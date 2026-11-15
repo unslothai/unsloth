@@ -1029,8 +1029,115 @@ fn page_user_agent() -> Option<String> {
 /// request on macOS without a prompt, so any page could open the microphone the app holds for
 /// dictation. `Default` is WebKit's own per-site prompt there and the platform default elsewhere
 /// (WebView2's prompt, WebKitGTK's deny), so only the silent grant goes away.
-fn page_permission(_kind: PermissionKind) -> PermissionResponse {
-    PermissionResponse::Default
+/// The user's camera and microphone settings can only turn that prompt into a refusal: nothing
+/// here returns `Allow`.
+fn page_permission(
+    rules: &CaptureRules,
+    page: Option<&Url>,
+    kind: PermissionKind,
+) -> PermissionResponse {
+    let site = page
+        .and_then(capture_origin)
+        .and_then(|origin| rules.sites.get(&origin));
+    let rule = match kind {
+        PermissionKind::Camera => site.map_or(rules.camera, |site| site.camera),
+        PermissionKind::Microphone => site.map_or(rules.microphone, |site| site.microphone),
+        _ => CaptureRule::Ask,
+    };
+    match rule {
+        CaptureRule::Ask => PermissionResponse::Default,
+        CaptureRule::Block => PermissionResponse::Deny,
+    }
+}
+
+const MAX_CAPTURE_SITES: usize = 500;
+const MAX_CAPTURE_ORIGIN_LEN: usize = 300;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureRule {
+    #[default]
+    Ask,
+    Block,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct CaptureSiteRule {
+    camera: CaptureRule,
+    microphone: CaptureRule,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct CaptureRules {
+    camera: CaptureRule,
+    microphone: CaptureRule,
+    #[serde(default)]
+    sites: HashMap<String, CaptureSiteRule>,
+}
+
+#[derive(Default)]
+pub struct BrowserCaptureRules(Mutex<CaptureRules>);
+
+pub fn new_browser_capture_rules() -> BrowserCaptureRules {
+    BrowserCaptureRules::default()
+}
+
+/// The key site rules are stored and looked up under: `example.com.` is the same site.
+fn capture_origin(url: &Url) -> Option<String> {
+    let origin = crate::webview_permissions::permission_origin(url)?;
+    let Some(host) = url.host_str().and_then(|host| host.strip_suffix('.')) else {
+        return Some(origin);
+    };
+    let mut url = url.clone();
+    url.set_host(Some(host)).ok()?;
+    crate::webview_permissions::permission_origin(&url)
+}
+
+fn checked_capture_rules(rules: CaptureRules) -> Result<CaptureRules, String> {
+    if rules.sites.len() > MAX_CAPTURE_SITES {
+        return Err("too many site rules".into());
+    }
+    let mut sites = HashMap::with_capacity(rules.sites.len());
+    for (site, rule) in rules.sites {
+        let origin = (site.len() <= MAX_CAPTURE_ORIGIN_LEN)
+            .then(|| Url::parse(&site).ok())
+            .flatten()
+            .as_ref()
+            .and_then(capture_origin)
+            .ok_or("site rules need an http(s) origin")?;
+        sites.insert(origin, rule);
+    }
+    Ok(CaptureRules { sites, ..rules })
+}
+
+fn page_permission_for<R: Runtime>(
+    webview: &Webview<R>,
+    kind: PermissionKind,
+) -> PermissionResponse {
+    let Some(state) = webview.try_state::<BrowserCaptureRules>() else {
+        return PermissionResponse::Default;
+    };
+    let page = webview.url().ok();
+    let rules = state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    page_permission(&rules, page.as_ref(), kind)
+}
+
+#[tauri::command]
+pub fn browser_capture_rules_set<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserCaptureRules>,
+    rules: CaptureRules,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let rules = checked_capture_rules(rules)?;
+    *state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = rules;
+    Ok(())
 }
 
 /// Pages' own profile, proxied via `browser_proxy` (macOS: set on first load). Every
@@ -1040,7 +1147,8 @@ fn with_page_profile<R: Runtime>(
     app: &AppHandle<R>,
     local: Option<&LocalPage>,
 ) -> Result<WebviewBuilder<R>, String> {
-    let builder = builder.on_permission_request(|_, kind| page_permission(kind));
+    let builder =
+        builder.on_permission_request(|webview, kind| page_permission_for(&webview, kind));
     let proxy = match local {
         Some(local) => local.proxy.address,
         None => crate::browser_proxy::address()?,
@@ -1524,6 +1632,8 @@ async fn create_view<R: Runtime>(
         let _ = apply_mute(&webview, true);
     }
     #[cfg(windows)]
+    keep_blocks_unsaved(&webview);
+    #[cfg(windows)]
     if let Some(origin) = origin {
         if let Err(error) = protect_local_frames(&webview, origin).await {
             let _ = close_view(&webview);
@@ -1553,6 +1663,61 @@ async fn create_view<R: Runtime>(
         );
     start_url_poll(&app);
     Ok(webview)
+}
+
+/// WebView2 saves a denial and stops asking, so a Block would outlast its rule: mark it unsaved.
+#[cfg(windows)]
+fn keep_blocks_unsaved<R: Runtime>(page: &Webview<R>) {
+    use webview2_com::{
+        Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND,
+            COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+        },
+        PermissionRequestedEventHandler,
+    };
+    use windows_core::Interface;
+    let app = page.app_handle().clone();
+    let label = page.label().to_string();
+    let hooked = page.with_webview(move |platform| {
+        let result = (|| -> windows_core::Result<()> {
+            let view = unsafe { platform.controller().CoreWebView2()? };
+            let mut token = 0;
+            unsafe {
+                view.add_PermissionRequested(
+                    &PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                        let Some(args) = args else { return Ok(()) };
+                        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                        args.PermissionKind(&mut kind)?;
+                        let kind = if kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA {
+                            PermissionKind::Camera
+                        } else if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                            PermissionKind::Microphone
+                        } else {
+                            return Ok(());
+                        };
+                        let blocked = app.get_webview(&label).is_some_and(|page| {
+                            matches!(page_permission_for(&page, kind), PermissionResponse::Deny)
+                        });
+                        if blocked {
+                            if let Ok(request) =
+                                args.cast::<ICoreWebView2PermissionRequestedEventArgs3>()
+                            {
+                                let _ = request.SetSavesInProfile(false);
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }
+        })();
+        if let Err(error) = result {
+            log::warn!("Could not keep blocked capture requests unsaved: {error}");
+        }
+    });
+    if let Err(error) = hooked {
+        log::warn!("Could not keep blocked capture requests unsaved: {error}");
+    }
 }
 
 // Wry's Windows navigation callback covers only the top document, so frames are filtered here.
@@ -2688,17 +2853,213 @@ fn take_finished(
 mod tests {
     #[test]
     fn page_capture_requests_are_never_granted_silently() {
-        for kind in [
-            PermissionKind::Microphone,
-            PermissionKind::Camera,
-            PermissionKind::DisplayCapture,
-            PermissionKind::Other,
-        ] {
-            assert!(
-                !matches!(page_permission(kind), PermissionResponse::Allow),
-                "{kind:?} must not be granted without asking"
+        let rule_sets = [CaptureRule::Ask, CaptureRule::Block]
+            .into_iter()
+            .flat_map(|default| {
+                [CaptureRule::Ask, CaptureRule::Block].map(|site| capture_rules(default, site))
+            });
+        let pages = [
+            "https://ruled.example/",
+            "https://other.example/",
+            "about:blank",
+        ];
+        for rules in rule_sets {
+            for page in pages.iter().map(|page| Url::parse(page).ok()).chain([None]) {
+                for kind in [
+                    PermissionKind::Microphone,
+                    PermissionKind::Camera,
+                    PermissionKind::DisplayCapture,
+                    PermissionKind::Other,
+                ] {
+                    assert!(
+                        !matches!(
+                            page_permission(&rules, page.as_ref(), kind),
+                            PermissionResponse::Allow
+                        ),
+                        "{kind:?} must not be granted without asking"
+                    );
+                }
+            }
+        }
+    }
+
+    fn capture_rules(default: CaptureRule, site: CaptureRule) -> CaptureRules {
+        let site = CaptureSiteRule {
+            camera: site,
+            microphone: site,
+        };
+        CaptureRules {
+            camera: default,
+            microphone: default,
+            sites: HashMap::from([("https://ruled.example".to_string(), site)]),
+        }
+    }
+
+    fn capture_answer(rules: &CaptureRules, page: &str, kind: PermissionKind) -> &'static str {
+        match page_permission(rules, Url::parse(page).ok().as_ref(), kind) {
+            PermissionResponse::Deny => "deny",
+            PermissionResponse::Default => "default",
+            _ => "other",
+        }
+    }
+
+    #[test]
+    fn capture_site_rule_wins_over_the_default() {
+        let blocked_site = capture_rules(CaptureRule::Ask, CaptureRule::Block);
+        for kind in [PermissionKind::Camera, PermissionKind::Microphone] {
+            assert_eq!(
+                capture_answer(&blocked_site, "https://ruled.example/call", kind),
+                "deny"
+            );
+            assert_eq!(
+                capture_answer(&blocked_site, "https://other.example/", kind),
+                "default"
+            );
+            assert_eq!(
+                capture_answer(&blocked_site, "http://ruled.example/", kind),
+                "default"
+            );
+            assert_eq!(
+                capture_answer(&blocked_site, "https://ruled.example:8443/", kind),
+                "default"
             );
         }
+        let asking_site = capture_rules(CaptureRule::Block, CaptureRule::Ask);
+        for kind in [PermissionKind::Camera, PermissionKind::Microphone] {
+            assert_eq!(
+                capture_answer(&asking_site, "https://ruled.example/", kind),
+                "default"
+            );
+            assert_eq!(
+                capture_answer(&asking_site, "https://other.example/", kind),
+                "deny"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_rules_are_per_kind_and_leave_other_kinds_alone() {
+        let rules: CaptureRules = serde_json::from_str(
+            r#"{"camera":"block","microphone":"ask","sites":{"https://ruled.example":{"camera":"ask","microphone":"block"}}}"#,
+        )
+        .unwrap();
+        let rules = checked_capture_rules(rules).unwrap();
+        assert_eq!(
+            capture_answer(&rules, "https://other.example/", PermissionKind::Camera),
+            "deny"
+        );
+        assert_eq!(
+            capture_answer(&rules, "https://other.example/", PermissionKind::Microphone),
+            "default"
+        );
+        assert_eq!(
+            capture_answer(&rules, "https://ruled.example/", PermissionKind::Camera),
+            "default"
+        );
+        assert_eq!(
+            capture_answer(&rules, "https://ruled.example/", PermissionKind::Microphone),
+            "deny"
+        );
+        let all = capture_rules(CaptureRule::Block, CaptureRule::Block);
+        for kind in [PermissionKind::DisplayCapture, PermissionKind::Other] {
+            assert_eq!(
+                capture_answer(&all, "https://ruled.example/", kind),
+                "default"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_site_lookup_ignores_host_case_and_a_trailing_dot() {
+        let rules = capture_rules(CaptureRule::Ask, CaptureRule::Block);
+        for page in [
+            "https://RULED.Example/",
+            "https://ruled.example./",
+            "https://ruled.example:443/a",
+        ] {
+            assert_eq!(
+                capture_answer(&rules, page, PermissionKind::Camera),
+                "deny",
+                "{page}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_page_without_an_http_origin_gets_the_default_rule() {
+        let asking = capture_rules(CaptureRule::Ask, CaptureRule::Block);
+        let blocking = capture_rules(CaptureRule::Block, CaptureRule::Ask);
+        for page in [
+            "about:blank",
+            "data:text/html,hi",
+            "file:///tmp/a.html",
+            "not a url",
+        ] {
+            assert_eq!(
+                capture_answer(&asking, page, PermissionKind::Microphone),
+                "default",
+                "{page}"
+            );
+            assert_eq!(
+                capture_answer(&blocking, page, PermissionKind::Microphone),
+                "deny",
+                "{page}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_rules_from_the_app_are_validated_and_normalized() {
+        let with_site = |site: &str| {
+            let mut rules = CaptureRules::default();
+            rules
+                .sites
+                .insert(site.to_string(), CaptureSiteRule::default());
+            checked_capture_rules(rules)
+        };
+        let kept = with_site("HTTPS://Example.com./path?q=1").unwrap();
+        assert_eq!(
+            kept.sites.keys().collect::<Vec<_>>(),
+            ["https://example.com"]
+        );
+        for bad in [
+            "example.com",
+            "file:///etc/passwd",
+            "about:blank",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert!(with_site(bad).is_err(), "{bad}");
+        }
+        assert!(with_site(&format!(
+            "https://{}.example",
+            "a".repeat(MAX_CAPTURE_ORIGIN_LEN)
+        ))
+        .is_err());
+        let mut many = CaptureRules::default();
+        for index in 0..=MAX_CAPTURE_SITES {
+            many.sites.insert(
+                format!("https://site{index}.example"),
+                CaptureSiteRule::default(),
+            );
+        }
+        assert!(checked_capture_rules(many).is_err());
+        assert!(
+            serde_json::from_str::<CaptureRules>(r#"{"camera":"allow","microphone":"ask"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_blocked_capture_request_is_not_saved_by_webview2() {
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(code.contains("    #[cfg(windows)]\n    keep_blocks_unsaved(&webview);\n"));
+        let start = code.find("fn keep_blocks_unsaved").unwrap();
+        let body = &code[start..start + code[start..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains("PermissionResponse::Deny") && body.contains(".SetSavesInProfile(false)")
+        );
     }
 
     #[test]

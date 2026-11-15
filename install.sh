@@ -2611,7 +2611,11 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+_OVERRIDES_FILE=""
+# A checkout's pins describe that checkout, not the released wheel, so take them only when the
+# checkout is what gets installed; otherwise _bootstrap_packaged_mlx_override reads the wheel's copy.
+if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] \
+   && { [ "$STUDIO_LOCAL_INSTALL" = true ] || [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; }; then
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
         # uv splits UV_OVERRIDE on whitespace; hand uv a copy in a whitespace-free temp dir.

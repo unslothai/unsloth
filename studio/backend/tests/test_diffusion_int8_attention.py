@@ -210,23 +210,63 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
     assert DA.select_attention_backend(target, "unsloth_int8", speed_active = False) is None
 
 
+def _variants(config: dict) -> list:
+    """The kernels a table entry compiles: the one of short calls, and the one from ``long_keys`` keys on."""
+    short = I.select_config(config, 0)
+    long = I.select_config(config, 10**9)
+    return [short] if long == short else [short, long]
+
+
 def test_every_config_fits_its_card():
     assert set(I.KERNEL_CONFIGS) == set(SHARED_LIMIT)
     for capability, table in I.KERNEL_CONFIGS.items():
         assert set(table) == set(I.HEAD_DIMS)
-        for head_dim, config in table.items():
-            assert config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
-            assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
-            cap = config.get("max_registers")
-            if cap is not None:
-                assert 32 * config["wpc"] * cap <= SM_REGISTERS
-            assert (
-                32 * config["wpc"] <= 1024
-            )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
-            assert I.kernel_config(capability, head_dim) == config
+        for head_dim, entry in table.items():
+            assert ("long" in entry) == ("long_keys" in entry)
+            for config in _variants(entry):
+                assert (
+                    config["bn"] in (64, 128) and config["nq"] >= 1 and config["stages"] in (1, 2)
+                )
+                assert config["bn"] == entry["bn"]  # the tile is what the output bits depend on
+                assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT[capability]
+                cap = config.get("max_registers")
+                if cap is not None:
+                    assert 32 * config["wpc"] * cap <= SM_REGISTERS
+                assert (
+                    32 * config["wpc"] <= 1024
+                )  # sm75 holds 32 warps per SM, and a block is at most 1024 threads
+            assert I.kernel_config(capability, head_dim) == entry
     assert I.kernel_config((9, 0), 128) is None and I.kernel_config((12, 0), 96) is None
     assert I.kernel_config((7, 0), 128) is None and I.kernel_config((6, 1), 128) is None
     assert I.kernel_config(None, 128) is None
+
+
+def test_long_overrides_apply_from_long_keys_on():
+    """A table entry may name another block shape for long sequences: ``select_config`` applies ``long`` from
+    ``long_keys`` keys on and returns a plain config either way (one compiled kernel). sm80 at head dim 128 and
+    sm89 at head dim 64 run 4 warps per block below 4608 keys and 8 from there on; no other entry has overrides."""
+    with_long = {
+        (capability, head_dim)
+        for capability, table in I.KERNEL_CONFIGS.items()
+        for head_dim, entry in table.items()
+        if "long" in entry
+    }
+    assert with_long == {((8, 0), 128), ((8, 9), 64)}
+    entry = I.kernel_config((8, 9), 64)
+    assert I.select_config(entry, 4607)["wpc"] == 4 and I.select_config(entry, 4608)["wpc"] == 8
+    entry = I.kernel_config((8, 0), 128)
+    assert entry["long_keys"] == 4608 and entry["long"] == {"wpc": 8}
+    short, long = (
+        I.select_config(entry, entry["long_keys"] - 1),
+        I.select_config(entry, entry["long_keys"]),
+    )
+    assert short == {"bn": 128, "wpc": 4, "nq": 1, "stages": 2, "qreg": 1}
+    assert long == dict(short, wpc = 8)
+    assert I.select_config(short, 10**9) == short
+    assert I.kernel_defines(128, entry) == I.kernel_defines(128, short)
+    assert I._config_key(entry) != I._config_key(short) and hash(I._config_key(entry)) is not None
+    plain = I.kernel_config((8, 9), 128)
+    assert I.select_config(plain, 0) == I.select_config(plain, 10**9) == plain
 
 
 def test_sm75_has_its_own_config():
@@ -281,28 +321,29 @@ def test_kernel_compiles_for_every_config(capability):
     arch = 10 * capability[0] + capability[1]
     if arch not in _nvrtc_archs():
         pytest.skip(f"NVRTC {K.nvrtc_version()} cannot target sm_{arch}")
-    for head_dim, config in I.KERNEL_CONFIGS[capability].items():
-        ptx = K.compile_ptx(
-            K.KERNEL_SOURCE,
-            f"sm_{arch}",
-            I.kernel_defines(head_dim, config),
-        ).decode(errors = "replace")
-        products = config["nq"] * (
-            (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
-        )
-        if capability < (8, 0):
-            assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
-            assert "m16n8k32" not in ptx and "cp.async" not in ptx
-        else:
-            assert ptx.count("mma.sync.aligned.m16n8k32") == products
-            assert "m8n8k16" not in ptx
-        assert "cvt.rn.f32.s32" not in ptx
+    for head_dim, entry in I.KERNEL_CONFIGS[capability].items():
+        for config in _variants(entry):
+            ptx = K.compile_ptx(
+                K.KERNEL_SOURCE,
+                f"sm_{arch}",
+                I.kernel_defines(head_dim, config),
+            ).decode(errors = "replace")
+            products = config["nq"] * (
+                (head_dim // 32) * (config["bn"] // 8) + (config["bn"] // 32) * (head_dim // 8)
+            )
+            if capability < (8, 0):
+                assert ptx.count("mma.sync.aligned.m8n8k16") == 4 * products
+                assert "m16n8k32" not in ptx and "cp.async" not in ptx
+            else:
+                assert ptx.count("mma.sync.aligned.m16n8k32") == products
+                assert "m8n8k16" not in ptx
+            assert "cvt.rn.f32.s32" not in ptx
         quant = K.compile_ptx(
             K.QUANT_SOURCE,
             f"sm_{arch}",
             {
                 "HD": head_dim,
-                "BN": config["bn"],
+                "BN": entry["bn"],
                 "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
             },
         ).decode(errors = "replace")
@@ -415,6 +456,60 @@ def test_no_probability_is_packed_unclamped():
         and "pack4(ex2(" not in source
         and " ex2(fmaf(" not in source
     )
+
+
+ORDERINGS = ("qkw", "pvw", "spread")
+
+
+def test_the_orderings_reach_the_kernel_as_defines():
+    """qkw / pvw / spread are per-card config keys that become compile-time defines; a config without them
+    compiles the kernel as it was. Head dim 128 on sm120 (all three) and on sm75 (the two product orders: its one
+    stage has no next tile to spread) are the configs that set them."""
+    tuned = {((12, 0), 128): {"QKW": 1, "PVW": 8, "SPREAD": 5}, ((7, 5), 128): {"QKW": 1, "PVW": 8}}
+    for capability in sorted(SHARED_LIMIT):
+        for head_dim in I.HEAD_DIMS:
+            defines = I.kernel_defines(head_dim, I.kernel_config(capability, head_dim))
+            got = {
+                name.upper(): defines[name.upper()] for name in ORDERINGS if name.upper() in defines
+            }
+            assert got == tuned.get((capability, head_dim), {}), (capability, head_dim)
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_the_orderings_keep_the_products_and_refuse_bad_combinations():
+    """Each ordering compiles to the same number of tensor-core products and tile copies and adds no int <-> float
+    conversion; spread needs qkw, pvw an even divisor of the channel blocks, and a one-stage kernel has no next
+    tile to spread."""
+    arch = max(a for a in _nvrtc_archs() if a in (80, 86, 89, 120))
+    base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+
+    def ptx(head_dim, **keys):
+        return K.compile_ptx(
+            K.KERNEL_SOURCE, f"sm_{arch}", I.kernel_defines(head_dim, dict(base, **keys))
+        ).decode(errors = "replace")
+
+    for head_dim in I.HEAD_DIMS:
+        plain = ptx(head_dim)
+        for keys in (
+            {"qkw": 1},
+            {"pvw": 2},
+            {"pvw": 8},
+            {"qkw": 1, "spread": 1},
+            {"qkw": 1, "pvw": 8, "spread": 5},
+            {"qkw": 1, "pvw": 8, "spread": 5, "nq": 2},
+        ):
+            got = ptx(head_dim, **keys)
+            scale = keys.get("nq", 1)
+            assert got.count("mma.sync.aligned.m16n8k32") == scale * plain.count(
+                "mma.sync.aligned.m16n8k32"
+            ), keys
+            assert got.count("ldmatrix") <= scale * plain.count("ldmatrix"), keys
+            assert got.count("cp.async.cg") == plain.count("cp.async.cg"), keys
+            assert "cvt.rn.f32.s32" not in got and "cvt.rni" not in got
+    assert ptx(128, qkw = 1, spread = 5, stages = 1) == ptx(128, qkw = 1, stages = 1)
+    for keys in ({"spread": 1}, {"pvw": 3}, {"pvw": 6}):
+        with pytest.raises(RuntimeError, match = "unsupported combination"):
+            ptx(128, **keys)
 
 
 def test_install_off_cuda_and_kill_switch(monkeypatch):
@@ -531,6 +626,50 @@ def test_statistics_cover_every_key():
         assert vstep == 1 and rows % vstep == 0 and chunks <= I.V_RANGE_CHUNKS
         assert (chunks - 1) * rows < n <= chunks * rows
         assert 1 <= kstep <= I.K_MEAN_STEP and -(-n // kstep) >= min(n, I.K_MEAN_KEYS)
+
+
+def test_the_quantisers_read_only_aligned_rows():
+    """The quantisers load 16 bytes at a time: a tensor goes in as it is when its last-dim stride is 1 and every
+    row starts on a 16-byte boundary (packed QKV views do), and as a contiguous copy otherwise."""
+    H, D = 2, 64
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    for view in packed.chunk(3, dim = -1):
+        x = view.unflatten(-1, (H, D))
+        assert I._strides_aligned(x) and I._aligned(x) is x
+    odd = torch.zeros(1, 9, 3 * H * D + 1, dtype = torch.bfloat16)[..., : H * D].unflatten(-1, (H, D))
+    assert not I._strides_aligned(odd)  # rows 2 bytes apart from a 16-byte boundary
+    shifted = torch.zeros(1, 9, H, D + 8, dtype = torch.bfloat16)[..., 1 : D + 1]
+    assert I._strides_aligned(shifted) and shifted.data_ptr() % 16 != 0
+    sparse = torch.zeros(1, 9, H, 2 * D, dtype = torch.bfloat16)[..., ::2]
+    assert not I._strides_aligned(sparse)
+    for x in (odd, shifted, sparse):
+        copy_ = I._aligned(x)
+        assert copy_ is not x and copy_.is_contiguous() and copy_.data_ptr() % 16 == 0
+        assert I._strides_aligned(copy_) and torch.equal(copy_, x)
+
+
+def test_a_launch_plan_is_keyed_by_everything_it_depends_on(monkeypatch):
+    """The launch arithmetic of a call is done once per signature: the same shape, dtypes, strides, config and
+    scale find the plan again (the config by value: the per-card table hands out copies), any other call does not."""
+    H, D = 2, 64
+    config = {"bn": 128, "wpc": 4, "nq": 2, "stages": 2}
+    packed = torch.zeros(1, 9, 3 * H * D, dtype = torch.bfloat16)
+    q, k, v = (x.unflatten(-1, (H, D)) for x in packed.chunk(3, dim = -1))
+    key = I._plan_key(q, k, v, config, None, 0)
+    assert key == I._plan_key(q, k, v, dict(reversed(list(config.items()))), None, 0)
+    assert hash(key) == hash(I._plan_key(q, k, v, dict(config), None, 0))
+    others = [
+        I._plan_key(q, k, v, dict(config, wpc = 8), None, 0),
+        I._plan_key(q, k, v, config, 0.25, 0),
+        I._plan_key(q, k, v, config, None, 1),
+        I._plan_key(q.contiguous(), k, v, config, None, 0),  # other strides
+        I._plan_key(q, k.float(), v.float(), config, None, 0),
+        I._plan_key(q[:, :8], k, v, config, None, 0),
+        I._plan_key(q, k[:, :8], v[:, :8], config, None, 0),
+    ]
+    assert len({key, *others}) == len(others) + 1
+    monkeypatch.setattr(I, "V_RANGE_STEP", 8)  # the statistics plan is part of what a plan holds
+    assert I._plan_key(q, k, v, config, None, 0) != key
 
 
 def test_v_range_over_every_key_keeps_a_short_sequence_accurate(monkeypatch):
@@ -677,7 +816,10 @@ def _h3_inputs(
 
 @pytest.fixture
 def _active_backend():
-    from diffusers.models.attention_dispatch import _AttentionBackendRegistry
+    # Skip, not error, where diffusers is missing (the backend CPU job), as _h3() does for the test body.
+    _AttentionBackendRegistry = pytest.importorskip(
+        "diffusers.models.attention_dispatch"
+    )._AttentionBackendRegistry
 
     active = _AttentionBackendRegistry._active_backend
     yield
@@ -1101,16 +1243,97 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
 
 @needs_kernel
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_call_signature_is_planned_once(head_dim):
+    """Two quantiser launches and the kernel, with their grids and arguments worked out on the first call of a
+    signature only; packed views and separate tensors are two signatures with one answer, and the query rows are
+    padded to the kernel's block, no further."""
+    shape = (2, 333, 3, head_dim)
+    config = _cuda_config(head_dim)
+    q, k, v = _case(shape, _card_dtype(), seed = 5, strided = True)
+    I._plans().clear()
+    first = I.quantise(q, k, v, config)
+    plan = first["plan"]
+    assert len(I._plans()) == 1 and len(plan["stats_grids"]) == len(plan["kv_grids"]) == 1
+    rows = 16 * config["nq"] * config["wpc"]
+    assert first["pads"] == (-(-333 // rows) * rows, -(-333 // config["bn"]) * config["bn"])
+    assert (
+        first["qi"].shape == (6, first["pads"][0], head_dim) and first["f32"].dtype == torch.float32
+    )
+    out = I.attend(first)
+    again = I.quantise(q, k, v, dict(config))
+    assert again["plan"] is plan and len(I._plans()) == 1
+    assert torch.equal(I.attend(again), out)
+    apart = I.quantise(q.contiguous(), k.contiguous(), v.contiguous(), config)
+    assert apart["plan"] is not plan and len(I._plans()) == 2
+    assert torch.equal(I.attend(apart), out)
+    assert torch.equal(I.int8_attention(q, k, v, scale = 0.05), I.int8_attention(q, k, v, scale = 0.05))
+    assert len(I._plans()) == 3
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_long_overrides_do_not_change_the_output(head_dim):
+    """The block shape moves no output bit (rows do not see each other, the tile is the same), so the kernel a call
+    gets by its key count agrees with the other one; a call runs the long kernel exactly from long_keys keys on."""
+    base = I.select_config(_cuda_config(head_dim), 0)
+    entry = dict(base, long_keys = 300, long = {"wpc": 2 if base["wpc"] != 2 else 4})
+    for keys in (299, 300, 700):
+        q, k, v = _case((1, keys, 2, head_dim), _card_dtype(), seed = keys)
+        q = q[:, :333].contiguous()
+        p = I.quantise(q, k, v, entry)
+        assert p["config"] == I.select_config(entry, keys)
+        assert (p["config"]["wpc"] == base["wpc"]) is (keys < 300)
+        got = I.attend(p)
+        assert torch.equal(got, I.int8_attention(q, k, v, config = base))
+        assert torch.equal(
+            got, I.int8_attention(q, k, v, config = dict(base, wpc = entry["long"]["wpc"]))
+        )
+
+
+@needs_kernel
+def test_inputs_off_the_16_byte_grid_are_copied():
+    """A view whose rows do not start on a 16-byte boundary (here one element into a wider buffer) is read from
+    an aligned copy: the same bits as the aligned call."""
+    shape = (1, 200, 2, 128)
+    q, k, v = _case(shape, _card_dtype(), seed = 9)
+    want = I.int8_attention(q, k, v)
+    wide = torch.zeros(1, 200, 2, 128 + 8, dtype = q.dtype, device = "cuda")
+    wide[..., 1:129] = k
+    shifted = wide[..., 1:129]
+    assert shifted.data_ptr() % 16 != 0
+    assert torch.equal(I.int8_attention(q, shifted, v), want)
+    wide[..., 1:129] = q
+    assert torch.equal(I.int8_attention(shifted, k, v), want)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
+    """A grid holds 65535 blocks along the axis the quantisers' jobs sit on; a call with more jobs than that runs
+    them in several launches, each told its first job. With the limit turned down to three the bits stay the same."""
+    q, k, v = _case((2, 700, 2, head_dim), _card_dtype(), seed = 11)
+    want = I.int8_attention(q, k, v)
+    monkeypatch.setattr(I, "GRID_LIMIT", 3)
+    I._plans().clear()
+    got = I.int8_attention(q, k, v)
+    (plan,) = I._plans().values()
+    assert len(plan["stats_grids"]) > 3 and len(plan["kv_grids"]) > 3
+    assert all(grid[1] <= 3 for grid, _ in plan["stats_grids"] + plan["kv_grids"])
+    assert torch.equal(got, want)
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
-    config = _cuda_config(head_dim)
-    fn = I.kernel_function("cuda", head_dim, config)
-    assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
-    cap = config.get("max_registers")
-    assert cap is None or fn.registers <= cap
-    # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
-    assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
-    assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
+    for config in _variants(_cuda_config(head_dim)):
+        fn = I.kernel_function("cuda", head_dim, config)
+        assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
+        cap = config.get("max_registers")
+        assert cap is None or fn.registers <= cap
+        # at least one block of this config is resident per SM (registers are granted in multiples of 8 per thread)
+        assert 32 * config["wpc"] * ((fn.registers + 7) // 8 * 8) <= SM_REGISTERS
+        assert I.shared_bytes(head_dim, config) <= SHARED_LIMIT.get(tuple(capability), 99 * 1024)
 
 
 @needs_kernel
@@ -1244,6 +1467,47 @@ def test_the_flush_placement_does_not_change_the_output(head_dim):
     )
 
 
+def _plain(config: dict) -> dict:
+    return {key: value for key, value in config.items() if key not in ORDERINGS}
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize(
+    "case",
+    [
+        (torch.bfloat16, 1039, 1.0, 0.0),
+        (torch.float16, 2500, 1.0, 0.0),
+        (torch.float32, 16 * 128 * 2 + 5, 1.0, 0.0),  # past two removals of the rounding constant
+        (torch.bfloat16, 3000, 2.0, 6.0),  # late keys far above the early ones: the rebase branch
+        (torch.bfloat16, 77, 3.0, 0.0),  # one padded tile
+    ],
+    ids = ["bf16", "fp16", "flush", "rebase", "short"],
+)
+def test_the_orderings_do_not_change_the_output(head_dim, case):
+    """The order the products and the tile copies are issued in gives the bits of the plain order: integer sums
+    are exact and every float accumulator sees the same operations. So a card tuned with them still agrees with
+    the others bit for bit."""
+    dtype, tokens, gain, spike = case
+    generator = torch.Generator().manual_seed(tokens)
+    q, k, v = (torch.randn(2, tokens, 3, head_dim, generator = generator) for _ in range(3))
+    q, k = q * gain, k * gain
+    if spike:
+        k[:, tokens // 2 :] *= spike
+        k[:, -3:] *= 4.0
+    q = q[:, : min(tokens, 700)].contiguous()
+    q, k, v = (x.to("cuda", dtype) for x in (q, k, v))
+    plain = _plain(_cuda_config(head_dim))
+    want = I.int8_attention(q, k, v, config = plain)
+    assert torch.isfinite(want.float()).all()
+    variants = [{"qkw": 1}, {"pvw": 2}, {"pvw": 8}, {"qkw": 1, "pvw": 16 if head_dim == 128 else 4}]
+    if plain["stages"] == 2:
+        variants += [{"qkw": 1, "spread": 1}, {"qkw": 1, "pvw": 8, "spread": 5}]
+    for variant in variants:
+        assert torch.equal(I.int8_attention(q, k, v, config = dict(plain, **variant)), want), variant
+    assert torch.equal(I.int8_attention(q, k, v), want)
+
+
 @needs_kernel
 def test_batch_offsets_past_2_31_elements():
     """Three batches whose stride is 2^30 elements: the third starts 2^31 elements into the buffer, past int32."""
@@ -1346,6 +1610,129 @@ def test_cuda_graph_replay_matches_eager():
         graph.replay()
         torch.cuda.synchronize()
         assert torch.equal(out, op(*fresh))
+
+
+OTHER = 1  # the second card of the two-card tests
+
+needs_two_cards = pytest.mark.skipif(
+    _cuda_config() is None
+    or torch.cuda.device_count() <= OTHER
+    or I.kernel_config(torch.cuda.get_device_capability(OTHER), 128) is None,
+    reason = "needs two CUDA cards with an INT8 kernel config",
+)
+
+
+@needs_two_cards
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_each_card_loads_its_own_kernels(head_dim):
+    """A loaded module belongs to the context of one card: each card compiles and loads its own kernels and keeps
+    its own launch plans, and a call runs on the card of its operands whatever the current device is."""
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    calls = {
+        index: I.probe_inputs(torch.device("cuda", index), dtype, 700, 3, head_dim)
+        for index in (0, OTHER)
+    }
+    I._plans().clear()
+    assert torch.cuda.current_device() == 0
+    out = {index: I.int8_attention(*calls[index]) for index in (0, OTHER)}
+    assert out[OTHER].device == there and torch.cuda.current_device() == 0
+    with torch.cuda.device(OTHER):
+        swapped = I.int8_attention(*calls[0])
+        assert torch.cuda.current_device() == OTHER
+    assert swapped.device.index == 0 and torch.equal(swapped, out[0])
+    assert sorted(plan["index"] for plan in I._plans().values()) == [0, OTHER]
+    loaded = {}
+    for index in (0, OTHER):
+        config = I.kernel_config(torch.cuda.get_device_capability(index), head_dim)
+        attn, quant, _ = I._functions(index, head_dim, config)
+        loaded[index] = [attn, *quant.values()]
+        assert I.accuracy(out[index], I.reference_attention(*calls[index]))["cos"] >= I.MIN_COSINE
+    assert len(loaded[0]) == 3 and all(a is not b for a, b in zip(loaded[0], loaded[OTHER]))
+    if torch.cuda.get_device_capability(OTHER) == torch.cuda.get_device_capability(0):
+        assert torch.equal(out[OTHER].cpu(), out[0].cpu())
+
+
+@needs_two_cards
+def test_the_card_check_counts_for_its_card_only(monkeypatch):
+    """A check passed on one card says nothing about the other: the verdicts and the verified set are per device,
+    and the op keeps native attention on a card until that card passed its own check."""
+    monkeypatch.setattr(I, "_VERDICTS", {})
+    monkeypatch.setattr(I, "_VERIFIED", set())
+    dtype = _card_dtype()
+    there = torch.device("cuda", OTHER)
+    here_call = I.probe_inputs("cuda:0", dtype, 500, 2, 128)
+    there_call = I.probe_inputs(there, dtype, 500, 2, 128)
+    first = I.verdict("cuda:0", dtype, 2, 128, timed = False)
+    assert first["ok"] and I._verified(*here_call) and not I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0} and {key[0] for key in I._VERIFIED} == {0}
+    native, ran = I.STATS["native"], I.STATS["int8"]
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran)
+    second = I.verdict(there, dtype, 2, 128, timed = False)
+    assert second["ok"] and second is not first and I._verified(*there_call)
+    assert {key[0] for key in I._VERDICTS} == {0, OTHER}
+    assert {key[0] for key in I._VERIFIED} == {0, OTHER}
+    assert I.int8_attention_impl(*there_call).device == there
+    assert (I.STATS["native"], I.STATS["int8"]) == (native + 1, ran + 1)
+
+
+@needs_two_cards
+def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
+    """Every launch of a call goes to the current stream of the card its operands are on, with that card's context
+    current, also while another card is the current device."""
+    q, k, v = I.probe_inputs(torch.device("cuda", OTHER), _card_dtype(), 700, 3, 128)
+    seen = []
+    launch = K.Function.launch
+
+    def spy(self, grid, block, values, shared, stream):
+        seen.append((self.name, stream, torch.cuda.current_device()))
+        return launch(self, grid, block, values, shared, stream)
+
+    monkeypatch.setattr(K.Function, "launch", spy)
+    names = {K.KERNEL_NAME, *K.QUANT_KERNELS}
+    assert torch.cuda.current_device() == 0
+    out = I.int8_attention(q, k, v)
+    usual = torch.cuda.current_stream(OTHER).cuda_stream
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (usual, OTHER) for _, stream, device in seen)
+    side = torch.cuda.Stream(device = OTHER)
+    assert side.cuda_stream != usual
+    del seen[:]
+    with (
+        torch.cuda.stream(side),
+        torch.cuda.device(0),
+    ):  # card 0 is current, the other card's stream is `side`
+        assert torch.cuda.current_device() == 0
+        again = I.int8_attention(q, k, v)
+    side.synchronize()
+    assert {name for name, _, _ in seen} == names
+    assert all((stream, device) == (side.cuda_stream, OTHER) for _, stream, device in seen)
+    assert torch.equal(again, out)
+
+
+@needs_two_cards
+def test_a_cuda_graph_of_another_card_replays_the_call():
+    """A graph captured on the other card holds the quantisers and the kernel: its replay follows new inputs. The
+    capture names a stream of that card: torch's default capture stream is one per process, on the card of the first
+    capture (after one on card 0 a capture here would be empty)."""
+    there = torch.device("cuda", OTHER)
+    dtype = _card_dtype()
+    q, k, v = (x.clone() for x in I.probe_inputs(there, dtype, 1100, 4, 128))
+    for _ in range(3):  # allocator and JIT warm, as before any capture
+        I.int8_attention(q, k, v)
+    with torch.cuda.device(OTHER):
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = torch.cuda.Stream(device = OTHER)):
+            out = I.int8_attention(q, k, v)
+        for seed in (5, 6):
+            fresh = I.probe_inputs(there, dtype, 1100, 4, 128, seed = seed)
+            for dst, src in zip((q, k, v), fresh):
+                dst.copy_(src)
+            graph.replay()
+            torch.cuda.synchronize()
+            assert torch.equal(out, I.int8_attention(*fresh))
 
 
 @needs_kernel
