@@ -460,8 +460,22 @@ CELLS = {
 }
 
 
+def _v_schedules_supported():
+    # V placement (two adjacent stages on one rank) needs PipelineStage._is_same_rank, torch >= 2.12.
+    try:
+        from torch.distributed.pipelining import PipelineStage
+    except ImportError:
+        return False
+    return hasattr(PipelineStage, "_is_same_rank")
+
+
 @pytest.mark.parametrize("cell", sorted(CELLS))
 def test_deepseek_v41_parallel_matches_one_process(cell):
+    if (
+        CELLS[cell].get("schedule") in ("zbvzerobubble", "dualpipev")
+        and not _v_schedules_supported()
+    ):
+        pytest.skip(f"V schedules need torch >= 2.12 (refused on {torch.__version__})")
     kwargs = dict(CELLS[cell])
     world = kwargs.pop("world")
     results = _spawn("parity", world, **kwargs)
