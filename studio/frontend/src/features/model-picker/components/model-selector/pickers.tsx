@@ -2480,7 +2480,8 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${name}`}
-            onReveal={() => revealLocalModel(m.path, m.id)}
+            // The local reveal route lists no hf_cache rows.
+            onReveal={m.source === "hf_cache" ? undefined : () => revealLocalModel(m.path, m.id)}
             del={
               DELETABLE_LOCAL_SOURCES.has(m.source)
                 ? {
