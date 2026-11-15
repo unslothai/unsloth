@@ -242,6 +242,12 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
         M._normalise_mask(layer, hidden, {"attention_mask": padding.expand(2, 1, 6, 6)})
         rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
         assert rebuilt is None if want is None else torch.equal(rebuilt, want)
+    # A token-broadcast 2D mask rebuilds as all ones in that layout.
+    layer = _MaskDecoderLayer().train()
+    M._MATERIALISED[0] = None
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1], [0]]).expand(2, 6)})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert torch.equal(rebuilt, torch.ones(2, 6, dtype = torch.long))
 
 
 def test_rebind_globals_resolves():

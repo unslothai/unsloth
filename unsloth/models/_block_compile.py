@@ -1554,22 +1554,21 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
         mask = cached[1] if cached[2] else cached[1]()
         if mask is not None:
             return mask
-    if dim == 2:
-        full = (batch, seq_len)
-        base = torch.ones(seq_len, dtype = dtype, device = device)
-    else:
-        full = (batch, heads, seq_len, seq_len)
-        if 2 in broadcast:
-            # Query dim broadcast (a padding-only bidirectional mask): a causal mask cannot be stored that way.
-            if causal:
-                return None
-            base = torch.ones((1, seq_len), dtype = torch.bool, device = device)
-        else:
-            base = torch.ones((seq_len, seq_len), dtype = torch.bool, device = device)
-            if causal:
-                base = base.tril_()
+    full = (batch, seq_len) if dim == 2 else (batch, heads, seq_len, seq_len)
     stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
-    mask = base.expand(stored).contiguous()
+    if dim == 4 and causal:
+        # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
+        if 2 in broadcast or 3 in broadcast:
+            return None
+        mask = (
+            torch.ones((seq_len, seq_len), dtype = torch.bool, device = device)
+            .tril_()
+            .expand(stored)
+            .contiguous()
+        )
+    else:
+        # All ones (2D padding, or a bidirectional 4D mask) in the stored shape, broadcast dims kept at 1.
+        mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
     if view:
         mask = mask.expand(full)
     setattr(mask, _MATERIALISED_ATTR, True)
