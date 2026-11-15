@@ -1066,8 +1066,7 @@ class DeepseekV41NgramHashState(nn.Module):
     def bind_token_map(self, token_map):
         self._token_map = torch.as_tensor(token_map, dtype = torch.int64, device = "cpu")
         self.pad_id = int(self._token_map[self.engram_pad_id])
-        # Host-side work here, not in forward: the compiled cache wraps compute_hash_multipliers in
-        # torch.compiler.disable, which a fullgraph forward cannot call.
+        # Not in forward: compiled cache disables compute_hash_multipliers, breaking fullgraph.
         primes, offsets = self._layout
         self._host_tables = (
             self._token_map,

@@ -186,8 +186,7 @@ def test_candidate_blocks_pin_the_newest_block_and_drop_unreachable_ones():
 
 
 def test_engram_hash_compiles_fullgraph_with_the_host_helpers_disabled(monkeypatch):
-    """The compiled cache wraps compute_hash_multipliers in torch.compiler.disable and compiles the hash forward with
-    fullgraph = True: the forward must not call it (it used to, on the first call per device)."""
+    """A fullgraph hash forward must not call the compiler-disabled compute_hash_multipliers."""
     model = _tiny_model()
     hasher = model.model.ngram_hash
     ids = torch.randint(0, 512, (2, 9), generator = torch.Generator().manual_seed(0))
