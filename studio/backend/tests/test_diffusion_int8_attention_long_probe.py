@@ -48,6 +48,20 @@ def _fake_card(monkeypatch, long_fails = False):
     monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
     monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
+
+    def route(q, k, v):
+        head_dim = int(q.shape[-1])
+        impl, config = I._serving(0, head_dim)
+        if config is None:
+            return "no kernel config for this card", 0, None, None
+        return (
+            ("kernel failed on this card" if (0, head_dim) in I._BROKEN else None),
+            0,
+            impl,
+            config,
+        )
+
+    monkeypatch.setattr(I, "_call_route", route)
     probe = I.probe_inputs
     monkeypatch.setattr(I, "probe_inputs", lambda device, *a, **k: probe("cpu", *a, **k))
     calls = []
@@ -77,6 +91,12 @@ def _fake_card(monkeypatch, long_fails = False):
 
     monkeypatch.setattr(I, "quantise", quantise)
     monkeypatch.setattr(I, "attend", attend)
+    # the eager hot path launches through _cuda_attention (one pass of the same two steps)
+    monkeypatch.setattr(
+        I,
+        "_cuda_attention",
+        lambda q, k, v, config, scale, index: I.attend(I.quantise(q, k, v, config, scale)),
+    )
     return calls, state
 
 
