@@ -366,3 +366,9 @@ test("a voice turn whose attachment send is slow still gets its reply", () => {
   assert.match(engine, /if \(msgs\.length <= before && Date\.now\(\) - armedAt < VOICE_APPEND_WAIT_MAX_MS\) \{/);
   assert.doesNotMatch(engine, /msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES/);
 });
+
+test("assistive tech's bare click pauses voice; a handled press is not tapped twice", () => {
+  const button = readSrc("components/assistant-ui/voice-pause-stop-button.tsx");
+  assert.match(button, /const release = \(\) => \{\s*releasedAtRef\.current = performance\.now\(\);/);
+  assert.match(button, /if \(e\.detail === 0 && performance\.now\(\) - releasedAtRef\.current > 500\) requestVoicePauseToggle\(\);/);
+});
