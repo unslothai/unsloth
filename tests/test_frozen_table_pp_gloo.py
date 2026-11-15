@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Frozen lookup tables (Qwen4Exp PLE n-gram table, in layer 1) under pipeline parallelism, 2 gloo stages, every
-UNSLOTH_FROZEN_TABLE mode: only the stage owning layer 1 holds and reads the table (the other stage has no table
-module and no open file), each micro-batch looks up its own rows (GPipe and 1F1B, also with checkpoint recompute,
-whose memo must not hand one micro-batch's rows to another), the loader never reads a ram / disk table and the
-adapter save holds no table key. See _frozen_table_parallel.py."""
+"""Frozen lookup tables under pipeline parallelism on 2 gloo stages, every UNSLOTH_FROZEN_TABLE mode."""
 
 import multiprocessing
 import os
@@ -70,8 +66,7 @@ def test_pp_tables(ckpt, cell):
 
 
 def test_pp_named_adapter_gets_every_stages_tables(ckpt):
-    """The table lives on stage 1 only (stage 0 = layer 0), and pp rank 0 writes the adapter: both the default
-    adapter and the named one (saved in <directory>/second) get the merged record of every stage."""
+    """Only stage 1 holds the table; both saved adapters get the merged record of every stage."""
     _pipelining()
     res = ftp.run(
         2, mode = "pp", path = ckpt, table_mode = "ram", second_adapter = True, layers_per_stage = [1, 3]

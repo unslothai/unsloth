@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An adapter of a model with a frozen lookup table (Qwen3.8-Flash-Next's PLE n-gram table read from the checkpoint
-by unsloth_zoo, ram / disk mode) never carries the table, so the save writes frozen_tables.json next to it and
-loading the adapter checks the model it lands on has the same base table: silent on the same checkpoint, a warning
-(an error with UNSLOTH_FROZEN_TABLE_PROVENANCE=strict) on a checkpoint whose table differs. CPU, tiny model.
-(The distributed saves are checked in tests/_frozen_table_parallel.py.)"""
+"""frozen_tables.json provenance record: written on adapter save, checked against the base table on load."""
 
 import contextlib
 import json
@@ -154,8 +150,7 @@ def test_strict_from_pretrained_refuses_before_touching_the_base(checkpoints, ad
 
 
 def test_named_adapters_carry_their_own_record(checkpoints, tmp_path):
-    """PEFT saves "default" at the directory and every other adapter in <directory>/<name>: each gets the record,
-    also when the adapters to save are passed positionally."""
+    """Every saved adapter gets the record, also when adapters are passed positionally."""
     from peft import LoraConfig, get_peft_model
 
     provenance = ftp.load_module("frozen_table_provenance")
@@ -174,8 +169,7 @@ def test_named_adapters_carry_their_own_record(checkpoints, tmp_path):
 
 
 def test_hub_adapter_is_checked_before_loading(checkpoints, adapter, monkeypatch):
-    """A Hub adapter id: frozen_tables.json comes through the Hub cache (with the load's revision / subfolder /
-    token options), and strict mode refuses a mismatch before PEFT fetches or installs anything."""
+    """Hub adapter: the record comes via the Hub cache and strict mode refuses before PEFT fetches."""
     import huggingface_hub
     from peft import PeftModel
 
@@ -198,8 +192,7 @@ def test_hub_adapter_is_checked_before_loading(checkpoints, adapter, monkeypatch
 
 
 def test_hub_sidecar_absent_or_unreachable(monkeypatch):
-    """No record on the Hub: nothing to check. Not answerable (offline, not cached): strict refuses, warn goes
-    on. A model without frozen tables never asks the Hub."""
+    """No Hub record: no check; unanswerable: strict refuses, warn goes on; no tables: no Hub call."""
     import huggingface_hub
     from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
@@ -227,8 +220,7 @@ def test_hub_sidecar_absent_or_unreachable(monkeypatch):
 def test_native_resume_checks_every_adapter_before_reading(
     checkpoints, tmp_path, monkeypatch, record_at
 ):
-    """native_load_model_checkpoint (native FSDP2 Trainer resume) bypasses PEFT's loaders: it checks the record
-    at the checkpoint and in each named adapter's directory before reading any weight."""
+    """native_load_model_checkpoint checks every adapter record before reading any weight."""
     from peft import LoraConfig, get_peft_model
 
     native = ftp.load_module("fsdp2_native")

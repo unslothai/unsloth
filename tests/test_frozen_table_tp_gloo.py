@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Frozen lookup tables (Qwen4Exp PLE n-gram table) under tensor parallelism, 2 gloo ranks, every
-UNSLOTH_FROZEN_TABLE mode: the table is outside every tensor parallel region (never a DTensor), every tp rank
-looks up the same ids and gets the same rows (the file's), the loader never reads a ram / disk table and the
-adapter save holds no table key. See _frozen_table_parallel.py."""
+"""Frozen lookup tables under tensor parallelism on 2 gloo ranks, every UNSLOTH_FROZEN_TABLE mode."""
 
 import multiprocessing
 import os

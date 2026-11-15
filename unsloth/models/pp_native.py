@@ -110,9 +110,7 @@ class PPConfig:
     # dropping them, so for_inference / generate / exports can rebuild the whole model on each rank after
     # training (pp_env.py; UNSLOTH_PP_SIZE sets it).
     keep_replica: bool = False
-    # Rows each frozen lookup table (unsloth_zoo frozen_table_store: n-gram / engram tables read from disk or
-    # host RAM) keeps for checkpoint recomputes; None = the micro-batches this stage has in flight (GPipe: all of
-    # them, 1F1B: the stages from this one to the last), at least 2.
+    # Frozen table rows kept for checkpoint recomputes; None = this stage's in-flight micro-batches (at least 2).
     frozen_table_memo_slots: Optional[int] = None
 
 

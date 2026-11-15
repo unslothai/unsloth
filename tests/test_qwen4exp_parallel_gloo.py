@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Qwen4Exp (Qwen3.8-Flash-Next: gated delta net + QSA indexed attention, 4 hyper-connection streams, PLE
-n-gram table, MoE with a router auxiliary loss) under tensor, pipeline and FSDP2 data parallelism on a gloo CPU
-world, LoRA on every linear, fp32, vs the same model in one process:
-
-- tp: the full batch (QSA attention sharded by heads, its indexer kept whole; GDN / MoE / PLE replicated);
-- fsdp2: the mean of each rank's loss on its own rows (data parallel);
-- pp: gradient accumulation over the same micro-batches (the router aux loss added per forward).
-"""
+"""Qwen4Exp under TP / PP / FSDP2 on a gloo CPU world, LoRA on every linear, fp32, vs one process."""
 
 import multiprocessing
 import os

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Frozen lookup tables (Qwen4Exp PLE n-gram table) under native FSDP2, 2 gloo ranks, the shard layout (frozen
-weights sharded), every UNSLOTH_FROZEN_TABLE mode. The table is never sharded, all-gathered or reduced (gpu: kept
-whole by ignored_params; ram / disk: no parameter at all), the loader never reads it (ram / disk), each rank's
-lookups are its own rows of the file, and the adapter save holds no table key. See _frozen_table_parallel.py."""
+"""Frozen lookup tables under native FSDP2 on 2 gloo ranks, every UNSLOTH_FROZEN_TABLE mode."""
 
 import multiprocessing
 import os
@@ -118,8 +115,7 @@ def _fake_table_model():
 def test_full_export_puts_the_tables_where_the_full_state_is(
     monkeypatch, rank, writer, cpu_offload, keys
 ):
-    """native_full_state_dict: the frozen tables (never gathered, read from their own files) go exactly where
-    get_model_state_dict / the writer gather put the full state dict."""
+    """native_full_state_dict places the frozen tables where the full state dict goes."""
     import torch.distributed as dist
     import torch.distributed.checkpoint.state_dict as dsd
 
@@ -149,9 +145,7 @@ def test_full_export_table_keys_drop_compile_wrappers():
 
 @pytest.mark.parametrize("mode", ["fsdp2", "tp"])
 def test_setup_alone_keeps_tables_out_of_dcp_without_bitsandbytes(ckpt, mode):
-    """Native FSDP2 / tensor parallel setup of a 16-bit LoRA model (no QLoRA), in an install without
-    bitsandbytes, and no explicit DCP install: Trainer / DCP state dicts still hold no table key and do not fail
-    on the table's checkpoint names (torch alone does)."""
+    """16-bit LoRA FSDP2 / TP without bitsandbytes or DCP install: state dicts hold no table key."""
     res = ftp.run(
         2, mode = mode, table_mode = "ram", path = ckpt, steps = 1, no_bitsandbytes = True, install_dcp = False
     )

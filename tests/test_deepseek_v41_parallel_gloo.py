@@ -1,21 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unsloth's native DeepSeek-V4.1 (latent-query MQA with one key / value head, attention sinks, a grouped low-rank
-output, compressor / indexer group state shared between layers, hc_mult residual streams, engram n-gram tables,
-MoE without a router auxiliary loss) under tensor, pipeline and FSDP2 data parallelism on a gloo CPU world, LoRA on
-every linear incl. the grouped o_a_proj (Unsloth's grouped LoRA), fp32, vs the same model in one process:
+"""DeepSeek-V4.1 under TP / PP / FSDP2 on a gloo CPU world vs one process.
 
-- tp: the full batch (query heads, their sinks and whole o_a_proj groups sharded; the query latent, the key / value
-  head, the compressor and the indexer replicated with their gradients summed; MoE, engram, hyper-connections
-  replicated);
-- fsdp2: the mean of each rank's loss on its own rows (data parallel);
-- pp: gradient accumulation over the same micro-batches; stages start only at the model's safe cut points and
-  carry (hidden streams, pre_mix) between them; each engram table lives on the stage owning its layer.
-
-The engram gate is sigmoid(sign(dot) sqrt|dot|): near dot = 0 its gradient 1 / (2 sqrt|dot|) amplifies float32
-rounding about 4000x (one process with 1e-7 input noise moves the engram LoRA gradients by 4e-4). Both arms here
-set the gate's clamp to 1e-2 so the parity tolerance measures parallelism, not that conditioning.
+The engram gate sigmoid(sign(dot) sqrt|dot|) amplifies fp32 rounding near dot = 0 (~4000x), so both arms clamp
+it at 1e-2 and the parity tolerance measures parallelism only.
 """
 
 import multiprocessing
@@ -154,7 +143,7 @@ def build(
         )
     for layer in model.model.layers:
         if layer.engram is not None:
-            layer.engram.clamp_value = 1e-2  # see the module docstring
+            layer.engram.clamp_value = 1e-2
     model.config._attn_implementation = "eager"
     if not lora:
         return model
@@ -336,8 +325,7 @@ def _case_parity(
 
 
 def _case_attention_units(rank, world, tmp):
-    """FSDP2 on each self_attn by hand (not Unsloth's units): the group state dict handed to the attention by
-    keyword is rebuilt by FSDP2's forward-input cast, so a layer's writes never reach the next layer."""
+    """FSDP2 on each self_attn by hand: its input cast rebuilds the group state dict, dropping layer writes."""
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
@@ -508,8 +496,7 @@ def test_deepseek_v41_parallel_matches_one_process(cell):
 
 
 def test_pp_cut_at_an_unsafe_layer_breaks_parity():
-    """Flip for the cut-point rule: a stage starting at layer 3 (layer 3 reads the compressed KV and top-k that
-    layer 2 publishes) no longer matches one process once the rule is switched off."""
+    """Flip: a stage starting at layer 3 diverges once the cut-point rule is off."""
     results = _spawn(
         "parity",
         2,
@@ -527,8 +514,7 @@ def test_pp_cut_at_an_unsafe_layer_breaks_parity():
 
 
 def test_tp_without_the_replicated_gradient_sum_breaks_parity():
-    """Flip for the latent-query MQA rule: every rank backpropagates only its own query heads into the shared
-    query latent / key-value head / compressor, so their gradients are partial sums until summed over tp."""
+    """Flip: without the tp sum the shared latent / kv head / compressor gradients stay partial."""
     results = _spawn("parity", 2, mode = "tp", fault = "no_replicated_grad_sum")
     problems = _parity_problems(results, "tp_unsummed")
     assert any(".kv_proj." in p for p in problems) and any(
@@ -584,9 +570,7 @@ def test_tp_refuses_a_size_that_splits_an_output_group():
 
 
 def test_fsdp2_shards_whole_decoder_layers():
-    """The group state crosses decoder layers as an opaque object FSDP2 passes through, but inside a layer the
-    attention and the indexer get its plain dict by keyword: an FSDP2 unit at or below self_attn would rebuild that
-    dict. Unsloth's units are the decoder layers, and a unit inside one is refused."""
+    """An FSDP2 unit at or below self_attn would rebuild the group state dict, so it is refused."""
     native = _load("fsdp2_native")
     model = build()
     layers = list(model.get_base_model().model.layers)
@@ -632,8 +616,7 @@ def _fake_stage(carry = None, segments = None):
 
 
 def test_pp_boundary_compiles_in_one_graph():
-    """The carried tensors' view check is skipped while compiling (Dynamo cannot trace _is_view): a compiled
-    stage boundary stays one graph, and its outputs are still no views."""
+    """The view check is skipped while compiling (Dynamo cannot trace _is_view)."""
     stage = _fake_stage()
 
     def boundary(h, pre_mix):
@@ -647,8 +630,7 @@ def test_pp_boundary_compiles_in_one_graph():
 
 
 def test_pp_stage_forward_takes_ordinary_position_ids():
-    """position_ids 0, 1, 2, ... (what a collator or generate passes) run; packed rows (positions restarting at
-    0) and left padding are still refused."""
+    """Sequential position_ids run; packed rows and left padding are refused."""
     ids = torch.zeros(2, SEQ, dtype = torch.long)
     stage = _fake_stage(segments = dsv41.sequence_segments)
     run = lambda **kw: ppn._PPStageModule._model_stage_forward(stage, ids, kw)

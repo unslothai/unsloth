@@ -146,10 +146,8 @@ _HEAD_NORMS = (
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
 # Multi-head latent attention proper: per-head keys / values expanded from a shared latent (kv_b_proj).
 _MLA_KV_NAMES = ("kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
-# Latent-query MQA (DeepSeek-V4.1): a low-rank query (q_a_proj -> q_a_norm -> q_b_proj per head), ONE key / value
-# head (kv_proj, kv_norm) every query head reads, a compressor / indexer over the block input, and a grouped
-# low-rank output (o_a_proj, block diagonal over o_groups, then o_b_proj). The query heads, their attention sinks
-# and whole output groups shard; everything else reads the block input and is replicated (gradients summed).
+# Latent-query MQA (DeepSeek-V4.1): query heads, sinks and whole o_a_proj groups shard; the single key / value
+# head and everything else reads the block input, so it is replicated (gradients summed over tp).
 _LATENT_MQA_REPLICATED = ("q_a_proj", "q_a_norm", "kv_proj", "kv_norm", "compressor", "indexer")
 _LATENT_MQA_COL = ("q_b_proj", "o_a_proj")
 _LATENT_MQA_ROW = ("o_b_proj",)

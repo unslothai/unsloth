@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Provenance of frozen lookup tables (unsloth_zoo frozen_table_store: Qwen3.8-Flash-Next's PLE n-gram table,
-DeepSeek-V4.1's engram tables) next to every adapter save that leaves the tables out.
+"""Write `frozen_tables.json` next to adapter saves and check it on load.
 
-An adapter (single GPU, FSDP2 / tensor / pipeline parallel, a Trainer or DCP checkpoint's adapter) never carries
-the tables: they stay in the base checkpoint and are read from it again. The adapter is only meaningful on the
-same base tables, so the save writes `frozen_tables.json` (repo id, revision, file sizes, header and sampled
-content digests, from unsloth_zoo) next to it, and loading the adapter checks the live model's tables against
-it. UNSLOTH_FROZEN_TABLE_PROVENANCE = "warn" (default: a warning on a mismatch), "strict" (an error), "off".
+Adapters never carry the frozen lookup tables, so they are only valid on the same base tables.
+UNSLOTH_FROZEN_TABLE_PROVENANCE = "warn" (default), "strict" (error) or "off".
 """
 
 import functools

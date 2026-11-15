@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Context parallelism refuses models with n-gram lookup tables (Qwen4Exp ple_layer_ids, DeepSeek-V4.1
-engram_layer_ids): a sequence shard would hash its first tokens without the previous shard's. The test also shows
-the hazard on a tiny Qwen4Exp: the n-gram ids of the second half differ when it is hashed alone."""
+"""Context parallelism refuses n-gram lookup table models: a shard would hash without the previous tokens."""
 
 import os
 import sys

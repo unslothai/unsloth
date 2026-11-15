@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Shared harness for the frozen lookup table checks under FSDP2 / TP / PP (test_frozen_table_*_gloo.py).
-
-A tiny Qwen4Exp checkpoint stores its PLE n-gram table the way the release does (row shards
-`...ngram_embedding.shard_{i}.weight`, spread over several safetensors files). Each rank loads it with
-UNSLOTH_FROZEN_TABLE = gpu / ram / disk, applies one parallelism, trains 2 steps with LoRA and records:
-
-- which checkpoint keys the loader materialized (a disk / ram table must never be read at load);
-- the table module and its tensors after the split (no Parameter / buffer / DTensor for disk / ram; a gpu table
-  is never sharded, all-gathered or reduced: FSDP2 leaves it whole, TP keeps it outside its regions);
-- every lookup (ids, rows), checked against the rows read straight from the files and against the ids the
-  same model computes in one process for the same tokens;
-- the file descriptors open on the table's files (a PP stage without the table layer holds none);
-- anonymous RSS against a run of the same model without the table;
-- the adapter save (no table key).
-
-`fault` injects a deliberate break so each test proves its checks can fail.
-"""
+"""Shared harness for the frozen lookup table checks under FSDP2 / TP / PP; `fault` injects a break per test."""
 
 import contextlib
 import importlib.machinery
@@ -447,7 +431,7 @@ def worker_case(
         mine = list(ids.chunk(n_mb))
         step = lambda: pp.step(ids, labels)
         params = pp.parameters()
-        rec["owns_table"] = pp.start <= 1 < pp.end  # the table lives in layer 1
+        rec["owns_table"] = pp.start <= 1 < pp.end
     gc_module.collect()
     tables = table_modules(model)
     if mode == "pp" and fault == "leak_table":
@@ -691,9 +675,7 @@ def big_checkpoints(tmp_path_factory):
 
 
 def memory_violations(with_table, without_table, table_mode, path):
-    """Per-rank anonymous RSS growth of the run with the table minus the run without it. ram / disk: the table is
-    page cache (file-backed, shared), so the difference stays far below the table; gpu (here: the CPU device) holds
-    it decoded."""
+    """Per-rank anonymous RSS growth with the table minus without it (ram / disk tables stay page cache)."""
     table_bytes = reference_table(path).numel() * 2  # bf16 on disk
     out, rows = [], []
     for a, b in zip(with_table, without_table):
