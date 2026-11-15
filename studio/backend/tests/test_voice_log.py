@@ -206,3 +206,13 @@ def test_the_chat_delete_route_scopes_the_log_to_the_caller():
     assert "_remove_voice_log_rows, payload.ids, current_account_id()" in inspect.getsource(
         chat_history.delete_threads
     )
+
+
+def test_an_outcome_reported_after_the_last_export_is_in_the_next_one(monkeypatch):
+    row_id = _judge("so I was thinking", 0.9)
+    # The last export ran after the decision was logged but before its outcome came in.
+    since = "2099-01-01T00:00:00.000+00:00"
+    assert vl.export_rows(since = since) == []
+    monkeypatch.setattr(vl.time, "time", lambda: 4102444800.0)  # 2100-01-01
+    vl.set_outcome(row_id, "continued_quickly")
+    assert [r["text"] for r in vl.export_rows(since = since)] == ["so I was thinking"]

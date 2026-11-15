@@ -163,6 +163,10 @@ def read_rows() -> list[dict]:
         o = outcomes.get(row.get("id", ""))
         if o:
             row["outcome"] = o.get("outcome")
+            if isinstance(o.get("at"), (int, float)):
+                row["outcome_t"] = datetime.fromtimestamp(o["at"], timezone.utc).isoformat(
+                    timespec = "milliseconds"
+                )
             if o.get("detail"):
                 row["outcome_detail"] = o["detail"]
     return rows
@@ -274,7 +278,10 @@ def export_rows(
     if thread_id:
         rows = [r for r in rows if r.get("thread_id") == thread_id]
     if since:
-        rows = [r for r in rows if str(r.get("t") or "") >= since]
+        # A later outcome can turn an old decision into a disagreement: it counts as new.
+        rows = [
+            r for r in rows if max(str(r.get("t") or ""), str(r.get("outcome_t") or "")) >= since
+        ]
     if only == "all":
         picked = rows
     else:

@@ -319,3 +319,10 @@ test("a filler that finishes synthesizing after the reply ended is dropped", () 
   const aside = player.slice(player.indexOf("const sayAside = useCallback("));
   assert.match(aside.slice(0, 1500), /const play = \([^)]*\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(reqRef\.current !== reqId \|\| streamRef\.current !== st \|\| st\.final\) return;/);
 });
+
+test("the since-last-export cutoff is taken before the request, not after the save dialog", () => {
+  const section = readSrc("features/settings/components/voice-decision-log-section.tsx");
+  const run = section.slice(section.indexOf("const doExport = async () => {"));
+  assert.ok(run.indexOf("const cutoff = Date.now();") < run.indexOf("await exportLayaLog("));
+  assert.match(run.slice(0, 900), /setExportedAt\(cutoff\);/);
+});
