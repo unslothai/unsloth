@@ -1210,7 +1210,11 @@ def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     dtype = get_parameter_dtype(transformer.context_embedder)
-    return transformer.token_refiner(transformer.context_embedder(encoder_hidden_states.to(dtype)))
+    refined = transformer.token_refiner(
+        transformer.context_embedder(encoder_hidden_states.to(dtype))
+    )
+    # A float32-computing path (fp16 cards) hands the block stack its storage dtype.
+    return refined.to(dtype)
 
 
 def _h3_image_forward(
@@ -1233,7 +1237,13 @@ def _h3_image_forward(
     ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
     of ``pdd_proj_out[pdd_step_index]``)."""
     stock = type(self).forward
-    if text_embeds is None and output_indices is None and head is None:
+    # The fp16 contract (float32 conditioning) needs refined_text's dtype hand-off, which the stock forward lacks.
+    if (
+        text_embeds is None
+        and output_indices is None
+        and head is None
+        and not self.__dict__.get(FP16_CONTRACT_ATTR)
+    ):
         return stock(
             self,
             hidden_states = hidden_states,
@@ -2930,7 +2940,13 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
     from .diffusion_quant_pad import is_quantized_linear
 
     if os.environ.get(QUANT_CONDITIONING_ENV, "").strip() == "1":
-        return 0
+        if dtype is not torch.float16:
+            return 0
+        # fp16 cards (sm75): the conditioning stream outgrows float16, and only the dense path computes it in float32
+        logger.warning(
+            "diffusion.minimax_h3_image: %s=1 ignored on a float16 load; the text-conditioning path stays dense",
+            QUANT_CONDITIONING_ENV,
+        )
     dtype = dtype or torch.bfloat16
     count = 0
     for name, module in transformer.named_modules():
@@ -2945,6 +2961,272 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
         module.weight = torch.nn.Parameter(dense.to(dtype), requires_grad = False)
         count += 1
     return count
+
+
+def follow_compute_dtype(transformer: Any, dtype: Any) -> int:
+    """A hosted file stores what it does not quantize as released: float32 (``proj_in``, the timestep embedder, the
+    PDD heads, the curve AdaLN projections) or bfloat16 (every norm, the conditioning biases, the curve AdaLN output).
+    The bfloat16 part is the block stack's precision, so it follows ``dtype`` as ``_cast`` does for the dense release;
+    left at bfloat16 on an fp16 card (sm75) it meets fp16 activations (a dtype error in ``context_embedder``, the
+    blocks promoted to float32 after the first norm). float32 tensors and quantized weights are untouched. Returns the
+    number of tensors cast."""
+    import torch
+
+    count = 0
+    for module in transformer.modules():
+        for key, param in list(module.named_parameters(recurse = False)):
+            if (
+                not param.is_floating_point()
+                or param.dtype in (dtype, torch.float32)
+                or hasattr(param, "__tensor_flatten__")
+            ):
+                continue
+            setattr(module, key, torch.nn.Parameter(param.detach().to(dtype), requires_grad = False))
+            count += 1
+        out = getattr(module, "_unsloth_adaln_out_dtype", None)
+        if out is not None and out not in (dtype, torch.float32):
+            module._unsloth_adaln_out_dtype = dtype
+            count += 1
+    return count
+
+
+def _float32_linear_forward(self: Any, x: Any) -> Any:
+    """The Linear (ConvRot or plain) in float32 from its half storage: the weight is upcast per call, never held."""
+    import torch
+    import torch.nn.functional as F
+
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    x = x.float()
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = torch.float32), group
+        )
+    bias = self.bias
+    out = F.linear(x, self.weight.float(), None if bias is None else bias.float())
+    # q / k / v come out of a norm: bounded, so attention keeps the storage dtype every backend takes
+    return out.to(self.weight.dtype) if getattr(self, "_unsloth_storage_out", False) else out
+
+
+_ATTENTION_INPUTS = (".attn.to_q", ".attn.to_k", ".attn.to_v")
+
+
+FP16_CONTRACT_ATTR = "_unsloth_h3_fp16_contract"
+
+
+def conditioning_computes_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75). The conditioning stream outgrows float16: on a real prompt the Qwen3-VL rows peak near
+    15k and ``context_embedder`` writes values past 65504 into the refiner's residual stream, so the refined text is
+    inf / NaN and the render black. bf16 has the range, float16 does not; the path runs once per render, so it
+    computes in float32 from its float16 storage (each dense Linear upcasts its weight per call, the norms that read
+    the stream hold float32) and ``refined_text`` hands the block stack its float16 copy. Attention itself (q / k / v
+    out of a norm, so bounded) stays float16, which every attention backend takes. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    transformer.__dict__[FP16_CONTRACT_ATTR] = True
+    count = 0
+    for name, module in transformer.named_modules():
+        if not name.startswith(CONDITIONING_PREFIXES):
+            continue
+        if isinstance(module, torch.nn.Linear):
+            if hasattr(module.weight, "__tensor_flatten__"):
+                continue  # still quantized (UNSLOTH_H3_IMAGE_QUANT_CONDITIONING=1): its own kernel's dtype
+            module.forward = types.MethodType(_float32_linear_forward, module)
+            module._unsloth_storage_out = name.endswith(_ATTENTION_INPUTS)
+            count += 1
+            continue
+        if ".attn." in name:
+            continue  # norm_q / norm_k: read the float16 q / k
+        for key, param in list(module.named_parameters(recurse = False)):
+            if param.is_floating_point() and param.dtype is not torch.float32:
+                setattr(
+                    module, key, torch.nn.Parameter(param.detach().float(), requires_grad = False)
+                )
+    return count
+
+
+def _int8_rescaled(self: Any, y: Any) -> Any:
+    """The output scales ``stream_runs_rescaled`` folds into this Linear, in place on a fresh output (float32 when
+    called from the epilogue)."""
+    out_scale = getattr(self, "_unsloth_out_scale", None)
+    if out_scale is not None:
+        y.mul_(out_scale)
+    value_scale = getattr(self, "_unsloth_value_half_scale", None)
+    if value_scale is not None:
+        y[..., : y.shape[-1] // 2] *= value_scale
+    return y
+
+
+def _int8_float32_epilogue_forward(self: Any, x: Any) -> Any:
+    """torchao's dynamic-int8 Int8Tensor linear, op for op, with the rescale kept in float32. torchao casts
+    ``int32 acc * x_scale`` to the activation dtype before the weight scale: that product is the unscaled int8 sum,
+    past 65504 in float16 on the H3 blocks, so attention reads inf. Anything it does not know (static activation
+    scales, a torchao without these helpers, a non-float16 input) runs the class forward."""
+    import torch
+
+    weight = self.weight
+    kwargs = getattr(weight, "act_quant_kwargs", None)
+    quantize = scaled_matmul = None
+    if (
+        x.dtype is torch.float16
+        and kwargs is not None
+        and type(weight).__name__ == "Int8Tensor"
+        and getattr(weight, "act_pre_scale", None) is None
+        and getattr(weight, "act_quant_scale", None) is None
+        and getattr(weight, "act_quant_zero_point", None) is None
+    ):
+        try:
+            from torchao.kernel import int_scaled_matmul as scaled_matmul
+            from torchao.quantization.quantize_.common import (
+                _choose_quant_func_and_quantize_tensor as quantize,
+            )
+        except Exception:  # noqa: BLE001 - torchao without them: its own forward
+            quantize = None
+    if quantize is None:
+        return _int8_rescaled(self, type(self).forward(self, x))
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    q = quantize(x, kwargs)
+    codes = q.qdata.reshape(-1, q.qdata.shape[-1])
+    x_scale = q.scale.reshape(-1, 1).float()
+    y = scaled_matmul(codes, weight.qdata.contiguous().t(), x_scale)
+    zero_point = getattr(q, "zero_point", None)
+    if zero_point is not None:
+        # an asymmetric activation's correction (all zeros for the symmetric int8 the hosted files declare)
+        y = y - (zero_point.reshape(-1, 1).float() * x_scale) * weight.qdata.sum(dim = -1).float()
+    y = y * weight.scale.flatten().float()
+    if self.bias is not None:
+        y = y + self.bias.float()
+    y = _int8_rescaled(self, y)
+    return y.reshape(*x.shape[:-1], y.shape[-1]).to(x.dtype)
+
+
+def int8_blocks_rescale_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75): every int8 block Linear keeps its torchao GEMM but rescales in float32, as Studio's own
+    torchao-free int8 linear does on these cards. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    count = 0
+    for name, module in transformer.named_modules():
+        if (
+            name.startswith("transformer_blocks.")
+            and isinstance(module, torch.nn.Linear)
+            and type(module.weight).__name__ == "Int8Tensor"
+            and "forward" not in module.__dict__
+        ):
+            module.forward = types.MethodType(_int8_float32_epilogue_forward, module)
+            count += 1
+    return count
+
+
+# fp16 cards run the residual stream at 1/4096: a T4 render reaches ~3.3e7 in blocks 39-49, past float16's 65504.
+FP16_STREAM_SCALE = 4096.0
+# and the SwiGLU product at 1/256 (block 39 reaches ~3.6e5).
+FP16_MLP_SCALE = 256.0
+_STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2.inner")
+_MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")
+
+
+def _dense_float32_rescaled_forward(self: Any, x: Any) -> Any:
+    """A plain float16 Linear computed in float32 with ``_int8_rescaled``'s output scales, so a dense (non-int8) DiT
+    gets the same stream and SwiGLU ranges as the int8 epilogue."""
+    import torch.nn.functional as F
+
+    bias = None if self.bias is None else self.bias.float()
+    return _int8_rescaled(self, F.linear(x.float(), self.weight.float(), bias)).to(x.dtype)
+
+
+def _dense_fp16_linear(module: Any) -> bool:
+    import torch
+    weight = getattr(module, "weight", None)
+    return (
+        type(module) is torch.nn.Linear
+        and "forward" not in module.__dict__
+        and type(weight) is torch.nn.Parameter
+        and weight.dtype is torch.float16
+    )
+
+
+def _int8_epilogue(module: Any) -> bool:
+    forward = module.__dict__.get("forward")
+    return getattr(forward, "__func__", None) in (
+        _int8_float32_epilogue_forward,
+        _dense_float32_rescaled_forward,
+    )
+
+
+def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
+    """fp16 runs only (sm75): the stream enters and is written at 1/scale (folded into the writers' float32 epilogue)
+    and every norm reading it is scale invariant (eps / scale^2), so the result is exact up to rounding. Returns the
+    writers rescaled; 0 on a layout it does not know."""
+    inv = 1.0 / float(scale)
+    blocks = list(getattr(transformer, "transformer_blocks", None) or ())
+    norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)
+    norms = [norm_out] + [getattr(b, n, None) for b in blocks for n in ("norm1", "norm2")]
+    if transformer.__dict__.get("_unsloth_stream_scale") or not blocks:
+        return 0
+    if not all(isinstance(getattr(n, "eps", None), float) for n in norms):
+        return 0
+    writers = [
+        m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_STREAM_WRITERS)
+        and not hasattr(m, "inner")
+    ]
+    if len(writers) != 2 * len(blocks):
+        return 0
+
+    def _scaled(module: Any, args: Any, output: Any) -> Any:
+        return output * inv
+
+    mlp_in = {
+        name.split(".ff.")[0]: m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_MLP_INPUTS)
+        and not hasattr(m, "inner")
+    }
+    for module in list(writers) + list(mlp_in.values()):
+        if not _int8_epilogue(module) and _dense_fp16_linear(module):
+            module.forward = types.MethodType(_dense_float32_rescaled_forward, module)
+    for name, module in transformer.named_modules():
+        if module not in writers:
+            continue
+        if not _int8_epilogue(module):
+            module.register_forward_hook(_scaled)
+            continue
+        scale_out = inv
+        value = mlp_in.get(name.split(".ff.")[0]) if ".ff." in name else None
+        if value is not None and _int8_epilogue(value):
+            # the SwiGLU product is linear in its value half: scale it there, undo it in the projection out
+            value._unsloth_value_half_scale = 1.0 / FP16_MLP_SCALE
+            scale_out = inv * FP16_MLP_SCALE
+        module._unsloth_out_scale = scale_out
+    transformer.proj_in.register_forward_hook(_scaled)
+    transformer.token_refiner.register_forward_hook(_scaled)
+    for norm in norms:
+        norm.eps = norm.eps * inv * inv
+    transformer._unsloth_stream_scale = float(scale)
+    return len(writers)
 
 
 def hosted_prequant_available(
@@ -3984,6 +4266,7 @@ def load_minimax_h3_image_pipeline(
             for block in transformer.transformer_blocks:
                 wrap_row_multiple(block, QUANT_LINEAR_SUFFIXES)
             densified = densify_conditioning_path(transformer, dtype)
+            follow_compute_dtype(transformer, dtype)
             logger.info(
                 "diffusion.minimax_h3_image: hosted DiT, text-conditioning path kept dense (%d Linears)",
                 densified,
@@ -4006,6 +4289,10 @@ def load_minimax_h3_image_pipeline(
             check_cancelled = check,
         )
     check()
+    if dtype is torch.float16:
+        conditioning_computes_in_float32(transformer)
+        int8_blocks_rescale_in_float32(transformer)
+        stream_runs_rescaled(transformer)
     install_h3_image_forward(transformer)
     install_pdd_head_bank(transformer)
     vae = load_h3_image_vae(root)
