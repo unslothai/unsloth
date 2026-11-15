@@ -352,7 +352,7 @@ test("a message sent from the composer drops a voice fragment still waiting for 
   const submit = thread.slice(thread.indexOf("const handleSubmit = useCallback("));
   assert.ok(submit.indexOf("noteTypedSend();") > 0 && submit.indexOf("noteTypedSend();") < submit.indexOf("isRewindCommand(composerText)"));
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current === "active"\) clearHeldTurn\(\);\s*\}\);/);
+  assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current !== "active"\) return;\s*clearHeldTurn\(\);\s*(?:\/\/[^\n]*\n\s*)?clearPendingVoiceNotes\(\);\s*\}\);/);
 });
 
 test("a clip dropped by a reset re-arms the mic while voice stays on", () => {

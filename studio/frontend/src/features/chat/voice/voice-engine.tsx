@@ -1322,7 +1322,10 @@ export const VoiceEngine: FC = () => {
 
   useEffect(() => {
     registerVoiceTypedSend(() => {
-      if (voiceModeRef.current === "active") clearHeldTurn();
+      if (voiceModeRef.current !== "active") return;
+      clearHeldTurn();
+      // A verdict still out for the last utterance belongs to the run this send replaces.
+      clearPendingVoiceNotes();
     });
     return () => registerVoiceTypedSend(null);
   }, []);
