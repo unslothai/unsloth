@@ -755,6 +755,49 @@ def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     assert routed == [short] and plain_calls == [long]
 
 
+def _fake_gemma4_router_stack(M, monkeypatch, scans):
+    """zoo's gemma-4 router wrapped by another router from a module without _ORIG_SDPA (unsloth's
+    head_dim 512 kernel is installed on top at load, before the block hook runs)."""
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    band = types.ModuleType("fake_banded_attention_2")
+    band._mask_is_plain_band = lambda mask, S, w: scans.append((S, w)) or bool(
+        getattr(mask, "_ok", True)
+    )
+    zoo = types.ModuleType("fake_flash_sliding_2")
+    top_mod = types.ModuleType("fake_large_head_2")
+    calls = {"plain": [], "top": []}
+
+    def plain(module, q, k, v, mask, **kw):
+        calls["plain"].append(mask)
+        return "plain", None
+
+    def top(module, q, k, v, mask, **kw):
+        calls["top"].append(mask)
+        return "top", None
+
+    top._unsloth_gemma4_flash = True  # forwarded sentinels, like the real wrappers do
+    top.__module__ = top_mod.__name__
+    zoo._ORIG_SDPA = [plain]
+    for mod in (band, zoo, top_mod):
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    monkeypatch.setattr(M, "_BAND_MODULE", band.__name__)
+    monkeypatch.setattr(M, "_FLASH_MODULE", zoo.__name__)
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", top)
+    return calls, top
+
+
+def test_gemma4_hook_installs_beneath_a_wrapping_router(monkeypatch):
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, top = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    assert wrapped is not top and wrapped._unsloth_block_band and M._BAND_CHECK[0] is not None
+
+
 def test_kill_switch(monkeypatch):
     M = _load()
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "0")
