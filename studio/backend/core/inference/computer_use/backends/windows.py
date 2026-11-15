@@ -49,8 +49,9 @@ _EXTENDED_KEYS = frozenset(
     {"up", "down", "left", "right", "home", "end", "pageup", "pagedown", "insert", "delete", "cmd"}
 )
 
+# PowerShell 5.1 writes redirected output in the console code page, which mangles app names.
+_UTF8_OUTPUT = "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; "
 _OPEN_APP_SCRIPT = (
-    "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; "
     "$n = $env:UNSLOTH_COMPUTER_USE_APP; "
     "$apps = Get-StartApps; "
     "$a = $apps | Where-Object { $_.Name -eq $n } | Select-Object -First 1; "
@@ -427,6 +428,20 @@ class WindowsBackend(Backend):
         self._resolved[name] = (time.monotonic(), found)
         return found
 
+    def _powershell(self, script: str, env: dict) -> subprocess.CompletedProcess:
+        root = os.environ.get("SystemRoot") or r"C:\Windows"
+        shell = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        return subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", _UTF8_OUTPUT + script],
+            check = False,
+            timeout = 30,
+            capture_output = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = env,
+            creationflags = _CREATE_NO_WINDOW,
+        )
+
     def open_app(
         self,
         name: str,
@@ -436,24 +451,13 @@ class WindowsBackend(Backend):
             raise BackendError(
                 "give the application's name as the Start menu shows it, not a path."
             )
-        root = os.environ.get("SystemRoot") or r"C:\Windows"
-        shell = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
         # The name travels in the environment, never in the script text.
         env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": name}
         env.pop("UNSLOTH_COMPUTER_USE_RESOLVE", None)
         if not launch:
             env["UNSLOTH_COMPUTER_USE_RESOLVE"] = "1"
         try:
-            done = subprocess.run(
-                [shell, "-NoProfile", "-NonInteractive", "-Command", _OPEN_APP_SCRIPT],
-                check = False,
-                timeout = 30,
-                capture_output = True,
-                encoding = "utf-8",
-                errors = "replace",
-                env = env,
-                creationflags = _CREATE_NO_WINDOW,
-            )
+            done = self._powershell(_OPEN_APP_SCRIPT, env)
         except (OSError, subprocess.SubprocessError) as exc:
             raise BackendError("the application could not be opened.") from exc
         if done.returncode != 0:

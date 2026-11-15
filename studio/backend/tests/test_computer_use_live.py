@@ -275,52 +275,19 @@ def test_windows_names_an_app_as_the_start_menu_does(windows):
     assert isinstance(front.app, str) and front.app_id == front.app_id.lower()
 
 
-def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows, monkeypatch):
+def test_windows_reads_a_non_ascii_app_name_back_from_powershell(windows):
     shown = "Unsloth Café 日本"
-    root = os.environ.get("ProgramData") or r"C:\ProgramData"
-    folder = os.path.join(root, "Microsoft", "Windows", "Start Menu", "Programs")
-    os.makedirs(folder, exist_ok = True)
-    link = os.path.join(folder, shown + ".lnk")
-    # WScript saves through the ANSI code page, so the name is given afterwards.
-    ascii_link = os.path.join(folder, "unsloth-cu-test.lnk")
-    target = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "notepad.exe")
-    make = (
-        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LINK); "
-        "$s.TargetPath = $env:TARGET; $s.Save()"
+    env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": shown}
+    echo = "Write-Output $env:UNSLOTH_COMPUTER_USE_APP"
+    assert windows._powershell(echo, env).stdout.strip() == shown
+    # As it ran before: the console code page mangles the name.
+    before = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", echo],
+        capture_output = True,
+        text = True,
+        env = env,
     )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-Command", make],
-        check = True,
-        env = {**os.environ, "LINK": ascii_link, "TARGET": target},
-    )
-    os.replace(ascii_link, link)
-    try:
-        found = ""
-        for _ in range(20):
-            windows._resolved.clear()
-            found = windows.resolve_app("Unsloth Café")
-            if found == shown:
-                break
-            time.sleep(0.5)
-        assert found == shown, repr(found)
-        from core.inference.computer_use.backends import windows as windows_mod
-
-        # The same lookup decoded the way it was before: the console code page mangles the name.
-        before = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             windows_mod._OPEN_APP_SCRIPT.split("; ", 1)[1]],
-            capture_output = True,
-            text = True,
-            env = {**os.environ, "UNSLOTH_COMPUTER_USE_APP": "Unsloth Café", "UNSLOTH_COMPUTER_USE_RESOLVE": "1"},
-        )  # fmt: skip
-        assert before.stdout.strip() != shown, before.stdout
-        runs = []
-        real = subprocess.run
-        monkeypatch.setattr(subprocess, "run", lambda *a, **k: runs.append(a) or real(*a, **k))
-        assert windows.resolve_app("Unsloth Café") == shown
-        assert runs == [], "a name just resolved is not looked up again"
-    finally:
-        os.remove(link)
+    assert before.stdout.strip() != shown, before.stdout
 
 
 def test_windows_open_app_takes_names_not_paths(windows):

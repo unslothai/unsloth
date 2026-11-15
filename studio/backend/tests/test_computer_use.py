@@ -444,6 +444,19 @@ def test_a_macos_security_prompt_floating_over_an_app_is_found_under_a_click():
     assert mac.window_at(500, 500).app_id == "com.apple.Notes"
 
 
+def test_a_windows_app_name_is_looked_up_once_for_its_gate_card_and_run(monkeypatch):
+    from core.inference.computer_use.backends.windows import WindowsBackend
+
+    windows = object.__new__(WindowsBackend)
+    windows._resolved = {}
+    lookups = []
+    monkeypatch.setattr(
+        windows, "open_app", lambda name, launch = True: lookups.append(name) or "Notepad"
+    )
+    assert [windows.resolve_app("notepad") for _ in range(3)] == ["Notepad"] * 3
+    assert lookups == ["notepad"]
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)
