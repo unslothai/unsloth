@@ -384,6 +384,31 @@ def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_p
     assert os.listdir(tmp_path / "converted") == stamp
 
 
+def test_the_declared_released_renames_reach_every_module_name():
+    """unsloth_zoo's merged export rewrites the released files and finds each adapter's tensor through
+    _unsloth_checkpoint_conversion_mapping; every released name it renames must land on the native name."""
+    import re
+
+    mapping = dsv41.DeepseekV41ForCausalLM._unsloth_checkpoint_conversion_mapping
+    assert all("\\" not in target for target in mapping.values()), mapping
+    model = _tiny_model()
+    native = set(model.state_dict())
+    checked = 0
+    for name in _released_state_dict(model):
+        if name.startswith("mtp.") or ".experts." in name and ".shared_experts." not in name:
+            continue
+        if ".engram.embed." in name:
+            continue
+        renamed = name
+        for pattern, target in mapping.items():
+            renamed = re.sub(pattern, target, renamed)
+        if renamed != "lm_head.weight":
+            renamed = "model." + renamed
+        assert renamed in native, (name, renamed)
+        checked += 1
+    assert checked > 20
+
+
 def _fp4_release(tmp_path, model):
     """The tiny model's released files with real fp4 experts (int8 e2m1 pairs + e8m0 per 32)."""
     from safetensors.torch import save_file

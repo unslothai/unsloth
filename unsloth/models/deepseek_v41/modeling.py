@@ -1566,6 +1566,19 @@ def _parent_keywords(fn):
     return {p.name for p in params if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
 
 
+def _released_key_renames():
+    """Released tensor name -> module name, the one-to-one renames (no backreferences) as a regex dict. transformers
+    5 registers them under the text sub-config, which unsloth_zoo's merge does not see, so the class states them for
+    it: a merged export rewrites the released files and has to find each adapter's tensor there."""
+    from .convert import _RENAMES
+
+    out = {r"^head\.weight": "lm_head.weight"}
+    for source, target in _RENAMES:
+        if "\\" not in target:
+            out.setdefault(source, target)
+    return out
+
+
 # Not defs, so unsloth_zoo's compiler leaves these eager.
 _sequence_segments_outside_trace = torch.compiler.disable(sequence_segments)
 _forward_segments_outside_trace = torch.compiler.disable(_forward_segments_call)
@@ -1576,6 +1589,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["DeepseekV41DecoderLayer", "DeepseekV41EngramEmbedding"]
+    _unsloth_checkpoint_conversion_mapping = _released_key_renames()
     # accelerate's hooks rebuild dict kwargs; `shared` must stay one object
     _skip_keys_device_placement = ["past_key_values", "shared"]
     _supports_flash_attn = False
