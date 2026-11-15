@@ -903,14 +903,6 @@ def keep_for_training(model):
     return fits
 
 
-def _version(t):
-    if t is None or not isinstance(t, torch.Tensor):
-        return None
-    if t.is_inference():
-        return (t.data_ptr(), None)
-    return (t.data_ptr(), t._version)
-
-
 def _ident(t):
     """What a captured step bakes in about a tensor: its address, dtype and shape (not its values)."""
     if t is None or not isinstance(t, torch.Tensor):
