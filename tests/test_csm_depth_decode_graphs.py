@@ -120,3 +120,20 @@ def test_patch_is_idempotent(csm):
     vision._patch_nested_generate(csm)
     assert csm.depth_decoder.generate is generate
     assert csm.depth_decoder._old_generate.__name__ != "unsloth_nested_fast_generate"
+
+
+def test_graphs_off_keeps_the_stock_call(csm, monkeypatch):
+    # Kill switch (or a platform without decode graphs): the per-frame call is the stock one, no static cache.
+    monkeypatch.setenv(ENV, "0")
+    depth = csm.depth_decoder
+    real, seen = depth._old_generate, []
+
+    def recording(*args, **kwargs):
+        seen.append(dict(kwargs))
+        return real(*args, **kwargs)
+
+    depth._old_generate = recording
+    _gen(csm, frames = 2)
+    assert seen and all(
+        "cache_implementation" not in kw and "compile_config" not in kw for kw in seen
+    )

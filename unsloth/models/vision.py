@@ -2619,17 +2619,19 @@ def unsloth_nested_fast_generate(self, *args, **kwargs):
     input_ids = args[0] if args else kwargs.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         return self._old_generate(*args, **kwargs)
-    kwargs["cache_implementation"] = "static"
+    static = dict(kwargs, cache_implementation = "static")
     # As the parent: a static cache would otherwise auto-compile the forward (transformers' compile_config).
-    kwargs.setdefault("compile_config", _compile_config)
+    static.setdefault("compile_config", _compile_config)
     with _decode_graphs.generate_scope():
-        if _generic_decode_graphs.plan(self, args, kwargs, input_ids) != "graph":
+        if _generic_decode_graphs.plan(self, args, static, input_ids) != "graph":
+            # Graphs off (kill switch, ROCm, short call): the stock call, as before. Its growing cache decodes
+            # faster eagerly than a static one (Kaggle T4, csm-1b depth decoder: 13% slower static).
             with _decode_graphs.plan_scope("eager"):
                 return self._old_generate(*args, **kwargs)
         scope = _GraphDecodeSteps(self)
         with scope, _decode_graphs.plan_scope("graph"):
-            out = self._old_generate(*args, **kwargs)
-            scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+            out = self._old_generate(*args, **static)
+            scope.keep = _generic_decode_graphs.keepable(self, static, out)
         return out
 
 
