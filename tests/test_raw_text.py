@@ -854,7 +854,6 @@ def test_add_structure_tokens_leaves_code_blocks_alone():
 
 
 def test_add_structure_tokens_reads_any_fence_info_string():
-    """A fence language with non-word characters or extra attributes is still a code block."""
     text = (
         "```c++\n// main\nint main() {}\n```\n\n"
         "```shell-session\n# install deps\n$ pip install unsloth\n```\n\n"
