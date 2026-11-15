@@ -206,12 +206,13 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
-/** MiniMax-H3-Image's edit size: Image 1 at the size its reference latent is encoded at (short edge clamped to
- *  1024..2048, aspect kept, both sides on the 32 grid). Mirrors the backend's size_short_edge. */
+/** MiniMax-H3-Image's edit size, as the reference edit workflow derives it: Image 1 scaled to 4 MP (aspect kept,
+ *  sides rounded), then cut to the 32 grid (each side floored; sizes already on it, or flooring to 0, are kept).
+ *  Mirrors the backend's reference_edit_size. */
 export function h3ImageSourceSize(width: number, height: number): { width: number; height: number } {
   const m = 32;
-  const short = Math.min(width, height);
-  const scale = Math.min(Math.max(short, 1024), 2048) / short;
+  const total = 4 * 1024 * 1024;
+  const scale = Math.sqrt(total / (width * height));
   // Python's round(): halves go to the even neighbour
   const round = (x: number) => {
     const f = Math.floor(x);
@@ -220,10 +221,12 @@ export function h3ImageSourceSize(width: number, height: number): { width: numbe
     if (d < 0.5) return f;
     return f % 2 === 0 ? f : f + 1;
   };
-  return {
-    width: Math.max(m, round((width * scale) / m) * m),
-    height: Math.max(m, round((height * scale) / m) * m),
-  };
+  const w = round(width * scale);
+  const h = round(height * scale);
+  const tw = Math.floor(w / m) * m;
+  const th = Math.floor(h / m) * m;
+  if (tw === 0 || th === 0) return { width: w, height: h };
+  return { width: tw, height: th };
 }
 
 /** ``width`` x ``height`` scaled down as one pair (aspect kept, sides floored to the grid) until both the side and

@@ -40,6 +40,13 @@ def _stack():
     return torch
 
 
+@pytest.fixture(autouse = True)
+def _picture_one_at_its_own_size(monkeypatch):
+    """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
+    a 4 MP reference); the tests of that rescale turn it back on."""
+    monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
+
+
 @pytest.fixture(scope = "module")
 def h3i():
     _stack()
@@ -239,7 +246,9 @@ def test_table_adaln_matches_the_dense_projection(h3i, release, n_ref):
     dense = ref["transformer"]
     table = copy.deepcopy(dense)
     assert h3i.convert_dense_transformer_to_table(table) == len(dense.transformer_blocks)
-    steps = h3i.grid_timesteps()[:6]
+    sched = h3i.MiniMaxH3ImageScheduler(sample_sigmas = list(h3i.H3_IMAGE_SIGMAS))
+    sched.set_timesteps(6)
+    steps = sched.timesteps.tolist()
     rows, text, pos, tok, img, txt, plan = _forward_inputs(h3i, steps, n_ref)
     for i in (0, 3, 5):
         unique, index = plan[i]
@@ -283,7 +292,7 @@ def test_grid_has_seven_timesteps_and_refuses_off_grid(h3i):
     assert len(grid) == 7 and grid[0] == 0.0 and abs(grid[-1] - 0.999) < 1e-6
     embedder = h3i._grid_embedder_class()(grid)
     assert embedder(torch.tensor(grid)).argmax(dim = 1).tolist() == list(range(7))
-    with pytest.raises(ValueError, match = "fixed 6-step grid"):
+    with pytest.raises(ValueError, match = "AdaLN table"):
         embedder(torch.tensor([0.5]))
 
 
@@ -344,15 +353,19 @@ def test_patchify_roundtrip(h3i):
     assert torch.equal(h3i.unpatchify(rows, 8, 6, 24, (1, 2, 2)), x[:, :, 0])
 
 
-def test_scheduler_is_the_velocity_euler_on_the_fixed_grid(h3i):
+def test_scheduler_is_the_reference_euler_on_the_simple_schedule(h3i):
     import torch
 
     s = h3i.MiniMaxH3ImageScheduler(sample_sigmas = list(h3i.H3_IMAGE_SIGMAS))
     s.set_timesteps()
     assert s.timesteps.numel() == 6 and float(s.sigmas[-1]) == 0.0
+    assert torch.equal(s.sigmas, h3i.reference_sigmas(6))
     x, v = torch.randn(4, 3), torch.randn(4, 3)
     out = s.step(v, s.timesteps[0], x)[0]
-    assert torch.equal(out, x + (s.sigmas[0] - s.sigmas[1]) * v)
+    denoised = x + v * s.sigmas[0]
+    assert torch.equal(out, x + (x - denoised) / s.sigmas[0] * (s.sigmas[1] - s.sigmas[0]))
+    s.set_timesteps(3)
+    assert s.timesteps.numel() == 3
     noisy = s.scale_noise(torch.ones(2), torch.tensor(0.999), torch.zeros(2))
     assert torch.allclose(noisy, torch.full((2,), 0.999))
 
@@ -401,15 +414,23 @@ def test_t2i_renders_at_the_requested_size_and_is_seeded(h3i, pipe):
     assert not np.array_equal(np.asarray(a.images[0]), np.asarray(c.images[0]))
 
 
-def test_small_request_renders_on_the_4mp_canvas_and_resizes_back(h3i, pipe):
+def test_a_small_request_renders_natively_and_the_floor_is_opt_in(h3i, pipe):
     import torch
 
     img = pipe(
         prompt = "a cat", height = 64, width = 96, generator = torch.Generator().manual_seed(0)
     ).images[0]
+    assert img.size == (96, 64) and pipe._unsloth_h3_last_stats["canvas"] == (96, 64)
+    img = pipe(
+        prompt = "a cat",
+        height = 64,
+        width = 96,
+        min_generation_area = 192 * 192,
+        generator = torch.Generator().manual_seed(0),
+    ).images[0]
     assert img.size == (96, 64)
     w, h = pipe._unsloth_h3_last_stats["canvas"]
-    assert w * h >= 0.97 * 2048 * 2048 and w % 32 == 0 and h % 32 == 0
+    assert w * h >= 0.9 * 192 * 192 and w % 32 == 0 and h % 32 == 0
 
 
 def test_edit_packs_labels_vision_tokens_and_reference_rows(h3i, pipe, monkeypatch):

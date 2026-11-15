@@ -16,7 +16,7 @@ import {
 import {
   defaultsFor,
   defaultsKeyFor,
-  fixedStepsFor,
+  maxStepsFor,
 } from "../src/features/images/image-generation-defaults.ts";
 import { sizeLimitsFrom } from "../src/features/images/image-size.ts";
 import { familyOverrideOptions } from "../src/features/model-picker/components/model-selector/family-override.ts";
@@ -156,7 +156,7 @@ test("Apple Silicon and CPU hosts get the GGUF row in place of the pipeline (the
   }
 });
 
-test("the page opens on 6 steps at guidance 1, and the step count is locked", () => {
+test("the page opens on 6 steps at guidance 1, and the step count is capped at 6", () => {
   assert.deepEqual(defaultsFor(REPO), { steps: 6, guidance: 1 });
   assert.deepEqual(defaultsFor("/models/minimax_h3_image"), {
     steps: 6,
@@ -166,12 +166,13 @@ test("the page opens on 6 steps at guidance 1, and the step count is locked", ()
     defaultsFor(defaultsKeyFor("/models/opaque", "minimax-h3-image")),
     { steps: 6, guidance: 1 },
   );
-  assert.equal(fixedStepsFor("minimax-h3-image"), 6);
-  assert.equal(fixedStepsFor("flux.3-klein"), null);
-  assert.equal(fixedStepsFor(null), null);
+  assert.equal(maxStepsFor("minimax-h3-image"), 6);
+  assert.equal(maxStepsFor("flux.3-klein"), null);
+  assert.equal(maxStepsFor(null), null);
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /value=\{fixedSteps \?\? steps\}/);
-  assert.match(page, /disabled=\{fixedSteps !== null\}/);
+  assert.match(page, /max=\{maxSteps \?\? stepsSliderMax\(/);
+  assert.match(page, /if \(maxSteps !== null && steps > maxSteps\) setSteps\(maxSteps\)/);
+  assert.doesNotMatch(page, /disabled=\{maxSteps !== null\}/);
 });
 
 test("its size presets are the 4 MP and 16 MP tables, all inside the backend's limits", () => {

@@ -4779,6 +4779,18 @@ def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
     return f"{base} ({n})"
 
 
+def _fork_settings_json(settings_json: Optional[str]) -> Optional[str]:
+    """A fork starts without the source chat's Full access: that grant was given to one chat."""
+    try:
+        settings = json.loads(settings_json) if settings_json else None
+    except (TypeError, ValueError):
+        return settings_json
+    if not isinstance(settings, dict) or "fullAccess" not in settings:
+        return settings_json
+    settings.pop("fullAccess")
+    return json.dumps(settings)
+
+
 def fork_chat_thread(
     source_thread_id: str,
     branch_message_id: Optional[str],
@@ -4890,7 +4902,7 @@ def fork_chat_thread(
                 branch_message_id,
                 boundary_message_id,
                 base,
-                src_dict.get("settings_json"),
+                _fork_settings_json(src_dict.get("settings_json")),
             ),
         )
         fork_messages = []
