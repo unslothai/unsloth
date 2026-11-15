@@ -523,13 +523,13 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
     },
-    # The base trains in bf16 (40 GB DiT with the AdaLN table) where the card has room, else as int8 (21 GB); the
-    # 27 GB int8 Qwen3-VL-32B conditioner is freed before the DiT loads.
+    # Measured on an A100-80 (rank 32, ~1 MP canvases): bf16 base peaks at 45.5 GB (0.94 step/s), int8 base at 24.3 GB
+    # (0.81 step/s); the int8 Qwen3-VL-32B conditioner is freed before the DiT loads. auto takes bf16 from 56 GB free.
     "minimax-h3-image": {
         "params": "33B",
-        "qlora_vram_gb": 40,
+        "qlora_vram_gb": 32,
         "gated": False,
-        "note": "bf16 base on 80 GB cards, int8 below; LoRA loads at model load time.",
+        "note": "bf16 base on 80 GB cards, int8 below; the LoRA is merged in when the model loads.",
     },
 }
 # Keys are canonical upstream ids; family_train_infos adds mirror aliases the client overlays.
