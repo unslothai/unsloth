@@ -49,7 +49,6 @@ _CF_NUMBER_SINT64 = 4
 _CF_UTF8 = 0x08000100
 # Events posted back to back can arrive out of order.
 _EVENT_GAP_S = 0.004
-_UNICODE_CHUNK = 20
 
 
 class _Point(ctypes.Structure):
@@ -308,23 +307,17 @@ class MacBackend(Backend):
             if part == "\t":
                 self.key((), "tab")
                 continue
-            units = part.encode("utf-16-le")
-            step = _UNICODE_CHUNK * 2
-            start = 0
-            while start < len(units):
-                end = min(len(units), start + step)
-                # Never split a surrogate pair across two events.
-                if end < len(units) and 0xD8 <= units[end - 1] <= 0xDB:
-                    end -= 2
-                chunk = units[start:end]
-                start = end
-                buffer = ctypes.create_string_buffer(chunk, len(chunk))
+            # One character per event: Tk, Java and others read only the first of a longer string.
+            for char in part:
+                units = char.encode("utf-16-le")
+                buffer = ctypes.create_string_buffer(units, len(units))
                 for down in (True, False):
                     event = self._lib.CGEventCreateKeyboardEvent(None, 0, down)
                     if event:
                         self._lib.CGEventSetFlags(event, 0)
-                        self._lib.CGEventKeyboardSetUnicodeString(event, len(chunk) // 2, buffer)
+                        self._lib.CGEventKeyboardSetUnicodeString(event, len(units) // 2, buffer)
                     self._post(event)
+                time.sleep(0.004)
 
     def _front_app(self) -> tuple[str, str, int]:
         """Asked of LaunchServices: NSWorkspace goes stale in a process with no run loop."""
