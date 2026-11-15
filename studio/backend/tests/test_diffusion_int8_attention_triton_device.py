@@ -13,6 +13,7 @@ import types
 
 import pytest
 import torch
+from torch._subclasses import fake_tensor
 from torch._subclasses.fake_tensor import FakeTensorMode
 
 from core.inference import diffusion_int8_attention_triton as T
@@ -46,6 +47,9 @@ def card(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "current_device", lambda: state["device"])
     monkeypatch.setattr(torch.cuda, "device", device)
+    # A fake tensor's first use of a device makes a real tensor there (torch.zeros on ROCm builds), which fails for
+    # the fake cuda:1 on a one-GPU host; the launchers here are recorded, so no real device is needed.
+    monkeypatch.setattr(fake_tensor, "init_gpu_context", lambda device: None, raising = False)
     names = ("stats", "quant_rows", "quant_v", "transpose_v", "prep", "kv", "attn")
     kk = types.SimpleNamespace(**{n: _Launcher(log, n, state) for n in names})
     monkeypatch.setattr(T, "kernels", lambda: kk)
