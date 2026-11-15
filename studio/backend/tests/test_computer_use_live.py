@@ -89,6 +89,34 @@ def test_x11_without_a_window_manager_knows_the_focused_window(xvfb, tmp_path):
         app.wait(timeout = 10)
 
 
+def test_x11_typing_with_caps_lock_on_keeps_the_case_and_the_lock(xvfb, tmp_path):
+    pytest.importorskip("tkinter")
+    from core.inference.computer_use.backends.linux import LinuxBackend
+
+    out, ready = tmp_path / "out", tmp_path / "ready"
+    app = subprocess.Popen([sys.executable, "-c", _TK_APP, str(out), str(ready)])
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert app.poll() is None and time.monotonic() < deadline, "the Tk window never showed"
+            time.sleep(0.1)
+        backend = LinuxBackend()
+        # No window manager: the Tk window sits exactly at +120+120.
+        backend.click(420, 220, "left", 1, ())
+        backend._set_caps_lock(True)
+        backend.type_text("Hello abc")
+        assert backend._caps_locked()
+        backend._set_caps_lock(False)
+        backend.click(440, 430, "left", 1, ())
+        deadline = time.monotonic() + 10
+        while not out.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert out.read_text(encoding = "utf-8") == "Hello abc"
+    finally:
+        app.terminate()
+        app.wait(timeout = 10)
+
+
 def test_x11_typing_borrows_a_key_and_gives_it_back(xvfb):
     import ctypes
 

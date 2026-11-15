@@ -59,6 +59,8 @@ def _session_problem() -> Optional[str]:
 
 _IS_VIEWABLE = 2
 _POINTER_ROOT = 1
+_LOCK_MASK = 1 << 1
+_USE_CORE_KBD = 0x0100
 _INPUT_OUTPUT = 1
 
 
@@ -163,6 +165,7 @@ class LinuxBackend(Backend):
         )  # fmt: skip
         sig(x11, "XGetWindowAttributes", cint, ref, ulong, pointer(_WindowAttributes))
         sig(x11, "XGetInputFocus", cint, ref, pointer(ulong), pointer(cint))
+        sig(x11, "XkbLockModifiers", cint, ref, uint, uint, uint)
         sig(xtst, "XTestFakeMotionEvent", cint, ref, cint, cint, cint, ulong)
         sig(xtst, "XTestFakeButtonEvent", cint, ref, uint, cint, ulong)
         sig(xtst, "XTestFakeKeyEvent", cint, ref, uint, cint, ulong)
@@ -363,12 +366,32 @@ class LinuxBackend(Backend):
         self._flush()
         time.sleep(_REMAP_SETTLE_S)
 
+    def _caps_locked(self) -> bool:
+        root, child = ctypes.c_ulong(0), ctypes.c_ulong(0)
+        at = [ctypes.c_int(0) for _ in range(4)]
+        mask = ctypes.c_uint(0)
+        self._x11.XQueryPointer(
+            self._display, self._x11.XDefaultRootWindow(self._display), ctypes.byref(root),
+            ctypes.byref(child), *(ctypes.byref(value) for value in at), ctypes.byref(mask),
+        )  # fmt: skip
+        return bool(mask.value & _LOCK_MASK)
+
+    def _set_caps_lock(self, on: bool) -> None:
+        self._x11.XkbLockModifiers(
+            self._display, _USE_CORE_KBD, _LOCK_MASK, _LOCK_MASK if on else 0
+        )
+        self._x11.XSync(self._display, 0)
+
     def type_text(self, text: str) -> None:
         self._ready()
         with self._lock:
             table, spare = self._keyboard_map()
             shift = self._keycode("shift")
             borrowed = None
+            # XTEST keys pass through the lock state, so Caps Lock would flip every letter's case.
+            caps = self._caps_locked()
+            if caps:
+                self._set_caps_lock(False)
             try:
                 for char in text.replace("\r\n", "\n"):
                     if char in ("\n", "\r"):
@@ -402,6 +425,8 @@ class LinuxBackend(Backend):
             finally:
                 if borrowed is not None and spare is not None:
                     self._remap(spare, 0)
+                if caps:
+                    self._set_caps_lock(True)
 
     def _property(self, window: int, name: bytes) -> tuple[int, bytes]:
         atom = self._x11.XInternAtom(self._display, name, 1)
