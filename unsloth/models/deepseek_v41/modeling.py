@@ -31,6 +31,7 @@ renaming table and existing Unsloth / unsloth_zoo hooks (non-reentrant checkpoin
 ``shared`` group state, grouped LoRA for ``o_a_proj``, the engram table store) apply unchanged.
 """
 
+import copy
 import json
 import math
 import os
@@ -938,11 +939,19 @@ class DeepseekV41EngramEmbedding(nn.Embedding):
         table_device = weight.device if weight.device.type != "meta" else ids.device
         idx = ids.to(table_device)
         values = F.embedding(idx, weight)
-        if weight.dtype == getattr(torch, "float8_e4m3fn", None):
-            scales = F.embedding(idx, self.weight_scale_inv).float()
+        # Rows are always the stored codes times their per-block scale: a load can widen fp8 rows to the model dtype
+        # (losing the fp8 dtype, not the scale); float tables carry unit scales.
+        fp8 = weight.dtype == getattr(torch, "float8_e4m3fn", None)
+        if fp8 or (
+            weight.shape[-1] % self.block_size == 0
+            and self.weight_scale_inv.shape[-1] == weight.shape[-1] // self.block_size
+        ):
+            scales = F.embedding(idx, self.weight_scale_inv.to(idx.device)).float()
             values = (
                 values.float().unflatten(-1, (-1, self.block_size)) * scales.unsqueeze(-1)
             ).flatten(-2)
+            if not fp8:
+                values = values.to(weight.dtype)
         return values.to(ids.device)
 
 
@@ -1295,7 +1304,7 @@ def _checkpoint_key_names(path, **hub_kwargs):
     import struct
 
     def _local_or_cached(name):
-        local = os.path.join(str(path), name)
+        local = os.path.join(str(path), hub_kwargs.get("subfolder") or "", name)
         if os.path.isfile(local):
             return local
         try:
@@ -1381,9 +1390,37 @@ def _drop_engram_tables_outside_full_save(module, state_dict, prefix, local_meta
                 if store.scale is not None:
                     state_dict[f"{prefix}engram_tables.{key}.weight_scale_inv"] = store.scale
         return state_dict
-    for key in [k for k in state_dict if k.startswith(prefix + "engram_tables.")]:
-        del state_dict[key]
+    # Parameter-free tables only: a Parameter-backed DeepseekV41EngramEmbedding (UNSLOTH_DSV41_FROZEN_ENGRAM=0, or no
+    # unsloth_zoo) holds real weights that from_pretrained / load_state_dict must find.
+    for key, table in getattr(module, "engram_tables", {}).items():
+        if not is_parameter_free_table(table):
+            continue
+        table_prefix = f"{prefix}engram_tables.{key}."
+        for name in [k for k in state_dict if k.startswith(table_prefix)]:
+            del state_dict[name]
     return state_dict
+
+
+def _engram_table_entries(model):
+    """{state-dict key: tensor} of every engram table a full save writes: rows held in memory (_TensorTableStore)
+    and Parameter-backed tables. File-backed tables (unsloth_zoo's store) export through unsloth_zoo's save guard."""
+    out = {}
+    for module_name, module in model.named_modules():
+        tables = getattr(module, "engram_tables", None)
+        if not isinstance(tables, nn.ModuleDict):
+            continue
+        prefix = f"{module_name}." if module_name else ""
+        for key, table in tables.items():
+            table_prefix = f"{prefix}engram_tables.{key}."
+            store = getattr(table, "frozen_table_store", None)
+            if isinstance(store, _TensorTableStore):
+                out[table_prefix + "weight"] = store.weight
+                if store.scale is not None:
+                    out[table_prefix + "weight_scale_inv"] = store.scale
+            elif not is_parameter_free_table(table):
+                for name, tensor in table.state_dict().items():
+                    out[table_prefix + name] = tensor
+    return out
 
 
 def _engram_cut_safe(config, cut):
@@ -1553,6 +1590,20 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
                     dropped.append((c, c.unsloth_experts_format))
                     del c.unsloth_experts_format
         try:
+            # A full save handed a state dict collected beforehand (state_dict() drops the tables outside a full save)
+            # still writes the engram tables; the caller's dict is not modified.
+            positional = len(args) > 2 and isinstance(args[2], dict)
+            supplied = args[2] if positional else kwargs.get("state_dict")
+            if isinstance(supplied, dict) and not getattr(self, "_hf_peft_config_loaded", False):
+                missing = {
+                    k: v for k, v in _engram_table_entries(self).items() if k not in supplied
+                }
+                if missing:
+                    supplied = {**supplied, **missing}
+                    if positional:
+                        args = (*args[:2], supplied, *args[3:])
+                    else:
+                        kwargs["state_dict"] = supplied
             return super().save_pretrained(*args, **kwargs)
         finally:
             for c, value in dropped:
@@ -1577,23 +1628,40 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         except Exception:
             names = None
         released = _released_layout(names)
+        # The caller's config object is never mutated (the release's metadata goes onto a copy).
+        if kwargs.get("config") is not None and not isinstance(
+            kwargs["config"], (str, os.PathLike)
+        ):
+            kwargs["config"] = copy.deepcopy(kwargs["config"])
         if released and not released_needs_conversion():
+            # A direct native-class load may run before anything registered the release's renames.
+            from . import _register_conversions
+            if not _register_conversions():
+                raise RuntimeError(
+                    "Unsloth: could not register the DeepSeek-V4.1 checkpoint conversions with transformers."
+                )
             # transformers 5 loads the release itself through the registered renames and the release's FP8
             # quantization_config. A config passed in (a DeepseekV41TextConfig, or the text class's own config
             # class) does not carry that quantization_config, and without it the fp8 / fp4 tensors cannot load:
             # take it from the checkpoint, as a config read from the checkpoint would have it.
             _attach_release_quantization_config(cls, pretrained_model_name_or_path, kwargs, hub)
         if released and released_needs_conversion():
-            hub.pop("subfolder", None)
+            # the converted copy is flat: the subfolder is consumed by the conversion
             pretrained_model_name_or_path = convert_released_checkpoint(
                 pretrained_model_name_or_path, **hub
             )
+            kwargs.pop("subfolder", None)
             # The converted weights are dequantized: drop the release's FP8 config wherever a caller carried
             # it over (a config object read from the original repo, or a quantization_config kwarg); a
             # bitsandbytes config asked for by the caller stays.
             if _is_fp8_quant_config(kwargs.get("quantization_config")):
                 kwargs.pop("quantization_config")
             config = kwargs.get("config")
+            if isinstance(config, (str, os.PathLike)):
+                # a config path still has to build the experts the converted files hold (resolved as transformers
+                # resolves it: with the caller's subfolder)
+                config = cls.config_class.from_pretrained(str(config), **hub)
+                kwargs["config"] = config
             experts_format = converted_experts_format(pretrained_model_name_or_path)
             if config is not None and not isinstance(config, (str, os.PathLike)):
                 for c in (config, getattr(config, "text_config", None)):
@@ -1635,9 +1703,11 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         # The engram hashes need the tokenizer's compressed token map; the checkpoint ships the tokenizer.
         target = model[0] if isinstance(model, tuple) else model
         if hasattr(target, "_autobind_tokenizer"):
+            # the tokenizer sits next to the weights: subfolder included (a converted copy is flat, its subfolder
+            # was consumed above)
             hub = {
                 k: kwargs[k]
-                for k in ("cache_dir", "token", "revision", "local_files_only")
+                for k in ("cache_dir", "token", "revision", "subfolder", "local_files_only")
                 if k in kwargs
             }
             target._autobind_tokenizer(pretrained_model_name_or_path, **hub)

@@ -282,9 +282,12 @@ def _released_state_dict(model):
         out[name] = t
     text = model.config.text_config
     for layer_id in text.engram_layer_ids:
-        out[f"layers.{layer_id}.engram.embed.weight"] = model.model.engram_tables[
-            str(layer_id)
-        ].frozen_table_store.weight.clone()
+        # parameter-free (frozen table store) or Parameter-backed (UNSLOTH_DSV41_FROZEN_ENGRAM=0) representation
+        table = model.model.engram_tables[str(layer_id)]
+        store = getattr(table, "frozen_table_store", None)
+        out[f"layers.{layer_id}.engram.embed.weight"] = (
+            (store.weight if store is not None else table.weight).detach().clone()
+        )
     out["mtp.0.norm.weight"] = torch.ones(
         text.hidden_size
     )  # DSpark / MTP head: never built, never loaded
@@ -601,6 +604,235 @@ def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
         if want is None:
             want = logits
         torch.testing.assert_close(logits, want, rtol = 0, atol = 0, msg = name)
+
+
+def _parameter_backed_engram(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DSV41_FROZEN_ENGRAM", "0")
+
+
+def test_parameter_backed_engram_tables_survive_state_dict_and_reload(tmp_path, monkeypatch):
+    """Parameter-backed tables (no frozen table store) are real weights: an ordinary state_dict keeps them, so
+    load_state_dict and save / from_pretrained reproduce the logits exactly (they used to stay random / meta)."""
+    _parameter_backed_engram(monkeypatch)
+    model = _tiny_model().eval()
+    table = model.model.engram_tables["1"]
+    assert not dsv41.is_parameter_free_table(table) and isinstance(
+        table, dsv41.DeepseekV41EngramEmbedding
+    )
+    sd = model.state_dict()
+    assert "model.engram_tables.1.weight" in sd and "model.engram_tables.4.weight" in sd
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    fresh = _tiny_model(seed = 5).eval()
+    fresh.load_state_dict(sd)
+    with torch.no_grad():
+        assert torch.equal(fresh(input_ids = ids).logits, want)
+    model.save_pretrained(tmp_path / "saved")
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+        tmp_path / "saved", dtype = torch.float32
+    ).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, want)
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_full_save_with_a_supplied_state_dict_still_writes_the_engram_tables(tmp_path, positional):
+    """state_dict() leaves the (in-memory, parameter-free) tables out; a full save handed that dict must still write
+    them, without modifying the caller's dict, and the reload gives the same logits."""
+    from safetensors import safe_open
+
+    model = _tiny_model().eval()
+    assert dsv41.is_parameter_free_table(model.model.engram_tables["1"])
+    sd = model.state_dict()
+    assert not any(".engram_tables." in k for k in sd)
+    keys_before = set(sd)
+    out = tmp_path / "saved"
+    if positional:
+        model.save_pretrained(out, True, sd)
+    else:
+        model.save_pretrained(out, state_dict = sd)
+    assert set(sd) == keys_before
+    saved = set()
+    for f in os.listdir(out):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(out, f), "pt") as h:
+                saved |= set(h.keys())
+    # native names, or the release's under the base-model prefix (transformers 5 writes the renames back); the
+    # reload below reads them back through the anchored rule
+    for layer_id in (1, 4):
+        names = {
+            f"model.engram_tables.{layer_id}.weight",
+            f"model.layers.{layer_id}.engram.embed.weight",
+        }
+        assert names & saved
+    ids = torch.randint(0, 512, (1, 16))
+    with torch.no_grad():
+        want = model(input_ids = ids).logits
+    loaded = dsv41.DeepseekV41ForCausalLM.from_pretrained(out, dtype = torch.float32).eval()
+    loaded.bind_token_map([i % 97 for i in range(512)])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids = ids).logits, want)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, monkeypatch, convert):
+    """The release's fp8 engram rows (+ e8m0 scale per 32) loaded into Parameter-backed tables give the same rows
+    as the frozen table store: the scale is applied after a load that widened the fp8 rows, and transformers 5's
+    direct load renames the release's .scale onto weight_scale_inv."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    src = _quantized_release(tmp_path, _tiny_model())
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 16))
+
+    def rows(model):
+        model = model.float().eval()
+        model.bind_token_map([i % 97 for i in range(512)])
+        with torch.no_grad():
+            return model.model.engram_rows(ids), model(input_ids = ids).logits
+
+    want_rows, want_logits = rows(dsv41.DeepseekV41ForCausalLM.from_pretrained(src))
+    _parameter_backed_engram(monkeypatch)
+    model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(src, output_loading_info = True)
+    assert not dsv41.is_parameter_free_table(model.model.engram_tables["1"])
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    got_rows, got_logits = rows(model)
+    for layer_id in want_rows:
+        torch.testing.assert_close(
+            got_rows[layer_id].float(), want_rows[layer_id].float(), rtol = 0, atol = 0
+        )
+    torch.testing.assert_close(got_logits, want_logits, rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_a_released_checkpoint_in_a_subfolder_loads_from_that_subfolder(
+    tmp_path, monkeypatch, convert
+):
+    """from_pretrained(root, subfolder=...) on a released layout: discovery, conversion and loading all read the
+    subfolder (the conversion used to drop it and convert / load the root)."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    import shutil
+
+    src = _quantized_release(tmp_path, _tiny_model())
+    root = tmp_path / "repo"
+    shutil.copytree(src, root / "sub")
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    ids = torch.randint(0, 512, (1, 16))
+    outs = []
+    for path, kw in ((root / "sub", {}), (root, {"subfolder": "sub"})):
+        model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+            path, output_loading_info = True, **kw
+        )
+        assert not info["missing_keys"] and not info["unexpected_keys"], kw
+        model = model.float().eval()
+        model.bind_token_map([i % 97 for i in range(512)])
+        with torch.no_grad():
+            outs.append(model(input_ids = ids).logits)
+    assert torch.equal(outs[0], outs[1])
+
+
+def test_tokenizer_autobinding_reads_the_checkpoint_subfolder(tmp_path, monkeypatch):
+    model = _tiny_model()
+    model.save_pretrained(tmp_path / "repo" / "sub")
+    seen = []
+    monkeypatch.setattr(
+        dsv41.DeepseekV41ForCausalLM,
+        "_autobind_tokenizer",
+        lambda self, path = None, **hub: seen.append((str(path), hub)) or False,
+    )
+    dsv41.DeepseekV41ForCausalLM.from_pretrained(tmp_path / "repo", subfolder = "sub")
+    assert seen and seen[0][1].get("subfolder") == "sub"
+
+
+@pytest.mark.parametrize("as_path", [False, True])
+def test_a_config_path_picks_up_the_converted_packed_expert_format(tmp_path, monkeypatch, as_path):
+    pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    from pathlib import Path
+
+    from unsloth_zoo.mxfp4_dequant import is_mxfp4_expert_param
+
+    src = _fp4_release(tmp_path, _tiny_model().to(torch.bfloat16).float().eval())
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    config = Path(src) if as_path else str(src)
+    model, info = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+        src, config = config, output_loading_info = True
+    )
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    assert is_mxfp4_expert_param(model.model.layers[0].mlp.experts.gate_up_proj)
+
+
+@pytest.mark.parametrize("convert", ["auto", "1"])
+def test_loading_never_mutates_the_callers_config(tmp_path, monkeypatch, convert):
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    src = _quantized_release(tmp_path, _tiny_model())
+    if convert == "1":
+        monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    for config in (
+        DeepseekV41Config.from_pretrained(src),
+        dsv41.DeepseekV41TextConfig(**DeepseekV41Config.from_pretrained(src).text_config.to_dict()),
+    ):
+        before = config.to_json_string()
+        text_before = getattr(config, "text_config", None)
+        text_before = text_before.to_json_string() if text_before is not None else None
+        dsv41.DeepseekV41ForCausalLM.from_pretrained(src, config = config)
+        assert config.to_json_string() == before
+        if text_before is not None:
+            assert config.text_config.to_json_string() == text_before
+
+
+def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_path):
+    """A fresh transformers 5 process where nothing registered the conversion rules yet (they used to come only from
+    the Auto registration): DeepseekV41ForCausalLM.from_pretrained on the release still maps every tensor."""
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch without float8_e8m0fnu")
+    from unsloth.models.deepseek_v41.modeling import has_core_model_loading
+    from unsloth.models.deepseek_v41.convert import released_needs_conversion
+
+    if not has_core_model_loading() or released_needs_conversion():
+        pytest.skip("transformers without the direct release load")
+    import subprocess
+    import sys
+    import textwrap
+
+    src = _quantized_release(tmp_path, _tiny_model())
+    child = textwrap.dedent(
+        f"""
+        import json
+        import transformers.conversion_mapping as cm
+        from unsloth.models.deepseek_v41.modeling import DeepseekV41ForCausalLM
+        cache = cm._checkpoint_conversion_mapping_cache
+        if cache is not None:
+            for key in [k for k in list(cache) if "deepseek_v41" in k.lower()]:
+                cache.pop(key)
+        model, info = DeepseekV41ForCausalLM.from_pretrained({str(src)!r}, output_loading_info = True)
+        print("PROBE", json.dumps({{"missing": len(info["missing_keys"]), "unexpected": len(info["unexpected_keys"])}}))
+        """
+    )
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("UNSLOTH_DISABLE_CPU_FALLBACK", "UNSLOTH_FORCE_GPU_PATH", "UNSLOTH_ALLOW_CPU")
+    }
+    env.update(CUDA_VISIBLE_DEVICES = "", UNSLOTH_FORCE_CPU = "1")
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    run = subprocess.run(
+        [sys.executable, "-c", child], env = env, capture_output = True, text = True, timeout = 600
+    )
+    probe = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
+    assert probe, run.stdout[-2000:] + run.stderr[-3000:]
+    import json
+
+    assert json.loads(probe[0][6:]) == {"missing": 0, "unexpected": 0}
 
 
 def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
@@ -1034,7 +1266,7 @@ def test_router_sqrtsoftplus_backward_stays_finite_when_softplus_underflows():
     raw = torch.nn.functional.softplus(
         torch.nn.functional.linear(x, router.weight) / router.gate_temp
     )
-    assert float(raw[0, 0]) == 0.0
+    assert float(raw[0, 0].detach()) == 0.0
     (g,) = torch.autograd.grad(raw.sqrt().sum(), x)
     assert not torch.isfinite(g).all()  # the trap is real for a plain sqrt
     weights, _ = router(x)
