@@ -417,7 +417,6 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
-    # 7B single-stream DiT; 768 keeps the 16x latent grid at 48x48 tokens and a step under QLoRA affordable.
     "qwen-image-2.1": {
         "lora_rank": 16,
         "learning_rate": 1e-4,

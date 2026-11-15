@@ -645,9 +645,8 @@ def _fmt_weight(w: float) -> str:
     return s or "0"
 
 
-# Families sd-cli LoRA name conversion supports (not Qwen-Image); substring match. Qwen-Image-2.1: its diffusers keys
-# are the GGUF's own tensor names, and sd.cpp folds the proj / gate_layer adapters into the fused img_mlp.gate_up
-# (upstream #2057); a trained Studio adapter applied 448 / 448 tensors through sd-cli.
+# Families sd-cli LoRA name conversion supports (not Qwen-Image); substring match. Qwen-Image-2.1's diffusers keys are
+# the GGUF's tensor names, and sd.cpp folds proj / gate_layer into the fused img_mlp.gate_up (upstream #2057).
 _NATIVE_LORA_FAMILY_TOKENS = (
     "flux.1",
     "flux.2",

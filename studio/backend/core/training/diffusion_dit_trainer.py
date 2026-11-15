@@ -1231,10 +1231,8 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# Qwen-Image-2.1: a 7B single-stream, block-causal DiT (QwenImage21Transformer2DModel), a Qwen3-VL-8B prompt encoder and
-# a 64-channel RGBA VAE at 16x. Every helper below mirrors QwenImage21Pipeline (diffusers 0.41) for text-to-image: the
-# pipeline's own prompt template and system-token drop, the unpatched latent flatten, img_shapes / img_mask over the
-# joint text + image sequence, timestep / 1000, and the target tokens read off the end of the output.
+# Qwen-Image-2.1 (7B block-causal DiT, Qwen3-VL-8B encoder, RGBA VAE at 16x): every helper below mirrors
+# QwenImage21Pipeline's text-to-image path (diffusers 0.41), so training sees exactly what inference feeds the DiT.
 # Attention q/k/v/out and the SwiGLU of the 32 blocks; the shared modulation, txt_in, img_in and proj_out stay frozen.
 _QWEN21_TARGETS = (
     "to_q",
@@ -1315,8 +1313,7 @@ def _qwen21_collate(
     weight_dtype,
     pad_to = None,
 ):
-    # Kept per sample: the image block's rotary frame index is the text length, so padding a shorter caption would
-    # move its image positions away from what an unpadded inference prompt gives. _qwen21_forward groups equal lengths.
+    # Kept per sample: the image's rotary index starts at the text length, so padding would move its positions.
     return ([e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries],)
 
 
@@ -1346,7 +1343,6 @@ def _qwen21_call(transformer, packed, timestep, pe, h, w):
         img_mask = img_mask,
         return_dict = False,
     )[0]
-    # The output spans the joint sequence; the target image is its tail.
     return out[:, -target_tokens:]
 
 
@@ -1414,7 +1410,6 @@ def _qwen21_latent_shape(vae, height, width):
 
 def _qwen21_decode_latents(vae, latents):
     mean, std = _qwen_latent_affine(vae, latents)
-    # RGBA out; training images are opaque, so the preview keeps RGB.
     return vae.decode((latents * std + mean).to(vae.dtype)).sample[:, :3, 0]
 
 
