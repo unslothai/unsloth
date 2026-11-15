@@ -329,6 +329,26 @@ def test_fused_launches_match_one_launch_per_quantiser_interpreted():
     assert len(res) == 6 and all(all(v) for v in res.values()), res
 
 
+def test_varying_sizes_stay_out_of_the_compile_key():
+    """Sequence lengths, head counts and block counts are not specialised on (% 16, == 1), so a new shape does not
+    compile another variant of a kernel (at most the EVEN_K pair per config and head dim)."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_int8_attention_triton as T
+
+    if T.triton is None:
+        pytest.skip("no Triton")
+    for kernel, names in (
+        (T.attn_kernel, {"sq", "sk", "n_heads"}),
+        (T.prep_kernel, {"sq", "sk", "n_heads", "n_qblk"}),
+        (T.kv_kernel, {"sk", "n_heads", "n_kblk"}),
+    ):
+        # names or positions, by Triton version
+        skipped = {
+            kernel.arg_names[i] if isinstance(i, int) else i for i in kernel.do_not_specialize
+        }
+        assert names <= skipped, (kernel.fn.__name__, skipped)
+
+
 def test_launch_plan_is_made_once_per_call_signature(monkeypatch):
     from core.inference import diffusion_int8_attention_triton as T
 

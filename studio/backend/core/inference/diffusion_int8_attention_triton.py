@@ -383,7 +383,9 @@ if triton is not None:
             TO_F16,
         )
 
-    @triton.jit
+    # sequence lengths, head counts and block counts vary per call: kept out of the compile key (no % 16 / == 1
+    # specialisation), so a shape change never compiles another variant
+    @triton.jit(do_not_specialize = ["sq", "sk", "n_heads", "n_qblk"])
     def prep_kernel(
         q_ptr,
         k_ptr,
@@ -467,7 +469,7 @@ if triton is not None:
                     V_T == 2,
                 )
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["sk", "n_heads", "n_kblk"])
     def kv_kernel(
         k_ptr,
         kc_ptr,
@@ -634,7 +636,7 @@ if triton is not None:
         m_i = m_new
         return acc, l_i, m_i
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["sq", "sk", "n_heads"])
     def attn_kernel(
         q_ptr,
         qs_ptr,
