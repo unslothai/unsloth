@@ -318,12 +318,21 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
       const wav = new Blob([encodeWav(merged, sampleRate)], { type: "audio/wav" });
 
+      // Words heard across a voice off or reset are dropped anyway: no VAD or STT run for them.
+      if (switchedOff()) {
+        dropSwitched();
+        return;
+      }
       if ((await clipHasSpeech(wav, bargedIn ? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS)) === false) {
         if (ended) return;
         endWithoutSpeech();
         return;
       }
       if (ended) return;
+      if (switchedOff()) {
+        dropSwitched();
+        return;
+      }
 
       try {
         const modelId =
@@ -337,7 +346,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           ).trim();
           if (ended) return;
         } catch (error) {
-          if (error instanceof SttModelNotDownloadedError) {
+          if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
             requestSttDownload(
               modelId ?? useVoiceSettingsStore.getState().sttModel,
             );
@@ -413,6 +422,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
       } catch (error) {
         if (ended) return;
+        if (switchedOff()) {
+          dropSwitched();
+          return;
+        }
         console.error("Voice transcription error:", error);
         toast.error("Transcription failed.");
         if (bargedIn) requestVoiceBargeAbort();

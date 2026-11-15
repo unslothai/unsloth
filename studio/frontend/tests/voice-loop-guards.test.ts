@@ -201,7 +201,7 @@ test("a message sent from the composer drops a voice fragment still waiting for 
 
 test("a clip dropped by a reset re-arms the mic while voice stays on", () => {
   assert.match(loop, /const dropSwitched = \(\) => \{\s*finish\("cancelled"\);\s*if \(getVoiceMode\(\) === "active"\) setTimeout\(\(\) => requestVoiceResume\(\), 0\);\s*\};/);
-  assert.equal((loop.match(/if \(switchedOff\(\)\) \{\s*dropSwitched\(\);/g) ?? []).length, 3);
+  assert.equal((loop.match(/if \(switchedOff\(\)\) \{\s*dropSwitched\(\);/g) ?? []).length, 6);
 });
 
 test("a voice turn whose attachment send is slow still gets its reply", () => {
@@ -216,4 +216,12 @@ test("turning voice on stops a read-aloud already playing before the mic opens",
   const stopAt = act.indexOf("thread.stopSpeaking();");
   assert.ok(stopAt > 0 && stopAt < act.indexOf("startDictation();"));
   assert.match(act.slice(0, stopAt), /if \(thread\.getState\(\)\.speech\) \{/);
+});
+
+test("a clip heard across voice off runs no VAD or STT and raises no error or download prompt", () => {
+  const fin = loop.slice(loop.indexOf("const finalizeHeard = async () => {"));
+  const firstOff = fin.indexOf("if (switchedOff()) {\n        dropSwitched();");
+  assert.ok(firstOff > 0 && firstOff < fin.indexOf("await clipHasSpeech("));
+  assert.match(fin, /if \(error instanceof SttModelNotDownloadedError && !switchedOff\(\)\) \{/);
+  assert.match(fin, /\} catch \(error\) \{\s*if \(ended\) return;\s*if \(switchedOff\(\)\) \{\s*dropSwitched\(\);\s*return;\s*\}\s*console\.error\("Voice transcription error:"/);
 });
