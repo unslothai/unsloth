@@ -1358,7 +1358,6 @@ function saveGrantedChats(grants: ChatFullAccessGrants): void {
   }
 }
 
-/** Leaving Full access in the open chat, which also clears what was saved with it. */
 function revokeChatFullAccessAndForget(state: ChatRuntimeStore): ChatFullAccessGrants {
   if (state.activeThreadId) saveChatFullAccess(state.activeThreadId, false, true);
   return revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId);
