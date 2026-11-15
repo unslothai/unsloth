@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// /context: the command match, the breakdown view, and that the command only counts, so the
-// conversation and the next completion (and with them the prompt cache) are untouched.
+// /context only counts: the conversation and the next completion stay untouched.
 
 import assert from "node:assert/strict";
 import test from "node:test";
