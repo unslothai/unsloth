@@ -127,6 +127,7 @@ export function ApiKeysTab() {
         const created = await createApiKey(
           revokeTarget.name,
           expiryDays(revokeTarget),
+          revokeTarget.access,
         );
         reveal(created.key);
       }

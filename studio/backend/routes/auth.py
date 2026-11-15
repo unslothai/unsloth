@@ -757,6 +757,9 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
         expires_at = row.get("expires_at"),
         is_active = bool(row["is_active"]),
         purpose = row.get("purpose"),
+        access = storage.API_KEY_ACCESS_INFERENCE
+        if row.get("access") not in (None, storage.API_KEY_ACCESS_FULL)
+        else storage.API_KEY_ACCESS_FULL,
     )
 
 
@@ -805,6 +808,7 @@ async def create_api_key(
             purpose = storage.UNSLOTH_START_API_KEY_PURPOSE
             if payload.name == storage.UNSLOTH_START_API_KEY_NAME
             else None,
+            access = payload.access,
         )
     except storage.CredentialRotated:
         raise HTTPException(

@@ -335,6 +335,13 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc).lower():
                 raise
+    if "access" not in api_key_columns:
+        # NULL is full access, so rows predating the column keep what they had.
+        try:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN access TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -1787,6 +1794,8 @@ def clear_desktop_secret() -> None:
 
 
 API_KEY_PREFIX = "sk-unsloth-"
+API_KEY_ACCESS_FULL = "full"
+API_KEY_ACCESS_INFERENCE = "inference"
 
 # Name sets authority: Deep Research keys reach the saved connection, data-recipe keys only local /v1.
 DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
@@ -1808,8 +1817,12 @@ def create_api_key(
     expect_gen: Optional[str] = None,
     account_id: Optional[str] = None,
     purpose: Optional[str] = None,
+    access: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """``expect_gen`` fences the insert so a password reset cannot mint a key that outlives it."""
+    if access not in (None, API_KEY_ACCESS_FULL, API_KEY_ACCESS_INFERENCE):
+        raise ValueError(f"unknown API key access {access!r}")
+    access = None if access == API_KEY_ACCESS_FULL else access
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _fenced_hash(_pbkdf2_api_key(raw_key), username)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
@@ -1834,8 +1847,8 @@ def create_api_key(
             account_id = _managed_account_id(conn, username)
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id, purpose)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id, purpose, access)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
@@ -1847,6 +1860,7 @@ def create_api_key(
                 1 if internal else 0,
                 account_id,
                 purpose,
+                access,
             ),
         )
         if account_id is not None:
@@ -1875,7 +1889,7 @@ def list_api_keys(
         cur = conn.execute(
             f"""
             SELECT id, username, key_prefix, name, created_at, last_used_at,
-                   expires_at, is_active, is_internal, purpose
+                   expires_at, is_active, is_internal, purpose, access
             FROM api_keys
             WHERE {scope}{internal}
             ORDER BY created_at DESC
@@ -2046,7 +2060,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.is_internal, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.access, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -2092,6 +2106,10 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "key_name": row["name"],
             "key_purpose": row["purpose"],
             "key_internal": bool(row["is_internal"]),
+            # Anything but NULL or "full" is read as inference only, never as wider.
+            "key_access": API_KEY_ACCESS_FULL
+            if row["access"] in (None, API_KEY_ACCESS_FULL)
+            else API_KEY_ACCESS_INFERENCE,
             "key_id": row["id"],
         }
         return record, secret
