@@ -80,8 +80,8 @@ if triton is not None:
         MODE: tl.constexpr,
     ):
         # per (batch, head, channel) over every STEP-th token: MODE 0 mean -> c; MODE 1 mid-range -> c, half range -> g
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         cols = tl.arange(0, D)
         n_sub = (n_rows + STEP - 1) // STEP
         acc = tl.zeros([D], tl.float32)
@@ -105,10 +105,10 @@ if triton is not None:
                 lo = tl.minimum(lo, tl.min(tl.where(live[:, None], x, 3.0e38), axis = 0))
                 hi = tl.maximum(hi, tl.max(tl.where(live[:, None], x, -3.0e38), axis = 0))
         if MODE == 0:
-            tl.store(c_ptr + bh * D + cols, acc / n_sub)
+            tl.store(c_ptr + bh.to(tl.int64) * D + cols, acc / n_sub)
         else:
-            tl.store(c_ptr + bh * D + cols, 0.5 * (hi + lo))
-            tl.store(g_ptr + bh * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
+            tl.store(c_ptr + bh.to(tl.int64) * D + cols, 0.5 * (hi + lo))
+            tl.store(g_ptr + bh.to(tl.int64) * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
 
     @triton.jit
     def _quant_rows(
@@ -133,8 +133,8 @@ if triton is not None:
         # R rows of one (batch, head), optionally centred, rotated: int8 = rint(x * 127 / amax), amax per row
         # (scale [BH, n_pad]) or over the R rows (TILE, scale [BH, n_pad / R]); scale = amax / 127 * mul. Padded
         # rows are zeros (with scale 0 per row)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * R + tl.arange(0, R)
         cols = tl.arange(0, D)
         live = rows < n_rows
@@ -148,7 +148,7 @@ if triton is not None:
             other = 0.0,
         ).to(tl.float32)
         if CENTRE:
-            c = tl.load(c_ptr + bh * D + cols)
+            c = tl.load(c_ptr + bh.to(tl.int64) * D + cols)
             x = tl.where(live[:, None], x - c[None, :], 0.0)
         x = _rotate(x, R, D)
         base = bh.to(tl.int64) * n_pad
@@ -183,8 +183,8 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head): (x - centre) / gain per channel, one scale for the tile,
         # stored key-major [BH, n_pad, D] or (TRANS) channel-major [BH, D, n_pad]
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * T + tl.arange(0, T)
         cols = tl.arange(0, D)
         live = rows < n_rows
@@ -197,8 +197,8 @@ if triton is not None:
             mask = live[:, None],
             other = 0.0,
         ).to(tl.float32)
-        c = tl.load(c_ptr + bh * D + cols)
-        g = tl.load(g_ptr + bh * D + cols)
+        c = tl.load(c_ptr + bh.to(tl.int64) * D + cols)
+        g = tl.load(g_ptr + bh.to(tl.int64) * D + cols)
         x = tl.where(live[:, None], (x - c[None, :]) / g[None, :], 0.0)
         amax = tl.maximum(tl.max(tl.max(tl.abs(x), axis = 1), axis = 0), 1e-20)
         tile = bh.to(tl.int64) * (n_pad // T) + blk
@@ -228,8 +228,8 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad], padded keys zero; in V's dtype,
         # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * T + tl.arange(0, T)
         cols = tl.arange(0, D)
         x = tl.load(
@@ -681,8 +681,8 @@ if triton is not None:
         # contiguously (a key-major V tile is gathered element by element from shared memory on RDNA3 WMMA)
         pid_m = tl.program_id(0)
         bh = tl.program_id(1)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = pid_m * BM + tl.arange(0, BM)
         offs_n = tl.arange(0, BN)
         cols = tl.arange(0, D)
@@ -779,8 +779,8 @@ if triton is not None:
             )
         out = acc / l_i[:, None]
         if PV_MODE == 2 or PV_MODE == 4:
-            vg = tl.load(vg_ptr + bh * D + cols)
-            vc = tl.load(vc_ptr + bh * D + cols)
+            vg = tl.load(vg_ptr + bh.to(tl.int64) * D + cols)
+            vc = tl.load(vc_ptr + bh.to(tl.int64) * D + cols)
             out = out * vg[None, :] + vc[None, :]
         tl.store(
             o_ptr + b * o_sb + h * o_sh + rows[:, None].to(tl.int64) * o_ss + cols[None, :],
