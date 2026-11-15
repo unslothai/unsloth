@@ -1454,6 +1454,58 @@ def _training_flex_options(options):
     return options
 
 
+def _sdpa_alignment_without_guard():
+    """Stop Inductor recompiling a block for every new `seq_len % 8` class.
+
+    Lowering an SDPA call (torch 2.14 `sdpa_constraint`) asks whether each input's strides are 8-aligned
+    (`ir.is_aligned_realized_tensor`; e.g. the flash backward's (B, H, L) logsumexp, strides (H*L, L, 1)) through
+    `guard_or_false`. With the sequence dim dynamic that installs a `Mod(s, 8)` guard, so the first aligned
+    length after an unaligned one (or the reverse) recompiled the whole block (20-44 s per layer kind on real
+    models). Inside the SDPA constraint only, `guard_or_false` becomes `statically_known_true`: False is its
+    documented safe answer, so a dynamic length takes the general path every unaligned length already took
+    (a stride-order check; an attention bias is copied to an 8-aligned layout). Static shapes decide as
+    before. UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
+    if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        return False
+    try:
+        import torch._inductor.lowering as lowering
+        from torch._inductor.sizevars import SizeVarAllocator
+        from torch._inductor.virtualized import V
+    except Exception:
+        return False
+    original = getattr(lowering, "sdpa_constraint", None)
+    table = getattr(lowering, "_maybe_layout_constraints", None)
+    if original is None or not isinstance(table, dict):
+        return False
+    if getattr(original, "_unsloth_no_align_guard", False):
+        return True
+    if not hasattr(SizeVarAllocator, "statically_known_true") or not hasattr(
+        SizeVarAllocator, "guard_or_false"
+    ):
+        return False
+
+    @functools.wraps(original)
+    def sdpa_constraint(*args, **kwargs):
+        sizevars = V.graph.sizevars
+        shadowed = "guard_or_false" in sizevars.__dict__
+        previous = sizevars.__dict__.get("guard_or_false")
+        sizevars.guard_or_false = sizevars.statically_known_true
+        try:
+            return original(*args, **kwargs)
+        finally:
+            if shadowed:
+                sizevars.guard_or_false = previous
+            else:
+                del sizevars.guard_or_false
+
+    sdpa_constraint._unsloth_no_align_guard = True
+    replaced = [op for op, fn in table.items() if fn is original]
+    for op in replaced:
+        table[op] = sdpa_constraint
+    lowering.sdpa_constraint = sdpa_constraint
+    return bool(replaced)
+
+
 def _flex_split_hook():
     """Lets a block keep flex_attention out of its graph. Some masks do not lower inside a larger
     graph (torch 2.13, Gemma-4 12B blockwise mask: `unsupported operand type(s) for &:
@@ -2190,6 +2242,7 @@ def patch_block_compile(model):
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
+    _sdpa_alignment_without_guard()
     _gemma4_router_hook()
     _stable_parametrized_classes()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
