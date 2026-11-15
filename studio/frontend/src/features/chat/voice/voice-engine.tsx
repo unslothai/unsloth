@@ -39,6 +39,7 @@ import { useCallback, useEffect, useRef, useState, type FC } from "react";
 
 let _prevRunning = false;
 
+const PLAYBACK_TAIL_MS = 500;
 const VOICE_COALESCE_MS = 650;
 const VOICE_COALESCE_MAX_RETRIES = 15;
 const VOICE_HEARING_HOLD_MAX_MS = 30000;
@@ -61,6 +62,7 @@ export const VoiceEngine: FC = () => {
   const voiceModeRef = useRef(getVoiceMode());
   const isSpeakingRef = useRef(false);
   const isPlayingRef = useRef(false);
+  const playedAtRef = useRef(-Infinity);
   const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auiRef = useRef(aui);
   auiRef.current = aui;
@@ -129,9 +131,14 @@ export const VoiceEngine: FC = () => {
     resumePlayback,
   } = useTtsPlayer(resumeListen);
   isSpeakingRef.current = isSpeaking;
+  if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
   useEffect(() => {
-    registerVoicePlayback(() => isSpeakingRef.current || isPlayingRef.current);
+    // Audible output only (plus its echo tail and sentence gaps): while the reply is still being thought
+    // or synthesized nothing plays, so a normal-volume interjection is heard, not held to the barge-in bar.
+    registerVoicePlayback(
+      () => isPlayingRef.current || performance.now() - playedAtRef.current < PLAYBACK_TAIL_MS,
+    );
     return () => registerVoicePlayback(null);
   }, []);
   const beginStreamRef = useRef(beginStream);
