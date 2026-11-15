@@ -247,10 +247,25 @@ def test_only_a_modular_family_drops_its_dense_encoder():
 
 def test_an_unset_request_takes_the_hosted_conditioner():
     """Unset is what the video page sends, so this is the whole point: it must resolve to the
-    hosted 27.1 GB / 50-layer conditioner, not to the released 66.7 GB / 64-layer one."""
-    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, _cuda_target()) == "int8"
-    assert VideoBackend._h3_te_quant_scheme(_fam(), "auto", H3_BASE, _cuda_target()) == "int8"
-    assert VideoBackend._h3_te_quant_scheme(_fam(), "", H3_BASE, _cuda_target()) == "int8"
+    hosted 15.7 GB / 50-layer nvfp4_awq conditioner (the reference templates' file), not to the
+    released 66.7 GB / 64-layer one; an explicit int8 keeps the 27.1 GB int8 one."""
+    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, _cuda_target()) == "nvfp4_awq"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "auto", H3_BASE, _cuda_target()) == "nvfp4_awq"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "", H3_BASE, _cuda_target()) == "nvfp4_awq"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE, _cuda_target()) == "int8"
+
+
+def test_the_default_conditioner_is_the_reference_templates_file_from_the_unsloth_repo():
+    from core.inference import video_minimax_h3_te as te
+
+    assert te.H3_TE_QUANT_DEFAULT == "nvfp4_awq"
+    assert h3_te_quant_filename("nvfp4_awq") == (
+        "text_encoders/official/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    )
+    assert te.h3_te_quant_source("nvfp4_awq") == H3_TE_QUANT_REPO
+    assert te.h3_te_resident_gb("nvfp4_awq", bf16_gb = 66.7) < te.h3_te_resident_gb(
+        "int8", bf16_gb = 66.7
+    )
 
 
 def test_none_still_pins_the_released_encoder():

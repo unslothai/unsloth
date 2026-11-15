@@ -21,27 +21,37 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
 # Not H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror, the conditioner did not.
 H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
 H3_TE_INT8 = "int8"
+# The reference workflow templates' conditioner (Qwen3-VL-32B-Instruct, NVFP4 weights with AWQ input scales, read
+# weight-only like the reference: video_minimax_h3_te_nvfp4). Hosted unchanged next to the int8 file
+# (sha256 35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6, 15,687,142,551 bytes).
+H3_TE_NVFP4_AWQ = "nvfp4_awq"
 # Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
 H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
     # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
     # only.
     H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    H3_TE_NVFP4_AWQ: "text_encoders/official/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
 H3_TE_QUANT_SOURCES: dict[str, str] = {
     H3_TE_INT8: H3_TE_QUANT_REPO,
+    H3_TE_NVFP4_AWQ: H3_TE_QUANT_REPO,
     H3_TE_Q4_K_M: "unsloth/MiniMax-H3-GGUF",
 }
 # Never a request value: an explicit "nvfp4" keeps meaning the W4A4 runtime cast (refused for H3).
-H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M})
+# nvfp4_awq is the unset default; an explicit request names int8 (the larger, earlier conditioner) or none.
+H3_TE_AUTO_ONLY_SCHEMES = frozenset({H3_TE_Q4_K_M, H3_TE_NVFP4_AWQ})
 
-# Default int8: 27 GB over 50 layers vs 66.7 GB dense 64-layer; transformers has no early exit.
-# Not an INT8 GEMM: ConvRot dequantizes then F.linear; the win is bytes moved, not math.
-H3_TE_QUANT_DEFAULT = H3_TE_INT8
+# Default nvfp4_awq, the reference templates' file: 15.7 GB over 50 layers (int8: 27.2 GB, dense 64-layer: 66.7 GB).
+# Its conditioning matches the reference's (rel. L2 0.009 on t2va vs int8's 0.022), the t2va render LPIPS to the
+# reference falls 0.214 -> 0.075, peak VRAM 60.1 -> 50.4 GiB on a G4, and the encode is no slower. Weight-only on
+# every GPU, as the reference: dequantize, then F.linear. int8 stays an explicit pick.
+H3_TE_QUANT_DEFAULT = H3_TE_NVFP4_AWQ
 
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
     H3_TE_INT8: 27.2,
+    H3_TE_NVFP4_AWQ: 15.7,
     H3_TE_Q4_K_M: 18.3,
 }
 
@@ -85,28 +95,38 @@ def h3_te_auto_scheme(
     if forced is not None:
         return forced
     if not H3_TE_LOW_RAM_AUTO:
-        return H3_TE_INT8
+        return H3_TE_QUANT_DEFAULT
+    # A low-RAM scheme only helps where it is smaller than the default (nvfp4_awq already is: 15.7 vs 18.3 GB).
+    if (
+        H3_TE_QUANT_RESIDENT_GB[H3_TE_LOW_RAM_SCHEME]
+        >= H3_TE_QUANT_RESIDENT_GB[H3_TE_QUANT_DEFAULT]
+    ):
+        return H3_TE_QUANT_DEFAULT
     try:
         if host_capacity_gb is None:
             from utils.host_memory import host_ram_capacity_mib
 
             mib = host_ram_capacity_mib()
             if mib is None:
-                return H3_TE_INT8
+                return H3_TE_QUANT_DEFAULT
             host_capacity_gb = mib * (1 << 20) / 1e9
-        need = H3_TE_INT8_HOST_SET_GB
+        need = (
+            H3_TE_INT8_HOST_SET_GB
+            - H3_TE_QUANT_RESIDENT_GB[H3_TE_INT8]
+            + H3_TE_QUANT_RESIDENT_GB[H3_TE_QUANT_DEFAULT]
+        )
         if denoiser_gb is not None:
             need = need - 20.3 + float(denoiser_gb)
         if float(host_capacity_gb) >= need:
-            return H3_TE_INT8
+            return H3_TE_QUANT_DEFAULT
         # Without gguf the 4-bit load falls back to the 66.7 GB dense encoder.
         import importlib.util
 
         if H3_TE_LOW_RAM_SCHEME == H3_TE_Q4_K_M and importlib.util.find_spec("gguf") is None:
-            return H3_TE_INT8
+            return H3_TE_QUANT_DEFAULT
         return H3_TE_LOW_RAM_SCHEME
     except Exception:  # noqa: BLE001 -- no reading, no change
-        return H3_TE_INT8
+        return H3_TE_QUANT_DEFAULT
 
 
 def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:

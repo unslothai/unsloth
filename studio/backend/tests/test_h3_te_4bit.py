@@ -159,12 +159,12 @@ def _gguf_reader(monkeypatch, present: bool):
     )
 
 
-def test_an_unset_request_keeps_int8_on_every_host_while_the_switch_is_off(monkeypatch):
+def test_an_unset_request_keeps_the_default_on_every_host_while_the_switch_is_off(monkeypatch):
     monkeypatch.delenv(te.H3_TE_QUANT_AUTO_ENV, raising = False)
     _gguf_reader(monkeypatch, True)
     assert te.H3_TE_LOW_RAM_AUTO is False
     for gb in (10.0, 53.0, 200.0):
-        assert te.h3_te_auto_scheme(host_capacity_gb = gb) == "int8"
+        assert te.h3_te_auto_scheme(host_capacity_gb = gb) == te.H3_TE_QUANT_DEFAULT == "nvfp4_awq"
 
 
 def test_the_env_opts_in_to_q4_k_m(monkeypatch):
@@ -173,12 +173,22 @@ def test_the_env_opts_in_to_q4_k_m(monkeypatch):
     monkeypatch.setenv(te.H3_TE_QUANT_AUTO_ENV, "int8")
     assert te.h3_te_auto_scheme(host_capacity_gb = 10.0) == "int8"
     monkeypatch.setenv(te.H3_TE_QUANT_AUTO_ENV, "bogus")
-    assert te.h3_te_auto_scheme(host_capacity_gb = 10.0) == "int8"
+    assert te.h3_te_auto_scheme(host_capacity_gb = 10.0) == "nvfp4_awq"
+
+
+def test_the_switch_never_trades_the_nvfp4_default_for_the_larger_4bit_file(monkeypatch):
+    monkeypatch.delenv(te.H3_TE_QUANT_AUTO_ENV, raising = False)
+    monkeypatch.setattr(te, "H3_TE_LOW_RAM_AUTO", True)
+    _gguf_reader(monkeypatch, True)
+    for gb in (10.0, 53.0, 200.0):
+        assert te.h3_te_auto_scheme(host_capacity_gb = gb) == "nvfp4_awq"
 
 
 def test_the_switch_when_on_follows_host_ram(monkeypatch):
+    """With int8 as the default (the earlier behaviour) the low-RAM switch still trades it for q4_k_m."""
     monkeypatch.delenv(te.H3_TE_QUANT_AUTO_ENV, raising = False)
     monkeypatch.setattr(te, "H3_TE_LOW_RAM_AUTO", True)
+    monkeypatch.setattr(te, "H3_TE_QUANT_DEFAULT", "int8")
     _gguf_reader(monkeypatch, True)
     assert te.h3_te_auto_scheme(host_capacity_gb = 200.0) == "int8"
     assert te.h3_te_auto_scheme(host_capacity_gb = te.H3_TE_INT8_HOST_SET_GB + 0.1) == "int8"
@@ -200,7 +210,9 @@ def test_the_pick_reaches_the_video_resolver(monkeypatch):
         device = "cuda", dtype = torch.bfloat16, supports_default_torch_compile = True
     )
     monkeypatch.delenv(te.H3_TE_QUANT_AUTO_ENV, raising = False)
-    assert VideoBackend._h3_te_quant_scheme(fam, None, "MiniMaxAI/MiniMax-H3", target) == "int8"
+    assert (
+        VideoBackend._h3_te_quant_scheme(fam, None, "MiniMaxAI/MiniMax-H3", target) == "nvfp4_awq"
+    )
     monkeypatch.setenv(te.H3_TE_QUANT_AUTO_ENV, "q4_k_m")
     assert VideoBackend._h3_te_quant_scheme(fam, None, "MiniMaxAI/MiniMax-H3", target) == "q4_k_m"
     assert VideoBackend._h3_te_quant_scheme(fam, "int8", "MiniMaxAI/MiniMax-H3", target) == "int8"
@@ -212,7 +224,7 @@ def test_the_4bit_file_is_not_a_request_value_and_is_sized():
 
     with pytest.raises(ValueError):
         normalize_te_quant(te.H3_TE_Q4_K_M)
-    assert set(te.H3_TE_QUANT_FILES) == {"int8", "q4_k_m"}
+    assert set(te.H3_TE_QUANT_FILES) == {"int8", "nvfp4_awq", "q4_k_m"}
     assert te.h3_te_resident_gb("q4_k_m", bf16_gb = 66.7) < te.h3_te_resident_gb("int8", bf16_gb = 66.7)
 
 

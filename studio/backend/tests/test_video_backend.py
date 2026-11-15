@@ -13920,7 +13920,7 @@ def test_h3_unified_guard_prices_the_hosted_conditioner(
 @pytest.mark.parametrize(
     "te_request, source, encoder_gb",
     [
-        (None, "MiniMaxAI/MiniMax-H3", 27.2),
+        (None, "MiniMaxAI/MiniMax-H3", 15.7),
         ("int8", "MiniMaxAI/MiniMax-H3", 27.2),
         ("none", "MiniMaxAI/MiniMax-H3", 66.8),
         ("int8", "someone/MiniMax-H3", 66.8),
