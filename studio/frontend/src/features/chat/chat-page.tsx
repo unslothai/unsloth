@@ -30,6 +30,7 @@ import {
   getVoiceMode,
   loadVoiceMode,
   requestVoiceThreadReset,
+  requestVoicePauseToggle,
   requestVoiceToggle,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
@@ -119,7 +120,6 @@ import { isTauri } from "@/lib/api-base";
 import { getDiffusionStatus } from "@/features/images/api";
 // eslint-disable-next-line no-restricted-imports
 import { getVideoStatus } from "@/features/video/api";
-import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
   subscribeModelEjected,
   subscribeModelLifecycle,
@@ -3165,20 +3165,6 @@ export function ChatPage({
   const selectedVoiceModelId = useChatRuntimeStore(
     (s) => s.selectedVoiceModelId,
   );
-  const setSelectedVoiceModelId = useChatRuntimeStore(
-    (s) => s.setSelectedVoiceModelId,
-  );
-  const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
-  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
-  const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
-  const selectedVadModelId = useChatRuntimeStore((s) => s.selectedVadModelId);
-  const setSelectedVadModelId = useChatRuntimeStore((s) => s.setSelectedVadModelId);
-  const vadSlotLoaded = useChatRuntimeStore((s) => s.vadSlotLoaded);
-  const sttSlotLoaded = useChatRuntimeStore((s) => s.sttSlotLoaded);
-  const sttSlotDownload = useChatRuntimeStore((s) => s.sttSlotDownload);
-  const setSelectedSttModelId = useChatRuntimeStore(
-    (s) => s.setSelectedSttModelId,
-  );
   // Only a voice this page loaded is ever unloaded; whichever is picked when a load settles ends up loaded.
   const loadedVoiceRef = useRef<VoiceHold | null>(null);
   const voiceLoadRef = useRef<Promise<boolean> | null>(null);
@@ -3321,9 +3307,28 @@ export function ChatPage({
     [unloadOwnVoice],
   );
 
-  // Off the chat route this page stays mounted but hidden, with no orb or pill to show a live mic: end voice mode.
+  // Off the chat route this page stays mounted but hidden, with no orb or pill to show a live mic. A running
+  // voice pauses there (mic off, reply held, its models kept loaded) and picks up again on the way back; a
+  // pause the user chose stays. Setup has no mic, so its panel just closes.
+  const pausedOffRouteRef = useRef(false);
   useEffect(() => {
-    if (!active && getVoiceMode() !== "off") requestVoiceToggle();
+    const mode = getVoiceMode();
+    if (mode === "configuring") {
+      if (!active) requestVoiceToggle();
+      return;
+    }
+    if (mode !== "active") {
+      pausedOffRouteRef.current = false;
+      return;
+    }
+    const paused = useChatRuntimeStore.getState().voicePaused;
+    if (!active && !paused) {
+      pausedOffRouteRef.current = true;
+      requestVoicePauseToggle();
+    } else if (active && pausedOffRouteRef.current) {
+      pausedOffRouteRef.current = false;
+      if (paused) requestVoicePauseToggle();
+    }
   }, [active]);
 
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
@@ -5165,22 +5170,8 @@ export function ChatPage({
               />
             )}
             <Suspense fallback={null}>
-              {view.mode !== "compare" && voiceMode !== "off" && (
-                <VoicePanel
-                  vadModelId={selectedVadModelId}
-                  onVadModelChange={setSelectedVadModelId}
-                  vadLoaded={vadSlotLoaded}
-                  sttModelId={selectedSttModelId}
-                  onSttModelChange={setSelectedSttModelId}
-                  sttLoaded={sttSlotLoaded}
-                  sttDownload={sttSlotDownload}
-                  onSttDownload={() => requestSttDownload(selectedSttModelId)}
-                  ttsModelId={selectedVoiceModelId}
-                  onTtsModelChange={setSelectedVoiceModelId}
-                  ttsLoading={voiceSlotLoading}
-                  ttsLoaded={voiceSlotLoaded}
-                  disabled={!hasActiveModel}
-                />
+              {view.mode !== "compare" && voiceMode === "active" && (
+                <VoicePanel />
               )}
             </Suspense>
             {view.mode !== "compare" && currentProjectId && (

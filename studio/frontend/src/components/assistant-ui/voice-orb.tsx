@@ -51,6 +51,9 @@ const orbMeta: Record<OrbStateName, { label: TranslationKey; icon: IconKind }> =
   synthesizing: { label: "voiceOrb.states.synthesizing", icon: "synth" },
   speaking: { label: "voiceOrb.states.speaking", icon: "waveform" },
   paused: { label: "voiceOrb.states.paused", icon: "pause" },
+  switching: { label: "voiceOrb.states.switching", icon: "spinner" },
+  downloading: { label: "voiceOrb.states.downloading", icon: "spinner" },
+  needsDownload: { label: "voiceOrb.states.needsDownload", icon: "mic-off" },
 };
 
 type IconKind = "mic" | "mic-off" | "wave" | "dots" | "brain" | "spinner" | "pencil" | "waveform" | "synth" | "pause";

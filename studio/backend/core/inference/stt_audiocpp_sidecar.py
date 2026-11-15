@@ -105,12 +105,16 @@ _MOSS_TOKENS_PER_SECOND = 12
 _MOSS_CONTEXT_TOKENS = 131_072
 _MOSS_PROMPT_TOKENS_PER_SECOND = 13.5
 _MOSS_PROMPT_OVERHEAD_TOKENS = 512
+# A short clip gets twice its speech rate plus slack, not the 14-minute default: a decode that loops
+# on noise (a cough, a breath) then stops in about a second instead of running 5120 tokens (~20 s).
+_MOSS_SHORT_CLIP_SLACK_TOKENS = 128
 
 
 def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
     if not duration or duration <= 0:
         return None
-    budget = max(_MOSS_DEFAULT_MAX_TOKENS, math.ceil(duration * _MOSS_TOKENS_PER_SECOND))
+    short = math.ceil(duration * _MOSS_TOKENS_PER_SECOND * 2) + _MOSS_SHORT_CLIP_SLACK_TOKENS
+    budget = max(min(short, _MOSS_DEFAULT_MAX_TOKENS), math.ceil(duration * _MOSS_TOKENS_PER_SECOND))
     room = (
         _MOSS_CONTEXT_TOKENS
         - math.ceil(duration * _MOSS_PROMPT_TOKENS_PER_SECOND)
@@ -121,6 +125,16 @@ def _moss_max_tokens(duration: Optional[float]) -> Optional[int]:
     if budget <= 0 or budget == _MOSS_DEFAULT_MAX_TOKENS:
         return None
     return budget
+
+
+def _looped_short_clip(detail: str, options: dict) -> bool:
+    """MOSS ran out of a short clip's token budget: it looped on sound with no words in it."""
+    cap = options.get("max_tokens")
+    return (
+        isinstance(cap, int)
+        and cap < _MOSS_DEFAULT_MAX_TOKENS
+        and "max_tokens before EOS" in (detail or "")
+    )
 
 
 def _request_options(entry: AudioCppModel, aligned: bool, duration: Optional[float]) -> dict:
@@ -1222,6 +1236,9 @@ class AudioCppSttSidecar:
             if 400 <= exc.status < 500:
                 # The server rejected this clip or option (e.g. an unsupported language), not a broken runtime.
                 raise SttAudioDecodeError(detail) from exc
+            if _looped_short_clip(exc.detail, options):
+                logger.info("audio.cpp: %s heard no words in a short clip (%s)", server.model.family, detail)
+                return {"text": ""}
             note_runtime_inference_failure(str(exc))
             raise SttEngineUnavailableError(f"The audio runtime failed: {detail}") from exc
         except (AudioCppUnavailableError, ValueError) as exc:

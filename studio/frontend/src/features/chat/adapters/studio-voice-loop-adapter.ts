@@ -813,7 +813,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         } catch (error) {
           if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
             const missing = modelId ?? useVoiceSettingsStore.getState().sttModel;
-            if (!isTrackingSttDownload(missing)) requestSttDownload(missing);
+            const downloading = isTrackingSttDownload(missing);
+            if (!downloading) requestSttDownload(missing);
+            // Not a failed transcription: the voice waits for the transcriber (the orb and pill say so)
+            // and listens again once it is loaded. This clip cannot be heard.
+            const rt = useChatRuntimeStore.getState();
+            if (rt.selectedSttModelId === missing) rt.setSttSlotDownload(downloading ? "downloading" : "needed");
+            voiceTrace("stt.notDownloaded", { model: missing, downloading });
+            if (bargedIn) requestVoiceBargeAbort();
+            finish("cancelled");
+            return;
           }
           throw error;
         } finally {

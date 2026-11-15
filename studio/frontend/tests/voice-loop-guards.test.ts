@@ -122,7 +122,7 @@ test("a short barge-in (\"stop\") that passed its probe is transcribed, not drop
 test("a voice pause survives the engine remount: the new player starts held", () => {
   assert.match(
     engine,
-    /useEffect\(\(\) => \{\s*if \(useChatRuntimeStore\.getState\(\)\.voicePaused\) holdPlayback\(true\);\s*\}, \[holdPlayback\]\);/,
+    /holdPlayback\(voiceMode === "active" && \(pausedForHold \|\| !hasChatModel\)\);/,
   );
 });
 
@@ -245,7 +245,7 @@ test("speech heard after the chat model went away is never sent", () => {
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   const submit = engine.slice(engine.indexOf("const submitTranscript = useCallback("));
   assert.match(submit.slice(0, 900), /if \(!hasChatModelRef\.current\) \{\s*if \(text && !typed\) composer\.setText\(text\);\s*return;/);
-  assert.match(engine, /if \(!hasChatModel\) \{\s*const composer = auiRef\.current\.composer\(\);\s*if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);/);
+  assert.match(engine, /if \(!hasChatModel\) \{[\s\S]{0,500}const composer = auiRef\.current\.composer\(\);\s*if \(composer\.getState\(\)\.dictation\) composer\.stopDictation\(\);/);
 });
 
 test("a re-arm strips only the voice fragment after a typed draft", () => {

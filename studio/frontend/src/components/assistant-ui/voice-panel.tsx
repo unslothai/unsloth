@@ -15,12 +15,15 @@ import {
   useVoiceDecision,
   type VoiceLoadState,
 } from "@/features/chat/voice/decision-checkpoint";
+import { useChatModelStatus } from "@/features/chat/voice/chat-model-ready";
 import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
 import { vadDisplayName } from "@/features/chat/voice/vad-client";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
+import { ORB_IDLE_GRADIENT } from "@/features/chat/voice/orb-config";
 import { DotTag } from "@/features/hub";
 import { useVoiceSettingsStore } from "@/features/settings";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 // Deep import: through the eager model-picker index it would land in the startup bundle.
 // eslint-disable-next-line no-restricted-imports
 import { DecisionPicker } from "@/features/model-picker/components/model-selector/decision-picker";
@@ -35,6 +38,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type FC, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { SttModelSelector, sttRepoForKey } from "./stt-model-selector";
 import { VadModelSelector } from "./vad-model-selector";
 import {
@@ -47,7 +51,7 @@ type Role = "listen" | "transcribe" | "decide" | "speak" | "voice";
 const ROLES: Role[] = ["listen", "transcribe", "decide", "speak", "voice"];
 const PICKER_ROLES = new Set<Role>(["listen", "transcribe", "decide", "speak"]);
 
-export interface VoicePanelProps {
+interface VoicePanelProps {
   vadModelId: string;
   onVadModelChange: (id: string) => void;
   vadLoaded: boolean;
@@ -61,8 +65,37 @@ export interface VoicePanelProps {
   onTtsModelChange: (id: string) => void;
   ttsLoading: boolean;
   ttsLoaded: boolean;
+  /** No chat model is loaded: the models can still be chosen, but voice mode cannot start. */
   disabled?: boolean;
+  anchor?: "header" | "composer";
 }
+
+/** The panel's models and their load state, from the chat store. */
+function useVoicePanelProps(): Omit<VoicePanelProps, "anchor"> {
+  const s = useChatRuntimeStore(
+    useShallow((s) => ({
+      vadModelId: s.selectedVadModelId,
+      onVadModelChange: s.setSelectedVadModelId,
+      vadLoaded: s.vadSlotLoaded,
+      sttModelId: s.selectedSttModelId,
+      onSttModelChange: s.setSelectedSttModelId,
+      sttLoaded: s.sttSlotLoaded,
+      sttDownload: s.sttSlotDownload,
+      ttsModelId: s.selectedVoiceModelId,
+      onTtsModelChange: s.setSelectedVoiceModelId,
+      ttsLoading: s.voiceSlotLoading,
+      ttsLoaded: s.voiceSlotLoaded,
+      disabled: !s.params.checkpoint,
+    })),
+  );
+  return { ...s, onSttDownload: () => requestSttDownload(s.sttModelId) };
+}
+
+/** Voice mode's models, one row per role. "composer": opens from the voice button beside the mic, to
+ *  set up and start. "header": the status pill while voice mode runs. */
+export const VoicePanel: FC<{ anchor?: "header" | "composer" }> = ({ anchor = "header" }) => (
+  <VoicePanelView {...useVoicePanelProps()} anchor={anchor} />
+);
 
 const STATE_KEY: Record<VoiceLoadState, TranslationKey> = {
   loaded: "voicePanel.state.loaded",
@@ -103,7 +136,7 @@ const StateTag: FC<{ state: VoiceLoadState; label: string; idle?: boolean }> = (
   />
 );
 
-export const VoicePanel: FC<VoicePanelProps> = ({
+const VoicePanelView: FC<VoicePanelProps> = ({
   vadModelId,
   onVadModelChange,
   vadLoaded,
@@ -117,9 +150,12 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   ttsLoading,
   ttsLoaded,
   disabled = false,
+  anchor = "header",
 }) => {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const composer = anchor === "composer";
+  // Turning voice on from the composer opens its setup there, with Start in reach.
+  const [open, setOpen] = useState(composer);
   const [role, setRole] = useState<Role | null>(null);
   const rowRefs = useRef<Partial<Record<Role, HTMLButtonElement | null>>>({});
   const decision = useVoiceDecision(open);
@@ -127,7 +163,10 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   const vadDetectors = useVadDetectors();
   // "configuring": the pill is up for choosing models, and nothing loads until Start.
   const started = useChatRuntimeStore((s) => s.voiceMode === "active");
+  const chatModel = useChatModelStatus();
   const canThink = useChatRuntimeStore((s) => s.supportsReasoning && !s.reasoningAlwaysOn);
+  // Voice can only think when the chat model does: with Thinking off in the model menu the switch would do nothing.
+  const chatThinks = useChatRuntimeStore((s) => s.reasoningEnabled);
   const voiceThinking = useVoiceSettingsStore((s) => s.voiceThinking);
   const setVoiceThinking = useVoiceSettingsStore((s) => s.setVoiceThinking);
   const start = () => {
@@ -213,13 +252,16 @@ export const VoicePanel: FC<VoicePanelProps> = ({
     },
   };
   const states = ROLES.map((r) => (rows[r].unset ? null : rows[r].state));
-  const summary = states.includes("loading")
+  // Shown only by the header pill, which is up only while voice mode runs.
+  const summary = chatModel !== "ready"
+    ? t(chatModel === "switching" ? "voicePanel.chatModelLoading" : "voicePanel.chatModelWaiting")
+    : sttDownload === "downloading"
+    ? t("voicePanel.downloadingTranscriber")
+    : states.includes("loading")
     ? t("voicePanel.loading")
     : states.includes("error")
       ? t("voicePanel.error")
-      : !started
-        ? t("voicePanel.notStarted")
-        : sttDownload === "needed" && !sttLoaded
+      : sttDownload === "needed" && !sttLoaded
           ? t("voicePanel.downloadNeeded")
           : t("voicePanel.ready", {
             n: states.filter((s) => s === "loaded").length,
@@ -310,27 +352,40 @@ export const VoicePanel: FC<VoicePanelProps> = ({
 
   return (
     <Popover
-      open={!disabled && open}
+      open={open}
       onOpenChange={(next) => {
-        setOpen(!disabled && next);
+        setOpen(next);
         if (!next) setRole(null);
       }}
     >
-      <div
-        className={cn(
-          "flex min-w-0 items-center",
-          disabled && "pointer-events-none opacity-50",
+      <div className="flex min-w-0 items-center">
+        {/* The pill's status changes while voice runs (a model swap, a load): said, not only shown. */}
+        {!composer && (
+          <output className="sr-only" aria-live="polite" aria-atomic="true">
+            {summary}
+          </output>
         )}
-        aria-disabled={disabled || undefined}
-        title={disabled ? t("voicePanel.selectChatModelFirst") : undefined}
-      >
         <PopoverTrigger asChild={true}>
+          {composer ? (
+            <button
+              type="button"
+              aria-label={t("voiceControls.setUp")}
+              title={t("voiceControls.setUp")}
+              className="flex size-8 items-center justify-center rounded-full transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-nav-surface-hover"
+            >
+              <span
+                aria-hidden
+                className="size-4 rounded-full ring-2 ring-primary/40"
+                style={{ background: ORB_IDLE_GRADIENT }}
+              />
+            </button>
+          ) : (
           <button
             type="button"
             aria-label={t("voicePanel.pillAria")}
             className="flex !h-8.5 min-w-0 items-center gap-2 rounded-[10px] pl-3 pr-1.5 text-sm transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {states.includes("loading") ? (
+            {states.includes("loading") || chatModel === "switching" ? (
               <Spinner className="size-3.5 shrink-0 text-amber-500" />
             ) : (
               <HugeiconsIcon
@@ -351,11 +406,13 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               className="size-3.5 shrink-0 text-muted-foreground"
             />
           </button>
+          )}
         </PopoverTrigger>
       </div>
       <PopoverContent
-        align="start"
-        alignOffset={10}
+        {...(composer
+          ? { side: "top", align: "end", sideOffset: 10 }
+          : { side: "bottom", align: "start", alignOffset: 10 })}
         dropdownGlow="picker"
         onEscapeKeyDown={(event) => {
           if (role) {
@@ -455,22 +512,33 @@ export const VoicePanel: FC<VoicePanelProps> = ({
               </div>
             )}
             {canThink && (
-              <label className="mt-1 flex cursor-pointer items-center gap-3 border-t border-border/60 py-2 pl-2.5 pr-2">
+              <label
+                className={cn(
+                  "mt-1 flex items-center gap-3 border-t border-border/60 py-2 pl-2.5 pr-2",
+                  chatThinks ? "cursor-pointer" : "cursor-default",
+                )}
+              >
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm">{t("voicePanel.thinkFirst")}</span>
+                  <span className={cn("block text-sm", !chatThinks && "text-muted-foreground")}>
+                    {t("voicePanel.thinkFirst")}
+                  </span>
                   <span className="block text-xs leading-snug text-muted-foreground">
-                    {t("voicePanel.thinkFirstHint")}
+                    {t(chatThinks ? "voicePanel.thinkFirstHint" : "voicePanel.thinkNeedsChatThinking")}
                   </span>
                 </span>
-                <Switch checked={voiceThinking} onCheckedChange={setVoiceThinking} />
+                <Switch
+                  checked={chatThinks && voiceThinking}
+                  disabled={!chatThinks}
+                  onCheckedChange={setVoiceThinking}
+                />
               </label>
             )}
             {!started && (
               <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
                 <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
-                  {t("voicePanel.startHint")}
+                  {t(disabled ? "voicePanel.selectChatModelFirst" : "voicePanel.startHint")}
                 </p>
-                <Button type="button" variant="primary" size="sm" onClick={start}>
+                <Button type="button" variant="primary" size="sm" disabled={disabled} onClick={start}>
                   {t("voiceControls.start")}
                 </Button>
               </div>

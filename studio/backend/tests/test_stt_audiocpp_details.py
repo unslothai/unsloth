@@ -295,10 +295,31 @@ def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
     assert "session_options" not in fake.starts[-1]["entry"]
 
 
-def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side, source):
+@pytest.mark.parametrize("duration, heard", [(2.0, ""), (900.0, None)])
+def test_moss_looping_on_a_short_clip_is_no_words_not_a_failure(
+    fake, side, source, monkeypatch, duration, heard
+):
+    def post_json(self, path, payload, **kwargs):
+        raise srv.AudioCppRequestError(
+            500, "MOSS-Transcribe-Diarize reached max_tokens before EOS; increase max_tokens"
+        )
+
+    monkeypatch.setattr(srv.AudioCppServer, "post_json", post_json)
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    if heard is None:
+        # A long file ran out of a budget sized for its speech: a real failure, still reported.
+        with pytest.raises(stt.SttEngineUnavailableError):
+            side.transcribe_path(source, MOSS, None)
+    else:
+        assert side.transcribe_path(source, MOSS, None)["text"] == heard
+        assert stt.runtime_inference_failure() is None
+
+
+def test_moss_reads_the_source_in_place_with_speakers(fake, side, source):
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
-    assert body["audio"] == str(source) and "options" not in body
+    # A 2 s clip: only a budget for its length.
+    assert body["audio"] == str(source) and body["options"] == {"max_tokens": 176}
     assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
@@ -313,7 +334,8 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
 @pytest.mark.parametrize(
     ("duration", "expected"),
     [
-        (60.0, None),
+        (2.0, 176),  # a voice clip: twice its speech rate plus slack
+        (60.0, 1568),
         (420.0, None),
         (900.0, 10800),
         (960.0, 11520),

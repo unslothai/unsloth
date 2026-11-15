@@ -12,7 +12,10 @@ export type VoiceOrbState =
   | "speaking"
   | "hearing"
   | "loading"
-  | "paused";
+  | "paused"
+  | "switching"
+  | "downloading"
+  | "needsDownload";
 
 export type VoiceOrbInputs = {
   voiceMode: "off" | "configuring" | "active";
@@ -25,6 +28,10 @@ export type VoiceOrbInputs = {
   isReasoning: boolean;
   isSpeaking: boolean;
   voicePaused?: boolean;
+  /** No chat model because one is being loaded or swapped in. */
+  chatSwitching?: boolean;
+  /** The picked transcriber is not downloaded: voice cannot hear until it is. */
+  sttDownload?: "needed" | "downloading" | null;
 };
 
 export type VoiceOrbDecision =
@@ -38,7 +45,9 @@ const set = (state: VoiceOrbState | null): VoiceOrbDecision => ({
 
 export function deriveOrbState(inputs: VoiceOrbInputs): VoiceOrbDecision {
   if (inputs.voiceMode !== "active") return set(null);
-  if (!inputs.hasChatModel) return set("waiting");
+  if (!inputs.hasChatModel) return set(inputs.chatSwitching ? "switching" : "waiting");
+  if (inputs.sttDownload === "downloading") return set("downloading");
+  if (inputs.sttDownload === "needed") return set("needsDownload");
   if (inputs.voicePaused) return set("paused");
   // Grey-blue, not the lilac of TTS synthesis, so warming up never reads as ready or as speech.
   if (inputs.voiceSlotLoading) return set("loading");

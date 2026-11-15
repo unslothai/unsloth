@@ -9,12 +9,11 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 const root = read("../src/app/routes/__root.tsx");
 const page = read("../src/features/chat/chat-page.tsx");
 
-test("leaving the chat route ends voice mode", () => {
+test("leaving the chat route pauses voice mode and coming back resumes it", () => {
   // The page stays mounted off its route, so its unmount cleanup never runs and nothing on the
-  // other pages shows the loop: left on, the mic kept listening and sending turns unseen.
+  // other pages shows the loop: left listening, the mic kept sending turns unseen. Ending the
+  // session instead unloaded every voice model, so it pauses (frames dropped, models kept).
   assert.match(root, /<ChatPageSlot search=\{chatSearch\} active=\{isChatRoute\} \/>/);
-  assert.match(
-    page,
-    /useEffect\(\(\) => \{\s*if \(!active && getVoiceMode\(\) !== "off"\) requestVoiceToggle\(\);\s*\}, \[active\]\);/,
-  );
+  assert.match(page, /if \(!active && !paused\) \{\s*pausedOffRouteRef\.current = true;\s*requestVoicePauseToggle\(\);/);
+  assert.match(page, /else if \(active && pausedOffRouteRef\.current\) \{\s*pausedOffRouteRef\.current = false;\s*if \(paused\) requestVoicePauseToggle\(\);/);
 });

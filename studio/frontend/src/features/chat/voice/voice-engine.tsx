@@ -4,6 +4,7 @@
 
 import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { VoicePanel as VoiceSetupPanel } from "@/components/assistant-ui/voice-panel";
 import {
   VoiceOrb
 } from "@/components/assistant-ui/voice-orb";
@@ -44,6 +45,7 @@ import {
   isSameAsk,
 } from "@/features/chat/voice/laya-outcomes";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/features/chat/voice/orb-config";
+import { useChatModelStatus } from "@/features/chat/voice/chat-model-ready";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import { stillInTurn } from "@/features/chat/voice/turn-end";
 import {
@@ -184,7 +186,13 @@ export const VoiceEngine: FC = () => {
   const isThreadRunning = useChatRuntimeStore((s) =>
     s.activeThreadId ? Boolean(s.runningByThreadId[s.activeThreadId]) : false,
   );
-  const hasChatModel = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
+  const chatModelStatus = useChatModelStatus();
+  const hasChatModel = chatModelStatus === "ready";
+  const sttDownload = useChatRuntimeStore((s) => s.sttSlotDownload);
+  // The chat model the loop last had to talk to: a swap's "changed" is judged against it.
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint ?? null);
+  const readyCheckpointRef = useRef(checkpoint);
+  if (hasChatModel) readyCheckpointRef.current = checkpoint;
   const hasChatModelRef = useRef(hasChatModel);
   hasChatModelRef.current = hasChatModel;
   const rearmSeqRef = useRef(0);
@@ -289,10 +297,7 @@ export const VoiceEngine: FC = () => {
     resumePlayback,
     holdPlayback,
   } = useTtsPlayer(onPlaybackEnd);
-  // A pause outlives this engine (New Chat remounts it): the new player starts held too.
-  useEffect(() => {
-    if (useChatRuntimeStore.getState().voicePaused) holdPlayback(true);
-  }, [holdPlayback]);
+  const pausedForHold = useChatRuntimeStore((s) => s.voicePaused);
   isSpeakingRef.current = isSpeaking;
   if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
@@ -1049,6 +1054,8 @@ export const VoiceEngine: FC = () => {
       isReasoning,
       isSpeaking,
       voicePaused,
+      chatSwitching: chatModelStatus === "switching",
+      sttDownload,
     });
     if (decision.kind === "set") {
       clearSynthGap();
@@ -1066,7 +1073,7 @@ export const VoiceEngine: FC = () => {
         dwell.push("synthesizing");
       }
     }, SYNTH_GAP_MS);
-  }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, voicePaused, setVoiceOrbState]);
+  }, [voiceMode, hasChatModel, chatModelStatus, sttDownload, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isReasoning, isSpeaking, isPlaying, voicePaused, setVoiceOrbState]);
 
   const wasSlotLoadingRef = useRef(voiceSlotLoading);
   useEffect(() => {
@@ -1113,6 +1120,8 @@ export const VoiceEngine: FC = () => {
       }
     }
     if (!hasChatModelRef.current) return;
+    // A transcriber still to download cannot hear: listening starts again once it is loaded.
+    if (useChatRuntimeStore.getState().sttSlotDownload !== null) return;
     if (useChatRuntimeStore.getState().voiceSlotLoading) return;
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
       auiRef.current.composer().startDictation();
@@ -1120,17 +1129,49 @@ export const VoiceEngine: FC = () => {
   }, []);
 
   const armedForModelRef = useRef(hasChatModel);
+  // The chat model the loop was talking to when it went away (a swap, an eject, a load).
+  const heldForModelRef = useRef<string | null>(null);
   useEffect(() => {
     if (armedForModelRef.current === hasChatModel) return;
     armedForModelRef.current = hasChatModel;
+    const checkpoint = useChatRuntimeStore.getState().params.checkpoint ?? null;
     if (!hasChatModel) {
+      heldForModelRef.current = readyCheckpointRef.current;
+      voiceTrace("engine.chatModelAway", { checkpoint: heldForModelRef.current });
+      // Words already heard become a draft (submit keeps them in the box), nothing new is heard,
+      // and the reply is held (the hold effect) while the swap asks to stop it or loads.
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
       return;
     }
+    const changed = heldForModelRef.current !== checkpoint;
+    voiceTrace("engine.chatModelBack", { checkpoint, changed });
+    // A different model: the old reply was stopped by the swap, so what is left of its audio goes too.
+    if (changed) stop();
     if (voiceModeRef.current !== "active") return;
     resumeListen();
-  }, [hasChatModel, resumeListen]);
+  }, [hasChatModel, resumeListen, stop]);
+  // The picked transcriber went missing (or its download finished and it loaded): stop hearing what
+  // cannot be transcribed, and listen again once it can be.
+  const sttWaitingRef = useRef(sttDownload !== null);
+  useEffect(() => {
+    const waiting = sttDownload !== null;
+    if (sttWaitingRef.current === waiting) return;
+    sttWaitingRef.current = waiting;
+    voiceTrace("engine.sttWaiting", { waiting, sttDownload });
+    if (waiting) {
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+      return;
+    }
+    if (voiceModeRef.current === "active") resumeListen();
+  }, [sttDownload, resumeListen]);
+  // One rule for a held reply: the user paused, or there is no chat model to talk to (a swap asking
+  // or loading). After the effect above, so a swapped-out reply is dropped before the hold lifts.
+  // A pause outlives this engine (New Chat remounts it), so the new player starts held too.
+  useEffect(() => {
+    holdPlayback(voiceMode === "active" && (pausedForHold || !hasChatModel));
+  }, [voiceMode, pausedForHold, hasChatModel, holdPlayback]);
 
   // Deferred a tick: a New Chat's voice reset runs in the same commit, after this effect.
   useEffect(() => {
@@ -1527,10 +1568,8 @@ export const VoiceEngine: FC = () => {
     registerVoiceStopSpeaking(() => {
       if (voiceModeRef.current !== "active") return;
       voiceTrace("engine.stopSpeaking", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
-      if (useChatRuntimeStore.getState().voicePaused) {
-        useChatRuntimeStore.getState().setVoicePaused(false);
-        holdPlayback(false);
-      }
+      // The hold effect releases the player.
+      if (useChatRuntimeStore.getState().voicePaused) useChatRuntimeStore.getState().setVoicePaused(false);
       if (voiceCoalesceTimerRef.current) {
         clearTimeout(voiceCoalesceTimerRef.current);
         voiceCoalesceTimerRef.current = null;
@@ -1556,7 +1595,7 @@ export const VoiceEngine: FC = () => {
       resumeListen();
     });
     return () => registerVoiceStopSpeaking(null);
-  }, [stop, resumeListen, clearFiller, holdPlayback]);
+  }, [stop, resumeListen, clearFiller]);
 
   useEffect(() => {
     registerVoicePauseToggle(() => {
@@ -1565,10 +1604,9 @@ export const VoiceEngine: FC = () => {
       const next = !store.voicePaused;
       voiceTrace("engine.pause", { paused: next, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
       store.setVoicePaused(next);
-      holdPlayback(next);
     });
     return () => registerVoicePauseToggle(null);
-  }, [holdPlayback]);
+  }, []);
 
   const resumeOrFlush = useCallback(() => {
     // Only once the voice is up: after a failed load each silent session would re-park and reload in a loop.
@@ -1745,6 +1783,8 @@ export const VoiceControlButton: FC = () => {
   const t = useT();
 
   if (voiceMode === "off") return null;
+  // Not started yet: the button opens voice setup here, beside the mic, with Start in it.
+  if (voiceMode === "configuring") return <VoiceSetupPanel anchor="composer" />;
 
   if (voiceMode === "active" && !collapsed) {
     return (

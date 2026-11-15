@@ -67,6 +67,25 @@ export const orbConfig = {
     duration: "6s",
     shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
   },
+  // Not listening until a model is ready: drawn as loading, or as waiting when the user has to act.
+  switching: {
+    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
+    animation: "voice-orb-pulse",
+    duration: "2s",
+    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
+  },
+  downloading: {
+    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
+    animation: "voice-orb-pulse",
+    duration: "2s",
+    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
+  },
+  needsDownload: {
+    gradient: ORB_IDLE_GRADIENT_VALUE,
+    animation: "voice-orb-breathe",
+    duration: "4.5s",
+    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
+  },
 } as const;
 
 export type OrbStateName = keyof typeof orbConfig;
