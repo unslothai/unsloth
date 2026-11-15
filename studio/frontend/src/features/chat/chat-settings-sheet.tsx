@@ -97,6 +97,7 @@ import {
   type Preset,
   applyPresetForProvider,
   getBuiltinVariantName,
+  getLinkedPreset,
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
@@ -123,6 +124,7 @@ import {
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
+  linkedPresetShown,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -655,6 +657,8 @@ export function ChatSettingsPanel({
   const setCustomPresets = useChatRuntimeStore((s) => s.setCustomPresets);
   const activePreset = useChatRuntimeStore((s) => s.activePreset);
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
+  const modelPresets = useChatRuntimeStore((s) => s.modelPresets);
+  const setModelPreset = useChatRuntimeStore((s) => s.setModelPreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
   const baseContext = loadedContextLength;
@@ -718,6 +722,12 @@ export function ChatSettingsPanel({
       BUILTIN_PRESETS.find((preset) => preset.name === activePreset) ?? null,
     [activePreset],
   );
+  const linkedPreset = useMemo(
+    () => getLinkedPreset(currentCheckpoint, modelPresets, customPresets),
+    [currentCheckpoint, modelPresets, customPresets],
+  );
+  const activePresetIsLinked =
+    linkedPreset != null && linkedPreset.name === activePreset;
   const hasUnsavedPresetChanges = useMemo(() => {
       if (activePresetDefinition == null) {
         return false;
@@ -989,8 +999,13 @@ export function ChatSettingsPanel({
     const fallbackPreset =
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ?? null;
     const next = customPresets.filter((preset) => preset.name !== name);
+    // Shown through a link, the unlink below puts the earlier pick back instead of Default.
+    const shownByLink = activePreset === name && linkedPresetShown();
     setCustomPresets(next);
-    if (activePreset === name) {
+    for (const [modelId, linkedName] of Object.entries(modelPresets)) {
+      if (linkedName === name) setModelPreset(modelId, null);
+    }
+    if (activePreset === name && !shownByLink) {
       if (fallbackPreset) {
         setParams(
           applyPresetParamsWithinCurrentLimits(fallbackPreset),
@@ -1297,7 +1312,12 @@ export function ChatSettingsPanel({
                       }}
                       className="flex min-h-9 items-center px-3 py-0 text-ui-13 font-medium leading-[1.4] tracking-nav"
                     >
-                      {p.name}
+                      <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                      {linkedPreset?.name === p.name ? (
+                        <span className="ml-3 shrink-0 text-ui-11 font-normal text-muted-foreground">
+                          This model
+                        </span>
+                      ) : null}
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
@@ -1337,6 +1357,56 @@ export function ChatSettingsPanel({
                 Delete
               </Button>
             </div>
+            {currentCheckpoint ? (
+              <div className="flex min-h-8 items-center justify-between gap-3 pt-1">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Use for this model
+                  </span>
+                  <InfoHint>
+                    Apply this preset's sampling and system prompt whenever
+                    this model is selected. Edits stay temporary until you
+                    save them. Its load settings apply only when you pick the
+                    preset by hand.
+                  </InfoHint>
+                </div>
+                <Switch
+                  className="panel-switch shrink-0"
+                  checked={activePresetIsLinked}
+                  disabled={
+                    !settingsHydrated ||
+                    (!activeCustomPreset && !activePresetIsLinked)
+                  }
+                  onCheckedChange={(checked) => {
+                    setModelPreset(
+                      currentCheckpoint,
+                      checked && activeCustomPreset ? activeCustomPreset.name : null,
+                    );
+                  }}
+                  title={
+                    activeCustomPreset
+                      ? undefined
+                      : "Save the current settings as a preset to link it to this model"
+                  }
+                  aria-label="Use this preset for this model"
+                />
+              </div>
+            ) : null}
+            {currentCheckpoint && linkedPreset && !activePresetIsLinked ? (
+              <div className="flex items-center justify-between gap-2 text-ui-11 leading-[1.4] text-muted-foreground">
+                <span className="min-w-0">
+                  This model is linked to &quot;{linkedPreset.name}&quot;.
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 cursor-pointer underline-offset-2 hover:text-nav-fg hover:underline disabled:cursor-default disabled:opacity-50"
+                  disabled={!settingsHydrated}
+                  onClick={() => setModelPreset(currentCheckpoint, null)}
+                >
+                  Unlink
+                </button>
+              </div>
+            ) : null}
           </div>
         </CollapsibleSection>
 

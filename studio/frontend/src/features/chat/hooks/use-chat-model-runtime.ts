@@ -137,6 +137,7 @@ import {
   saveSpeculativeType,
   syncKeepModelsLoaded,
   takeEffortDisplacedByPin,
+  presetSourceForModel,
   useChatRuntimeStore,
   type LoadingModelPick,
   type ReasoningEffort,
@@ -2666,7 +2667,7 @@ export function useChatModelRuntime() {
                   current: currentParams,
                   response: loadResponse,
                   modelId,
-                  presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetSource: presetSourceForModel(modelId),
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 ...(isGguf
@@ -2890,7 +2891,7 @@ export function useChatModelRuntime() {
               (loadResponse.supports_reasoning ?? false)
             ) {
               const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
+              if (presetSourceForModel(modelId) === "builtin-default") {
                 store.setParams({ ...store.params, ...p }, {
                   fromModelDefaults: true,
                   maxTokensCap: loadedContextCap,

@@ -176,6 +176,17 @@ export function applyPresetForProvider(
   };
 }
 
+/** Only custom presets link: Default already follows each model's recommendation. */
+export function getLinkedPreset(
+  modelId: string | null | undefined,
+  modelPresets: Record<string, string>,
+  customPresets: Preset[],
+): Preset | null {
+  const name = modelId ? modelPresets[modelId] : undefined;
+  if (!name || BUILTIN_PRESET_NAMES.has(name)) return null;
+  return customPresets.find((preset) => preset.name === name) ?? null;
+}
+
 export type PresetSaveMode =
   | "disabled"
   | "overwrite-active"
