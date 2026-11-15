@@ -243,3 +243,27 @@ def test_packed_forward_keeps_documents_apart_with_a_config_cache(reference_gdn_
     start = sum(LENGTHS[:3])
     packed[0, start:].sum().backward()
     assert x.grad[0, :start].abs().sum() == 0 and x.grad[0, start:].abs().sum() > 0
+
+
+def test_packed_ple_gaps_run_outside_compiled_graphs(reference_gdn_kernels):
+    # The block compile traces each decoder layer; the gapped PLE length (tokens plus a gap per document,
+    # dynamic document count) failed inductor's backward codegen (CantSplit), so packed rows run it eagerly.
+    model, ple = _tiny_model()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    lengths = torch.tensor(LENGTHS)
+    cu = torch.cat([torch.zeros(1, dtype = torch.int32), lengths.cumsum(0).to(torch.int32)])
+    seq = torch.repeat_interleave(torch.arange(len(LENGTHS), dtype = torch.int32), lengths)[None]
+    x = torch.randn(1, int(lengths.sum()), ple.hidden_size * ple.hc_count)
+    ple._unsloth_varlen = (cu, seq)
+    try:
+        eager = ple._short_conv(x, None)
+        torch._dynamo.reset()
+        with pytest.raises(Exception):
+            torch.compile(ple._short_conv, backend = "eager", fullgraph = True)(x, None)
+        torch._dynamo.reset()
+        torch.testing.assert_close(torch.compile(ple._short_conv, backend = "eager")(x, None), eager)
+        ple._unsloth_varlen = None  # unpacked rows still trace in one graph
+        torch.compile(ple._short_conv, backend = "eager", fullgraph = True)(x, None)
+    finally:
+        ple._unsloth_varlen = None
+        torch._dynamo.reset()
