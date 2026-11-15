@@ -264,6 +264,15 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # MLX can load hub checkpoints through transformers too; a no-op where its quantizers are absent.
+        from .import_fixes import (
+            fix_transformers_quantizer_unquantized_converters as _fix_unquantized_converters,
+        )
+        _fix_unquantized_converters()
+        del _fix_unquantized_converters
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
