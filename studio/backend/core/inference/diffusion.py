@@ -2034,7 +2034,7 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
 
 
-# First upstream sd.cpp build of each native-only family, for the refusal when the installed one predates it.
+# First sd.cpp build per native-only family, named in the too-old refusal.
 _NATIVE_ONLY_FIRST_BUILD = {
     MOSS_IMAGE_FAMILY_NAME: "upstream master-975",
     MINIMAX_H3_IMAGE_FAMILY_NAME: "upstream master-1088",
@@ -5525,7 +5525,6 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
-        # The in-tree pipeline needs CUDA / ROCm; its GGUFs run on the native engine, which has no such limit.
         if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME and kind != "gguf":
             from .diffusion_minimax_h3_image import h3_image_device_refusal
             refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)

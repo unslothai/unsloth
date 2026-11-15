@@ -122,7 +122,6 @@ class DiffusionFamily:
     gguf_loadable: bool = True
     # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
-    # False: no transformer-only .safetensors load on either engine (MiniMax-H3-Image: pipeline or GGUF only).
     single_file_loadable: bool = True
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
@@ -246,7 +245,7 @@ class DiffusionFamily:
     sd_cpp_flow_shift: Optional[float] = None
     # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
     sd_cpp_scheduler: Optional[str] = None
-    # sd-cli / sd-server --rng; "cpu" matches the release CLI's noise per seed. None = sd.cpp's default.
+    # sd.cpp --rng; None keeps its default.
     sd_cpp_rng: Optional[str] = None
     # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
     sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
@@ -1527,8 +1526,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
             " as <Picture 1>, <Picture 2> and say what to keep and what to change."
         ),
-        # diffusers: the in-tree loader reads the release shards (no single-file load). GGUFs run on sd.cpp only, so
-        # they also serve CPU, Apple Silicon and small cards.
         native_transformer_files_only = True,
         single_file_loadable = False,
         supports_torch_compile = False,
@@ -1542,19 +1539,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
             ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
         ),
-        # sd.cpp: the GGUF carries the DiT and its six PDD heads; the release image VAE; the H3 Qwen3-VL-32B encoder,
-        # whose GGUF also holds the vision tower an edit reads.
         sd_cpp_vae = ("MiniMaxAI/MiniMax-H3-Image", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = (
             ("unsloth/MiniMax-H3-GGUF", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf", "llm"),
         ),
         # Upstream #2324's model name; builds before it cannot load the checkpoint.
         sd_cpp_arch_marker = "MiniMax-H3-Image",
-        # Edits shipped with the architecture: any build carrying the marker takes <Picture N> references.
         sd_cpp_reference = True,
         # No scheduler or sigmas: sd.cpp's own H3-Image schedule is the PDD grid the heads were distilled on.
         sd_cpp_sampling_method = "euler",
-        # The model card's command line: a seed renders what the release CLI renders.
         sd_cpp_rng = "cpu",
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
@@ -3380,7 +3373,7 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
-    # A video model repo lending its encoder stays a model (MiniMax-H3-Image reads unsloth/MiniMax-H3-GGUF's).
+    # a video repo lending its encoder stays a model
     from .video_families import _FAMILIES as _VIDEO_FAMILIES
 
     for vfam in _VIDEO_FAMILIES:

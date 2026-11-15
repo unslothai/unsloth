@@ -1789,7 +1789,6 @@ def _module_dtype(module: Any, skip_fp32: bool = False) -> Any:
 
 # "1" lets the loader run on any device (the CPU tests, diagnostics); Studio refuses everything but CUDA / ROCm.
 ALLOW_ANY_DEVICE_ENV = "UNSLOTH_H3_IMAGE_ALLOW_ANY_DEVICE"
-# The GGUFs the native engine runs on any device (catalog row in model-catalog.ts).
 H3_IMAGE_GGUF_REPO = "unsloth/MiniMax-H3-Image-GGUF"
 
 

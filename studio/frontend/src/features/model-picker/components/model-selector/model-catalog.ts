@@ -245,7 +245,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // The dense row is CUDA / ROCm only and keeps the official id (the loader reads VAE, tokenizer, config from it).
+    // CUDA / ROCm only; keeps the official id (the loader reads VAE, tokenizer, config from it).
     // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",

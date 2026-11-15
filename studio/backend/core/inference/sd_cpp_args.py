@@ -35,7 +35,6 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
     "krea-2": ("--llm",),
-    # The H3 Qwen3-VL-32B GGUF, vision tower included.
     "minimax-h3-image": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
@@ -97,7 +96,6 @@ class SdCppGenParams:
     lora_apply_mode: Optional[str] = None
     # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
-    # --rng (DiffusionFamily.sd_cpp_rng); None keeps sd.cpp's default.
     rng: Optional[str] = None
 
 
@@ -859,8 +857,7 @@ def offload_flags(
     return out
 
 
-# MiniMax-H3 video under --vae-tiling: the H3 VAE tiler reads --vae-tile-overlap as the minimum overlap fraction of its
-# 256 px tiles (0.5 when unset); 0.25 is the reference layout's 64 px, so tiling adds no extra tiles.
+# H3 VAE tiler: --vae-tile-overlap is a minimum overlap fraction (0.5 unset); 0.25 = the reference 64 px layout.
 H3_VAE_TILE_OVERLAP = "0.25"
 
 

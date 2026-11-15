@@ -170,7 +170,6 @@ assert.deepEqual(
   const group = groupForRepoId(h3i, IMAGE_CATALOG);
   assert.ok(group);
   assert.equal(groupForRepoId("unsloth/MiniMax-H3-Image-FP8", IMAGE_CATALOG), group);
-  // The dense row IS the Fast FP8 row (no unpinned bf16 twin); the sd.cpp GGUF row follows it.
   assert.equal(group.artifacts.length, 2);
   assert.equal(group.artifacts[1].repoId, "unsloth/MiniMax-H3-Image-GGUF");
   assert.equal(group.artifacts[1].loadKind, "gguf");
@@ -198,7 +197,6 @@ assert.deepEqual(
   const names = catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])
     .filter((o) => IMAGE_CATALOG.some((g) => g.pinToTop && groupForRepoId(o.id, IMAGE_CATALOG) === g))
     .map((o) => o.name);
-  // Rows pinned together: the H3 GGUF sits right under its Fast FP8 row, above FLUX.3's.
   assert.deepEqual(names.slice(0, 3), [
     "MiniMax-H3-Image (Fast FP8)",
     "MiniMax-H3-Image-GGUF (Slow)",
