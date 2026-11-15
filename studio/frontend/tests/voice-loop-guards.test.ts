@@ -46,7 +46,7 @@ test("a voice turn with attachments goes through the composer, and the run waits
     commit,
     /if \(composer\.getState\(\)\.attachments\.length > 0\) \{[\s\S]*?composer\.setText\(text\);\s*composer\.send\(\{ startRun: false \}\);/,
   );
-  assert.match(commit, /if \(msgs\.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES\) \{/);
+  assert.match(commit, /if \(msgs\.length <= before && Date\.now\(\) - armedAt < VOICE_APPEND_WAIT_MAX_MS\) \{/);
 });
 
 test("a barge-in that ends before the detector answers keeps its voiced length", () => {
