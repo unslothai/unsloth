@@ -491,6 +491,18 @@ def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
     torch._dynamo.reset()
 
 
+def _fla_present():
+    import importlib.util
+    import sys
+
+    if sys.modules.get("fla") is not None:
+        return True
+    try:
+        return importlib.util.find_spec("fla") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
     """GDN first reached under an enclosing compile runs _prepare_gdn eagerly; later traces stay whole."""
     from transformers import AutoModelForCausalLM
@@ -507,15 +519,11 @@ def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
         ).train()
     except Exception as e:
         pytest.skip(f"tiny Qwen3-Next unavailable: {e}")
+    if _fla_present():
+        # The stock GDN op then resolves to fla (installed or vendored), which is compiler-disabled.
+        pytest.skip("stock GDN op resolves to fla")
     ids = torch.randint(0, 100, (2, 8))
-    try:
-        want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
-    except (RuntimeError, ValueError) as e:
-        # A GPU host resolves the stock GDN op to the compiler-disabled fla Triton kernel, which
-        # neither takes these CPU tensors nor traces whole; the eager GDN reference only runs CPU-only.
-        if "Triton" not in str(e):
-            raise
-        pytest.skip(f"stock GDN op resolved to a Triton kernel: {e}")
+    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
     calls = []
     prepare = M._prepare_gdn
 
@@ -2527,3 +2535,37 @@ def test_block_keeps_real_transformers_checkpointing(monkeypatch):
     layer, calls = _checkpointed_layer(ToyGCDecoderLayer)
     layer(torch.randn(1, 4, 8, requires_grad = True))
     assert calls == [1]
+
+
+@pytest.mark.parametrize("extra_fwd", [0, 1], ids = ["fla_0.5_six_outputs", "fla_main_seven_outputs"])
+def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
+    # fla main (#1731) returns an extra h; a fixed 6-way unpack silently disabled the op.
+    import contextlib
+
+    M = _load("_gdn_op")
+    if M._gdn_chunk is None:
+        pytest.skip("torch.library.custom_op unavailable")
+    monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
+
+    def fwd(q, k, v, g, beta, scale, initial_state, output_final_state, **kw):
+        A = torch.zeros(*k.shape[:-1], 64, dtype = k.dtype)
+        return (g.float().cumsum(1), v * scale, A, None, None, None) + (None,) * extra_fwd
+
+    def bwd(q, k, v, g, beta, A, scale, initial_state, do, dht, **kw):
+        return (do * 0 + 1, do * 0 + 2, do * scale, beta * 0 + 3, g * 0 + 4, None, None, None)
+
+    def l2_fwd(x):
+        return x.clone(), x.new_ones(x.shape[:-1], dtype = torch.float32)
+
+    def l2_bwd(x, rstd, dx):
+        return dx.clone()
+
+    monkeypatch.setattr(M, "_FLA", (fwd, bwd, l2_fwd, l2_bwd))
+    B, T, H, D = 1, 8, 2, 4
+    q, k, v = (torch.randn(B, T, H, D, requires_grad = True) for _ in range(3))
+    g, beta = (torch.randn(B, T, H, requires_grad = True) for _ in range(2))
+    out = M._gdn_chunk(q, k, v, g, beta, 0.5)
+    assert len(out) == 7
+    torch.testing.assert_close(out[0], v.detach() * 0.5)
+    out[0].sum().backward()
+    assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)

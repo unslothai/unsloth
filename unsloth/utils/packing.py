@@ -1181,6 +1181,13 @@ def _ple_input_with_gaps(tensor, varlen, gap, fill_value):
     return expanded.index_copy(1, positions, tensor), positions
 
 
+# Eager: the dynamic gapped length fails inductor's backward tiling (CantSplit) in the block compile.
+@torch.compiler.disable
+def _ple_gapped_call(fn, tensor, varlen, gap, fill_value, past_key_values):
+    expanded, positions = _ple_input_with_gaps(tensor, varlen, gap, fill_value)
+    return fn(expanded, past_key_values).index_select(1, positions)
+
+
 def _wrap_ple_boundaries(module) -> None:
     # PLE's dilated conv has no seq_idx kernel: pad zero history before each document, gather real outputs.
     conv_orig = module._short_conv
@@ -1198,12 +1205,11 @@ def _wrap_ple_boundaries(module) -> None:
         varlen = packed_input(hidden_states, past_key_values)
         if varlen is None:
             return conv_orig(hidden_states, past_key_values)
-        expanded, positions = _ple_input_with_gaps(
-            hidden_states, varlen, module.short_conv_state_len, 0
+        output = _ple_gapped_call(
+            conv_orig, hidden_states, varlen, module.short_conv_state_len, 0, past_key_values
         )
-        output = conv_orig(expanded, past_key_values)
         module._unsloth_varlen_conv_hit = True
-        return output.index_select(1, positions)
+        return output
 
     @wraps(embedding_orig)
     def ngram_embedding(input_ids, past_key_values):
@@ -1211,12 +1217,16 @@ def _wrap_ple_boundaries(module) -> None:
         if varlen is None:
             return embedding_orig(input_ids, past_key_values)
         # Boundaries need not hold EOS: synthetic EOS history resets the n-gram hash like a separate forward.
-        expanded, positions = _ple_input_with_gaps(
-            input_ids, varlen, embedding.context_len, embedding.eos_token_id
+        output = _ple_gapped_call(
+            embedding_orig,
+            input_ids,
+            varlen,
+            embedding.context_len,
+            embedding.eos_token_id,
+            past_key_values,
         )
-        output = embedding_orig(expanded, past_key_values)
         module._unsloth_varlen_embedding_hit = True
-        return output.index_select(1, positions)
+        return output
 
     module._short_conv = short_conv
     embedding.forward = ngram_embedding
@@ -1650,6 +1660,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             forward_sig = inspect.signature(forward_orig)
         except (TypeError, ValueError):
             forward_sig = None
+        takes_use_cache = forward_sig is not None and (
+            "use_cache" in forward_sig.parameters
+            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in forward_sig.parameters.values())
+        )
 
         # A bound method with no __wrapped__: accelerate's unwrap_model(keep_fp32_wrapper = False),
         # run by TRL every step, rebinds the forward it finds with MethodType(forward, model), which
@@ -1677,6 +1691,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
                     module._unsloth_varlen_embedding_hit = False
+            if varlen is not None and takes_use_cache and bound.get("use_cache") is None:
+                if "use_cache" in kwargs or "use_cache" not in bound:
+                    # A packed-forward cache makes transformers drop the per-document mask (QSA spans docs).
+                    kwargs["use_cache"] = False
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)

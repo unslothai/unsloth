@@ -114,7 +114,8 @@ try:
         with torch.cuda.device(q.device):
             qn, q_rstd = l2_fwd(q)
             kn, k_rstd = l2_fwd(k)
-            g_cum, o, A, _, _, _ = fwd(
+            # (g, o, A, final_state, initial_state, g_input), plus intermediate states h on fla main (#1731).
+            res = fwd(
                 q = qn,
                 k = kn,
                 v = v,
@@ -125,6 +126,7 @@ try:
                 output_final_state = False,
                 **_varlen_kwargs(fwd, cu_seqlens),
             )
+            g_cum, o, A = res[0], res[1], res[2]
         # Fake metas are contiguous; keep the real outputs the same.
         return tuple(t.contiguous() for t in (o.to(q.dtype), qn, q_rstd, kn, k_rstd, g_cum, A))
 
@@ -160,7 +162,8 @@ try:
         _, bwd, _, l2_bwd = _FLA
         v, beta, do = v.contiguous(), beta.contiguous(), do.contiguous()
         with torch.cuda.device(qn.device):
-            dq, dk, dv, db, dg, _, _, _ = bwd(
+            # (dq, dk, dv, db, dg, dh0, dA_log, ddt_bias): positional, so a longer return keeps working.
+            res = bwd(
                 q = qn,
                 k = kn,
                 v = v,
@@ -173,6 +176,7 @@ try:
                 dht = None,
                 **_varlen_kwargs(bwd, cu_seqlens),
             )
+            dq, dk, dv, db, dg = res[:5]
             dq = l2_bwd(qn, q_rstd, dq)
             dk = l2_bwd(kn, k_rstd, dk)
         out = (

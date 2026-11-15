@@ -4015,6 +4015,26 @@ class FastBaseModel:
                 _offload_layers,
                 "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
             )
+        # The same load modes FastLanguageModel refuses: the host tail is rebuilt as dense or bnb 4-bit layers.
+        if _offload_layers and load_in_8bit:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers, "supports 16-bit and 4-bit loads, not load_in_8bit."
+            )
+        if _offload_layers and _quantization_config_requested is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a quantization_config; pass load_in_4bit = True instead.",
+            )
+        if _offload_layers and kwargs.get("state_dict") is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a state_dict; save it as a safetensors checkpoint and load that.",
+            )
+        if _offload_layers and (kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs a safetensors checkpoint; it does not support gguf_file or use_safetensors = False.",
+            )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
         local_files_only = _get_effective_local_files_only(kwargs)
