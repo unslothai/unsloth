@@ -2078,7 +2078,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             and not blocked
             and not is_processor
             and not is_vlm
-            and not is_hybrid
             and getattr(config_arg, "padding_free", None) is None
             and _default_packing_env_on()
         ):
