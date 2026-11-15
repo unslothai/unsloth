@@ -6909,6 +6909,7 @@ class VideoBackend:
             SdCppModelFiles,
             device_backend_flags,
             offload_flags,
+            with_h3_vae_tile_overlap,
         )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
@@ -7242,7 +7243,7 @@ class VideoBackend:
         }[requested_mode]
         # NOT --vae-on-cpu: H3 audio VAE conv1d aborts on CPU (ggml F16 im2col assert, exit 134).
         # Keep dropped even after the fork fix: under --offload-to-cpu it saves no VRAM and is 4.8x slower.
-        native_offload = tuple(
+        native_offload = with_h3_vae_tile_overlap(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
         # H3's 20.5 GB DiT and 17 GB encoder OOM in auto and fast; --max-vram segments them, and streaming needs CPU offload.

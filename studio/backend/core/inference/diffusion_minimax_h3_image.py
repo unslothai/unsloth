@@ -1789,11 +1789,12 @@ def _module_dtype(module: Any, skip_fp32: bool = False) -> Any:
 
 # "1" lets the loader run on any device (the CPU tests, diagnostics); Studio refuses everything but CUDA / ROCm.
 ALLOW_ANY_DEVICE_ENV = "UNSLOTH_H3_IMAGE_ALLOW_ANY_DEVICE"
+H3_IMAGE_GGUF_REPO = "unsloth/MiniMax-H3-Image-GGUF"
 
 
 def h3_image_device_refusal(device: Any) -> Optional[str]:
-    """The load refusal for a device this model cannot run on, else None. The 33B DiT and the 33B conditioner are
-    streamed and quantized through CUDA (NVIDIA, or AMD through ROCm); Apple Silicon and the CPU have no route yet."""
+    """The pipeline load refusal for a device it cannot run on, else None. The 33B DiT and the 33B conditioner are
+    streamed and quantized through CUDA (NVIDIA, or AMD through ROCm); elsewhere the GGUFs run on sd.cpp."""
     kind = str(getattr(device, "type", device) or "").split(":")[0].strip().lower()
     if kind == "cuda" or os.environ.get(ALLOW_ANY_DEVICE_ENV, "").strip() == "1":
         return None
@@ -1802,8 +1803,8 @@ def h3_image_device_refusal(device: Any) -> Optional[str]:
     )
     return (
         f"MiniMax-H3-Image needs an NVIDIA or AMD GPU and cannot run on {where} yet: its 33B image model and 33B "
-        f"text encoder are streamed and quantized through CUDA or ROCm. Load it on a machine with an NVIDIA or AMD "
-        f"GPU."
+        f"text encoder are streamed and quantized through CUDA or ROCm. Load {H3_IMAGE_GGUF_REPO} instead, which "
+        f"runs on the native stable-diffusion.cpp engine, or use a machine with an NVIDIA or AMD GPU."
     )
 
 
