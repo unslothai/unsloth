@@ -2168,8 +2168,7 @@ else:
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
 
-    # Both backends: AutoConfig learns deepseek_v41 / deepseek_v41_text (Unsloth's native implementation) when the
-    # installed transformers lacks them. The CPU path never runs _gpu_init, where this used to live.
+    # Both backends: the CPU path never runs _gpu_init.
     try:
         from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
         _fix_dsv41()

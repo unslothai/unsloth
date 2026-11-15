@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Native DeepSeek-V4.1 LoRA targets: explicit lists honour the attention / mlp family filters, the bare MLP names do
-not reach the compressor, get_peft_model keeps the caller's families for expert targeting, and the legacy
-FastLlamaModel.get_peft_model routes remapping models through FastBaseModel. CPU, tiny random model."""
+"""Native DeepSeek-V4.1 LoRA target mapping and get_peft_model routing on CPU."""
 
 import os
 import re
@@ -51,9 +49,6 @@ def _kinds(names):
     return {re.sub(r"^.*?layers\.\d+\.", "", n) for n in names}
 
 
-# ---------------------------------------------------------------- the mapper
-
-
 def test_explicit_list_without_attention_keeps_no_attention_target():
     mapped = remap(["q_proj", "gate_proj"], attention = False)
     assert not any(_is_attention(t) for t in mapped), mapped
@@ -93,9 +88,6 @@ def test_passthrough_names_are_family_filtered():
         "engram.wkv",
     ]
     assert remap(r".*q_a_proj", attention = False) == r".*q_a_proj"
-
-
-# ---------------------------------------------------------------- FastBaseModel.get_peft_model on CPU
 
 
 @pytest.fixture
@@ -158,9 +150,6 @@ def test_get_peft_model_default_still_reaches_every_family(cpu_peft):
 def test_get_peft_model_routed_experts_follow_the_caller_aliases(cpu_peft):
     _, params = _peft(cpu_peft, ["q_proj", "down_proj"])
     assert params and all(p.endswith("experts.down_proj") for p in params), params
-
-
-# ---------------------------------------------------------------- legacy FastLlamaModel.get_peft_model routing
 
 
 def test_legacy_route_sends_remapping_models_to_fast_base(monkeypatch):

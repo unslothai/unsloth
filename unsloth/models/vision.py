@@ -5571,8 +5571,7 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
-        # Models with their own projection names (Unsloth's native DeepSeek-V4.1) translate q/k/v/o/gate/up/down_proj,
-        # "all-linear" and None into their real Linears; the attention / mlp family choice is applied there.
+        # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
         _targets_remapped = False
         _remapped_moe_targets = None
@@ -5584,8 +5583,7 @@ class FastBaseModel:
                 mlp = finetune_mlp_modules,
             )
             if _remapped is not target_modules:
-                # Routed-expert intent comes from the caller's bare aliases: the remapped MLP names are qualified to
-                # the shared expert. The family flags stay as the caller set them, so expert detection follows them.
+                # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
                 if _requested_targets is None or _requested_targets == "all-linear":
                     _requested_targets = ["gate_proj", "up_proj", "down_proj"]
                 _remapped_moe_targets = [

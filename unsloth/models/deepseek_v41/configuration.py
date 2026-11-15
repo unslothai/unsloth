@@ -44,11 +44,8 @@ class DeepseekV41TextConfig(PretrainedConfig):
     keys_to_ignore_at_inference = ["past_key_values"]
     # TRL / MoE helpers read num_experts; transformers' MoE code reads num_local_experts.
     attribute_map = {"num_experts": "n_routed_experts", "num_local_experts": "n_routed_experts"}
-    # Tensor parallelism: query heads (q_b_proj rows, per-head sinks) are sharded; the single shared KV head
-    # (kv_proj, compressor, indexer) is replicated; the grouped o_a_proj is sharded by whole groups (its rows are
-    # [G * o_lora_rank] in group order, matching the rank's heads), so o_b_proj reduces rowwise. Routed experts follow
-    # transformers' / Unsloth's MoE TP rules. Engram: the tables hold no Parameter (unsloth_zoo frozen table) and
-    # engram.wkv stays replicated. Needs num_attention_heads % tp == 0 and o_groups % tp == 0.
+    # TP: query heads sharded, the single shared KV head replicated, o_a_proj sharded by whole groups so o_b_proj
+    # reduces rowwise. Needs num_attention_heads % tp == 0 and o_groups % tp == 0.
     base_model_tp_plan = {
         "layers.*.self_attn.q_b_proj": "colwise",
         "layers.*.self_attn.sinks": "colwise",
@@ -58,9 +55,8 @@ class DeepseekV41TextConfig(PretrainedConfig):
         "layers.*.mlp.experts.down_proj": "rowwise",
         "layers.*.mlp.experts": "moe_tp_experts",
     }
-    # Pipeline parallelism: the residual stream is hc_mult copies plus the next sublayer's mixing weights. KV / index
-    # sources share per-forward group state with later layers of their group, so stages may only start at
-    # modeling.pipeline_safe_cut_points(config) (released config: 0, 1, 2, 8, 14, 20).
+    # PP: KV / index sources share group state with later layers, so stages start only at
+    # modeling.pipeline_safe_cut_points(config).
     base_model_pp_plan = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
         "layers": (["hidden_states", "pre_mix"], ["hidden_states", "pre_mix"]),

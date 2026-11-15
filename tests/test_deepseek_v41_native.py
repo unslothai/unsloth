@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Unsloth's native DeepSeek-V4.1 (unsloth/models/deepseek_v41): registration, the reference semantics of its parts,
-training forward / backward, save / reload, and the released-layout guard. CPU, tiny random configs."""
+"""Unsloth's native DeepSeek-V4.1 on CPU with tiny random configs."""
 
 import os
 
@@ -51,8 +50,7 @@ needs_zoo_native = pytest.mark.skipif(
 
 
 def _cpu_backend_child_env(*paths):
-    """A child process that takes Unsloth's CPU backend whatever earlier tests left in os.environ: every variable
-    that steers the backend choice (unsloth / unsloth_zoo device_type) is dropped, then the CPU backend forced."""
+    """Run a child process forced onto Unsloth's CPU backend regardless of os.environ."""
     steering = (
         "UNSLOTH_DISABLE_CPU_FALLBACK",
         "UNSLOTH_FORCE_GPU_PATH",
@@ -302,8 +300,7 @@ _TO_RELEASED = [
 
 
 def _released_state_dict(model):
-    """The tiny model under DeepSeek's released names (written from the reference checkpoint, independently of
-    convert.py's table): per-expert w1 / w3 / w2, engram rows under layers.<i>.engram.embed, mtp keys present."""
+    """The tiny model under DeepSeek's released names, written independently of convert.py's table."""
     import re
 
     out = {}
@@ -342,8 +339,7 @@ def _released_state_dict(model):
 
 
 def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_path, monkeypatch):
-    """transformers 4.57 (no core_model_loading) and FP8 quantizers without fp4 experts load the released layout
-    through convert.py; forced here so every transformers version runs it."""
+    """Load the released layout through convert.py, as transformers 4.57 and non-fp4 FP8 quantizers do."""
     from safetensors.torch import save_file
     from unsloth.models.deepseek_v41 import convert
 
@@ -367,15 +363,13 @@ def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_p
     assert not any("mtp" in n for n, _ in loaded.named_parameters())
     with torch.no_grad():
         assert torch.equal(loaded(input_ids = ids).logits, want)
-    # converted once, then reused
     stamp = os.listdir(tmp_path / "converted")
     dsv41.DeepseekV41ForCausalLM.from_pretrained(src, dtype = torch.float32)
     assert os.listdir(tmp_path / "converted") == stamp
 
 
 def _fp4_release(tmp_path, model):
-    """The tiny model's released files with real fp4 experts (int8 e2m1 pairs + e8m0 per 32); the model's experts are
-    set to their exact dequantization, so the release and the model hold the same function."""
+    """The tiny model's released files with real fp4 experts (int8 e2m1 pairs + e8m0 per 32)."""
     from safetensors.torch import save_file
     from unsloth.models.deepseek_v41 import convert
 
@@ -414,8 +408,7 @@ def _fp4_release(tmp_path, model):
 
 
 def test_released_fp4_experts_stay_mxfp4_packed(tmp_path, monkeypatch, capsys):
-    """transformers 4.57 path: the release's fp4 experts load as MXFP4 stacks (a quarter of bf16, no dequantized copy
-    on disk) and give the same logits as the bf16 conversion; save / reload keeps them packed."""
+    """Released fp4 experts load as packed MXFP4, match the bf16 conversion, and stay packed on reload."""
     pytest.importorskip("unsloth_zoo.mxfp4_dequant")
     from unsloth_zoo.mxfp4_dequant import is_mxfp4_expert_param
 
@@ -461,7 +454,6 @@ def test_released_fp4_experts_stay_mxfp4_packed(tmp_path, monkeypatch, capsys):
     assert len(os.listdir(tmp_path / "converted")) == 2  # one cached copy per expert format
     monkeypatch.delenv("UNSLOTH_DSV41_FP4_EXPERTS")
 
-    # save / reload: blocks + scales on disk, packed again after loading
     # save / reload. Under unsloth_zoo's save patch a full save writes the experts dequantized (and a config
     # without the packed flag); without it, the blocks + scales are written and reload packed.
     from safetensors import safe_open
@@ -529,8 +521,7 @@ def _e8m0_pow2(amax, qmax):
 
 
 def _quantized_release(tmp_path, model):
-    """The release's storage for the tiny model: fp8 e4m3 32x32-block linears (the release's fp8 set) and fp8 engram
-    rows with e8m0 scales, int8-packed fp4 experts, bf16 elsewhere, and the release's quantization_config."""
+    """Write the tiny model in the release's fp8 / fp4 storage with its quantization_config."""
     import json
 
     from safetensors.torch import save_file
@@ -603,10 +594,7 @@ def _quantized_release(tmp_path, model):
 def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
     tmp_path, monkeypatch, convert
 ):
-    """AutoModelForCausalLM, DeepseekV41ForCausalLM and DeepseekV41TextForCausalLM, with and without an explicit
-    (composite or text) config, load every released tensor: no MISSING / UNEXPECTED keys, the same logits. "auto"
-    takes transformers' own loader where it can (5.x: renames + the release's FP8 quantization_config, which a passed
-    text config lacks), "1" the converter."""
+    """Every causal LM class, with or without an explicit config, loads every released tensor."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -658,8 +646,7 @@ def _parameter_backed_engram(monkeypatch):
 
 
 def test_parameter_backed_engram_tables_survive_state_dict_and_reload(tmp_path, monkeypatch):
-    """Parameter-backed tables (no frozen table store) are real weights: an ordinary state_dict keeps them, so
-    load_state_dict and save / from_pretrained reproduce the logits exactly (they used to stay random / meta)."""
+    """Parameter-backed engram tables round-trip through state_dict and save / reload."""
     _parameter_backed_engram(monkeypatch)
     model = _tiny_model().eval()
     table = model.model.engram_tables["1"]
@@ -687,8 +674,7 @@ def test_parameter_backed_engram_tables_survive_state_dict_and_reload(tmp_path, 
 @needs_frozen_tables
 @pytest.mark.parametrize("positional", [False, True])
 def test_full_save_with_a_supplied_state_dict_still_writes_the_engram_tables(tmp_path, positional):
-    """state_dict() leaves the (in-memory, parameter-free) tables out; a full save handed that dict must still write
-    them, without modifying the caller's dict, and the reload gives the same logits."""
+    """A full save writes the frozen engram tables without mutating the caller's state_dict."""
     from safetensors import safe_open
 
     model = _tiny_model().eval()
@@ -726,9 +712,7 @@ def test_full_save_with_a_supplied_state_dict_still_writes_the_engram_tables(tmp
 
 @pytest.mark.parametrize("convert", ["auto", "1"])
 def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, monkeypatch, convert):
-    """The release's fp8 engram rows (+ e8m0 scale per 32) loaded into Parameter-backed tables give the same rows
-    as the frozen table store: the scale is applied after a load that widened the fp8 rows, and transformers 5's
-    direct load renames the release's .scale onto weight_scale_inv."""
+    """Released fp8 engram rows load into Parameter-backed tables identically to the frozen store."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
     src = _quantized_release(tmp_path, _tiny_model())
@@ -760,8 +744,7 @@ def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, mon
 def test_a_released_checkpoint_in_a_subfolder_loads_from_that_subfolder(
     tmp_path, monkeypatch, convert
 ):
-    """from_pretrained(root, subfolder=...) on a released layout: discovery, conversion and loading all read the
-    subfolder (the conversion used to drop it and convert / load the root)."""
+    """from_pretrained(root, subfolder=...) discovers, converts and loads the subfolder."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
     import shutil
@@ -839,8 +822,7 @@ def test_loading_never_mutates_the_callers_config(tmp_path, monkeypatch, convert
 
 
 def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_path):
-    """A fresh transformers 5 process where nothing registered the conversion rules yet (they used to come only from
-    the Auto registration): DeepseekV41ForCausalLM.from_pretrained on the release still maps every tensor."""
+    """A fresh transformers 5 process maps every released tensor without prior Auto registration."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
     from unsloth.models.deepseek_v41.modeling import has_core_model_loading
@@ -879,8 +861,7 @@ def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_pat
 
 
 def test_each_release_rename_applies_once_per_model_root():
-    """transformers collects conversion rules per PreTrainedModel submodule (class name, then model_type): the
-    text model nested in a causal LM must not add a second, scoped copy of every rule."""
+    """The nested text model does not add a second scoped copy of the conversion rules."""
     from unsloth.models.deepseek_v41.convert import released_needs_conversion
     from unsloth.models.deepseek_v41.modeling import has_core_model_loading
 
@@ -943,9 +924,7 @@ def test_offset_position_ids_are_refused():
 
 
 def _alone(model, ids, width):
-    """One sequence in its own row, right padded to `width` (the row length the relayout gives it): the indexer's
-    top-k breaks ties among equal (relu-zero) scores by position over the whole row, so the row width must match
-    for an exact comparison. Right padding never changes a real token's inputs otherwise."""
+    """One sequence right padded to `width`, the row length the relayout gives it."""
     pad = width - len(ids)
     row = torch.cat([ids, torch.zeros(pad, dtype = torch.long)]).unsqueeze(0)
     mask = torch.cat([torch.ones(len(ids)), torch.zeros(pad)]).long().unsqueeze(0)
@@ -954,8 +933,7 @@ def _alone(model, ids, width):
 
 
 def test_packed_sequences_match_each_sequence_run_alone():
-    """Padding-free packing (position_ids restarting at 0): compressor groups, window, top-k blocks and engram
-    n-grams stay inside each sequence, so every sequence's logits equal a run of it alone."""
+    """Padding-free packed sequences give the same logits as each sequence run alone."""
     model = _tiny_model().eval()
     torch.manual_seed(1)
     a, b, c = torch.randint(0, 512, (7,)), torch.randint(0, 512, (13,)), torch.randint(0, 512, (4,))
@@ -978,9 +956,7 @@ def test_packed_sequences_match_each_sequence_run_alone():
 
 @pytest.mark.parametrize("layout", ["packed", "left_padded"])
 def test_packed_rows_and_left_padding_stay_separated_under_torch_compile(layout):
-    """torch.compile of the whole model keeps the relayout (it runs outside the traced graph): compiled logits and
-    gradients equal eager for packed rows and left padding (the compiled path used to skip it, letting sequences
-    attend across each other)."""
+    """torch.compile keeps the packed-row relayout."""
     torch._dynamo.reset()
     model = _tiny_model().eval()
     torch.manual_seed(3)
@@ -1066,9 +1042,7 @@ def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch)
 
 @needs_zoo_native
 def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
-    """Nothing installs the zoo replay explicitly: building the model and model.gradient_checkpointing_enable()
-    alone must give the gradients of the plain run (unsloth_zoo's patches ran before the native module existed,
-    so they had no-opped and the recompute read overwritten group state)."""
+    """Building the model and gradient_checkpointing_enable() install the zoo replay."""
     import json
     import subprocess
     import sys
@@ -1128,7 +1102,7 @@ def test_labels_with_logits_to_keep_score_the_kept_positions_against_their_own_t
         assert out.logits.shape[1] == 3
         torch.testing.assert_close(out.logits, full[:, positions], rtol = 1e-5, atol = 1e-6)
         torch.testing.assert_close(out.loss, reference(positions), rtol = 1e-5, atol = 1e-6)
-        # without labels a tensor selector keeps only those positions (it used to return every position)
+        # without labels a tensor selector keeps only those positions
         assert model(input_ids = ids, logits_to_keep = torch.tensor([1, 3])).logits.shape[1] == 2
         # logits_to_keep = 0 (all) with labels: the usual full loss
         torch.testing.assert_close(
@@ -1214,8 +1188,7 @@ def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel
 def test_window_only_layers_take_the_hd512_kernel_and_compressed_layers_the_window_kernel(
     monkeypatch,
 ):
-    """head_dim 512 (the release's), bf16 on CUDA: window-only layers (empty compressed set) dispatch to Unsloth's
-    hd512 kernel, compressing layers to a window kernel (gather / triton); logits match the concatenated path."""
+    """head_dim 512 bf16 CUDA kernels match the concatenated path."""
     zoo = pytest.importorskip("unsloth_zoo.sparse_attention")
     if "hd512" not in getattr(zoo, "SPARSE_ATTN_STATS", {}):
         pytest.skip("this unsloth_zoo has no hd512 window dispatch")
@@ -1286,9 +1259,7 @@ def test_an_unsloth_zoo_without_the_window_entry_keeps_the_concatenated_path(mon
     ],
 )
 def test_window_attention_entry_matches_the_concatenated_index_path(monkeypatch, device):
-    """unsloth_zoo's sparse_attn_window (window KV contiguous + the compressed rows, the banded window kernel's entry)
-    gives the logits and gradients of the concatenated window + compressed index lists through sparse_attn, on
-    window-only layers (empty compressed set) and compressed ones; the kill switch keeps the concatenation."""
+    """sparse_attn_window matches the concatenated sparse_attn path; the kill switch keeps the concatenation."""
     zoo = pytest.importorskip("unsloth_zoo.sparse_attention")
     if not hasattr(zoo, "sparse_attn_window"):
         pytest.skip("this unsloth_zoo has no sparse_attn_window")
@@ -1339,11 +1310,7 @@ def test_window_attention_entry_matches_the_concatenated_index_path(monkeypatch,
 
 @pytest.mark.parametrize("hooks", ["layers_skip_shared", "layers_no_skip", "every_submodule"])
 def test_shared_group_state_survives_accelerate_device_hooks(hooks):
-    """device_map splits attach accelerate hooks that rebuild dict / Mapping arguments (keyword or positional), and
-    CPU / disk offload also hooks submodules (self_attn, the indexer) that receive ``shared`` positionally, out of reach
-    of ``_skip_keys_device_placement``. KV / index sources write into ``shared`` and later layers read it, so the
-    state is an opaque object that send_to_device passes through. Flip: as a plain dict the submodule case raises
-    KeyError('index_k')."""
+    """Accelerate hooks that rebuild Mapping arguments under device_map / offload keep the shared state intact."""
     accelerate_hooks = pytest.importorskip("accelerate.hooks")
     model = _tiny_model().eval()
     ids = torch.randint(0, 512, (1, 16))
@@ -1364,8 +1331,7 @@ def test_shared_group_state_survives_accelerate_device_hooks(hooks):
 
 
 def test_shared_group_state_is_not_a_container_that_device_moves_rebuild():
-    """accelerate's send_to_device and FSDP2's forward-input cast (torch.distributed.utils._apply_to_tensors) both
-    rebuild Mappings, sequences and dataclasses; the state object must come back as the same object."""
+    """send_to_device and FSDP2's input cast return the state object unchanged."""
     operations = pytest.importorskip("accelerate.utils.operations")
     from torch.distributed.utils import _apply_to_tensors
 
@@ -1450,8 +1416,7 @@ def test_tp_plan_names_real_modules_and_keeps_the_kv_head_and_engram_replicated(
 
 
 def test_attention_runs_with_a_tensor_parallel_shard_of_heads_and_groups():
-    """Rank 0 of tp=2: half the q heads / sinks / o_a groups (colwise) and the matching o_b columns (rowwise); the
-    partial outputs of both ranks sum to the unsharded output."""
+    """tp=2 shards sum to the unsharded attention output."""
     model = _tiny_model().eval()
     attn = model.model.layers[2].self_attn
     x = torch.randn(1, 12, model.config.text_config.hidden_size)
@@ -1483,8 +1448,7 @@ def test_pipeline_cut_points_follow_the_group_sources():
 
 
 def test_router_sqrtsoftplus_backward_stays_finite_when_softplus_underflows():
-    """model.py:819 is inference only: softplus(z) is exactly 0 in fp32 for z <= ~-104, and sqrt's backward there
-    is 0 / 0 = NaN for every expert (picked or not). The clamp keeps the gradient finite."""
+    """The router clamp keeps sqrt(softplus) gradients finite where softplus underflows."""
     config = _tiny_config().text_config
     router = dsv41.DeepseekV41TopKRouter(config, 4, 2)
     with torch.no_grad():
@@ -1523,8 +1487,7 @@ def test_swiglu_clamp_is_asymmetric_like_the_reference():
 
 
 def test_eps_1e20_is_added_in_fp32_so_half_precision_zero_rows_stay_finite():
-    """rms_norm_eps / hc_eps / the router denominator use 1e-20, which is 0 in fp16: every one of those sums runs in
-    fp32 first."""
+    """The 1e-20 eps sums run in fp32, since 1e-20 is 0 in fp16."""
     torch.manual_seed(0)
     config = _tiny_config(rms_norm_eps = 1e-20).text_config
     flushed = torch.zeros(16, dtype = torch.float16) * torch.rsqrt(
@@ -1577,8 +1540,7 @@ def test_a_callers_cache_is_left_alone():
 
 
 def test_each_layer_reads_only_its_own_source_compressed_kv(monkeypatch):
-    """Without a cache every compressing layer attends to the window plus the seqlen // ratio latents of its group's
-    source layer (model.py:740-760), never a concatenation over several source layers."""
+    """Each compressing layer attends to its group source's latents only (model.py:740-760)."""
     model = _tiny_model().eval()
     calls = []
     real, real_window = dsv41.sparse_attn, dsv41.sparse_attn_window
@@ -1608,9 +1570,7 @@ def test_each_layer_reads_only_its_own_source_compressed_kv(monkeypatch):
 
 @pytest.mark.parametrize("needs_conversion", ["0", "1"])
 def test_release_fp8_config_is_dropped_only_where_it_cannot_load(monkeypatch, needs_conversion):
-    """Where transformers loads the release through convert.py (dequantized), the release's FP8 quantization_config
-    must vanish from the config, else Unsloth's loader sees a pre-quantized model and skips a 4-bit request; a
-    bitsandbytes config is kept."""
+    """A dequantized convert.py load drops the release's FP8 quantization_config so 4-bit requests still apply."""
     monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", needs_conversion)
     fp8 = {
         "quant_method": "fp8",
@@ -1635,8 +1595,7 @@ def test_release_fp8_config_is_dropped_only_where_it_cannot_load(monkeypatch, ne
     ],
 )
 def test_default_lora_targets_map_to_the_real_projections(targets):
-    """FastLanguageModel's q/k/v/o/gate/up/down defaults, "all-linear" and None reach q_a/q_b, kv, o_a/o_b, the
-    compressor, the engram wkv and the shared expert; never the indexer (selection only) or a router."""
+    """Default, "all-linear" and None LoRA targets skip the indexer and routers."""
     peft = pytest.importorskip("peft")
     mapped = dsv41.DeepseekV41ForCausalLM.unsloth_lora_target_modules(targets)
     model = peft.get_peft_model(_tiny_model(), peft.LoraConfig(r = 4, target_modules = mapped))
@@ -1664,8 +1623,7 @@ def test_default_lora_targets_map_to_the_real_projections(targets):
 
 
 def test_a_flat_text_config_loads_into_the_composite(tmp_path):
-    """A model built on DeepseekV41TextConfig saves a flat config; DeepseekV41ForCausalLM.from_pretrained reads it
-    through the composite config, which must take those fields as its text config (not the released defaults)."""
+    """A flat text config saved by the text model reloads as the composite config's text config."""
     text = _tiny_config().text_config
     model = dsv41.DeepseekV41ForCausalLM(text).float().eval()
     model.bind_token_map([i % 97 for i in range(512)])
@@ -1683,8 +1641,7 @@ def test_a_flat_text_config_loads_into_the_composite(tmp_path):
 
 
 def _fsdp2_style_input_rebuild(model):
-    """What FSDP2's _cast_forward_inputs does to every fully_shard'ed layer's inputs: torch.distributed.utils.
-    _apply_to_tensors rebuilds each dict (subclasses included); other objects pass through."""
+    """Emulate FSDP2's per-layer _apply_to_tensors rebuild of dict inputs."""
     from torch.distributed.utils import _apply_to_tensors
 
     def hook(module, args, kwargs):
@@ -1702,7 +1659,7 @@ def test_group_state_survives_fsdp2_input_casting(monkeypatch):
     handles = _fsdp2_style_input_rebuild(model)
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, want)
-    # Flip: the dict the model used to pass is rebuilt per layer, so the readers miss the sources' writes.
+    # Flip: a dict rebuilt per layer makes readers miss the sources' writes.
     monkeypatch.setattr(dsv41, "_SharedState", dict)
     with pytest.raises(KeyError):
         with torch.no_grad():
@@ -1739,8 +1696,7 @@ def test_group_state_survives_fsdp2_input_casting_under_gradient_checkpointing()
 
 
 def test_o_a_proj_swapped_for_a_plain_linear_stays_grouped():
-    """bitsandbytes' Linear4bit swap (a load that did not skip o_a_proj) puts a plain Linear there; the diagonal
-    blocks of its product are the grouped result. Plain PEFT LoRA on top matches its merged weight."""
+    """A plain Linear o_a_proj takes the diagonal blocks and matches its merged LoRA weight."""
     peft = pytest.importorskip("peft")
     model = _tiny_model().eval()
     ids = torch.randint(0, 512, (1, 16))
@@ -1787,8 +1743,7 @@ def test_auto_classes_reload_a_flat_text_config_checkpoint(tmp_path):
 
 @pytest.mark.parametrize("cut", [1, 2, 3, 4, 5])
 def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut):
-    """Two stages split at any layer: hidden streams + pre_mix + only the handoff keys cross; each stage hashes
-    input_ids for the engram layers it owns. Logits and gradients equal the unsplit model."""
+    """A two-stage pipeline split matches the unsplit model's logits and gradients."""
     model = _tiny_model().train()
     ids = torch.randint(0, 512, (2, 16))
     full = model.model(input_ids = ids).last_hidden_state
@@ -1818,9 +1773,7 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
 
 @pytest.mark.parametrize("install", [pytest.param(True, marks = needs_zoo_native), False])
 def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, install):
-    """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA.
-    Building the attention installs it; without it, the plain PEFT LoRA's stacked-width delta is reduced to the
-    per-group blocks (it used to fail with a shape error). Either way adapted == merged."""
+    """o_a_proj LoRA without the zoo grouped patch matches its merged weight."""
     peft = pytest.importorskip("peft")
     pytest.importorskip("unsloth_zoo.temporary_patches.deepseek_v41")
     from peft.tuners.lora.model import LoraModel
@@ -1854,8 +1807,7 @@ def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, in
 
 
 def test_cpu_backend_import_registers_deepseek_v41(tmp_path):
-    """The CPU fallback never runs _gpu_init, where the native registration hook lived: AutoConfig rejected
-    deepseek_v41 there. It is installed on both backends now."""
+    """The native registration hook is installed on the CPU backend too."""
     import json
     import subprocess
     import sys

@@ -1,5 +1,4 @@
-"""Safety of the offline DeepSeek-V4.1 released-checkpoint conversion cache (unsloth/models/deepseek_v41/convert.py):
-private staging + locked atomic publication, index shard containment, cache identity, and subfolder sources."""
+"""Safety of the offline DeepSeek-V4.1 released-checkpoint conversion cache."""
 
 import json
 import multiprocessing

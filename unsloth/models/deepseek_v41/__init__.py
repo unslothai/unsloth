@@ -13,10 +13,7 @@
 
 """Native DeepSeek-V4.1 (``deepseek_v41`` / ``deepseek_v41_text``) for transformers releases that do not ship it.
 
-``register_deepseek_v41()`` registers the configs with ``AutoConfig`` and the models with ``AutoModel`` /
-``AutoModelForCausalLM`` (idempotent), plus, on transformers 5 (``core_model_loading``), the renaming table that
-loads the released checkpoint (DeepSeek-native key names, per-expert weights) into this layout. When transformers
-itself provides ``transformers.models.deepseek_v41`` nothing is registered and that implementation is used.
+On transformers 5 the checkpoint renaming table is registered too; a transformers that ships deepseek_v41 wins.
 """
 
 import importlib.util
@@ -39,9 +36,8 @@ def transformers_has_deepseek_v41():
 
 
 def _conversion_rules():
-    """The released checkpoint's names -> this module tree (relative to the text model). Same table as
-    transformers' deepseek_v4 entry plus the V4.1 parts (compressor / indexer / engram). No ``$`` anchors: the
-    table also runs in reverse on save, and a reversed ``$`` would be written into the key."""
+    """Released checkpoint names -> this module tree. No ``$`` anchors: the table also runs in reverse on save,
+    and a reversed ``$`` would be written into the key."""
     from transformers.core_model_loading import (
         Concatenate,
         MergeModulelist,
@@ -99,10 +95,8 @@ def _conversion_rules():
 
 
 def _register_conversions():
-    """Register the renames once per scope. transformers collects them per PreTrainedModel submodule (class name
-    first, then model_type) and adds a scoped copy for a child that matches under another identifier, so: the
-    text-model rules under ``deepseek_v41_text`` (the text model's model_type, whichever root holds it, and a
-    standalone text model) and only the head rename under the two causal-LM classes. Idempotent."""
+    """Register the renames once per scope. transformers collects them per submodule and scopes a copy per
+    match, so text rules go under ``deepseek_v41_text`` and only the head rename under the causal-LM classes."""
     try:
         from transformers.conversion_mapping import register_checkpoint_conversion_mapping
     except Exception:

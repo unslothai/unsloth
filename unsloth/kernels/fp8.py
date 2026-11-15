@@ -2762,9 +2762,7 @@ if FP8GroupedLinear is not None:
 
     @functools.lru_cache(maxsize = None)
     def _fp8_grouped_eval_kernel_ok():
-        """transformers' grouped fp8 eval kernel is usable here. Newer releases load it from the Hub through the
-        optional `kernels` package (transformers.integrations.hub_kernels); without that package the eval path
-        fails, so it takes the dequant path too (no new dependency)."""
+        """Whether transformers' grouped fp8 eval kernel is usable; newer releases need the optional `kernels` package."""
         try:
             import transformers.integrations.finegrained_fp8 as _ff8
 
