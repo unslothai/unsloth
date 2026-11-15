@@ -9,6 +9,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from real_accelerator import has_real_cuda  # noqa: E402
 from unsloth.models.deepseek_v41 import register_deepseek_v41, transformers_has_deepseek_v41  # noqa: E402
 from unsloth.models.deepseek_v41 import modeling as dsv41  # noqa: E402
 from unsloth.models.deepseek_v41.configuration import DeepseekV41Config, DeepseekV41TextConfig  # noqa: E402
@@ -16,6 +17,36 @@ from unsloth.models.deepseek_v41.configuration import DeepseekV41Config, Deepsee
 needs_native = pytest.mark.skipif(
     transformers_has_deepseek_v41(),
     reason = "transformers ships deepseek_v41; the native classes are not registered",
+)
+
+
+def _zoo_dsv41():
+    try:
+        import unsloth_zoo.temporary_patches.deepseek_v41 as zoo_dsv41
+    except Exception:
+        return None
+    return zoo_dsv41
+
+
+def _zoo_resolves_native():
+    """unsloth_zoo's DeepSeek-V4.1 patches (checkpoint replay, grouped LoRA) find Unsloth's native module."""
+    zoo_dsv41 = _zoo_dsv41()
+    try:
+        return zoo_dsv41 is not None and zoo_dsv41._modeling() is dsv41
+    except Exception:
+        return False
+
+
+# Capability probes for the companion unsloth_zoo (not version strings): on an unsloth_zoo without them these tests
+# skip; the model falls back (Parameter-backed engram tables, the torch sparse attention, plain-PEFT grouped
+# blocks) or refuses (gradient checkpointing without the replay).
+needs_frozen_tables = pytest.mark.skipif(
+    not hasattr(_zoo_dsv41(), "make_deepseek_v41_engram_table"),
+    reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table (unsloth-zoo #2510)",
+)
+needs_zoo_native = pytest.mark.skipif(
+    not _zoo_resolves_native(),
+    reason = "unsloth_zoo's DeepSeek-V4.1 patches do not resolve Unsloth's native module (unsloth-zoo #2510)",
 )
 
 
@@ -653,6 +684,7 @@ def test_parameter_backed_engram_tables_survive_state_dict_and_reload(tmp_path, 
         assert torch.equal(loaded(input_ids = ids).logits, want)
 
 
+@needs_frozen_tables
 @pytest.mark.parametrize("positional", [False, True])
 def test_full_save_with_a_supplied_state_dict_still_writes_the_engram_tables(tmp_path, positional):
     """state_dict() leaves the (in-memory, parameter-free) tables out; a full save handed that dict must still write
@@ -1024,6 +1056,15 @@ def test_grouped_lora_is_not_marked_ready_when_nothing_was_installed(monkeypatch
     assert dsv41._GROUPED_LORA_READY[0] is False
 
 
+def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch):
+    """An unsloth_zoo that cannot install the decoder-layer replay must not give silently wrong gradients."""
+    monkeypatch.setattr(dsv41, "ensure_checkpoint_replay", lambda: False)
+    model = _tiny_model()
+    with pytest.raises(RuntimeError, match = "replay"):
+        model.gradient_checkpointing_enable()
+
+
+@needs_zoo_native
 def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
     """Nothing installs the zoo replay explicitly: building the model and model.gradient_checkpointing_enable()
     alone must give the gradients of the plain run (unsloth_zoo's patches ran before the native module existed,
@@ -1169,7 +1210,7 @@ def test_sparse_attention_engages_the_torch_reference_without_unsloth_zoo_kernel
     assert dsv41.DSV41_STATS["sparse_attn_torch"] == before + 6  # one call per layer
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA")
 def test_window_only_layers_take_the_hd512_kernel_and_compressed_layers_the_window_kernel(
     monkeypatch,
 ):
@@ -1241,9 +1282,7 @@ def test_an_unsloth_zoo_without_the_window_entry_keeps_the_concatenated_path(mon
     "device",
     [
         "cpu",
-        pytest.param(
-            "cuda", marks = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA")
-        ),
+        pytest.param("cuda", marks = pytest.mark.skipif(not has_real_cuda(), reason = "CUDA")),
     ],
 )
 def test_window_attention_entry_matches_the_concatenated_index_path(monkeypatch, device):
@@ -1335,15 +1374,6 @@ def test_shared_group_state_is_not_a_container_that_device_moves_rebuild():
     assert operations.send_to_device((state,), "cpu")[0] is state
     assert _apply_to_tensors(lambda t: t.clone(), (state,))[0] is state
     assert "index_k" in state and state.get("missing") is None
-
-
-needs_frozen_tables = pytest.mark.skipif(
-    not hasattr(
-        __import__("unsloth_zoo.temporary_patches.deepseek_v41", fromlist = ["x"]),
-        "make_deepseek_v41_engram_table",
-    ),
-    reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table",
-)
 
 
 @needs_frozen_tables
@@ -1681,6 +1711,7 @@ def test_group_state_survives_fsdp2_input_casting(monkeypatch):
         h.remove()
 
 
+@needs_zoo_native
 def test_group_state_survives_fsdp2_input_casting_under_gradient_checkpointing():
     """unsloth_zoo replays each checkpointed layer with a copy of the group state; the copy is a group state too."""
     from unsloth_zoo.temporary_patches.deepseek_v41 import patch_deepseek_v41_gradient_checkpointing
@@ -1785,7 +1816,7 @@ def test_pipeline_stages_with_the_group_state_handoff_match_the_whole_model(cut)
         torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
 
 
-@pytest.mark.parametrize("install", [True, False])
+@pytest.mark.parametrize("install", [pytest.param(True, marks = needs_zoo_native), False])
 def test_building_the_model_installs_grouped_lora_for_plain_peft(monkeypatch, install):
     """The CPU backend (and plain transformers + PEFT) never ran the zoo patch that gives o_a_proj a grouped LoRA.
     Building the attention installs it; without it, the plain PEFT LoRA's stacked-width delta is reduced to the
