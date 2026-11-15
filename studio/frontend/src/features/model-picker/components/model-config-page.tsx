@@ -612,27 +612,11 @@ function GgufContextLengthSetting({
   return (
     <div className="space-y-1">
       {/* One row, as the Settings sliders: label, slider, value. Reset and the hint float in the gap
-          after the label (reset first, as the hint shows only on hover), so the slider's left gap
-          counts from the label text. */}
+          after the label (hint, then reset), so the slider's left gap counts from the label text. */}
       <div className="config-row flex min-h-8 items-center">
         <div className="relative flex shrink-0 items-center">
           <span className={LABEL_CLASS}>Context</span>
           <span className="absolute left-full ml-1.5 flex items-center gap-1">
-            {isAuto ? null : (
-              <button
-                type="button"
-                onClick={() => onChange(0)}
-                className="inline-flex size-[calc(16px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label="Reset context to Auto"
-                title="Reset to Auto"
-              >
-                <HugeiconsIcon
-                  icon={ArrowTurnBackwardIcon}
-                  className="size-3.5"
-                  strokeWidth={2}
-                />
-              </button>
-            )}
             <InfoHint>
               The model&apos;s context window. Auto (a full bar) picks one that
               fits while keeping GPU speed; the reset button returns to it. A
@@ -645,6 +629,21 @@ function GgufContextLengthSetting({
                 ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
                 : ""}
             </InfoHint>
+            {isAuto ? null : (
+              <button
+                type="button"
+                onClick={() => onChange(0)}
+                className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label="Reset context to Auto"
+                title="Reset to Auto"
+              >
+                <HugeiconsIcon
+                  icon={ArrowTurnBackwardIcon}
+                  className="size-4"
+                  strokeWidth={2}
+                />
+              </button>
+            )}
           </span>
         </div>
         {nativeContextLength != null ? (
@@ -653,7 +652,7 @@ function GgufContextLengthSetting({
             max={max}
             step={CONTEXT_SLIDER_STEP}
             {...sliderProps}
-            className="ml-10 mr-7 min-w-0 flex-1"
+            className="ml-12 mr-7 min-w-0 flex-1"
             aria-label="Context"
             thumbValueText={(v) =>
               !(isMaxPosition(v) && value === 0)

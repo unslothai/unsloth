@@ -83,7 +83,7 @@ test("once a number is set, the far right is the real maximum and only reset ret
   );
   assert.match(
     panelCode,
-    /ml-1\.5 flex items-center gap-1"> \{isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"[\s\S]*?<\/button> \)\} <InfoHint>/,
+    /<\/InfoHint> \{isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"[\s\S]*?<\/button> \)\} <\/span>/,
   );
 });
 
@@ -93,7 +93,7 @@ test("the context slider's left gap counts from the label text, with a tighter r
     panelCode,
     /<div className="config-row flex min-h-8 items-center"> <div className="relative flex shrink-0 items-center"> <span className=\{LABEL_CLASS\}>Context<\/span> <span className="absolute left-full ml-1\.5 flex items-center gap-1">/,
   );
-  assert.match(panelCode, /className="ml-10 mr-7 min-w-0 flex-1" aria-label="Context"/);
+  assert.match(panelCode, /className="ml-12 mr-7 min-w-0 flex-1" aria-label="Context"/);
 });
 
 test("Reset all reads in the same color as Save", () => {
