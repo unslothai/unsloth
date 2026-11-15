@@ -28,7 +28,7 @@ async function start(name: string) {
   const module = (await import(`${STORE}?scenario=${name}`)) as Runtime;
   const state = () => module.useChatRuntimeStore.getState();
   state().setPermissionMode("auto");
-  return state;
+  return Object.assign(state, { module });
 }
 
 type State = Awaited<ReturnType<typeof start>>;
@@ -98,7 +98,39 @@ test("a saved chat Full access is not restored on an install with other accounts
     open(state, CHAT);
     assert.equal(state().permissionMode, "auto");
     assert.equal(state().bypassPermissions, false);
+    await settle();
+    assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false, "the saved copy is cleared");
   } finally {
     setLoginMode("single", true);
   }
+});
+
+test("a level picked while the chat's settings load is not overridden by the saved Full access", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
+  const state = await start("saved-grant-pick-during-read");
+  state().setActiveThreadId(CHAT);
+  state().applyThreadScopedSettings(null, null);
+  state.module.beginThreadScopedPairing(CHAT);
+  state().setPermissionMode("ask");
+  state().applyThreadScopedSettings(CHAT, sanitizeThreadScopedSettings(threadRows.rows.get(CHAT)));
+  assert.equal(state().permissionMode, "ask");
+  assert.equal(state().bypassPermissions, false);
+  await settle();
+  assert.equal(state().permissionMode, "ask");
+  assert.equal(state().bypassPermissions, false);
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
+});
+
+test("reopening a chat whose saved Full access was revoked elsewhere drops the restored grant", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
+  const state = await start("saved-grant-revoked-elsewhere");
+  open(state, CHAT);
+  assert.equal(state().permissionMode, "full");
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: false });
+  open(state, OTHER);
+  open(state, CHAT);
+  assert.equal(state().permissionMode, "auto");
+  assert.equal(state().bypassPermissions, false);
 });
