@@ -39,7 +39,7 @@ UMBRELLA = {
     "FireRedAudio-GGUF": ("firered_audio", ["clone", "edit"]),
     "FireRedTTS3-Base-GGUF": ("fireredtts3", ["clone"]),
     "FireRedTTS3-Instruct-GGUF": ("fireredtts3", ["clone"]),
-    "FireRedVAD-GGUF": ("firered_vad", []),
+    "FireRedVAD-GGUF": ("firered_vad", ["detect"]),
     "Fish-Audio-S2-Pro-GGUF": ("fish_audio", ["speak", "clone"]),
     "Fun-ASR-Nano-2512-GGUF": ("fun_asr_nano", ["transcribe"]),
     "GigaAM-ASR-GGUF": ("gigaam_asr", ["transcribe"]),

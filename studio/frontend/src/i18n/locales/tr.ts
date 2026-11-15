@@ -954,6 +954,7 @@ export const tr = {
     modelsOwnVoice: "Modelin kendi sesi",
     randomEachSentence: "Her cümlede rastgele ses",
     builtinSpeakers: "Yerleşik",
+    builtinDetectors: "Yerleşik",
     savedVoices: "Kayıtlı sesler",
     decideHint:
       "Değiştirdiğinizde hemen yüklenmeye başlar; sonraki karar onu kullanır.",

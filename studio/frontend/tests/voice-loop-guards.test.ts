@@ -89,8 +89,8 @@ test("a turn queued behind a reply that already ended is sent, not parked", () =
 });
 
 test("the barge-in probe is judged on the shorter bar its clip can meet", () => {
-  assert.match(loop, /const BARGE_VAD_MIN_SPEECH_MS = 200;/);
-  assert.match(loop, /BARGE_VAD_MIN_SPEECH_MS,?\s*\)\.then\(\(voiced\) => \{/);
+  // The probe asks for the barge bar; voice-vad-detectors.test.ts checks which bar that is.
+  assert.match(loop, /clipHasSpeech\(wavBlob\(probe, sampleRate\), true\)\.then\(\(voiced\) => \{/);
 });
 
 test("a draft typed before speaking leads the spoken turn instead of being cleared", () => {
@@ -116,7 +116,7 @@ test("frames stay in order when the reply ends while the barge-in probe is out",
 
 test("a short barge-in (\"stop\") that passed its probe is transcribed, not dropped as too short", () => {
   assert.match(loop, /const minMs = bargedIn \? BARGE_CONFIRMED_MS : MIN_SPEECH_MS;/);
-  assert.match(loop, /detectClip\(wav, bargedIn \? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS\)/);
+  assert.match(loop, /detectClip\(wav, bargedIn\)/);
 });
 
 test("a voice pause survives the engine remount: the new player starts held", () => {

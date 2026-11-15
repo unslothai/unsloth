@@ -966,6 +966,7 @@ export const pl = {
     modelsOwnVoice: "Własny głos modelu",
     randomEachSentence: "Losowy głos w każdym zdaniu",
     builtinSpeakers: "Wbudowane",
+    builtinDetectors: "Wbudowane",
     savedVoices: "Zapisane głosy",
     decideHint:
       "Po przełączeniu ładowanie zaczyna się od razu; użyje go następna decyzja.",

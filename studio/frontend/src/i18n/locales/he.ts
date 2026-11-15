@@ -900,6 +900,7 @@ export const he = {
     speakerMale: "גברי",
     randomEachSentence: "קול אקראי בכל משפט",
     builtinSpeakers: "מובנים",
+    builtinDetectors: "מובנים",
     savedVoices: "קולות שמורים",
     decideHint: "מעבר מתחיל לטעון מיד; ההחלטה הבאה משתמשת בו.",
     decideGroupFineTunes: "מכווננים",

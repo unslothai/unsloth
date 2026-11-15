@@ -862,6 +862,7 @@ export const ar = {
     speakerMale: "ذكر",
     randomEachSentence: "صوت عشوائي في كل جملة",
     builtinSpeakers: "مدمجة",
+    builtinDetectors: "مدمجة",
     savedVoices: "الأصوات المحفوظة",
     decideHint: "يبدأ التبديل بالتحميل فورًا، ويستخدمه القرار التالي.",
     decideGroupFineTunes: "مضبوطة بدقة",

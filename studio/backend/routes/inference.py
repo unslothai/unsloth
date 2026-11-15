@@ -26923,9 +26923,12 @@ async def _require_vad_model_access(model: Optional[str]) -> None:
     if not account_access.managed_account():
         return
     from core.inference.audio_cpp_models import repo_of
-    from core.inference.vad_audiocpp_sidecar import DEFAULT_VAD_MODEL
+    from core.inference.vad_audiocpp_sidecar import is_builtin_id
 
-    identifier = (model or "").strip() or DEFAULT_VAD_MODEL
+    if is_builtin_id(model):
+        # It ships with the install, or names nothing the load will accept: no Hub repo to gate.
+        return
+    identifier = (model or "").strip()
     await asyncio.to_thread(account_access.require_model_access, repo_of(identifier) or identifier)
 
 

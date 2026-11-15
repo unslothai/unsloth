@@ -965,6 +965,7 @@ export const es419 = {
     modelsOwnVoice: "Voz propia del modelo",
     randomEachSentence: "Voz aleatoria en cada oración",
     builtinSpeakers: "Integradas",
+    builtinDetectors: "Integrados",
     savedVoices: "Voces guardadas",
     decideHint:
       "Al cambiar, empieza a cargarse de inmediato; la siguiente decisión lo usará.",

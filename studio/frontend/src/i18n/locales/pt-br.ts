@@ -862,6 +862,7 @@ export const ptBR = {
     speakerMale: "Masculina",
     randomEachSentence: "Voz aleatória a cada frase",
     builtinSpeakers: "Integradas",
+    builtinDetectors: "Integrados",
     savedVoices: "Vozes salvas",
     decideHint: "Uma troca começa a carregar agora; a próxima decisão a usa.",
     decideGroupFineTunes: "Ajustados",

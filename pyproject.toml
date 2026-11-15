@@ -84,6 +84,8 @@ studio = [
     "backend/assets/**/*.html",
     # Served locally instead of from a CDN; without them /docs and /redoc render blank.
     "backend/assets/docs_ui/*",
+    # Detectors that ship with Studio (Earshot VAD); without them voice mode has no default detector.
+    "backend/assets/audio/**/*",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.
     "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/inference/voice_phrases.json",

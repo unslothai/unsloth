@@ -16,6 +16,8 @@ studio/backend/async_task_outputs/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
+# The detectors Studio ships (Earshot VAD, 48 KB): voice mode has no default detector without them.
+!studio/backend/assets/audio/**/*.safetensors
 
 # C extensions
 *.so

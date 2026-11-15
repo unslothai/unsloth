@@ -14,6 +14,8 @@ import {
   useVoiceDecision,
   type VoiceLoadState,
 } from "@/features/chat/voice/decision-checkpoint";
+import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
+import { vadDisplayName } from "@/features/chat/voice/vad-client";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { DotTag } from "@/features/hub";
@@ -115,6 +117,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
   const rowRefs = useRef<Partial<Record<Role, HTMLButtonElement | null>>>({});
   const decision = useVoiceDecision(open);
   const preset = useVoicePreset(ttsModelId, ttsLoaded);
+  const vadDetectors = useVadDetectors();
   // "configuring": the pill is up for choosing models, and nothing loads until Start.
   const started = useChatRuntimeStore((s) => s.voiceMode === "active");
   const start = () => {
@@ -153,7 +156,7 @@ export const VoicePanel: FC<VoicePanelProps> = ({
     }
   > = {
     listen: {
-      name: shortName(vadModelId),
+      name: vadDisplayName(vadModelId, vadDetectors),
       state: vadLoaded ? "loaded" : "not_loaded",
       enabled: true,
     },

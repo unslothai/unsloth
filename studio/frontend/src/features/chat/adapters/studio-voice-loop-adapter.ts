@@ -31,6 +31,8 @@ import {
   VadUnavailableError,
   detectSpeech,
   loadVadModel,
+  minSpeechMs,
+  vadFallback,
 } from "@/features/chat/voice/vad-client";
 import {
   publishSttDecision,
@@ -91,9 +93,6 @@ const ZERO_RUN_TRACE_MS = 200;
 const BARGE_PREROLL_MS = 600;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
-const VAD_MIN_SPEECH_MS = 300;
-// The probe clip holds only ~BARGE_CONFIRMED_MS of voice: the full bar failed the first check every time.
-const BARGE_VAD_MIN_SPEECH_MS = 200;
 
 // The transcriber the download prompt was last raised for as listening began: a dismissed prompt
 // is not raised again every time the mic re-arms (an utterance that needs the model still asks).
@@ -510,13 +509,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
     const detectClip = async (
       blob: Blob,
-      minSpeechMs: number,
+      barge: boolean,
     ): Promise<{ kept: boolean; speech_ms: number } | null> => {
       if (!vadReady || vadDisabled) return null;
       const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
       try {
-        const { speech_ms } = await detectSpeech(blob, vadPick);
-        return { kept: speech_ms >= minSpeechMs, speech_ms };
+        const { speech_ms, bars } = await detectSpeech(blob, vadPick);
+        return { kept: speech_ms >= minSpeechMs(bars, barge), speech_ms };
       } catch (error) {
         if (error instanceof VadUnavailableError) disableVad(vadPick);
         return null;
@@ -528,8 +527,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       voiceTrace("vad", { ...vad, bargedIn, bargeConfirming });
       return vad.kept;
     };
-    const clipHasSpeech = async (blob: Blob, minSpeechMs: number) =>
-      publishVad(await detectClip(blob, minSpeechMs));
+    const clipHasSpeech = async (blob: Blob, barge: boolean) =>
+      publishVad(await detectClip(blob, barge));
 
     type ClipAnalysis = {
       modelId: string | undefined;
@@ -558,7 +557,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const wav = wavBlob(merged, sampleRate);
       const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
       const abort = new AbortController();
-      const vad = detectClip(wav, bargedIn ? BARGE_VAD_MIN_SPEECH_MS : VAD_MIN_SPEECH_MS);
+      const vad = detectClip(wav, bargedIn);
       const text = vad.then(async (v) =>
         v?.kept === false
           ? ""
@@ -881,8 +880,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               useChatRuntimeStore.getState().setVadSlotLoaded(true);
             })
             .catch((error: unknown) => {
-              if (error instanceof VadUnavailableError) disableVad(vadPick);
               useChatRuntimeStore.getState().setVadSlotLoaded(false);
+              if (!(error instanceof VadUnavailableError)) return;
+              const fallback = vadFallback(vadPick);
+              // Not saved: an install that gains the detector later (a runtime update) gets the pick back.
+              if (fallback) useChatRuntimeStore.setState({ selectedVadModelId: fallback });
+              else disableVad(vadPick);
             });
         }
 
@@ -972,7 +975,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               probe.set(c, at);
               at += c.length;
             }
-            void clipHasSpeech(wavBlob(probe, sampleRate), BARGE_VAD_MIN_SPEECH_MS).then((voiced) => {
+            void clipHasSpeech(wavBlob(probe, sampleRate), true).then((voiced) => {
               bargeConfirming = false;
               if (ended || bargedIn) return;
               if (voiced === false) {

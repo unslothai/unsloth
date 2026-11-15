@@ -965,6 +965,7 @@ export const uk = {
     modelsOwnVoice: "Власний голос моделі",
     randomEachSentence: "Випадковий голос для кожного речення",
     builtinSpeakers: "Вбудовані",
+    builtinDetectors: "Вбудовані",
     savedVoices: "Збережені голоси",
     decideHint:
       "Після перемикання завантаження починається одразу; наступне рішення використає її.",

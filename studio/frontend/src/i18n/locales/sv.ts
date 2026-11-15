@@ -915,6 +915,7 @@ export const sv = {
     speakerMale: "Man",
     randomEachSentence: "Slumpad röst i varje mening",
     builtinSpeakers: "Inbyggda",
+    builtinDetectors: "Inbyggda",
     savedVoices: "Sparade röster",
     decideHint: "Ett byte börjar laddas direkt; nästa beslut använder det.",
     decideGroupFineTunes: "Finjusterade",

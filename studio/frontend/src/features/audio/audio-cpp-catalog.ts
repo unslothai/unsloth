@@ -252,6 +252,7 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
     languages: VOXTRAL_LANGUAGES,
   },
   { id: folder("PulseVAD-GGUF"), task: "vad" },
+  { id: folder("FireRedVAD-GGUF"), task: "vad" },
 ];
 
 /** Shared-repo folders the pickers leave out, and why. The nightly catalog check warns on a folder in neither list (the backend catalog lists it). */
@@ -262,7 +263,6 @@ export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
   "AST-AudioSet-GGUF": "needs a newer audio runtime",
   "CED-GGUF": "needs a newer audio runtime",
-  "FireRedVAD-GGUF": "needs a newer audio runtime",
   "MicroWakeWord-GGUF": "needs a newer audio runtime",
   "MossFormer2-GGUF": "needs a newer audio runtime",
   "Phonon-2-GGUF": "needs a newer audio runtime",

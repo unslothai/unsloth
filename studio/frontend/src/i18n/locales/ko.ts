@@ -862,6 +862,7 @@ export const ko = {
     speakerMale: "남성",
     randomEachSentence: "문장마다 무작위 목소리",
     builtinSpeakers: "기본 제공",
+    builtinDetectors: "기본 제공",
     savedVoices: "저장된 목소리",
     decideHint: "전환하면 바로 로드를 시작하고 다음 판단부터 사용합니다.",
     decideGroupFineTunes: "파인튜닝됨",

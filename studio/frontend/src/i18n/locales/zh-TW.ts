@@ -903,6 +903,7 @@ export const zhTW = {
     modelsOwnVoice: "模型本身的音色",
     randomEachSentence: "每句隨機音色",
     builtinSpeakers: "內建",
+    builtinDetectors: "內建",
     savedVoices: "已儲存的音色",
     decideHint: "切換後會立即開始載入，下一次判斷就會使用它。",
     decideGroupFineTunes: "已微調",

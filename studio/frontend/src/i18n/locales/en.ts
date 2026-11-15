@@ -869,6 +869,7 @@ export const en = {
     speakerMale: "Male",
     randomEachSentence: "Random voice each sentence",
     builtinSpeakers: "Built-in",
+    builtinDetectors: "Built-in",
     savedVoices: "Saved voices",
     decideHint: "A switch starts loading now; the next decision uses it.",
     decideGroupFineTunes: "Fine-tuned",

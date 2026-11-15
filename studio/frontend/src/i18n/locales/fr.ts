@@ -862,6 +862,7 @@ export const fr = {
     speakerMale: "Masculine",
     randomEachSentence: "Voix aléatoire à chaque phrase",
     builtinSpeakers: "Intégrées",
+    builtinDetectors: "Intégrés",
     savedVoices: "Voix enregistrées",
     decideHint: "Un changement se charge tout de suite ; la prochaine décision l'utilise.",
     decideGroupFineTunes: "Affinés",

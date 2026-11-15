@@ -3931,6 +3931,7 @@ export const it = {
     speakerMale: "Maschile",
     randomEachSentence: "Voce casuale a ogni frase",
     builtinSpeakers: "Integrate",
+    builtinDetectors: "Integrati",
     savedVoices: "Voci salvate",
     decideHint: "Un cambio inizia subito a caricarsi; la prossima decisione lo usa.",
     decideGroupFineTunes: "Ottimizzati",

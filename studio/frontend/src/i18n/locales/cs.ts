@@ -960,6 +960,7 @@ export const cs = {
     modelsOwnVoice: "Vlastní hlas modelu",
     randomEachSentence: "Náhodný hlas pro každou větu",
     builtinSpeakers: "Vestavěné",
+    builtinDetectors: "Vestavěné",
     savedVoices: "Uložené hlasy",
     decideHint:
       "Po přepnutí se model hned začne načítat; použije ho další rozhodnutí.",

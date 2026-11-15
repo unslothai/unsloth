@@ -1,11 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import { AUDIO_CPP_REPO } from "@/features/audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
 
-export const VOICE_DEFAULT_VAD_MODEL = `${AUDIO_CPP_REPO}/PulseVAD-GGUF`;
+// Earshot ships with Studio and runs on the CPU. Mirrors DEFAULT_VAD_MODEL in vad_audiocpp_sidecar.py.
+export const VOICE_DEFAULT_VAD_MODEL = "builtin/earshot-vad";
+// The Hub detector every supported audio runtime runs.
+const HUB_VAD_MODEL = `${AUDIO_CPP_REPO}/PulseVAD-GGUF`;
+const BUILTIN_PREFIX = "builtin/";
+
+/** A detector that needs no download: it ships with Studio or with the audio runtime. */
+export interface VadDetector {
+  id: string;
+  label: string;
+  available: boolean;
+}
+
+const isBuiltinVad = (id: string) => id.toLowerCase().startsWith(BUILTIN_PREFIX);
+
+/**
+ * The detector to use when this install cannot run `pick`: the default for another built-in, the
+ * Hub detector for the default (an audio runtime older than Earshot), none for a Hub pick.
+ */
+export function vadFallback(pick: string): string | null {
+  if (!isBuiltinVad(pick)) return null;
+  return pick.toLowerCase() === VOICE_DEFAULT_VAD_MODEL ? HUB_VAD_MODEL : VOICE_DEFAULT_VAD_MODEL;
+}
+
+/** The detector's name for display: the server's label, else the id's last part ("Earshot VAD"). */
+export function vadDisplayName(id: string, detectors: readonly VadDetector[] = []): string {
+  const known = detectors.find((d) => d.id === id.toLowerCase());
+  if (known) return known.label;
+  const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+  if (!isBuiltinVad(id)) return leaf.replace(/-GGUF$/i, "");
+  return leaf
+    .split("-")
+    .map((word) => (word === "vad" ? "VAD" : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(" ");
+}
+
+export async function fetchVadDetectors(signal?: AbortSignal): Promise<VadDetector[]> {
+  const response = await authFetch("/api/inference/audio/vad/status", { signal });
+  if (!response.ok) return [];
+  const data = (await response.json()) as { detectors?: VadDetector[] };
+  return data.detectors ?? [];
+}
 
 export interface SpeechSegment {
   start_s: number;
@@ -18,6 +58,20 @@ export interface SpeechDetection {
   speech_ms: number;
   sample_rate: number;
   model: string;
+  /** Voiced time this detector needs before a clip counts as speech; absent on older servers. */
+  bars?: { utterance_ms: number; barge_ms: number };
+}
+
+// The bars a server that sends none is held to (the Hub detectors'). The barge-in probe holds only
+// ~250 ms of voice, so the full bar failed its first check every time.
+const VAD_MIN_SPEECH_MS = 300;
+const BARGE_VAD_MIN_SPEECH_MS = 200;
+
+/** Voiced time a clip needs to count as speech: the detector's own bar, the shorter one for a barge-in probe. */
+export function minSpeechMs(bars: SpeechDetection["bars"], barge: boolean): number {
+  return barge
+    ? (bars?.barge_ms ?? BARGE_VAD_MIN_SPEECH_MS)
+    : (bars?.utterance_ms ?? VAD_MIN_SPEECH_MS);
 }
 
 export class VadUnavailableError extends Error {}

@@ -912,6 +912,7 @@ export const th = {
     modelsOwnVoice: "เสียงของโมเดลเอง",
     randomEachSentence: "สุ่มเสียงทุกประโยค",
     builtinSpeakers: "ในตัว",
+    builtinDetectors: "ในตัว",
     savedVoices: "เสียงที่บันทึกไว้",
     decideHint:
       "เมื่อสลับ ระบบจะเริ่มโหลดทันที และการตัดสินใจครั้งถัดไปจะใช้โมเดลนี้",

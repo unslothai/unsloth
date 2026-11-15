@@ -863,6 +863,7 @@ export const ja = {
     speakerMale: "男性",
     randomEachSentence: "文ごとにランダムな声",
     builtinSpeakers: "組み込み",
+    builtinDetectors: "組み込み",
     savedVoices: "保存した声",
     decideHint: "切り替えるとすぐに読み込みを始め、次の判定から使われます。",
     decideGroupFineTunes: "ファインチューニング済み",

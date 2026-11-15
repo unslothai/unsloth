@@ -956,6 +956,7 @@ export const fa = {
     modelsOwnVoice: "صدای خود مدل",
     randomEachSentence: "صدای تصادفی برای هر جمله",
     builtinSpeakers: "داخلی",
+    builtinDetectors: "داخلی",
     savedVoices: "صداهای ذخیره‌شده",
     decideHint:
       "با تغییر، بارگیری بی‌درنگ آغاز می‌شود و تصمیم بعدی از آن استفاده می‌کند.",

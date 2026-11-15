@@ -958,6 +958,7 @@ export const id = {
     modelsOwnVoice: "Suara bawaan model",
     randomEachSentence: "Suara acak setiap kalimat",
     builtinSpeakers: "Bawaan",
+    builtinDetectors: "Bawaan",
     savedVoices: "Suara tersimpan",
     decideHint:
       "Peralihan langsung mulai dimuat; keputusan berikutnya akan menggunakannya.",

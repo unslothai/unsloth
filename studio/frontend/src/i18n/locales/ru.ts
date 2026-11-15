@@ -862,6 +862,7 @@ export const ru = {
     speakerMale: "Мужской",
     randomEachSentence: "Случайный голос в каждой фразе",
     builtinSpeakers: "Встроенные",
+    builtinDetectors: "Встроенные",
     savedVoices: "Сохранённые голоса",
     decideHint: "Переключение сразу начинает загрузку; следующее решение использует новую модель.",
     decideGroupFineTunes: "Дообученные",

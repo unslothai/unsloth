@@ -962,6 +962,7 @@ export const vi = {
     modelsOwnVoice: "Giọng riêng của mô hình",
     randomEachSentence: "Giọng ngẫu nhiên cho mỗi câu",
     builtinSpeakers: "Tích hợp",
+    builtinDetectors: "Tích hợp",
     savedVoices: "Giọng đã lưu",
     decideHint:
       "Khi chuyển, mô hình bắt đầu nạp ngay; quyết định tiếp theo sẽ dùng nó.",

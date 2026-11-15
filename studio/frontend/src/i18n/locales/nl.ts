@@ -969,6 +969,7 @@ export const nl = {
     modelsOwnVoice: "Eigen stem van het model",
     randomEachSentence: "Willekeurige stem per zin",
     builtinSpeakers: "Ingebouwd",
+    builtinDetectors: "Ingebouwd",
     savedVoices: "Opgeslagen stemmen",
     decideHint:
       "Na het wisselen begint het laden meteen; de volgende beslissing gebruikt het.",

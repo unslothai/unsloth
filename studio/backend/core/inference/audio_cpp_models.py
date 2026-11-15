@@ -712,7 +712,7 @@ _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
 
 
 # Table families can be newer than some runtimes, so the runtime check still applies to them.
-_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts"))
+_RUNTIME_GATED_FAMILIES = frozenset(("mira_tts", "sopro_tts", "firered_vad"))
 
 _MULTI_FILE_PACKAGE = "This model ships as a multi-file package Unsloth Studio cannot load yet."
 
@@ -972,6 +972,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         for name in names
     ),
     AudioCppFamily("pulsevad", "vad"),
+    # Newer than some supported runtimes: one without its spec refuses it (_RUNTIME_GATED_FAMILIES).
+    AudioCppFamily("firered_vad", "vad"),
     *(
         AudioCppFamily(
             name,

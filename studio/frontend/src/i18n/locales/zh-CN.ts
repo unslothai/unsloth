@@ -862,6 +862,7 @@ export const zhCN = {
     speakerMale: "男声",
     randomEachSentence: "每句随机音色",
     builtinSpeakers: "内置",
+    builtinDetectors: "内置",
     savedVoices: "已保存的音色",
     decideHint: "切换后立即开始加载，下一次判定就会使用它。",
     decideGroupFineTunes: "已微调",
