@@ -907,8 +907,7 @@ def _drops_frozen_weights(kwargs):
 
 
 def _linear4bit_class():
-    """bitsandbytes' Linear4bit, or None: without bitsandbytes unsloth_zoo's stub hands back an instance, and
-    isinstance(m, <instance>) raises TypeError."""
+    # unsloth_zoo's stub (no bitsandbytes) yields an instance; isinstance on it raises TypeError.
     try:
         from bitsandbytes.nn import Linear4bit
     except Exception:
