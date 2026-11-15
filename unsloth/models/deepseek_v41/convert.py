@@ -30,11 +30,14 @@ converted once, streamed one layer at a time, into this implementation's own lay
 * ``mtp.*``, ``vision.*``, ``aligner.*``, ``image_*`` dropped; ``quantization_config`` removed from config.json.
 """
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shutil
+import tempfile
+from pathlib import PurePosixPath, PureWindowsPath
 
 import torch
 
@@ -158,11 +161,30 @@ def _transformers_major():
         return 0
 
 
+def _checked_shard(name):
+    """An index shard name must be a plain relative path inside the checkpoint directory (lexical check, so the
+    symlinked blobs of a Hub snapshot keep working)."""
+    bad = not isinstance(name, str) or not name
+    if not bad:
+        for pure in (PurePosixPath(name), PureWindowsPath(name)):
+            if pure.is_absolute() or pure.drive or pure.anchor or ".." in pure.parts:
+                bad = True
+                break
+    if bad:
+        raise ValueError(
+            f"Unsloth: DeepSeek-V4.1 checkpoint index names an unsafe shard path {name!r}"
+        )
+    return name
+
+
 def _read_index(src):
     index = os.path.join(src, "model.safetensors.index.json")
     if os.path.isfile(index):
         with open(index) as f:
-            return json.load(f)["weight_map"]
+            weight_map = json.load(f)["weight_map"]
+        for shard in weight_map.values():
+            _checked_shard(shard)
+        return weight_map
     from safetensors import safe_open
 
     single = os.path.join(src, "model.safetensors")
@@ -192,19 +214,30 @@ def released_needs_conversion():
         return True
 
 
-def _source_dir(path, **hub_kwargs):
+def _source_dir(
+    path,
+    subfolder = None,
+    **hub_kwargs,
+):
+    """<local dir or Hub snapshot>/<subfolder> holding the released files."""
+    sub = str(subfolder or "").replace("\\", "/").strip("/")
+    if sub:
+        _checked_shard(sub)
     if os.path.isdir(str(path)):
-        return str(path)
-    from huggingface_hub import snapshot_download
+        base = str(path)
+    else:
+        from huggingface_hub import snapshot_download
 
-    allowed = {
-        k: v
-        for k, v in hub_kwargs.items()
-        if k in ("cache_dir", "token", "revision", "local_files_only")
-    }
-    return snapshot_download(
-        str(path), allow_patterns = ["*.safetensors", "*.json", "tokenizer*", "*.jinja"], **allowed
-    )
+        allowed = {
+            k: v
+            for k, v in hub_kwargs.items()
+            if k in ("cache_dir", "token", "revision", "local_files_only")
+        }
+        patterns = ["*.safetensors", "*.json", "tokenizer*", "*.jinja"]
+        if sub:
+            patterns = [sub + "/" + p for p in patterns]
+        base = snapshot_download(str(path), allow_patterns = patterns, **allowed)
+    return os.path.join(base, *sub.split("/")) if sub else base
 
 
 def _target_dir(src):
@@ -218,7 +251,7 @@ def _target_dir(src):
     for f in sorted(os.listdir(src)):
         if f.endswith((".safetensors", ".json")):
             st = os.stat(os.path.join(src, f))
-            stamp.append(f"{f}:{st.st_size}:{int(st.st_mtime)}")
+            stamp.append(f"{f}:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}")
     mode = "fp4packed" if keep_fp4_experts_packed() else "bf16"
     digest = hashlib.sha256(
         (os.path.realpath(src) + "|" + "|".join(stamp) + "|" + mode).encode()
@@ -226,11 +259,47 @@ def _target_dir(src):
     return os.path.join(root, digest)
 
 
+@contextlib.contextmanager
+def _dst_lock(dst):
+    """Inter-process lock guarding the completion check, conversion and publication of ``dst``."""
+    lock_path = dst + ".lock"
+    try:
+        from filelock import FileLock
+    except Exception:
+        FileLock = None
+    if FileLock is not None:
+        with FileLock(lock_path):
+            yield
+        return
+    try:
+        import fcntl
+    except Exception:
+        fcntl = None
+    if fcntl is None:
+        yield
+        return
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _drop_lock_file(dst):
+    """Remove ``dst``.lock once ``dst`` is published. Safe while held: every later critical section, even one that
+    still waits on the unlinked inode, only re-reads the completion marker, which is never removed again."""
+    try:
+        os.unlink(dst + ".lock")
+    except OSError:
+        pass
+
+
 def convert_released_checkpoint(path, **hub_kwargs):
     """Convert (once, cached) and return the directory of the native-layout checkpoint."""
-    from safetensors import safe_open
-    from safetensors.torch import save_file
-
     src = _source_dir(path, **hub_kwargs)
     dst = _target_dir(src)
     if _transformers_major() < 5:
@@ -238,19 +307,48 @@ def convert_released_checkpoint(path, **hub_kwargs):
             "Unsloth: recent transformers 5.x releases load the release directly (fp8 linears and fp4 experts stay "
             "quantized, no converted copy on disk). `pip install -U transformers` is recommended for DeepSeek-V4.1."
         )
+    parent = os.path.dirname(dst)
+    os.makedirs(parent, exist_ok = True)
     done = os.path.join(dst, ".unsloth_converted")
-    if os.path.isfile(done):
-        return dst
-    tmp = dst + ".partial"
-    shutil.rmtree(tmp, ignore_errors = True)
-    os.makedirs(tmp, exist_ok = True)
+    with _dst_lock(dst):
+        if os.path.isfile(done) and not os.path.islink(dst):
+            _drop_lock_file(dst)
+            return dst
+        # A private staging dir per call (never a predictable path another user could pre-plant), published with
+        # one atomic rename while the lock is held.
+        tmp = tempfile.mkdtemp(prefix = os.path.basename(dst) + ".partial-", dir = parent)
+        published = False
+        try:
+            umask = os.umask(0)
+            os.umask(umask)
+            os.chmod(
+                tmp, 0o777 & ~umask
+            )  # published with the usual permissions, not mkdtemp's 0700
+            _convert_into(src, tmp, dst)
+            if os.path.islink(dst):
+                os.unlink(dst)
+            elif os.path.isdir(dst):
+                shutil.rmtree(dst)
+            os.replace(tmp, dst)
+            published = True
+            _drop_lock_file(dst)
+        finally:
+            if not published:
+                shutil.rmtree(tmp, ignore_errors = True)
+    return dst
+
+
+def _convert_into(src, tmp, dst):
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
     weight_map = _read_index(src)
     handles = {}
 
     def get(name):
         f = weight_map[name]
         if f not in handles:
-            handles[f] = safe_open(os.path.join(src, f), "pt")
+            handles[f] = safe_open(os.path.join(src, _checked_shard(f)), "pt")
         return handles[f].get_tensor(name)
 
     pack_fp4 = keep_fp4_experts_packed()
@@ -359,7 +457,3 @@ def convert_released_checkpoint(path, **hub_kwargs):
         ):
             shutil.copy(os.path.join(src, f), os.path.join(tmp, f))
     open(os.path.join(tmp, ".unsloth_converted"), "w").close()
-    if os.path.isdir(dst):
-        shutil.rmtree(dst, ignore_errors = True)
-    os.replace(tmp, dst)
-    return dst
