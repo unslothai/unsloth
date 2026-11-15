@@ -186,7 +186,7 @@ def test_rocm_call_runs_the_triton_kernel(monkeypatch):
         calls.append((tuple(q.shape), dict(config), pv, scale))
         return v.clone()
 
-    monkeypatch.setattr(T, "int8_attention", fake)
+    monkeypatch.setattr(T, "_int8_attention", fake)
     monkeypatch.setattr(I, "unsupported_reason", lambda q, k, v: None)
     monkeypatch.setattr(torch.cuda, "device", lambda *a, **k: contextlib.nullcontext())
     q = torch.randn(1, 8, 2, 128, dtype = torch.bfloat16)
@@ -522,3 +522,79 @@ def test_direct_launch_passes_every_argument_in_parameter_order():
     assert T._launcher(kernel, compiled, ("tx", "ty"), (5, 6), {"BM": 64}) is None
     assert T._launcher(kernel, None, ("tx", "ty"), (5,), {"BM": 64}) is None
     assert T._launcher(kernel, P(run = 1), ("tx", "ty"), (5,), {"BM": 64}) is None
+
+
+def test_direct_launch_never_crosses_cards(monkeypatch):
+    """The cached direct launcher belongs to the card it was compiled on: a call on another card (or with operands on
+    another card than the current one) takes the regular launch, and each card gets its own cached launcher."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_int8_attention_triton as T
+
+    if T.triton is None:
+        pytest.skip("no Triton")
+    from triton.runtime.driver import driver
+
+    P = types.SimpleNamespace
+    current = {"dev": 0}
+    log = []
+
+    class Compiled:
+        def __init__(self, dev):
+            self.dev, self.function, self.packed_metadata = dev, dev, None
+
+        def run(self, *a):
+            log.append(("direct", self.dev, current["dev"]))
+
+    class Kernel:
+        params = [
+            P(name = "x", is_constexpr = False, default = None),
+            P(name = "n", is_constexpr = False, default = None),
+        ]
+
+        def __getitem__(self, grid):
+            def launch(*a, **k):
+                log.append(("regular", current["dev"]))
+                return Compiled(current["dev"])
+
+            return launch
+
+    class Buf:
+        def __init__(self, dev):
+            self.dev = dev
+
+        def data_ptr(self):
+            return 4096
+
+        def get_device(self):
+            return self.dev
+
+    class Driver:
+        def get_current_device(self):
+            return current["dev"]
+
+        def get_current_stream(self, dev):
+            return 0
+
+    monkeypatch.setattr(T.triton.runtime.jit, "JITFunction", Kernel)
+    monkeypatch.setattr(T, "_FAST_LAUNCH", {"ok": True})
+    monkeypatch.setattr(
+        driver, "_active", Driver()
+    )  # restored after the test, no real driver is created
+    plan = {"k_grid": (1, 1, 1), "k_args": (5,), "k_meta": {}}
+    kernel = Kernel()
+    T._launch(
+        kernel, plan, "k", (Buf(0),)
+    )  # first call on card 0: regular, caches card 0's launcher
+    T._launch(kernel, plan, "k", (Buf(0),))  # card 0 again: direct, card 0's kernel
+    current["dev"] = 1
+    T._launch(kernel, plan, "k", (Buf(1),))  # card 1: regular, never card 0's kernel
+    T._launch(kernel, plan, "k", (Buf(1),))  # card 1 again: direct, card 1's kernel
+    T._launch(kernel, plan, "k", (Buf(0),))  # operands on card 0 while card 1 is current: regular
+    assert log == [
+        ("regular", 0),
+        ("direct", 0, 0),
+        ("regular", 1),
+        ("direct", 1, 1),
+        ("regular", 1),
+    ], log
+    assert T._FAST_LAUNCH["ok"] is True

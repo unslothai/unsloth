@@ -25,6 +25,7 @@ otherwise spill them); ``PREFETCH_FIX`` keeps cubins compiled with and without t
 
 from __future__ import annotations
 
+import contextlib
 import math
 import types
 from typing import Any, Optional
@@ -98,8 +99,8 @@ if triton is not None:
         MODE: tl.constexpr,
     ):
         # per (batch, head, channel) over every STEP-th token: MODE 0 mean -> c; MODE 1 mid-range -> c, half range -> g
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         cols = tl.arange(0, D)
         n_sub = (n_rows + STEP - 1) // STEP
         acc = tl.zeros([D], tl.float32)
@@ -123,10 +124,10 @@ if triton is not None:
                 lo = tl.minimum(lo, tl.min(tl.where(live[:, None], x, 3.0e38), axis = 0))
                 hi = tl.maximum(hi, tl.max(tl.where(live[:, None], x, -3.0e38), axis = 0))
         if MODE == 0:
-            tl.store(c_ptr + bh * D + cols, acc / n_sub)
+            tl.store(c_ptr + bh.to(tl.int64) * D + cols, acc / n_sub)
         else:
-            tl.store(c_ptr + bh * D + cols, 0.5 * (hi + lo))
-            tl.store(g_ptr + bh * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
+            tl.store(c_ptr + bh.to(tl.int64) * D + cols, 0.5 * (hi + lo))
+            tl.store(g_ptr + bh.to(tl.int64) * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
 
     @triton.jit
     def _quant_rows(
@@ -151,8 +152,8 @@ if triton is not None:
         # R rows of one (batch, head), optionally centred, rotated: int8 = rint(x * 127 / amax), amax per row
         # (scale [BH, n_pad]) or over the R rows (TILE, scale [BH, n_pad / R]); scale = amax / 127 * mul. Padded
         # rows are zeros (with scale 0 per row)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * R + tl.arange(0, R)
         cols = tl.arange(0, D)
         live = rows < n_rows
@@ -166,7 +167,7 @@ if triton is not None:
             other = 0.0,
         ).to(tl.float32)
         if CENTRE:
-            c = tl.load(c_ptr + bh * D + cols)
+            c = tl.load(c_ptr + bh.to(tl.int64) * D + cols)
             x = tl.where(live[:, None], x - c[None, :], 0.0)
         x = _rotate(x, R, D)
         base = bh.to(tl.int64) * n_pad
@@ -201,8 +202,8 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head): (x - centre) / gain per channel, one scale for the tile,
         # stored key-major [BH, n_pad, D] or (TRANS) channel-major [BH, D, n_pad]
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * T + tl.arange(0, T)
         cols = tl.arange(0, D)
         live = rows < n_rows
@@ -215,8 +216,8 @@ if triton is not None:
             mask = live[:, None],
             other = 0.0,
         ).to(tl.float32)
-        c = tl.load(c_ptr + bh * D + cols)
-        g = tl.load(g_ptr + bh * D + cols)
+        c = tl.load(c_ptr + bh.to(tl.int64) * D + cols)
+        g = tl.load(g_ptr + bh.to(tl.int64) * D + cols)
         x = tl.where(live[:, None], (x - c[None, :]) / g[None, :], 0.0)
         amax = tl.maximum(tl.max(tl.max(tl.abs(x), axis = 1), axis = 0), 1e-20)
         tile = bh.to(tl.int64) * (n_pad // T) + blk
@@ -246,8 +247,8 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad], padded keys zero; in V's dtype,
         # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = blk * T + tl.arange(0, T)
         cols = tl.arange(0, D)
         x = tl.load(
@@ -401,8 +402,8 @@ if triton is not None:
             TO_F16,
         )
 
-    # sequence lengths, head counts and block counts vary per call: kept out of the compile key (no % 16 / == 1
-    # specialisation), so a shape change never compiles another variant
+    # Token counts, head counts and block counts stay out of the compile key (Triton would otherwise specialise them on
+    # % 16 and == 1), so one compile serves every shape.
     @triton.jit(do_not_specialize = ["sq", "sk", "n_heads", "n_qblk"])
     def prep_kernel(
         q_ptr,
@@ -699,8 +700,8 @@ if triton is not None:
         # contiguously (a key-major V tile is gathered element by element from shared memory on RDNA3 WMMA)
         pid_m = tl.program_id(0)
         bh = tl.program_id(1)
-        b = bh // n_heads
-        h = bh % n_heads
+        b = (bh // n_heads).to(tl.int64)
+        h = (bh % n_heads).to(tl.int64)
         rows = pid_m * BM + tl.arange(0, BM)
         offs_n = tl.arange(0, BN)
         cols = tl.arange(0, D)
@@ -797,8 +798,8 @@ if triton is not None:
             )
         out = acc / l_i[:, None]
         if PV_MODE == 2 or PV_MODE == 4:
-            vg = tl.load(vg_ptr + bh * D + cols)
-            vc = tl.load(vc_ptr + bh * D + cols)
+            vg = tl.load(vg_ptr + bh.to(tl.int64) * D + cols)
+            vc = tl.load(vc_ptr + bh.to(tl.int64) * D + cols)
             out = out * vg[None, :] + vc[None, :]
         tl.store(
             o_ptr + b * o_sb + h * o_sh + rows[:, None].to(tl.int64) * o_ss + cols[None, :],
@@ -980,8 +981,24 @@ def _plan(q: Any, k: Any, v: Any, config: dict, pv: Optional[str], scale: Option
     return plan
 
 
+_NO_SCOPE = contextlib.nullcontext()
+
+
+def _on_card(t: Any) -> Any:
+    """Triton launches on the current device: run the launches of a call on another card under that card. One
+    check per public call; the same card (every single-card render) never switches."""
+    import torch
+
+    d = t.device
+    if d.type != "cuda" or d.index is None or d.index == torch.cuda.current_device():
+        return _NO_SCOPE
+    if torch.compiler.is_compiling():
+        return _NO_SCOPE
+    return torch.cuda.device(d.index)
+
+
 def _quantise(plan: dict, q: Any, k: Any, v: Any) -> dict:
-    """The operands of ``attend`` for one call: two launches (``prep_kernel``, ``kv_kernel``)."""
+    """The operands of ``attend`` for one call: two launches (``prep_kernel``, ``kv_kernel``) on the current card."""
     import torch
 
     kk = kernels()
@@ -1143,9 +1160,11 @@ def _launch(kernel: Any, plan: dict, name: str, tensors: tuple) -> None:
     if _fast_launch_ok() and isinstance(kernel, triton.runtime.jit.JITFunction):
         from triton.runtime.driver import driver
 
+        # keyed by the card the launch runs on (the operands' card: the public calls hold it via _on_card); a call
+        # whose operands sit on another card takes the regular launch, never another card's compiled kernel
         dev = driver.active.get_current_device()
         fast = plan.setdefault("fast", {}).get((name, dev))
-        if fast and all(t.data_ptr() % 16 == 0 for t in tensors):
+        if fast and tensors[0].get_device() == dev and all(t.data_ptr() % 16 == 0 for t in tensors):
             compiled, template = fast
             args = list(template)
             args[: len(tensors)] = tensors
@@ -1173,7 +1192,11 @@ def _launch(kernel: Any, plan: dict, name: str, tensors: tuple) -> None:
             except Exception:  # noqa: BLE001 -- this Triton's launcher wants something else: regular launches
                 _FAST_LAUNCH["ok"] = False
         compiled = kernel[grid](*tensors, *scalars, **meta)
-        if fast is None and all(t.data_ptr() % 16 == 0 for t in tensors):
+        if (
+            fast is None
+            and tensors[0].get_device() == dev
+            and all(t.data_ptr() % 16 == 0 for t in tensors)
+        ):
             plan["fast"][(name, dev)] = _launcher(kernel, compiled, tensors, scalars, meta) or False
         return
     kernel[grid](*tensors, *scalars, **meta)
@@ -1192,10 +1215,12 @@ def quantise(
     ``config``: ``bm`` / ``bn`` (query rows / keys per tile), ``warps``, ``stages``, ``pv`` (``int8``, ``half``:
     16-bit P.V on a heads-major copy of V, ``half_strided``: 16-bit P.V reading V in place) and ``kscale``
     (``key``: one K scale per key, ``tile``: one per key tile)."""
-    return _quantise(_plan(q, k, v, config, pv, scale), q, k, v)
+    with _on_card(q):
+        return _quantise(_plan(q, k, v, config, pv, scale), q, k, v)
 
 
-def attend(p: dict) -> Any:
+def _attend(p: dict) -> Any:
+    """The attention launch on ``_quantise``'s operands, on the current card."""
     import torch
 
     kk = kernels()
@@ -1225,6 +1250,12 @@ def attend(p: dict) -> Any:
     return out
 
 
+def attend(p: dict) -> Any:
+    """``[B, Sq, H, D]`` attention on ``quantise``'s operands, launched on their card."""
+    with _on_card(p["qi"]):
+        return _attend(p)
+
+
 def int8_attention(
     q: Any,
     k: Any,
@@ -1234,7 +1265,21 @@ def int8_attention(
     scale: Optional[float] = None,
 ) -> Any:
     """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``: three
-    launches, their arithmetic planned once per call signature."""
+    launches, their arithmetic planned once per call signature, on the card of ``q``."""
+    with _on_card(q):
+        return _int8_attention(q, k, v, config, pv, scale)
+
+
+def _int8_attention(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: Optional[dict] = None,
+    pv: Optional[str] = None,
+    scale: Optional[float] = None,
+) -> Any:
+    """``int8_attention`` on the current card: for callers that already hold ``torch.cuda.device(q.device)``
+    (Studio's dispatcher), so a call pays no device check."""
     import torch
 
     if q.stride(3) != 1:
@@ -1245,7 +1290,7 @@ def int8_attention(
         v = v.contiguous()
     plan = _plan(q, k, v, config or DEFAULT_CONFIGS[int(q.shape[-1])], pv, scale)
     with torch.no_grad():
-        return attend(_quantise(plan, q, k, v))
+        return _attend(_quantise(plan, q, k, v))
 
 
 def half_attention(
@@ -1267,45 +1312,46 @@ def half_attention(
     out = torch.empty((B, Sq, H, D), dtype = v.dtype, device = v.device)
     k = k.to(q.dtype)
     v2 = v.to(q.dtype)
-    kk.attn[(triton_cdiv(Sq, bm), B * H)](
-        q,
-        q,
-        k,
-        k,
-        v2,
-        q,
-        q,
-        q,
-        out,
-        Sq,
-        Sk,
-        0,
-        0,
-        H,
-        mul,
-        q.stride(0),
-        q.stride(1),
-        q.stride(2),
-        k.stride(0),
-        k.stride(1),
-        k.stride(2),
-        v2.stride(0),
-        v2.stride(1),
-        v2.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        BM = bm,
-        BN = bn,
-        D = D,
-        QK_INT8 = False,
-        K_TILE = False,
-        PV_MODE = 0,
-        EVEN_K = Sk % bn == 0,
-        ACC_IN_DOT = bool(config.get("acc_in_dot", False)),
-        PREFETCH_FIX = prefetch_fix(),
-        **_launch_options(config),
-    )
+    with _on_card(out):
+        kk.attn[(triton_cdiv(Sq, bm), B * H)](
+            q,
+            q,
+            k,
+            k,
+            v2,
+            q,
+            q,
+            q,
+            out,
+            Sq,
+            Sk,
+            0,
+            0,
+            H,
+            mul,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            v2.stride(0),
+            v2.stride(1),
+            v2.stride(2),
+            out.stride(0),
+            out.stride(1),
+            out.stride(2),
+            BM = bm,
+            BN = bn,
+            D = D,
+            QK_INT8 = False,
+            K_TILE = False,
+            PV_MODE = 0,
+            EVEN_K = Sk % bn == 0,
+            ACC_IN_DOT = bool(config.get("acc_in_dot", False)),
+            PREFETCH_FIX = prefetch_fix(),
+            **_launch_options(config),
+        )
     return out
 
 
