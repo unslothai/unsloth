@@ -1008,6 +1008,61 @@ def test_packed_sequences_match_each_sequence_run_alone():
     assert model.model.embed_tokens.weight.grad[ids[0, :-1]].abs().sum(-1).gt(0).all()
 
 
+def test_packed_documents_at_every_boundary_match_unpacked_runs_and_never_leak():
+    """Padding-free packing at the attention boundaries: a 1-token document, one exactly the sliding window, one past
+    it, one compressor block (ratio 2), one past the indexer budget, an odd one. Per document: logits equal the
+    document run alone (unpadded); the summed loss and every gradient equal the per-document sum; perturbing one
+    document leaves the others unchanged. 16 indexer heads: with 2, relu often zeroes a whole score, and top-k breaks
+    exact ties by tensor width (the unpadded run has fewer compressed entries than the relayout's padded row)."""
+    model = _tiny_model(index_n_heads = 16)
+    text = model.config.text_config
+    lengths = [1, text.sliding_window, text.sliding_window + 1, 2, 17, 5]
+    assert 17 > text.index_topk * 2  # past the indexer budget at ratio 1 and 2
+    gen = torch.Generator().manual_seed(3)
+    docs = [torch.randint(0, 512, (n,), generator = gen) for n in lengths]
+    starts = [sum(lengths[:k]) for k in range(len(lengths))]
+    ids = torch.cat(docs).unsqueeze(0)
+    pos = torch.cat([torch.arange(n) for n in lengths]).unsqueeze(0)
+    labels = ids.clone()
+    labels[0, starts] = -100  # no document predicts the next one's first token
+    n_items = int((labels[0, 1:] != -100).sum())
+
+    model.eval()
+    with torch.no_grad():
+        packed = model(input_ids = ids, position_ids = pos).logits[0]
+        for doc, lo in zip(docs, starts):
+            alone = model(input_ids = doc.unsqueeze(0)).logits[0]
+            torch.testing.assert_close(packed[lo : lo + len(doc)], alone, rtol = 1e-5, atol = 1e-5)
+        # perturb document 2 only: every other document's logits stay put, document 2's move
+        bumped = ids.clone()
+        bumped[0, starts[2] : starts[2] + lengths[2]] = (
+            bumped[0, starts[2] : starts[2] + lengths[2]] + 7
+        ) % 512
+        moved = model(input_ids = bumped, position_ids = pos).logits[0]
+    for k, (lo, n) in enumerate(zip(starts, lengths)):
+        diff = float((moved[lo : lo + n] - packed[lo : lo + n]).abs().max())
+        assert (diff > 1e-3) if k == 2 else (diff <= 1e-6), (k, diff)
+
+    model.train()
+    model.zero_grad(set_to_none = True)
+    loss = model(input_ids = ids, position_ids = pos, labels = labels, num_items_in_batch = n_items).loss
+    loss.backward()
+    want = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    total = 0.0
+    for doc in docs:
+        doc_labels = doc.clone().unsqueeze(0)
+        doc_labels[0, 0] = -100
+        part = model(input_ids = doc.unsqueeze(0), labels = doc_labels, num_items_in_batch = n_items).loss
+        part.backward()
+        total = total + part.detach()
+    torch.testing.assert_close(total, loss.detach(), rtol = 1e-5, atol = 1e-6)
+    got = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+    assert got.keys() == want.keys()
+    for name in want:
+        torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
+
+
 @pytest.mark.parametrize("layout", ["packed", "left_padded"])
 def test_packed_rows_and_left_padding_stay_separated_under_torch_compile(layout):
     """torch.compile keeps the packed-row relayout."""
@@ -1229,6 +1284,62 @@ def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
             got = forward(model, input_ids = ids, labels = labels, logits_to_keep = keep).loss
             torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-6)
     assert calls == [10, 4, 3]
+
+
+def test_greedy_generate_equals_full_prefix_recompute_across_the_boundaries():
+    """No KV cache: every generate step recomputes the whole prefix. Token by token, batch 2 (left padded) and with a
+    LoRA adapter on and off, greedy generate equals argmax of a fresh full-prefix forward, past the sliding window,
+    compressor blocks and the indexer budget."""
+    from peft import LoraConfig, get_peft_model
+
+    model = _tiny_model(index_n_heads = 16)
+    text = model.config.text_config
+    model.generation_config.eos_token_id = None
+    model.generation_config.pad_token_id = 0
+    gen = torch.Generator().manual_seed(5)
+    prompts = [torch.randint(3, 512, (n,), generator = gen) for n in (3, text.sliding_window - 1)]
+    width = max(len(p) for p in prompts)
+    ids = torch.stack(
+        [torch.cat([torch.zeros(width - len(p), dtype = torch.long), p]) for p in prompts]
+    )
+    mask = torch.stack(
+        [torch.cat([torch.zeros(width - len(p)), torch.ones(len(p))]).long() for p in prompts]
+    )
+    # Both rows end past the window (8) and past index_topk (3) compressed blocks at ratio 2.
+    new_tokens = text.sliding_window + 1
+
+    def recompute(m, prompt):
+        seq = prompt.unsqueeze(0)
+        for _ in range(new_tokens):
+            with torch.no_grad():
+                nxt = m(input_ids = seq).logits[:, -1].argmax(-1, keepdim = True)
+            seq = torch.cat([seq, nxt], dim = 1)
+        return seq[0, len(prompt) :]
+
+    def check(m, recompute_too = True):
+        with torch.no_grad():
+            out = m.generate(
+                input_ids = ids, attention_mask = mask, max_new_tokens = new_tokens, do_sample = False
+            )
+        for k, prompt in enumerate(prompts if recompute_too else ()):
+            assert torch.equal(out[k, width:], recompute(m, prompt)), k
+        return out[:, width:]
+
+    model.eval()
+    plain = check(model)
+    peft_model = get_peft_model(
+        model,
+        LoraConfig(
+            r = 4,
+            lora_alpha = 8,
+            target_modules = ["q_a_proj", "kv_proj", "o_b_proj"],
+            init_lora_weights = False,
+        ),
+    ).eval()
+    with_lora = check(peft_model)
+    with peft_model.disable_adapter():
+        assert torch.equal(check(peft_model, recompute_too = False), plain)
+    assert not torch.equal(with_lora, plain)  # the adapter changes the continuation
 
 
 def test_generation_projects_only_the_last_position():
