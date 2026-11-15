@@ -71,6 +71,11 @@ def normalize_tool_permissions(
 OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
 
+def _is_computer_tool(name: str) -> bool:
+    from core.inference.computer_use import is_computer_tool
+    return is_computer_tool(name)
+
+
 SANDBOX_LEVELS = ("high", "low")
 
 
@@ -95,6 +100,9 @@ def off_mode_still_gates(
     session_id: Optional[str] = None,
 ) -> bool:
     """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
+    # The desktop is outside every sandbox, so "off" keeps asking about what is risky there.
+    if _is_computer_tool(name):
+        return True
     if name not in OS_SANDBOXED_TOOLS:
         return False
     if runs_without_os_sandbox(name, sandbox_level):
@@ -136,6 +144,7 @@ def needs_tool_confirmation(
     never_needs = None,
     sandbox_level: Optional[str] = None,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -143,6 +152,11 @@ def needs_tool_confirmation(
         never_needs = never_needs or tools.never_needs_approval
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
+    if permission_mode in ("off", "auto") and _is_computer_tool(name):
+        from core.inference.computer_use import policy as computer_policy
+
+        # Per conversation: a project's chats share session_id, and each asks for itself.
+        return computer_policy.needs_confirmation(arguments, thread_id or session_id)
     if permission_mode == "off":
         return off_mode_still_gates(name, sandbox_level, session_id) and _classify(
             is_high_risk, name, arguments, sandbox_level
