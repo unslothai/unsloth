@@ -134,7 +134,7 @@ def _lora_uses_every_trainable_param(model):
     ):
         return False
     base = getattr(model, "get_base_model", lambda: None)()
-    # A sequence classification head (PEFT's modules_to_save "score" / "classifier") runs on every forward.
+    # A classifier head in modules_to_save runs on every forward.
     classifier = type(base).__name__.endswith("ForSequenceClassification")
     for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
         value = getattr(cfg, attr, None)

@@ -218,7 +218,7 @@ def _llama_classifier():
 
 
 def test_sequence_classification_head_defaults_to_false(ddp_env):
-    # The score head runs on every forward; True crashed reentrant checkpointing ("ready only once").
+    # True crashed reentrant checkpointing ("ready only once").
     model = _lora(_llama_classifier(), task_type = "SEQ_CLS")
     assert any(".modules_to_save." in n and p.requires_grad for n, p in model.named_parameters())
     assert _helper()(_args(), model) is False
