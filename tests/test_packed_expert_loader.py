@@ -271,3 +271,53 @@ def test_transformers_alone_shows_the_defect(tmp_path):
             "this transformers loads NVFP4 experts with their global scale (upstream fixed)"
         )
     assert plain_max > 100 * true_max
+
+
+def test_offloaded_device_maps_keep_transformers_path(tmp_path):
+    _write_checkpoint(str(tmp_path), "nvfp4")
+    model = transformers.Qwen3MoeForCausalLM(_config())
+
+    class _Q:
+        quantization_config = None
+
+    pel._before_loading(
+        _Q(), model, [os.path.join(tmp_path, "model.safetensors")], {"model": "cpu", "lm_head": 0}
+    )
+    assert pel._PLAN_ATTR not in model.__dict__
+    assert "gate_up_proj" in model.model.layers[0].mlp.experts._parameters
+
+
+def test_a_declined_converter_filter_restores_stacks_and_ignore_lists(tmp_path):
+    _write_checkpoint(str(tmp_path), "nvfp4")
+    model = transformers.Qwen3MoeForCausalLM(_config())
+    before = getattr(model, "_keys_to_ignore_on_load_unexpected", None)
+    before = set(before) if isinstance(before, set) else before
+
+    class _Q:
+        quantization_config = None
+
+    q = _Q()
+    pel._before_loading(q, model, [os.path.join(tmp_path, "model.safetensors")])
+    assert pel._PLAN_ATTR in model.__dict__
+    assert pel._filter_conversions(q, []) == []  # no merge converter to drop: decline
+    after = getattr(model, "_keys_to_ignore_on_load_unexpected", None)
+    assert (set(after) if isinstance(after, set) else after) == before
+    experts = model.model.layers[0].mlp.experts
+    assert "gate_up_proj" in experts._parameters and not any(
+        k.startswith(pel._PLACEHOLDER) for k in experts._parameters
+    )
+
+
+def test_malformed_scales_are_refused(tmp_path, monkeypatch):
+    from safetensors.torch import load_file, save_file
+
+    _write_checkpoint(str(tmp_path), "nvfp4")
+    f = os.path.join(tmp_path, "model.safetensors")
+    state = load_file(f)
+    key = "model.layers.0.mlp.experts.1.up_proj.weight_scale"
+    state[key] = state[key][:, :1].contiguous()  # (rows, 1): would broadcast
+    save_file(state, f, metadata = {"format": "pt"})
+    monkeypatch.delenv(pel.PACKED_EXPERTS_ENV, raising = False)
+    assert pel.install_packed_expert_loading()
+    with pytest.raises(Exception):
+        _load(str(tmp_path))

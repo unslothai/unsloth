@@ -239,7 +239,13 @@ def _swap_in_placeholders(plan):
         item["dtype"] = originals["gate_up_proj"].dtype
 
 
-def _restore(plan):
+def _restore(plan, model = None):
+    if model is not None:
+        for attr, value in model.__dict__.pop("_unsloth_packed_ignore_backup", {}).items():
+            if value is _UNSET:
+                model.__dict__.pop(attr, None)
+            else:
+                setattr(model, attr, value)
     for item in plan:
         module = item["module"]
         for stack, param in item.get("originals", {}).items():
@@ -249,12 +255,19 @@ def _restore(plan):
             module._parameters[stack] = param
 
 
+_UNSET = object()
+
+
 def _ignore_keys(model):
+    backup = model.__dict__.setdefault("_unsloth_packed_ignore_backup", {})
     for attr, pattern in (
         ("_keys_to_ignore_on_load_missing", rf"\.{_PLACEHOLDER}"),
         ("_keys_to_ignore_on_load_unexpected", r"\.experts\.\d+\."),
     ):
         current = getattr(model, attr, None)
+        backup.setdefault(
+            attr, model.__dict__.get(attr, _UNSET) if not isinstance(current, set) else set(current)
+        )
         if isinstance(current, set):
             current.add(pattern)
         else:
@@ -330,8 +343,8 @@ def _fill(item, shards):
         device = holders["codes"].device
         if device.type == "meta":
             raise RuntimeError(
-                f"Unsloth: the packed experts of {item['name']} were offloaded; packed expert stacks need a GPU or "
-                f"CPU device. Load with {PACKED_EXPERTS_ENV}=0 to keep them as 16-bit stacks."
+                f"Unsloth: the packed experts of {item['name']} were offloaded to disk; packed expert stacks "
+                "need a GPU or CPU device map. Load with an explicit device_map that keeps the experts off disk."
             )
         # Fresh buffers in the storage dtypes: a load-time cast of the placeholders must not round the scales.
         codes = torch.empty(tuple(holders["codes"].shape), dtype = torch.uint8, device = device)
@@ -343,15 +356,36 @@ def _fill(item, shards):
         )
         del holders
         E, rows = codes.shape[0], codes.shape[1] // len(projs)
+
+        def _exact(tensor, target, what):
+            # copy_ would broadcast a malformed (rows, 1) scale over the whole slice.
+            if tuple(tensor.shape) != tuple(target.shape):
+                raise RuntimeError(
+                    f"Unsloth: {item['name']} expert {what} has shape {tuple(tensor.shape)}, expected "
+                    f"{tuple(target.shape)}; the checkpoint does not match the model."
+                )
+            target.copy_(tensor)
+
         for e in range(E):
             for p, proj in enumerate(projs):
                 rs = slice(p * rows, (p + 1) * rows)
-                codes[e, rs].copy_(shards.get(entries, e, proj, code_key).view(torch.uint8))
-                scales[e, rs].copy_(shards.get(entries, e, proj, "weight_scale").view(torch.uint8))
+                _exact(
+                    shards.get(entries, e, proj, code_key).view(torch.uint8),
+                    codes[e, rs],
+                    f"{e}.{proj} codes",
+                )
+                _exact(
+                    shards.get(entries, e, proj, "weight_scale").view(torch.uint8),
+                    scales[e, rs],
+                    f"{e}.{proj} scales",
+                )
                 if glob is not None:
-                    glob[e, p] = (
-                        shards.get(entries, e, proj, glob_key).to(torch.float32).reshape(-1)[0]
-                    )
+                    g = shards.get(entries, e, proj, glob_key)
+                    if g.numel() != 1:
+                        raise RuntimeError(
+                            f"Unsloth: {item['name']} expert {e}.{proj} has {g.numel()} global scales, expected 1."
+                        )
+                    glob[e, p] = g.to(torch.float32).reshape(())
         dtype = item["dtype"]
         if fmt == "mxfp8":
             param = pe.Mxfp8ExpertParam(codes, packed_scales = scales, packed_dtype = dtype)
@@ -378,8 +412,9 @@ def finalize_packed_experts(model) -> int:
     if not plan:
         return 0
     if any("order" not in item for item in plan):
-        _restore(plan)
+        _restore(plan, model)
         return 0
+    model.__dict__.pop("_unsloth_packed_ignore_backup", None)
     shards = _Shards()
     with torch.no_grad():
         for item in plan:
@@ -394,7 +429,18 @@ def finalize_packed_experts(model) -> int:
     return len(plan)
 
 
-def _before_loading(quantizer, model, checkpoint_files):
+def _offloads(device_map) -> bool:
+    if not isinstance(device_map, dict):
+        return False
+    return any(str(v) in ("cpu", "disk", "meta") for v in device_map.values())
+
+
+def _before_loading(
+    quantizer,
+    model,
+    checkpoint_files,
+    device_map = None,
+):
     # dequantize=True asks transformers for 16-bit experts; its own (lossy) path is left as it is.
     if getattr(getattr(quantizer, "quantization_config", None), "dequantize", False):
         return
@@ -404,6 +450,9 @@ def _before_loading(quantizer, model, checkpoint_files):
         or getattr(model, "_device_mesh", None) is not None
         or (getattr(model, "tp_size", None) or 1) > 1
     ):
+        return
+    # cpu / disk offload dispatches before the fill could read the shards; transformers' own path is kept there.
+    if _offloads(device_map):
         return
     plan = _plan(model, checkpoint_files)
     if not plan:
@@ -424,14 +473,14 @@ def _filter_conversions(quantizer, conversions):
     for stack in ("gate_up_proj", "down_proj"):
         result = _converter_order(kept, stack)
         if result is None or result[1] is None:
-            _restore(plan)
+            _restore(plan, model)
             model.__dict__.pop(_PLAN_ATTR, None)
             return conversions
         kept, order[stack] = result
     entries = plan[0]["entries"]
     known = {proj for _, proj, _ in entries}
     if not set(order["gate_up_proj"]) | set(order["down_proj"]) <= known:
-        _restore(plan)
+        _restore(plan, model)
         model.__dict__.pop(_PLAN_ATTR, None)
         return conversions
     for item in plan:
@@ -465,11 +514,11 @@ def install_packed_expert_loading() -> bool:
     def _process_model_before_weight_loading(self, model, **kwargs):
         result = before(self, model, **kwargs)
         try:
-            _before_loading(self, model, kwargs.get("checkpoint_files"))
+            _before_loading(self, model, kwargs.get("checkpoint_files"), kwargs.get("device_map"))
         except Exception as exc:
             plan = model.__dict__.pop(_PLAN_ATTR, None)
             if plan:
-                _restore(plan)
+                _restore(plan, model)
             print(
                 f"Unsloth: could not plan packed expert stacks ({exc}); loading them as transformers does."
             )
@@ -507,7 +556,7 @@ def quantize_moe_experts_if_requested(model, full_finetuning = False) -> int:
     fmt = pe.experts_quantize_format()
     if fmt is None:
         return 0
-    if full_finetuning:
+    if full_finetuning or os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
         print(
             "Unsloth: UNSLOTH_MOE_EXPERTS_QUANTIZE is ignored for full finetuning (the experts train)."
         )
