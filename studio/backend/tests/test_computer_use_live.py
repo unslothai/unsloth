@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -254,6 +255,38 @@ def test_windows_names_an_app_as_the_start_menu_does(windows):
     assert windows._description(os.path.join(system, "no-such-program.exe")) == ""
     front = windows.front_window()
     assert isinstance(front.app, str) and front.app_id == front.app_id.lower()
+
+
+def test_windows_reads_a_non_ascii_start_menu_name_and_looks_it_up_once(windows, monkeypatch):
+    shown = "Unsloth Café 日本"
+    folder = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs")
+    link = os.path.join(folder, shown + ".lnk")
+    target = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "notepad.exe")
+    make = (
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:LINK); "
+        "$s.TargetPath = $env:TARGET; $s.Save()"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", make],
+        check = True,
+        env = {**os.environ, "LINK": link, "TARGET": target},
+    )
+    try:
+        found = ""
+        for _ in range(20):
+            windows._resolved.clear()
+            found = windows.resolve_app("Unsloth Café")
+            if found == shown:
+                break
+            time.sleep(0.5)
+        assert found == shown, repr(found)
+        runs = []
+        real = subprocess.run
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: runs.append(a) or real(*a, **k))
+        assert windows.resolve_app("Unsloth Café") == shown
+        assert runs == [], "a name just resolved is not looked up again"
+    finally:
+        os.remove(link)
 
 
 def test_windows_open_app_takes_names_not_paths(windows):

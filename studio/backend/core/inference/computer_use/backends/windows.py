@@ -31,6 +31,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MONITORINFOF_PRIMARY = 1
 _CREATE_NO_WINDOW = 0x08000000
 _GA_ROOT = 2
+_RESOLVE_TTL_S = 60.0
 
 _VK_MODIFIERS = {"ctrl": 0x11, "alt": 0x12, "shift": 0x10, "cmd": 0x5B}
 _VK = {
@@ -49,6 +50,7 @@ _EXTENDED_KEYS = frozenset(
 )
 
 _OPEN_APP_SCRIPT = (
+    "[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; "
     "$n = $env:UNSLOTH_COMPUTER_USE_APP; "
     "$apps = Get-StartApps; "
     "$a = $apps | Where-Object { $_.Name -eq $n } | Select-Object -First 1; "
@@ -109,6 +111,7 @@ class WindowsBackend(Backend):
         self._user32 = ctypes.WinDLL("user32", use_last_error = True)
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         self._descriptions: dict[str, str] = {}
+        self._resolved: dict[str, tuple[float, str]] = {}
         user32 = self._user32
         user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int]
         user32.SendInput.restype = wintypes.UINT
@@ -411,10 +414,18 @@ class WindowsBackend(Backend):
         return self._window(root) if root else None
 
     def resolve_app(self, name: str) -> str:
+        # One call resolves a name for its gate, its card and its run: each lookup starts PowerShell.
+        cached = self._resolved.get(name)
+        if cached is not None and time.monotonic() - cached[0] < _RESOLVE_TTL_S:
+            return cached[1]
         try:
-            return self.open_app(name, launch = False)
+            found = self.open_app(name, launch = False)
         except BackendError:
-            return name
+            found = name
+        if len(self._resolved) >= 256:
+            self._resolved.clear()
+        self._resolved[name] = (time.monotonic(), found)
+        return found
 
     def open_app(
         self,
@@ -438,7 +449,8 @@ class WindowsBackend(Backend):
                 check = False,
                 timeout = 30,
                 capture_output = True,
-                text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 env = env,
                 creationflags = _CREATE_NO_WINDOW,
             )

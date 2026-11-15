@@ -328,7 +328,11 @@ class MacBackend(Backend):
         """Asked of LaunchServices: NSWorkspace goes stale in a process with no run loop."""
         try:
             asn = subprocess.run(
-                ["/usr/bin/lsappinfo", "front"], capture_output = True, text = True, timeout = 5
+                ["/usr/bin/lsappinfo", "front"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
             ).stdout.strip()
             if not asn:
                 return "", "", 0
@@ -345,7 +349,8 @@ class MacBackend(Backend):
                     asn,
                 ],
                 capture_output = True,
-                text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             ).stdout
         except (OSError, subprocess.SubprocessError):
@@ -442,7 +447,8 @@ class MacBackend(Backend):
             check = False,
             timeout = 20,
             capture_output = True,
-            text = True,
+            encoding = "utf-8",
+            errors = "replace",
         )
         if done.returncode != 0:
             raise BackendError(f"no application named {name} was found on this Mac.")
