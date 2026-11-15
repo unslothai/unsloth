@@ -24,6 +24,9 @@ __all__ = [
 
 # calls: kernel ran; fallback: a qualifying call went back to SDPA after an error.
 LARGE_HEAD_ENGAGED = {"calls": 0, "fallback": 0}
+# Set to True on a 4D mask by unsloth/models/_block_compile.py (eager scan before the compiled
+# block) when the mask is exactly causal with no padding; compiled graphs cannot scan a mask.
+PLAIN_CAUSAL_ATTR = "_unsloth_plain_causal"
 _SUPPORTED_HEAD_DIMS = (512,)
 _INT32_MAX = 2**31 - 1
 
@@ -288,24 +291,29 @@ def _lh_bwd_dkdv(
     sdvb,
     sdvh,
     sdvn,
+    sds,
     HKV,
     G,
     S,
+    NSPLIT,
     HEAD_DIM: tl.constexpr,  # hd
     BLOCK_M: tl.constexpr,  # query rows per program
     BLOCK_N: tl.constexpr,  # key rows per step
 ):
-    # One program owns a kv block of one kv head and loops over its G query heads,
-    # so GQA needs no atomics and no repeated K / V.
+    # One program owns a kv block of one kv head and loops over its query heads (all G, or G / NSPLIT
+    # of them into an fp32 partial summed afterwards when B * HKV * kv blocks would leave SMs idle,
+    # e.g. Gemma-4 global layers: one kv head), so GQA needs no atomics and no repeated K / V.
     start_n = tl.program_id(0)
-    off_bkh = tl.program_id(1)
+    off_split = tl.program_id(1) % NSPLIT
+    off_bkh = tl.program_id(1) // NSPLIT
     off_b = (off_bkh // HKV).to(tl.int64)
     off_hk = (off_bkh % HKV).to(tl.int64)
     H = HKV * G
+    GS = G // NSPLIT
     K += off_b * skb + off_hk * skh
     V += off_b * svb + off_hk * svh
-    DK += off_b * sdkb + off_hk * sdkh
-    DV += off_b * sdvb + off_hk * sdvh
+    DK += off_b * sdkb + off_hk * sdkh + off_split.to(tl.int64) * sds
+    DV += off_b * sdvb + off_hk * sdvh + off_split.to(tl.int64) * sds
     LO += off_b * S
     HI += off_b * S
     QLO += off_b * S
@@ -322,8 +330,8 @@ def _lh_bwd_dkdv(
     m_end = tl.load(QHI + tl.minimum(start_n * BLOCK_N + BLOCK_N, S) - 1) + 1
     dk = tl.zeros([BLOCK_N, HEAD_DIM], tl.float32)
     dv = tl.zeros([BLOCK_N, HEAD_DIM], tl.float32)
-    for g in range(G):
-        off_h = off_hk * G + g
+    for g in range(GS):
+        off_h = off_hk * G + off_split * GS + g
         Qh = Q + off_b * sqb + off_h * sqh
         DOh = DO + off_b * sdob + off_h * sdoh
         row_base = (off_b * H + off_h) * S
@@ -426,6 +434,25 @@ def _fwd_impl(q, k, v, lo, hi, scale):
     return o, lse
 
 
+_SM_COUNT = {}
+
+
+def _dkdv_splits(device, bkh, S, G):
+    """Query-head groups the dK / dV pass splits into, so that kv blocks x kv heads x splits fill the
+    GPU about twice over (1 = no split: one kv head over a short sequence ran on 64 programs)."""
+    if os.environ.get("UNSLOTH_LH_DKDV_SPLIT", "1") == "0" or G == 1:
+        return 1
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    sms = _SM_COUNT.get(index)
+    if sms is None:
+        sms = _SM_COUNT[index] = torch.cuda.get_device_properties(index).multi_processor_count
+    programs = triton.cdiv(S, 32) * bkh
+    split = 1
+    while split * 2 <= G and G % (split * 2) == 0 and programs * split < 2 * sms:
+        split *= 2
+    return split
+
+
 def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     B, H, S, D = q.shape
     HKV = k.shape[1]
@@ -435,6 +462,12 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
+    nsplit = _dkdv_splits(q.device, B * HKV, S, G)
+    if nsplit > 1:
+        dk_out = torch.empty((nsplit, B, HKV, S, D), device = q.device, dtype = torch.float32)
+        dv_out = torch.empty_like(dk_out)
+    else:
+        dk_out, dv_out = dk, dv
     delta = torch.empty((B, H, S), device = q.device, dtype = torch.float32)
     positions = (
         torch.arange(S, device = q.device, dtype = torch.int32).expand(lo.shape[0], S).contiguous()
@@ -460,13 +493,13 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             num_warps = 4,
             enable_fp_fusion = True,
         )
-        _lh_bwd_dkdv[lambda meta: (triton.cdiv(S, meta["BLOCK_N"]), B * HKV)](
+        _lh_bwd_dkdv[lambda meta: (triton.cdiv(S, meta["BLOCK_N"]), B * HKV * nsplit)](
             q,
             k,
             v,
             do,
-            dk,
-            dv,
+            dk_out,
+            dv_out,
             lse,
             delta,
             lo,
@@ -487,18 +520,23 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             do.stride(0),
             do.stride(1),
             do.stride(2),
-            dk.stride(0),
-            dk.stride(1),
-            dk.stride(2),
-            dv.stride(0),
-            dv.stride(1),
-            dv.stride(2),
+            dk_out.stride(-4),
+            dk_out.stride(-3),
+            dk_out.stride(-2),
+            dv_out.stride(-4),
+            dv_out.stride(-3),
+            dv_out.stride(-2),
+            dk_out.stride(0) if nsplit > 1 else 0,
             HKV,
             G,
             S,
+            nsplit,
             HEAD_DIM = D,
             enable_fp_fusion = True,
         )
+        if nsplit > 1:
+            dk.copy_(dk_out.sum(0))
+            dv.copy_(dv_out.sum(0))
         _lh_bwd_dq[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
             q,
             k,
@@ -759,9 +797,13 @@ def _measured_faster_on(device):
         return False
 
 
-def _self_check(device, dtype):
-    """One small fwd + bwd against SDPA math per (device, dtype) before first use."""
-    key = (str(device), dtype)
+def _self_check(
+    device,
+    dtype,
+    head_dim = 512,
+):
+    """One small fwd + bwd against SDPA math per (device, dtype[, head_dim]) before first use."""
+    key = (str(device), dtype) if head_dim == 512 else (str(device), dtype, head_dim)
     if key in _SELF_CHECK:
         return _SELF_CHECK[key]
     passed = False
@@ -779,11 +821,16 @@ def _self_check(device, dtype):
         with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
-                for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
+                for shape in (
+                    (1, 4, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 80, 4, head_dim),
+                )
             ]
             q, k, v = [x.requires_grad_() for x in (q, k, v)]
             lo, hi = _dense_intervals(1, 80, True, device)
-            out = large_head_attention(q, k, v, lo, hi, 512**-0.5)
+            out = large_head_attention(q, k, v, lo, hi, head_dim**-0.5)
             grads = torch.autograd.grad(out, (q, k, v), g)
             qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
             ref = torch.nn.functional.scaled_dot_product_attention(
@@ -901,6 +948,15 @@ def _make_router(original):
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
+            elif (
+                compiling
+                and getattr(attention_mask, PLAIN_CAUSAL_ATTR, None) is True
+                and attention_mask.shape[-2] == S
+                and attention_mask.shape[-1] == S
+            ):
+                # Block compile scanned this mask eagerly (no padding, plain causal), so the
+                # graph needs no host sync; the masked SDPA it replaces repeats the kv heads.
+                intervals = _dense_intervals(B, S, True, query.device)
             elif (
                 not compiling
                 and not capturing

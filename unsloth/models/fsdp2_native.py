@@ -2711,12 +2711,28 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     return state
 
 
+def _read_dcp_metadata(directory):
+    """state_dict_metadata of a torch.distributed.checkpoint directory. torch 2.15 records tensor strides
+    in it (TensorProperties pickles 6 fields), which torch <= 2.14 cannot unpickle ("too many values to
+    unpack (expected 5)"), so name the cause instead of the raw error."""
+    from torch.distributed.checkpoint import FileSystemReader
+    try:
+        return FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    except ValueError as exc:
+        if "unpack" not in str(exc):
+            raise
+        raise RuntimeError(
+            f"Unsloth: cannot read the sharded optimizer checkpoint {directory} with torch "
+            f"{torch.__version__}: it was written by a newer torch (2.15+ stores tensor strides in "
+            "the checkpoint metadata, which older torch cannot read). Resume with torch 2.15 or newer, "
+            "or save with UNSLOTH_FSDP2_DCP_OPTIM=0 (the full optimizer.pt, readable by any torch)."
+        ) from exc
+
+
 def _drop_unsaved_group_keys(state, directory):
     """Removes (and returns as (group index, key, value)) the param group entries of the dcp.load
     target that the checkpoint does not hold."""
-    from torch.distributed.checkpoint import FileSystemReader
-
-    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    metadata = _read_dcp_metadata(directory)
     dropped = []
     for index, group in enumerate(state.get("param_groups") or []):
         prefix = f"param_groups.{index}."
@@ -2744,9 +2760,7 @@ def _match_saved_optimizer_keys(
       state, or the parameter (same sharding), when the global shape matches, else a plain tensor
       read whole.
     Returns the parameters left without state."""
-    from torch.distributed.checkpoint import FileSystemReader
-
-    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    metadata = _read_dcp_metadata(directory)
     per_param = state.setdefault("state", {})
     unstepped = []
     for fqn in list(per_param):

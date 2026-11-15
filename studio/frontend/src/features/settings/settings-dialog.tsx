@@ -21,6 +21,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  Cursor02Icon,
   ApiIcon,
   BotIcon,
   Cancel01Icon,
@@ -86,6 +87,8 @@ const TAB_LOADERS = {
     import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
   browser: () =>
     import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
+  "computer-use": () =>
+    import("./tabs/computer-use-tab").then((m) => ({ default: m.ComputerUseTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
@@ -305,6 +308,11 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
+  },
+  {
+    id: "computer-use",
+    labelKey: "computerUse.settings.title",
+    icon: Cursor02Icon,
   },
   {
     id: "keyboard-shortcuts",
@@ -622,6 +630,7 @@ export function SettingsDialog() {
     chat: null,
     sandbox: null,
     browser: null,
+    "computer-use": null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,

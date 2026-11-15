@@ -322,7 +322,6 @@ from .video_minimax_h3 import (
     H3_TASK_REFERENCES,
     fit_h3_keyframe,
     fit_h3_reference_image,
-    h3_canvas_for_aspect,
     h3_conditioning_mode,
     h3_denoiser_component,
     h3_transformer_resident_gb,
@@ -12363,6 +12362,11 @@ class VideoBackend:
         from .video_minimax_h3_forward import install_h3_forward_on_pipe
 
         install_h3_forward_on_pipe(pipe, logger = logger)
+        from .video_minimax_h3_adaln import install_h3_reference_temb
+
+        # Before any compile: a dense denoiser's time embedding is rounded the reference way.
+        for component in ("transformer", "transformer_ref"):
+            install_h3_reference_temb(getattr(pipe, component, None), logger = logger)
         # Pre-cast the decoder: fp32 VAE under fp16 autocast keeps both copies; encoder stays for keyframes.
 
         from .video_minimax_h3 import trim_h3_video_vae
@@ -12846,12 +12850,19 @@ class VideoBackend:
                 strided_install_backend(attention_engaged) or int8_wanted
             ):
                 try:
+                    from .video_minimax_h3_qknorm import video_qk_rope_rounding
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None),
                         logger = logger,
                         qk_rope = None if strided_install_backend(attention_engaged) else False,
+                        qk_rope_rounding = video_qk_rope_rounding(),
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        if any(
+                            getattr(getattr(m, "processor", None), "_unsloth_qk_rope_once", False)
+                            for m in getattr(pipe, denoiser_component).modules()
+                        ):
+                            h3_attn_levers += ("h3_qk_rope_once",)
                         if int8_wanted and int8_attention.install_int8_attention(
                             getattr(pipe, denoiser_component, None),
                             device = device,
@@ -12993,7 +13004,7 @@ class VideoBackend:
         try:
             from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
             install_h3_chunked_reference_encode(logger)
-        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+        except Exception as exc:  # noqa: BLE001 -- the render's recipe install retries it
             logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
@@ -14813,7 +14824,8 @@ class VideoBackend:
         *,
         decoded_images: Optional[list] = None,
     ) -> tuple[Any, Any, int, int, str]:
-        """Decode keyframes onto one shared canvas; omitting both dimensions matches the source aspect."""
+        """Decode keyframes onto one shared canvas. Omitting a dimension takes the family default (MiniMax-H3: the
+        reference's fixed 1344x768, whatever the keyframe's aspect), or the nearest preset for an i2v pipeline."""
         validate_video_keyframe_conditioning(
             fam,
             h3_task,
@@ -14840,9 +14852,9 @@ class VideoBackend:
 
         if (width is None or height is None) and first is not None and i2v_pipeline:
             width, height = first_frame_canvas(fam, *first.size)
-        elif (width is None or height is None) and (first is not None or last is not None):
-            width, height = h3_canvas_for_aspect(*(first if first is not None else last).size)
         else:
+            # The reference keyframe node keeps its own size (1344x768 by default): the first frame is stretched onto
+            # it and the last centre-cropped, so an omitted size is the family default here too.
             # A custom family may declare no presets; fall back to 768x512.
             default_w, default_h = (
                 fam.resolution_presets[0] if fam.resolution_presets else (768, 512)
@@ -15547,7 +15559,9 @@ class VideoBackend:
     ) -> bytes:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
-        what the gallery persists."""
+        what the gallery persists. A MiniMax-H3 pipeline gets the reference workflow's
+        save settings (encode_x264 reference=True: CRF 18, BT.709, float AAC)."""
+        reference = type(getattr(pipe, "vae", None)).__name__ == "AutoencoderKLMiniMaxH3"
         if audio is None:
             streamed = claim_stream(video_frames, fps)
             if streamed is not None:
@@ -15588,6 +15602,8 @@ class VideoBackend:
                     tmp.name,
                     encode_kwargs.get("audio"),
                     encode_kwargs.get("audio_sample_rate"),
+                    # only for H3, so every other family's call (and its test doubles) is unchanged
+                    **({"reference": True} if reference else {}),
                 ):
                     encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
@@ -15911,6 +15927,8 @@ class VideoBackend:
                 "canvas_short_edge": _keyframe_canvas(fam)[0],
                 "canvas_max_pixels": _keyframe_canvas(fam)[1],
                 "canvas_from_presets": video_family_uses_i2v_pipeline(fam),
+                "keyframe_keeps_canvas": bool(getattr(fam, "keyframes_keep_canvas", False)),
+                "default_resolution": _ui_default_resolution(fam),
                 "flow_shift": fam.default_flow_shift,
                 "audio_flow_shift": fam.default_audio_flow_shift,
                 # sd.cpp has no flag for the audio shift, so the control is only real on Diffusers.
@@ -15934,6 +15952,15 @@ def _custom_size_defaults(fam: Any) -> dict[str, Any]:
         "custom_size_max_pixels": bounds[1],
         "custom_size_max_aspect": bounds[2],
     }
+
+
+def _ui_default_resolution(fam: Any) -> Optional[list[int]]:
+    """The page's Default preset size when it is a preset (UNSLOTH_VIDEO_H3_480P=0 drops the 480p ones)."""
+    wanted = getattr(fam, "ui_default_resolution", None)
+    if not wanted:
+        return None
+    presets = {(int(w), int(h)) for w, h in (getattr(fam, "resolution_presets", ()) or ())}
+    return [int(wanted[0]), int(wanted[1])] if (int(wanted[0]), int(wanted[1])) in presets else None
 
 
 def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:

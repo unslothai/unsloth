@@ -800,8 +800,10 @@ def _run(
             config = select_config(config, 0)
     if impl == "triton":
         from . import diffusion_int8_attention_triton as triton_kernel
+
+        # the launches run under the card of q here, so the module's own same-card check is skipped
         with torch.no_grad(), torch.cuda.device(q.device):
-            return triton_kernel.int8_attention(q, k, v, config, scale = scale)
+            return triton_kernel._int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():
         return attend(quantise(q, k, v, config, scale))
 

@@ -7734,8 +7734,8 @@ class VideoGenerateRequest(BaseModel):
         None,
         max_length = 32 * 1024 * 1024,
         description = "Base64/data-URL image the clip starts from (image-to-video). With width "
-        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
-        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "and height omitted it picks the canvas: MiniMax-H3 keeps its default 1344x768 (as the "
+        "reference workflow does) and stretches the frame on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
         "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
         "frame (status supports_first_frame).",
     )
@@ -7847,7 +7847,7 @@ class VideoGenerateRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
-        # Keyframe only: a half-specified canvas is silently replaced by the source aspect; other families resolve the missing axis from a preset.
+        # Keyframe only: a half-specified canvas would silently drop the sent axis for the default canvas; other families resolve the missing axis from a preset.
         if not (self.first_frame or self.last_frame):
             return self
         if (self.width is None) != (self.height is None):
@@ -8048,6 +8048,18 @@ class VideoGenerationDefaults(BaseModel):
         description = "True when a first frame without width/height takes the resolution preset "
         "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
         "canvas_short_edge rule",
+    )
+    keyframe_keeps_canvas: bool = Field(
+        False,
+        description = "True when a keyframe without width/height renders at the family default "
+        "canvas (stretched / centre-cropped on, as MiniMax-H3's reference workflow does) rather "
+        "than a canvas matched to its aspect",
+    )
+    default_resolution: Optional[list[int]] = Field(
+        None,
+        description = "(width, height) of the page's Default preset when it differs from resolution_presets[0] "
+        "(MiniMax-H3: the reference templates' 864x480); a request without a size still takes "
+        "resolution_presets[0]",
     )
     flow_shift: Optional[float] = Field(
         None,
