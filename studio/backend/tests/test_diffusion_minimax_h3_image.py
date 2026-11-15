@@ -1091,6 +1091,34 @@ def test_the_hosted_files_conditioning_path_runs_dense(h3i, monkeypatch):
     assert is_quantized_linear(model.transformer_blocks[0])
 
 
+def test_the_dense_conditioning_path_runs_in_fp16_where_the_card_has_no_bf16(h3i):
+    """sm75 runs the pipeline in fp16: the densified weights, their biases and the refiner's own small layers all
+    follow, so context_embedder never adds a bf16 bias to fp16 activations."""
+    import torch
+
+    pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+    model = torch.nn.Module()
+    model.context_embedder = torch.nn.Linear(256, 64)
+    model.token_refiner = torch.nn.Module()
+    model.token_refiner.norm = torch.nn.LayerNorm(64)
+    model.token_refiner.refiner_blocks = torch.nn.ModuleList([torch.nn.Linear(64, 64)])
+    model.to(torch.bfloat16)
+    quantize_(model, _make_quant_config("int8"))
+    assert h3i.densify_conditioning_path(model, torch.float16) == 2
+    params = dict(model.context_embedder.named_parameters()) | {
+        f"token_refiner.{k}": v for k, v in model.token_refiner.named_parameters()
+    }
+    assert {k: v.dtype for k, v in params.items() if v.dtype != torch.float16} == {}
+    x = torch.randn(1, 3, 256, dtype = torch.float16)
+    out = model.token_refiner.norm(model.context_embedder(x))
+    assert out.dtype == torch.float16 and torch.isfinite(out).all()
+
+
 def _release_copy(root, dst, with_encoder):
     import shutil
     shutil.copytree(

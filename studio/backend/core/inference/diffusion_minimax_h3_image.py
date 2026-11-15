@@ -2404,6 +2404,20 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
             continue
         module.weight = torch.nn.Parameter(dense.to(dtype), requires_grad = False)
         count += 1
+    # The whole path computes in ``dtype``: a bias, norm or small Linear left at the file's bf16 meets fp16 activations
+    # where the card has no bf16 (sm75).
+    for name, module in transformer.named_modules():
+        if not name.startswith(CONDITIONING_PREFIXES):
+            continue
+        for key, param in list(module.named_parameters(recurse = False)):
+            if (
+                param.is_floating_point()
+                and param.dtype != dtype
+                and not hasattr(param, "__tensor_flatten__")
+            ):
+                setattr(
+                    module, key, torch.nn.Parameter(param.detach().to(dtype), requires_grad = False)
+                )
     return count
 
 
