@@ -101,16 +101,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
-      # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
-      #
-      # Background, together with the uninstall test below: about 60 s of pure
-      # PowerShell that reads only the checkout, so it overlaps the node/python setup
-      # and the ~90 s uv cache restore instead of running ahead of them. Both are
-      # collected by the wait step right before Install Unsloth, so a failure still
-      # stops the job before the install, as it did when they ran first; they are not
-      # overlapped with the install itself, because test_mirror_fallback.ps1 asserts
-      # deadlines and transfer speeds that a CPU-bound install next to it could skew.
+      # GPU-free gate: parses install.ps1 and setup.ps1 and runs their PowerShell unit tests in the
+      # background, collected before Install Unsloth; not overlapped with the install, since
+      # test_mirror_fallback.ps1 asserts timings a CPU-bound install could skew.
       - name: PowerShell installer unit tests
         id: ps-installer-units
         background: true

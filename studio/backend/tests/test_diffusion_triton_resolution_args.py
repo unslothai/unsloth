@@ -13,7 +13,11 @@ INF = pathlib.Path(__file__).resolve().parents[1] / "core" / "inference"
 
 CASES = {
     "diffusion_int8_gemm.py": {"i8mm_dq": ("M",), "i8mm_dq_tma": ("M",)},
-    "diffusion_convrot_quant.py": {"rotq_i8": ("M",), "rotq_h16": ("M",)},
+    "diffusion_convrot_quant.py": {
+        "rotq_i8": ("M",),
+        "rotq_h16": ("M",),
+        "rotq_h16x": ("M", "SEQ"),
+    },
     "diffusion_flux2_rope.py": {"_rope_fwd": ("S",)},
     "diffusion_rocm_fused.py": {"_adaln_fwd": ("S",)},
     "diffusion_moss_fused.py": {"kernel": ("S",)},

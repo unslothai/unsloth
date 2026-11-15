@@ -46,8 +46,7 @@ def _write_snapshot(hub_cache: Path, repo: str, revision: str, filename: str) ->
 
 
 def test_a_lost_revision_record_still_finds_the_downloaded_model(tmp_path, monkeypatch):
-    """Pinned download writes no refs/main and its record write can fail, so the snapshot is the
-    fallback."""
+    """Pinned downloads skip refs/main and can lose the record; the snapshot is the fallback."""
     revision = "a" * 40
     repo = ggml_mod.GGML_STT_REPOS["tiny"]
     _write_snapshot(tmp_path, repo, revision, ggml_mod.GGML_STT_MODELS["tiny"])
@@ -412,8 +411,7 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
 
 
 def test_mtmd_rejects_a_revision_that_is_not_an_immutable_commit(monkeypatch, tmp_path):
-    """The other two backends validate the SHA; a bad one here would be pinned
-    into --revision and then silently dropped by the revision record."""
+    """Other backends check the SHA; a bad one pinned into --revision is silently dropped."""
 
     class _Meta:
         commit_hash = "main"

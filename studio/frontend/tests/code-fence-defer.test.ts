@@ -293,9 +293,9 @@ test("a print upgrades the whole document, and never puts it back", () => {
 test("an upgrade taken inside one task warms, flushes, and flushes again", () => {
   const latchNow = SOURCE.slice(SOURCE.indexOf("const latchNow"));
   const body = latchNow.slice(0, latchNow.indexOf("\n};"));
-  assert.ok(body.includes("gate.warm(true)"), "the tokens have to exist before the swap renders");
+  assert.ok(body.includes("gate.warm(true, "), "the tokens have to exist before the swap renders");
   assert.ok(
-    body.indexOf("gate.warm(true)") < body.indexOf("flushSync"),
+    body.indexOf("gate.warm(true, ") < body.indexOf("flushSync"),
     "warming after the flush is warming after the paint",
   );
   assert.equal(

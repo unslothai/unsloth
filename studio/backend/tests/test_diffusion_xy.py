@@ -470,3 +470,40 @@ def test_grid_stop_is_keyed_on_the_stable_account_id(monkeypatch):
     # Scope moves from None to the owner's id once the first managed account exists.
     monkeypatch.setattr(routes_inference.account_access, "account_scope", lambda: "something-else")
     assert routes_inference._stop_xy_grids() is True and ticket.cancelled()
+
+
+def test_cells_are_shrunk_off_the_event_loop(client, monkeypatch):
+    import asyncio
+
+    import core.inference.diffusion as diffusion_module
+    from PIL import Image
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    backend.generate = lambda **kwargs: {
+        "images": [Image.new("RGB", (64, 64), "gray")],
+        "seed": kwargs["seed"],
+        "repo_id": "x/z-image",
+        "workflow": "txt2img",
+    }
+    on_loop = []
+    original = diffusion_xy.fit_cell
+
+    def _fit_cell(image, plan):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return original(image, plan)
+
+    monkeypatch.setattr(diffusion_xy, "fit_cell", _fit_cell)
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "seed": 3, "xy": {"x": {"field": "steps", "values": [2, 4]}}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert on_loop == [False, False]

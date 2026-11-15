@@ -133,12 +133,9 @@ permissions:
 jobs:
   prune:
     name: Prune superseded caches
-    # Not ubuntu-latest: that label's queue is what merge bursts fill, and on 2026-10-13/14 this
-    # sweep waited 0.6 to 3.5 hours for it (one run took 6h15m end to end) while CodeQL kept
-    # writing overlay bases, so the budget it guards ran out between sweeps. The arm label
-    # started jobs in a median 1.3 minutes over the same window. The sweep is API-only (gh,
-    # GNU date/awk/sed/sort), all present on the arm image. The account-wide job cap still
-    # applies; this only stops the sweep waiting behind hundreds of ubuntu-latest jobs.
+    # Arm label, not ubuntu-latest, since merge bursts fill that queue and stalled this sweep for
+    # hours; the sweep is API-only (gh, GNU date, awk, sed, sort), and the account job cap still
+    # applies.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
@@ -269,10 +266,9 @@ jobs:
           : > "$grouped"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
-            # Per-family keep. `keep` (the input) is for families where an older
-            # generation can still answer a restore nothing newer can. CodeQL,
-            # pip-v2, uv and rust-cache all restore by prefix and take the newest,
-            # so their second copy answers only an exact revert (see the header).
+            # The keep input applies only where an older generation can answer a restore that
+            # nothing newer can; prefix-restored CodeQL, pip-v2, uv and rust-cache keep one copy,
+            # since a second copy answers only an exact revert.
             fkeep="$KEEP"
             case "$key" in
               codeql-overlay-base-database-*)
@@ -280,20 +276,14 @@ jobs:
               codeql-trap-*)
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               v0-rust-*)
-                # rust-cache's restore-key is the key minus the trailing lockfile
-                # hash, i.e. exactly this prefix, so a lockfile bump still starts
-                # from the surviving generation.
+                # rust-cache restore-key is the key minus its trailing lockfile hash, exactly this
+                # prefix, so a lockfile bump still starts from the surviving generation.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
-                # Strip only the trailing dependency hash. Everything before it --
-                # the job name for pip-v2, the OS for uv and fe-dist -- stays in the
-                # prefix on purpose: those are separate keys that never substitute
-                # for one another, and folding them into one group would rank live
-                # caches as generations of each other and delete all but one.
-                #
-                # A retired prefix (notebooks-colab -> notebooks-colab-cpu, see its
-                # `name` in notebooks-ci.yml) is its own family here, so keep=1
-                # drains it to one entry and the 7-day idle timer takes the last.
+                # Strip only the trailing dependency hash, so the job name (pip-v2) or OS (uv,
+                # fe-dist) stays in the prefix and separate keys are not ranked as generations; a
+                # retired notebooks-colab prefix is drained to one entry by keep=1, then aged out by
+                # the 7-day idle timer.
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//')
                 # fe-dist has no restore-keys: an older generation is the only
                 # thing an exact revert of the frontend can hit, so it keeps `keep`.

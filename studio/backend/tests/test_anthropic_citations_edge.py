@@ -208,8 +208,7 @@ def test_citations_delta_with_non_dict_citation_is_ignored(monkeypatch):
 
 
 def test_citations_delta_with_missing_citation_field_is_ignored(monkeypatch):
-    """Missing ``citation`` field is treated like a non-dict citation: skip
-    without crashing."""
+    """Missing citation field is treated like a non-dict citation: skipped without crashing."""
     lines = _capture(
         monkeypatch,
         [
@@ -313,8 +312,7 @@ def test_content_block_location_with_non_int_block_index_does_not_crash(monkeypa
 
 
 def test_unknown_citation_type_falls_back_to_stringified_key(monkeypatch):
-    """Unknown citation ``type`` (forward-compat) still dedupes: identical
-    ones collapse, differing ones get distinct numbers."""
+    """Unknown citation types dedupe: identical ones collapse, differing ones stay separate."""
     cit_a = {
         "type": "future_shape_location",
         "anchor": "abc",
@@ -386,9 +384,8 @@ def test_mixed_citation_types_same_document_get_distinct_keys(monkeypatch):
 
 
 def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
-    """``cited_text`` must survive into the synthetic event so the Sources
-    panel can render it as a tooltip. Anthropic does not bill cited_text
-    against output tokens, so preserving it is free."""
+    """cited_text must survive into the synthetic event for the Sources tooltip; Anthropic does not
+    bill it against output tokens, so keeping it is free."""
     cit = _citation(
         document_title = "Trustworthy Doc",
         end_char_index = 20,
@@ -412,8 +409,7 @@ def test_cited_text_is_preserved_in_synthetic_event(monkeypatch):
 
 
 def test_internal_key_field_never_leaks_to_client(monkeypatch):
-    """The internal ``_key`` dedup sentinel must be stripped before the
-    synthetic event is forwarded; it is not an Anthropic field."""
+    """_key is an internal sentinel stripped before forwarding; it is not an Anthropic field."""
     cit = _citation(cited_text = "..")
     lines = _capture(
         monkeypatch,
@@ -435,8 +431,7 @@ def test_internal_key_field_never_leaks_to_client(monkeypatch):
 
 
 def test_citation_across_multiple_content_blocks_numbers_continue(monkeypatch):
-    """Footnote numbering is per-message, not per-content-block: citations
-    across separate blocks emit [1] then [2]."""
+    """Footnote numbering is per message, not per block: separate blocks emit [1] then [2]."""
     cit_a = {
         "type": "char_location",
         "document_index": 0,
@@ -591,8 +586,7 @@ def test_input_document_translation_enables_citations(monkeypatch):
 
 
 def test_cited_text_truncated_in_synthetic_event(monkeypatch):
-    """``cited_text`` is capped server-side so multi-KB spans don't balloon
-    the SSE payload."""
+    """cited_text is capped server-side so multi-KB spans do not balloon the SSE payload."""
     from core.inference.external_provider import _CITED_TEXT_MAX_LEN
 
     long_quote = "x" * (_CITED_TEXT_MAX_LEN + 4000)

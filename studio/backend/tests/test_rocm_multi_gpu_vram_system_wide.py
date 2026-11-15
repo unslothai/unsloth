@@ -253,9 +253,7 @@ def test_kfd_absent_yields_no_device_order(monkeypatch):
 
 
 def _patch_pci_map(monkeypatch, bdfs):
-    """Declare the ROCm device order by PCI address (index N is device N) and clear
-    the visibility masks the overlay requires unset.
-    """
+    """Declare the ROCm device order by PCI address (index N is device N) and clear the visibility masks."""
     for var in (
         "HIP_VISIBLE_DEVICES",
         "ROCR_VISIBLE_DEVICES",
@@ -374,8 +372,7 @@ def test_overlay_skips_masked_subsets(monkeypatch):
 
 
 def test_overlay_skips_device_cgroup_filtered_container(monkeypatch):
-    # A device-cgroup container compacts torch indices with no env var; the count mismatch
-    # disables the overlay.
+    # Cgroup-filtered containers have no env var; the torch count mismatch skips the overlay.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     _patch_pci_map(monkeypatch, [_pci(0), _pci(1), _pci(2), _pci(3)])
     monkeypatch.setattr(

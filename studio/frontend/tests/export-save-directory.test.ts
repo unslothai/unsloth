@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { saveDirectoryField } from "../src/features/export/lib/save-directory.ts";
+import {
+  buildRelativeSaveDirectory,
+  saveDirectoryField,
+} from "../src/features/export/lib/save-directory.ts";
 
 const DEFAULT = "qwen3-4b-GGUF";
 
@@ -34,4 +37,29 @@ test("a pasted absolute path is used as typed", () => {
     inputValue: "/Volumes/ext/exports",
     saveDirectory: "/Volumes/ext/exports",
   });
+});
+
+const checkpointDir = (
+  method: "lora" | "merged" | "gguf",
+  run: string,
+  checkpoint: string,
+) => buildRelativeSaveDirectory(method, "checkpoint", "", run, checkpoint);
+
+test("a run's LoRA and merged exports get separate default folders", () => {
+  const lora = checkpointDir("lora", "run_A", "run_A");
+  const merged = checkpointDir("merged", "run_A", "run_A");
+  assert.notEqual(lora, merged);
+  assert.ok(lora.startsWith("run_A/"));
+  assert.ok(merged.startsWith("run_A/"));
+});
+
+test("the same checkpoint of two runs gets separate GGUF default folders", () => {
+  assert.notEqual(
+    checkpointDir("gguf", "run_A", "checkpoint-100"),
+    checkpointDir("gguf", "run_B", "checkpoint-100"),
+  );
+});
+
+test("a run's final checkpoint keeps its GGUF default folder", () => {
+  assert.equal(checkpointDir("gguf", "run_A", "run_A"), "run_A-GGUF");
 });

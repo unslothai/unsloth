@@ -219,9 +219,7 @@ def test_an_unscoreable_window_does_not_reach_the_cost_per_character():
 
 
 def test_a_payload_recorded_before_the_flag_existed_is_scored_exactly_as_before():
-    """`is False`, not falsiness. Rows written before the instrument published the flag carry no
-    key at all, and voiding them would retro-actively delete every streaming metric this project
-    has already recorded."""
+    """Missing flag means scored: check `is False`, not falsiness, so pre-flag rows are not voided."""
     w = _window("stream:gap1")
     assert "reply_chars_scoreable" not in w["instruments"]["stream_cost"]
     picked, rejected = _stream_windows([w])

@@ -915,8 +915,7 @@ def test_probe_hides_reap_for_an_older_modelopt_export(tmp_path, monkeypatch):
     ],
 )
 def test_custom_reap_dataset_is_validated_with_the_callers_token(route, request_cls):
-    # Managed accounts refuse a remote dataset without the caller's own token (403), so the
-    # dataset check must carry the token the request supplied.
+    # Remote dataset checks need the caller's own token; managed accounts 403 without it.
     from routes import export as export_route
 
     class Stop(Exception):

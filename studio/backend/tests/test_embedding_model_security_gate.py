@@ -543,8 +543,7 @@ def _erroring_plan(model, backend, error):
 
 
 def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, monkeypatch):
-    """The PUT raised on plan.error only for llama destinations, so a repo passing
-    the tag gate with no loadable checkpoint was persisted anyway."""
+    """Only llama destinations refused on plan.error; ST repos with no checkpoint were saved."""
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import utils.models as models
@@ -565,8 +564,7 @@ def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, mon
 
 
 def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
-    """Save anyway over a failed plan recorded no marker, so both loaders took
-    their uncached path and fetched invisibly at the first index."""
+    """Forced save over a failed plan wrote no marker; loaders then fetched invisibly on index."""
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     monkeypatch.setattr(
@@ -585,8 +583,7 @@ def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
 
 
 def test_unload_is_offered_while_another_model_is_still_resident(client, monkeypatch):
-    """Saving a new model does not release the old one, and `loaded` answers only
-    about the selected one, so the previous model had no control to free it."""
+    """`loaded` only covers the selected model, so an old resident model needs its own unload."""
     c, _saved = client
     import core.rag.embeddings as embeddings
 

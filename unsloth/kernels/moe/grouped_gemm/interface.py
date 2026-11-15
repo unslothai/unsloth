@@ -172,10 +172,9 @@ def _fit_tiles_to_operand_device(
 
 
 def _autotuner_for(kernel, device):
-    """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
-    the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
-    scratch state (nargs) stays per card, since backward runs one autograd thread per device. No lock:
-    a cached launch never waits on another card's tuning."""
+    """Triton's autotune key omits the device, so each card gets a copy; same-model copies share one
+    results cache; nargs stays per card (one autograd thread per device); no lock, since a cached
+    launch never waits on another card's tuning."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
     key = (id(kernel), _device_index(device))
@@ -1144,11 +1143,10 @@ def _dW_accumulate_enabled():
 
 
 def _dW_accumulate_target(ctx, X, autotune):
-    """The leaf parameter whose existing .grad the dW kernel may add into, else None.
-
-    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW,
-    including Node hooks that can rewrite dW: prehooks on W's AccumulateGrad and post hooks on this
-    GroupedGemmBackward. Post hooks on AccumulateGrad only observe (they see None for this dW)."""
+    """Leaf param whose .grad the dW kernel may add into, else None; any case where AccumulateGrad
+    would do more than param.grad += dW (e.g. prehooks on W's AccumulateGrad or post hooks on
+    this GroupedGemmBackward) falls back to returning dW; AccumulateGrad post hooks only observe,
+    seeing None."""
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
         return None
     # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
@@ -1200,10 +1198,9 @@ def _node_hook_probe(*args):
 
 
 def _node_has_python_hooks(register):
-    """True if the Node behind `register` (register_hook / register_prehook) already holds a Python hook.
-
-    Nodes cannot list their hooks, but every Python hook of one kind shares a single dict, and the
-    handle of a new registration points at it: register a no-op, count, remove it again."""
+    """True if the Node behind register (register_hook or register_prehook) already holds a Python
+    hook; Nodes cannot list hooks, so a no-op is registered and its handle's shared dict counted,
+    then removed."""
     try:
         handle = register(_node_hook_probe)
     except Exception:

@@ -450,6 +450,17 @@ def test_race_switch_off_keeps_the_fallback_and_never_reads_the_file(monkeypatch
     assert fake.raced == [] and fake.probes == [g8._FALLBACK_CONFIG]
 
 
+def test_race_switch_acts_between_loads_after_a_winner_is_kept(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE
+    monkeypatch.setenv(g8.INT8_GEMM_RACE_ENV, "0")
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    assert fake.timed[-1] == g8._FALLBACK_CONFIG
+    monkeypatch.delenv(g8.INT8_GEMM_RACE_ENV)
+    assert g8.device_config(0) == _L4_TILE
+    assert len(fake.raced) == 1  # the kept winner, not a second race
+
+
 def test_cache_keeps_a_bounded_number_of_cards(monkeypatch, tmp_path):
     import json
 

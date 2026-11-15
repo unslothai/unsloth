@@ -104,9 +104,8 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
 
 
 def test_the_search_reads_content_rather_than_only_a_filename():
-    """A small local model rewording the path is not a Studio defect. What
-    cannot be faked is the token's BYTES landing on disk, so the content is
-    what the search is entitled to rely on."""
+    """The search checks file content, not only the filename, since a small model may reword the
+    path but the token's bytes cannot be faked on disk."""
     body = _body()
     assert "read_text" in body
     assert "token in body" in body
@@ -119,8 +118,7 @@ def test_it_looks_under_the_studio_home_sandbox_and_not_a_stray_root():
 
 
 def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
-    """A skipped assertion that leaves no record is indistinguishable from one
-    that never existed, and the summary would be short by one line rather than
-    red."""
+    """The CPU fallback must record code_execution explicitly, because a skipped assertion with no
+    record is indistinguishable from one that never existed."""
     run = _body("execute")
     assert '"code_execution",' in run, "the non-GPU branch must record code_execution explicitly"

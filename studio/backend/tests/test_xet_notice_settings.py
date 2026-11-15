@@ -36,8 +36,7 @@ def test_the_count_outlives_the_process_that_wrote_it():
 
 
 def test_concurrent_reservations_never_exceed_the_limit():
-    """Two tabs at once. Why the reserve is one transaction: a split read and write
-    lets both callers read the same count and both be granted."""
+    """Reserve is one transaction, since a split read and write lets both callers be granted."""
     results: list[bool] = []
     lock = threading.Lock()
     start = threading.Barrier(8)

@@ -1724,9 +1724,8 @@ class TestResolveInstallAttempts:
         assert approved.release_tag == "llama-prebuilt-latest"
 
     def test_windows_cuda_fork_never_falls_back_to_upstream_assets(self, monkeypatch):
-        # The fork's checksums once approved an upstream ggml-org Windows CUDA zip by name;
-        # prebuilts now come only from the fork, so a release without a covering published
-        # bundle raises (older release / source build) and never lists ggml-org's assets.
+        # Fork checksums must never approve an upstream ggml-org zip by name, so a release lacking a
+        # covering bundle raises and never lists ggml-org assets.
         host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
@@ -2392,9 +2391,8 @@ class TestWindowsCudaAttemptCoversBlackwell:
 
 
 class TestDirectUpstreamWindowsAmdTakesVulkan:
-    """The direct/upstream planner is reached when the caller pins --published-repo, so the
-    Windows Vulkan gate there has to match the published one. Left Intel-only, a Windows AMD
-    host with no usable ROCm took the CPU attempt even with win-vulkan in the release."""
+    """The direct/upstream planner runs when --published-repo is pinned, so its Windows Vulkan gate
+    must match the published one; Intel-only left Windows AMD hosts with no usable ROCm on CPU"""
 
     TAG = "b9365"
 
@@ -2838,8 +2836,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         return make_host(**base)
 
     def test_amd_without_rocm_gets_the_published_vulkan_bundle(self):
-        """Published attempts must prefer Vulkan in _linux_published_attempts for AMD without ROCm,
-        not CPU."""
+        """_linux_published_attempts must prefer the Vulkan bundle over CPU for AMD hosts without ROCm."""
         host = self._gpu_host(has_amd_gpu_without_rocm = True)
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
             host, self._vulkan_and_cpu_bundle()
@@ -2935,9 +2932,8 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
 
 
 class TestPublishedLegacyNamedArm64BundlesAreOrdered:
-    """The legacy-minor ordering synthesised -x64.zip names and called windows_cuda_attempts
-    without the arch, so an approved llama-<tag>-bin-win-cuda-13.1-arm64.zip produced no
-    runtime line and was skipped for the unchecksummed upstream fallback."""
+    """Legacy-minor ordering synthesised -x64.zip names and dropped the arch passed to
+    windows_cuda_attempts, so approved arm64 bundles fell back to unchecksummed upstream."""
 
     TAG = "b8508"
 
@@ -2986,9 +2982,8 @@ class TestPublishedLegacyNamedArm64BundlesAreOrdered:
         assert all(not a.name.endswith("13.3-arm64.zip") for a in result)
 
     def test_the_artifact_gate_reads_the_arm64_name(self, monkeypatch):
-        """Two legacy minors on one line, the higher one ranked first: the line survives on
-        the lower minor, and the per-artifact gate must parse the -arm64 name to drop the
-        higher one; an x64 spelling never matches, and the preferred 13.3 build slips through."""
+        """With two legacy minors on one line, the per-artifact gate must parse the -arm64 name to
+        drop the higher minor; an x64 spelling never matches."""
         mock_windows_runtime(monkeypatch, ["cuda13"])
         release = self._release([("13.3", "cuda13"), ("13.1", "cuda13")], ranks = {"13.3": 10})
         result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")

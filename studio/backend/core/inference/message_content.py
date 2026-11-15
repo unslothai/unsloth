@@ -14,8 +14,7 @@ _PASTED_TEXT_CLOSE = "</pasted_text>"
 
 
 def content_to_text(content: Any) -> str:
-    """Plain text of a `content`: str unchanged, list/tuple text parts newline-joined
-    (non-text dropped), None to "", else str(content)."""
+    """Plain text of content: text parts newline-joined, non-text dropped, None as empty."""
     if content is None:
         return ""
     if isinstance(content, str):

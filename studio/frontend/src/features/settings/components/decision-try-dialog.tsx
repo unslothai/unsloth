@@ -1236,7 +1236,7 @@ export function DecisionTryDialog({
               )}
             </div>
 
-            <div className="z-10 flex shrink-0 items-center justify-between gap-3 border-t border-border/70 bg-card px-4 py-3 max-lg:sticky max-lg:bottom-0 sm:px-6">
+            <div data-sticky-bar="" className="z-10 flex shrink-0 items-center justify-between gap-3 border-t border-border/70 bg-card px-4 py-3 max-lg:sticky max-lg:bottom-0 sm:px-6">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
                   <Button

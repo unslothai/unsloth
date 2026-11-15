@@ -407,8 +407,7 @@ def test_spawn_refreshes_pooling_for_a_replaced_model(monkeypatch, tmp_path):
 def test_a_process_started_elsewhere_during_spawn_does_not_replace_the_server_command(
     monkeypatch, tmp_path
 ):
-    """Another thread starting a process mid-spawn must neither be handed the fake server nor
-    overwrite the command the test reads back."""
+    """A concurrent spawn must not take the fake server or overwrite the command under test."""
     path = tmp_path / "embed.gguf"
     _write_gguf(path, "qwen3", 1)
     backend = LlamaServerBackend()
@@ -1034,8 +1033,7 @@ def test_cached_gguf_resolves_without_touching_the_hub(monkeypatch, tmp_path):
 
 
 def test_the_pick_takes_the_shortest_variant_match_and_never_an_mmproj(monkeypatch):
-    """An order no directory scan would produce: the wanted file is neither first nor
-    shortest overall, and the shortest F16 name is an mmproj projector."""
+    """Wanted file is not first or shortest, and the shortest F16 match is an mmproj to skip."""
     monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
     names = [
         "bge-small-en-v1.5-F16-alt.gguf",
@@ -1061,9 +1059,7 @@ def test_cached_gguf_skips_mmproj_and_honours_the_variant(monkeypatch, tmp_path)
 
 
 def test_the_pick_is_stable_whatever_order_the_names_arrive_in(monkeypatch):
-    """A directory scan has no guaranteed order, unlike a hub listing. Among equal-length
-    shard names that order would otherwise decide the answer, and only the first shard
-    carries the metadata llama-server needs."""
+    """Directory scans are unordered, and among equal-length shards only the first has the metadata."""
     monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
     shards = ["model-F16-00001-of-00002.gguf", "model-F16-00002-of-00002.gguf"]
     assert LlamaServerBackend._pick_gguf(shards) == shards[0]
@@ -1071,9 +1067,7 @@ def test_the_pick_is_stable_whatever_order_the_names_arrive_in(monkeypatch):
 
 
 def test_an_mtp_drafter_is_never_taken_for_the_embedder(monkeypatch):
-    """A drafter is a companion, not a model. A cache holding only the companion must read
-    as no embedder rather than as the embedder, and the name sorts ahead of the real weight
-    often enough that the length tiebreak alone would not save it."""
+    """An MTP drafter is a companion, not a model: a cache holding only one must read as no embedder."""
     monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "BF16")
     assert LlamaServerBackend._pick_gguf(["MTP/mtp-model-BF16.gguf"]) is None
     assert (
@@ -1083,8 +1077,7 @@ def test_an_mtp_drafter_is_never_taken_for_the_embedder(monkeypatch):
 
 
 def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
-    """Quant-per-directory layouts are common, so a snapshot-root-only scan would
-    re-download a model that is already cached."""
+    """Quant files sit in subdirectories, so a root-only scan would re-download a cached model."""
     repo = config.effective_gguf_repo()
     _seed_cache(tmp_path / "hub", repo, ["F16/bge-small.gguf"])
     _use_cache_root(monkeypatch, tmp_path / "hub")
@@ -1093,9 +1086,7 @@ def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
 
 
 def test_an_incomplete_cached_shard_set_is_not_a_hit(monkeypatch, tmp_path):
-    """llama-server opens sibling shards implicitly and only the first carries the metadata,
-    so a snapshot holding a trailing shard alone cannot serve the model. Treating it as a
-    hit would skip the hub that still has the rest."""
+    """A lone trailing shard cannot serve the model; llama-server needs the first shard's metadata."""
     repo = config.effective_gguf_repo()
     _seed_cache(tmp_path / "hub", repo, ["model-F16-00002-of-00002.gguf"])
     _use_cache_root(monkeypatch, tmp_path / "hub")
@@ -1103,8 +1094,7 @@ def test_an_incomplete_cached_shard_set_is_not_a_hit(monkeypatch, tmp_path):
 
 
 def test_a_complete_cached_shard_set_resolves_to_its_first_shard(monkeypatch, tmp_path):
-    """Whole on disk, it is servable -- and must be handed over as shard 1 whatever order
-    the scan produced."""
+    """A complete shard set is servable and resolves to shard 1 whatever order the scan returns."""
     repo = config.effective_gguf_repo()
     _seed_cache(
         tmp_path / "hub",
@@ -1117,9 +1107,7 @@ def test_a_complete_cached_shard_set_resolves_to_its_first_shard(monkeypatch, tm
 
 
 def test_an_incomplete_set_does_not_shadow_a_complete_one(monkeypatch, tmp_path):
-    """Completeness has to narrow the candidates, not veto the winner: the short name wins
-    the tiebreak, so vetoing it afterwards would report no hit while a servable family sat
-    beside it."""
+    """Completeness must narrow the candidates, not veto the winner, or a servable family goes unseen."""
     repo = config.effective_gguf_repo()
     _seed_cache(
         tmp_path / "hub",
@@ -1180,8 +1168,7 @@ def test_a_cached_other_variant_does_not_satisfy_the_configured_one(monkeypatch,
 
 
 def test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached(monkeypatch, tmp_path):
-    """Refusing the wrong variant must not cost the user their embedder outright: a cached
-    Q8 beats none, the degrade #8778 asks for."""
+    """A cached other variant beats no embedder at all, the degrade issue 8778 asks for."""
     huggingface_hub = _shared_setup_2(monkeypatch, tmp_path)
     monkeypatch.setattr(
         huggingface_hub,
@@ -1226,9 +1213,8 @@ def test_a_completed_pending_download_uses_its_cached_fallback_quant(monkeypatch
 
 
 def test_an_unreachable_hub_still_reaches_the_fallback_repo_s_cache(monkeypatch, tmp_path):
-    """The cache-first pass consults only the preferred repo, to keep a reachable companion
-    ahead of the fallback. Offline that ordering is moot and the fallback repo's cache is
-    all there is, so the relaxed pass must still look there."""
+    """Cache-first consults only the preferred repo to keep a reachable companion ahead of the
+    fallback; offline the relaxed pass must still check the fallback repo cache."""
     import contextlib
     import huggingface_hub
     from core.inference import llama_cpp
@@ -1248,8 +1234,7 @@ def test_an_unreachable_hub_still_reaches_the_fallback_repo_s_cache(monkeypatch,
 
 
 def test_a_reachable_hub_is_preferred_over_a_cached_other_variant(monkeypatch, tmp_path):
-    """A last resort, not a shortcut: a cached Q8 must not pre-empt a hub that can still
-    name the configured variant."""
+    """A cached Q8 is a last resort and must not pre-empt a reachable hub naming the variant."""
     huggingface_hub = _shared_setup_2(monkeypatch, tmp_path)
     monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["bge-F16.gguf"])
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda **kw: "/cache/bge-F16.gguf")
@@ -1282,8 +1267,7 @@ def test_a_cached_gguf_is_found_whatever_the_extension_case(monkeypatch, tmp_pat
 
 
 def test_the_adopted_path_is_tagged_with_the_repo_it_was_resolved_for(monkeypatch, tmp_path):
-    """A Settings change landing mid-resolution must leave the path tagged with the repo it
-    was resolved FOR, so _current() reads it as stale and respawns."""
+    """Tag the path with the repo it was resolved for, so a Settings change reads as stale."""
     repo = config.effective_gguf_repo()
     _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"])
     _use_cache_root(monkeypatch, tmp_path / "hub")
@@ -1330,8 +1314,7 @@ def test_a_cached_fallback_repo_does_not_pre_empt_the_preferred_one(monkeypatch,
 
 
 def test_the_cache_folder_is_named_from_the_resolved_repo_casing(monkeypatch, tmp_path):
-    """Cache folders keep the resolver's repo casing; a case mismatch re-downloads and fails when
-    offline."""
+    """Cache folders take the resolver's casing; a mismatch re-downloads and fails offline."""
     import utils.paths as paths_pkg
 
     _seed_cache(tmp_path / "hub", "Cached/Spelling-GGUF", ["bge-F16.gguf"])
@@ -1371,8 +1354,7 @@ def test_the_listing_cannot_outlive_its_deadline(monkeypatch, tmp_path):
 
 
 def test_the_hub_resolve_runs_inside_the_unreachable_guard(monkeypatch, tmp_path):
-    """The deadline covers the listing only; the guard is what keeps the transfer from
-    starting against an unreachable endpoint."""
+    """Deadline covers only the listing; the guard blocks transfers to an unreachable endpoint."""
     import contextlib
     import huggingface_hub
     from core.inference import llama_cpp
@@ -1537,9 +1519,7 @@ def test_a_posix_path_is_untouched_by_the_normalization(tmp_path):
 
 
 def test_a_stand_in_quant_does_not_retire_the_pending_marker(monkeypatch, tmp_path):
-    """The advertised transfer has not landed: reaching the relaxed pass means the
-    configured variant is absent, so what gets served is a leftover from an earlier
-    setting. Clearing the marker on it would pin the model to that quant for good."""
+    """A stand-in quant is a leftover from an earlier setting; clearing the marker would pin it for good."""
     cleared, ems, repo = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
     _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
@@ -1548,8 +1528,7 @@ def test_a_stand_in_quant_does_not_retire_the_pending_marker(monkeypatch, tmp_pa
 
 
 def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp_path):
-    """The other half: the configured variant in the preferred repo IS what the
-    picker advertised, so the marker has been answered and must not outlive it."""
+    """The planned variant landing in the preferred repo answers the marker, so it is cleared."""
     cleared, ems, repo = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
     _seed_cache(tmp_path / "hub", repo, ["pending-F16.gguf"])
@@ -1571,8 +1550,7 @@ def test_the_planned_fallback_quant_landing_retires_the_pending_marker(monkeypat
 
 
 def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(monkeypatch):
-    """One subprocess serves one GGUF, and the lifecycle read the live setting, so
-    a job pinned to A served B's weights while still tagging its vectors A."""
+    """One subprocess serves one GGUF, so a pinned request must not read the live setting."""
     from core.rag import config
 
     b = LlamaServerBackend()
@@ -1744,8 +1722,7 @@ def test_the_planned_family_matches_by_its_directory_too(monkeypatch, tmp_path):
 
 
 def test_warming_one_model_cannot_respawn_under_another_models_request(monkeypatch):
-    """warm() must not ready the server outside the lock, or it can respawn under another model's
-    request."""
+    """Readying the server outside the lock could respawn it under another model's request."""
     b = LlamaServerBackend()
     unlocked = []
 
@@ -1785,8 +1762,7 @@ def test_the_planned_family_outranks_a_variant_that_arrives_later(monkeypatch, t
 
 
 def test_a_partly_present_planned_family_is_not_served(monkeypatch, tmp_path):
-    """Whole family or nothing: entering a torn one at shard 1 gives llama-server a
-    model it cannot finish opening."""
+    """Whole family or nothing: a torn set entered at shard 1 cannot be opened by llama-server."""
     ems, repo = _shared_setup_3(monkeypatch)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: False)
     monkeypatch.setattr(
@@ -2097,8 +2073,7 @@ def test_encode_identity_keeps_the_callers_snapshot_when_another_model_takes_ove
 
 
 def test_llama_identity_is_not_predicted_from_a_fallback_repo(monkeypatch, tmp_path):
-    """The loader serves only the desired repo from cache before going online, so a
-    fallback repo's cached GGUF may not be what the next encode loads."""
+    """Only the desired repo's cache is read before going online; a fallback's GGUF may differ."""
     model, repo = "org/embed", "org/embed-GGUF"
     monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
     snapshot = _seed_cache(tmp_path / "hub", model, ["embed-F16.gguf"])

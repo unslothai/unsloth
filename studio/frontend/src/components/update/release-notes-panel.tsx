@@ -13,12 +13,14 @@ import {
 } from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
 import { useT } from "@/i18n";
+import { openLink } from "@/lib/open-link";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
 import {
   type ReleaseNotesLink,
   releaseNotesPreview,
 } from "@/lib/release-notes-preview";
 import {
+  type MouseEvent,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -99,6 +101,13 @@ function NotesMessage({
   );
 }
 
+// target="_blank" has nowhere to go in the Tauri webview; openLink() uses the system browser.
+function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
+  if (openLink(event.currentTarget.href)) {
+    event.preventDefault();
+  }
+}
+
 function NotesLink({
   href,
   isRelease,
@@ -112,6 +121,7 @@ function NotesLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={handleExternalClick}
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
@@ -255,6 +265,7 @@ function linked(
         href={link.href}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={handleExternalClick}
         className="underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
       >
         {text.slice(link.start, link.end)}

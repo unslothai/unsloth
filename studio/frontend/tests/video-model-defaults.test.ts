@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Video page seeds steps and guidance from a repo-id substring table before the backend status
-// answers. The table and its matcher live inside the page component, so this lifts both out of the
-// source and runs them on real checkpoint names, including separator spellings the backend's family
-// matcher already folds together.
+// The Video page seeds steps and guidance from a repo-id substring table before backend status
+// answers; the test lifts the table and matcher out of the page and runs them on real checkpoint
+// names, including separator spellings the backend family matcher already folds.
 
 import assert from "node:assert/strict";
 import test from "node:test";

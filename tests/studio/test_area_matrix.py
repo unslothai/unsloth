@@ -83,6 +83,12 @@ def test_coverage_matcher():
     assert am.uncovered(triggers) == ["dropdown-menu-trigger:Brand new menu"]
 
 
+@pytest.fixture
+def length_blocking(monkeypatch):
+    """The paint / main-thread length rule as it judges once LENGTH_TIME_BLOCKING is switched on."""
+    monkeypatch.setattr(am, "LENGTH_TIME_BLOCKING", True)
+
+
 def _page(cells):
     return {"cells": {a: {"status": "OK", **c} for a, c in cells.items()}}
 
@@ -131,11 +137,15 @@ def test_appearance_check(base, mode, fails, monkeypatch):
 
 # Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
 # between runs; 25 runs, 2026-11-07).
+# Scrolls pause the Glass blur (glass-motion.ts), so their worst readings dropped from 8.3x (thread)
+# and 14.0x (Settings) to at most 4.9x (local and runner runs of that change).
 RUNNER_READINGS = [
-    ("blurred", "thread_scroll", 8.3),
+    ("blurred", "thread_scroll", 4.9),
     (am.GLASS, "reasoning_toggle", 7.8),
-    ("blurred", "settings_scroll", 14.0),
-    ("frosted", "settings_scroll", 13.5),
+    ("blurred", "settings_scroll", 4.9),
+    ("frosted", "settings_scroll", 4.9),
+    # Before keys and presses paused the blur (main runner, Frontend CI 42610880257).
+    ("liquid", "type", 4.9),
 ]
 
 
@@ -332,6 +342,102 @@ def test_missing_default_page_fails_coverage(monkeypatch):
     assert sum("measuring the page failed" in f for f in failures) == len(out)
 
 
+def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(
+    monkeypatch, length_blocking
+):
+    # CI (message_menu, Liquid 3D): a 506 ms first short reading failed the appearance check, so only
+    # the short page was measured again (99, 90 ms). That made the length check fail for the first
+    # time, on a long reading (354 ms) nobody had measured again.
+    cell = lambda cpu, main: {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": cpu,
+        "main_ms": main,
+        "paint_ms": 5,
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"type": cell(100, 90)}),
+        (am.SHORT, "frosted"): _page({"type": cell(2000, 506)}),
+        (am.LONG, "default"): _page({"type": cell(110, 100)}),
+        (am.LONG, "frosted"): _page({"type": cell(400, 354)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["type"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            reading = {"status": "OK", "elements": 10, "layout_objects": 0, "paint_ms": 5}
+            reading.update(
+                {"cpu_ms": 200, "main_ms": 95}
+                if turns == am.SHORT
+                else {"cpu_ms": 220, "main_ms": 120}
+            )
+            result["pages"][(turns, mode)]["cells"][area].setdefault("again", []).extend(
+                [reading] * am.RECHECKS
+            )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    assert calls[0] == [(am.SHORT, "frosted", "type")]
+    assert calls[1] == [(am.LONG, "frosted", "type")]
+    assert not [f for f in failures if "costs more as the chat grows" in f]
+
+
+def test_an_appearance_failure_that_appears_after_a_recheck_is_measured_again(monkeypatch):
+    # CI, main, Liquid 3D typing at 200 turns: one sweep of the 200-turn pages caught a background-
+    # thread burst in every look (default 1,266 ms CPU, Liquid 3D 1,005). Another mode's failure got
+    # the default page measured again (154 ms); Liquid 3D was then judged 1,005 / 154 = 6.5x against
+    # 6x on its never-rechecked first reading. Its own recheck reads 1.6x.
+    cell = (
+        lambda cpu: {
+            "elements": 70,
+            "layout_objects": 200,
+            "cpu_ms": cpu,
+            "main_ms": 60,  # flat, so the paint / CPU length rule (rechecked even report-only) stays out of it
+            "paint_ms": 15,
+        }
+    )
+    pages = {
+        (am.SHORT, "default"): _page({"type": cell(150)}),
+        (am.SHORT, "frosted"): _page({"type": cell(160)}),
+        (am.SHORT, am.GLASS): _page({"type": cell(230)}),
+        (am.LONG, "default"): _page({"type": cell(1266)}),
+        (am.LONG, "frosted"): _page({"type": cell(9000)}),
+        (am.LONG, am.GLASS): _page({"type": cell(1005)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["type"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calm = {"default": 154, "frosted": 300, am.GLASS: 250}
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            for name in ("default", mode):
+                reading = {"status": "OK", **cell(calm[name])}
+                result["pages"][(turns, name)]["cells"][area].setdefault("again", []).extend(
+                    [reading] * am.RECHECKS
+                )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    assert calls[0] == [(am.LONG, "frosted", "type")]
+    assert calls[1] == [(am.LONG, am.GLASS, "type")]
+    assert not [f for f in failures if "makes area type cost" in f]
+
+
 def test_every_area_opened_by_a_shortcut_or_toggle_proves_it_happened():
     # A key press always "succeeds"; only a visible change shows the app acted on it.
     for name, spec in am.AREAS.items():
@@ -461,3 +567,319 @@ def test_settings_ready_marker_is_set_from_inside_the_panel_suspense():
         "data-settings-panel=" not in src
     ), "a pane-level marker would read ready before the panel resolves"
     assert "data-settings-panel-ready=" in am.TABS and "data-settings-panel-failed" in am.TABS
+
+
+@pytest.mark.parametrize(
+    "short, long_, fails",
+    [
+        (15, 104, True),  # Round 11's Settings paint behind the overlay at 1 vs 150 turns
+        (100, 240, False),  # under 2.5x
+        (10, 55, False),  # over 2.5x, but under 50 ms more
+        (40, 140, True),
+    ],
+)
+def test_paint_length_check(short, long_, fails, length_blocking):
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": short}}
+        ),
+        (am.LONG, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": long_}}
+        ),
+    }
+    rows = [v for v in am.judge(_result(pages), known = "") if v["metric"] == "paint_ms"]
+    assert [v["fail"] for v in rows] == [fails]
+    if fails:
+        assert not [v for v in am.judge(_result(pages), known = "paint:a=8") if v["fail"]]
+        assert not [v for v in am.judge(_result(pages), known = "paint@default:a=8") if v["fail"]]
+
+
+def test_paint_length_check_keeps_the_cheapest_reading():
+    # A recheck that reads lower clears a noisy first reading (the minimum of the sweeps is judged).
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": 10,
+        "paint_ms": 300,
+        "again": [{"status": "OK", "paint_ms": 30, "cpu_ms": 10}],
+    }
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": 20}}
+        ),
+        (am.LONG, "default"): _page({"a": long_cell}),
+    }
+    assert not [v for v in am.judge(_result(pages), known = "") if v["fail"]]
+
+
+@pytest.mark.parametrize("metric", ["paint_ms", "main_ms"])
+def test_length_ratio_divides_by_the_median_short_reading(metric, length_blocking):
+    # CI, reasoning_toggle (Liquid 3D): short readings 23 / 34 / 49 ms, long 76 ms. The cheapest short
+    # reading (23) made it 3.3x; over the median (34) it is 2.2x and passes.
+    short_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 23,
+        "again": [{"status": "OK", metric: 49}, {"status": "OK", metric: 34}],
+    }
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 90,
+        "again": [{"status": "OK", metric: 76}],
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"a": short_cell}),
+        (am.LONG, "default"): _page({"a": long_cell}),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == metric and v["kind"] == "length"
+    ]
+    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(76, 34, False)]
+    # A real growth still fails over the same median: 34 -> 300 ms is 8.8x and 266 ms more.
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        metric: 310,
+        "again": [{"status": "OK", metric: 300}],
+    }
+    pages[(am.LONG, "default")] = _page({"a": long_cell})
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == metric and v["kind"] == "length"
+    ]
+    assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(300, 34, True)]
+
+
+def test_cpu_length_growth_needs_the_cpu_floor_as_well_as_the_ratio(length_blocking):
+    # GitHub runner, Liquid 3D tool_toggle after rechecks: 51 -> 132 ms is 2.6x but only 81 ms more, inside
+    # the 2-core runner spread for message-level actions; paint keeps the 50 ms floor.
+    def rows(short, long):
+        cells = lambda v: {
+            "elements": 10,
+            "layout_objects": 0,
+            "main_ms": v,
+            "paint_ms": v,
+            "again": [{"status": "OK", "main_ms": v, "paint_ms": v}],
+        }
+        pages = {
+            (am.SHORT, "default"): _page({"a": cells(short)}),
+            (am.LONG, "default"): _page({"a": cells(long)}),
+        }
+        return {
+            v["metric"]: v["fail"]
+            for v in am.judge(_result(pages), known = "")
+            if v["kind"] == "length" and v["metric"] in ("main_ms", "paint_ms")
+        }
+
+    assert am.length_floor_ms("main_ms") == am.TIME_LENGTH_CPU_FLOOR_MS == 250
+    assert am.length_floor_ms("paint_ms") == am.TIME_LENGTH_FLOOR_MS == 50
+    assert rows(51, 132) == {"main_ms": False, "paint_ms": True}
+    # The synthetic per-message walk on a menu open: about +1 s at 200 turns.
+    assert rows(547, 1535) == {"main_ms": True, "paint_ms": True}
+
+
+def test_length_time_checks_block_by_default():
+    # Blocking since the length cells are judged on fresh-page rechecks (no spilled-over first reading).
+    assert am.LENGTH_TIME_BLOCKING is True
+    assert not [
+        k for k in am.known_limits(am.KNOWN_DEFAULT) if k[0].split("@")[0] in ("cpu", "paint")
+    ], "paint / CPU length ceilings were for single first readings; rechecks replace them"
+
+
+def test_length_time_checks_can_report_only(monkeypatch):
+    monkeypatch.setattr(am, "LENGTH_TIME_BLOCKING", False)
+    pages = {
+        (am.SHORT, "default"): _page(
+            {
+                "a": {
+                    "elements": 10,
+                    "layout_objects": 0,
+                    "cpu_ms": 80,
+                    "main_ms": 80,
+                    "paint_ms": 15,
+                }
+            }
+        ),
+        (am.LONG, "default"): _page(
+            {
+                "a": {
+                    "elements": 10,
+                    "layout_objects": 0,
+                    "cpu_ms": 90,
+                    "main_ms": 400,
+                    "paint_ms": 104,
+                }
+            }
+        ),
+    }
+    result = _result(pages)
+    verdicts = am.judge(result, known = "")
+    rows = [v for v in verdicts if v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")]
+    assert [(v["metric"], v["would_fail"], v["fail"]) for v in rows] == [
+        ("paint_ms", True, False),
+        ("main_ms", True, False),
+    ]
+    # Even report-only, the reading is measured again at both lengths: a single first reading at LONG
+    # turns carries work spilled over from the areas before it.
+    assert am.recheck_keys(verdicts) == [(am.SHORT, "default", "a"), (am.LONG, "default", "a")]
+    text = "\n".join(am.table(result, verdicts))
+    assert "would fail (report-only, not failing the gate): default/a paint 15->104 ms" in text
+
+
+def test_cpu_length_check(length_blocking):
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 80, "main_ms": 80}}
+        ),
+        (am.LONG, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 400, "main_ms": 400}}
+        ),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == "main_ms" and v["kind"] == "length"
+    ]
+    assert [v["fail"] for v in rows] == [True]
+
+
+def _stream_result(pages):
+    return {"pages": pages, "modes": {m["name"]: m for m in am.app_modes()}, "areas": ["stream"]}
+
+
+@pytest.mark.parametrize(
+    "short, long_, fails",
+    # main reads 1.4-2.1x for a 2 s stream; 3x is the limit; a small absolute rise never fails
+    [(2500, 5200, False), (2500, 9000, True), (40, 180, False), (2500, 7400, False)],
+)
+def test_stream_is_judged_on_cpu_growth_with_the_chat(short, long_, fails):
+    cell = lambda cpu: {"elements": 1200, "layout_objects": 3000, "cpu_ms": cpu}
+    pages = {
+        (am.SHORT, "default"): _page({"stream": cell(short)}),
+        (am.LONG, "default"): _page({"stream": cell(long_)}),
+    }
+    rows = [
+        v
+        for v in am.judge(_stream_result(pages), known = "")
+        if v["kind"] == "length" and v["metric"] == "cpu_ms"
+    ]
+    assert [v["fail"] for v in rows] == [fails]
+    counts = [v for v in am.judge(_stream_result(pages), known = "") if v["metric"] == "elements"]
+    assert counts and not any(v["fail"] for v in counts), "flat counts never fail"
+
+
+def test_stream_area_is_last_sends_a_fixed_reply_and_waits_for_its_end():
+    assert list(am.AREAS)[-1] == "stream", "it adds a turn, so it runs after every other area"
+    spec = am.AREAS["stream"]
+    assert spec["setup"] == ("compose", am.STREAM_PROMPT)
+    assert spec["open"] == ("key", "Enter") and spec["ready"] == ("streamed", am.STREAM_END)
+    frames = am.stream_frames()
+    text = "".join(f["choices"][0]["delta"].get("content", "") for f in frames if "choices" in f)
+    assert text.rstrip().endswith(am.STREAM_END), "the end text is the last thing drawn"
+    assert "```python" in text and "- item 5" in text, "prose, a code fence and a list"
+    assert any(f["choices"][0]["delta"].get("reasoning_content") for f in frames if "choices" in f)
+    kinds = [f.get("type") for f in frames]
+    assert kinds.count("tool_start") == 1 and kinds.count("tool_end") == 1
+    assert frames[-1]["choices"][0]["finish_reason"] == "stop"
+    assert am.stream_frames() == frames, "deterministic"
+
+
+def test_the_stub_health_settles_the_hardware_verdict():
+    # An unsettled verdict leaves the Train row spinner running, which made every measured action pay
+    # an IntersectionObserver pass over the whole chat on each frame (env.ts capabilitiesUnknown).
+    health = am.Api(2).bodies["/api/health"]
+    assert health.get("version") and health.get("chat_only") is False
+    assert not health.get("hardware_detecting") and not health.get("hardware_detection_deferred")
+
+
+def test_the_stub_has_a_resident_model_and_saves_the_streamed_turn():
+    api = am.Api(2)
+    assert api.bodies["/api/inference/status"]["active_model"]
+
+    class Route:
+        def __init__(self, method, path):
+            self.request = type("R", (), {"method": method, "url": "http://x" + path})()
+            self.got = None
+
+        def fulfill(
+            self,
+            status,
+            content_type = None,
+            body = "",
+        ):
+            self.got = status
+
+    put = Route("PUT", f"/api/chat/threads/{api.rec['id']}/messages/abc")
+    api.handle(put)
+    assert put.got == 200
+    other = Route("PUT", "/api/chat/threads/other/messages")
+    api.handle(other)
+    assert other.got == 404, "only the seeded thread's saves are answered"
+
+
+def test_stream_wait_is_cheap_while_the_reply_streams():
+    # polled inside the measured window: no DOM walk until the shim has sent its last frame
+    body = am.STREAMED.split("if (!window.__gateStreamDone) return false;")
+    assert len(body) == 2 and "querySelector" not in body[0]
+    assert "__gateStreamDone = true" in am.STREAM_SHIM
+
+
+def _length_run(monkeypatch, first_long_main, again_long_main):
+    """am.run on one area whose main-thread time is 130 ms at SHORT turns; the LONG reading is
+    first_long_main, then again_long_main on each fresh-page recheck."""
+    cell = lambda main: {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": 200,
+        "main_ms": main,
+        "paint_ms": 5,
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"chat_row_menu": cell(130)}),
+        (am.LONG, "default"): _page({"chat_row_menu": cell(first_long_main)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["chat_row_menu"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            reading = {"status": "OK", **cell(130 if turns == am.SHORT else again_long_main)}
+            result["pages"][(turns, mode)]["cells"][area].setdefault("again", []).extend(
+                [reading] * am.RECHECKS
+            )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    return calls, [f for f in failures if "costs more as the chat grows" in f]
+
+
+def test_a_spilled_over_first_long_reading_clears_on_recheck(monkeypatch, length_blocking):
+    # Gate order, 200 turns: chat_row_menu read 404-518 ms on its first reading and 178-268 ms on a
+    # fresh page (130 ms at 40 turns); the work belonged to the areas run before it.
+    calls, failures = _length_run(monkeypatch, first_long_main = 470, again_long_main = 220)
+    assert calls == [
+        [(am.SHORT, "default", "chat_row_menu"), (am.LONG, "default", "chat_row_menu")]
+    ]
+    assert failures == []
+
+
+def test_length_growth_that_survives_rechecks_fails(monkeypatch, length_blocking):
+    calls, failures = _length_run(monkeypatch, first_long_main = 470, again_long_main = 450)
+    assert len(calls) == 1
+    assert len(failures) == 1 and "area chat_row_menu (default)" in failures[0]
+
+
+def test_an_area_under_the_limit_costs_no_recheck(monkeypatch, length_blocking):
+    calls, failures = _length_run(monkeypatch, first_long_main = 250, again_long_main = 250)
+    assert calls == [] and failures == []

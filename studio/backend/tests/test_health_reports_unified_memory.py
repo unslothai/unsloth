@@ -85,16 +85,13 @@ def test_apple_silicon_is_reported(monkeypatch):
 
 
 def test_every_other_host_reports_false(monkeypatch):
-    """Including an Intel Mac, which is the case device_type cannot distinguish and the
-    one the old wording was already right about."""
+    """Other hosts report false, including an Intel Mac that device_type cannot tell apart."""
     body = _health(monkeypatch, apple_silicon = False)
     assert body["apple_silicon"] is False
 
 
 def test_it_rides_with_device_type(monkeypatch):
-    """Both are authed-only. The frontend keys `fetched` on device_type and reads
-    apple_silicon on the same terms, so a reply carrying one without the other would make
-    the store cache a verdict it was never told."""
+    """apple_silicon and device_type must come together: the frontend reads both on the same terms."""
     for apple in (True, False):
         body = _health(monkeypatch, apple_silicon = apple)
         assert ("apple_silicon" in body) == ("device_type" in body)
@@ -108,8 +105,7 @@ def test_an_unauthenticated_reply_carries_neither(monkeypatch):
 
 
 def test_the_gate_is_the_one_the_metal_budget_uses(monkeypatch, real_apple_metal_budget):
-    """Not a second definition of Apple Silicon. If these ever diverge, the UI starts
-    describing a memory model the loader is not enforcing."""
+    """Reuse the Metal budget's gate, or the UI describes memory the loader is not enforcing."""
     import inspect
 
     import main as main_mod

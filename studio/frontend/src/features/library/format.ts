@@ -3,6 +3,7 @@
 
 import type { InterpolationValues, Locale, TranslationKey } from "@/i18n";
 import { formatRelativeTime } from "../../i18n/relative-time.ts";
+import { formatDate, formatNumber } from "../../lib/intl-cache.ts";
 import { withTimeFormat } from "../../lib/time-format.ts";
 
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
@@ -31,17 +32,14 @@ export function formatCardTime(ts: number, locale: Locale, now: number = Date.no
   // Rounded: DST days are 23 or 25 hours long.
   const days = Math.round((startOfDay(today) - startOfDay(then)) / DAY_MS);
   if (days === 0) {
-    return then.toLocaleTimeString(
-      locale,
-      withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale),
-    );
+    return formatDate(then, locale, withTimeFormat({ hour: "numeric", minute: "2-digit" }, locale));
   }
   if (days === 1) {
     const word = yesterday(locale);
     return word.charAt(0).toLocaleUpperCase(locale) + word.slice(1);
   }
-  if (days > 1 && days < 7) return then.toLocaleDateString(locale, { weekday: "long" });
-  return then.toLocaleDateString(locale, {
+  if (days > 1 && days < 7) return formatDate(then, locale, { weekday: "long" });
+  return formatDate(then, locale, {
     month: "short",
     day: "numeric",
     year: then.getFullYear() === today.getFullYear() ? undefined : "numeric",
@@ -72,7 +70,7 @@ const SIZE_UNITS = [
 export function formatSize(bytes: number | null, locale: Locale, t: Translate): string | null {
   if (bytes === null) return null;
   if (bytes < 1024) {
-    return t("library.size.bytes", { value: bytes.toLocaleString(locale, { useGrouping: false }) });
+    return t("library.size.bytes", { value: formatNumber(bytes, locale, { useGrouping: false }) });
   }
   let value = bytes / 1024;
   let unit: (typeof SIZE_UNITS)[number] = SIZE_UNITS[0];
@@ -82,7 +80,7 @@ export function formatSize(bytes: number | null, locale: Locale, t: Translate): 
     unit = next;
   }
   const digits = value >= 10 ? 0 : 1;
-  const formatted = value.toLocaleString(locale, {
+  const formatted = formatNumber(value, locale, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });

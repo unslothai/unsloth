@@ -137,6 +137,8 @@ if HAS_TRITON:
         ADD: tl.constexpr,  # accumulate into OUT, per call site
         SCALE: tl.constexpr,  # per-adapter scales given
         IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        UPCAST: tl.constexpr,  # mixed input dtypes: upcast both tiles to fp32
+        ROUND: tl.constexpr,  # 16-bit inputs, fp32 OUT: keep fp16's 11 significant bits, round to nearest
         BLOCK_M: tl.constexpr,  # token tile, fixed 64
         BLOCK_N: tl.constexpr,  # from N (rank or out_features)
         BLOCK_K: tl.constexpr,  # from K (in_features or rank)
@@ -183,12 +185,19 @@ if HAS_TRITON:
                 mask = mask_k[:, None] & mask_n[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                a, b = a.to(tl.float32), b.to(tl.float32)
             if IEEE:
                 acc += tl.dot(a, b, input_precision = "ieee")
             else:
                 acc += tl.dot(a, b)
         if SCALE:
             acc *= tl.load(SCALES + u).to(tl.float32)
+        if ROUND:
+            # tf32 dots read the top 11 significant bits and drop the rest (round toward zero). Rounding to
+            # nearest here makes them exact, so dH carries fp16's precision with fp32's range.
+            bits = acc.to(tl.int32, bitcast = True)
+            acc = ((bits + 0x1000) & -8192).to(tl.float32, bitcast = True)
         ptrs = OUT + out_rows[:, None] * stride_out + offs_n[None, :]
         mask = mask_m[:, None] & mask_n[None, :]
         if ADD:
@@ -214,6 +223,7 @@ if HAS_TRITON:
         Q_SORTED: tl.constexpr,  # Q rows in adapter order, per call site
         SCALE: tl.constexpr,  # per-adapter scales given
         IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        UPCAST: tl.constexpr,  # mixed input dtypes: upcast both tiles to fp32
         BLOCK_T: tl.constexpr,  # token tile, fixed 64
         BLOCK_I: tl.constexpr,  # from I (weight dim)
         BLOCK_J: tl.constexpr,  # from J (weight dim)
@@ -254,6 +264,8 @@ if HAS_TRITON:
                 mask = mask_t[:, None] & mask_j[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                p, q = p.to(tl.float32), q.to(tl.float32)
             if IEEE:
                 acc += tl.dot(p, q, input_precision = "ieee")
             else:
@@ -311,7 +323,9 @@ def _launch_seg_mm(
         OUT_SORTED = out_sorted,
         ADD = add,
         SCALE = scales is not None,
-        IEEE = inp.dtype == torch.float32,
+        IEEE = inp.dtype == torch.float32 and W.dtype == torch.float32,
+        UPCAST = inp.dtype != W.dtype,
+        ROUND = out.dtype == torch.float32 and inp.dtype != torch.float32,
         BLOCK_M = BLOCK_M,
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
@@ -351,7 +365,8 @@ def _launch_seg_wgrad(
         P_SORTED = p_sorted,
         Q_SORTED = q_sorted,
         SCALE = scales is not None,
-        IEEE = P.dtype == torch.float32,
+        IEEE = P.dtype == torch.float32 and Q.dtype == torch.float32,
+        UPCAST = P.dtype != Q.dtype,
         BLOCK_T = 64,
         BLOCK_I = BLOCK_I,
         BLOCK_J = BLOCK_J,
@@ -507,7 +522,10 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
+        # fp16 dH = scale * dY @ B can overflow while every true gradient is finite: keep it fp32 there.
+        # bf16 / fp32 have fp32 range, so they keep their dtype and kernels.
+        dH_dtype = torch.float32 if dtype == torch.float16 else dtype
+        dH = torch.empty(X.shape[0], R, dtype = dH_dtype, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
         )
@@ -566,10 +584,26 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
         Y = MultiLoRA_W.apply(X, W, W_quant, A, B, scales, batch.sorted_idx, batch.seg_start)
     else:
         Wd = fast_dequantize(W, W_quant, dtype = X.dtype) if W_quant is not None else W.to(X.dtype)
-        Y = F.linear(X, Wd) + multi_lora_delta(X, A, B, scales, batch)
+        Y = F.linear(X, Wd)
+        # Autocast: base matmul is low precision but the delta promotes to X.dtype.
+        Y = Y + multi_lora_delta(X, A, B, scales, batch).to(Y.dtype)
     if bias is not None:
         Y = Y + bias.to(Y.dtype)
     return Y
+
+
+def _refuse_int8_base(name: str, base: nn.Module) -> None:
+    """An 8-bit bitsandbytes weight would be read as a dense int8 matrix with its scales dropped."""
+    W = getattr(base, "weight", None)
+    if (
+        any(cls.__name__ == "Linear8bitLt" for cls in type(base).__mro__)
+        or any(cls.__name__ == "Int8Params" for cls in type(W).__mro__)
+        or getattr(W, "SCB", None) is not None
+    ):
+        raise NotImplementedError(
+            f"Multi-LoRA does not support 8-bit bitsandbytes base layers ({name!r} is "
+            f"{type(base).__name__}). Load the base model in 4-bit or in 16-bit instead."
+        )
 
 
 class MultiLoraLinear(nn.Module):
@@ -587,6 +621,7 @@ class MultiLoraLinear(nn.Module):
         use_rslora: bool = False,
         dtype: torch.dtype = torch.float32,
     ):
+        _refuse_int8_base(type(base).__name__, base)
         super().__init__()
         self.base_layer = base
         for p in base.parameters():
@@ -669,6 +704,8 @@ def inject_multi_lora(
     ]
     if not found:
         raise ValueError(f"No linear layers named {targets} found.")
+    for name, module in found:
+        _refuse_int8_base(name, module)
     _freeze_all_but_adapters(model)
     for name, module in found:
         parent_name, _, child = name.rpartition(".")
@@ -1470,6 +1507,9 @@ def set_multi_lora_batch(
         seg = layer.batch.seg_start
         present = (seg[1:] - seg[:-1]) > 0
         layer.seen = present if layer.seen is None else layer.seen | present
+        if isinstance(layer, MultiLoraExpertParam):
+            # Build groups eagerly: a data-dependent .tolist() inside forward breaks fullgraph.
+            _adapter_groups(layer.batch)
     return next(iter(by_device.values()))
 
 
@@ -1520,6 +1560,69 @@ def adapter_token_counts(
     )
 
 
+# fp32 logits per chunk: a full fp32 copy of B x T logits is several times the bf16 logits and OOMs.
+_CE_CHUNK_ELEMENTS = 1 << 25
+
+
+class _ChunkedTokenCrossEntropy(torch.autograd.Function):
+    """Chunked per-token cross entropy of ``logits[:, :-1]``; saves only logits, labels and per-token fp32
+    max and log-sum-exp (no fp32 logits copy) and backward forms ``softmax - onehot`` from them."""
+
+    @staticmethod
+    def forward(ctx, logits, labels, ignore_index, chunk):
+        B, T1 = labels.shape
+        loss = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        # Max and log-sum-exp kept apart, as log_softmax rounds them: x - (max + lse) loses ulp(max).
+        mx = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        lse = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        for b in range(B):
+            for t in range(0, T1, chunk):
+                e = min(t + chunk, T1)
+                y = labels[b, t:e]
+                valid = y != ignore_index
+                z = logits[b, t:e].float()
+                m = z.amax(1, keepdim = True)
+                z = z - m
+                s = z.exp().sum(1).log()
+                picked = z.gather(1, torch.where(valid, y, 0)[:, None]).squeeze(1)
+                loss[b, t:e] = torch.where(valid, s - picked, 0.0)
+                mx[b, t:e] = m.squeeze(1)
+                # +inf on ignored tokens makes their softmax 0.
+                lse[b, t:e] = torch.where(valid, s, float("inf"))
+        ctx.save_for_backward(logits, labels, mx, lse)
+        ctx.ignore_index, ctx.chunk = ignore_index, chunk
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_loss):
+        logits, labels, mx, lse = ctx.saved_tensors
+        grad = torch.zeros_like(logits)
+        B, T1 = labels.shape
+        for b in range(B):
+            for t in range(0, T1, ctx.chunk):
+                e = min(t + ctx.chunk, T1)
+                y = labels[b, t:e]
+                valid = y != ctx.ignore_index
+                g = torch.where(valid, grad_loss[b, t:e].float(), 0.0)
+                p = (logits[b, t:e].float() - mx[b, t:e, None]).sub_(lse[b, t:e, None]).exp_()
+                p.scatter_add_(1, torch.where(valid, y, 0)[:, None], -torch.ones_like(g)[:, None])
+                grad[b, t:e] = p.mul_(g[:, None])
+        return grad, None, None, None
+
+
+def _token_cross_entropy(logits, shift_labels, ignore_index):
+    if ignore_index == -100 and _use_triton(logits):
+        from .cross_entropy_loss import Fast_CrossEntropyLoss
+
+        # Full rows, no logits[:, :-1] copy: the last position's -100 label gives it zero loss and gradient.
+        B, T, V = logits.shape
+        labels = F.pad(shift_labels, (0, 1), value = -100)
+        loss = Fast_CrossEntropyLoss.apply(logits.reshape(B * T, V), labels.reshape(-1), 0, 0)
+        return loss.view(B, T)[:, :-1]
+    chunk = max(1, _CE_CHUNK_ELEMENTS // max(1, logits.shape[-1]))
+    return _ChunkedTokenCrossEntropy.apply(logits, shift_labels, ignore_index, chunk)
+
+
 def per_adapter_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -1529,21 +1632,23 @@ def per_adapter_loss(
     process_group = None,
     model: Optional[nn.Module] = None,
     num_items_in_batch: Optional[torch.Tensor] = None,
+    grad_scale: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     ``row_adapter_ids``: (B,) or per token (B, T). Pass ``model`` for ``drop_absent_adapter_grads_``, and under
     gradient accumulation ``num_items_in_batch`` = per-adapter ``adapter_token_counts`` summed over the window.
+    ``grad_scale``: per-row (B,) or per-token (B, T) fp32 factor on each logit's gradient (fp16 loss
+    scaling), applied before the gradient is rounded to the logits dtype; values stay unscaled.
     Returns (total, this rank's per-adapter losses).
     """
-    shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
-    token_loss = F.cross_entropy(
-        shift_logits.reshape(-1, shift_logits.shape[-1]),
-        shift_labels.reshape(-1),
-        ignore_index = ignore_index,
-        reduction = "none",
-    ).view(shift_labels.shape)
+    token_loss = _token_cross_entropy(logits, shift_labels.to(logits.device), ignore_index)
+    if grad_scale is not None:
+        scale = grad_scale.to(token_loss)
+        scale = scale[:, :-1] if scale.dim() == 2 else scale[:, None]
+        # Same value, gradient times scale.
+        token_loss = token_loss.detach() + (token_loss - token_loss.detach()) * scale
     valid = (shift_labels != ignore_index).float()
     ids = _label_adapter_ids(row_adapter_ids, labels)
     # Tokens with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.

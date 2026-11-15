@@ -11,3 +11,5 @@ export const CSV_MIME = "text/csv;charset=utf-8";
 export function csvDocument(lines: string[]): string {
   return "\ufeff" + lines.join("\n");
 }
+
+export const COMBINED_CSV_HEADER = "chat,title,role,content";

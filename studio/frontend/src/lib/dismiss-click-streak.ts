@@ -3,8 +3,8 @@
 
 // The OS counts a menu-dismissing press as click 1; later presses select as if it had not (caret, word, block).
 
-const OPEN_FLOATING =
-  '[data-radix-popper-content-wrapper] :is([role="menu"],[role="listbox"],[role="dialog"])';
+const FLOATING_WRAPPER = "[data-radix-popper-content-wrapper]";
+const OPEN_FLOATING = `${FLOATING_WRAPPER} :is([role="menu"],[role="listbox"],[role="dialog"])`;
 
 const TEXT_ENTRY =
   'input,textarea,select,[contenteditable]:not([contenteditable="false"])';
@@ -151,10 +151,12 @@ export function installDismissClickStreakGuard(
   const onPointerDown = (event: PointerEvent): void => {
     // Capture phase: runs before Radix closes the menu.
     const target = asElement(event.target);
+    // Wrapper first: the descendant selector walks a long chat on every press.
     pressDismisses =
       event.button === 0 &&
+      doc.querySelector(FLOATING_WRAPPER) !== null &&
       doc.querySelector(OPEN_FLOATING) !== null &&
-      !target?.closest("[data-radix-popper-content-wrapper]");
+      !target?.closest(FLOATING_WRAPPER);
   };
 
   const onMouseDown = (event: MouseEvent): void => {

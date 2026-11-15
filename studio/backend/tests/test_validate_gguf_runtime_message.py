@@ -100,9 +100,8 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
 
 
 class TestLoadPathPropagatesRuntimeError(unittest.TestCase):
-    """The backend GGUF load now raises LlamaServerNotFoundError when the runtime is
-    missing (after diffusion routing). The default (non-tensor) load must propagate it
-    to load_model's 400 arm, not swallow it into a generic 500."""
+    """The default (non-tensor) GGUF load raises LlamaServerNotFoundError when the runtime is
+    missing; it must reach load_model's 400 arm, not a generic 500."""
 
     def test_tensor_fallback_propagates_missing_runtime(self):
         from core.inference.tensor_fallback import load_with_tensor_fallback

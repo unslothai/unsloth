@@ -253,9 +253,7 @@ def _priced_mib(b, ub, slots, ctx, kv):
 
 
 class TestMeasuredComputeBuffer:
-    """Flat plus context-linear must cover llama-server's own reserve without
-    inflating it: the vocab-wide rows the old formula charged per slot came to 16 GiB
-    for Gemma 4 12B at 8 slots and ubatch 2048, which reserves 652 MiB."""
+    """Flat plus context-linear must match llama-server's reserve, not the old per-slot vocab rows."""
 
     @pytest.mark.parametrize("name,ub,slots,ctx,kv,measured", _MEASURED_COMPUTE)
     def test_covers_the_measured_buffer(self, name, ub, slots, ctx, kv, measured):
@@ -486,9 +484,8 @@ class TestContextBufferDSV4:
 
 
 class TestContextBufferDSV41:
-    """DeepSeek-V4.1 (deepseek41) has its own sparse-attention graph: ~2 GiB flat, then
-    growing faster than linearly, but far below DSV4's rate. Measured CUDA0 compute
-    buffer with the pinned llama.cpp (UD-IQ1_S, experts + Engram on CPU, f16 cache)."""
+    """DeepSeek-V4.1 has a sparse-attention graph: about 2 GiB flat, then superlinear but well below
+    DSV4."""
 
     MIB = 1024**2
     # (n_ctx, n_ubatch): measured MiB
@@ -913,8 +910,7 @@ class TestPerDeviceSplitReserve:
         enforce = True,
         cap = True,
     ):
-        """Mirror of load_model's auto-context subset loop over the production fit
-        and reserve helpers. Returns (gpu_indices, chosen_ctx)."""
+        """Mirrors load_model's auto-context subset loop; returns (gpu_indices, chosen_ctx)."""
         frac = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
         model_bytes = model_mib * MIB
 
@@ -991,8 +987,7 @@ class TestPerDeviceSplitReserve:
         return None, 0
 
     def _card_at_floor_reserve(self, b, total_mib, margin_mib):
-        """Derives the reserve from the fit floor context, so a hardcoded context stops straddling
-        the gate."""
+        """Reserve uses the fit floor context, so a fixed context cannot straddle the gate."""
         reserve_mib = (
             self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
         ) / MIB
@@ -1058,10 +1053,7 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Native-context loop, the reduced-to-4096 fallback below it, the Auto
-        # drafter-drop probe above them, which caps to the same reserve so it cannot
-        # price a drafter at a context the weakest card never holds, and (#14492)
-        # the context ceiling's dGPU-only tier, where pooling can hide a small card.
+        # All four gates must hold every GPU's reserve, since pooled VRAM can hide the weakest card.
         assert compact.count("ifnotself._every_gpu_holds_reserve(") == 4
         assert "_usable_mib=[_gpu_usable(g,_cap_fraction)forginsubset]" in compact
         # Gated on the chosen context, and only reachable after the pooled test.
@@ -1314,8 +1306,7 @@ class TestSplitRateRecheckAfterSelection:
 
 
 class TestScratchTakesTheLighterAxis:
-    """_planned_scratch_cache_type is the seam that keeps the two terms honest:
-    heavier axis for KV bytes, lighter axis for the dequant scratch."""
+    """_planned_scratch_cache_type: KV bytes use the heavier axis, dequant scratch the lighter."""
 
     @pytest.mark.parametrize(
         "k,v,expected",
@@ -1335,14 +1326,12 @@ class TestScratchTakesTheLighterAxis:
         assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
 
     def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
-        """Unsloth emits one type on both axes, so nothing changes for the common
-        case -- this fix must not move the fit for a plain q8_0 load."""
+        """Unsloth emits one type on both axes, so a plain q8_0 load's fit must not move."""
         for kv in ("f16", "q8_0", "q4_0", "iq4_nl"):
             assert _planned_scratch_cache_type(kv, None) == kv
 
     def test_extras_beat_the_managed_field_per_axis(self):
-        """Extras are appended last and win per axis, so the scratch must follow
-        them, not the field the UI sent."""
+        """Extras are appended last and win per axis, so the scratch follows them, not the UI."""
         assert _planned_scratch_cache_type("f16", ["--cache-type-k", "q4_0"]) == "q4_0"
 
     def test_it_reads_the_inherited_env_when_nothing_else_sets_a_type(self):
@@ -1351,8 +1340,7 @@ class TestScratchTakesTheLighterAxis:
 
     @pytest.mark.parametrize("k,v", [("q4_0", "f16"), ("f16", "q4_0")])
     def test_the_asymmetric_pair_selects_the_dequant_rate(self, k, v):
-        """The point of the seam: at the same context the asymmetric pair must
-        cost what the quantized axis really allocates, not the KQ-mask floor."""
+        """An asymmetric pair must price its quantized axis's dequant, not the KQ-mask floor."""
         b = _backend()
         extras = ["--cache-type-k", k, "--cache-type-v", v]
         heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
@@ -1366,9 +1354,8 @@ class TestScratchTakesTheLighterAxis:
 
 
 class TestTensorFitPricesTheQuantizedAxis:
-    """End to end through the planner: the advertised context must not exceed
-    what an honest per-axis price allows. Tensor mode has no --fit valve, so an
-    optimistic context OOMs at startup instead of spilling."""
+    """The advertised context must not exceed what an honest per-axis price allows; tensor mode has
+    no --fit valve, so an optimistic context OOMs at startup instead of spilling."""
 
     @staticmethod
     def _plan(
@@ -1395,9 +1382,8 @@ class TestTensorFitPricesTheQuantizedAxis:
         )
 
     def test_an_asymmetric_pair_is_capped_like_its_quantized_axis(self):
-        """-ctk q4_0 -ctv f16 at a raised micro-batch. Priced from the heavier
-        axis alone the planner advertises the full 262144; the quantized axis
-        cannot hold it."""
+        """With -ctk q4_0 -ctv f16 at a raised micro-batch, the quantized axis caps the advertised
+        context."""
         b = _backend_from_gguf_local()
         optimistic = self._plan(b, "f16", None, 2048, per_gpu = 36_000)[0]
         honest = self._plan(b, "f16", "q4_0", 2048, per_gpu = 36_000)[0]
@@ -1408,8 +1394,7 @@ class TestTensorFitPricesTheQuantizedAxis:
         assert honest < self._plan(b, "q4_0", "q4_0", 2048, per_gpu = 36_000)[0]
 
     def test_a_symmetric_request_is_unchanged(self):
-        """Default and explicit scratch type agree when both axes match, so no
-        existing load moves."""
+        """Default and explicit scratch agree when both axes match, so no existing load moves."""
         b = _backend_from_gguf_local()
         for kv in ("f16", "q8_0", "q4_0"):
             for ub in (512, 2048):
@@ -1417,8 +1402,7 @@ class TestTensorFitPricesTheQuantizedAxis:
 
 
 class TestSpeculativeComputeBuffers:
-    """Draft buffers must cover growth beyond the 224 MiB floor.
-    Measurements below are from Qwen3.8 27B's embedded head."""
+    """Draft buffers must cover growth past the 224 MiB floor; measured on Qwen3.8 27B's head."""
 
     def _qwen38(self):
         b = _backend(vocab = 248320, embd = 5120)
@@ -1464,9 +1448,7 @@ class TestSpeculativeComputeBuffers:
 
 
 class TestFlashAttentionOff:
-    """Without flash attention llama.cpp materialises [n_kv, n_ubatch, n_head] float32
-    attention scores and builds the KQ mask as float32. Measured on b10909 (RTX 6000
-    Ada), f16 cache, llama-server's CUDA0 compute buffer in MiB."""
+    """Without flash attention llama.cpp materialises [n_kv, n_ubatch, n_head] float32 scores."""
 
     _MEASURED = [
         ("Llama-3.2-1B", 512, 4, 32768, 2130.01),
@@ -1500,9 +1482,7 @@ class TestFlashAttentionOff:
 
 
 class TestLayerSplitSlidingWindowSlots:
-    """The replicated sliding-window masks of a layer split hold the window for every
-    slot, as the single-device mask does. Measured per GPU across an RTX 6000 Ada and an
-    RTX 3090, Gemma 4 12B at ubatch 1120."""
+    """A layer split replicates sliding-window masks per GPU, each holding the window for every slot."""
 
     @pytest.mark.parametrize("slots,ctx,measured", [(8, 65536, 971), (16, 131072, 1601)])
     def test_covers_the_measured_split(self, slots, ctx, measured):
@@ -1519,9 +1499,7 @@ class TestLayerSplitSlidingWindowSlots:
 
 
 class TestOutputRowsByBuild:
-    """Before ggml-org/llama.cpp#23861 (b9460) a context reserved an output row for every
-    micro-batch token, once, whatever the slot count: on Vulkan, Gemma 4 E2B at ubatch
-    512 reserved 515 MiB on b9415 and 137 MiB on b10909, the same at one slot or four."""
+    """Builds before b9460 reserved an output row per micro-batch token, whatever the slot count."""
 
     @pytest.mark.parametrize(
         "output,build",

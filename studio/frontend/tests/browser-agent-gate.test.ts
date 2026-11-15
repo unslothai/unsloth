@@ -66,6 +66,22 @@ test("a site the user named, already reached, or linked from the page opens with
   assert.equal(gateNavigation("https://other.example/?d=secret", navigation({ pageLinks: new Set(["https://other.example/a"]) })).kind, "ask");
 });
 
+test("another port on an approved host is another site, and asks", () => {
+  const known = navigation({ knownHosts: new Set(["example.edu"]), userText: "open example.edu" });
+  const gate = gateNavigation("http://example.edu:8081/?d=secret", known);
+  assert.equal(gate.kind === "ask" && gate.prompt, "Open example.edu:8081?");
+  for (const url of ["http://example.edu/", "https://www.example.edu:443/a", "http://example.edu:80/"]) {
+    assert.equal(gateNavigation(url, navigation({ knownHosts: new Set(["example.edu"]) })).kind, "allow");
+  }
+  assert.equal(gateNavigation("http://example.edu:8081/a", navigation({ knownHosts: new Set(["example.edu:8081"]) })).kind, "allow");
+  assert.equal(gateNavigation("http://example.edu:8082/a", navigation({ knownHosts: new Set(["example.edu:8081"]) })).kind, "ask");
+  assert.equal(gateNavigation("http://example.edu:8081/", navigation({ userText: "open example.edu:8081" })).kind, "allow");
+  assert.equal(gateNavigation("http://wikipedia.org:8081/", navigation({ userText: "search wikipedia" })).kind, "ask");
+  const form = element({ submits: true, formMethod: "post" });
+  const submit = gateElement("click", form, "http://example.edu:8081/", open, NONE);
+  assert.equal(submit.kind === "ask" && submit.host, "example.edu:8081");
+});
+
 test("an address the model made up for a new site asks first", () => {
   const gate = gateNavigation("https://collector.example/?q=secret", navigation({ userText: "summarize my notes" }));
   assert.equal(gate.kind, "ask");
@@ -75,6 +91,9 @@ test("an address the model made up for a new site asks first", () => {
   assert.equal(gateNavigation("https://e.com/x", navigation({ userText: "open example.com" })).kind, "ask");
   // The site's name alone approves only the big generic TLDs, not a lookalike the model made up.
   assert.equal(gateNavigation("https://wikipedia.xyz/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
+  assert.equal(gateNavigation("https://notes.com/?d=secret", navigation({ userText: "summarize my notes" })).kind, "ask");
+  assert.equal(gateNavigation("https://search.com/?d=secret", navigation({ userText: "search wikipedia" })).kind, "ask");
+  assert.equal(gateNavigation("https://notes.com/a", navigation({ userText: "open notes.com" })).kind, "allow");
 });
 
 test("consequential labels ask in the languages Studio ships in", () => {
@@ -170,6 +189,8 @@ test("Run scripts set to Never drops browser_evaluate from the turn", async () =
   setBrowserPanelAvailable(true);
   useBrowserAgentStore.setState({ enabled: true, historyAccess: "ask", scriptAccess: "ask" });
   assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
+  useBrowserAgentStore.setState({ scriptAccess: "allow" });
+  assert.ok(browserAgentToolsForTurn().includes("browser_evaluate"));
   useBrowserAgentStore.setState({ scriptAccess: "never" });
   const tools = browserAgentToolsForTurn();
   assert.ok(!tools.includes("browser_evaluate"));
@@ -184,11 +205,17 @@ test("a form posting to a blocked site is refused", () => {
 });
 
 const permissions = (sites: AgentPermissions["sites"], defaults = NONE.defaults): AgentPermissions => ({ defaults, sites });
-const rule = (browsing: "allow" | "ask" | "block", actions: "ask" | "allow" = "ask", unlabelled: "ask" | "allow" = "ask") => ({
+const rule = (
+  browsing: "allow" | "ask" | "block",
+  actions: "ask" | "allow" = "ask",
+  unlabelled: "ask" | "allow" = "ask",
+  scripts: "ask" | "allow" = "ask",
+) => ({
   browsing,
   actions,
   downloads: "ask" as const,
   unlabelled,
+  scripts,
 });
 
 test("site patterns are normalized hosts, and the most specific rule wins", () => {
@@ -219,10 +246,10 @@ test("site rules decide navigation before the new-site check", () => {
   assert.equal(gateNavigation("https://careful.example/b", navigation({ permissions: rules, currentUrl: "https://careful.example/a" })).kind, "allow");
   assert.equal(gateNavigation("https://never.example/", navigation({ permissions: rules, userText: "never.example" })).kind, "block");
   // Default Blocked: only the sites with their own rule open.
-  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  const allowlist = permissions({ "allowed.example": rule("allow") }, { browsing: "block", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(gateNavigation("https://other.example/", navigation({ permissions: allowlist, userText: "other.example" })).kind, "block");
   assert.equal(gateNavigation("https://allowed.example/", navigation({ permissions: allowlist })).kind, "allow");
-  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  const open = permissions({}, { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(gateNavigation("https://made-up.example/?data=1", navigation({ permissions: open })).kind, "allow");
 });
 
@@ -244,11 +271,38 @@ test("stored permissions are checked, so a bad value never reads as allow", () =
       "canvas.example": { browsing: "allow", unlabelled: "allow" },
     },
   });
-  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask", unlabelled: "ask" });
+  assert.deepEqual(checked.defaults, { browsing: "ask", actions: "allow", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.deepEqual(Object.keys(checked.sites).sort(), ["canvas.example", "example.com"]);
   // A rule saved before Unlabelled clicks existed reads as ask.
-  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask" });
+  assert.deepEqual(checked.sites["example.com"], { browsing: "allow", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" });
   assert.equal(checked.sites["canvas.example"]?.unlabelled, "allow");
   assert.equal(ruleFor("https://app.canvas.example/", checked).rule.unlabelled, "allow");
   assert.equal(ruleFor("https://other.example/", checked).rule.unlabelled, "ask");
+});
+
+test("stored Scripts rules are checked, and a rule saved before Scripts existed asks", () => {
+  const checked = checkedPermissions({
+    defaults: { scripts: "always" },
+    sites: { "dash.example": { browsing: "allow", scripts: "allow" }, "old.example": { browsing: "allow" }, "odd.example": { scripts: 1 } },
+  });
+  assert.equal(checked.defaults.scripts, "ask");
+  assert.equal(checked.sites["dash.example"]?.scripts, "allow");
+  assert.equal(checked.sites["old.example"]?.scripts, "ask");
+  assert.equal(checked.sites["odd.example"]?.scripts, "ask");
+});
+
+test("a script runs without asking only under Always allow or its site's Scripts rule", async () => {
+  const { scriptRunsWithoutAsking } = await import("../src/features/browser/agent/permissions.ts");
+  const rules = permissions({ "dash.example": rule("allow", "ask", "ask", "allow"), "admin.dash.example": rule("allow") });
+  assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example/board", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://eu.dash.example/", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://admin.dash.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://dash.example.evil.test/", rules), false);
+  const everywhere = permissions({}, { ...NONE.defaults, scripts: "allow" });
+  assert.equal(scriptRunsWithoutAsking("ask", "https://any.example/", everywhere), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "about:blank", everywhere), false);
+  assert.equal(scriptRunsWithoutAsking("allow", "https://other.example/", rules), true);
+  assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);
 });

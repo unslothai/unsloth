@@ -89,9 +89,7 @@ def test_network_share_host_is_unchanged_for_a_specific_bind(public_and_lan):
 
 
 def test_external_ip_falls_back_to_the_raw_route_address(monkeypatch):
-    """The LAN detector's filtering is right for an address we advertise and wrong
-    as the last resort for "where am I": _resolve_external_ip keeps its own route
-    lookup, so a WSL/NAT host with no public answer still reports a real address."""
+    """LAN filtering is wrong for 'where am I'; _resolve_external_ip falls back to the raw route address."""
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: [])
     monkeypatch.setattr(
         urllib.request,
@@ -161,8 +159,7 @@ def _rewritten_startup_line(logger, bind_host: str) -> str:
 
 
 def test_startup_log_line_names_the_lan_address(uvicorn_log_filters, monkeypatch):
-    """#8868 as reported: the line reads as a claim about where this machine
-    answers, so a wildcard bind must not be rewritten to the public WAN IP."""
+    """The startup log names where this host answers, so a wildcard bind must not be rewritten to WAN IP."""
     monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 4: LAN_IP)
     run._install_uvicorn_startup_log_rewrite("0.0.0.0")
     line = _rewritten_startup_line(uvicorn_log_filters, "0.0.0.0")

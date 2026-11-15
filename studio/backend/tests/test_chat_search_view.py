@@ -127,6 +127,28 @@ def test_search_view_keeps_what_the_index_reads_and_drops_the_rest(history):
     assert view_bytes < 5_000
 
 
+def test_search_view_never_decodes_metadata(history, monkeypatch):
+    """Provider metadata (reasoning ledgers) is large and the search view drops it: skip the decode."""
+    full = _batch()
+    expected = {
+        tid: [
+            chat_history.ChatMessage(**chat_history._search_view_message(m)).model_dump(mode = "json")
+            for m in messages
+        ]
+        for tid, messages in full.items()
+    }
+    decode = studio_db._json_loads
+
+    def guarded(value, fallback):
+        assert value is None or "predicted_n" not in value, "search view decoded metadata_json"
+        return decode(value, fallback)
+
+    monkeypatch.setattr(studio_db, "_json_loads", guarded)
+    assert _batch("search") == expected
+    with pytest.raises(AssertionError, match = "decoded metadata_json"):
+        _batch("full")
+
+
 @pytest.mark.parametrize(
     "attachments",
     [

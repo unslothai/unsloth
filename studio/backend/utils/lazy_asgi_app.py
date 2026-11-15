@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A mounted ASGI app built on its first request instead of at import. Its lifespan runs inside the
-parent app's lifespan: entered at startup when the app is already built or wanted then, otherwise
-by the first request, always in one host task (anyio task groups must exit in the task that entered
-them) and exited at the parent's shutdown. Concurrent first requests share one build."""
+"""Builds a mounted ASGI app on its first request, not at import; its lifespan runs inside the
+parent's, always in one host task (anyio groups exit where entered) and exits at parent shutdown;
+concurrent first requests share one build."""
 
 from __future__ import annotations
 
@@ -128,8 +127,7 @@ class LazyLifespanApp:
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         cycle = self._cycle
         if scope["type"] == "lifespan" or cycle is None or cycle.stopping.is_set():
-            # No parent lifespan running: hand the request to the app as it stands, unstarted,
-            # which is what an eagerly built app sees too.
+            # No parent lifespan: the request passes on unstarted, as an eager build would.
             app = self._built
             if app is None:
                 app = await anyio.to_thread.run_sync(self.build)

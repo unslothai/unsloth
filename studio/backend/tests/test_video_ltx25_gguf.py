@@ -158,8 +158,7 @@ def test_picker_rows_keep_dev_and_distilled_apart_and_rank_ud_first():
 
     keys = {gguf_variant_key(f) for f in DEV_FILES + DISTILLED_FILES}
     assert len(keys) == len(DEV_FILES) + len(DISTILLED_FILES)
-    # Within each checkpoint UD-Q4_K_XL ranks first, then Q4_K_M; which checkpoint a bare id means is
-    # default_gguf_scope's call (the next test).
+    # Within a checkpoint UD-Q4_K_XL beats Q4_K_M; default_gguf_scope picks the checkpoint.
     assert pick_best_gguf(DEV_FILES) == "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf"
     assert pick_best_gguf([f for f in DEV_FILES if "UD-" not in f]) == "ltx-2.5-22b-dev-Q4_K_M.gguf"
     assert pick_best_gguf(DISTILLED_FILES) == "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"

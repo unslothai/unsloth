@@ -149,7 +149,7 @@ def discover_clip_caption_pairs(
         if not meta_path.is_file():
             continue
         try:
-            meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            meta_lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in meta_lines:

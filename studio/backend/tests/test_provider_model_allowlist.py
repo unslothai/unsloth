@@ -16,8 +16,7 @@ from core.inference.providers import PROVIDER_REGISTRY  # noqa: E402
 
 
 def test_current_generation_model_ids_reach_the_picker():
-    """Live ids from each provider's list endpoint must survive the
-    allow/deny filters, otherwise the newest models are invisible."""
+    """Live model ids must survive the allow/deny filters, or the newest models are invisible."""
     live = {
         "openai": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.5-pro"],
         "gemini": [

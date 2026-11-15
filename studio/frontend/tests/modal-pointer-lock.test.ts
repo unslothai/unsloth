@@ -9,6 +9,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { readSrc } from "./helpers/kit.ts";
 
 type Init = { childList?: boolean; attributes?: boolean; subtree?: boolean; attributeFilter?: string[] };
@@ -169,6 +173,61 @@ test("no modal rule keys on an inline style, and lock attributes above a thread 
   }
   assert.match(readSrc("main.tsx"), /watchModalPointerLock\(document\);/);
 });
+
+test("no stylesheet keys a descendant rule on an attribute a modal toggles above the chat", () => {
+  // These attributes toggle above every message on each modal; keyed before a combinator, WebKit re-matches the chat.
+  const root = fileURLToPath(new URL("../src/", import.meta.url));
+  const sheets = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".css"));
+  assert.ok(sheets.length > 1, "stylesheets found");
+  const toggled = ["data-scroll-locked", "aria-hidden", "data-aria-hidden"];
+  const offenders: string[] = [];
+  for (const file of sheets) {
+    const css = readFileSync(join(root, file), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const block of css.split("}")) {
+      const prelude = block.slice(0, block.lastIndexOf("{") >= 0 ? block.lastIndexOf("{") : 0);
+      for (const selector of splitTopLevel(prelude)) {
+        for (const attr of toggled) {
+          const re = new RegExp(`\\[${attr}(?:[\\]=~|^$*]|\\])`, "g");
+          for (let m = re.exec(selector); m; m = re.exec(selector)) {
+            if (combinatorAfter(selector, m.index)) offenders.push(`${file}: ${selector.trim()}`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+function splitTopLevel(prelude: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < prelude.length; i++) {
+    const ch = prelude[i];
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === ")" || ch === "]") depth -= 1;
+    else if (ch === "," && depth === 0) {
+      out.push(prelude.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(prelude.slice(start));
+  return out.map((s) => s.trim()).filter((s) => s && !s.startsWith("@"));
+}
+
+function combinatorAfter(selector: string, at: number): boolean {
+  let depth = 0;
+  let i = selector.indexOf("]", at) + 1;
+  for (; i < selector.length; i++) {
+    const ch = selector[i];
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === ")" || ch === "]") {
+      depth -= 1;
+      if (depth < 0) return false; // the attribute sits inside :is() / :not(): its own compound decides
+    } else if (depth === 0 && /[\s>+~]/.test(ch)) return /\S/.test(selector.slice(i));
+  }
+  return false;
+}
 
 test("nothing is marked until the body lock goes up", () => {
   assert.deepEqual(marked(), {});

@@ -303,15 +303,9 @@ _PUBLISHED_GGML_TREE_CACHE: dict[tuple[str, str], str | None] = {}
 
 
 def published_llama_ggml_tree(tag: Any, repo: Any = None) -> str | None:
-    """ggml tree id recorded in the published llama release for ``tag``.
-
-    An install made before ggml_tree was recorded has no tree locally, and
-    nothing can backfill one without reinstalling llama. The release manifest
-    carries it, so read that instead of falling back to the "-mix-" suffix,
-    which does not track ggml. Failures return None: the caller then uses the
-    old fallback rather than refusing an otherwise valid install, so this
-    fetches once with no retries -- the retry policy exists for downloads we
-    need, and an unreachable host would otherwise stall every uncached tag."""
+    """Reads the ggml tree from the published release manifest, not the -mix- suffix; fetches once
+    with no retries, since an unreachable host would stall every tag; failures return None so the
+    caller falls back rather than refusing a valid install."""
     if not isinstance(tag, str) or not tag:
         return None
     if not (isinstance(repo, str) and repo):
@@ -335,12 +329,7 @@ def published_llama_ggml_tree(tag: Any, repo: Any = None) -> str | None:
 
 
 def installed_llama_tree_repo() -> str | None:
-    """Repo whose published ggml tree describes the installed llama binaries.
-
-    None when there is nothing to read, or when the binaries came from a repo
-    other than the one that published the release: recorded_ggml_tree() leaves
-    the marker's tree unset in that case precisely because the fork tree does
-    not describe an upstream-built libggml, so it must not be inferred either."""
+    """Repo that published the installed llama binaries, or None; a fork tree is never inferred."""
     metadata = llama.load_prebuilt_metadata(llama.default_managed_llama_dir())
     if metadata is None:
         return None
@@ -412,14 +401,7 @@ def _is_linux_libomp_soname(name: str) -> bool:
 
 
 def _ggml_stack_imports_libomp(llama_bin_dir: Path, backend: str) -> bool | None:
-    """Whether the ggml libraries whisper will load actually import LLVM's libomp.
-
-    True on the first import found; False only once every relevant library was inspected
-    and none imported it; None when any could not be inspected.
-
-    The selected backend module is inspected alongside the core: it is dlopen'd after
-    startup, so a dependency living only there is invisible to a --help smoke test.
-    """
+    """Whether ggml libs or the late-dlopen'd backend import libomp; None if any could not be inspected."""
     patterns = ["libggml-base.so*", "libggml.so*"]
     module_glob = SLIM_BACKEND_MODULE_GLOBS.get(backend, {}).get("linux")
     if module_glob:
@@ -444,9 +426,7 @@ def _ggml_stack_imports_libomp(llama_bin_dir: Path, backend: str) -> bool | None
 def slim_pairing_for_artifact(
     artifact: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[Path, str] | None:
-    """(llama bin dir, llama release tag) when the installed llama runtime can
-    back this slim artifact, else None. Each failed gate logs why; the caller
-    then retries via CPU or reports the prebuilt unavailable."""
+    """Returns (llama bin dir, release tag) if the installed runtime can back this artifact; else None."""
     asset = artifact.get("asset")
     runtime = installed_llama_runtime()
     if runtime is None:
@@ -505,12 +485,9 @@ def slim_pairing_for_artifact(
 def select_slim_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """The paired slim artifact for any backend (cpu and metal included), or None.
-    Slim assets carry backend "slim" so the CPU escape hatch's fat os/arch/backend
-    matching never sees them. When the release ships slim candidates but none
-    pair, log the actionable reason: on a slim-only release nothing else selects,
-    setup reports the prebuilt unavailable, and local dictation stays on
-    Transformers STT."""
+    """Paired slim artifact for any backend, or None; slim assets skip fat matching; when slim
+    candidates exist but none pair, log the actionable reason: setup then reports the prebuilt
+    unavailable and dictation stays on Transformers STT."""
     if backend not in SLIM_ELIGIBLE_BACKENDS:
         return None
     os_token, arch_token = host_platform_tokens(host)
@@ -535,10 +512,7 @@ def select_slim_artifact(
 def select_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """Slim-only: every backend resolves to the paired slim artifact. The one
-    legacy shape still honored is the published fat CPU bundle of a pinned pre-slim
-    release, reached by a GPU-backend miss through the core's CPU fallback retry.
-    No other fat artifact is ever selected."""
+    """Slim-only, except a pinned pre-slim release's fat CPU bundle, reached via the CPU fallback retry."""
     slim = select_slim_artifact(manifest, host, backend)
     if slim is not None:
         return slim
@@ -591,12 +565,9 @@ def _installed_llama_is_ahead(manifest: dict[str, Any], host: HostInfo) -> bool:
 
 
 def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> str | None:
-    """Explain a valid platform slim release that this runtime cannot pair.
-
-    This intentionally excludes missing files, malformed manifests, checksum
-    failures, and unsupported platforms. Those are operational errors and must
-    never be converted into the update path's kept-existing-runtime success.
-    """
+    """Explains only a valid slim release this runtime cannot pair; missing files, bad manifests,
+    checksum failures and unsupported platforms are excluded and must never count as
+    kept-existing success."""
     os_token, arch_token = host_platform_tokens(host)
     candidates = [
         artifact
@@ -763,12 +734,8 @@ def locate_server_in_tree(root: Path, host: HostInfo) -> Path:
 
 
 def _assemble_install_tree(bundle_root: Path, staged_root: Path, host: HostInfo) -> Path:
-    """Lay out staged_root as a full install: build/bin/<server + libs>.
-
-    Everything beside the server in the archive (shared libs, backend kernel
-    subdirs, license/build-info) is co-located into the canonical bin dir so the
-    server's RUNPATH=$ORIGIN resolves its libs.
-    """
+    """Lay out staged_root as a full install in build/bin: co-locate everything beside the server
+    (shared libs, backend kernel subdirs, license) so RUNPATH=$ORIGIN resolves its libs."""
     bin_dir = runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
     for entry in sorted(bundle_root.iterdir()):
@@ -917,15 +884,9 @@ def link_ggml_runtime(
     *,
     backend: str | None = None,
 ) -> list[str]:
-    """Hardlink every ggml library from the llama runtime into the whisper bin
-    dir; returns the wired filenames (sorted) for the marker / sidecar launch guard.
-
-    Hardlinks (not symlinks) on purpose: when the llama updater atomically swaps
-    its install dir, the old inodes stay alive under these links, so a
-    not-yet-updated whisper keeps running the exact ggml build it was installed
-    against. Falls back to a copy where linking is unsupported or crosses devices.
-    Re-run on every install/update so the links track the current pairing.
-    """
+    """Hardlinks (not symlinks) to the llama ggml libraries keep the paired build alive across an
+    atomic swap of its install dir; copy only where linking is unsupported or crosses devices;
+    re-run on each install or update to track the pairing; returns sorted names."""
     sources = _runtime_library_sources(llama_bin_dir, backend)
     if not any(source.name.startswith(("libggml", "ggml")) for source in sources):
         raise PrebuiltFallback(
@@ -966,10 +927,8 @@ def link_runtime_directories(
 
 
 def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -> Any:
-    """Slim installs wire the paired llama ggml runtime into the staged bin dir
-    before validation so the activated tree is self-contained; the returned
-    selection carries the wired filenames for the marker. Fat installs need
-    nothing (the archive carries its ggml) and return None."""
+    """Slim installs link the paired llama ggml runtime into the staged bin dir before validation
+    and the returned selection records the wired filenames; fat installs return None."""
     if getattr(selection, "install_kind", None) != "slim" or not selection.linked_from:
         return None
     source = Path(selection.linked_from)
@@ -1083,11 +1042,9 @@ def _runtime_file_records(
 
 
 def runtime_file_records(install_dir: Path, selection: Any) -> "dict[str, dict[str, Any]]":
-    """prebuilt_core.write_prebuilt_metadata's hook: the record for the tree just staged.
-
-    Slim bundles pass their wired ggml filenames through, so the marker describes the
-    hardlinks it is about to claim as well as the server it shipped.
-    """
+    """Hook for prebuilt_core.write_prebuilt_metadata that records the staged tree; slim bundles
+    pass their wired ggml filenames so the marker describes the hardlinks it claims as well as
+    the server."""
     is_slim = getattr(selection, "install_kind", None) == "slim"
     linked = selection.linked_libraries if is_slim else None
     runtime_dirs = getattr(selection, "linked_runtime_directories", None) if is_slim else None
@@ -1204,11 +1161,9 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def existing_install_matches(
     install_dir: Path, host: HostInfo, selection: InstallSelection
 ) -> bool:
-    """Core fingerprint match, hardened for repairability: a marker-matching
-    install is only "current" when the server is executable (the sidecar refuses
-    non-executable binaries, so setup must repair not skip) and, for slim
-    installs, every wired ggml library is still present (else a deleted/moved
-    llama dir leaves dictation broken while update reports up to date)."""
+    """A marker match counts as current only if the server is executable (the sidecar refuses
+    non-executable binaries) and slim wired ggml libraries all exist, since a deleted or moved
+    llama dir breaks dictation while update reports up to date."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     return installed_tree_is_intact(install_dir, host)
@@ -1244,25 +1199,9 @@ def settle_kept_install(install_dir: Path) -> None:
 
 
 def _backfill_runtime_file_records(install_dir: Path) -> None:
-    """Record the payload's sizes and digests on a marker written before that key existed.
-
-    An install made by an older Unsloth Studio carries no runtime_files, and
-    existing_install_current_without_plan demands one: without this backfill every such
-    install would take the full path on EVERY update -- fetching the release, its
-    manifest and its checksum index each time -- instead of once. Nothing here re-downloads
-    anything: the comparison in installed_tree_is_intact accepts an absent record precisely
-    so that an upgrade never costs 200-400 MB for a tree that is fine.
-
-    Added, never corrected: a marker that already carries a record was written by a run
-    that hashed the bytes it installed, and overwriting it would re-bless bytes this run
-    did not choose. What this writes is what is on disk NOW, which is the only thing an
-    offline run can honestly say -- a legacy install already damaged before this ran is
-    recorded as damaged. That is the inherent limit of a record introduced after the fact;
-    from the moment it is written the bytes are pinned.
-
-    Never raises -- the install is already valid, and a read-only marker must not fail
-    setup over a metadata refresh.
-    """
+    """Backfills runtime_files on markers from older installs, which would otherwise refetch the
+    release, manifest and checksums on every update; records what is on disk now, never
+    overwrites, never downloads, never raises."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("runtime_files"):
         return

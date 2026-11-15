@@ -55,6 +55,25 @@ test("the lock's body styles are static, with what react-remove-scroll-bar injec
   }
 });
 
+test("on screen <body> already has the lock's overflow and position, so a lock toggle is a no-op", () => {
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /@media screen \{\s*body \{\s*overflow: hidden;\s*position: relative;\s*\}\s*\}/,
+  );
+  const lock = rule(css, "body[data-scroll-locked]");
+  assert.ok(lock.includes("overflow: hidden !important;") && lock.includes("position: relative !important;"));
+});
+
+test("the login and change-password pages scroll in their own <main>, now that <body> never does", () => {
+  const hiddenRouteMain = /<main className="([^"]*--studio-hidden-route-top-inset[^"]*)"/.exec(
+    readSrc("app/routes/__root.tsx"),
+  );
+  assert.ok(hiddenRouteMain, "the hidden-navbar <main> is gone");
+  const classes = hiddenRouteMain[1].split(" ");
+  assert.ok(classes.includes("h-dvh") && classes.includes("overflow-y-auto"), hiddenRouteMain[1]);
+});
+
 test("document pointer listeners are pinned once per type, before the app mounts", () => {
   const added: [string, unknown][] = [];
   const target = {
@@ -131,13 +150,12 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
   // No page-wide rule: dialogs portaled into the page (Recipe Studio) host live comboboxes there.
   assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
-  // Page restorations (toolbars, the Downloads card) go inert under the body lock, with one rule:
+  // Page restorations (toolbars) go inert under the body lock, with one rule:
   // inside a page region, or on a region root or a thread root's ancestor itself.
   const not =
     ':not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
   const page = `[data-modal-lock-region] :is(.pointer-events-auto, .sidebar-row-action)${not},\n\t:is([data-modal-lock-region], [data-modal-lock-path]):is(.pointer-events-auto, .sidebar-row-action)${not}`;
   assert.match(rule(css, page), /pointer-events: none !important;/);
-  assert.match(readSrc("features/hub/download-manager/download-manager-panel.tsx"), /"hub-download-panel pointer-events-auto /);
   // What is meant to work over a modal stays live.
   const live: Array<[string, RegExp]> = [
     ["components/tauri/window-titlebar.tsx", /"modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-\[70\]/],
@@ -146,7 +164,10 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
     ["components/ui/combobox.tsx", /"isolate z-\[120\] modal-pe-live pointer-events-auto"/],
     ["features/interface-zoom/components/interface-zoom.tsx", /"modal-pe-live interface-zoom-position pointer-events-auto/],
     ["app/provider.tsx", /data-tauri-drag-region=\{true\}[\s\S]{0,80}"pointer-events-auto modal-pe-live /],
+    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-fab pointer-events-auto modal-pe-live"/],
+    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-panel pointer-events-auto modal-pe-live /],
   ];
   for (const [file, re] of live) assert.match(readSrc(file), re, file);
+  assert.equal(readSrc("app/provider.tsx").match(/data-testid="overlay-rail"\s+data-overlay-rail=""/g)?.length, 2);
   assert.equal(readSrc("components/tauri/window-titlebar.tsx").match(/"pointer-events-auto fixed /g), null);
 });

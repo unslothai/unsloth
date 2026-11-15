@@ -10,6 +10,8 @@ from hub.services import snapshot_progress
 from hub.services.models import downloads
 from hub.utils import download_manifest
 
+_real_requirements = downloads.gguf_variants.gguf_variant_requirements
+
 
 @pytest.fixture
 def scoped_progress(monkeypatch, tmp_path):
@@ -216,3 +218,23 @@ def test_offline_variant_manifest_does_not_shrink_hint(scoped_progress):
     result = case.poll(670, "Q6_K")
     assert result["expected_bytes"] == 670
     assert result["complete_on_disk"] is False
+
+
+@pytest.mark.parametrize("scope", ["@diffusion", "@audio", "@hub-assets"])
+def test_scoped_poll_does_not_fetch_model_info(monkeypatch, scoped_progress, scope):
+    case = scoped_progress
+    case.metadata.scoped_files = ()
+    gv = downloads.gguf_variants
+    monkeypatch.setattr(gv, "gguf_variant_requirements", _real_requirements)
+    fetched = []
+    monkeypatch.setattr(
+        gv, "_fetch_gguf_variant_requirements", lambda repo, *a, **k: fetched.append(repo) or {}
+    )
+    (case.blobs / "new.incomplete").write_bytes(b"n" * 20)
+    for _ in range(3):
+        result = case.poll(700, scope)
+    assert fetched == []
+    assert result["expected_bytes"] == 700
+    assert result["downloaded_bytes"] == 0
+    case.poll(700, "Q6_K")
+    assert fetched == ["Org/Model"]

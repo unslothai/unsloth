@@ -255,9 +255,8 @@ def test_the_recipe_endpoint_check_still_requires_http_with_the_setting_on(
 
 
 def test_a_link_local_provider_that_saves_can_also_be_dialled(monkeypatch, as_alice):
-    """Save and dial have to agree. 169.254.0.0/16 is also where a self-assigned host and an
-    mDNS name land, so a DNS answer there is an ordinary LAN provider, not the metadata service.
-    A typed literal in that range stays refused at both ends, which is what the validator does."""
+    """Save and dial must agree: DNS answers in 169.254.0.0/16 are LAN hosts; typed literals stay
+    refused."""
     import socket
 
     from core.inference.providers import provider_address_excluding_metadata

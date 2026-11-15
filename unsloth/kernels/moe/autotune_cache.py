@@ -11,9 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""
-Auto-tuning cache system for MoE kernels to ensure tuning runs only once at training start.
-"""
+"""Auto-tuning cache system for MoE kernels to ensure tuning runs only once at training start."""
 
 import hashlib
 import json
@@ -556,10 +554,9 @@ def _estimate_smem(
     capability: Tuple[int, int],
     pipelined_dW: bool = False,
 ) -> int:
-    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB.
-
-    pipelined_dW: the per-expert dW kernel with unpermuted operands. Its one M loop is software pipelined (the
-    legacy kernel's nested loop and a gathered load never are), so 16-bit shared memory grows with num_stages."""
+    """Shared memory in bytes per launch, matching compiled metadata.shared (Triton 3.6-3.8,
+    sm_75..120) or exceeding it by <= 1 KiB; for pipelined_dW (per-expert dW, unpermuted
+    operands) 16-bit SMEM grows with num_stages."""
     M, N, K = config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K
     stages = max(int(config.num_stages), 1)
     if kind == "fwd":

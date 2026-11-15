@@ -33,11 +33,8 @@ DEFAULT_FETCH_TIMEOUT = int(os.environ.get("UNSLOTH_NOTEBOOK_FETCH_TIMEOUT", "60
 
 
 def _load(path_or_url, fetch_timeout = None):
-    """Parsed notebook. A URL is fetched with a socket timeout: --timeout only ever
-    reached nbconvert, so a host that accepted the connection and then went quiet hung
-    the run before a single cell had executed. This bounds each blocking socket
-    operation, not the total transfer, which is what that failure needs; a server
-    trickling bytes forever is a different problem and not one seen here."""
+    """Returns the parsed notebook; URLs use a socket timeout because --timeout only reached
+    nbconvert and a host that went quiet hung the run; total transfer time is not bounded."""
     if path_or_url.startswith(("http://", "https://")):
         if fetch_timeout is None:
             fetch_timeout = DEFAULT_FETCH_TIMEOUT
@@ -103,9 +100,8 @@ def _stage_metadata(
     dest,
     owner_ids = None,
 ):
-    """Give the staged output the metadata the destination must end up with: mkstemp()
-    creates 0600, nbconvert truncates that same inode, and os.replace carries it onto
-    the destination. Best effort."""
+    """Gives the staged output the destination's metadata: mkstemp() creates 0600, nbconvert
+    truncates that same inode, and os.replace carries it onto the destination; best effort."""
     try:
         st = os.stat(dest)
     except OSError:

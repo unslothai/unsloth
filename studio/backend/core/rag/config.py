@@ -90,6 +90,8 @@ FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 *
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
+# Linked-folder indexing waits while a local chat generates, else it starves decode (#16992).
+FOLDER_YIELD_TO_CHAT = os.environ.get("RAG_FOLDER_YIELD_TO_CHAT", "1") != "0"
 # Small linked-folder files in flight, clamped to workers..64; past the workers they only wait to embed.
 FOLDER_INGEST_IN_FLIGHT = int(os.environ.get("RAG_FOLDER_INGEST_IN_FLIGHT", "16"))
 FOLDER_INGEST_BATCH_FILE_BYTES = int(
@@ -187,8 +189,7 @@ def effective_embedding_model(fresh: bool = False) -> str:
 
 
 def _names_gguf(model: str) -> bool:
-    """True when "gguf" appears as a whole name segment, so plain substrings
-    like "bigguf" don't count."""
+    """True when `gguf` is a whole name segment; substrings like `bigguf` do not count."""
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
@@ -197,8 +198,7 @@ _QUANT_SUFFIX_RE = re.compile(r"(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$", re.
 
 
 def gguf_repo_candidates(model: str) -> list[str]:
-    """Repos that may hold ``model``'s GGUF, in preference order. Shared by the
-    loader and the settings resolve endpoint so they cannot pick different repos."""
+    """Repos that may hold the GGUF, in preference order; loader and settings must agree."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:
         return [EMBED_GGUF_REPO]
     if _names_gguf(model):

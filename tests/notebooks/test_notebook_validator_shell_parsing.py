@@ -1916,9 +1916,8 @@ def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
 
 
 def test_python_version_drift_in_the_os_oracle_fails_strict():
-    """_marker_environment reads the Python line out of os-info, so that key is rule-bearing
-    even though the rest is human context: with only the pip freeze strict, an interpreter
-    bump behind an unchanged package set left the cron green and the Python stale."""
+    """_marker_environment reads the Python version from os-info, so that key is rule-bearing; an
+    interpreter bump with unchanged packages must fail strict, not stay green."""
     nv = _load_notebook_validator_module()
 
     assert nv.COLAB_STRICT_ORACLE == "pip-freeze.gpu.txt"
@@ -4448,10 +4447,8 @@ def test_a_project_name_is_canonicalized_the_way_pep_503_says():
 
 
 def test_a_for_list_is_read_across_any_shell_whitespace():
-    """`for x\tin\ta` is the same loop to bash as the spaced form.
-
-    Partitioning on the literal `" in "` found no list, so a body that certainly runs was marked
-    conditional and its install dropped out of the replay."""
+    """A for loop with tabs around in is the same loop to bash; partitioning on literal spaces found
+    no list, so a body that certainly runs was marked conditional."""
     nv = _load_notebook_validator_module()
 
     assert ("!pip install torch==2.11", False) in nv._split_chained(

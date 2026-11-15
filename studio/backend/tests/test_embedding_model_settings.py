@@ -53,9 +53,8 @@ def settings_store(monkeypatch):
 
 
 def test_custom_model_overrides_default_and_derives_gguf(settings_store, monkeypatch):
-    """The core contract: with nothing stored the default is in effect; a saved
-    custom model becomes the effective embedding model and derives its -GGUF
-    companion (what the llama-server backend loads); reset clears the override."""
+    """With nothing stored the default applies; a saved custom model becomes effective and derives
+    its -GGUF companion that llama-server loads; reset clears it."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     assert ems.get_rag_embedding_model() == rag_config.EMBEDDING_MODEL
     assert rag_config.effective_gguf_repo() == rag_config.EMBED_GGUF_REPO
@@ -76,8 +75,7 @@ def test_env_default_derives_its_gguf_companion(monkeypatch):
 
 
 def test_env_default_keeps_its_resolved_gguf_without_becoming_custom(settings_store, monkeypatch):
-    """An env default can resolve to an off-convention repo even though selecting
-    it should not turn the default itself into a persisted override."""
+    """Selecting the env default must not persist it as a custom override."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default-embedder")
 
@@ -162,8 +160,7 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
 
 
 def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(settings_store, monkeypatch):
-    """One stored record, so saving B takes A's repo away while a job pinned to A
-    is still ingesting, moving its identity to the derived A-GGUF mid-run."""
+    """A job pinned to A keeps A's repo when B is saved, not the derived A-GGUF mid-run."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
     from core.rag import config
@@ -236,8 +233,7 @@ def test_a_pinned_jobs_backend_and_pending_survive_a_save_for_another_model(
 
 
 def test_retiring_the_pending_marker_retires_it_in_the_memo_too(settings_store, monkeypatch):
-    """Or a pinned job keeps reading pending=True and stays cache-only after the
-    download landed."""
+    """Otherwise a pinned job keeps seeing pending=True and stays cache-only after download."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
 
@@ -286,9 +282,8 @@ def test_a_reset_with_nothing_remembered_stays_a_plain_reset(settings_store, mon
 
 
 def test_the_planned_gguf_family_is_stored_and_survives_the_clear(settings_store):
-    """The loader needs the family to tell the quant the picker actually delivered
-    from an unrelated one in the same repo. The clear is conditional on the record
-    as read, so carrying an extra field must not make it a permanent no-op."""
+    """The loader needs the family to tell the delivered quant from others in the repo; the clear is
+    conditional on the record as read, so an extra field must not make it a no-op."""
     ems._resolved_gguf_memo.clear()
     ems.set_rag_embedding_model(
         "org/a",
@@ -312,9 +307,8 @@ def test_the_planned_gguf_family_is_stored_and_survives_the_clear(settings_store
 
 
 def test_a_record_written_before_the_family_existed_still_clears(settings_store):
-    """Upgrade path: an install that saved under the previous build has a record
-    with no gguf_files key. Comparing against a rebuilt record would never match
-    it, pinning every such model cache-only for good."""
+    """An install saved by the previous build has no gguf_files key, so comparing to a rebuilt
+    record would pin such models cache-only forever."""
     from storage.studio_db import upsert_app_settings
 
     ems._resolved_gguf_memo.clear()
@@ -337,9 +331,8 @@ def test_a_record_written_before_the_family_existed_still_clears(settings_store)
 
 
 def test_a_reset_keeps_a_pending_only_resolution_for_the_default(settings_store):
-    """A default saved over a failed resolution remembers no repo and no backend,
-    only the pending flag, and that flag is the one thing keeping the first index
-    from starting the implicit download this picker replaces."""
+    """A default saved over a failed resolution keeps only the pending flag, which alone stops the
+    first index from starting the implicit download."""
     ems._resolved_gguf_memo.clear()
     default = ems.default_embedding_model()
     ems.set_rag_embedding_model(default, download_pending = True)

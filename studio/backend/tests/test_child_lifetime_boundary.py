@@ -66,8 +66,7 @@ PARENT = textwrap.dedent(
 
 
 def _run_case(tmp_path: Path, mode: str) -> bool:
-    """Start a parent, let it spawn a shell-wrapped payload, hard-kill the
-    parent, and report whether the payload survived."""
+    """Returns True if a shell-wrapped payload survives a hard kill of its parent."""
     pidfile = tmp_path / f"{mode}.pid"
     script = tmp_path / f"parent_{mode}.py"
     script.write_text(PARENT)
@@ -108,9 +107,7 @@ def test_job_object_reaps_the_whole_tree(tmp_path):
 
 @pytest.mark.skipif(not IS_WINDOWS, reason = "job objects are Windows-only")
 def test_without_the_job_the_grandchild_is_orphaned(tmp_path):
-    """This is the state the desktop updater leaves the app in: the job is
-    still there but KILL_ON_JOB_CLOSE has been cleared and nothing restores
-    it, so a hard exit leaks every child."""
+    """The desktop updater leaves KILL_ON_JOB_CLOSE cleared on the job, so a hard exit leaks every child."""
     assert _run_case(tmp_path, "nojob") is True
 
 

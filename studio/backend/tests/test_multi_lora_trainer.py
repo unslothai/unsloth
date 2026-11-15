@@ -993,6 +993,20 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
     assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
 
 
+@pytest.mark.parametrize("target", ["embed_tokens", "lm_head", "model.embed_tokens"])
+def test_an_embedding_target_fails_instead_of_training_something_else(
+    monkeypatch, tmp_path, target
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, model, pristine = _run(monkeypatch, MEMBERS[:2], target_modules = ["q_proj", target])
+    for m in MEMBERS[:2]:
+        mine = _member_events(events, m["run_id"])
+        assert mine[-1]["type"] == "error" and target in mine[-1]["error"], mine[-1]
+        assert not any(e.get("output_dir") for e in mine)
+    assert type(model.lm_head) is type(pristine.lm_head)
+    assert [e["type"] for e in events if "member_run_id" not in e][-1] == "error"
+
+
 def test_an_expert_only_moe_target_trains_batched(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     events, _, _ = _run(

@@ -219,7 +219,7 @@ async def _generating(caller: Caller, slot: str) -> bool:
 
 
 async def studio_status() -> StudioStatus:
-    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the LLM and image (diffusion) training jobs, the export job and GPU use. A loaded audio model lists its ``audio_options`` for generate_audio, such as its built-in voices. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
+    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the LLM and image (diffusion) training jobs, the export job and GPU use. A loaded audio model lists its ``audio_options`` for generate_audio, such as its built-in voices. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio<<unload_model: and unload_model does not unload it>>. A slot that could not be read is listed under ``unavailable`` with the reason."""
     caller = current_caller()
     slots = list(SLOT_ROUTES)
     results, generating = await asyncio.gather(

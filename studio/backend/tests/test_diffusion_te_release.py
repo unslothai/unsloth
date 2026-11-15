@@ -7,6 +7,7 @@ lifts, and releasing the encoders between prompts. The release tests run on what
 
 from __future__ import annotations
 
+import os
 import types
 
 import pytest
@@ -328,6 +329,122 @@ def test_maybe_install_only_when_wanted(snapshot_root, monkeypatch):
     monkeypatch.setenv(te_release.RELEASE_ENV, "1")
     releaser = te_release.maybe_install(pipe, None)
     assert releaser is not None
+    releaser.close()
+
+
+def _save_source(
+    encoder,
+    path,
+    prefix = "",
+):
+    """The encoder's weights as a checkpoint file, each tied tensor once."""
+    from safetensors.torch import save_file
+
+    tensors = {}
+    seen = set()
+    for name, tensor in list(encoder.named_parameters()) + list(encoder.named_buffers()):
+        if id(tensor) in seen or name == "rotary":
+            continue
+        seen.add(id(tensor))
+        tensors[prefix + name] = tensor.detach().to("cpu").contiguous().clone()
+    save_file(tensors, str(path))
+    return path
+
+
+def _snapshot_bytes(root):
+    return sum(f.stat().st_size for f in root.rglob("*.safetensors")) if root.exists() else 0
+
+
+def test_release_reloads_unchanged_weights_from_the_source_file(
+    snapshot_root, tmp_path, monkeypatch
+):
+    monkeypatch.delenv(te_release.SOURCE_REUSE_ENV, raising = False)
+    device = _device()
+    pipe = _pipe(device)
+    source = _save_source(pipe.text_encoder, tmp_path / "te.safetensors")
+    setattr(pipe.text_encoder, te_release.WEIGHT_FILES_ATTR, (str(source),))
+    ids = torch.arange(8, device = device)
+    with torch.no_grad():
+        before = pipe.text_encoder(ids).cpu()
+    releaser = te_release.TextEncoderReleaser([("text_encoder", pipe.text_encoder)])
+    total = releaser.releasable_bytes
+    assert releaser.release() == total
+    assert len(releaser._from_source) == len(releaser._slots) == 3
+    assert _snapshot_bytes(snapshot_root) == 0
+    if not os.name == "nt":
+        # The open handle keeps the bytes even when the file is replaced or deleted meanwhile.
+        source.unlink()
+    with torch.no_grad():
+        after = pipe.text_encoder(ids).cpu()
+    assert releaser.reloads == 1
+    assert torch.equal(before, after)
+    assert pipe.text_encoder.head.weight is pipe.text_encoder.embed.weight
+    assert pipe.text_encoder.proj.weight.device.type == device
+    assert releaser.release() == total
+    with torch.no_grad():
+        assert torch.equal(before, pipe.text_encoder(ids).cpu())
+    releaser.close()
+
+
+def test_release_snapshots_only_the_tensors_that_differ_from_the_source(
+    snapshot_root, tmp_path, monkeypatch
+):
+    """A merged / cast tensor no longer matches its file: it alone goes to the snapshot, and the reload is exact."""
+    monkeypatch.delenv(te_release.SOURCE_REUSE_ENV, raising = False)
+    device = _device()
+    pipe = _pipe(device)
+    # The checkpoint nests one level shallower than the module, as transformers 5 remaps some encoders.
+    _save_source(pipe.text_encoder, tmp_path / "model.safetensors")
+    with torch.no_grad():
+        pipe.text_encoder.proj.weight.add_(1e-3)
+    wrapper = torch.nn.Module()
+    wrapper.inner = pipe.text_encoder
+    wrapper.name_or_path = str(tmp_path)
+    ids = torch.arange(8, device = device)
+    with torch.no_grad():
+        before = wrapper.inner(ids).cpu()
+    releaser = te_release.TextEncoderReleaser([("text_encoder", wrapper)])
+    total = releaser.releasable_bytes
+    assert releaser.release() == total
+    assert sorted(releaser._from_source) == [
+        "text_encoder.inner.codes",
+        "text_encoder.inner.embed.weight",
+    ]
+    proj = pipe.text_encoder.proj.weight
+    assert 0 < _snapshot_bytes(snapshot_root) < total
+    assert _snapshot_bytes(snapshot_root) >= 1024 * 1024 * proj.element_size()
+    with torch.no_grad():
+        after = wrapper.inner(ids).cpu()
+    assert torch.equal(before, after)
+    releaser.close()
+
+
+def test_release_source_reuse_kill_switch_snapshots_everything(
+    snapshot_root, tmp_path, monkeypatch
+):
+    monkeypatch.setenv(te_release.SOURCE_REUSE_ENV, "0")
+    pipe = _pipe(_device())
+    source = _save_source(pipe.text_encoder, tmp_path / "te.safetensors")
+    setattr(pipe.text_encoder, te_release.WEIGHT_FILES_ATTR, (str(source),))
+    releaser = te_release.TextEncoderReleaser([("text_encoder", pipe.text_encoder)])
+    total = releaser.releasable_bytes
+    assert releaser.release() == total
+    assert releaser._from_source == {}
+    assert _snapshot_bytes(snapshot_root) >= total
+    releaser.ensure_loaded()
+    releaser.close()
+
+
+def test_release_without_a_known_source_still_snapshots(snapshot_root, tmp_path, monkeypatch):
+    monkeypatch.delenv(te_release.SOURCE_REUSE_ENV, raising = False)
+    pipe = _pipe(_device())
+    pipe.text_encoder.name_or_path = "some/repo-id"
+    releaser = te_release.TextEncoderReleaser([("text_encoder", pipe.text_encoder)])
+    total = releaser.releasable_bytes
+    assert releaser.release() == total
+    assert releaser._from_source == {}
+    assert _snapshot_bytes(snapshot_root) >= total
+    releaser.ensure_loaded()
     releaser.close()
 
 

@@ -503,8 +503,7 @@ def test_draft_cpu_moe_from_the_env_is_a_placement_too(env):
 
 
 def test_a_positive_draft_cpu_moe_count_is_not_undone_by_a_later_zero():
-    """llama.cpp appends the draft CPU overrides per positive count; a later 0 adds none
-    but removes none either."""
+    """llama.cpp appends draft CPU overrides per positive count; a later 0 removes none."""
     assert lc._draft_card_share_unknown(["--spec-draft-n-cpu-moe", "8", "-ncmoed", "0"], {})
     assert not lc._draft_card_share_unknown(["-ncmoed", "0"], {})
 
@@ -523,8 +522,7 @@ def test_a_partly_placed_drafter_keeps_its_compute_floor(tmp_path, extras):
     [(["-nkvo"], {}), (["--no-kv-offload"], {}), ([], {"LLAMA_ARG_NO_KV_OFFLOAD": "1"})],
 )
 def test_host_resident_draft_kv_is_not_reserved_on_the_card(tmp_path, monkeypatch, extras, env):
-    """The draft context copies the target's params (common_base_params_to_speculative), so
-    -nkvo puts the draft KV in host buffers too."""
+    """The draft copies the target's params, so -nkvo also puts the draft KV in host buffers."""
     for d in ("on", "off"):
         (tmp_path / d).mkdir()
 
@@ -586,8 +584,7 @@ def test_borrowed_tensor_detection(tmp_path, monkeypatch, present, borrows):
 @pytest.mark.parametrize(
     "tensors, borrows, borrows_output",
     [
-        # Upstream DFlash borrows the target's head when a draft ships none, and no marker
-        # tells a build that ties it to the draft's embeddings apart.
+        # DFlash borrows the target's head if the draft ships none; no marker shows the tie.
         ({"token_embd.weight"}, True, True),
         ({"output.weight"}, True, False),
         (set(), True, True),
@@ -706,8 +703,7 @@ def test_a_missing_binary_fails_closed(tmp_path):
 
 
 def test_a_cached_probe_rereads_the_shared_library(tmp_path, monkeypatch):
-    """The capability cache is keyed on the server alone; a swapped libllama-common
-    must not keep an older answer."""
+    """Capability cache keys on the server only; a swapped libllama-common must re-probe."""
     binary = h.elf(tmp_path / "llama-server", b"libllama-common.so")
     st = binary.stat()
     key = (str(binary), st.st_mtime_ns, st.st_size)
@@ -810,8 +806,7 @@ def test_the_drafter_free_startup_retry_drops_the_reserve(tmp_path):
 
 
 def test_the_drafter_free_fallback_keeps_the_reserve_for_a_user_drafter(tmp_path):
-    """The fallback removes Studio's own block; a bare user --model-draft survives and
-    still loads, so its reserve must too."""
+    """A bare user --model-draft survives the fallback and still loads, so its reserve stays."""
     backend, gguf = h.cuda_backend(tmp_path)
     custom = tmp_path / "custom-dspark-Q8_0.gguf"
     custom.write_bytes(b"draft")
@@ -968,8 +963,7 @@ def test_the_one_slot_retry_reprices_the_reserve(tmp_path):
 
 
 def test_the_one_slot_retry_keeps_a_user_margin_equal_to_the_reserve(tmp_path):
-    """A user --fit-target equal to Studio's reserved margin stays theirs: the retry drops
-    only Studio's trailing pair and reprices it for the one slot left."""
+    """User --fit-target equal to the reserve stays theirs; retry drops only Studio's pair."""
     (tmp_path / "plain").mkdir()
     backend, gguf = h.cuda_backend(tmp_path / "plain")
     plain = h.spawns(

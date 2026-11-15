@@ -29,13 +29,11 @@ export function upgradeInstallVersion(
   return null;
 }
 
-/** Decide the dialog's actions from the check that raised it.
- *
- * The custom-code fallback used to appear only with nothing to install, or after an
- * install failed. It reads as a courtesy but is a correctness rule: the fallback loads
- * on the CURRENT transformers, the only path that still loads bnb 4-bit, since
- * installing activates the 16-bit sidecar. Hiding it behind Install leaves a QLoRA run
- * no way to start at its own precision. Whenever the fallback exists, it is offered. */
+/**
+ * Derives the dialog actions from the check that raised it; the custom-code fallback is always
+ * offered when it exists, as the only path loading bnb 4-bit (installing activates the 16-bit
+ * sidecar).
+ */
 export function upgradeDialogActions({
   upgrade,
   phase,

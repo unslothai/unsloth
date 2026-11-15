@@ -190,9 +190,8 @@ class CredentialRotated(Exception):
 
 
 def credential_generation(jwt_secret: str) -> str:
-    """Marker for the credential version a refresh token was issued under. Every password change
-    rotates ``jwt_secret``, so a token stamped with the previous one is rejected even if it was
-    inserted after the revoking DELETE."""
+    """Credential version a refresh token was issued under; a password change rotates jwt_secret, so
+    the old stamp is rejected even if inserted after the revoking DELETE."""
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
@@ -1317,8 +1316,7 @@ def create_initial_user(
     *,
     must_change_password: bool = False,
 ) -> None:
-    """Create the initial admin user in the database. Raises sqlite3.IntegrityError if username already
-    exists."""
+    """Creates the first admin; raises sqlite3.IntegrityError if the username exists."""
     from .hashing import hash_password
     from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
     import uuid
@@ -1370,8 +1368,7 @@ def create_initial_user(
 
 
 def delete_user(username: str) -> None:
-    """Delete a user from the database, for rollback when user creation fails partway through
-    bootstrap."""
+    """Delete a user, to roll back a failed bootstrap user creation."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM auth_user WHERE username = ?", (username,))
@@ -1624,9 +1621,7 @@ class RotatedRefresh(NamedTuple):
 def rotate_refresh_token(
     token: str, new_token: str, new_expires_at: str
 ) -> Optional[RotatedRefresh]:
-    """Consume ``token`` and store ``new_token`` in its place, in one transaction. If anything fails
-    before the commit, including a busy auth.db, the old token is still valid, so a retry can
-    succeed instead of logging the user out. None means the old token was invalid or expired."""
+    """Swap tokens in one transaction: on failure, including a busy auth.db, the old token stays valid."""
     from utils.account_context import ROLE_OWNER
 
     now = datetime.now(timezone.utc).isoformat()
@@ -1711,8 +1706,7 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
 
 
 def revoke_user_refresh_tokens(username: str, *, account_id: Optional[str] = None) -> None:
-    """Revoke a user's refresh tokens. ``account_id`` pins the username-keyed table to the
-    immutable identity, so a recreated namesake keeps its sessions."""
+    """Revoke refresh tokens by immutable account_id, so recreated namesakes keep sessions."""
     conn = get_connection()
     try:
         with conn:
@@ -1801,6 +1795,9 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
 # Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
+STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
+# The same key minted for a chat an API key started: it never gets the owner's load-beside pass.
+STUDIO_CHAT_TOOLS_API_KEY_NAME = "Unsloth Studio chat tools (API)"
 
 
 def create_api_key(
@@ -1951,6 +1948,23 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def delete_internal_api_key(key_id: int) -> bool:
+    """Delete an internal key row and its account copy. For keys minted per call, which would
+    otherwise leave one inactive row behind for every call."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM account_api_keys "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ? AND is_internal = 1)",
+            (key_id,),
+        )
+        cursor = conn.execute("DELETE FROM api_keys WHERE id = ? AND is_internal = 1", (key_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def is_internal_api_key(raw_key: str) -> bool:
     """Memoized: it runs on the event loop per API-key request, and a key's origin never changes."""
     if not raw_key.startswith(API_KEY_PREFIX):
@@ -2032,7 +2046,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
                 touch = False
         cur = conn.execute(
             f"""
-            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.expires_at,
+            SELECT k.id, k.username, k.name, k.purpose, k.is_active, k.is_internal, k.expires_at,
                    u.account_id, u.role, u.is_active AS account_active,
                    COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
@@ -2077,6 +2091,8 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "expires_at": row["expires_at"],
             "key_name": row["name"],
             "key_purpose": row["purpose"],
+            "key_internal": bool(row["is_internal"]),
+            "key_id": row["id"],
         }
         return record, secret
     finally:

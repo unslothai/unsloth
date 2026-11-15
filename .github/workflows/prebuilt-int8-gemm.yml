@@ -1,0 +1,234 @@
+# Prebuilt int8 GEMM for Unsloth Studio's INT8 ConvRot diffusion path (studio/native_kernels/int8_gemm).
+# C ABI + static cudart: one py3-none wheel per platform for every torch and CUDA 12/13 driver (built with 12.8).
+# Dispatch only; `publish: false` builds, tests and signs; publishing shares prebuilt-cuda-wheels.yml's tag.
+name: Prebuilt int8 GEMM
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'release tag to publish under'
+        type: string
+        default: 'prebuilt-wheels-cu13'
+      publish:
+        description: 'upload to the release (otherwise artifacts only)'
+        type: boolean
+        default: false
+      draft:
+        description: 'keep the release a draft'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prebuilt-int8-gemm-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  # CUTLASS is header-only here; pinned by commit so a rebuild is the same source.
+  CUTLASS_SHA: b2f249acd20392beeb16f5e5a31f4f1a4e38b3bd
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: manylinux_2_28_x86_64
+            runner: ubuntu-latest
+          - platform: win_amd64
+            runner: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            studio/native_kernels/int8_gemm
+            studio/backend/core/inference/diffusion_int8_cutlass.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: CUTLASS at the pinned commit
+        run: |
+          set -euo pipefail
+          git init -q cutlass
+          git -C cutlass remote add origin https://github.com/NVIDIA/cutlass
+          git -C cutlass fetch -q --depth 1 origin "$CUTLASS_SHA"
+          git -C cutlass checkout -q FETCH_HEAD
+          test "$(git -C cutlass rev-parse HEAD)" = "$CUTLASS_SHA"
+
+      - name: Build (Linux, manylinux_2_28 container)
+        if: runner.os == 'Linux'
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          docker run --rm -e CUTLASS_SHA -v "$PWD:/w" -w /w quay.io/pypa/manylinux_2_28_x86_64 bash -euo pipefail -c '
+            dnf -y -q install dnf-plugins-core
+            dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+            dnf -y -q install cuda-nvcc-12-8 cuda-cudart-devel-12-8 cuda-crt-12-8
+            /opt/python/cp312-cp312/bin/python studio/native_kernels/int8_gemm/build.py \
+              --cutlass cutlass --out build --nvcc /usr/local/cuda-12.8/bin/nvcc --jobs "$(nproc)"
+            /opt/python/cp312-cp312/bin/python studio/native_kernels/int8_gemm/make_wheel.py \
+              --lib build/libunsloth_i8gemm.so --platform manylinux_2_28_x86_64 --out dist --cutlass-sha "$CUTLASS_SHA"
+          '
+
+      # Authenticode-checked NVIDIA installer: its output is what we sign.
+      - name: Install the CUDA 12.8 toolkit (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '12.8.1'
+          $url = "https://developer.download.nvidia.com/compute/cuda/$version/network_installers/cuda_${version}_windows_network.exe"
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda_network.exe'
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 300; break }
+            catch { if ($attempt -eq 3) { throw }; Start-Sleep -Seconds 10 }
+          }
+          $signature = Get-AuthenticodeSignature -FilePath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=NVIDIA Corporation') {
+            throw "CUDA installer signature: $($signature.Status) $($signature.SignerCertificate.Subject)"
+          }
+          $packages = @('nvcc', 'nvvm', 'crt', 'cudart', 'thrust') | ForEach-Object { "${_}_12.8" }
+          $process = Start-Process -FilePath $installer -ArgumentList (@('-s') + $packages + @('-n')) -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "CUDA installer exited $($process.ExitCode)" }
+          $root = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+          if (-not (Test-Path (Join-Path $root 'bin\nvcc.exe'))) { throw "no nvcc.exe under $root" }
+          New-Item -ItemType Junction -Path 'C:\cuda' -Target $root | Out-Null
+          'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build (Windows, MSVC x64)
+        if: runner.os == 'Windows'
+        timeout-minutes: 60
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) }
+          }
+          python studio/native_kernels/int8_gemm/build.py --cutlass cutlass --out build --nvcc C:\cuda\bin\nvcc.exe --jobs $env:NUMBER_OF_PROCESSORS
+          if ($LASTEXITCODE -ne 0) { throw "build exited $LASTEXITCODE" }
+          python studio/native_kernels/int8_gemm/make_wheel.py --lib build/unsloth_i8gemm.dll --platform win_amd64 --out dist --cutlass-sha $env:CUTLASS_SHA
+          if ($LASTEXITCODE -ne 0) { throw "make_wheel exited $LASTEXITCODE" }
+
+      # No GPU: the library must still load and report its ABI and tile tables.
+      - name: Smoke (install the wheel, load it the way Studio does)
+        run: |
+          set -euo pipefail
+          python -m venv smoke
+          py="$PWD/smoke/bin/python"; [ -x "$py" ] || py="$PWD/smoke/Scripts/python.exe"
+          "$py" -m pip install --quiet --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$py" - <<'EOF'
+          import ctypes, importlib.util, os
+          import unsloth_studio_i8gemm as m
+          lib = ctypes.CDLL(m.LIB_PATH)
+          assert lib.ui8_abi_version() == m.ABI_VERSION == 1, lib.ui8_abi_version()
+          assert lib.ui8_num_tiles(80) > 0 and lib.ui8_num_tiles(75) > 0
+          print(m.LIB_PATH, os.path.getsize(m.LIB_PATH), "tiles", lib.ui8_num_tiles(80), lib.ui8_num_tiles(75))
+          EOF
+
+      - name: Linked only against the system runtime (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          ldd build/libunsloth_i8gemm.so
+          ! ldd build/libunsloth_i8gemm.so | grep -E 'libcudart|libtorch|libpython'
+          objdump -T build/libunsloth_i8gemm.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wheel-i8gemm-${{ matrix.platform }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sign:
+    name: Sign
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-signing
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: wheel-i8gemm-*
+          merge-multiple: true
+          path: wheels
+
+      - name: Both platforms arrived
+        run: |
+          set -euo pipefail
+          ls -l wheels/
+          test "$(find wheels -name '*.whl' | wc -l)" -eq 2
+          cd wheels && sha256sum -- *.whl | sort -k2 > SHA256SUMS && cat SHA256SUMS
+
+      - name: Sign every wheel with Sigstore
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9  # v3.5.0
+        with:
+          inputs: ./wheels/*.whl
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.repository }}/.github/workflows/prebuilt-int8-gemm.yml@${{ github.ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          upload-signing-artifacts: false
+          release-signing-artifacts: false
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-checksums: wheels/SHA256SUMS
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: prebuilt-int8-gemm-signed
+          path: |
+            wheels/*.whl
+            wheels/*.sigstore.json
+            wheels/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish to the release
+    needs: sign
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: prebuilt-int8-gemm-signed
+          path: wheels
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Prebuilt wheels" \
+              --latest=false --draft="$DRAFT"
+          fi
+          # SHA256SUMS is not uploaded here: prebuilt-cuda-wheels.yml owns that asset on the shared tag.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber wheels/*.whl wheels/*.sigstore.json

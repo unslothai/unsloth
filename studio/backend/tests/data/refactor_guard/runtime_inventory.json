@@ -3,7 +3,6 @@
     "dir": [
       "Any",
       "BUDGET_EXHAUSTED_NUDGE",
-      "DUPLICATE_CALL_NUDGE",
       "INTENT_SIGNAL",
       "MAX_ACT_REPROMPTS",
       "NUDGE_TOOL_CALLS_STATUS",

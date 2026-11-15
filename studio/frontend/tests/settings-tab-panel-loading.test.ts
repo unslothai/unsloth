@@ -154,10 +154,49 @@ test("a panel that fails to load cannot take the app down with it", async () => 
   );
 });
 
-test("the panels are prefetched once the dialog opens", async () => {
+test("the panels are prefetched: the opening tab after startup, the rest after an open", async () => {
   const source = await readFile(DIALOG, "utf8");
   assert.match(source, /scheduleIdleTask/);
-  assert.match(source, /Object\.values\(TAB_LOADERS\)/);
+  // Startup: the tab Settings opens on, plus the shortcuts list Mod+/ opens.
+  assert.match(
+    source,
+    /prefetchTab\(resolveSettingsTab\(useSettingsDialogStore\.getState\(\)\.activeTab, isOwner\)\);\s*prefetchTab\("keyboard-shortcuts"\);/,
+  );
+  // After an open: the rest, once per page and one per idle slot, nothing while closed.
+  assert.match(source, /if \(!open \|\| tabsLeftToPrefetch\.length === 0\)/);
+  assert.match(source, /tabsLeftToPrefetch\.shift\(\)/);
   // It warms unselected panels, so a failed chunk must not surface as a rejection.
-  assert.match(source, /load\(\)\.catch\(/);
+  assert.match(source, /loadTab\(id\)\.catch\(/);
+  // One request per panel, shared by the prefetch and the lazy component; a failed one is dropped.
+  assert.match(source, /lazy\(\(\) => loadTab\(id\)\)/);
+  assert.match(source, /tabRequests\[id\] = undefined;/);
+});
+
+test("an open renders the requested panel, never the one shown last", async () => {
+  // The deferred tab lives in the pane, which mounts with the dialog's content, so only tab
+  // switches made while open lag. A tab's first view in the page paints the dialog first (null,
+  // no panel) and renders the panel right after; once shown, an open renders it in the same pass.
+  const source = await readFile(DIALOG, "utf8");
+  const pane = source.slice(
+    source.indexOf("const SettingsPanelPane = memo("),
+    source.indexOf("export function SettingsDialog()"),
+  );
+  const dialog = source.slice(source.indexOf("export function SettingsDialog()"));
+  assert.match(
+    pane,
+    /useDeferredValue<SettingsTab \| null>\(\s*requestedTab,\s*shownTabs\.has\(requestedTab\) \? undefined : null,\s*\)/,
+  );
+  assert.match(source, /shownTabs\.add\(tab\)/);
+  assert.doesNotMatch(dialog, /useDeferredValue\(/);
+  assert.match(dialog, /<SettingsPanelPane\b/);
+});
+
+test("opening focuses the active tab once and forces no layout from the rail ref", async () => {
+  const source = await readFile(DIALOG, "utf8");
+  // Radix's default would focus the search box first, then the tab a frame later.
+  assert.match(source, /onOpenAutoFocus=\{\(e\) => \{\s*if \(focusTabButton\(activeTab\)\) \{\s*e\.preventDefault\(\);/);
+  // The rail's scroll bar width comes from the ResizeObserver only, never a read mid-commit.
+  const rail = source.slice(source.indexOf("const railRef = useCallback("), source.indexOf("const visibleTabs = useMemo("));
+  assert.match(rail, /new ResizeObserver\(sync\)/);
+  assert.doesNotMatch(rail, /^\s*sync\(\);/m);
 });

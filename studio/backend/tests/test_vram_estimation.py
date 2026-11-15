@@ -2337,8 +2337,7 @@ def test_embedding_targets_feed_optimizer_and_gradient_bytes():
 
 
 def test_an_embedding_only_request_still_counts_the_default_projections():
-    """Counting only the embeddings under-reports by every projection adapter the CPT
-    fallback adds."""
+    """Embedding-only counts miss the projection adapters that the CPT fallback adds."""
     tied = replace(LLAMA_8B, tie_word_embeddings = True)
     projections = compute_lora_params(tied, 128, list(DEFAULT_TARGET_MODULES))
     one_matrix = tied.vocab_size * tied.hidden_size

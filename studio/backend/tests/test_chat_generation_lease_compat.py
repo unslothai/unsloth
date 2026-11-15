@@ -249,9 +249,8 @@ def test_clock_stepping_backwards_does_not_age_a_live_run(clock):
 
 
 def test_clock_jumping_forward_can_reap_and_is_recorded(clock):
-    # Documents a real limitation: the lease is wall clock, so a large forward NTP
-    # step ages a live run instantly. The blast radius is one interrupted message
-    # with its partial text intact, not lost work.
+    # Documents a real limitation: the lease is wall clock, so a large forward NTP step ages a live
+    # run instantly; blast radius is one interrupted message, partial text intact.
     token = _seed("run-fwd")
     runs_db.append_events("run-fwd", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})])
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
@@ -281,8 +280,7 @@ def test_cancelling_run_settles_as_cancelled_not_failed(clock):
 
 
 def test_boot_reconcile_still_settles_everything(clock):
-    # No stale_after_ms: every active run is orphaned by definition at process boot,
-    # including one that was progressing a millisecond ago.
+    # No stale_after_ms: every active run is orphaned at boot, even one that just progressed.
     token = _seed("run-boot")
     runs_db.append_events(
         "run-boot", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
@@ -359,8 +357,7 @@ def test_streaming_survives_a_migration_still_blocked_by_a_writer(clock, monkeyp
     token = _seed()
     with _migration_blocked(monkeypatch):
         assert "progress_at" not in _columns(), "the block did not take"
-        # The producer's own write path. Aborting here would kill a live generation
-        # purely because another process held the database when this one started.
+        # Producer's writes: aborting would kill a live run if another process held the DB.
         runs_db.mark_running("run-1", token)
         runs_db.append_events("run-1", token, [("chunk", {"delta": "hi"})])
 
@@ -386,9 +383,8 @@ def test_live_reaping_is_deferred_until_the_migration_lands(clock, monkeypatch):
 
 
 def test_boot_reconcile_still_works_without_the_lease_columns(clock, monkeypatch):
-    """Deferring the LIVE sweep must not disable startup recovery, which is the only
-    thing that repairs runs orphaned by the previous process. It passes no
-    stale_after_ms, because every active run is orphaned by definition at boot."""
+    """Deferring the live sweep must not disable startup recovery, the only repair for orphaned
+    runs; boot passes no stale_after_ms since every active run is orphaned."""
     _seed()
     with _migration_blocked(monkeypatch):
         assert runs_db.reconcile_orphaned_runs() == 1
@@ -427,9 +423,8 @@ def test_touch_progress_renews_the_lease_without_recording_output(clock):
 
 
 def test_a_long_model_load_does_not_consume_the_prefill_budget(clock):
-    """mark_running stamps the lease, then the load runs, then the engine's own
-    first-token budget starts. Ageing from mark_running would reap a legitimate load
-    followed by a legitimate prefill once the two together reached the lease."""
+    """mark_running stamps the lease before the load and the first-token budget starts later; ageing
+    from mark_running would reap a load plus prefill that together reach the lease."""
     _seed()
     clock.advance_ms(int(0.9 * _LEASE_MS))
     runs_db.touch_progress("run-1")
@@ -452,9 +447,8 @@ def _supervisor():
 
 
 def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatch):
-    """A single preparation phase can outlast the lease on its own, a large GGUF over a
-    slow link being the case. Behavioural rather than source-pinned: the point is that
-    the lease actually moves, not that the call is present."""
+    """One preparation phase can outlast the lease alone (a large GGUF over a slow link); the test
+    checks the lease actually moves, not that the call is present."""
     _seed()
     sup = _supervisor()
     monkeypatch.setattr(sup, "_PREPARE_RENEW_INTERVAL_S", 0.0, raising = False)
@@ -462,8 +456,7 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
     real_sleep = asyncio.sleep
 
     async def _sleep(_seconds):
-        # Each tick is one renewal interval of wall clock, so a preparation far longer
-        # than the lease is simulated without waiting one.
+        # Each tick advances the clock by one renewal interval, so no real waiting is needed.
         ticks["n"] += 1
         clock.advance_ms(60_000)
         await real_sleep(0)
@@ -485,8 +478,7 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
-    """Unbounded renewal would keep a preparation that never returns alive forever,
-    which is the failure this file exists to end."""
+    """Unbounded renewal keeps a stuck preparation alive forever; renewals must be capped."""
     _seed()
     sup = _supervisor()
     interval = runs_mod._renew_interval_seconds()
@@ -519,9 +511,8 @@ def test_a_renewal_that_cannot_be_written_does_not_fail_the_generation(clock, mo
 
 
 def test_touch_progress_moves_updated_at_so_a_follower_sees_liveness(clock):
-    """Neither model preparation nor an admission wait emits events, so the follower's
-    snapshot poll is the only thing that can tell it the server is alive. That poll
-    compares updatedAt, which every event append already moves."""
+    """Neither model prep nor an admission wait emits events, so the follower snapshot poll is the
+    only liveness signal; it compares updatedAt, which every event append already moves."""
     token = _seed()
     run = runs_db.get_run("run-1")
     before = int(run["updatedAt"])
@@ -543,9 +534,8 @@ def test_updated_at_never_moves_backwards(clock):
 
 
 def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
-    """SQLite writes use a five second busy timeout while large history transactions may
-    hold contention for longer, so a lost stamp is ordinary. Returning on the first one
-    let a healthy long load be reaped once the last good stamp aged out."""
+    """A lost stamp is ordinary under the five second SQLite busy timeout, so returning on the first
+    failure let a healthy long load be reaped."""
     _seed()
     sup = _supervisor()
     calls = {"n": 0}
@@ -659,9 +649,8 @@ def test_only_admission_comments_renew_the_lease_from_the_stream():
 
 
 def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
-    """The wait renewals are rate limited, so a run admitted just after one could enter
-    its first-token window with a lease most of an interval old. The default lease equals
-    the default first-token timeout, so that difference is negative margin."""
+    """Leaving the queue must renew now, since rate-limited waits can leave a lease most of an
+    interval old; the default lease equals the first-token timeout, leaving negative margin."""
     import inspect
 
     source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce_run)
@@ -687,9 +676,8 @@ def test_the_renewal_interval_stays_under_the_lease_actually_in_force(monkeypatc
 
 
 def test_a_lease_shorter_than_the_admission_cadence_is_clamped_and_logged(clock):
-    """Our own renewal cadence can be made arbitrarily fine, but the admission stream's
-    keep-alive interval is upstream. A lease shorter than a few of those expires between
-    markers however fast we poll, and reaps a healthy queued run."""
+    """Renewal cadence can be arbitrarily fine, but the admission keep-alive interval is upstream; a
+    lease under a few of those expires between markers and reaps a queued run."""
     floor = runs_mod._minimum_lease_seconds()
     assert floor > 5.0, "the floor must exceed one admission keep-alive interval"
     assert runs_mod._clamped_lease_timeout(1.0) == floor

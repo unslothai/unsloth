@@ -29,15 +29,24 @@ export function dictationSendBlocked(state: {
   );
 }
 
-/** Refuse on a thread switch, a text change not from speech, or silence. */
+/** Refuse on a thread switch, a text change not from speech, or silence; an attached clip always sends. */
 export function shouldSubmitDictation(input: {
   originComposer: string;
   currentComposer: string;
   producedTranscript: boolean;
+  producedClip?: boolean;
   baseText: string;
   text: string;
 }): boolean {
   if (input.originComposer !== input.currentComposer) return false;
+  if (input.producedClip) return true;
   if (!input.producedTranscript) return false;
   return dictationProducedText(input.baseText, input.text);
+}
+
+export function clipStillAttached(
+  clip: File | null,
+  attachments: readonly { file?: File }[],
+): boolean {
+  return clip !== null && attachments.some((attachment) => attachment.file === clip);
 }

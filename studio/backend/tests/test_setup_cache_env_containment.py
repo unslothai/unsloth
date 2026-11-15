@@ -106,8 +106,7 @@ def test_regenerable_caches_are_pinned_under_the_studio_root(tmp_path):
         assert value.startswith(root), f"{key} escaped the studio root: {value}"
 
 
-# Paths handed to a compiler command line: cpp_builder.py re-splits it with shlex.split,
-# so a root containing a space breaks the build.
+# cpp_builder.py re-splits compiler flags with shlex.split, so a root with a space breaks it.
 _TOOLCHAIN_PINNED = (
     "TORCHINDUCTOR_CACHE_DIR",
     "TORCH_EXTENSIONS_DIR",
@@ -157,8 +156,7 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
 
 
 def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_path):
-    """The other half of the guard: it must fire on a path a compiler cannot take, not on
-    every path."""
+    """The guard must fire only on a path a compiler cannot take, not on every path."""
     plain = tmp_path / "plain_home" / "studio"
     plain.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(plain))
@@ -381,8 +379,7 @@ def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatc
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
 def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_path):
-    """The other half: when nothing is in the way it must not create a cache the rest of the
-    host can write into either."""
+    """When nothing blocks it, the fallback cache it creates must be closed to other accounts."""
     refused = tmp_path / "o'brien" / "studio"
     refused.mkdir(parents = True)
     shared = tmp_path / "shared-tmp"
@@ -413,13 +410,7 @@ def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_pat
 def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
     mode, published, monkeypatch, tmp_path
 ):
-    """Validating the cache directory settles who may write inside it and nothing else.
-
-    Renaming an entry is authorised by the write bit on its PARENT, and the sticky bit is what
-    narrows that to the entry's owner. So a shared temporary root that is writable and not
-    sticky lets another account rename ours aside and leave theirs at the same name between the
-    check and the compiler reading the variable. /tmp is 1777 and fine; a TMPDIR pointed at an
-    ordinary shared directory is not."""
+    """A writable shared temp root without the sticky bit lets another account swap our cache aside."""
     refused = tmp_path / "o'brien" / "studio"
     refused.mkdir(parents = True)
     shared = tmp_path / "shared"
@@ -439,15 +430,7 @@ def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership semantics")
 def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
-    """A mode is not a promise, because changing it belongs to the owner.
-
-    A 0755 holding directory owned by another ordinary account, with our 0700 temporary root
-    inside it, used to pass on today's write bits alone. Its owner can open it whenever it
-    likes, rename the root away and leave a tree holding the predictable cache name. So an
-    ancestor has to be held by this account or by root as well as be closed to others. The
-    foreign owner is applied through os.stat, since changing it for real needs privileges this
-    test does not have; everything else about the tree is real.
-    """
+    """An ancestor must be owned by this account or root too, since its owner can rename our root away."""
     from utils.paths import storage_roots
 
     outer = tmp_path / "outer"
@@ -480,14 +463,8 @@ def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX symlink and mode semantics")
 def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
-    """A symlink is a name, and a name in a directory another account can write is not ours.
-
-    Resolving the holding directory first discarded the lexical path, so a link in a 0777
-    directory was judged on the private directory it pointed at while staying replaceable.
-    Both chains are walked now, which also catches the reverse, a link in a safe directory
-    aimed into a shared tree. Symlinked roots are not refused outright: /tmp and /var are
-    symlinks on macOS, so the third case below has to keep passing.
-    """
+    """Walk the lexical symlink chain too: a link in a 0777 directory stays replaceable. Symlinked
+    roots are not refused outright, since macOS /tmp and /var must keep passing."""
     from utils.paths.storage_roots import _holding_dir_is_safe
 
     shared = tmp_path / "shared"
@@ -520,12 +497,7 @@ def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
 def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_path):
-    """Checking one level is not enough.
-
-    TMPDIR=/shared/victim-tmp at 0700 looks private, but if /shared is 0777 another account can
-    rename the whole root away and leave a tree carrying the predictable cache name in its
-    place, which substitutes the artifacts just as effectively as swapping the leaf. Every
-    ancestor is asked, bounded by the path's own depth."""
+    """Check every ancestor, not one level: a 0700 root inside a 0777 parent can still be renamed away."""
     shared = tmp_path / "shared"
     shared.mkdir()
     private_root = shared / "victim-tmp"
@@ -609,11 +581,8 @@ def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeyp
 
 @pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
 def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
-    """Keyed on the intended path alone, two OS accounts sharing one install derived the same
-    name. The first created it 0700 and every later account then failed the ownership check and
-    got nothing pinned, which for a login that is itself unparseable means the build fails after
-    all. The account goes into the digest, not into the visible name: a login is exactly the
-    kind of string that started this."""
+    """Put the euid in the cache digest, never the visible name (a login can be unparseable);
+    otherwise a second OS account fails the ownership check."""
     sr = _load_storage_roots()
     intended = "/srv/o'brien/studio/cache/torch-extensions/tag"
 
@@ -656,8 +625,7 @@ def test_an_explicit_compiler_cache_is_left_alone_when_the_builders_can_read_it(
 
 
 def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path):
-    """An inherited unpasteable cache path is refused; the pin is process-local and the cache
-    regenerable."""
+    """Refuse an inherited unpasteable cache path; the cache is regenerable anyway."""
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
     temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
     sr = _load_storage_roots()
@@ -1604,13 +1572,7 @@ def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_pat
     os.name == "nt" or os.geteuid() == 0, reason = "chmod 555 denies neither root nor Windows"
 )
 def test_a_read_only_managed_cache_is_not_published(tmp_path):
-    """A directory that exists but cannot be written to is the same defect as a missing one.
-
-    mkdir passes exist_ok = False, so an existing directory takes the FileExistsError path and
-    proves nothing about writability. torch only falls back to its own temporary cache when the
-    variable is UNSET (torch/_inductor/runtime/cache_dir_utils.py), so a read-only pin fails
-    every compile.
-    """
+    """A read-only cache directory counts as missing: torch falls back only when the variable is UNSET."""
     cache = tmp_path / "studio" / "cache"
     for name in ("torchinductor", "triton", "cuda"):
         (cache / name).mkdir(parents = True)
@@ -1652,14 +1614,7 @@ def test_a_usable_managed_inductor_path_is_still_published(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason = "chmod 000 denies neither")
 def test_a_note_that_could_not_be_read_is_not_cached_as_a_missing_one(monkeypatch, tmp_path):
-    """A miss is a fact about the install; a failure to LOOK is a fact about one instant.
-
-    _recorded_master_root() memoises per studio path, and the backend is a long-lived process.
-    Caching an EACCES on share/ -- a mount that came back, a permission fixed a second later --
-    pinned that process to the legacy runtime paths for its whole lifetime with the trees it
-    should have found sitting right beside it, and nothing in production calls
-    forget_recorded_master_root() to get back out.
-    """
+    """An unreadable note is not a miss: _recorded_master_root() memoises for the process lifetime."""
     master = tmp_path / "root"
     studio = master / "studio"
     share = studio / "share"
@@ -1697,9 +1652,7 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
 
 
 def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypatch, tmp_path):
-    """_usable_dir answers yes or no. Every other failure in it returns False; an OSError from
-    os.close escaping instead would take the whole _setup_cache_env() -- and the backend start
-    that called it -- down with it."""
+    """_usable_dir must answer False on any failure, since an os.close OSError would crash startup."""
     sr = _load_storage_roots()
 
     real_close = os.close
@@ -1741,8 +1694,7 @@ def _note_naming_the_legacy_default(tmp_path, monkeypatch):
 
 
 def _note_naming_a_real_master_root(tmp_path, monkeypatch):
-    """The other side of the rule: a recorded root that is not the legacy default and that
-    contains this Studio tree is exactly what the note is for."""
+    """A non-default root that contains this Studio tree is what the recorded note is for."""
     master = tmp_path / "portable"
     _write_note(master / "studio", master)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))

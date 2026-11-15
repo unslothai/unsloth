@@ -4,9 +4,8 @@
 import { useCallback, useLayoutEffect, useState } from "react";
 
 /**
- * - `undefined`: every pill keeps its label.
- * - `"first"`: only the leading permission pill drops to its icon.
- * - `"true"`: every pill drops to its icon.
+ * undefined keeps every pill label; first drops only the leading permission pill to its icon; true
+ * drops every pill to its icon.
  */
 export type PillCompact = undefined | "first" | "true";
 

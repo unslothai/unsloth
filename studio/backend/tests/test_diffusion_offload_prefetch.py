@@ -488,9 +488,7 @@ def test_diffusers_stream_path_synchronizes_per_group(monkeypatch):
 
 
 def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeypatch):
-    """Host far ahead of the GPU: every later copy is queued before the block that frees its memory has run. The copy
-    stream's wait on the offload event keeps those copies out of blocks still being read (outputs bit-identical) and
-    the allocator never grows past the window."""
+    """The copy stream waits on the offload event, so queued copies never overwrite blocks still read."""
     _cuda()
     monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "1")
     torch.manual_seed(0)
@@ -691,3 +689,46 @@ def test_torchao_int8_weights_stream_bit_identical(version):
     go = pytest.importorskip("diffusers.hooks.group_offloading")
     # the torchao wrapper reports its onload device, so check the inner tensors
     assert dm._placed_on(net.proj_in.weight, "cpu", go._is_torchao_tensor)
+
+
+def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch):
+    """A compile keeps a weakref to every wrapper-subclass weight it traced (its fake-mode memo outlives it), and
+    swap_tensors refuses such a tensor: FLUX.3 INT8 streamed at 6 GiB failed every render with 'Cannot swap t1 because
+    it has weakref associated with it'. A weight whose wrapper already reports the device needs no swap."""
+    import weakref
+
+    two = pytest.importorskip("torch.testing._internal.two_tensor")
+    pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = True, groups_n = 1, tensors = 1)
+    lin = torch.nn.Linear(8, 8)
+    w = lin.weight.detach().clone()
+    lin.weight = torch.nn.Parameter(two.TwoTensor(w, w.clone()), requires_grad = False)
+    torch._dynamo.reset()
+    compiled = torch.compile(lin, backend = "eager")
+    x = torch.randn(2, 8)
+    with torch.no_grad():
+        compiled(x)
+    # compile's own weakref is gone by torch 2.12; hold one so swap_tensors would refuse, as in a render.
+    held = weakref.ref(lin.weight)
+    assert weakref.getweakrefs(lin.weight)
+    host = two.TwoTensor(w + 1, w + 2)
+    monkeypatch.setattr(type(host), "is_pinned", lambda self: True, raising = False)
+    group = groups[0]
+    group.parameters = [lin.weight]
+    group.cpu_param_dict = {lin.weight: host}
+    monkeypatch.setattr(
+        op,
+        "_go",
+        lambda: types.SimpleNamespace(
+            _is_torchao_tensor = lambda t: isinstance(t, two.TwoTensor),
+            _swap_torchao_tensor = torch.utils.swap_tensors,
+        ),
+    )
+    param = lin.weight
+    pf._issue(group)
+    assert lin.weight is param
+    assert torch.equal(param.a, w + 1) and torch.equal(param.b, w + 2)
+    assert held() is param
+    with torch.no_grad():
+        got = compiled(x)
+    assert torch.equal(got, torch.nn.functional.linear(x, two.TwoTensor(w + 1, w + 2), lin.bias))
+    torch._dynamo.reset()

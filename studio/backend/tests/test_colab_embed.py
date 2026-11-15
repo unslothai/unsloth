@@ -4,10 +4,13 @@
 """Regression coverage for Colab iframe embedding (#7344)."""
 
 import inspect
+import re
 import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import colab
 
@@ -307,8 +310,7 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
 
 
 def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatch):
-    """After an in-app password change the cached first-run password no longer
-    authenticates, so it must not be redisplayed (#7349 Codex review)."""
+    """After an in-app password change the cached first-run password must not be redisplayed."""
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
     monkeypatch.setattr(
         colab,
@@ -381,11 +383,27 @@ def test_shareable_link_html_renders_the_url_as_a_link():
 
 
 def test_shareable_link_html_emphasises_the_password():
-    """The password is the one thing to copy, so it is enlarged and underlined."""
+    """The password is the one thing to copy, so it is enlarged and highlighted."""
     html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
     pw_tag = html[html.index("Password") : html.index("secret-pass")]
     assert "font-size: 24px" in pw_tag
-    assert "text-decoration: underline" in pw_tag
+    assert "background: #fff176" in pw_tag
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        colab._colab_login_html("unsloth", "secret-pass"),
+        colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth"),
+    ],
+)
+def test_credential_code_tags_pin_their_colours(html):
+    """Colab's dark theme recolours bare <code> light grey on the white card."""
+    tags = re.findall(r"<code([^>]*)>", html)
+    assert len(tags) == 2
+    for attrs in tags:
+        assert "color: #000000 !important" in attrs
+        assert "background: #" in attrs
 
 
 def test_shareable_link_html_password_has_no_adjacent_whitespace():

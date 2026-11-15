@@ -1134,9 +1134,8 @@ class _SlicedVae(_VaeLike):
 
 
 def test_one_session_spans_a_sliced_batch_decode(monkeypatch):
-    """Item 4283031587: with slicing, every slice's _decode used to recover on its own: move the pipeline off,
-    restore it, then move it off again for the next slice. Now the public decode opens one session for the batch:
-    the pipeline moves off once and comes back once, after the last slice."""
+    """Item 4283031587: one decode session spans the sliced batch, so the pipeline moves off once
+    and returns once after the last slice."""
     moves = []
     monkeypatch.setattr(O, "_to_host", lambda m: (moves.append("off"), m.to(torch.float32)))
     monkeypatch.setattr(O, "_return_to", lambda m, d: (moves.append("on"), m.to(_CARD)))
@@ -1502,9 +1501,8 @@ def test_ltx2_tiles_free_the_card_before_the_floor_tile(monkeypatch):
 
 
 def test_ladder_is_the_outermost_decode_layer_in_both_pipelines():
-    """Class ask (c): in the load order of diffusion.py and video.py the OOM retry is installed after every decode
-    wrapper that can fall back on an OOM, so its scope is the outermost decode layer; inner fallbacks (wide tiles,
-    LTX-2 tiles, untiled gate) call free_first before going cheaper."""
+    """The OOM retry is installed after every decode wrapper, so its scope is the outermost decode
+    layer; inner fallbacks call free_first first."""
     import inspect
     import re
 
@@ -1826,8 +1824,7 @@ def test_ensure_outermost_puts_the_scope_over_a_later_compiled_guard():
 
 
 def test_scope_heals_itself_after_a_rewrap_drops_it():
-    """A compile fallback restoring its eager decode (or any rewrap) can drop the scope at run time; the next
-    _decode reached without it reinstalls it on top."""
+    """A compile fallback or rewrap can drop the scope; the next _decode reinstalls it on top."""
     vae, pipe = _setup_public(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
     del vae.decode
     vae.decode(_z())
@@ -1835,9 +1832,8 @@ def test_scope_heals_itself_after_a_rewrap_drops_it():
 
 
 def test_structural_traces_on_two_threads_keep_their_own_reader():
-    """Item 4285966457: the reader callback was one class attribute, so a second thread's trace finishing while the
-    first was mid-run cleared it, and the first trace missed a residual read of its norm output (a false exclusive
-    pairing). The callback is per thread and traces run one at a time."""
+    """Item 4285966457: the reader callback is per thread; a shared class attribute let another
+    thread's trace clear it mid-run."""
     import threading
 
     shared_norm, shared_act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU()
@@ -2032,9 +2028,8 @@ def test_strict_graph_reset_reports_a_handle_that_kept_its_graph():
 
 
 def test_step_a_moves_no_weight_when_a_graph_could_not_be_dropped(monkeypatch):
-    """Item 4285966487: reset_all swallowed a handle's failure and step (a) then moved weights under a graph that
-    could still replay old addresses. A strict reset failure now stops step (a) before any move; the ladder goes on
-    (stock tiles here)."""
+    """Item 4285966487: a strict reset failure now stops step (a) before any weight move, since a
+    graph could still replay old addresses."""
     from core.inference import diffusion_cuda_graph as G
 
     class Stuck:
@@ -2055,10 +2050,8 @@ def test_step_a_moves_no_weight_when_a_graph_could_not_be_dropped(monkeypatch):
 
 
 def test_scope_finds_a_compiled_guard_under_the_rocm_bf16_decode(monkeypatch):
-    """Items 4285966482 / 4286353651: ROCm order is compile, then the bf16 decode wraps the compiled guard, then the
-    OOM retry. The scope is the outermost layer (above the bf16 cast, whose own fp32 output cast may run out of
-    memory too) and reaches the compiled guard under it: a compiled OOM frees the card and retries the whole decode,
-    compiled."""
+    """Items 4285966482 / 4286353651: on ROCm the scope is the outermost layer, reaching the
+    compiled guard under the bf16 decode, so a compiled OOM retries the whole decode, compiled."""
     from core.inference import diffusion_device as D
     from core.inference import diffusion_speed as S
 
@@ -2142,10 +2135,8 @@ def test_dtype_wrapper_own_allocation_oom_reaches_the_scope():
 
 @pytest.mark.parametrize("slot_kind", ["vae", "fp16"])
 def test_compile_fallback_keeps_the_scope(monkeypatch, slot_kind):
-    """Item 4286353643: a lazy compile that fails replaced its owner slot with the eager decode. When the scope sat in
-    that slot (fp16 / bf16 orders) or on top of the guard, the fallback dropped it and later sliced decodes ran
-    without one shared session. The fallback now leaves a slot it no longer holds alone, and the scope re-asserts
-    itself when a decode closes."""
+    """Item 4286353643: a failed lazy compile must not drop the scope; the fallback leaves slots it
+    no longer holds alone and the scope re-asserts itself."""
     from core.inference import diffusion_speed as S
 
     monkeypatch.setattr(S, "is_compile_failure", lambda exc: isinstance(exc, _CompileFailed))
@@ -2179,9 +2170,8 @@ def test_compile_fallback_keeps_the_scope(monkeypatch, slot_kind):
 
 
 def test_compiled_guard_behind_the_untiled_gate_reaches_the_ladder(monkeypatch):
-    """The video untiled gate calls what it wraps through a closure (no slot), so a compiled
-    guard under it was invisible and its tiled-attempt OOM escaped. Under the single placement rule the scope is
-    outermost; it frees the card, retries the whole decode compiled, then with every guard eager."""
+    """The video untiled gate wraps through a closure with no slot, so its compiled guard was
+    invisible; the outermost scope now retries the decode compiled, then eager."""
     from core.inference import diffusion_speed as S
     from core.inference import video_vae_untiled as U
 
@@ -2223,10 +2213,8 @@ def _raw_read(t):
 
 
 def test_patched_norms_never_hand_a_fused_input_to_the_kernel(monkeypatch):
-    """Item 4286353624: a GroupNorm-only site (act False) handed a fused GroupNorm+SiLU output to its kernel as is,
-    and a kernel reads raw memory (activated values). Every patched entry checks its input first, and a raw pointer
-    read of a fused output from any other module's kernel is caught too: the decode is redone without activation
-    fusion instead (the structural tests check the redone output against stock)."""
+    """Item 4286353624: a GroupNorm-only site must not pass a fused GroupNorm+SiLU output to a
+    raw-memory kernel; the decode is redone unfused."""
     seen = []
 
     def kernel(
@@ -2278,8 +2266,7 @@ def test_after_an_inplace_paired_silu_the_tensor_reads_as_stock():
 
 
 class _CausalLtx:
-    """An LTX-2-shaped VAE whose decoder keeps causal state across calls (reset by clear_cache); OOMs on chosen
-    decoder calls."""
+    """Stub LTX-2 VAE: causal decoder state (cleared by clear_cache); OOMs on chosen calls."""
 
     spatial_compression_ratio = 32
 
@@ -2333,8 +2320,7 @@ def test_ltx2_floor_decode_starts_clean_after_a_freed_retry_fails_part_way(monke
 
 
 def test_untiled_gate_tiled_retry_starts_clean(monkeypatch):
-    """Same class as 4286353660 in the untiled-when-fits gate: an untiled attempt that ran out of memory part way
-    left causal state for the tiled decode."""
+    """Item 4286353660 class: an untiled OOM leaves causal state behind for the tiled retry."""
     from core.inference import video_vae_untiled as U
 
     class Causal(torch.nn.Module):
@@ -2368,9 +2354,8 @@ def test_untiled_gate_tiled_retry_starts_clean(monkeypatch):
 
 
 def test_regional_compiled_blocks_take_the_eager_retry():
-    """Item 4286789089: a regionally compiled VAE (compile_repeated_blocks + guard_compiled_blocks) promised the
-    scope an eager retry, but the block guard ignored the VAE-level flag, so the retry ran the same compiled blocks.
-    Every compiled guard now reads one signal (diffusion_bg_compile.force_eager)."""
+    """Item 4286789089: the block guard ignored the VAE-level flag, so an eager retry re-ran
+    compiled blocks; all guards now read diffusion_bg_compile.force_eager."""
     from core.inference import diffusion_speed as S
 
     budget = _Budget(1 << 40)
@@ -2587,10 +2572,8 @@ def test_drop_tracebacks_walks_cause_context_and_cycles():
 
 
 def test_dtype_wrapper_oom_climbs_to_the_vae_offload(monkeypatch):
-    """Item 4287727804: the inner _decode succeeded but the fp16-shaped wrapper's own check ran out of memory, and
-    freeing the rest of the pipeline was not enough; the scope re-raised, since only the _decode ladder (which never
-    saw this OOM) knew the later rungs. The scope now climbs the one ladder (same rungs, same session): freed, stock
-    tiles, then the VAE's weights streamed from the host, which is what fits here."""
+    """Item 4287727804: an OOM in the fp16 wrapper's own check now climbs the same ladder in one
+    session: freed, stock tiles, then VAE host streaming."""
     offloads = []
     monkeypatch.setattr(
         O,
@@ -2613,10 +2596,8 @@ def test_dtype_wrapper_oom_climbs_to_the_vae_offload(monkeypatch):
 
 
 def test_split_vae_never_decodes_before_its_required_repair(monkeypatch):
-    """Item 4287727812: undoing the VAE offload failed and parking it failed too, so the VAE was split with no
-    working streamed path, yet its deferred return was optional: the next decode ran on the inconsistent VAE. The
-    return is required unless the VAE is CHECKED to stream whole from the host, and a decode whose required repair
-    still fails raises that clear error instead of decoding."""
+    """Item 4287727812: the deferred VAE return is required unless the VAE is checked to stream
+    whole from the host; a failed repair raises instead of decoding."""
     vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
     session = O.DecodeSession(vae, _FakeDevice())
     calls = []

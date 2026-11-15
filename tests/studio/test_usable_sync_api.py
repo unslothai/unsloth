@@ -16,9 +16,8 @@ from _playwright_robust import usable_sync_api  # noqa: E402
 
 
 def _sync_api_stub() -> types.ModuleType:
-    """The shape test_heavy_thread_measurement_integrity.py installs: every name answers with a
-    callable that raises, dunders do not. Rebuilt here rather than imported, since importing
-    that module installs its stub and loads its harness as a side effect."""
+    """Rebuilds the stub test_heavy_thread_measurement_integrity.py installs, where non-dunder names
+    are raising callables; importing that module has side effects."""
     module = types.ModuleType("playwright.sync_api")
 
     def __getattr__(name):

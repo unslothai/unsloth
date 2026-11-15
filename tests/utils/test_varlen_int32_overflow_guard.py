@@ -205,9 +205,8 @@ def test_forward_only_is_never_downgraded(monkeypatch, backend):
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatch, backend):
-    """torch.utils.checkpoint runs its first forward under no_grad and recomputes with grad on.
-    If the guard keyed only on the tensors, the two passes would take different backends and
-    the backward would see activations the reported loss never came from."""
+    """Checkpoint's no_grad forward and grad-enabled recompute must pick the same backend; keying
+    the guard on tensors alone lets the passes differ, so backward sees unreported activations."""
 
     def go(grad_enabled):
         with torch.set_grad_enabled(grad_enabled):

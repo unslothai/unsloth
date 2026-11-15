@@ -46,9 +46,8 @@ def test_prebuilt_metadata_probe_cannot_terminate_setup():
 
 
 def test_every_denial_route_reports_instead_of_proceeding():
-    """An unreadable parent dir, metadata file, .git checkout, or ownership root
-    must all stop. Treating any of them as absent lets the caller replace or
-    delete a tree it cannot read."""
+    """An unreadable parent dir, metadata file, .git checkout or ownership root must stop setup;
+    treating any of them as absent lets the caller replace or delete a tree it cannot read."""
     assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1
     assert '$llamaDirState -eq "Denied"' in SETUP_PS1
     assert '$llamaGitState = Get-PathState -Path (Join-Path $LlamaCppDir ".git")' in SETUP_PS1
@@ -148,9 +147,8 @@ def test_whisper_phase_stays_non_fatal_on_a_denied_llama_tree():
 
 
 def test_reporting_helpers_tolerate_an_empty_path():
-    """These run while a failure is being reported. A mandatory [string] rejects
-    null and empty, so without these attributes the reporter would throw a
-    binding exception instead of printing the actionable message."""
+    """These run while a failure is reported; a mandatory [string] rejects null and empty, so
+    without these attributes (such as [AllowNull()]) the reporter throws a binding exception."""
     for name in ("Get-PathDenialDetail", "Exit-PathAccessDenied"):
         body = SETUP_PS1.split(f"function {name}", 1)[1].split("\nfunction ", 1)[0]
         head = body.split("$Path", 1)[0]
@@ -174,9 +172,8 @@ def test_local_llama_dir_probes_are_three_state():
 
 
 def test_phase_1b_git_scan_is_guarded_too():
-    """The git prerequisite scan probes the same candidate binaries in Phase 1b,
-    thousands of lines before the Phase 4 guards, and under "Stop". A denial
-    there reproduced the original raw termination."""
+    """The git prerequisite scan in Phase 1b probes the same candidate binaries under Stop,
+    thousands of lines before the Phase 4 guards; a denial there reproduced the raw termination."""
     scan = SETUP_PS1.split("$_localLlamaBuilt = $false", 1)[1].split(
         "if (-not $_localLlamaBuilt) {", 1
     )[0]
@@ -188,9 +185,8 @@ def test_phase_1b_git_scan_is_guarded_too():
 
 
 def test_adoption_markers_keep_their_denial():
-    """A denied prebuilt marker is not evidence of absence. Collapsing it made the
-    ownership guard call an Unsloth tree an unrelated directory and tell the user
-    to move it aside, hiding a permissions problem."""
+    """A denied prebuilt marker is not evidence of absence; collapsing it made the ownership guard
+    call an Unsloth tree unrelated and advise moving it aside, hiding a permissions problem."""
     assert "function Get-StudioAdoptableState" in SETUP_PS1
     state = SETUP_PS1.split("function Get-StudioAdoptableState", 1)[1].split("\nfunction ", 1)[0]
     assert "Get-PathState -Path (Join-Path $Path $marker) -PathType Leaf" in state
@@ -254,9 +250,8 @@ def test_the_reparse_point_unlink_reports_a_denied_delete():
 
 
 def test_the_temp_dir_swap_checks_both_of_its_destructive_steps():
-    """Remove-Item and Move-Item are both non-terminating here, and Move-Item
-    onto a surviving directory nests the build inside it rather than replacing
-    it, so setup would report a build it never installed."""
+    """Remove-Item and Move-Item are both non-terminating here, and Move-Item onto a surviving
+    directory nests the build instead of replacing it, so both steps must be checked."""
     swap = SETUP_PS1.split("# Swap temp build dir into final location", 1)[1]
     swap = swap.split("} elseif (-not $BuildOk", 1)[0]
     assert "$swapState = Get-PathState -Path $OriginalLlamaCppDir" in swap, swap
@@ -317,9 +312,8 @@ def _slice(start: str, end: str) -> str:
 
 
 def _whisper_phase() -> str:
-    """The whisper phase body. Both anchors are asserted so a phase renumbering
-    fails as an assertion instead of an IndexError, and cannot silently widen
-    the window to end-of-file."""
+    """Returns the whisper phase body; both anchors are asserted so a phase renumbering fails as an
+    assertion, not an IndexError, and cannot widen to end-of-file."""
     return _slice("Install the whisper.cpp prebuilt", "PHASE 3.5")
 
 

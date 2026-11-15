@@ -63,8 +63,7 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
     assert read_at < main_src.index("_probe_init_scripts(extra_init, extra_init_source)")
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
     assert main_src.count("Path(extra_init).read_text") == 1
-    # Also ahead of the archive, which moves the payload aside; behaviour is pinned in
-    # runtime/selftest/test_studiobench_run_acquisition.py.
+    # Also ahead of the archive; see runtime/selftest/test_studiobench_run_acquisition.py.
     assert read_at < main_src.index("prepare_payload(")
 
 

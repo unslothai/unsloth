@@ -57,10 +57,8 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.4" in cmd
     assert "mlx-lm>=0.31.3,<=0.32.2" in cmd
-    # Look the requirement up by name rather than by prefix. Asserting on
-    # startswith("mlx==") could only ever be checked on a spec that already
-    # pins, so it passed vacuously the moment the pin was relaxed, which is the
-    # one case worth catching.
+    # Look up by name, not prefix: startswith('mlx==') could only be checked on a pinned spec, so it
+    # passed vacuously once the pin was relaxed.
     spec = mr._MLX_INSTALL_SPECS["mlx"]
     assert spec.startswith("=="), f"mlx must be pinned, not floored: got {spec}"
 
@@ -73,8 +71,7 @@ def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch)
     packages = mr._install_packages()
     vlm = next(p for p in packages if p.startswith("mlx-vlm"))
     assert "<0.7.0" in vlm
-    # mlx is pinned at both ends, so it is left alone: intersecting it with a zoo one patch
-    # release behind would empty the range and break every self-heal.
+    # mlx is pinned at both ends; intersecting it with an older release empties the range.
     assert "mlx==0.32.4" in packages
     assert "mlx-lm>=0.31.3,<=0.32.2" in packages
 

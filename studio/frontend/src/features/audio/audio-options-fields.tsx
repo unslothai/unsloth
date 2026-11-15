@@ -26,7 +26,7 @@ import { FieldLabel } from "./components/field";
 
 function OptionHint({ text }: { text?: string | null }) {
   return text ? (
-    <p className="text-ui-11p5 leading-snug text-muted-foreground">{text}</p>
+    <p className="text-ui-12 leading-normal text-muted-foreground">{text}</p>
   ) : null;
 }
 
@@ -54,7 +54,7 @@ export function AudioOptionFields({
         const value = audioOptionDisplayValue(spec, values);
         if (spec.type === "bool") {
           return (
-            <div key={spec.name} className="grid gap-1.5">
+            <div key={spec.name} className="grid gap-2">
               <FieldLabel
                 htmlFor={id}
                 className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
@@ -91,7 +91,7 @@ export function AudioOptionFields({
         }
         if (spec.type === "enum") {
           return (
-            <div key={spec.name} className="grid gap-1.5">
+            <div key={spec.name} className="grid gap-2">
               <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
                 {label}
               </FieldLabel>
@@ -117,7 +117,7 @@ export function AudioOptionFields({
         }
         const numeric = spec.type === "int" || spec.type === "float";
         return (
-          <div key={spec.name} className="grid gap-1.5">
+          <div key={spec.name} className="grid gap-2">
             <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
               {label}
             </FieldLabel>

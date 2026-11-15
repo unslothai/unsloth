@@ -29,7 +29,7 @@ let menuOpen = true;
 const menu = {
   querySelectorAll(selector) {
     if (selector === "button") return buttons;
-    if (selector === "button[data-model-picker-option]") {
+    if (selector === "[data-model-picker-option]") {
       return buttons.filter((button) => button.option);
     }
     throw new Error(`Unexpected selector: ${selector}`);
@@ -40,8 +40,12 @@ const context = {
   window: { addEventListener() {} },
   document: {
     querySelector(selector) {
-      assert.equal(selector, ".unsloth-model-selector-menu");
-      return menuOpen ? menu : null;
+      // The composer picker first, then the header picker other pages keep.
+      assert.ok(
+        ["[data-composer-model-picker]", ".unsloth-model-selector-menu"].includes(selector),
+        selector,
+      );
+      return menuOpen && selector === ".unsloth-model-selector-menu" ? menu : null;
     },
   },
 };

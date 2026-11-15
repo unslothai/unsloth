@@ -341,6 +341,18 @@ def test_cancel_propagates(runnable):
     assert pup.progress() is None
 
 
+def test_a_stopped_ticket_cancels_its_own_enhancement(runnable):
+    """A queued job's Stop reaches its captioning, not only the denoise after it."""
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    ticket = GenerationTicket()
+    ticket.stop()
+    with generation_ticket(ticket), pytest.raises(pup.UpsamplerCancelledError):
+        pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = None)
+    out = pup.enhance_for_generation(["a"], family_name = "flux.3-klein", enhance_prompt = None)
+    assert out.status == "applied"
+
+
 def _png_url(size = (640, 480)):
     from PIL import Image
 
@@ -1679,7 +1691,8 @@ def test_an_override_still_beats_a_cached_quant(fake_hub, monkeypatch, tmp_path)
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
-    monkeypatch.setattr(pup, "status", lambda: {"override": True})
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, "/models/pup.gguf")
+    monkeypatch.setattr(pup, "status", lambda: pytest.fail("status() read on the download route"))
     monkeypatch.setattr(pup, "start_download", lambda token: started.append(token) or "dl")
     r = client.post("/api/inference/images/prompt-upsampler/download")
     assert r.status_code == 409 and "UNSLOTH_FLUX3_UPSAMPLER_GGUF" in r.text and started == []

@@ -379,9 +379,8 @@ def test_quant_directory_siblings_share_the_media_default_scope(tmp_path, monkey
 
 
 def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
-    """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
-    txt2img workflow: the switch refuses it with a 400 and a resident one is refused by
-    /v1/images/generations too."""
+    """Edit-only checkpoints are tagged text-to-image but have no txt2img workflow, so the switch
+    and /v1/images/generations refuse them."""
     edit = MediaModelPick("org/qwen-image-edit", "/hf/edit")
     plain = MediaModelPick("org/plain-image", "/hf/plain")
     monkeypatch.setattr(
@@ -671,8 +670,7 @@ def test_whisper_rows_need_the_transformers_runtime(monkeypatch):
 
 
 def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
-    """Qwen3-ASR runs on no other engine, so without llama-server every
-    /v1/audio/transcriptions call for one returns 501."""
+    """Qwen3-ASR runs only on llama-server; without it, /v1/audio/transcriptions returns 501."""
     _stt(
         monkeypatch,
         mtmd = False,

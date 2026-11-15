@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Retries load_dataset in an Unsloth-owned cache on Errno 13 from a shared HF cache; on Windows,
-only WinError 1314 retries in regular-file cache mode for this worker. A local JSON load whose later
-rows add keys is retried with a schema covering every row."""
+"""Retries load_dataset in an Unsloth-owned cache on Errno 13 from a shared HF cache; on Windows
+only WinError 1314 does, in regular-file mode; JSON rows adding keys get a full schema."""
 
 import logging
 import os

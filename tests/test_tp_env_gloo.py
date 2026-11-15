@@ -30,11 +30,10 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
-# These arms start the adapters at init_lora_weights = False and compare 3 whole Trainer steps. At AdamW's
-# default eps 1e-8, m / (sqrt(v) + eps) turns the fp32 reduction-order noise between tp = 2 and one process
-# into 1e-5 grad-norm and 1e-4 weight drift by step 3 while the losses still match exactly; at 1e-4 it stays
-# below 1e-6, and a real tp error (a missed all-reduce) still lands at 3.5e-4. Only these runs take it: the
-# native Trainer tests (B = 0 adapters) pass at the default eps on the CI runners and fail at 1e-4 there.
+# Only these arms use eps 1e-4: at the default 1e-8 AdamW turns tp=2 vs one-process fp32 reduction
+# noise into 1e-4 weight drift by step 3; at 1e-4 drift stays below 1e-6 while a real missed
+# all-reduce still gives 3.5e-4; B = 0 native Trainer tests pass at default eps on CI but fail at
+# 1e-4.
 _ADAM_EPS = 1e-4
 
 _ENV_KEYS = (

@@ -517,6 +517,7 @@ def test_windows_failed_liveness_probe_preserves_the_record(monkeypatch):
 
     studio_mod = _studio()
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(
         subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
     )
@@ -538,3 +539,66 @@ def test_stop_drops_a_record_whose_stable_identity_proves_pid_reuse(monkeypatch,
     assert result.exit_code == 0, result.output
     assert killed == []
     assert not record.exists()
+
+
+def test_stop_does_not_sleep_when_the_server_is_already_gone(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    live = {8550}
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: pid in live)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod.os, "kill", lambda pid, sig: live.discard(pid))
+    monkeypatch.setattr(sys, "platform", "linux")
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert "stopped (1)" in result.output
+    assert sleeps == []
+    assert not (tmp_path / "studio-8901-8550.pid").exists()
+
+
+@pytest.mark.parametrize(
+    "platform, steps", [("linux", [0.05] * 100), ("darwin", [0.05] * 100), ("win32", [0.5] * 10)]
+)
+def test_stop_waits_the_same_five_seconds_for_a_server_that_keeps_running(
+    monkeypatch, tmp_path, platform, steps
+):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod, "_signal_stop", lambda pid: None)
+    monkeypatch.setattr(sys, "platform", platform)
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert sleeps == steps
+    assert "is shutting down" in result.output
+
+
+def test_stop_returns_within_one_short_step_once_a_posix_server_exits(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio_mod, "_PID_FILE", tmp_path / "studio.pid")
+    sleeps = []
+    monkeypatch.setattr(studio_mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr(studio_mod, "_pid_alive", lambda pid: len(sleeps) < 3)
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", lambda pid, created_times = (): True)
+    monkeypatch.setattr(studio_mod, "_signal_stop", lambda pid: None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    _write_pid(tmp_path, "studio-8901-8550.pid", 8550)
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert sleeps == [0.05] * 3
+    assert "stopped (1)" in result.output

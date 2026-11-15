@@ -271,8 +271,7 @@ def test_apply_event_preparing_and_warning():
 
 
 class _FakeService:
-    """Records the save flag the /diffusion/stop route forwards. A local copy of the
-    test_diffusion_training.py pattern so the two suites stay decoupled."""
+    """Records the save flag /diffusion/stop forwards; a local copy keeps suites decoupled."""
 
     def __init__(self) -> None:
         self._running = True
@@ -466,8 +465,7 @@ def test_a_no_save_stop_survives_a_child_that_dies_before_reporting_it():
 
 
 def test_a_fresh_job_forgets_the_previous_no_save_stop():
-    """The flag is per job. Carrying it across would block a resume the next run legitimately
-    offers."""
+    """The flag is per job; carrying it over would block a resume the next run offers."""
     import inspect
 
     svc = DiffusionTrainingService()
@@ -481,9 +479,8 @@ def test_a_fresh_job_forgets_the_previous_no_save_stop():
 
 
 def test_a_discard_is_applied_to_a_terminal_error_too(tmp_path, monkeypatch):
-    """An exception on the current step is a terminal `error`, and the pump returns on that path
-    rather than through the dead-process branch -- so a stop-without-saving followed by a crash
-    left the periodic checkpoint resumable in history."""
+    """A discard must also apply on a terminal error, which exits the pump outside the dead-process
+    branch, or the checkpoint stays resumable."""
     import core.training.diffusion_checkpoint as dc
 
     bundle = tmp_path / "checkpoint-40"
@@ -555,9 +552,8 @@ def test_a_killed_discard_removes_only_this_runs_bundles(tmp_path):
 
 
 def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
-    """num_epochs overrides train_steps, which then still carries the request model's default of
-    500. Using it for a run that died before its `resumed` event reported a 600-step checkpoint
-    as 600/500 and refused the resume."""
+    """With num_epochs set, the unused train_steps default (500) must not become the target;
+    total_steps wins."""
     from core.training.diffusion_training_service import _resolved_total_steps
 
     assert (
@@ -654,9 +650,8 @@ def test_a_child_that_cleaned_up_is_not_cleaned_up_again(tmp_path, monkeypatch):
 
 
 def test_a_checkpoint_makes_the_run_recoverable_before_it_ends(tmp_path, monkeypatch):
-    """Previous runs is built from the run JSONs and nothing else, and only a terminal event
-    wrote one. Unsloth being killed after a periodic save therefore left a resumable bundle on
-    disk with no entry and no Resume action for it."""
+    """A checkpoint must make the run recoverable before it ends: Previous runs reads only run
+    JSONs, which a periodic save must write."""
     import inspect
     import json as _json
 
@@ -719,9 +714,8 @@ def test_a_failed_checkpoint_write_is_recorded_too(tmp_path, monkeypatch):
 
 
 def test_the_live_job_is_not_offered_as_resumable(tmp_path, monkeypatch):
-    """The interim record is written with an error status, so the resume fields are derived as
-    though the run were over. _UNRESUMABLE_STATUS rejects a running job for a reason: its output
-    directory is being written right now, and a Resume offered there can only race it."""
+    """The interim record gets an error status, so resume fields are derived as if the run ended; a
+    running job is refused because its output dir is being written."""
     from core.training import diffusion_training_service as svc_mod
 
     svc = svc_mod.DiffusionTrainingService()
@@ -745,9 +739,8 @@ def test_the_live_job_is_not_offered_as_resumable(tmp_path, monkeypatch):
 
 
 def test_one_bad_record_does_not_take_the_history_with_it(tmp_path, monkeypatch):
-    """Every other kind of corruption here is skipped per record. A valid-JSON record with the
-    required job_id and status but a nonnumeric counter reached the refresh and raised out of
-    the listing, so one hand-edited or older file blanked the whole Previous runs panel."""
+    """A valid record with a nonnumeric counter raised out of the listing and blanked Previous runs;
+    corrupt records must be skipped per record."""
     import json as _json
 
     from core.training import diffusion_training_service as svc_mod

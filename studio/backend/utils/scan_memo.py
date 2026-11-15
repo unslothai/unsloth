@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memo for lookups a model inventory scan repeats per repo (root path resolves, the Hugging Face
-cache setting, registered scan folders). Scoped to one scan, never kept across requests, so a
-change is seen on the next one; outside a scope every lookup runs as before."""
+"""Memoises per-repo lookups a model inventory scan repeats (root path, HF cache setting, scan
+folders); scoped to one scan, never kept across requests."""
 
 from __future__ import annotations
 

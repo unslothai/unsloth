@@ -841,8 +841,7 @@ def test_tagged_module_reads_only_its_own_mode(monkeypatch):
     assert vsr._measured_extra_mib(module, 1000) is None
     module._unsloth_video_calibration_key = t2v
     assert vsr._measured_extra_mib(module, 1000) == 3000
-    # a fresh module after a reload, tagged before the fit, finds the process-wide peak (arm_request reads the
-    # device through torch)
+    # Reloaded module, tagged before the fit, still finds the process-wide peak via torch.
     pytest.importorskip("torch")
     reloaded = _Pipe()
     assert vsr.arm_request(

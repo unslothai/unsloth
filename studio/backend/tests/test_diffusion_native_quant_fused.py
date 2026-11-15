@@ -55,7 +55,7 @@ def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
     import core.inference.diffusion_speed as sp
     import core.inference.rocm_bf16 as rb
 
-    # An unreadable gfx arch, whatever card this host has (a real RDNA3 / RDNA4 host would compile).
+    # Unreadable gfx arch.
     monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: "")
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: False)
     assert nq._fused_w8a8() is None
@@ -63,7 +63,6 @@ def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
     monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
-    # No readable gfx arch: unmeasured, so eager.
     assert nq._fused_w8a8() is None
     assert nq.fused_w8a8_state()["failed"] == "ROCm unknown arch"
     # AMD SDK / Radeon wheels leave torch.version.hip unset and tag __version__ instead.
@@ -76,8 +75,7 @@ def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
 
 @pytest.mark.parametrize("arch", ["gfx1151", "gfx1100", "gfx1103", "gfx1201"])
 def test_rdna3_and_rdna4_rocm_get_the_compiled_linear(monkeypatch, arch):
-    # Measured on gfx1151 (Strix Halo): compiled == eager bit for bit, 1.03-1.36x bf16 per linear at 4096 rows, where
-    # the eager int8 path is 0.93x bf16.
+    # gfx1151: compiled == eager bit for bit, 1.03-1.36x bf16; eager int8 is 0.93x bf16.
     import core.inference.diffusion_speed as sp
     import core.inference.rocm_bf16 as rb
 
@@ -103,6 +101,66 @@ def test_other_rocm_archs_stay_eager(monkeypatch, arch):
     assert nq.fused_w8a8_state()["failed"] == f"ROCm {arch or 'unknown arch'}"
 
 
+def _two_cards(monkeypatch, archs):
+    import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
+
+    queried = []
+
+    def arch(_torch, ordinal):
+        queried.append(ordinal)
+        return archs[ordinal]
+
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
+    monkeypatch.setattr(rb, "_device_gfx_arch", arch)
+    return queried
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_each_rocm_card_is_judged_by_its_own_arch(monkeypatch, order):
+    queried = _two_cards(monkeypatch, {0: "gfx1100", 1: "gfx1030"})
+    got = {i: nq._fused_w8a8(torch.device("cuda", i)) for i in order}
+    assert got[0] is not None and got[1] is None
+    assert sorted(queried) == [0, 1]
+    assert nq.fused_w8a8_state()["devices"] == {"cuda:0": None, "cuda:1": "ROCm gfx1030"}
+    assert nq._fused_w8a8(torch.device("cuda", 0)) is got[0]
+    assert nq._fused_w8a8(torch.device("cuda", 1)) is None
+    assert sorted(queried) == [0, 1]
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_switching_the_current_card_rechecks_its_arch(monkeypatch, order):
+    _two_cards(monkeypatch, {0: "gfx1100", 1: "gfx1030"})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    got = {}
+    for i in order:
+        monkeypatch.setattr(torch.cuda, "current_device", lambda i = i: i)
+        got[i] = (nq._fused_w8a8(), nq.rocm_rdna_w8a8_ready())
+    assert got[0][0] is not None and got[0][1] is True
+    assert got[1] == (None, False)
+
+
+def test_rdna_ready_is_per_card(monkeypatch):
+    _two_cards(monkeypatch, {0: "gfx942", 1: "gfx1151"})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert nq._fused_w8a8(torch.device("cuda", 0)) is None
+    assert nq.rocm_rdna_w8a8_ready(1) is True
+    assert nq.rocm_rdna_w8a8_ready(0) is False
+
+
+def test_a_compile_failure_on_one_card_keeps_the_other(monkeypatch):
+    _two_cards(monkeypatch, {0: "gfx1100", 1: "gfx1151"})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    fn = nq._fused_w8a8(torch.device("cuda", 0))
+    assert fn is not None and nq._fused_w8a8(torch.device("cuda", 1)) is fn
+    nq._fused_w8a8_failed(RuntimeError("codegen"), torch.device("cuda", 1))
+    assert nq._fused_w8a8(torch.device("cuda", 1)) is None
+    assert nq._fused_w8a8(torch.device("cuda", 0)) is fn
+    assert nq.rocm_rdna_w8a8_ready(1) is False and nq.rocm_rdna_w8a8_ready(0) is True
+    assert "codegen" in nq.fused_w8a8_state()["failed"]
+
+
 def test_kill_switch_wins_on_rdna(monkeypatch):
     import core.inference.diffusion_speed as sp
     import core.inference.rocm_bf16 as rb
@@ -125,9 +183,9 @@ def test_cpu_input_never_takes_the_compiled_linear(monkeypatch):
 
 def test_too_few_rows_or_switched_off_returns_none(monkeypatch):
     layer = _layer()
-    monkeypatch.setattr(nq, "_fused_w8a8", lambda: pytest.fail("no compile for a 16-row input"))
+    monkeypatch.setattr(nq, "_fused_w8a8", lambda *_a: pytest.fail("no compile for a 16-row input"))
     assert layer._forward_fused(torch.randn(16, 512, dtype = torch.bfloat16)) is None
-    monkeypatch.setattr(nq, "_fused_w8a8", lambda: None)
+    monkeypatch.setattr(nq, "_fused_w8a8", lambda *_a: None)
     assert layer._forward_fused(torch.randn(64, 512, dtype = torch.bfloat16)) is None
 
 
@@ -138,10 +196,11 @@ def test_a_failing_compile_falls_back_once_and_stays_eager(monkeypatch):
         raise RuntimeError("inductor exploded")
 
     nq._FUSED_STATE["fn"] = boom
-    assert layer._forward_fused(torch.randn(64, 512, dtype = torch.bfloat16)) is None
+    x = torch.randn(64, 512, dtype = torch.bfloat16)
+    assert layer._forward_fused(x) is None
     state = nq.fused_w8a8_state()
     assert "inductor exploded" in state["failed"]
-    assert nq._fused_w8a8() is None
+    assert nq._fused_w8a8(x.device) is None
 
 
 def test_an_oom_propagates_and_keeps_the_compiled_linear(monkeypatch):
@@ -218,7 +277,7 @@ def test_fused_chunk_never_outgrows_the_eager_chunk(in_f, out_f):
 def test_eager_forced_pass_never_enters_the_compiled_linear(monkeypatch):
     layer = _layer()
     monkeypatch.setattr(
-        nq, "_fused_w8a8", lambda: pytest.fail("compiled linear inside a force-eager pass")
+        nq, "_fused_w8a8", lambda *_a: pytest.fail("compiled linear inside a force-eager pass")
     )
     x = torch.randn(64, 512, dtype = torch.bfloat16)
     with bg.auxiliary_pass():
@@ -341,7 +400,6 @@ def test_chunked_output_keeps_the_compiled_dtype(monkeypatch):
 
 
 def test_chunks_are_stored_once_into_their_output_rows(monkeypatch):
-    # Each chunk is written in place into its rows of the one output: no chunk result, no second copy.
     layer = _layer()
     monkeypatch.setattr(nq, "_INT_MM_FUSED_CHUNK_ELEMS", 512 * 40)
     writes = []
@@ -402,7 +460,6 @@ def test_compiled_into_slice_is_one_graph_and_bit_identical(monkeypatch, rot):
             rot_h = layer.rot_h if layer.rot_group else None
             ref = nq._w8a8_rows(x, rot_h, layer.weight_q, layer.weight_scale, layer.bias.detach())
             assert torch.equal(layer._forward_fused(x), ref)
-    # Every slice offset and chunk height reuses one graph: no recompile, no graph break.
     assert cnt.frame_count == 1
     assert not counters["graph_break"]
     torch._dynamo.reset()
@@ -418,3 +475,47 @@ def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
     monkeypatch.setattr(rb, "is_rocm_torch", lambda _torch: False)
     assert nq._fused_w8a8() is not None
     assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA / HIP devices"
+)
+def test_each_real_card_runs_the_compiled_linear_bit_identical_to_eager(monkeypatch):
+    # Mixed ROCm host: each card judged on its own arch; CUDA never refuses by arch.
+    from core.inference.rocm_bf16 import is_rocm_torch
+
+    torch._dynamo.reset()
+    ready = {i: nq._fused_w8a8(torch.device("cuda", i)) is not None for i in (0, 1)}
+    if not any(ready.values()):
+        pytest.skip(f"compiled linear off on both cards: {nq.fused_w8a8_state()['devices']}")
+    if not is_rocm_torch(torch):
+        assert all(ready.values()), nq.fused_w8a8_state()
+    with torch.no_grad():
+        for i in (1, 0):
+            dev = torch.device("cuda", i)
+            torch.manual_seed(0)
+            lin = torch.nn.Linear(512, 1536).to(dev, torch.bfloat16)
+            layer = nq.native_linear_class()(lin, "int8", act_int8 = True, rot_group = 256)
+            x = torch.randn(4096, 512, device = dev, dtype = torch.bfloat16) * 3
+            monkeypatch.setenv(nq.NATIVE_INT8_FUSED_ENV, "0")
+            ref = layer(x)
+            monkeypatch.delenv(nq.NATIVE_INT8_FUSED_ENV)
+            calls = nq.fused_w8a8_state()["calls"]
+            got = layer(x)
+            assert nq.fused_w8a8_state()["calls"] == calls + int(ready[i])
+            assert got.device == dev and torch.equal(got, ref)
+    devices = nq.fused_w8a8_state()["devices"]
+    assert {k: why is None for k, why in devices.items()} == {
+        f"cuda:{i}": ok for i, ok in ready.items()
+    }
+
+
+def test_a_cpu_input_on_a_rocm_torch_is_not_judged_by_a_card_arch(monkeypatch):
+    import core.inference.rocm_bf16 as rb
+
+    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
+    monkeypatch.setattr(
+        rb, "_device_gfx_arch", lambda _torch, _ordinal: pytest.fail("arch read for a CPU input")
+    )
+    nq._FUSED_STATE["fn"] = fn = lambda *_a: None
+    assert nq._fused_w8a8(torch.device("cpu")) is fn

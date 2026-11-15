@@ -122,7 +122,7 @@ const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
 const OPEN_DOCUMENT_BACKEND_GATE_RE =
   /function canAttachDocs[\s\S]*?return Boolean\(options\.onAttachDocuments\);/;
 const OPEN_DOCUMENT_CHAT_QUEUE_RE =
-  /const handleNativeDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachDocuments: handleNativeDocumentDrop/;
+  /const handleNativeDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(nativeAttachmentTargetKey, intents\)[\s\S]*?onAttachDocuments: handleNativeDocumentDrop/;
 const OPEN_DOCUMENT_DRAIN_RE =
   /takeOpenDocumentAttachments\(targetKey\)[\s\S]*?nativeAttachmentIntentToFile\(intent\)[\s\S]*?await aui\.composer\(\)\.addAttachment\(file\)/;
 

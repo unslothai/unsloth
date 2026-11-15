@@ -331,11 +331,15 @@ _SURFACES: list[Surface] = [
         id = "chat:model-picker",
         group = "chat",
         title = "Model picker",
-        reach = (("click", ".unsloth-model-selector-trigger"), ("wait", 600)),
+        # Chat's picker is the composer chip; click its name, since its logo ejects a loaded model.
+        reach = (
+            ("click", '[data-tour="chat-model-selector"] .composer-model-chip-name'),
+            ("wait", 600),
+        ),
         # Settle on rows: the popover mounts before its list is fetched.
-        settle = {"count_at_least": [".unsloth-model-selector-menu button", 2]},
+        settle = {"count_at_least": ["[data-composer-model-picker] button", 2]},
         restore = ESCAPE_OUT,
-        root = (".unsloth-model-selector-menu",),
+        root = ("[data-composer-model-picker]",),
         also_in_film = True,
     ),
     Surface(
@@ -343,14 +347,14 @@ _SURFACES: list[Surface] = [
         group = "chat",
         title = "Model picker, On Device tab",
         reach = (
-            ("click", ".unsloth-model-selector-trigger"),
+            ("click", '[data-tour="chat-model-selector"] .composer-model-chip-name'),
             ("wait", 600),
-            ("click", '.unsloth-model-selector-menu [role="tab"]:nth-of-type(2)'),
+            ("click", '[data-composer-model-picker] [role="tab"][aria-label="On Device"]'),
             ("wait", 500),
         ),
-        settle = {"visible": ".unsloth-model-selector-menu"},
+        settle = {"visible": "[data-composer-model-picker]"},
         restore = ESCAPE_OUT,
-        root = (".unsloth-model-selector-menu",),
+        root = ("[data-composer-model-picker]",),
     ),
     Surface(
         id = "chat:plus-menu",
@@ -411,8 +415,7 @@ _SURFACES: list[Surface] = [
         group = "chat",
         title = "Composer holding text",
         reach = (("fill", COMPOSER, "studiobench surface sweep"), ("wait", 400)),
-        # With text in the box Stop is replaced by Queue.
-        # Must be one expression: the evaluator wraps it in `return (...)`.
+        # With text in the box, Stop becomes Queue; must be one expression (wrapped in return).
         settle = {
             "js": "(document.querySelector("
             "'textarea[aria-label=\"Message input\"]') || {}).value ? true : false"

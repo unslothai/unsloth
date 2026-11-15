@@ -32,13 +32,9 @@ _EPS32 = torch.finfo(torch.float32).eps / 2  # unit roundoff u
 
 
 def _orthonormalize_(Y, shift, failures, householder):
-    """Y <- Y R^-1 in place, fp32 shifted CholeskyQR (Fukaya et al. 2020); no host sync.
-
-    Columns are scaled to unit norm first (Gram diagonal = 1, no overflow). The shift is Rump-Ogita's
-    breakdown bound 2.2 (n + 1) u tr(G) plus a sqrt(m) u n allowance for the Gram's rounding error.
-    Breakdown flags are appended to `failures` and checked once per call; any breakdown reruns the
-    whole call with Householder QR, which cannot fail on finite input.
-    """
+    """Y <- Y R^-1 in place via fp32 shifted CholeskyQR (Fukaya et al. 2020), no host sync; columns
+    unit-normed first; shift is Rump-Ogita's 2.2 (n + 1) u tr(G) plus sqrt(m) u n for the Gram's
+    rounding error; breakdowns in failures rerun with Householder QR."""
     if householder:
         Y.copy_(torch.linalg.qr(Y).Q)
         return

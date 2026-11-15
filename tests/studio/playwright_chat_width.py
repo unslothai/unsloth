@@ -154,7 +154,7 @@ def check_widths(page):
         step(f"measure the {preset!r} preset across 7 viewports")
         page.set_viewport_size({"width": 1440, "height": 900})
         page.keyboard.press("Control+,")
-        page.get_by_role("dialog").get_by_role("button", name = "Appearance", exact = True).click()
+        page.get_by_role("dialog").get_by_role("button", name = "Chat", exact = True).click()
         page.get_by_role("combobox", name = "Chat width").click()
         # By position, not label: the option text is copy (#16408 renamed Standard to Default).
         page.get_by_role("listbox").get_by_role("option").nth(index).click()

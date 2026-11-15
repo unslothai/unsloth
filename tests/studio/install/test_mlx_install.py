@@ -446,9 +446,8 @@ def _zoo_spec_sequence(monkeypatch, specs):
 
 
 def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
-    """The MLX step runs before the core phase, so it honours the OLD zoo's range. Without the
-    re-resolve an update that moves the zoo leaves the machine on the narrower mlx-vlm for good:
-    the startup self-heal will not correct it, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
+    """The MLX step runs before the core phase and honours the old zoo's range; without a re-resolve
+    the narrower mlx-vlm stays for good, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
     narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
     # Twice for the install step, then the widened answer after the core phase.
     _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])

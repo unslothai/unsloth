@@ -338,9 +338,8 @@ def _handled_mask(abi: int) -> int:
 
 
 def _writable_access(handled: int) -> int:
-    """Rights on a writable root. No symlink creation: the server follows links, so a tool must not
-    plant an escaping one. No device nodes or device ioctls either: a root-run Studio would otherwise
-    let a tool mknod a disk in its workspace; real devices come only from the explicit device rules."""
+    """Writable-root rights minus symlink and device rights: the server follows links, so a tool
+    must not plant one, nor mknod a disk; real devices come only from explicit device rules"""
     return handled & ~(_FS_MAKE_SYM | _FS_MAKE_CHAR | _FS_MAKE_BLOCK | _FS_IOCTL_DEV)
 
 
@@ -377,13 +376,8 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
 
 
 def _drop_capabilities() -> None:
-    """Runs in the forked child: a root-run Studio must not hand a managed tool its capabilities.
-
-    A process without capabilities (any non-root Studio) has nothing to drop and returns at once.
-    Otherwise the bounding set goes first where the server may change it (CAP_SETPCAP), then every
-    set. Clearing the sets is what matters (no_new_privs follows, so exec regains nothing), so a
-    capset failure raises and the tool never starts with the server's privileges.
-    """
+    """Forked child drops every capability (bounding set first, needs CAP_SETPCAP) so a root-run
+    Studio never hands a tool its privileges; a capset failure raises"""
     libc = _libc
     header = _CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)
     data = (_CapData * 2)()

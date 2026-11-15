@@ -3,6 +3,8 @@
 
 // Re-read when the tab regains focus instead of polling: an API call may switch the resident model.
 
+import { createWakeDedupe } from "../../../lib/wake-dedupe.ts";
+
 export interface ResidentStatusRefreshTargets {
   window: Pick<EventTarget, "addEventListener" | "removeEventListener">;
   document: Pick<EventTarget, "addEventListener" | "removeEventListener"> & {
@@ -17,11 +19,15 @@ function browserTargets(): ResidentStatusRefreshTargets {
 export function subscribeResidentStatusRefresh(
   refresh: () => void,
   targets: ResidentStatusRefreshTargets = browserTargets(),
+  now: () => number = Date.now,
 ): () => void {
-  const onFocus = () => refresh();
+  const isFreshWake = createWakeDedupe(undefined, now);
+  const onFocus = () => {
+    if (isFreshWake()) refresh();
+  };
   // Focus alone misses a backgrounded tab, visibility alone a window that never hid.
   const onVisibility = () => {
-    if (!targets.document.hidden) refresh();
+    if (!targets.document.hidden && isFreshWake()) refresh();
   };
   targets.window.addEventListener("focus", onFocus);
   targets.document.addEventListener("visibilitychange", onVisibility);

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 const LAZY_FEATURE_INDEXES = [
+  "browser",
   "chat",
   "hub",
   "library",

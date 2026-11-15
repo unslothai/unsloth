@@ -148,9 +148,7 @@ class TestTheMemoryProbeFallsBackToNvml:
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
 
     def test_the_child_pin_belongs_to_no_probe(self, monkeypatch, probe_script):
-        """The uuid each index stands for is derived from the last NVML inventory and the
-        mask in force when the launch asks, so another query answering in between (nvidia-smi
-        recovering, a concurrent preflight) neither blanks it nor leaves a stale one."""
+        """Each index's uuid is derived from the last NVML inventory and the mask at launch, not a probe."""
         _failing_smi(monkeypatch)
         slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
         probe_script(

@@ -161,11 +161,9 @@ MOCK
     echo "$_dir"
 }
 
-# amd-smi above emits ONE gfx token, which is not the shape a real host produces:
-# _probe_amd_gfx_arch greps every match out of rocminfo, and rocminfo names each
-# agent twice (Name: and the ISA Name:), so one card reads as two identical lines.
-# Any gfx comparison that matters has to be exercised against this shape.
-# $1 ROCm version, $2 gfx arch, $3 GPU agent count (default 1).
+# The amd-smi mock above emits ONE gfx token, unlike a real host where rocminfo names each agent
+# twice (Name and ISA Name); gfx checks must be tested with that shape; $1 ROCm version, $2 gfx
+# arch, $3 agent count (default 1).
 make_mock_rocminfo() {
     _dir=$(make_mock_amd_smi "$1" "$2")
     _rocm_gfx="$2"

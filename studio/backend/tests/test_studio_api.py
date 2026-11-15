@@ -282,8 +282,7 @@ def _final_finish_reason(chunks: list[dict]) -> str | None:
 
 
 def test_openai_tools_nonstream(base_url: str, api_key: str):
-    """llama-server's tool_calls response must be forwarded verbatim, not stripped of tools to plain
-    text."""
+    """llama-server's tool_calls must be forwarded verbatim, not flattened to plain text."""
     status, text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",

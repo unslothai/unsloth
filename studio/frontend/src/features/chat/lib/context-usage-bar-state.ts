@@ -28,6 +28,10 @@ export type ContextUsageBarInput = {
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
   estimated?: boolean;
+  /** A cloud model: the window is the provider's, so the local limit advice does not apply. */
+  cloud?: boolean;
+  /** Tokens at which this chat auto-compacts; marked on the ring and named in the tooltip. */
+  compactAt?: number | null;
 };
 
 export type ContextUsageRows = Pick<
@@ -71,13 +75,9 @@ export function contextUsageRows(
 }
 
 /**
- * Which limit warning the tooltip carries, if any.
- *
- * llama.cpp stops generating at the window, so its advice is to raise the limit before
- * hitting it. MLX generates straight past instead, so the same wording would promise a
- * stop that never comes -- and once a conversation is over the window there is something
- * different to say about it. Read from the unclamped ratio: the reported percent caps at
- * 100%, which is exactly the state being reported on.
+ * Which limit warning the tooltip carries: llama.cpp stops at the window, so its advice is to raise
+ * the limit first; MLX runs past it, so no stop is promised, and an over-window conversation gets
+ * other wording; read the unclamped ratio, since the reported percent caps at 100%.
  */
 export type ContextLimitAdvice =
   | "none"
@@ -120,7 +120,19 @@ export type ContextUsageBarState = {
   percent: number | null;
   hasUsageDetails: boolean;
   advice: ContextLimitAdvice;
+  /** Where on the ring compaction happens, as a share of the window; null when not drawn. */
+  compactMarkPercent: number | null;
 };
+
+/** The compaction point as a share of the window, when both are known and it falls inside. */
+export function compactMarkPercent(
+  compactAt: number | null | undefined,
+  total: number | null | undefined,
+): number | null {
+  if (typeof compactAt !== "number" || !(compactAt > 0)) return null;
+  if (typeof total !== "number" || !(total > 0) || compactAt >= total) return null;
+  return (compactAt / total) * 100;
+}
 
 // An unmeasured prompt must not read as 0% of the window.
 export function deriveContextUsageBar({
@@ -136,7 +148,46 @@ export function deriveContextUsageBar({
   parallelSlots,
   contextBudget,
   estimated,
+  cloud,
+  compactAt,
 }: ContextUsageBarInput): ContextUsageBarState | null {
+  const state = deriveUsageFace({
+    used,
+    total,
+    cached,
+    cacheWrites,
+    promptTokens,
+    completionTokens,
+    isMlx,
+    contextEnforced,
+    contextUnboundedWhenBatched,
+    parallelSlots,
+    contextBudget,
+    estimated,
+  });
+  if (!state) return null;
+  return {
+    ...state,
+    // A provider's window is not a local setting: nothing here stops at it or can raise it.
+    advice: cloud ? "none" : state.advice,
+    compactMarkPercent: compactMarkPercent(compactAt, total),
+  };
+}
+
+function deriveUsageFace({
+  used,
+  total,
+  cached,
+  cacheWrites,
+  promptTokens,
+  completionTokens,
+  isMlx,
+  contextEnforced,
+  contextUnboundedWhenBatched,
+  parallelSlots,
+  contextBudget,
+  estimated,
+}: ContextUsageBarInput): Omit<ContextUsageBarState, "compactMarkPercent"> | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;

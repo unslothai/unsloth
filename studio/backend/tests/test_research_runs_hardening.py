@@ -1013,8 +1013,7 @@ def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch)
 
 
 def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch):
-    """The saved cap is connection-wide, so for this run's model it is a guess: claude-opus-4-1
-    stops at 32_000 while its connection may be saved at 32_768."""
+    """A connection-wide saved cap is a guess for this model, so a legacy run keeps the default."""
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",
@@ -1722,9 +1721,8 @@ def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
 
     _install_fake_client(monkeypatch, [_QueuedThenSilentResponse()])
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.2)
-    # The gap allowed between queue notices also clears 3 keepalive heartbeats (5 s each by
-    # default, so 15 s here). A 0.3 s heartbeat makes it the 1 s first-output budget instead;
-    # the bound under test is the same, the test just stops waiting 15 s for it.
+    # A 0.3 s keepalive heartbeat keeps the test from waiting 15 s; the bound under test is
+    # unchanged.
     monkeypatch.setenv(llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.3")
     supervisor = _make_supervisor(_noop_check_active)
     run = _waiting_run(0)
@@ -3725,8 +3723,7 @@ def test_dropping_an_unsupported_document_citation_keeps_its_code(report):
 
 
 def test_restoring_many_code_spans_stays_linear():
-    """A replace() per token rescans the whole report once per span. Guard the single pass so a
-    code-heavy report cannot go quadratic on the event loop."""
+    """One pass restores placeholders; a replace() per token rescans the report, going quadratic."""
     placeholders = {f"\x00research-code-{i}\x00": f"`c{i}`" for i in range(2000)}
     text = "x" * 200_000 + "".join(placeholders)
     start = time.perf_counter()

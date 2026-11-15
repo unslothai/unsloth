@@ -10,6 +10,7 @@ import threading
 import time
 import types
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -207,9 +208,8 @@ def test_unset_fields_take_the_generation_config_defaults_and_set_fields_win(ser
 
 
 def test_concurrent_requests_all_complete(served):
-    # 256 is well past socketserver's default listen backlog of 5: with that
-    # backlog a burst this size has connections reset every run, while 32 only
-    # tripped it now and then on a loaded runner.
+    # 256 is well past socketserver's default listen backlog of 5, where a burst this size resets
+    # connections every run; 32 only tripped it now and then on a loaded runner.
     server, _ = served
     count = 256
     results = [None] * count
@@ -241,6 +241,43 @@ def test_pause_holds_new_requests_until_resume(served):
     _post(server, "/resume")
     thread.join(10)
     assert box["out"]["choices"][0]["token_ids"] == [4, 5]
+
+
+def _raw_post(
+    url,
+    payload,
+    content_type = "application/json",
+):
+    request = urllib.request.Request(
+        url, data = json.dumps(payload).encode(), headers = {"Content-Type": content_type}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout = 10) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def test_control_endpoints_need_the_url_secret(served):
+    server, llm = served
+    origin = "http://127.0.0.1:{}".format(urllib.parse.urlsplit(server.url).port)
+    adapter = {"lora_name": "other", "lora_path": "/tmp/other"}
+    for base in (origin, origin + "/wrong-token"):
+        assert _raw_post(base + "/v1/load_lora_adapter", adapter) == 404
+        assert _raw_post(base + "/pause", {}) == 404
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + "/v1/models", timeout = 10)
+        assert error.value.code == 404
+    assert llm.llm_engine.added_loras == [] and server.engine.paused is False
+    assert _get(server, "/health") == (200, {"status": "ok"})
+
+
+def test_text_plain_posts_are_refused(served):
+    server, llm = served
+    adapter = {"lora_name": "other", "lora_path": "/tmp/other"}
+    assert _raw_post(server.url + "/v1/load_lora_adapter", adapter, "text/plain") == 415
+    assert _raw_post(server.url + "/pause", {}, "text/plain;charset=UTF-8") == 415
+    assert llm.llm_engine.added_loras == [] and server.engine.paused is False
 
 
 def test_adapters_load_eagerly_serve_newest_and_unload_after_drain(served):

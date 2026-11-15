@@ -30,8 +30,7 @@ _VARIANT = "conditioning variant"
 _FASTWAN = "FastWan"
 _ANYFLOW = "NVIDIA AnyFlow checkpoint"
 
-# (identifier, family on this branch). Rows above the marker are what main already detected and must not move; the
-# Wan2.1 rows below it all detected None on main.
+# Rows above the marker must not move; the Wan2.1 rows below all detected None on main.
 _TABLE = [
     ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "wan2.2-ti2v-5b"),
     ("Wan-AI/Wan2.2-TI2V-5B", "wan2.2-ti2v-5b"),
@@ -338,8 +337,7 @@ def test_renamed_wan21_1_3b_gguf_resolves_by_header(tmp_path):
 
 
 def test_comfy_folder_hides_refused_names_with_a_t2v_header(tmp_path):
-    # FastWan 1.3B and a renamed variant carry the plain 1.3B T2V layout; the loader refuses them by name, so the
-    # listing must not offer them.
+    # FastWan and renamed variants are refused by the loader, so the listing must hide them.
     from hub.utils import comfy_models
 
     folder = tmp_path / "diffusion_models"
@@ -356,8 +354,7 @@ def test_comfy_folder_hides_refused_names_with_a_t2v_header(tmp_path):
 
 
 def test_comfy_folder_hides_variant_names_without_the_family_token(tmp_path):
-    # The header resolves these to Wan2.1 1.3B; the loader then judges the file name with that context and refuses
-    # it, so the listing must too.
+    # Names the header resolves to Wan2.1 1.3B must be hidden too, as the loader refuses them.
     from hub.utils import comfy_models
 
     folder = tmp_path / "diffusion_models"

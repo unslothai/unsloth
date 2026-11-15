@@ -226,10 +226,8 @@ def _lowest_allowed(req) -> str:
 
 @per_source
 def test_a_selected_row_is_installable_on_the_python_it_was_selected_for(label, reqs):
-    """Splitting on platform is not enough on its own: a row can be live for an interpreter
-    that no release in its range supports, which is not a resolution failure anyone reads
-    as a marker bug -- pip just reports that no version matches.
-    """
+    """Splitting on platform is not enough: a row can be live for an interpreter no release in its
+    range supports, and pip reports that as no matching version rather than a marker bug."""
     for plat, py, env in ENVS:
         for req in _live(reqs, env):
             for spec, floor in PACKAGE_PYTHON_FLOORS.get(req.name.lower(), ()):
@@ -298,12 +296,8 @@ def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
 
 @per_extra
 def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
-    """A negative ARM64 marker is a scalpel: every other platform keeps the row.
-
-    Checked as an outcome rather than a spelling, over the same platform table the rest of
-    this file uses, so a marker that reads correctly but excludes (say) Windows x86 as well
-    is still caught.
-    """
+    """A negative ARM64 marker must drop the row only on ARM64; checked as an outcome over the
+    platform table, so a marker also excluding Windows x86 is caught."""
     for req in _pyproject_extras()[extra]:
         if IPS._canonical_dist_name(req.name) not in WOA_SKIPPED or req.marker is None:
             continue

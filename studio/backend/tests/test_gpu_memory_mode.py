@@ -817,8 +817,7 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # load_model phase 1 skips the unload reset, so diffusion startup must clear TP.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    # Taken from the request rather than the effective pin, which a forced-CPU launch on
-    # virtualised Metal clears.
+    # Taken from the request, since a forced-CPU Metal launch clears the effective pin.
     assert "_pinned = (fit_gpus or [sorted(gpu_ids)[0]]) if gpu_ids else None" in src
     assert "self._gpu_ids = _pinned if not _pv_diffusion_cpu else None" in src
 
@@ -834,8 +833,7 @@ def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_id
 
 
 def _patch_split_pin_env(monkeypatch, *, inherited, reported):
-    """Point the pin helper at a fake inherited mask and picker report.
-    ``reported`` None = enumeration unavailable (falls back to ascending)."""
+    """Fake an inherited mask and picker report; a None report falls back to ascending order."""
     import utils.hardware as hw
 
     monkeypatch.setattr(
@@ -1602,9 +1600,7 @@ def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
 
 
 def test_manual_auto_layers_does_not_judge_a_rewrite_that_never_happens():
-    """At Auto layers the launcher drops both copies of the ratio, so the route must not refuse
-    a value over the six-digit rendering it will never produce (the strip predicate and the
-    reserialized predicate are the same question)."""
+    """Auto layers drop the ratio, so the route must not judge a rewrite that never happens."""
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     for marker in (
         "reserialized = _resolved_layers >= 0",

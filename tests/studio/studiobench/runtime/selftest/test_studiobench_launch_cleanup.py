@@ -68,8 +68,7 @@ def test_a_studio_that_never_answers_healthz_is_terminated(launched):
 
 
 def test_a_studio_that_never_started_at_all_still_raises(launched):
-    """The control for the discovery itself: nothing to find is not a reason to crash on the way
-    to reporting the timeout."""
+    """Control: finding nothing must not crash on the way to reporting the timeout."""
 
     launched["healthy"] = False
     launched["pgrep_finds"] = False
@@ -121,8 +120,7 @@ def test_a_port_that_is_already_serving_is_refused_before_anything_is_launched(l
 
 
 def test_the_occupied_port_does_not_come_back_as_a_healthy_studio(launched):
-    """The consequence, stated as the caller sees it: no `StudioInstall` is returned at all, so
-    nothing records a ref against a build it never installed."""
+    """Occupied port yields no StudioInstall, so no ref is recorded against an unbuilt build."""
 
     launched["port_busy"] = True
     launched["healthy"] = True

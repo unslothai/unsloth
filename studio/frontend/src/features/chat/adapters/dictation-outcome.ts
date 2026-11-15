@@ -4,11 +4,21 @@
 /** Module state, read by the recording bar after the session is gone: composer text cannot
  *  tell (a saved prompt may be inserted, a partial transcript still lands). */
 let producedTranscript = false;
+let producedClip: File | null = null;
 let failed = false;
 
 export function beginDictationSession(): void {
   producedTranscript = false;
+  producedClip = null;
   failed = false;
+}
+
+export function markDictationClip(file: File): void {
+  producedClip = file;
+}
+
+export function dictationProducedClip(): File | null {
+  return producedClip;
 }
 
 export function markDictationTranscript(): void {

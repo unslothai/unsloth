@@ -309,8 +309,7 @@ def test_a_one_arm_miss_in_one_repetition_of_two_is_not_illustrated(tmp_path):
 
 
 def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tmp_path):
-    # `--resume` re-runs a pair under the same cell id, so a raw scan could pair the retry's verdict
-    # with the dead attempt's shot.
+    # `--resume` reuses the cell id, so a raw scan pairs a retry's verdict with the old shot.
     shots = tmp_path / "shots"
     png(shots / "old.png", 200, 120, (10, 60, 10))
     png(shots / "base.png", 200, 120, (10, 60, 10))
@@ -461,8 +460,7 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
             assert before.read_bytes() == (shots / f"{shard}_base_{rep}.png").read_bytes()
 
 
-# First-party imports of a measured route deliberately not gated on, with reasons. Every
-# import must be either in the workflow or here.
+# Imports not gated on, each with a reason; every import must be in the workflow or here.
 NOT_GATED: dict[str, str] = {
     "studio/backend/auth/authentication.py": "session plumbing shared by every route in the app; "
     "routes/auth.py already gates the endpoints studiobench actually calls",

@@ -97,9 +97,7 @@ def test_terminate_descendants_skips_init(recorded_signals, monkeypatch):
     assert recorded_signals == []
 
 
-# Every process on the host descends from init. A walk rooted at pid 1 is the whole
-# machine, and the llama-server unload SIGTERMs whatever the walk returns: a stand-in
-# process with pid 1 in a test took down every process the user owned that way.
+# A walk rooted at pid 1 is the whole machine, so a test stand-in at pid 1 SIGTERMs everything.
 _INIT_OWNS_EVERYTHING = {1: [4242], 4242: [4243]}
 
 
@@ -134,8 +132,7 @@ def test_llama_unload_walk_never_names_inits_children(monkeypatch):
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_signals):
-    """A record written by a build without the guard must fire nothing, and must
-    not survive to be retried on every subsequent launch."""
+    """A record from a build without the guard must fire nothing, and is dropped, not retried."""
     import json
 
     record = tmp_path / "4157196.json"
@@ -222,9 +219,7 @@ def test_terminate_pid_sends_nothing(recorded_signals, monkeypatch, pid):
 
 
 def test_terminate_all_never_signals_a_poisoned_tracked_pid(monkeypatch, recorded_signals):
-    """The in-memory table cannot hold a 1 now, but `terminate_all` is what runs
-    at shutdown and at `atexit`, so it carries its own floor. Nothing else covers
-    that line: the existing suites drive it with real spawned pids only."""
+    """terminate_all runs at shutdown and atexit, so it carries its own pid 1 floor."""
     monkeypatch.setattr(pl, "_tracked_pids", {1: "963", 0: "0"})
     monkeypatch.setattr(pl, "_tracked_pgids", {1: 1, 0: 0})
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
@@ -269,8 +264,7 @@ def test_kill_process_group_still_kills_a_real_group(monkeypatch):
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
-    """The guard must not disarm the feature it protects: a real child is still
-    signalled."""
+    """The guard must not disarm reaping: a real child with a valid record is still signalled."""
     import json
 
     record = tmp_path / "999999.json"
@@ -330,15 +324,7 @@ def test_llama_pidfile_reaper_refuses_init(tmp_path, monkeypatch, recorded_signa
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_llama_orphan_sweep_skips_init(tmp_path, monkeypatch):
-    """The orphan sweep must not kill pid 1 even when pid 1 looks exactly like an
-    owned, parentless llama-server.
-
-    That is not a contrived shape: #7894 established Unsloth can run as a
-    container entrypoint, and a container whose entrypoint is llama-server puts
-    a process this sweep recognises at pid 1. Killing it takes the container
-    down. The /proc scan and the psutil scan both feed one kill loop, so the
-    floor sits on the loop rather than in each scanner.
-    """
+    """Pid 1 must never be signalled: Unsloth can run as a container entrypoint (issue 7894)."""
     from core.inference import llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -399,8 +385,7 @@ def test_download_registry_never_signals_init(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_kill_orphan_refuses_init_on_its_own(monkeypatch):
-    """The helper that sends the signal carries the floor itself, so it does not
-    depend on every future caller having checked first."""
+    """The signal helper refuses pid 1 itself, not relying on callers to check first."""
     from hub.utils import download_registry as dr
 
     sent: "list[tuple[int, int]]" = []

@@ -738,3 +738,35 @@ def test_our_own_runtime_trees_are_still_checked(site):
     (site / "unsloth_zoo" / "tests" / "helper.py").unlink()
     found = _deps().damaged_installed_files()
     assert len(found) == 1 and "unsloth_zoo/tests/helper.py is missing" in found[0]
+
+
+def test_a_launcher_restored_from_an_older_copy_is_not_damage(site):
+    # #16897: the update put back an older uv trampoline, shorter than the RECORD the newest uv wrote.
+    launcher = "../Scripts/unsloth.exe"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", launcher: b"MZ" + b"\0" * 40979},
+        record_sizes = {launcher: 47104},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_missing_launcher_is_still_damage(site):
+    launcher = "../Scripts/unsloth.exe"
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", launcher: b"MZ" * 10})
+    (site / launcher).unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "Scripts/unsloth.exe is missing" in found[0]
+
+
+def test_only_the_managed_launcher_loses_its_size_check(site):
+    other = "../Scripts/hf.exe"
+    _make_dist(
+        site,
+        "huggingface_hub",
+        {"huggingface_hub/__init__.py": b"h\n", other: b"MZ" * 10},
+        record_sizes = {other: 47104},
+    )
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "Scripts/hf.exe is 20 bytes, expected 47104" in found[0]

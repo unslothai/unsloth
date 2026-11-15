@@ -211,8 +211,7 @@ def test_replayed_mcp_images_are_stripped_on_a_text_only_provider():
 
 
 def test_replay_promotion_is_moved_off_the_event_loop(monkeypatch):
-    """Promoting an envelope decodes and re-encodes every picture in it. That is
-    PIL work, and _proxy_to_external_provider calls the builder from the loop."""
+    """Promotion re-encodes every picture as PIL work, so it must leave the event loop."""
     import asyncio
 
     import routes.inference as inference_route

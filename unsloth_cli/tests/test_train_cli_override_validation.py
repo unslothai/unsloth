@@ -92,6 +92,37 @@ def test_valid_flags_still_override_the_config(tmp_path):
     assert "num_epochs: 5" in result.output
 
 
+@pytest.mark.parametrize(
+    "args",
+    [("--num-epochs", "0"), ("--num-epochs", "-2", "--max-steps", "-5")],
+)
+def test_no_epochs_and_no_max_steps_exits_2(args):
+    result = _dry_run(*args)
+
+    assert result.exit_code == 2
+    assert result.output.startswith("Error: ")
+    assert "--num-epochs" in result.output
+    assert "--max-steps" in result.output
+
+
+def test_a_config_with_zero_epochs_and_no_max_steps_exits_2(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("training:\n  num_epochs: 0\n", encoding = "utf-8")
+
+    result = _dry_run("--config", str(path))
+
+    assert result.exit_code == 2
+    assert "num_epochs" in result.output
+
+
+def test_zero_epochs_with_max_steps_is_accepted():
+    result = _dry_run("--num-epochs", "0", "--max-steps", "50")
+
+    assert result.exit_code == 0, result.output
+    assert "num_epochs: 0" in result.output
+    assert "max_steps: 50" in result.output
+
+
 def test_apply_overrides_raises_config_error_and_names_the_flag():
     with pytest.raises(ConfigError) as excinfo:
         Config().apply_overrides(training_type = "lroa")

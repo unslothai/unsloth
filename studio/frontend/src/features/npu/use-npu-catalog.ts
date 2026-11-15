@@ -4,14 +4,17 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type NpuDownloadPhase,
   type NpuModel,
   type NpuStatus,
   deleteNpuModel,
   enableNpu,
   getNpuStatus,
   listNpuDownloads,
+  npuMemoryWarning,
 } from "./api";
 import {
+  cancelNpuDownload,
   followNpuDownload,
   refreshNpuModels,
   useNpuCatalogStore,
@@ -30,8 +33,12 @@ export interface NpuCatalog {
   enabling: boolean;
   downloads: Record<string, number | null>;
   reconnecting: Record<string, true>;
+  phases: Record<string, NpuDownloadPhase>;
   enable: () => Promise<void>;
   download: (model: NpuModel) => Promise<boolean>;
+  /** Toasts the memory warning for a model that may not fit; never blocks. */
+  warnMemory: (model: NpuModel) => void;
+  cancel: (model: NpuModel) => Promise<void>;
   remove: (model: NpuModel) => Promise<void>;
 }
 
@@ -42,6 +49,7 @@ export function useNpuCatalog(
   const listError = useNpuCatalogStore((state) => state.listError);
   const downloads = useNpuCatalogStore((state) => state.progress);
   const reconnecting = useNpuCatalogStore((state) => state.reconnecting);
+  const phases = useNpuCatalogStore((state) => state.phases);
   const [enabling, setEnabling] = useState(false);
   const status = source?.status;
   const onStatusChange = source?.onStatusChange;
@@ -87,9 +95,31 @@ export function useNpuCatalog(
     }
   }, [onStatusChange]);
 
+  const memoryWindowGb = status?.memory_window_gb;
+  const warnMemory = useCallback(
+    (model: NpuModel) => {
+      const warning = npuMemoryWarning(model, {
+        memory_window_gb: memoryWindowGb,
+      });
+      if (warning) {
+        toast.warning(`${model.id} may not load on the NPU`, {
+          description: warning,
+        });
+      }
+    },
+    [memoryWindowGb],
+  );
+
   const download = useCallback(
-    (model: NpuModel) =>
-      followNpuDownload(model.id, { percent: model.resume_percent }),
+    (model: NpuModel) => {
+      warnMemory(model);
+      return followNpuDownload(model.id, { percent: model.resume_percent });
+    },
+    [warnMemory],
+  );
+
+  const cancel = useCallback(
+    (model: NpuModel) => cancelNpuDownload(model.id),
     [],
   );
 
@@ -107,8 +137,11 @@ export function useNpuCatalog(
     enabling,
     downloads,
     reconnecting,
+    phases,
     enable,
     download,
+    warnMemory,
+    cancel,
     remove,
   };
 }

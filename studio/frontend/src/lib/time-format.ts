@@ -62,24 +62,39 @@ type HourCycle = "h12" | "h23";
 
 const language = (tag: string) => tag.split("-")[0].toLowerCase();
 
+// Resolved once: the runtime default locale is fixed for the page's lifetime.
+let browserClock: { language: string; hourCycle: HourCycle } | null | undefined;
+
+function getBrowserClock(): { language: string; hourCycle: HourCycle } | null {
+  if (browserClock === undefined) {
+    try {
+      const browser = new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+      }).resolvedOptions();
+      browserClock = {
+        language: language(browser.locale),
+        hourCycle:
+          browser.hourCycle === "h11" || browser.hourCycle === "h12"
+            ? "h12"
+            : "h23",
+      };
+    } catch {
+      browserClock = null;
+    }
+  }
+  return browserClock;
+}
+
 // The UI locale has no region (en-GB is "en"), so a shared language takes the browser's clock.
 function systemHourCycle(locale: string | undefined): HourCycle | undefined {
   if (!locale) {
     return undefined;
   }
-  try {
-    const browser = new Intl.DateTimeFormat(undefined, {
-      hour: "numeric",
-    }).resolvedOptions();
-    if (language(browser.locale) !== language(locale)) {
-      return undefined;
-    }
-    return browser.hourCycle === "h11" || browser.hourCycle === "h12"
-      ? "h12"
-      : "h23";
-  } catch {
+  const browser = getBrowserClock();
+  if (!browser || browser.language !== language(locale)) {
     return undefined;
   }
+  return browser.hourCycle;
 }
 
 export function withTimeFormat(

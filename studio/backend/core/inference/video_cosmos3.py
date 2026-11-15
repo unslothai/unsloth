@@ -269,3 +269,102 @@ def seam_safe_tile_strides(pipe: Any, height: int, width: int):
         for (tile_key, stride_key), (tile, stride) in zip(keys, old):
             setattr(vae, tile_key, tile)
             setattr(vae, stride_key, stride)
+
+
+# Same caps as a MiniMax-H3 reference video and a keyframe image: 15 s of source, 4096 px a side.
+CONTINUATION_MAX_SECONDS = 15.0
+CONTINUATION_MAX_SIDE = 4096
+
+
+def _upright(image: Any, frame: Any) -> Any:
+    # PyAV's rotation is counterclockwise degrees, the same sense as PIL's rotate (matches ffmpeg autorotate).
+    rotation = int(getattr(frame, "rotation", 0) or 0) % 360
+    return image.rotate(rotation, expand = True) if rotation else image
+
+
+def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
+    """Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
+    clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
+    import collections
+    import math
+
+    import av
+
+    from .video_minimax_h3 import _open_reference_media
+
+    picked: Any = [] if keep == "first" else collections.deque(maxlen = count)
+    try:
+        container = _open_reference_media(av, blob)
+    except av.error.FFmpegError as exc:
+        raise ValueError("That clip could not be read as a video.") from exc
+    with container:
+        if not container.streams.video:
+            raise ValueError("That clip carries no video track.")
+        stream = container.streams.video[0]
+        source_fps = float(stream.average_rate or stream.guessed_rate or fps)
+        if source_fps <= 0:
+            source_fps = float(fps)
+        max_source_frames = math.floor(CONTINUATION_MAX_SECONDS * source_fps + 1e-6)
+        next_target = 0
+        decoded = 0
+        held: Any = None
+        origin: Optional[float] = None
+
+        def _take(frame: Any, until: float) -> None:
+            nonlocal next_target
+            while next_target / fps < until - 1e-6:
+                if keep != "first" or len(picked) < count:
+                    picked.append(frame)
+                next_target += 1
+
+        try:
+            for index, frame in enumerate(container.decode(video = 0)):
+                decoded = index + 1
+                stamp = frame.time if frame.time is not None else index / source_fps
+                if origin is None:
+                    origin = stamp
+                # Count and timestamps both: a VFR clip's average rate can understate a long gap.
+                if (
+                    decoded > max_source_frames
+                    or stamp - origin + 1 / source_fps > CONTINUATION_MAX_SECONDS + 1e-6
+                ):
+                    raise ValueError(
+                        f"The clip to continue runs longer than {CONTINUATION_MAX_SECONDS:g} seconds. Trim it first."
+                    )
+                if max(frame.width, frame.height) > CONTINUATION_MAX_SIDE:
+                    raise ValueError(
+                        f"The clip to continue is {frame.width}x{frame.height}; the limit is "
+                        f"{CONTINUATION_MAX_SIDE} px a side."
+                    )
+                # "first" still decodes to the end, so both ends are held to the same limits.
+                if held is not None:
+                    _take(held, max(stamp - origin, 0.0))
+                held = frame
+            if held is not None:
+                # The last frame lasts one nominal frame, as the clip's duration counts it.
+                _take(held, max(stamp - origin, 0.0) + 1 / source_fps)
+        except av.error.FFmpegError as exc:
+            raise ValueError("That clip could not be decoded.") from exc
+        frames = [
+            _upright(frame.to_image().convert("RGB"), frame) for frame in list(picked)[:count]
+        ]
+    if len(frames) < count:
+        raise ValueError(
+            f"This clip has {len(frames)} frames at {fps} fps, and continuing it needs at least {count}. "
+            "Use a longer clip."
+        )
+    return frames
+
+
+def fit_continuation_frames(frames: list, width: int, height: int) -> list:
+    """The pipeline resizes onto the canvas itself, so a clip already at the canvas aspect passes through untouched."""
+    if not frames:
+        return frames
+    src_w, src_h = frames[0].size
+    crop_w = min(src_w, round(src_h * width / height))
+    crop_h = min(src_h, round(src_w * height / width))
+    if (crop_w, crop_h) == (src_w, src_h):
+        return frames
+    left, top = (src_w - crop_w) // 2, (src_h - crop_h) // 2
+    box = (left, top, left + crop_w, top + crop_h)
+    return [frame.crop(box) for frame in frames]

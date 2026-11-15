@@ -51,6 +51,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _area_matrix as areas  # noqa: E402
 import _has_lint as has_lint  # noqa: E402
+import _webkit_leg as webkit_leg  # noqa: E402
 from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
@@ -80,6 +81,10 @@ AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
 ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
 # Static lint of the built CSS for new non-subject :has() rules (tests/studio/_has_lint.py).
 HAS_LINT = os.environ.get("LONG_THREAD_HAS_LINT", "1") != "0"
+# The WebKit leg (_webkit_leg.py): surface open/close time and longest frame, short vs long chat, in
+# Playwright WebKit with a macOS and a Linux user agent. Opt-in (one Linux CI lane sets it), as it
+# needs the WebKit browser installed.
+WEBKIT = os.environ.get("LONG_THREAD_WEBKIT", "0") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
@@ -726,6 +731,19 @@ def finish_areas(runs, failures, details, started) -> int:
                     default = str,
                 )
             )
+    if WEBKIT:
+        if not (DIST / "index.html").exists():
+            failures.append(f"no app build at {DIST / 'index.html'} for the WebKit leg")
+        else:
+            try:
+                lines, fails, _ = webkit_leg.run(DIST)
+            except Exception as exc:  # noqa: BLE001 - a leg that cannot start is a failure, not a pass
+                lines, fails = (
+                    [],
+                    [f"the WebKit leg did not run: {type(exc).__name__}: {str(exc)[:300]}"],
+                )
+            extra += lines
+            failures += fails
     return report(runs, failures, details, started, extra)
 
 

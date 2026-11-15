@@ -81,9 +81,8 @@ _uuid_mask_cache: dict[tuple[str, int], tuple[float, Optional[list[int]]]] = {}
 
 def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
-    # gpu_query never caches a failure, and the parent GPU spec is read on every poll and load:
-    # without this a hung nvidia-smi costs its full timeout per call.
-    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it too.
+    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it;
+    # gpu_query never caches failures, so a hung nvidia-smi costs its timeout per call.
     key = (parent_cuda_visible_devices, gpu_query._static_gen)
     hit = _uuid_mask_cache.get(key)
     if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
@@ -189,8 +188,7 @@ def _mig_cached() -> Any:
 
 
 def _mig_finish(probe: tuple[int, int, float], result: Any) -> Optional[frozenset[int]]:
-    """Publish one probe's outcome (``result`` None when the query raised) and return the
-    indices callers should use, None for unknown."""
+    """Publishes a probe's outcome (None if the query raised); returns the indices or None."""
     global _mig_entry
     gen, seq, started = probe
     stdout = getattr(result, "stdout", None)
@@ -214,9 +212,8 @@ def _mig_finish(probe: tuple[int, int, float], result: Any) -> Optional[frozense
 
 
 def _listing_taken_at(started: float, stdout: Any) -> Optional[float]:
-    """When the ``-L`` answer ``stdout`` was produced: the start of the gpu_query entry
-    holding exactly that answer, or when this query began with the cache off. None when
-    the cache no longer holds it (a newer listing replaced it)."""
+    """Start time of the gpu_query entry holding this -L stdout answer (or the query start when the
+    cache is off); None if a newer listing replaced it."""
     if not gpu_query.enabled():
         return started
     try:

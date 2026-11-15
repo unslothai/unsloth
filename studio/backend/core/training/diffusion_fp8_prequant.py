@@ -105,8 +105,7 @@ def resolve_fp8_checkpoint(
     hf_token: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Local path of a validated fp8 denoiser checkpoint for ``base_model`` (downloaded into the inference cache root
-    when absent), or None. Never raises."""
+    """Validated fp8 denoiser path for base_model (downloaded if absent); None; never raises."""
     if _disabled() or not family or not base_model:
         return None
     try:

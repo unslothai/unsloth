@@ -137,8 +137,7 @@ def test_the_auth_dir_named_relative_to_a_cd_into_the_studio_root(monkeypatch, t
 
 
 def test_equivalent_spellings_of_the_auth_path_are_all_covered(monkeypatch, tmp_path):
-    # The OS opens every one of these as the same file, so matching only the tidiest spelling left
-    # the others walking straight past the guard.
+    # All these spellings open one file, so matching only the tidiest one missed the others.
     home = tmp_path / "studio-home"
     (home / "auth").mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
@@ -292,8 +291,7 @@ def test_redaction_is_idempotent_and_leaves_other_output_alone():
     assert redact_studio_credentials(plain) == plain
     desktop = "desktop-" + "Ab3_-x9Z" * 8
     assert desktop not in redact_studio_credentials(f"secret={desktop}\n")
-    # A key cut in half by the window fit is still credential material, so it is masked too, while
-    # prose about the prefix itself reads through.
+    # A key cut short by the window fit is still masked; prose about the prefix itself passes.
     assert redact_studio_credentials(_FAKE_KEY[:24]) == "[redacted]"
     assert redact_studio_credentials("keys look like sk-unsloth-<hex>") == (
         "keys look like sk-unsloth-<hex>"
@@ -633,8 +631,7 @@ def test_padding_a_command_with_cds_does_not_spend_the_walk(studio_home):
 
 def test_the_shell_pid_spelling_of_the_proc_cwd_symlink(studio_home):
     home = studio_home
-    # `$$` is the shell's own PID, expanded before the path is opened, so it names the same symlink
-    # a literal number does.
+    # $$ is the shell's own PID, expanded before the path opens, so it names the same symlink.
     assert (
         tools._bash_exec(
             "cat /proc/$$/cwd/../../auth/auth.db",
@@ -1119,8 +1116,7 @@ def test_a_studio_home_variable_pointing_elsewhere_is_not_ours(studio_home, monk
 
 def test_an_unset_studio_home_variable_stays_registered(studio_home):
     home = studio_home
-    # The child cannot expand it either, so the spelling reaches nothing and dropping it would only
-    # widen the guard for no gain.
+    # The child cannot expand it either, so dropping the spelling would only widen the guard.
     assert tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
 
 
@@ -1303,8 +1299,7 @@ def test_a_pathlib_parent_walk_and_the_option_terminator(studio_home):
         'from pathlib import Path\nprint(Path.cwd().parent / "data" / "x.csv")',
         'from pathlib import Path\nprint(Path("x.txt").parent)',
         'from pathlib import Path\nprint((Path.cwd().parents[1] / "models" / "m.gguf").exists())',
-        # The sandbox is <home>/sandbox/<session>, so parents[1] is the home and parents[3] is
-        # two levels above it, which is not this install.
+        # The sandbox is <home>/sandbox/<session>; parents[3] is above home, not this install.
         'from pathlib import Path\nprint((Path.cwd().parents[3] / "auth" / "auth.db"))',
     ):
         assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
@@ -1362,8 +1357,7 @@ def test_command_positions_explicit_bases_and_chdir_aliases(studio_home):
 
 def test_a_generic_cwd_keyword_is_not_a_child_process(studio_home):
     home = studio_home
-    # `cwd` is an ordinary keyword name. Reading it as process semantics on any call refused
-    # ordinary code whose function may never touch the path it was handed.
+    # cwd is an ordinary keyword name; reading it as process semantics refused ordinary code.
     for ordinary in (
         'describe("auth/config.json", cwd = "../..")',
         'import subprocess as sp\nsp.run(["ls"], cwd = "build")',
@@ -1623,8 +1617,7 @@ def test_a_chdir_to_the_studio_home_variable_moves_there(studio_home):
     # os.environ[...] has no folded value, but bypass keeps the variable, so the move is real.
     for code in (
         'import os\nos.chdir(os.environ["UNSLOTH_STUDIO_HOME"])\nprint(open("auth/auth.db").read())',
-        # Windows upper-cases every key `os.environ` is handed, so the lower-case spelling
-        # resolves to the same directory there.
+        # Windows upper-cases os.environ keys; lower-case spellings reach the same directory.
         'import os\nos.chdir(os.environ["unsloth_studio_home"])\nprint(open("auth/.desktop_secret").read())',
         'import os\nos.chdir(os.getenv("STUDIO_HOME"))\nprint(open("auth/auth.db").read())',
     ):
@@ -1858,21 +1851,17 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(studio_home):
         ), ordinary
     for refused in (
         'cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; UNSLOTH_STUDIO_HOME=/tmp/project',
-        # The LAST assignment is the one the expansion applies, so a read between two of them
-        # still happens under the real root.
+        # The last assignment wins, so a read between two of them still sees the real root.
         'UNSLOTH_STUDIO_HOME=$UNSLOTH_STUDIO_HOME; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db"'
         " .dump; UNSLOTH_STUDIO_HOME=/tmp",
         'UNSLOTH_STUDIO_HOME=/tmp sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
         'UNSLOTH_STUDIO_HOME=/tmp/project cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
         f'UNSLOTH_STUDIO_HOME={home}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
-        # A quoted assignment is DATA that `echo` prints, so the later expansion still uses the
-        # inherited home and the database read is a real one.
+        # Quoted assignments are echo data, so the expansion still uses the inherited home.
         'echo " UNSLOTH_STUDIO_HOME=/tmp;"; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
-        # An assignment inside `( ... )` binds only the subshell, so the outer command still
-        # expands the inherited home.
+        # A ( ... ) assignment binds only the subshell, so the outer command keeps the home.
         '(UNSLOTH_STUDIO_HOME=/tmp); sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
-        # A backslash escapes the quote it precedes, so the region is still open and the
-        # assignment inside it is still data.
+        # A backslash escapes the quote it precedes, so the assignment inside is still data.
         'echo "x \\" UNSLOTH_STUDIO_HOME=/tmp;"; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
     ):
         assert tools._bash_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
@@ -2077,8 +2066,7 @@ def test_a_recursive_python_copy_of_the_studio_root_is_refused(studio_home):
     for ordinary in (
         'import shutil\nshutil.copytree("./src", "./dst")',
         'import shutil\nshutil.make_archive("b", "zip", "./src")',
-        # A SHALLOW listing returns the root's own entry names and opens nothing inside `auth`,
-        # exactly as the terminal side's plain root listing does.
+        # A shallow listing returns only the root's entry names, opening nothing inside auth.
         'import os\nprint(os.listdir(os.environ["UNSLOTH_STUDIO_HOME"]))',
         "import os\nfrom pathlib import Path\n"
         'print(list(Path(os.environ["UNSLOTH_STUDIO_HOME"]).iterdir()))',
@@ -2102,8 +2090,7 @@ def test_a_parent_walk_from_path_home_lands_in_the_studio_root(studio_home):
 
 
 def test_two_open_secrets_in_one_chunk_hold_from_the_first(studio_home):
-    # `rfind` walks right to left and the loop stopped at the first hit, so a chunk holding two
-    # open tokens emitted the earlier partial key.
+    # rfind walks right to left, so stopping at its first hit emitted an earlier partial key.
     from core.inference.tool_stream_exec import _hold_back_partial_secret
     assert _hold_back_partial_secret("sk-unsloth-abcdsk-unsloth-") == 0
     assert _hold_back_partial_secret("sk-unsloth-0123 done") == len("sk-unsloth-0123 done")
@@ -2118,8 +2105,7 @@ def test_a_snippet_the_parser_cannot_hold_is_a_decision(studio_home):
 
 def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(studio_home):
     home = studio_home
-    # Unescaping recursed once per backslash, so 550 of them raised RecursionError out of the guard,
-    # before the command was classified at all.
+    # Recursing per backslash raised RecursionError on 550 escapes before any classification.
     workdir = str(home / "sandbox" / _SESSION)
     assert tools._references_studio_credential_here("echo " + "\\" * 1100 + "a", workdir) is (False)
     assert (

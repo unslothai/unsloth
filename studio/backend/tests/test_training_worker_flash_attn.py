@@ -36,8 +36,7 @@ def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    # A CUDA torch with nothing published for it unless a test says otherwise: the host's own
-    # torch and the network must not decide the tests.
+    # Assume CUDA torch with nothing published, so the host's torch and network never decide.
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
@@ -109,8 +108,7 @@ def _flash_attn_import_until_installed(state: dict[str, bool]):
         if name == "flash_attn":
             if not state.get("installed"):
                 raise ImportError
-            # A stub, not a real import: flash_attn is not installed in the test env, and
-            # whether it happens to be is not what these tests are about.
+            # Fake module, not a real import, so the host's flash_attn cannot decide.
             return types.ModuleType("flash_attn")
         return real_import(name, globals, locals, fromlist, level)
 
@@ -351,11 +349,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 @linux_only
 @pytest.mark.parametrize("uv_path", ["/usr/bin/uv", None], ids = ["uv", "pip"])
 def test_runtime_flash_attn_rejected_wheel_is_removed_without_source_build(monkeypatch, uv_path):
-    """A wrong-arch/ABI wheel installs with rc=0 and then will not load.
-
-    The Blackwell shape (#5420, #6961): trusting the exit code left a flash_attn that
-    raised on import mid-training. It must be treated as not installed.
-    """
+    """Wrong-arch wheels exit 0 yet fail to import; rejected ones count as uninstalled."""
     statuses: list[str] = []
     calls: list[list[str]] = []
     state = {"installed": False}
@@ -971,8 +965,7 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     import inspect
 
     src = inspect.getsource(worker.run_training_process)
-    # Orchestration block. Match the call, not its formatting, so wrapping the args over
-    # several lines or adding a keyword does not break this.
+    # Match the calls, not their formatting, so wrapping or a new keyword cannot break this.
     assert "_ensure_causal_conv1d_fast_path(" in src
     assert "_install_fast_path_hooks(" in src
     eager_pos = src.find("_ensure_causal_conv1d_fast_path(")
@@ -1046,8 +1039,7 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
         assert package not in flat, f"{package} must never be pip installed: {calls}"
 
 
-# Only these prose lines and an import probe may name the stack; a bare "tilelang"
-# elsewhere is an unpinned pip spec.
+# Only these log lines and an import probe may name the stack; a bare tilelang is unpinned.
 _FLA_PROSE_LOG_LINES = (
     "flash-linear-attention fast path importable: %s",
     "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
@@ -1269,8 +1261,7 @@ def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
 
 
 def _isdir_for_layout(*existing: str):
-    """os.path.isdir replacement treating only the given absolute paths as
-    directories, to simulate which gcc runtime / C++ header dirs exist."""
+    """Fake os.path.isdir that reports only the given absolute paths as directories."""
     valid = set(existing)
 
     def fake_isdir(path: str) -> bool:
@@ -1317,8 +1308,7 @@ def test_hipcc_gcc_install_dir_picks_14_when_headers_exist(monkeypatch):
 
 
 def test_hipcc_gcc_install_dir_returns_none_when_no_match(monkeypatch):
-    """No gcc dir has both halves → return None and skip env injection
-    rather than guessing wrong and causing a confusing build failure."""
+    """No gcc dir has both halves: return None rather than guess and break the build."""
     monkeypatch.setattr(sys, "platform", "linux")
     import platform as _platform
 
@@ -1435,8 +1425,7 @@ def test_install_appends_to_existing_hipcc_compile_flags(monkeypatch):
 
 
 def test_install_respects_user_gcc_install_dir(monkeypatch):
-    """User explicitly set --gcc-install-dir=… already → don't touch it.
-    Avoids two competing --gcc-install-dir flags on the clang command line."""
+    """Leave a user --gcc-install-dir alone, or two competing flags reach the clang command."""
     monkeypatch.setenv(
         "HIPCC_COMPILE_FLAGS_APPEND",
         "--gcc-install-dir=/opt/custom/gcc-13",
@@ -1788,8 +1777,7 @@ def test_optional_mamba_ssm_is_skipped_below_the_setup_floor(monkeypatch):
 
 
 def test_a_required_hybrid_on_a_t4_still_installs_mamba_ssm(monkeypatch):
-    # As before setup stopped provisioning: Nemotron-H / Falcon-H1 / Granite-4.0-H install it on
-    # any GPU (the runtime never applied setup's floor to them).
+    # Hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H) need mamba_ssm on any GPU, floor or not.
     install = mock.Mock()
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(
@@ -1930,8 +1918,7 @@ def test_no_stop_for_optional_families_or_a_non_cuda_torch(monkeypatch, essentia
 
 
 def test_the_eager_install_and_the_hook_share_one_failed_attempt(monkeypatch):
-    # A failed (possibly 30-minute HIP) build is never repeated in one worker, nor after a chat
-    # load in the same process already failed it.
+    # A failed (possibly 30-minute HIP) build is never retried in the same worker or process.
     attempts = []
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(

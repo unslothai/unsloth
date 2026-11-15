@@ -118,9 +118,8 @@ def test_push_to_hub_gathers(fake_fsdp2):
     ],
 )
 def test_whole_model_exports_run_on_rank0_under_fsdp2(monkeypatch, method, call, adapter_only):
-    """GGUF, torchao, OpenVINO and GGML exports used to be refused (or, for OpenVINO and GGML, ran
-    on every rank over its own shards). Under FSDP2 they now gather and run on rank 0 alone:
-    a non-writer rank gets rank 0's answer without running the export."""
+    """Under FSDP2 GGUF, torchao, OpenVINO and GGML exports gather and run on rank 0 alone; a
+    non-writer rank gets rank 0's answer without running the export."""
     from peft import LoraConfig, get_peft_model
 
     seen = []

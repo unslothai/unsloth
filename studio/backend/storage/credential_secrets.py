@@ -209,9 +209,8 @@ def has_secret(credential_kind: str, scope_id: str) -> bool:
 
 
 def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
-    """Whether a credential is STORED, readable or not. `get_secret` and `has_secret` answer
-    None for an absent row AND an undecryptable one, which callers that AUTHORIZE on the absence
-    of a credential must tell apart."""
+    """Whether a credential row exists, readable or not; get_secret and has_secret return None for
+    both absent and undecryptable, so callers that authorize on absence must use this"""
     conn = get_connection()
     try:
         row = conn.execute(

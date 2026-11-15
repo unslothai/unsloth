@@ -133,8 +133,7 @@ def test_a_split_scrubbed_from_the_child_does_not_veto(monkeypatch, tmp_path):
 
 
 def test_a_split_the_child_does_inherit_still_vetoes(monkeypatch, tmp_path):
-    """The control: the child receives it here, so it is positional over the order
-    the user expected and the reorder must decline."""
+    """An inherited split is positional over the user's order, so the reorder must decline."""
     monkeypatch.setenv("LLAMA_ARG_TENSOR_SPLIT", "60,40")
     _, result = _run(monkeypatch, tmp_path, mask = "1,0")
     assert result["env"].get("LLAMA_ARG_TENSOR_SPLIT") == "60,40"
@@ -162,8 +161,7 @@ def test_the_authoritative_effective_pin_keeps_the_picked_order(monkeypatch, tmp
 
 
 def test_the_reported_split_follows_the_reorder(monkeypatch, tmp_path):
-    """/status serves the recorded emitted split, which was captured before the
-    reorder rewrote it, so each share was paired with the wrong visible device."""
+    """/status must serve the split after the reorder, or shares pair with the wrong device."""
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     backend, gguf = _backend(tmp_path, vulkan = False, memory = _TWO_GPUS)

@@ -13,6 +13,8 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 import {
   createCodePlugin,
+  LIVE_TAIL_CHARS,
+  MIN_INCREMENTAL_CHARS,
   TOKENIZE_LIMITS,
 } from "../src/components/assistant-ui/code-plugin.ts";
 
@@ -541,6 +543,9 @@ test("a changed theme definition is not answered from the old theme's cache", as
   );
 });
 
+// A cached prefix more than LIVE_TAIL_CHARS short of the body, so growing to it takes the throttled path.
+const cachedHead = (body: string): string => body.slice(0, body.indexOf("\n", body.length - LIVE_TAIL_CHARS - 200) + 1);
+
 test("a shorter delimiter-like sibling cannot drop a queued refresh", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
@@ -548,7 +553,7 @@ test("a shorter delimiter-like sibling cannot drop a queued refresh", async () =
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  await highlightOnce(plugin, { code: body, language, themes: THEMES });
+  await highlightOnce(plugin, { code: cachedHead(body), language, themes: THEMES });
 
   const longer = `${body}\`\`\``;
   const arrived: HighlightResult[] = [];
@@ -576,7 +581,7 @@ test("shedding a possible closing delimiter settles before the shorter result", 
     { length: 120 },
     (_, index) => `value_${index} = ${index}  # a completed Python line`,
   ).join("\n")}\n`;
-  await highlightOnce(plugin, { code: `${body}\`\``, language, themes: THEMES });
+  await highlightOnce(plugin, { code: cachedHead(body), language, themes: THEMES });
 
   const settled: HighlightResult[] = [];
   plugin.highlight({ code: `${body}\`\`\``, language, themes: THEMES }, (result) =>
@@ -661,6 +666,22 @@ test("a block that keeps failing to tokenize does not fill the cache", async () 
   );
 });
 
+test("a short growth of a large fence is coloured at once", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const initial = Array.from(
+    { length: 90 },
+    (_, index) => `value_${index} = ${index}  # a completed Python line`,
+  ).join("\n");
+  assert.ok(initial.length > MIN_INCREMENTAL_CHARS);
+  await highlightOnce(plugin, { code: initial, language, themes: THEMES });
+  for (const grown of [`${initial}\nnext_value = 100`, `${initial}\nnext_value = 100\nand_more = 101`]) {
+    const now = plugin.highlight({ code: grown, language, themes: THEMES }, () => {});
+    assert.ok(now, "answered in the same call");
+    assert.deepEqual(now.tokens, (await reference(grown, "python")).tokens, "every streamed line is coloured, none waits for the refresh");
+  }
+});
+
 test("a throttled multiline tail matches the previous plugin", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
@@ -673,7 +694,7 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     language,
     themes: THEMES,
   });
-  const grown = `${initial}\nnext_value = 100\nand_more = 101`;
+  const grown = `${initial}\n${Array.from({ length: 40 }, (_, index) => `next_value_${index} = ${index}  # streamed`).join("\n")}`;
   const throttled = await highlightOnce(plugin, {
     code: grown,
     language,

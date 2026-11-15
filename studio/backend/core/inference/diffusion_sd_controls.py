@@ -166,10 +166,8 @@ def _clip_skip_engaged(controls: SdControls, family: Any) -> bool:
 def weighting_engaged(
     controls: Optional[SdControls], family: Any, pipe: Any, texts: Sequence[Optional[str]]
 ) -> bool:
-    """Whether this call encodes its prompts here instead of in the pipeline.
-
-    Engaged by weight syntax, a prompt past 75 tokens or a CLIP skip past the model's layer; otherwise the
-    pipeline encodes, bit-identically."""
+    """Encodes here for weight syntax, prompts past 75 tokens, or a CLIP skip past the model layer;
+    else the pipeline encodes, bit-identically."""
     if not supports_sd_controls(family, pipe):
         return False
     controls = controls or SdControls()

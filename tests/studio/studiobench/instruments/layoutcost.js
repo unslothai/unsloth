@@ -2,12 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * Counts and times DOM operations suspected of forcing synchronous layout during streaming.
- * Off by default (perturbing); zero counts are distinguishable from patches that never installed.
- * Counts how often the app asks for layout, not layout time; scrollY, getBoundingClientRect,
- * offsetHeight and getComputedStyle are deliberately not wrapped (not in the suspected path).
- * selfCostEstimate() times wrapped vs original-descriptor reads on a detached element to give
- * per-call wrapper overhead. maxMs 0 means below clockGranularityMs, not free.
+ * Counts forced-layout requests while streaming, not layout time; off by default as it perturbs;
+ * zero counts must be distinguishable from never-installed patches; maxMs 0 means below
+ * clockGranularityMs, not free.
  */
 
 (function () {

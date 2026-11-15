@@ -19,8 +19,7 @@ _STACK = Path(__file__).resolve().parents[2] / "install_python_stack.py"
 
 @pytest.fixture(scope = "module")
 def stack():
-    """install_python_stack imported by path: it is a top-level installer script, not a package
-    module, so the backend's own import path does not reach it."""
+    """install_python_stack is loaded by path; it is a script, not a package module."""
     spec = importlib.util.spec_from_file_location("_unsloth_install_python_stack", _STACK)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -287,8 +286,7 @@ _NO_AMD_CARD = "\n".join(
 
 
 def test_the_request_does_not_select_rocm_without_an_amd_card(stack):
-    """A typo on a pure NVIDIA box must not turn a working CUDA machine into a ROCm or CPU one: the
-    AMD route test still has to pass."""
+    """A typo on a pure NVIDIA box must not switch a CUDA machine to ROCm or CPU torch."""
     out = _index_url("UNSLOTH_FORCE_ROCM_TORCH=1", _NO_AMD_CARD)
     assert "rocm" not in out and "gfx" not in out, out
 
@@ -339,9 +337,8 @@ def test_the_cuda_repair_still_runs_without_the_request(stack, monkeypatch):
 
 
 def test_windows_is_not_swapped_by_the_request_alone(stack, monkeypatch):
-    """Windows picks the wheel in install.ps1 and republishes an expected tag that
-    _ensure_expected_torch_flavor restores, so honouring the request only in Python would
-    install ROCm and have it reverted."""
+    """Windows picks the wheel in install.ps1 and _ensure_expected_torch_flavor restores it, so
+    honouring the request only in Python would install ROCm and have it reverted."""
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
     monkeypatch.setattr(stack, "IS_WINDOWS", True)
     monkeypatch.setattr(stack, "IS_MACOS", False)
@@ -422,8 +419,7 @@ def test_the_request_does_not_yield_a_pure_nvidia_host():
 
 
 def test_a_host_with_no_nvidia_card_is_unchanged_either_way():
-    """The automatic path is untouched: with no NVIDIA GPU the answer never depended on the
-    request, and must not start to."""
+    """Without an NVIDIA card the automatic answer never depended on the request; keep it so."""
     assert not _nvidia_wins("", _PURE_AMD)
     assert not _nvidia_wins("UNSLOTH_FORCE_ROCM_TORCH=1", _PURE_AMD)
 
@@ -510,8 +506,7 @@ _CUDA = "https://download.pytorch.org/whl/cu130"
 
 
 def test_a_dead_end_amd_route_keeps_cuda():
-    """ROCm 5.x, an arch no index covers, or a non-x86_64 host all end the AMD branch at the cpu
-    index."""
+    """ROCm 5.x, an uncovered arch or non-x86_64 hosts all fall back to the cpu index."""
     assert (
         _index_after_the_guard(
             "UNSLOTH_FORCE_ROCM_TORCH=1",
@@ -523,8 +518,7 @@ def test_a_dead_end_amd_route_keeps_cuda():
 
 
 def test_a_resolved_rocm_index_is_left_alone():
-    """The control that makes the test above mean something: when the request DID reach ROCm
-    wheels, the guard must not undo it."""
+    """Control: when the request did reach ROCm wheels, the guard must leave that index alone."""
     rocm = "https://repo.amd.com/rocm/whl/gfx1151"
     assert (
         _index_after_the_guard(
@@ -557,8 +551,7 @@ def test_a_mirror_whose_base_path_says_rocm_is_not_a_rocm_index():
 
 
 def test_a_mirrored_rocm_index_is_still_left_alone():
-    """The control for the case above, one path segment apart: the same mirror serving an actual
-    ROCm leaf must keep it."""
+    """Control: a mirror serving a real ROCm leaf, one path segment apart, must be kept."""
     rocm = "https://mirror.local/rocm-cache/rocm7.2"
     assert (
         _index_after_the_guard(
@@ -611,9 +604,7 @@ def test_a_miscomputing_arch_host_keeps_the_cuda_repair(stack, monkeypatch):
 
 
 def test_the_rocm_installer_bails_on_the_same_arch(stack, monkeypatch):
-    """The other half of the pair, and the reason the test above is not arbitrary: the helper the
-    repair now consults is the one _ensure_rocm_torch itself returns on, so the two sides of the
-    installer cannot disagree about whether a route exists."""
+    """The repair and _ensure_rocm_torch share one helper, so both sides agree on whether a route exists."""
     monkeypatch.setattr(stack, "IS_MACOS", False)
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
     monkeypatch.setattr(stack, "_miscomputing_arch_host", lambda: True)
@@ -678,24 +669,19 @@ def _gpu_summary_branch(
 
 
 def test_a_pinned_rocm_index_still_reports_the_nvidia_card():
-    """A pin names a wheel family, not a card. An NVIDIA host pinned to a ROCm index has no AMD
-    card to describe, so reading the resolved index alone hid the NVIDIA identity behind an
-    "AMD ROCm" banner for hardware the machine does not have."""
+    """A pin names a wheel family, not a card; reading the index alone hid NVIDIA behind an AMD banner."""
     assert (
         _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "", pinned = True) == "nvidia"
     )
 
 
 def test_an_unpinned_rocm_resolution_still_reports_amd():
-    """The control: the exemption is the pin, not the index. The same URL reached by resolution
-    still reports the card its wheels are for."""
+    """Control: the pin is the exemption, not the URL; resolved ROCm still reports AMD."""
     assert _gpu_summary_branch("https://download.pytorch.org/whl/rocm7.2", "") == "amd"
 
 
 def test_the_summary_reports_cuda_after_the_cuda_restore():
-    """The mixed host whose request found no ROCm route: the guard put the CUDA index back, but the
-    request is still set and the AMD card is still there, so the reroute predicate still answers
-    "AMD wins"."""
+    """Mixed host, no ROCm route: CUDA index restored, but the reroute predicate still answers AMD wins."""
     assert _gpu_summary_branch(_CUDA, "UNSLOTH_FORCE_ROCM_TORCH=1") == "nvidia"
 
 
@@ -712,8 +698,7 @@ def test_the_summary_still_reports_amd_when_the_request_won():
 
 
 def test_the_summary_on_a_pure_cuda_install_is_unchanged():
-    """And the control for the control: no request, CUDA wheels, NVIDIA reported, which is what
-    every automatic install on an NVIDIA host must keep seeing."""
+    """Control for the control: a pure CUDA install with no request still reports NVIDIA."""
     assert _gpu_summary_branch(_CUDA, "") == "nvidia"
 
 
@@ -755,8 +740,7 @@ def _route_shell(probe: str, inferred: str, pci_ok: bool) -> bool:
     ],
 )
 def test_the_request_needs_a_card_whose_arch_an_index_serves(probe, inferred, pci_ok, routes):
-    """Presence is not the bar: an arch no index can serve must never depose a card that can,
-    and each row is paired with its control."""
+    """Presence is not the bar: an arch no index serves must never depose a card that can."""
     assert _route_shell(probe, inferred, pci_ok = pci_ok) is routes
 
 
@@ -869,8 +853,7 @@ def _viable(
 
 
 def test_a_host_with_no_published_rocm_wheels_is_not_a_viable_route(stack, monkeypatch):
-    """_ensure_rocm_torch() returns on its Linux-x86_64 gate without installing anything, because
-    ROCm wheels are published nowhere else."""
+    """_ensure_rocm_torch gates Linux-x86_64 only: ROCm wheels are published nowhere else."""
     assert (
         _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1100"], machine = "aarch64")
         is False
@@ -885,8 +868,7 @@ def test_the_same_host_on_x86_64_is_still_viable(stack, monkeypatch):
 
 
 def test_the_python_route_test_matches_the_shell_one(stack, monkeypatch):
-    """Both halves of the installer have to answer the same question the same way, or a standalone
-    `studio update` undoes what install.sh chose."""
+    """Both installer halves must agree, or `studio update` undoes what install.sh chose."""
     assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1010"]) is False
     assert _viable(stack, monkeypatch, corroborated = True, archs = ["gfx1100"]) is True
     assert _viable(stack, monkeypatch, corroborated = False, archs = ["gfx1030"]) is False
@@ -961,8 +943,7 @@ def test_a_declared_arch_does_not_force_rocm_over_a_working_cuda_stack(stack, mo
 
 
 def test_a_real_card_with_a_declared_arch_is_still_served(stack, monkeypatch):
-    """The control: declaring an arch is the documented routing hint for a runtime-less host, so it
-    must keep working once the silicon is corroborated."""
+    """Control: a declared UNSLOTH_ROCM_GFX_ARCH still routes once silicon is corroborated."""
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1151")
     monkeypatch.setattr(stack, "IS_WINDOWS", False)
@@ -1133,8 +1114,7 @@ def test_the_shell_route_judges_the_card_the_mask_selects(physical, mask, routes
 
 
 def test_the_flat_probes_duplicate_rows_do_not_shift_the_ordinals():
-    """rocminfo names each agent's target twice, so the flat probe returns four rows for a two-card
-    host."""
+    """rocminfo lists each target twice, so a two-card host yields four probe rows."""
     assert (
         _route_shell_masked(
             ["gfx1100", "gfx1100", "gfx1010", "gfx1010"],
@@ -1158,9 +1138,7 @@ def test_the_same_duplicated_host_still_yields_for_the_routable_card():
 
 
 def test_a_mask_past_the_first_device_fails_closed_with_no_per_device_list():
-    """Only rocminfo enumerates in the order the masks index -- amd-smi orders by KFD discovery,
-    which is why _amd_smi_hip_order exists -- so a host without it cannot say which card an
-    ordinal names."""
+    """Only rocminfo matches mask index order (amd-smi uses KFD order); else no ordinal names a card."""
     assert _route_shell_masked(["gfx1010", "gfx1100"], devices = [], HIP_VISIBLE_DEVICES = "1") is False
 
 
@@ -1238,9 +1216,7 @@ def test_the_rocr_layer_is_resolved_the_same_way():
     ],
 )
 def test_a_mask_that_exposes_no_device_leaves_cuda_alone(mask):
-    """A deliberate no-GPU selection, not a detection miss: there is nothing for the request to
-    swap TO, so falling back to the physical inventory here installed ROCm wheels on a host
-    whose runtime exposes no AMD GPU at all."""
+    """A no-GPU mask is deliberate, not a miss; falling back to physical inventory would install ROCm."""
     assert _route_shell_masked(["gfx1100"], **mask) is False
 
 
@@ -1257,8 +1233,7 @@ def test_a_mask_this_cannot_resolve_fails_closed(value):
 
 
 def test_a_masked_gfx906_alone_is_still_routable():
-    """The control: on a host where gfx906 IS the sole arch, the legacy tag opens and a mask naming
-    it must not change that."""
+    """Control: a sole gfx906 host opens the legacy tag, and a mask naming it changes nothing."""
     assert _route_shell_masked(["gfx906"], HIP_VISIBLE_DEVICES = "0") is True
 
 
@@ -1353,14 +1328,12 @@ def _viable_masked(
 def test_the_python_route_judges_the_card_the_mask_selects(
     stack, monkeypatch, devices, mask, viable
 ):
-    """Each row is paired with the same host masked the other way, so a fix that answered
-    "never viable" fails here."""
+    """Rows pair with the same host masked the other way; a never-viable fix fails here."""
     assert _viable_masked(stack, monkeypatch, devices = devices, HIP_VISIBLE_DEVICES = mask) is viable
 
 
 def test_a_mask_exposing_no_device_is_not_a_viable_route(stack, monkeypatch):
-    """The Python half of the same rule the shell now applies: a no-GPU mask is a deliberate
-    selection, so there is nothing to swap to."""
+    """Python mirrors the shell: a no-GPU mask is deliberate, so there is nothing to swap to."""
     assert (
         _viable_masked(stack, monkeypatch, devices = ["gfx1100"], HIP_VISIBLE_DEVICES = "-1") is False
     )
@@ -1400,8 +1373,7 @@ def test_a_viable_route_still_lets_the_request_through(stack, monkeypatch):
 
 @pytest.mark.parametrize("family", ["cpu", "cu128"])
 def test_an_explicit_pin_of_another_family_outranks_the_request(stack, monkeypatch, family):
-    """A /cpu pin had the multi-GB ROCm stack installed here and then undone by _ensure_cpu_torch,
-    on every update."""
+    """A /cpu pin must outrank the request, or _ensure_cpu_torch undoes ROCm on every update."""
     assert (
         _rocm_repair_reached(stack, monkeypatch, archs = ["gfx1100"], viable = True, pin = family)
         is False
@@ -1416,9 +1388,8 @@ def test_an_explicit_pin_of_another_family_outranks_the_request(stack, monkeypat
 def test_a_pin_of_another_family_is_the_only_pin_that_outranks_the_request(
     stack, monkeypatch, pin_url, reached
 ):
-    """A pin naming ROCm agrees with the request and must not be swept up by the CPU/CUDA
-    check. An unknown leaf was applied verbatim at install time, so _ensure_rocm_torch
-    declines to judge it and returns before any vendor gate -- pre-existing, not added here."""
+    """A ROCm pin agrees with the request and must not be swept up by the CPU/CUDA check; an unknown
+    leaf is applied verbatim, so _ensure_rocm_torch returns before any vendor gate."""
     assert (
         _rocm_repair_reached(stack, monkeypatch, archs = ["gfx1100"], viable = True, pin_url = pin_url)
         is reached
@@ -1426,8 +1397,7 @@ def test_a_pin_of_another_family_is_the_only_pin_that_outranks_the_request(
 
 
 def test_the_two_mask_layers_compose_in_the_order_the_runtime_reads_them():
-    """ROCr filters the physical list and renumbers the survivors; the HIP layer then indexes
-    those."""
+    """ROCr filters the physical list and renumbers the survivors; HIP then indexes them."""
     assert (
         _route_shell_masked(
             ["gfx1100", "gfx1010"], ROCR_VISIBLE_DEVICES = "1", HIP_VISIBLE_DEVICES = "0"
@@ -1471,9 +1441,7 @@ def test_a_declared_arch_that_is_routable_still_deposes_cuda():
 
 
 def test_a_generic_only_arch_is_judged_against_the_tag_this_host_resolves():
-    """gfx950 has no per-arch index, so its only route is the generic wheel -- and the tag comes
-    from the installed ROCm version, which a stale /opt/rocm beside a current amdgpu can leave
-    older than the card."""
+    """gfx950 has only the generic wheel, and its tag follows the installed ROCm, which can be stale."""
     assert _route_shell_masked(["gfx950"], rocm_tag = "rocm6.4") is False
 
 
@@ -1483,8 +1451,7 @@ def test_the_same_arch_on_a_tag_that_carries_it_is_routable():
 
 
 def test_an_arch_with_its_own_index_is_not_held_to_the_generic_floor():
-    """The boundary: gfx1200 predates the rocm6.0 generic wheel too, but it has a per-arch AMD
-    index that carries it, and the reroute is what serves it."""
+    """gfx1200 predates the rocm6.0 generic floor but has its own AMD index, so it is served."""
     assert _route_shell_masked(["gfx1200"], rocm_tag = "rocm6.0") is True
 
 
@@ -1520,9 +1487,7 @@ def test_the_same_wsl_box_with_no_nvidia_card_still_counts(stack, monkeypatch):
 
 
 def test_a_wsl_box_whose_runtime_names_an_agent_counts_beside_nvidia(stack, monkeypatch):
-    """The other control: a real AMD adapter under WSL is still corroborated with an NVIDIA card
-    present, because the ROCm runtime enumerates it rather than a leftover file standing in for
-    it."""
+    """Control: a WSL AMD adapter beside NVIDIA still counts when ROCm enumerates it, not a stale file."""
     assert _corroborated_on_wsl(stack, monkeypatch, nvidia = True, rocm_sees_a_gpu = True) is True
 
 
@@ -1554,14 +1519,12 @@ def _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, *, viable: bool) ->
 
 
 def test_an_unroutable_request_does_not_bypass_the_nvidia_fast_path(stack, monkeypatch):
-    """On a mixed host whose selected AMD card has no wheel route, _ensure_cuda_torch() and
-    _ensure_rocm_torch() both leave CUDA in place."""
+    """Mixed host, unroutable AMD pick: _ensure_cuda_torch and _ensure_rocm_torch keep CUDA."""
     assert _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, viable = False) is False
 
 
 def test_a_routable_request_still_bypasses_it(stack, monkeypatch):
-    """The control: the request is the whole feature, so a viable one must still outrank the NVIDIA
-    card here or the repair it gates can never run."""
+    """Control: a viable request must outrank NVIDIA, or the gated repair never runs."""
     assert _needs_repair_passes_the_nvidia_gate(stack, monkeypatch, viable = True) is True
 
 
@@ -1605,9 +1568,8 @@ def test_the_same_arch_on_a_version_with_a_wheel_family_is_viable(stack, monkeyp
 
 
 def test_an_arch_the_generic_wheel_lacks_still_routes_on_an_old_version(stack, monkeypatch):
-    """The second control, and the one that keeps the version test from swallowing the repair it
-    exists beside: gfx1103 has no generic kernels at any tag, so _ensure_rocm_torch reroutes it
-    to AMD's per-arch index whatever the version reads."""
+    """gfx1103 has no generic kernels at any tag, so _ensure_rocm_torch reroutes it to its per-arch
+    index."""
     assert _viable_masked(stack, monkeypatch, devices = ["gfx1103"], rocm = (5, 7)) is True
 
 
@@ -1668,8 +1630,7 @@ def test_the_bad_arch_gate_answers_for_the_selected_card_under_the_request(stack
 
 
 def test_the_same_request_selecting_the_deck_still_takes_the_cpu_index(stack):
-    """The control that keeps the narrowing honest: the request cannot buy ROCm wheels for the arch
-    measured to compute wrong answers."""
+    """Control: the request cannot buy ROCm wheels for an arch that computes wrong answers."""
     out = _index_url("UNSLOTH_FORCE_ROCM_TORCH=1 HIP_VISIBLE_DEVICES=0", _VAN_GOGH_PLUS_DGPU)
     assert out.strip().endswith("/cpu"), out
 
@@ -1717,8 +1678,7 @@ def test_two_distinct_rocr_ordinals_still_expose_both_devices(stack, monkeypatch
 
 
 def test_the_rocr_subset_is_the_prefix_of_devices_the_mask_surfaces(stack, monkeypatch):
-    """The buckets behind the two cases above, since a route verdict cannot show WHICH list the HIP
-    layer was handed."""
+    """Buckets behind the cases above: a route verdict cannot show which list HIP was handed."""
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     _devices = ["gfx1100", "gfx1010", "gfx1201"]
     for _mask, _expected in (
@@ -1749,8 +1709,7 @@ def test_a_declared_arch_resolves_its_mask_against_the_unmasked_list(stack, monk
 
 
 def test_the_same_declared_host_with_a_mask_past_its_last_device_still_declines(stack, monkeypatch):
-    """The control: the unmasked list is asked for so the ordinals can be judged, not so that every
-    ordinal passes."""
+    """Control: fetch the unmasked list so ordinals are judged, not every ordinal passes."""
     monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
     assert (
         _viable_masked(
@@ -1821,15 +1780,12 @@ def test_an_unresolvable_mask_on_an_inferred_host_is_not_a_detection_miss(stack,
 
 
 def test_the_same_inferred_host_without_a_mask_is_still_a_route(stack, monkeypatch):
-    """The control that keeps the feature: a runtime-less but inferable AMD card is deliberately
-    served per-arch wheels, so the rule must be about the mask and not about the host having no
-    runtime."""
+    """Control: a runtime-less but inferable AMD card still gets per-arch wheels; only the mask decides."""
     assert _viable_masked(stack, monkeypatch, devices = [], inferred = "gfx1100") is True
 
 
 def test_the_same_inferred_host_selecting_its_only_card_is_still_a_route(stack, monkeypatch):
-    """The other control, and the one that pins WHICH ordinals decline: 0 names the single card the
-    name inferred, so it resolves and the route stands."""
+    """Control: ordinal 0 names the single inferred card, so it resolves and the route stands."""
     assert (
         _viable_masked(
             stack,
@@ -1896,8 +1852,7 @@ def test_the_named_arch_the_message_offers_resolves_the_ambiguity(stack, monkeyp
 
 
 def test_the_ambiguity_flag_does_not_survive_the_next_host(stack, monkeypatch):
-    """It is a module global read by a separate function, so a stale True would decline a later,
-    unrelated host."""
+    """Module global read elsewhere, so a stale True would decline a later, unrelated host."""
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     assert (
         _viable_masked(
@@ -1913,8 +1868,7 @@ def test_the_ambiguity_flag_does_not_survive_the_next_host(stack, monkeypatch):
 
 
 def test_an_integrated_gpu_enumerated_first_does_not_strand_the_discrete_card():
-    """A Ryzen APU enumerates ahead of the discrete Radeon beside it, and the wheel family is
-    picked for ONE arch."""
+    """A Ryzen APU enumerates before the discrete Radeon; the wheel is picked for ONE arch."""
     assert _route_shell_masked(["gfx90c", "gfx1200"]) is True
     assert _route_target_masked(["gfx90c", "gfx1200"]) == "gfx1200"
 
@@ -1938,21 +1892,18 @@ def test_an_integrated_gpu_alone_is_still_declined():
 
 
 def test_an_unroutable_sibling_does_not_rescue_an_unroutable_integrated_pick():
-    """gfx1010 is in neither the generic wheel nor any per-arch index, so deposing gfx90c for it
-    buys nothing and the request still declines."""
+    """gfx1010 has no wheel or index, so deposing gfx90c gains nothing; the request declines."""
     assert _route_shell_masked(["gfx90c", "gfx1010"]) is False
 
 
 def test_gfx906_is_not_a_candidate_for_the_swap():
-    """gfx906's only route is the rocm6.3 legacy tag, which opens solely when it is the sole arch
-    on the host, so promoting it here would install a rocm7.x wheel whose BLAS has no gfx906
-    kernels and strand BOTH cards."""
+    """The gfx906 route is the rocm6.3 legacy tag, which opens only as sole arch; promoting it
+    installs a rocm7.x wheel whose BLAS lacks gfx906 kernels and strands both cards."""
     assert _route_target_masked(["gfx1036", "gfx906"]) == "gfx1036"
 
 
 def test_a_pinned_host_keeps_the_device_the_user_named():
-    """A set mask is the user naming a device, and _visible_devices_pinned exempts the Python rule
-    for exactly that reason."""
+    """A set mask names a device, so _visible_devices_pinned exempts the Python rule."""
     assert _route_target_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") == ""
     assert _route_shell_masked(["gfx90c", "gfx1200"], HIP_VISIBLE_DEVICES = "0") is False
 
@@ -1999,8 +1950,7 @@ _DECK_PLUS_RDNA2 = ["gfx1033", "gfx1030"]
 
 
 def test_the_versionless_reroute_keeps_the_family_the_request_selected():
-    """The reroute clears the family on PRESENCE of gfx1033, which is right only while the card
-    that will run is unknown."""
+    """Presence of gfx1033 clears the family, right only while the running card is unknown."""
     assert (
         _reroute_family(_DECK_PLUS_RDNA2, UNSLOTH_FORCE_ROCM_TORCH = "1", HIP_VISIBLE_DEVICES = "1")
         == "gfx103X-all"
@@ -2017,8 +1967,7 @@ def test_the_same_request_selecting_the_deck_still_loses_the_family():
 
 
 def test_the_presence_rule_still_holds_for_a_host_that_did_not_ask():
-    """And the control for every other host: with no request nothing resolved a target, so presence
-    disqualifies the shared family as before (#7776)."""
+    """Control: without a request, presence still disqualifies the shared family (#7776)."""
     assert _reroute_family(_DECK_PLUS_RDNA2, HIP_VISIBLE_DEVICES = "1") == ""
 
 
@@ -2207,8 +2156,7 @@ def _reroute_family_for_target(
 def test_the_versionless_reroute_family_comes_from_the_selected_card(
     inventory, target, source, family
 ):
-    """The reroute family must come from the probe-selected card; a cross-family pair must not
-    disable it."""
+    """Reroute family comes from the probe-selected card; cross-family pairs cannot disable it."""
     assert _reroute_family_for_target(inventory = inventory, target = target, source = source) == family
 
 
@@ -2281,9 +2229,7 @@ def test_a_declared_arch_cannot_exempt_a_physical_gfx1033_in_python(stack, monke
 
 
 def test_a_probe_resolved_target_still_exempts_the_same_host(stack, monkeypatch):
-    """The control that keeps the narrowing honest, and the case install.sh spells out by name:
-    with NO declaration the probe resolves the target, the discrete-GPU preference selects the
-    gfx1100 over the integrated gfx1033, and that IS a statement about the silicon."""
+    """Probe-resolved targets count as silicon facts: the discrete gfx1100 beats integrated gfx1033."""
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", "1")
     for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
@@ -2308,8 +2254,7 @@ def test_a_probe_resolved_target_still_exempts_the_same_host(stack, monkeypatch)
 
 
 def test_a_declaration_still_routes_where_no_bad_arch_is_present(stack, monkeypatch):
-    """The second control: the guard keys on a MISCOMPUTING arch in the machine, not on the
-    declaration disagreeing with it."""
+    """Control: the guard keys on a miscomputing arch present, not a disagreeing declaration."""
     assert (
         _declared_on_physical(
             stack, monkeypatch, declared = "gfx1030", physical = ["gfx1030", "gfx1100"]
@@ -2319,9 +2264,7 @@ def test_a_declaration_still_routes_where_no_bad_arch_is_present(stack, monkeypa
 
 
 def test_the_documented_strix_declaration_still_routes(stack, monkeypatch):
-    """The third control, and the reason the guard cannot simply distrust declarations: the
-    documented Strix Halo workaround declares gfx1100 on a physical gfx1151, which install.sh
-    calls out by name."""
+    """Declarations cannot be distrusted: the documented Strix Halo fix declares gfx1100 on gfx1151."""
     assert (
         _declared_on_physical(stack, monkeypatch, declared = "gfx1100", physical = ["gfx1151"]) is True
     )
@@ -2358,8 +2301,7 @@ def _viability_across_the_install(stack, monkeypatch, gfx, installed):
 
 
 def test_the_route_is_still_viable_once_the_wheel_it_authorised_is_installed(stack, monkeypatch):
-    """Measured on gfx950 with an unreadable ROCm version, the one shape where
-    _rocm_torch_family_needs_repair is the only arm carrying the chain."""
+    """gfx950 with unreadable ROCm: only _rocm_torch_family_needs_repair carries the chain."""
     before = _viability_across_the_install(stack, monkeypatch, "gfx950", "2.9.0+cu128")
     after = _viability_across_the_install(stack, monkeypatch, "gfx950", "2.11.0+rocm7.1")
     assert before is True, "the request never authorised the swap, so there is nothing to keep"
@@ -2418,8 +2360,7 @@ def test_a_suffixed_arch_installs_the_same_pins_as_the_bare_one(stack, monkeypat
 
 
 def test_the_suffixed_arch_reaches_that_branch_at_all(stack, monkeypatch):
-    """The control: the assertion above is only worth anything if the suffixed spelling actually
-    installs something."""
+    """Control: the suffixed spelling must install something, or the assertion is meaningless."""
     assert _inferred_install_args(stack, monkeypatch, "gfx1151:xnack-")
 
 
@@ -2460,15 +2401,12 @@ def _mask_probe_count(stack, monkeypatch, requested):
 
 
 def test_a_declared_arch_under_a_mask_costs_no_probe_unless_asked(stack, monkeypatch):
-    """Those probes only fill the two mask-provenance flags, which only the forced route reads,
-    and each one can spend its 15s timeout. Running them for every declared-arch host put that
-    cost into an ordinary `studio update` that had asked for nothing."""
+    """Mask probes fill flags only the forced route reads, so they must not run unless asked."""
     assert _mask_probe_count(stack, monkeypatch, requested = False) == 0
 
 
 def test_the_host_that_did_ask_still_resolves_its_mask(stack, monkeypatch):
-    """The control: the flags are load-bearing for the route that reads them, so the request must
-    still pay for them."""
+    """Control: the flags matter to the forced route, so a request must still pay for them."""
     assert _mask_probe_count(stack, monkeypatch, requested = True) > 0
 
 
@@ -2543,8 +2481,7 @@ def test_a_host_gate_decides_when_no_probe_can_name_a_device(
     ids = ["default-nvidia-wins", "request-opens-the-probe"],
 )
 def test_the_shell_probe_hides_the_amd_card_until_it_is_asked(request_set, sees_amd):
-    """install.sh's half of the gate _has_rocm_gpu carries in Python: the AMD probe returns
-    early on a usable NVIDIA GPU unless this run asked for ROCm."""
+    """The shell AMD probe yields to a usable NVIDIA GPU unless this run requested ROCm."""
     script = "\n".join(
         [
             _shell_function("_rocm_torch_explicitly_requested"),

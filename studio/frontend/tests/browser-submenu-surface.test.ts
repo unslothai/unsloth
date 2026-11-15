@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Dark submenus no longer copy their parent's fill, so each one carries its
-// parent's surface class.
+// Dark submenus carry their parent's surface class themselves rather than copying its fill.
 
 import assert from "node:assert/strict";
 import test from "node:test";

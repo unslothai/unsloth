@@ -25,8 +25,7 @@ def _route_source() -> str:
 
 
 def _route_body() -> ast.FunctionDef:
-    """The route function, parsed. Structure, not text: a comment naming psutil is fine, a call
-    to it is not, and the two are indistinguishable to a grep."""
+    """The route body, parsed, so a comment naming psutil passes while a call to it fails."""
     module = ast.parse(_route_source().split("\n", 1)[1])
     function = module.body[0]
     assert isinstance(function, ast.FunctionDef)
@@ -149,8 +148,7 @@ def test_the_route_still_answers_when_the_settings_read_fails(monkeypatch, tmp_p
 
 
 def test_a_disk_reading_is_microseconds(tmp_path):
-    """disk_usage must stay microseconds; a loose budget fails only on a stalled mount, not a busy
-    runner."""
+    """disk_usage must take microseconds; the loose budget only trips on a stalled mount."""
     shutil.disk_usage(tmp_path)
     started = time.perf_counter()
     for _ in range(200):
@@ -267,8 +265,7 @@ def test_an_api_key_caller_is_not_told_the_host_path(monkeypatch, tmp_path):
 
 
 def test_a_ui_session_still_sees_the_path(monkeypatch, tmp_path):
-    """The control. Redacting for everyone would take the path off the Resources tab, which is
-    where a user checks WHICH volume the reading is about."""
+    """Control: UI sessions keep the path, since it shows which volume the reading is about."""
     hub = tmp_path / "cache" / "hub"
     hub.mkdir(parents = True)
 

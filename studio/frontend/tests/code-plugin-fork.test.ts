@@ -49,6 +49,7 @@ test("settled fences that extend one another each get exact tokens once, and the
 });
 
 test("an exact request leaves a streaming sibling's queued refresh in place", async () => {
+  const b = a + lines("b", 80);
   const reference = createCodePlugin({ themes: THEMES });
   const expected = await exactly(reference, b);
   const plugin = createCodePlugin({ themes: THEMES });

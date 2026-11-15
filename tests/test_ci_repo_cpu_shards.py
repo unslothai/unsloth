@@ -128,9 +128,8 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestEveryGlobRootMatchesAFile:
     def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
-        """bash passes a glob that matches nothing through as the literal pattern, and pytest
-        then fails the whole shard on a path that does not exist. A split that moved the last
-        file out of one of its globs would break that shard rather than drop the file."""
+        """bash passes an unmatched glob through literally and pytest then fails the whole shard on
+        the missing path, so a split must not empty any glob."""
         files = _test_files()
         empty = [
             (name, root)

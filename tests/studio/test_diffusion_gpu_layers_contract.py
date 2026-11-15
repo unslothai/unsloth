@@ -99,9 +99,8 @@ def test_diffusion_server_forwards_ngl_and_gates_it_on_shim_support():
 
 
 def test_zero_layers_masks_the_child_devices(llama_cpp):
-    """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False lies to the
-    training VRAM coordinator and a GPU-resident runner survives into a training run.
-    Behavioural, not a source-text match: what matters is the token the child gets."""
+    """gpu_layers=0 must CUDA-mask the child, else _gpu_offload_active=False misleads the training
+    VRAM coordinator and a GPU-resident runner survives into training."""
     arg = llama_cpp.LlamaCppBackend._diffusion_gpu_arg
     assert arg([3, 1], force_cpu = True) == ""
     assert arg(None, force_cpu = True) == ""
@@ -193,9 +192,8 @@ def test_backend_dedup_compares_the_requested_split(
 
 
 def test_the_dedupe_compares_the_requested_split_through_the_paravirtual_rewrite():
-    """The single comparator now lives on the backend, so the diffusion split has to be
-    judged on the normalized intent: a virtualised Metal device launches the CPU-pinned
-    rewrite, and comparing the raw ask against it would reload a healthy server forever."""
+    """The split dedupe compares the normalized intent, since a virtualised Metal device launches
+    the CPU-pinned rewrite and comparing the raw ask would reload a healthy server forever."""
     bodies = {
         node.name: (ast.get_source_segment(SRC, node) or "")
         for node in ast.walk(TREE)

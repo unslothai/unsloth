@@ -88,8 +88,7 @@ def test_nvfp4_rows_are_unchanged():
 )
 @pytest.mark.parametrize("scheme", ["fp8", "int8"])
 def test_families_without_a_hosted_artifact_resolve_none(repo, scheme):
-    """No fp8 / int8 denoiser is hosted for HunyuanVideo-1.5, so nothing may be seeded (it would 404 after the plan
-    dropped the released shards)."""
+    """HunyuanVideo-1.5 hosts no fp8/int8 denoiser, so nothing may be seeded (it would 404)."""
     fam = detect_video_family(repo)
     assert video_family_prequant_repo(fam, scheme, repo) is None
     assert denoiser_prequant_sources(fam, scheme, repo) is None

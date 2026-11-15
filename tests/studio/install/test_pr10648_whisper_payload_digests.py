@@ -223,9 +223,8 @@ def test_a_same_size_flip_in_a_ggml_library_is_deliberately_not_caught(tmp_path,
 
 
 def test_a_marker_whose_record_is_unusable_fails_closed(tmp_path, monkeypatch):
-    """Present but unreadable is not the same as absent. The record is the evidence that
-    replaces starting the binary, so an empty or malformed one proves nothing -- and it
-    cannot have come from the writer, which omits the key rather than writing {}."""
+    """A present but unusable runtime record is not the same as an absent one: it proves nothing,
+    and the writer never emits one since it omits the key rather than writing an empty record."""
     install_dir = _install(tmp_path, monkeypatch)
     for damaged in ({}, [], "runtime", {_server_key(install_dir): "not-a-record"}):
         marker = _marker(install_dir)
@@ -306,9 +305,8 @@ def test_the_backfill_records_the_live_bytes_of_a_slim_tree(tmp_path, monkeypatc
 
 
 def test_the_backfill_never_rewrites_a_record_it_did_not_take(tmp_path, monkeypatch):
-    """Added, never corrected. Overwriting a present record with whatever is on disk now
-    would re-bless bytes no run ever hashed -- it would turn the guard into a rubber
-    stamp the first time an update ran over a corrupt tree."""
+    """The backfill only adds missing records and never overwrites one, since re-blessing bytes no
+    run hashed would turn the guard into a rubber stamp."""
     install_dir = _install(tmp_path, monkeypatch)
     recorded = _marker(install_dir)["runtime_files"]
     WHISPER.installed_server_path(install_dir, LINUX).write_bytes(b"replaced-behind-our-back")
@@ -411,9 +409,8 @@ def test_an_upgrade_does_not_re_download_and_settles_under_the_lock(tmp_path, mo
 
 
 def test_a_backfill_that_cannot_hash_writes_nothing(tmp_path, monkeypatch):
-    """A scanner holding whisper-server open, or a tree half-owned by root. An empty
-    record is not evidence, and writing one would fail closed on every later update --
-    which is the re-download loop this whole part exists to prevent."""
+    """A backfill that cannot hash (a scanner holding whisper-server open, or a tree half-owned by
+    root) must write nothing; an empty record would fail closed on every later update."""
     install_dir = _install(tmp_path, monkeypatch)
     _legacy(install_dir)
     fired = {"n": 0}
@@ -444,9 +441,8 @@ def test_a_changed_mtime_alone_does_not_reject(tmp_path, monkeypatch):
 
 
 def test_an_unrecorded_file_appearing_beside_the_payload_does_not_reject(tmp_path, monkeypatch):
-    """A user's own notes, an antivirus quarantine stub, a .bak from a support session.
-    A file that appeared since is not evidence against the install; only a RECORDED file
-    that moved is."""
+    """A file that appeared beside the payload, such as user notes or an antivirus stub, is not
+    evidence against the install; only a recorded file that moved is."""
     install_dir = _install(tmp_path, monkeypatch)
     (WHISPER.runtime_bin_dir(install_dir, LINUX) / "notes.txt").write_text("hello")
     assert _intact(install_dir) is True
@@ -672,9 +668,8 @@ def test_an_unchanged_llama_install_still_takes_the_fast_path(tmp_path, monkeypa
 
 
 def test_a_marker_predating_the_key_is_backfilled_not_re_downloaded(tmp_path, monkeypatch):
-    """An older marker cannot say which bundle it was paired against, so a swap that ALREADY
-    happened is unanswerable from it. Reinstalling to find out would re-download the bundle
-    for every existing user; recording the current pairing makes the NEXT swap detectable."""
+    """A marker predating paired_llama_runtime_id cannot say which bundle it paired with;
+    backfilling the current pairing avoids re-downloads and makes the next swap detectable."""
     install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch)
     assert WHISPER.kept_install_needs_settling(install_dir) is True
     assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is True

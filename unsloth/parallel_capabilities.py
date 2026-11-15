@@ -656,7 +656,6 @@ _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
 _HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
-_MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
 # Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
     "trainer": ("sft",),
@@ -812,7 +811,10 @@ MOE_FAMILIES = (
     "qwen3_moe",
     "qwen3_5_moe",
     "gpt_oss",
+    "deepseek_v2",
     "deepseek_v3",
+    "deepseek_v32",
+    "deepseek_v4",
     "kimi_linear",
     "minimax",
     "minimax_m2",
@@ -882,6 +884,56 @@ _KIMI_EAGER = "eager: remote code, no compiled region"
 # rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
 _MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
 _MINIMAX_EAGER = "eager: block compile not measured for this family"
+# DeepSeek (transformers' DeepseekV2 / V3 / V32 / V4ForCausalLM, fused experts): V2 / V3 MLA (YaRN softmax scale,
+# narrower value heads) on the generic route, V3.2's global DSA indexer top-k and V4's sliding / CSA / HCA sink
+# attention on their own Ulysses forwards; right padded rows, fp64 against one process, every gradient (None vs
+# zero) and one AdamW step. HF checkpointing only. V4 runs eager attention only.
+_DEEPSEEK = "tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference"
+_DEEPSEEK_EAGER = "eager: block compile not measured for this family"
+_DEEPSEEK_CASES = {
+    "deepseek_v2": {
+        "full": "v2_cp2|v2_cp4|v2_dp2cp2|v2_cp2_eager_checkpoint",
+        "lora": "v2_cp2_lora",
+        "lora+experts": "v2_cp2_lora_experts",
+    },
+    "deepseek_v3": {
+        "full": "v3_cp2|v3_cp4|v3_dp2cp2|v3_cp2_eager_checkpoint",
+        "lora": "v3_cp2_lora",
+        "lora+experts": "v3_cp2_lora_experts",
+    },
+    "deepseek_v32": {
+        "full": "v32_cp2|v32_cp4_late_rank_empty|v32_dp2cp2|v32_cp2_sdpa_checkpoint",
+        "lora": "v32_cp2_lora",
+        "lora+experts": "v32_cp2_lora_experts",
+    },
+    "deepseek_v4": {
+        "full": "v4_cp2|v4_cp4_late_rank_empty|v4_dp2cp2|v4_cp2_checkpoint",
+        "lora": "v4_cp2_lora",
+        "lora+experts": "v4_cp2_lora_experts",
+    },
+}
+# Gemma 4: text-only Gemma4ForCausalLM, HF checkpointing only.
+_GEMMA4 = "tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference"
+_GEMMA4_EAGER = "eager: block compile not measured for this family"
+_GEMMA4_CASES = {
+    "full": "moe_cp2|moe_cp2_window9_prompt_masked|moe_cp4|moe_dp2cp2|moe_cp2_eager_checkpoint",
+    "lora": "moe_cp2_lora",
+    "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
+}
+# gpt-oss: eager only (no SDPA path honours the sinks); HF checkpointing only.
+_GPT_OSS = "tests/test_ulysses_gpt_oss.py::test_gpt_oss_cp_matches_fp64_reference"
+_GPT_OSS_EAGER = "eager: block compile not measured for this family"
+_GPT_OSS_CASES = {
+    "full": "cp2|cp2_window9_prompt_masked|cp4|dp2cp2|cp2_checkpoint|cp2_zoo_forward",
+    "lora": "cp2_lora|cp4_lora",
+    "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
+}
+# Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "gpt_oss": ("eager",)}
+_MOE_TEXT_ONLY = {
+    "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
+    "text-only Gemma4ForCausalLM ran",
+}
 # Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
 _MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
@@ -952,13 +1004,28 @@ _MOE_EVIDENCE = {
     )
     * 2
     + (_MINIMAX_EAGER,),
+    **{
+        (family, precision, False, "cp"): (f"{_DEEPSEEK}[{ids}]",) * 2 + (_DEEPSEEK_EAGER,)
+        for family, cases in _DEEPSEEK_CASES.items()
+        for precision, ids in cases.items()
+    },
+    **{
+        ("gemma4", precision, False, "cp"): (f"{_GEMMA4}[{ids}]",) * 2 + (_GEMMA4_EAGER,)
+        for precision, ids in _GEMMA4_CASES.items()
+    },
+    **{
+        ("gpt_oss", precision, False, "cp"): (f"{_GPT_OSS}[{ids}]",) * 2 + (_GPT_OSS_EAGER,)
+        for precision, ids in _GPT_OSS_CASES.items()
+    },
 }
 
 
 # Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 _TP_BLOCKED_FAMILIES = {
+    "deepseek_v2": "multi-head latent attention (MLA, kv_lora_rank)",
     "deepseek_v3": "multi-head latent attention (MLA, kv_lora_rank)",
+    "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
 
@@ -1010,6 +1077,10 @@ def _moe_cells():
                     }
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
+                        if family in _MOE_ATTENTION:
+                            match = {**match, "attention": _MOE_ATTENTION[family]}
+                        if family in _MOE_TEXT_ONLY:
+                            match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
@@ -1022,6 +1093,17 @@ def _moe_cells():
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
                         cells.append(Cell(name, match, *evidence, note = note))
+                        if family in _MOE_TEXT_ONLY:
+                            cells.append(
+                                Cell(
+                                    name + ", multimodal",
+                                    {**match, "multimodal": (True,)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = _MOE_TEXT_ONLY[family],
+                                )
+                            )
                         if mode in ("cp", "fsdp2_cp") and family not in _MOE_UNSLOTH_GC_FAMILIES:
                             cells.append(
                                 Cell(

@@ -299,8 +299,7 @@ _listener_url: Optional[str] = None
 
 
 def internal_endpoint() -> str:
-    """The loopback listener's base URL. Started on first use and kept for the process, so
-    workers spawned under it keep working after the source changes."""
+    """Loopback listener URL, kept for the process so spawned workers survive source changes."""
     global _listener_url
     with _listener_lock:
         if _listener_url is not None:

@@ -176,8 +176,7 @@ def test_lease_timestamp_never_moves_backwards(clock):
     _stream("run-1", token, count = 1)
     ahead, _tokens = runs_db.get_progress("run-1")
 
-    # NTP step / resume from suspend: the wall clock goes backwards. A regressing
-    # lease would age a live run straight into the sweep.
+    # Backwards clock (NTP step, suspend) must not regress the lease or a live run is swept.
     clock.advance_ms(-9 * _MINUTE_MS)
     _stream("run-1", token, count = 1)
     assert runs_db.get_progress("run-1") == (ahead, 2)
@@ -208,8 +207,7 @@ async def test_sweep_reaps_a_run_that_stopped_producing(clock, capture):
     message = studio_db.get_chat_message("thread-1", "assistant-run-1")
     assert message["metadata"]["generationStatus"] == "failed"
     assert message["metadata"]["incomplete"] == {"reason": "interrupted"}
-    # Partial output survives the reap: the point is to release the UI, not to
-    # discard what the model already produced.
+    # Partial output survives the reap, which exists to release the UI, not discard output.
     assert message["content"] == [{"type": "text", "text": "partial answer"}]
     assert [event["type"] for event in runs_db.list_events("run-1")].count("chunk") == 2
     assert capture.names() == ["chat_generation_run_lease_expired"]
@@ -261,8 +259,7 @@ async def test_sweep_cancels_the_wedged_producer(clock, capture):
     _running_run()
     clock.advance_ms(11 * _MINUTE_MS)
     assert await _sweeper(app, timeout_s = 600.0).sweep_once() == ["run-1"]
-    # Settling the row is not enough: a producer parked in the engine still holds
-    # its slot and activity reservation until it is cancelled.
+    # Settling the row is not enough; a parked producer keeps its slot until cancelled.
     assert cancelled == ["run-1"]
 
 
@@ -482,11 +479,8 @@ def test_an_abandoned_sweep_cannot_hold_the_process_open():
 
 @pytest.mark.asyncio
 async def test_stopping_the_sweeper_does_not_spend_the_desktop_exit_budget(monkeypatch):
-    """Desktop force-kills after five seconds, so the sweeper's own budget must be small.
-
-    Letting a parked sweep finish buys nothing: the boot reconcile settles every active
-    run anyway, so this work is redundant at shutdown.
-    """
+    """Desktop force-kills after five seconds, so the sweeper's own budget must be small; letting a
+    parked sweep finish buys nothing since the boot reconcile settles every active run anyway."""
     import time as _time
 
     parked = threading.Event()

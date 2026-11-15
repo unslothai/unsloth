@@ -160,10 +160,9 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Install Playwright browsers
-        # A background step, like the two cache restores after it: all three only
-        # fetch into their own directories, so they run while Install Unsloth does.
-        # The `wait-all` after the llama.cpp check settles them before any step reads
-        # their outputs.
+        # Background step like the two cache restores after it: all three only fetch into their own
+        # directories, so they overlap Install Unsloth; wait-all after the llama.cpp check settles
+        # them before any step reads their outputs.
         id: pw_install
         background: true
         # No --with-deps on Mac: that flag installs Linux apt packages.

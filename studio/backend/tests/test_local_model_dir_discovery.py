@@ -249,8 +249,7 @@ def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_l
 
 @pytest.fixture
 def as_host(monkeypatch):
-    """Simulates a host for the normalizers only; os.name is patched, so such tests must not use
-    tmp_path."""
+    """Simulated host for normalizers only (os.name patched); such tests must avoid tmp_path."""
 
     def _apply(label: str, *, automount: str = "/mnt/"):
         is_wsl = label == "wsl"
@@ -488,8 +487,7 @@ def test_the_ollama_default_is_found_without_the_env(fake_home, monkeypatch):
     ],
 )
 def test_the_modules_import_in_either_order_without_a_cycle(first, second):
-    """Fresh interpreter: a cycle sys.modules already papered over here would not
-    reproduce in-process."""
+    """Fresh interpreter, since sys.modules would hide an import cycle in-process."""
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "import importlib\n"

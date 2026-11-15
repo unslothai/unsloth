@@ -315,8 +315,7 @@ const SentOriginalDialog: FC<
   );
 };
 
-/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
- *  text (a text/* blob); a PDF opens at `page` (1-based). */
+/** Outside any message: pages, markdown or text read on open; a PDF opens at 1-based `page`. */
 export const LocalFileDialog: FC<
   PropsWithChildren<{ name: string; load: () => Promise<Blob>; page?: number }>
 > = ({ children, name, load, page }) => (

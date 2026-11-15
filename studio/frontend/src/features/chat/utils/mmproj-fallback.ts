@@ -60,12 +60,14 @@ export function mmprojLoadNotice(
   };
 }
 
-/** Covers both fallbacks: a CPU-fallback replay can set both, and neither may be dropped. */
+/** Covers both fallbacks: a CPU-fallback replay can set both, and neither may be dropped.
+ *  `placementNote` is information for a load that is otherwise fine, so it never makes the notice a warning. */
 export function loadFallbackNotice(
   baseTitle: string,
   cpuFallbackReason: CpuFallbackReason | null | undefined,
   mmprojFallbackReason: MmprojFallbackReason | null | undefined,
   offloadNotice?: { titleSuffix: string; description: string } | null,
+  placementNote?: string | null,
 ): { title: string; description: string | undefined; degraded: boolean } {
   const textOnly = isTextOnlyMmprojFallback(mmprojFallbackReason);
   const offload = cpuFallbackReason ? null : (offloadNotice ?? null);
@@ -91,6 +93,8 @@ export function loadFallbackNotice(
   }
   if (offload) {
     parts.push(offload.description);
+  } else if (!cpuFallbackReason && placementNote) {
+    parts.push(placementNote);
   }
   if (mmprojFallbackReason) {
     parts.push(mmprojFallbackMessage(mmprojFallbackReason));

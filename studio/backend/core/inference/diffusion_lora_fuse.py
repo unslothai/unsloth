@@ -6,7 +6,8 @@
 PEFT runs every adapted layer as ``base(x) + B(A(x)) * scale``: two extra GEMMs per layer on every step. Once the
 same set renders twice, the second render folds ``B @ A * scale`` into the base weights (fp32 add, one rounding to the
 weight dtype) and marks each layer merged, so PEFT's forward runs the base layer alone. The original weights are kept
-on the card when it has ample room (a restore is then a device copy), else in pinned host chunks, and copied back
+on the card when it has ample room (a restore is then a device copy), else in host chunks (pinned on a discrete card,
+only while the host keeps its RAM reserve), and copied back
 before any change, so the weights-only fast path (``set_adapters``) runs on exactly the weights it would have seen
 unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
 
@@ -15,12 +16,17 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .diffusion_manual_cast import lora_compute_dtype
+
 LORA_FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
 BACKUP_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_BACKUP"
+HOST_GUARD_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD"
+POW2_PACK_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_POW2_PACK"
 _DEVICE_BACKUP_MIN_FREE = 8 << 30
 _FUSED_ATTR = "_unsloth_lora_fused"
 _ALIGN = 64
 _CHUNK = 64 << 20  # a power of two: no rounding waste in the pinned host allocator
+_PINNED_CHUNK = 512 << 20
 
 
 def enabled() -> bool:
@@ -61,7 +67,10 @@ def _plan(denoisers: list) -> Optional[list]:
                 for a in active
             ):
                 return None  # DoRA / LoRA bias change more than the weight
-            weight = getattr(layer.get_base_layer(), "weight", None)
+            base = layer.get_base_layer()
+            if lora_compute_dtype(base) is not None:
+                return None  # manual cast: folding into bf16 storage would round the fp32 update
+            weight = getattr(base, "weight", None)
             if (
                 not isinstance(weight, torch.Tensor)
                 or type(weight.data) is not torch.Tensor  # quantised / GGUF / torchao subclasses
@@ -111,30 +120,27 @@ def fuse(
     device = plan[0][2].device
     if any(w.device != device for _l, _a, w in plan):
         return False
-    # Packed into power-of-two chunks: the pinned host allocator rounds every block up to a power of two, so one
-    # slab of the whole backup would hold up to twice its size.
-    places, sizes, used = [], [], _CHUNK
-    for _layer, _active, weight in plan:
-        nbytes = -(-weight.numel() * weight.element_size() // _ALIGN) * _ALIGN
-        if nbytes > _CHUNK:
-            places.append((len(sizes), 0))
-            sizes.append(nbytes)
-            used = _CHUNK
-            continue
-        if used + nbytes > _CHUNK:
-            sizes.append(_CHUNK)
-            used = 0
-        places.append((len(sizes) - 1, used))
-        used += nbytes
+    nbytes_list = [-(-w.numel() * w.element_size() // _ALIGN) * _ALIGN for _l, _a, w in plan]
+    places, sizes = _layout(nbytes_list, pow2 = False)
     total = sum(sizes)
     on_device = _backup_on_device(device, total)
+    pin = False if on_device else _host_backup_pinned(device)
+    if pin and _pow2_pack_enabled():
+        # pinned allocator rounds every block up to a power of two: charge what it really holds
+        places, sizes = _layout(nbytes_list, pow2 = True)
+        total = sum(sizes)
+    if not on_device and not _host_backup_fits(total):
+        if logger is not None:
+            logger.info(
+                "diffusion.lora_fuse: a %d MiB host backup would cut into the host RAM reserve, staying unfused",
+                total >> 20,
+            )
+        return False
     try:
         if on_device:
             chunks = [torch.empty(n, dtype = torch.uint8, device = device) for n in sizes]
         else:
-            chunks = [
-                torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes
-            ]
+            chunks = [torch.empty(n, dtype = torch.uint8, pin_memory = pin) for n in sizes]
     except Exception:  # noqa: BLE001 - no room for the backup: stay unfused
         return False
     entries = []
@@ -169,6 +175,40 @@ def fuse(
     return True
 
 
+def _pow2_pack_enabled() -> bool:
+    return (os.environ.get(POW2_PACK_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _layout(nbytes_list: list, pow2: bool) -> tuple:
+    """(chunk, offset) per weight and chunk sizes. ``pow2``: largest-first into power-of-two chunks (pinned memory)."""
+    places, sizes = [None] * len(nbytes_list), []
+    if not pow2:
+        used = _CHUNK
+        for i, nbytes in enumerate(nbytes_list):
+            if nbytes > _CHUNK:
+                places[i] = (len(sizes), 0)
+                sizes.append(nbytes)
+                used = _CHUNK
+                continue
+            if used + nbytes > _CHUNK:
+                sizes.append(_CHUNK)
+                used = 0
+            places[i] = (len(sizes) - 1, used)
+            used += nbytes
+        return places, sizes
+    used = []
+    for i in sorted(range(len(nbytes_list)), key = lambda j: -nbytes_list[j]):
+        nbytes = nbytes_list[i]
+        ci = next((c for c in range(len(sizes)) if used[c] + nbytes <= sizes[c]), None)
+        if ci is None:
+            ci = len(sizes)
+            sizes.append(max(_PINNED_CHUNK, 1 << (nbytes - 1).bit_length()))
+            used.append(0)
+        places[i] = (ci, used[ci])
+        used[ci] += nbytes
+    return places, [1 << (u - 1).bit_length() for u in used]
+
+
 def _restore(entries: list) -> None:
     import torch
     with torch.no_grad():
@@ -193,6 +233,35 @@ def _backup_on_device(device: Any, nbytes: int) -> bool:
     except Exception:  # noqa: BLE001 - unreadable: the host
         return False
     return int(free) - int(nbytes) >= max(_DEVICE_BACKUP_MIN_FREE, int(total) // 4)
+
+
+def _host_guard_enabled() -> bool:
+    return (os.environ.get(HOST_GUARD_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _host_backup_pinned(device: Any) -> bool:
+    """Pinned only on a discrete card: an integrated GPU's memory is this RAM (host_pinning)."""
+    if device.type != "cuda":
+        return False
+    if not _host_guard_enabled():
+        return True
+    from .host_pinning import host_pinning_allowed
+
+    return host_pinning_allowed(device)
+
+
+def _host_backup_fits(nbytes: int) -> bool:
+    """Leaves the small-host reserve of RAM free; an unreadable host keeps the allocation."""
+    if not _host_guard_enabled():
+        return True
+    try:
+        from .diffusion_small_host import host_ram_mib, host_reserve_mib
+        total_mib, available_mib = host_ram_mib()
+    except Exception:  # noqa: BLE001 - unreadable: keep the allocation
+        return True
+    if available_mib is None:
+        return True
+    return int(nbytes) + (host_reserve_mib(total_mib) << 20) <= int(available_mib) << 20
 
 
 def _sync(device: Any) -> None:

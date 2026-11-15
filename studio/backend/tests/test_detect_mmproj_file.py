@@ -42,8 +42,7 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 
 
 def _touch(path: Path) -> Path:
-    """A headerless GGUF: selection falls to the filename, but non-empty since zero bytes now
-    means an interrupted download."""
+    """Headerless GGUF stub, non-empty since zero bytes now means an interrupted download."""
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0" * 32)
     return path
@@ -372,8 +371,7 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
 
 
 def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
-    """Disjoint-root widening must not recurse into sibling quants; a foreign projector then wins
-    the tie."""
+    """Root widening must not enter sibling quants, or a foreign projector wins the tie."""
     snapshot = tmp_path / "snapshots" / "rev"
     weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
     mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
@@ -386,8 +384,7 @@ def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_pat
 
 
 def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
-    """The ancestor walk must still reach a root-level projector without foreign quants winning on
-    prefix."""
+    """Ancestor walk must reach root-level projectors; foreign quants must not win on prefix."""
     snapshot = tmp_path / "snapshots" / "rev"
     weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
     root_level = _touch(snapshot / "mmproj-F16.gguf")
@@ -407,8 +404,7 @@ def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
 
 
 def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path):
-    """One assets/ dir serves every Hermes download, so it fills with projectors for
-    different families. The family gate must keep picking the right one."""
+    """Shared assets/ holds many families' projectors; the family gate picks the right one."""
     model = _touch(tmp_path / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
     gemma = _touch(tmp_path / "assets" / "mmproj-gemma-4-26B-A4B-it-BF16.gguf")
@@ -416,9 +412,8 @@ def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path)
 
 
 def test_assets_holding_two_same_family_projectors_pairs_by_name(tmp_path: Path):
-    """Two Qwen downloads share one assets/ dir. Without header metadata both projectors
-    survive the family gate, so the name tie-break has to read past the mmproj- marker;
-    comparing raw stems ties at zero and the shorter name (the wrong model) won."""
+    """Without header metadata, same-family projectors survive the gate, so the name tie-break must
+    skip the mmproj- marker; raw stems tie and the shorter, wrong name wins."""
     model = _touch(tmp_path / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
     mine = _touch(tmp_path / "assets" / "mmproj-Qwen3.6-35B-A3B-BF16.gguf")

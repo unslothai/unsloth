@@ -158,6 +158,31 @@ export function isThreadOwnedSettingKey(key: string): boolean {
   );
 }
 
+// Derived from permissionMode, so they must travel with it (codeToolsOn reads the last).
+const PERMISSION_MIRROR_KEYS = [
+  "confirmToolCalls",
+  "bypassPermissions",
+  "chatFullAccessPreviousMode",
+  "codeToolsDeclinedUnderFullAccess",
+] as const;
+
+/** `live` with `own`'s thread-scoped settings and permission mirrors; the model fields stay live. */
+export function withRunThreadScopedSettings<T extends { params: object }>(
+  live: T,
+  own: T,
+): T {
+  const source = own as unknown as Record<string, unknown>;
+  const ownParams = own.params as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...live.params };
+  const next: Record<string, unknown> = { ...live, params };
+  for (const key of THREAD_SCOPED_SETTING_KEYS) {
+    if (isThreadScopedParamKey(key)) params[key] = ownParams[key];
+    else next[key] = source[key];
+  }
+  for (const key of PERMISSION_MIRROR_KEYS) next[key] = source[key];
+  return next as T;
+}
+
 // The patch model is extra="forbid", so one bad field would 400 the whole write.
 export function sanitizeThreadScopedSettings(
   value: unknown,

@@ -17,6 +17,8 @@ _FP16_MAX = 65504.0
 RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "native": None,
     "rescale_post_norm": (16.0, 128.0),
+    # FLUX.3 residual reaches ~1e7: whole stream at 1/1024, LayerNorm eps by 1/1024^2.
+    "rescale_residual": (1024.0, 1024.0),
 }
 
 
@@ -40,6 +42,16 @@ _RECIPE_TOKENS: dict[str, tuple[str, ...]] = {
         "self.w2(",
         "self.w3(",
         "norm_q",
+    ),
+    "rescale_residual": (
+        "self.context_embedder(encoder_hidden_states)",
+        'self.x_embedders["image"](hidden_states)',
+        "return hidden_states + mod_gate * (attn_output + ff_output)",
+        "encoder_hidden_states = encoder_hidden_states + c_mod_gate * context_output",
+        "hidden_states = hidden_states + mod_gate * content_output",
+        "x = self.gate_fn(x[..., :half]) * x[..., half:]",
+        "return self.norm(hidden_states) * (1 + scale) + shift",
+        "attn.norm_q(query.float())",
     ),
 }
 _SUPPORTED: dict[tuple[str, str], bool] = {}
@@ -157,6 +169,122 @@ def _block_sites(block: Any) -> Optional[tuple[Any, ...]]:
     return attn, ffn, norms[0], norms[1]
 
 
+def _scale_output_hook(inv: float):
+    def hook(module, args, output):
+        return output * inv
+
+    return hook
+
+
+def _scale_input_hook(inv: float):
+    def hook(module, args):
+        return (args[0] * inv, *args[1:]) if args else None
+
+    return hook
+
+
+def _compiling() -> bool:
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001 - no torch.compiler: eager
+        return False
+
+
+def _bias_free(*linears: Any) -> bool:
+    return all(lin is not None and getattr(lin, "bias", None) is None for lin in linears)
+
+
+def _residual_block_sites(block: Any) -> Optional[tuple[Any, ...]]:
+    """(norm, attn, act_fn) of a FLUX.3 mode / joint block, whose residual update is gate * (attn + ff)."""
+    norm, attn, ff = (getattr(block, n, None) for n in ("norm", "attn", "ff"))
+    if norm is None or attn is None or ff is None:
+        return None
+    to_out = getattr(attn, "to_out", None)
+    act = getattr(ff, "act_fn", None)
+    if to_out is None or act is None or not hasattr(ff, "linear_in"):
+        return None
+    try:
+        out_proj = to_out[0]
+    except (TypeError, IndexError):
+        return None
+    if not _bias_free(attn.to_q, attn.to_k, attn.to_v, out_proj, getattr(ff, "linear_out", None)):
+        return None
+    eps = [
+        getattr(m, "eps", None)
+        for m in (norm, getattr(attn, "norm_q", None), getattr(attn, "norm_k", None))
+    ]
+    if not all(isinstance(e, float) for e in eps):
+        return None
+    return norm, attn, act
+
+
+def _residual_entries(root: Any) -> Optional[list]:
+    """Modules that write the residual stream from the inputs (text and per-mode image projections)."""
+    ctx = getattr(root, "context_embedder", None)
+    xs = getattr(root, "x_embedders", None)
+    if ctx is None or xs is None or not callable(getattr(xs, "values", None)):
+        return None
+    return [ctx, *xs.values()]
+
+
+def _install_rescale_residual(root: Any, scale: float) -> int:
+    """Residual stream at 1/scale: exact via bias-free projections, scale-invariant norms, eps / scale^2."""
+    if root.__dict__.get(_MARK) is not None:
+        return root.__dict__[_MARK][1]
+    entries = _residual_entries(root)
+    final = getattr(getattr(root, "norm_out", None), "norm", None)
+    if (
+        entries is None
+        or not _bias_free(*entries)
+        or not isinstance(getattr(final, "eps", None), float)
+    ):
+        return 0
+    found = [(b, sites) for b in root.modules() if (sites := _residual_block_sites(b)) is not None]
+    if not found:
+        return 0
+    inv = 1.0 / scale
+    eps_scaled = [final]
+    handles = []
+    for _block, (norm, attn, act) in found:
+        eps_scaled += [norm, attn.norm_q, attn.norm_k]
+        handles.append(attn.register_forward_pre_hook(_attention_pre_hook(inv), with_kwargs = True))
+        handles.append(act.register_forward_hook(_scale_output_hook(inv)))
+    for norm in eps_scaled:
+        _scale_eps(norm, inv * inv)
+    # Re-hook whatever sits in the entry slot per call (e.g. a later LoRA wrapper) so the stream is scaled once.
+    entry_hooks: dict[int, Any] = {}
+
+    def sync_entries(
+        module,
+        args,
+        kwargs = None,
+    ):
+        if _compiling():
+            return None
+        current = _residual_entries(root) or []
+        ids = {id(m) for m in current}
+        for key in [k for k in entry_hooks if k not in ids]:
+            entry_hooks.pop(key).remove()
+        for m in current:
+            if id(m) not in entry_hooks:
+                entry_hooks[id(m)] = m.register_forward_pre_hook(_scale_input_hook(inv))
+        return None
+
+    sync_entries(root, ())
+    handles.append(root.register_forward_pre_hook(sync_entries))
+
+    def undo():
+        for handle in (*handles, *entry_hooks.values()):
+            handle.remove()
+        entry_hooks.clear()
+        for norm in eps_scaled:
+            _scale_eps(norm, scale * scale)
+
+    root.__dict__[_MARK] = (undo, len(found))
+    return len(found)
+
+
 def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -> int:
     import types
 
@@ -202,7 +330,10 @@ def install_fp16_guard(
     if not callable(getattr(root, "named_modules", None)):
         return 0
     attn_scale, ffn_scale = scales
-    sites = _install_rescale_post_norm(root, attn_scale, ffn_scale)
+    if recipe == "rescale_residual":
+        sites = _install_rescale_residual(root, attn_scale)
+    else:
+        sites = _install_rescale_post_norm(root, attn_scale, ffn_scale)
     if logger is not None:
         if sites:
             logger.info(
@@ -228,6 +359,10 @@ def remove_fp16_guard(root: Any) -> int:
     for _name, block in root.named_modules():
         mark = block.__dict__.pop(_MARK, None)
         if mark is None:
+            continue
+        if callable(mark[0]):
+            mark[0]()
+            removed += mark[1]
             continue
         attn_scale, ffn_scale, handles = mark
         for handle in handles:

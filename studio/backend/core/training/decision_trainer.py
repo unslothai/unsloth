@@ -158,7 +158,8 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
                 # "Extra data" means the first line parsed, so this is JSONL.
                 if exc.msg != "Extra data":
                     raise _bad_json(path, exc.lineno, exc) from None
-                for number, line in enumerate(text.splitlines(), 1):
+                # LF only: U+2028, U+2029 and U+0085 inside a string are data, not a row end.
+                for number, line in enumerate(text.split("\n"), 1):
                     if not line.strip():
                         continue
                     try:

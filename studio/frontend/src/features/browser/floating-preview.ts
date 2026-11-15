@@ -154,9 +154,9 @@ function boxIn(room: Room, intent: Geometry): Box {
   };
 }
 
-function intentOf(room: Box, box: Box): Geometry {
+function intentOf(room: Box, box: Box, snap = RIGHT_SNAP_PX): Geometry {
   const left = box.left - room.left;
-  const anchored = room.width - box.width - left <= RIGHT_SNAP_PX;
+  const anchored = room.width - box.width - left <= snap;
   return {
     left: anchored ? null : left,
     top: box.top - room.top,
@@ -385,6 +385,7 @@ export function nudgeFloating(event: ReactKeyboardEvent<HTMLElement>): void {
   const start = currentBox(room);
   const next = resized(start, edge, delta.dx * step, delta.dy * step, room);
   paint(surface, next);
-  writeGeometry(intentOf(room, next));
+  // No snap: a key step equals it, so the window could never leave the right edge.
+  writeGeometry(intentOf(room, next, 0));
   announceMove();
 }

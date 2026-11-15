@@ -72,8 +72,13 @@ test("a quant without a menu keeps its slot so gears line up", () => {
     picker,
     /const reserveMenuSlot = \(displayVariants \?\? \[\]\)\.some\(variantHasMenu\);/,
   );
+  // The slot is held inside SavedRunSettingsMenu, which shows Reset there once settings are saved.
   assert.match(
     picker,
-    /\{!variantHasMenu\(v\) && reserveMenuSlot && \(\s*<span className="size-5 shrink-0" aria-hidden=\{true\} \/>\s*\)\}\s*\{variantHasMenu\(v\) && \(\s*<ModelRowMenu/,
+    /\{!variantHasMenu\(v\) && \(\s*<SavedRunSettingsMenu[^/]*reserveSlot=\{reserveMenuSlot\}\s*\/>\s*\)\}\s*\{variantHasMenu\(v\) && \(\s*<ModelRowMenu/,
+  );
+  assert.match(
+    picker,
+    /return reserveSlot \? \(\s*<span className="size-5 shrink-0" aria-hidden=\{true\} \/>\s*\) : null;/,
   );
 });

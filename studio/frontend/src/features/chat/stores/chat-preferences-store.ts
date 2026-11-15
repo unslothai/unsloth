@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { adoptCurrentDraft } from "../utils/composer-draft.ts";
 import { persist } from "zustand/middleware";
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
@@ -26,6 +27,8 @@ import {
 } from "../lib/live-generation-stats.ts";
 
 export interface ChatPreferencesState {
+  shareComposerDraft: boolean;
+  setShareComposerDraft: (value: boolean) => void;
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
   showContextWindowUsage: boolean;
@@ -64,7 +67,7 @@ export interface ChatPreferencesState {
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
   setFilesPanelCollapsed: (value: boolean) => void;
-  /** New chat composer height, 0 (top) to 100 (docked at the bottom); 50 is the middle. */
+  /** New chat composer height, 0 (top) to 100 (docked at the bottom). */
   newChatComposerPosition: number;
   setNewChatComposerPosition: (value: number) => void;
   showTurnNavigation: boolean;
@@ -74,12 +77,14 @@ export interface ChatPreferencesState {
 }
 
 export const COMPOSER_POSITION_MIDDLE = 50;
+// A little above the middle, so a model picker opening down has room under the composer.
+export const COMPOSER_POSITION_DEFAULT = 40;
 export const COMPOSER_POSITION_BOTTOM = 100;
 // Records from the old on/off setting carry only newChatComposerAtBottom.
 export function normaliseComposerPosition(value: unknown, legacyBottom = false): number {
   if (typeof value === "number" && Number.isFinite(value))
     return Math.max(0, Math.min(COMPOSER_POSITION_BOTTOM, Math.round(value)));
-  return legacyBottom ? COMPOSER_POSITION_BOTTOM : COMPOSER_POSITION_MIDDLE;
+  return legacyBottom ? COMPOSER_POSITION_BOTTOM : COMPOSER_POSITION_DEFAULT;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -95,6 +100,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
       ...normalizeComposerPreferences(null),
+      shareComposerDraft: false,
+      setShareComposerDraft: (shareComposerDraft) => set({ shareComposerDraft }),
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
         set({ showContextWindowUsage }),
@@ -141,7 +148,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       filesPanelCollapsed: false,
       setFilesPanelCollapsed: (filesPanelCollapsed) =>
         set({ filesPanelCollapsed }),
-      newChatComposerPosition: COMPOSER_POSITION_MIDDLE,
+      newChatComposerPosition: COMPOSER_POSITION_DEFAULT,
       setNewChatComposerPosition: (value) =>
         set({ newChatComposerPosition: normaliseComposerPosition(value) }),
       showTurnNavigation: true,
@@ -169,6 +176,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         return {
           ...current,
           ...normalizeComposerPreferences(saved),
+          shareComposerDraft: saved?.shareComposerDraft === true,
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
@@ -211,3 +219,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
 );
 
 syncAcrossWindows(useChatPreferencesStore);
+// Here, not in the setter: another window's switch arrives as a rehydrate, which skips setters.
+useChatPreferencesStore.subscribe((state, prev) => {
+  if (state.shareComposerDraft && !prev.shareComposerDraft) adoptCurrentDraft();
+});

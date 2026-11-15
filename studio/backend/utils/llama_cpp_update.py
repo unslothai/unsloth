@@ -61,7 +61,6 @@ class _LlamaPhaseError(RuntimeError):
         self.reload_required = reload_required
 
 
-_JOB_IDLE = _flow.JOB_IDLE
 _JOB_RUNNING = _flow.JOB_RUNNING
 _JOB_SUCCESS = _flow.JOB_SUCCESS
 _JOB_ERROR = _flow.JOB_ERROR
@@ -73,7 +72,6 @@ _job: dict = _flow.new_job()
 _ALREADY_RUNNING_MESSAGE = "Another llama.cpp install is already running."
 
 _utcnow = _flow.utcnow
-_is_under = _flow.is_under
 _is_external_link = _flow.is_external_link
 _rocm_install_args = _flow.rocm_install_args
 
@@ -816,7 +814,7 @@ def _run_llama_phase(
         # A Vulkan asset name carries no arch, so the marker is the only record of the gfx an automatic AMD route used. Automatic only: elsewhere the asset has the arch and replaying it would assert ROCm on a host whose AMD GPU is gone. Advisory even then, applied only if this host's own probe finds none.
         if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
-        _flow.stream_installer(
+        runs_on_cpu = _flow.stream_installer(
             cmd,
             env,
             set_progress = set_progress,
@@ -888,7 +886,17 @@ def _run_llama_phase(
             )
         else:
             message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
+        if runs_on_cpu:
+            logger.warning(
+                "llama update: CUDA runtime missing, llama.cpp runs on the CPU", to_tag = new_tag
+            )
+            message += (
+                " The CUDA runtime llama.cpp needs could not be installed, so it will run on the "
+                "CPU. Use Repair installation in Settings in the desktop app, or re-run the "
+                "Unsloth installer."
+            )
         return {
+            "runs_on_cpu": bool(runs_on_cpu),
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,

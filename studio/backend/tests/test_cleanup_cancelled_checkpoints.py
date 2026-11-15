@@ -31,8 +31,7 @@ def _mk_dir(parent: Path, name: str) -> Path:
 
 
 def test_completed_checkpoints_are_preserved(outputs_setup):
-    """Regression: completed checkpoint-N/ used to be rmtree'd on Cancel,
-    destroying resume points."""
+    """Completed checkpoint-N/ directories are kept on Cancel because they are resume points."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     out = outputs_setup / "run-1"
@@ -83,8 +82,7 @@ def test_non_checkpoint_dirs_left_alone(outputs_setup):
 
 
 def test_output_dir_outside_outputs_root_is_refused(tmp_path, monkeypatch):
-    """Containment check: even if a bug passed an output_dir outside
-    outputs_root, the cleanup must refuse to touch it."""
+    """Even if output_dir lies outside outputs_root, cleanup must refuse to touch it."""
     from core.training import training as training_mod
     from core.training.training import _cleanup_cancelled_checkpoints
 
@@ -104,8 +102,7 @@ def test_output_dir_outside_outputs_root_is_refused(tmp_path, monkeypatch):
 
 
 def test_symlinked_output_dir_skipped(outputs_setup):
-    """A symlinked output_dir is skipped so the realpath check can't be
-    leveraged to delete content via a symlink trick."""
+    """Skip a symlinked output_dir so a symlink cannot steer the realpath containment check."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     real = outputs_setup / "real-run"
@@ -129,8 +126,7 @@ def test_missing_output_dir_is_noop(outputs_setup):
 
 
 def test_symlinked_child_skipped(outputs_setup):
-    """A symlinked tmp-checkpoint-* child must not be deleted, so the
-    realpath bypass cannot redirect rmtree to arbitrary content."""
+    """A symlinked tmp-checkpoint-* child is skipped so rmtree cannot be redirected by a link."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     out = outputs_setup / "run-symchild"

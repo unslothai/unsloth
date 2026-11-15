@@ -21,6 +21,7 @@ import {
   DEFAULT_PRESET_NAME,
   configKey,
   getBuiltinVariantName,
+  hydratedParams,
 } from "./preset-policy";
 import type {
   MediaGenerationKind,
@@ -44,6 +45,8 @@ export interface MediaGenerationPresetsOptions<Params extends object> {
   currentParams: Params;
   applyParams: (params: Params) => Params;
   normalizeParams?: (params: Params) => unknown;
+  // false: reopening loads the active named preset, not unsaved edits.
+  restoreWorkingParams?: boolean;
 }
 
 export function useMediaGenerationPresets<Params extends object>({
@@ -52,6 +55,7 @@ export function useMediaGenerationPresets<Params extends object>({
   currentParams,
   applyParams,
   normalizeParams,
+  restoreWorkingParams = true,
 }: MediaGenerationPresetsOptions<Params>) {
   const paramsKey = useCallback(
     (params: Params) =>
@@ -89,12 +93,14 @@ export function useMediaGenerationPresets<Params extends object>({
   const defaultParamsRef = useRef(defaultParams);
   const applyParamsRef = useRef(applyParams);
   const paramsKeyRef = useRef(paramsKey);
+  const restoreWorkingParamsRef = useRef(restoreWorkingParams);
   useLayoutEffect(() => {
     currentParamsRef.current = currentParams;
     activePresetRef.current = activePreset;
     applyParamsRef.current = applyParams;
     defaultParamsRef.current = defaultParams;
     paramsKeyRef.current = paramsKey;
+    restoreWorkingParamsRef.current = restoreWorkingParams;
   }, [
     activePreset,
     applyParams,
@@ -102,6 +108,7 @@ export function useMediaGenerationPresets<Params extends object>({
     defaultParams,
     hydrated,
     paramsKey,
+    restoreWorkingParams,
   ]);
 
   const presets = useMemo(
@@ -161,7 +168,12 @@ export function useMediaGenerationPresets<Params extends object>({
       baselineParamsRef.current = definition.params;
       setActivePreset(definition.name);
       // Unconditional: the store answers first, then model defaults fill the rest.
-      applyParamsRef.current(settings.currentParams);
+      const restored = hydratedParams(
+        settings.currentParams,
+        definition,
+        restoreWorkingParamsRef.current,
+      );
+      if (restored) applyParamsRef.current(restored);
       setHydrationSource("saved");
     },
     [],

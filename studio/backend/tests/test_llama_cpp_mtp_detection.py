@@ -649,8 +649,7 @@ _FIXED_MTIME_SECOND = 1_700_000_000
 
 
 def _pin_mtime(path: Path, *, nanos: int) -> Path:
-    """Pin a file's mtime `nanos` into one fixed second, so a later rewrite of it
-    differs only below the resolution a whole-second mtime can see."""
+    """Pin mtime into a fixed second plus nanos, so a rewrite differs only sub-second."""
     stamp = _FIXED_MTIME_SECOND * 1_000_000_000 + nanos
     os.utime(path, ns = (stamp, stamp))
     return path
@@ -666,6 +665,7 @@ def _clear_caps_cache():
     with LlamaCppBackend._capability_cache_lock:
         LlamaCppBackend._capability_cache.clear()
         LlamaCppBackend._capability_retry_after.clear()
+        LlamaCppBackend._reasoning_budget_value_cache.clear()
 
 
 @_NEEDS_BASH
@@ -1579,8 +1579,7 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
-# Sub-3B dense models regress with MTP, so load_model uses ngram-mod;
-# reload-skip must mirror that.
+# Sub-3B dense models regress with MTP, so load_model uses ngram-mod; reload-skip must match.
 
 
 def _patch_probe(monkeypatch, ngram_supported):
@@ -1735,9 +1734,7 @@ def _resolver_backend(
 
 
 def _flags_dict(flags):
-    """Parse the spec-flag list into a {flag: value} dict; collapses repeated
-    flags by keeping the last (only --spec-type can repeat, and never does
-    in our resolver)."""
+    """Parses spec flags into a dict; a repeated flag keeps its last value (only --spec-type can repeat)."""
     out = {}
     i = 0
     while i < len(flags):
@@ -1998,8 +1995,7 @@ def test_auto_defaults_to_dspark_when_a_sidecar_is_available(monkeypatch, tmp_pa
 
 
 def test_auto_keeps_mtp_for_a_separate_drafter_model(monkeypatch, tmp_path):
-    """gemma-4-12b-it ships MTP/mtp-*.gguf and no dspark sidecar, so the DSpark
-    branch must not intercept it."""
+    """gemma-4-12b-it ships an MTP drafter, no DSpark sidecar; DSpark must not intercept it."""
     backend = _resolver_backend(monkeypatch)
     drafter = tmp_path / "mtp-gemma-4-12b-it-Q8_0.gguf"
     drafter.write_bytes(b"draft")
@@ -2021,8 +2017,7 @@ def test_auto_keeps_mtp_for_a_separate_drafter_model(monkeypatch, tmp_path):
 
 
 def test_auto_keeps_embedded_mtp(monkeypatch):
-    """Qwen3.5-4B-MTP bakes the head into the main GGUF: no separate file of
-    either kind, so Auto must still emit MTP."""
+    """Qwen3.5-4B-MTP embeds its MTP head in the main GGUF, so Auto must still emit MTP."""
     backend = _resolver_backend(monkeypatch)
     backend._nextn_predict_layers = 1
     flags = backend._build_speculative_flags(
@@ -2112,9 +2107,7 @@ def test_auto_does_not_promote_dspark_on_a_binary_that_cannot_run_it(monkeypatch
 
 
 def test_build_speculative_flags_dspark_engages_under_auto_fit(monkeypatch, tmp_path):
-    """--fit on is not a blocker. The sidecar borrows the target's token_embd and
-    output, so llama.cpp's fit step cannot build a standalone draft context to
-    measure it and skips the reserve; the load itself still gets the drafter."""
+    """--fit on is no blocker: the sidecar borrows target tensors, skips the reserve, and still loads."""
     backend = _resolver_backend(monkeypatch)
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -2902,8 +2895,7 @@ def test_already_in_target_state_reloads_once_the_binary_can_run_the_drafter(
 
 @pytest.mark.parametrize("kind", ["dflash", "dspark", "mtp"])
 def test_already_in_target_state_keeps_deduping_while_the_binary_still_cannot(monkeypatch, kind):
-    """The half that stops this becoming a reload loop: nothing has changed, so the
-    healthy drafterless server has to be left alone."""
+    """Unchanged target: the healthy drafterless server is left alone, not reloaded in a loop."""
     _fake_caps(
         monkeypatch,
         supports_dflash = False,
@@ -3074,11 +3066,7 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 
 @_NEEDS_BASH
 def test_a_code_integrity_block_escalates_the_retry_window(tmp_path, monkeypatch):
-    """Only a confirmed block earns the doubling; a merely loaded machine that
-    times out a few probes and recovers must not inherit that wait. It arrives
-    the way Windows delivers it: subprocess.run returns the NTSTATUS from a
-    loader-killed process rather than raising.
-    """
+    """Only a confirmed block doubles the wait; Windows reports it as a subprocess.run NTSTATUS return."""
     import types as _types
 
     fake = _make_fake_llama_server(
@@ -3216,9 +3204,7 @@ def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkey
 
 @_NEEDS_BASH
 def test_a_conclusive_probe_is_never_expired_by_the_retry_window(tmp_path, monkeypatch):
-    """Only the inconclusive answer is time-bounded. A conclusive one describes the
-    binary, which cannot change while its mtime holds, so applying the retry window to it
-    too would re-run --help forever on a perfectly healthy install (#8317)."""
+    """Only inconclusive probes expire; a conclusive one stays cached while the binary's mtime holds."""
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
         "--spec-type none,draft-mtp,ngram-mod",
@@ -3250,9 +3236,7 @@ def test_a_conclusive_probe_is_never_expired_by_the_retry_window(tmp_path, monke
 
 @_NEEDS_BASH
 def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
-    """The cost half of #8317, stated as the caller sees it. One model load makes seven
-    capability calls; a binary that hangs for a permanent reason must pay the --help
-    timeout once across all of them, not once each."""
+    """A permanently hanging binary pays the --help timeout once per load, not once per capability call."""
     fake = _make_fake_llama_server(tmp_path / "llama-server", "--spec-type none,draft-mtp")
     _clear_caps_cache()
     now = [100.0]
@@ -3273,9 +3257,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 
 @_NEEDS_BASH
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
-    """The found:False early return sits above the cache and costs a stat rather than a
-    subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without an Unsloth restart."""
+    """The found:False return costs a stat, not a subprocess, so it stays uncached for late installs."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 
@@ -3300,9 +3282,8 @@ def _inconclusive_fallback_backend():
 
 
 def _same_settings_apply():
-    """Apply pressed again with the settings the fallback load already used. The identifier
-    has to be the fixture's own, or the reuse check refuses on identity and every assertion
-    below passes without ever reaching the speculative branch."""
+    """Reuse needs the fixture's own identifier, or the check refuses and the speculative branch
+    never runs."""
     return dict(
         model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
         hf_variant = "Q4_K_M",
@@ -3764,3 +3745,84 @@ def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
         reasoning_budget_message = "",
     )
     assert caps["supports_reasoning_budget_value:32"] is True
+
+
+def test_positive_budget_probe_runs_once_per_binary_and_budget(tmp_path, monkeypatch):
+    """Caps are a fresh copy on --fit-target builds: one spawn per (binary, budget, build)."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"v1")
+    monkeypatch.setattr(LlamaCppBackend, "_reasoning_budget_value_cache", {}, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": True,
+                "supports_reasoning_budget_message": True,
+                "supports_fit_target": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda binary: {})
+    )
+    spawned = []
+
+    def _run(cmd, **kwargs):
+        spawned.append(cmd[2])
+        return _types.SimpleNamespace(returncode = 0 if cmd[2] == "512" else 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+
+    def _validate(budget):
+        return LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(binary),
+            extra_args = None,
+            reasoning_budget = budget,
+            reasoning_budget_message = "",
+        )
+
+    for _ in range(3):
+        assert _validate(512)["supports_reasoning_budget_value:512"] is True
+    assert spawned == ["512"]
+    for _ in range(2):
+        with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+            _validate(64)
+    assert spawned == ["512", "64"]
+    binary.write_bytes(b"v2 build")
+    assert _validate(512)["supports_reasoning_budget_value:512"] is True
+    assert spawned == ["512", "64", "512"]
+
+
+def test_positive_budget_probe_error_is_not_remembered(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"v1")
+    monkeypatch.setattr(LlamaCppBackend, "_reasoning_budget_value_cache", {}, raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_reasoning_budget": True}),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda binary: {})
+    )
+    outcomes = [llama_cpp_module.subprocess.TimeoutExpired("llama-server", 10), -11, 0xC0000005, 0]
+
+    def _run(cmd, **kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return _types.SimpleNamespace(returncode = outcome, stdout = "", stderr = "")
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
+    kwargs = dict(extra_args = None, reasoning_budget = 256, reasoning_budget_message = "")
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
+    assert caps["supports_reasoning_budget_value:256"] is True
+    assert outcomes == []

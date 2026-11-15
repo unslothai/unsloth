@@ -29,8 +29,7 @@ export const buttonVariants = cva(
           "hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted aria-expanded:text-foreground",
         // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some themes.
         muted: "bg-muted text-foreground hover:bg-muted/80",
-        // Rebinds --destructive on the button itself, so callers' own text-/bg-destructive
-        // classes land on the same shade.
+        // Rebinds --destructive on the button so callers' destructive classes share its shade.
         destructive:
           "[--destructive:var(--destructive-button)] bg-destructive/10 hover:bg-destructive/15 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 text-destructive focus-visible:border-destructive/40",
         link: "text-foreground underline-offset-4 hover:underline",
@@ -45,8 +44,7 @@ export const buttonVariants = cva(
         "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
-        // Full-window screen actions (startup, update): taller than `lg`.
-        // Height is left to the padding, so the label sets it.
+        // Screen actions (startup, update): taller than `lg`; height comes from the label.
         hero: "h-auto rounded-full px-5 py-2.5",
       },
     },

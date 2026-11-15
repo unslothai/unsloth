@@ -224,8 +224,7 @@ def test_folder_linking_into_hf_cache_is_listed_with_the_repo(collector, tmp_pat
 
 
 def test_flat_folder_inside_an_hf_cache_root_is_found(collector, tmp_path):
-    # oMLX can list the HF cache itself; its flat <publisher>__<model> folders are invisible to
-    # the models--* walk.
+    # Flat publisher__model folders are invisible to the models--* walk; scan them too.
     cache = tmp_path / "hub"
     snapshot = _write_hf_cache_repo(cache, "mlx-community", "Shared-4bit")
     flat = cache / "mlx-community__Shared-4bit"

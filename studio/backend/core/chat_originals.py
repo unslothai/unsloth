@@ -49,8 +49,7 @@ class TooLarge(Exception):
 
 
 def originals_dir() -> Path:
-    """This account's originals folder. Only save() creates it, so a late sweep cannot recreate a
-    deleted account's workspace."""
+    """Only save() creates it, so a late sweep cannot recreate a deleted account's workspace."""
     return account_path("chat-originals")
 
 

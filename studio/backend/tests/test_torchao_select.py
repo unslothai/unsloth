@@ -344,9 +344,8 @@ def test_every_torchao_call_site_asks_for_the_pinned_tag():
 
 
 def test_no_torchao_install_can_resolve_a_dependency():
-    """Both call sites pass --no-deps, for the post-repair one: it runs right after step 13
-    fixed the torch build. No torchao release declares a runtime torch dependency today, so
-    this is hardening that must stay if one ever gains a pin."""
+    """Both call sites pass --no-deps; the post-repair one runs right after step 13 fixed the torch
+    build; no torchao release needs torch today, so keep it if one ever does."""
     body = _torchao_installer_source()
     assert 'args = ["--no-deps", "--no-cache-dir"]' in body
     # --force-reinstall must not be able to widen the install back out.

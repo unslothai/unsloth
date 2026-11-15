@@ -142,12 +142,9 @@ def _rms_layernorm_backward(
     TRAIN_W: tl.constexpr,  # weight grad partials
     FROM_Y: tl.constexpr,  # recompute normed from saved Y
 ):
-    """
-    Fast RMS Layernorm kernel for the backward pass
-    Inspiration from a Triton tutorial:
-    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    TRAIN_W: per-program fp32 dW partials (fla-org/flash-linear-attention layer_norm_bwd_kernel_row).
-    """
+    """Fast RMS layernorm backward kernel, inspired by the Triton layer-norm tutorial; TRAIN_W
+    writes per-program fp32 dW partials, as in fla-org/flash-linear-attention
+    layer_norm_bwd_kernel_row."""
     pid = tl.program_id(0)
     if LONG_INDEXING:
         pid = pid.to(tl.int64)
@@ -256,8 +253,11 @@ def _gemma_rms_layernorm_forward(
 
 @triton.jit
 def _fold_lanes(
-    x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr
-):  # ROWS rows per program, WARPS num_warps of the launch, HALF half of a lane pair
+    x,
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+    HALF: tl.constexpr,  # half of a lane pair
+):
     return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
 
 
@@ -268,8 +268,11 @@ _HIP_ROW_ORDER = tl.constexpr(bool(torch.version.hip))
 
 @triton.jit
 def _row_dot_in_hip_row_order(
-    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
-):  # ROWS rows per program, WARPS num_warps of the launch
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+):
     # Bit-exact replay of the one-row kernels' tl.sum on AMD (WARPS = BLOCK_SIZE // wavefront):
     # fma(a_l, b_l, a_(l-8) * b_(l-8)), row_shr 4, 2, 1, 16-lane rows by lane bit 4 then 5, warps.
     LANES: tl.constexpr = a.shape[1] // WARPS
@@ -292,8 +295,11 @@ def _row_dot_in_hip_row_order(
 
 @triton.jit
 def _row_dot_in_cuda_row_order(
-    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
-):  # ROWS rows per program, WARPS num_warps of the launch
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+):
     # Bit-exact replay of the one-row kernels' tl.sum (4 warps, 64 <= BLOCK_SIZE <= 128):
     # fma(a_l, b_l, a_(l+16) * b_(l+16)), lane xor 8, 4, 2, 1, warp xor 2, 1; explicit steps only.
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
@@ -313,8 +319,11 @@ def _row_dot_in_cuda_row_order(
 
 @triton.jit
 def _row_dot_in_row_kernel_order(
-    a, b, ROWS: tl.constexpr, WARPS: tl.constexpr
-):  # ROWS rows per program, WARPS num_warps of the launch
+    a,
+    b,
+    ROWS: tl.constexpr,  # rows per program
+    WARPS: tl.constexpr,  # num_warps of the launch
+):
     if _HIP_ROW_ORDER:
         total = _row_dot_in_hip_row_order(a, b, ROWS, WARPS)
     else:
@@ -502,8 +511,8 @@ def _rms_sum_dw_partials(
     dW,
     n_programs,
     n_cols,
-    BLOCK_ROWS: tl.constexpr,
-    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per step, BLOCK_COLS columns per program
+    BLOCK_ROWS: tl.constexpr,  # partial rows per step
+    BLOCK_COLS: tl.constexpr,  # columns per program
 ):
     # Fixed tile order, so eager and torch.compile give the same bytes.
     cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)

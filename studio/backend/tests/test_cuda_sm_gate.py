@@ -230,8 +230,7 @@ def _gated_backend(
 
 
 def _drive_load(backend, gguf, **intent_kwargs):
-    """Return (launches, error): a refusal has no launch to point at, so the
-    exception is handed back rather than raised through the harness."""
+    """Returns (launches, error): a refusal has no launch, so it is returned, not raised."""
     launches = []
 
     class _Process:

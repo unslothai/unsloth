@@ -183,9 +183,7 @@ def test_attempts_emptied_by_validation_still_fail_the_run(research_home, monkey
 
 
 def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home, monkeypatch):
-    """`length` is the one finish reason that means the text is unfinished, so size is
-    the wrong tiebreak: picking the longer draft delivered a truncated report, and
-    labelled it incomplete, while a finished one was in hand."""
+    """A length finish is unfinished text, so a complete recovery beats a longer truncated draft."""
     complete = "## Findings\n\nDemand outran supply.\n\n## Conclusion\n\nDone."
 
     finished = _run_synthesis(

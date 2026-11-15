@@ -124,9 +124,8 @@ def test_float8_linear_trains_under_native_fsdp2(tmp_path):
     import torch.multiprocessing as mp
     from test_fsdp2_frozen_dtypes_gloo import _free_port
 
-    # The unsharded reference trains in a fresh process too. Computed in the pytest worker it
-    # inherits whatever earlier tests left there, and in the CPU rest shard that moved its step-4
-    # loss to 5.603441 while the sharded ranks (and a clean process) give 5.603824.
+    # The unsharded reference runs in a fresh process: inside the pytest worker it inherited earlier
+    # tests' state and gave step-4 loss 5.603441 instead of 5.603824 from a clean process.
     ref_out = str(tmp_path / "unsharded_fp8.json")
     mp.spawn(_reference_worker, args = (ref_out,), nprocs = 1, join = True)
     reference = json.load(open(ref_out, encoding = "utf-8"))

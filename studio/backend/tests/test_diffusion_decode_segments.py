@@ -16,14 +16,21 @@ from core.inference import diffusion_vae_oom as O  # noqa: E402
 
 class _FakeTorch:
     def __init__(self, *, segments = (), backend = "native", hip = None, compiling = False, capturing = False,
-                 setter = True, legacy = False, fail = False):  # fmt: skip
+                 setter = True, legacy = False, fail = False, settings = ""):  # fmt: skip
         self.calls = []
+        self.settings = settings
         self.version = types.SimpleNamespace(hip = hip)
+
+        self.expandable = D._conf_keys(settings).get("expandable_segments") == "true"
 
         def set_settings(value):
             if fail:
                 raise RuntimeError("refused")
             self.calls.append(value)
+            self.settings = value
+            flag = D._conf_keys(value).get("expandable_segments")
+            if flag is not None:
+                self.expandable = flag == "true"
 
         c = types.SimpleNamespace()
         if setter:
@@ -34,7 +41,16 @@ class _FakeTorch:
         self.cuda = types.SimpleNamespace(
             is_current_stream_capturing = lambda: capturing,
             memory_snapshot = lambda: [dict(s) for s in segments],
-            memory = types.SimpleNamespace(get_allocator_backend = lambda: backend),
+            memory = types.SimpleNamespace(
+                get_allocator_backend = lambda: backend,
+                _snapshot = lambda: {
+                    "segments": [dict(s) for s in segments],
+                    "allocator_settings": {
+                        "PYTORCH_CUDA_ALLOC_CONF": self.settings,
+                        "expandable_segments": self.expandable,
+                    },
+                },
+            ),
         )
 
 
@@ -82,13 +98,70 @@ def test_flips_on_for_the_decode_and_back_off(fresh):
     fake = fresh(_FakeTorch())
     inside = _decode(_vae(), fake)
     assert inside == ["expandable_segments:True"]
-    assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
+    assert fake.settings == ""
 
 
 def test_legacy_setter_on_older_torch(fresh):
     fake = fresh(_FakeTorch(legacy = True))
     _decode(_vae(), fake)
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
+
+
+def test_explicit_off_is_restored_as_it_was(fresh):
+    fake = fresh(_FakeTorch(settings = "expandable_segments:False"))
+    _decode(_vae(), fake)
     assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.settings == "expandable_segments:False"
+
+
+@pytest.mark.parametrize(
+    "live",
+    [
+        "expandable_segments:True",  # opted in at runtime before any expandable segment exists
+        "expandable_segments:True,pinned_num_register_threads:1",
+        "max_split_size_mb:128,garbage_collection_threshold:0.6",  # a set would reset these
+        "expandable_segments:False,max_split_size_mb:128",
+    ],
+)
+def test_runtime_allocator_settings_are_left_alone(fresh, live):
+    fake = fresh(_FakeTorch(settings = live))
+    _decode(_vae(), fake)
+    assert fake.calls == [] and fake.settings == live
+
+
+def test_a_runtime_opt_in_after_an_engaged_decode_is_kept(fresh):
+    fake = fresh(_FakeTorch())
+    vae = _vae()
+    _decode(vae, fake)
+    fake.calls.clear()
+    fake.settings, fake.expandable = "expandable_segments:True", True
+    _decode(vae, fake)
+    assert fake.calls == [] and fake.settings == "expandable_segments:True"
+
+
+def test_segments_an_earlier_decode_left_do_not_stop_the_next(fresh):
+    # The flag is read live, so expandable segments still cached from the last scope are not "already on".
+    fake = fresh(_FakeTorch(segments = [{"is_expandable": True}]))
+    vae = _vae()
+    _decode(vae, fake)
+    _decode(vae, fake)
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""] * 2
+
+
+def test_a_flag_left_on_by_an_earlier_string_is_kept(fresh):
+    # "expandable_segments:True" then "" leaves the flag on with an empty string: only the live flag shows it
+    fake = fresh(_FakeTorch())
+    fake.expandable = True
+    _decode(_vae(), fake)
+    assert fake.calls == [] and fake.expandable is True
+
+
+def test_unreadable_live_settings_never_engage(fresh):
+    fake = fresh(_FakeTorch())
+    fake.cuda.memory._snapshot = lambda: {"segments": []}
+    _decode(_vae(), fake)
+    assert fake.calls == []
 
 
 def test_nested_decodes_flip_once(fresh):
@@ -98,7 +171,7 @@ def test_nested_decodes_flip_once(fresh):
         with D.expandable_decode(vae, _cuda_z()):
             assert fake.calls == ["expandable_segments:True"]
         assert fake.calls == ["expandable_segments:True"]
-    assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
 
 
 def test_restores_after_a_failing_decode(fresh):
@@ -106,13 +179,12 @@ def test_restores_after_a_failing_decode(fresh):
     with pytest.raises(ValueError):
         with D.expandable_decode(_vae(), _cuda_z()):
             raise ValueError("decode failed")
-    assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
 
 
 @pytest.mark.parametrize(
     "fake_kwargs",
     [
-        {"segments": [{"is_expandable": True}]},  # already on process-wide
         {"backend": "cudaMallocAsync"},
         {"hip": "6.4"},
         {"compiling": True},
@@ -147,12 +219,12 @@ def test_bare_expandable_true_export_after_init_still_engages(fresh, monkeypatch
     monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:True")
     fake = fresh(_FakeTorch(segments = [{"is_expandable": False}]))
     _decode(_vae(), fake)
-    assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
 
 
 def test_kill_switch_and_opt_in(fresh, monkeypatch):
     fake = fresh(_FakeTorch())
-    _decode(_Vae(), fake)  # not opted in: video and other VAEs
+    _decode(_Vae(), fake)
     assert fake.calls == []
     vae = _vae()
     monkeypatch.setenv(D.DECODE_EXPANDABLE_ENV, "0")
@@ -238,8 +310,64 @@ def test_oom_scope_wraps_the_whole_decode(fresh):
     z = _cuda_z()
     assert vae.decode(z) is z
     assert vae.during == [["expandable_segments:True"]]
-    assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""]
     O.uninstall(vae)
+
+
+def _real_live():
+    try:
+        return torch.cuda.memory._snapshot()["allocator_settings"]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@pytest.mark.skipif(
+    _real_live() is None or D._setter(torch) is None,
+    reason = "torch build without the CUDA allocator settings",
+)
+@pytest.mark.parametrize(
+    "first, live, engages",
+    [
+        (None, "", True),
+        (None, "expandable_segments:False", True),
+        (None, "max_split_size_mb:128,garbage_collection_threshold:0.6", False),
+        (
+            None,
+            "expandable_segments:True",
+            False,
+        ),
+        (
+            "expandable_segments:True",
+            "",
+            False,
+        ),
+    ],
+)
+def test_real_allocator_settings_come_back_exactly(fresh, first, live, engages):
+    """torch's own setter and live settings (they parse on a GPU-less CUDA build too); only the CUDA probes are faked."""
+    real_set = D._setter(torch)
+    before = _real_live()
+    fake = _FakeTorch()
+    fake._C = types.SimpleNamespace(_accelerator_setAllocatorSettings = real_set)
+    fake.cuda.memory._snapshot = lambda: {"segments": [], "allocator_settings": _real_live()}
+    fresh(fake)
+    try:
+        real_set("expandable_segments:False")
+        if first is not None:
+            real_set(first)
+        real_set(live)
+        want = dict(_real_live())
+        engaged = D.STATS["engaged"]
+        _decode(_vae(), fake)
+        assert dict(_real_live()) == want
+        assert D.STATS["engaged"] - engaged == int(engages)
+    finally:
+        real_set(
+            "expandable_segments:True"
+            if before["expandable_segments"]
+            else "expandable_segments:False"
+        )
+        real_set(before["PYTORCH_CUDA_ALLOC_CONF"])
 
 
 _real_gpu = torch.cuda.is_available() and sys.platform.startswith("linux")
@@ -291,3 +419,60 @@ def test_cuda_device_maps_the_decode_into_an_expandable_segment(monkeypatch):
     after = torch.empty(80 << 20, dtype = torch.uint8, device = "cuda")
     assert not expandable(after)
     del inside, after
+
+
+@pytest.mark.skipif(
+    not (_real_gpu and not getattr(torch.version, "hip", None))
+    or not D._platform_ok()
+    or D._allocator_configured(),
+    reason = "Linux CUDA device with the default allocator only",
+)
+def test_cuda_device_keeps_a_runtime_opt_in_and_restores_the_settings(monkeypatch):
+    monkeypatch.setattr(D, "_usable", None)
+    monkeypatch.setattr(D, "_depth", 0)
+    torch.cuda.init()
+    before = torch.cuda.memory._snapshot()["allocator_settings"]
+    vae = _Vae()
+    D.enable(vae)
+    z = torch.zeros(1, device = "cuda")
+    try:
+        D._setter(torch)("expandable_segments:True")
+        with D.expandable_decode(vae, z):
+            pass
+        assert torch.cuda.memory._snapshot()["allocator_settings"]["expandable_segments"] is True
+        D._setter(torch)("expandable_segments:False")
+        D._setter(torch)("garbage_collection_threshold:0.6")
+        live = dict(torch.cuda.memory._snapshot()["allocator_settings"])
+        with D.expandable_decode(vae, z):
+            pass
+        assert dict(torch.cuda.memory._snapshot()["allocator_settings"]) == live
+    finally:
+        D._setter(torch)(
+            "expandable_segments:True"
+            if before["expandable_segments"]
+            else "expandable_segments:False"
+        )
+        D._setter(torch)(before["PYTORCH_CUDA_ALLOC_CONF"])
+
+
+@pytest.mark.skipif(
+    not (_real_gpu and not getattr(torch.version, "hip", None))
+    or not D._platform_ok()
+    or D._allocator_configured(),
+    reason = "Linux CUDA device with the default allocator only",
+)
+def test_cuda_device_engages_every_decode_not_only_the_first(monkeypatch):
+    monkeypatch.setattr(D, "_usable", None)
+    monkeypatch.setattr(D, "_depth", 0)
+    torch.cuda.init()
+    if torch.cuda.memory._snapshot()["allocator_settings"]["expandable_segments"]:
+        pytest.skip("expandable segments already on in this process")
+    vae = _Vae()
+    D.enable(vae)
+    z = torch.zeros(1, device = "cuda")
+    engaged = D.STATS["engaged"]
+    for _ in range(3):
+        with D.expandable_decode(vae, z):
+            held = torch.empty(64 << 20, dtype = torch.uint8, device = "cuda")
+            del held
+    assert D.STATS["engaged"] - engaged == 3

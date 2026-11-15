@@ -752,3 +752,17 @@ test("the title budget is floored at the provider's minimum output", async () =>
     assert.equal(request?.max_tokens, expected, model);
   }
 });
+
+test("a Custom connection that cannot turn thinking off leaves room for it (#17332)", async () => {
+  const budget = async (overrides: Record<string, unknown>) => {
+    stageConnection({ providerType: "custom", models: ["qwen3"], ...overrides });
+    return (await buildTitleRequest("external::conn-1::qwen3", "x"))?.max_tokens;
+  };
+  assert.equal(await budget({}), 1024);
+  assert.equal(await budget({ reasoningConfig: { enabled: false, style: "reasoning_effort" } }), 1024);
+  // An enabled dialect sends thinking off, so the plain cap stands.
+  assert.equal(await budget({ reasoningConfig: { enabled: true, style: "chat_template_kwargs.enable_thinking" } }), 64);
+  for (const providerType of ["llama_cpp", "vllm", "ollama"]) {
+    assert.equal(await budget({ providerType }), 64, providerType);
+  }
+});

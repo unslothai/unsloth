@@ -20,6 +20,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_server_command,
     build_vid_gen_request,
     h3_server_eligible,
+    sd_cli_frame_files,
 )
 from core.inference.sd_cpp_engine import SdCppCancelled
 from core.inference.sd_cpp_server import SdCppServerUnsupported
@@ -94,14 +95,45 @@ def test_vid_gen_request_carries_keyframes_and_rejects_mixing_with_references():
         build_vid_gen_request(_params(), images_b64 = {"init_image": "AAA"}, ref_images_b64 = ["BBB"])
 
 
-def test_reference_video_and_audio_stay_on_the_cli():
+def test_reference_video_and_audio_need_inline_bytes():
     assert h3_server_eligible(_params()) is True
     assert h3_server_eligible(_params(ref_images = ("/r.png",))) is True
     for field in ("ref_videos", "ref_video_audios", "ref_audios"):
         params = _params(**{field: ("/r",)})
         assert h3_server_eligible(params) is False
+        assert h3_server_eligible(params, server_refs = True) is True
         with pytest.raises(ValueError):
             build_vid_gen_request(params)
+
+
+def test_vid_gen_request_carries_reference_video_and_audio():
+    params = _params(
+        ref_videos = ("/v0", "/v1"), ref_video_audios = ("/a0.wav",), ref_audios = ("/s.wav",)
+    )
+    req = build_vid_gen_request(
+        params,
+        ref_videos_b64 = [["F0", "F1"], ["G0"]],
+        ref_video_audios_b64 = ["A0"],
+        ref_audios_b64 = ["S"],
+    )
+    assert req["ref_videos"] == [["F0", "F1"], ["G0"]]
+    assert req["ref_video_audios"] == ["A0"]
+    assert req["ref_audios"] == ["S"]
+    with pytest.raises(ValueError, match = "cannot be combined"):
+        build_vid_gen_request(
+            _params(ref_audios = ("/s.wav",)), images_b64 = {"init_image": "AAA"}, ref_audios_b64 = ["S"]
+        )
+
+
+def test_frame_files_follow_the_cli_reader(tmp_path):
+    for name in ("00001.png", "00000.png", "00002.JPG", "notes.txt", "00003.gif"):
+        (tmp_path / name).write_bytes(name.encode())
+    (tmp_path / "sub.png").mkdir()
+    assert [Path(p).name for p in sd_cli_frame_files(str(tmp_path))] == [
+        "00000.png",
+        "00001.png",
+        "00002.JPG",
+    ]
 
 
 def test_server_command_passes_the_audio_vae():
@@ -186,9 +218,15 @@ class _FakeServer:
         self.alive_after = alive_after
         self.payloads = []
         self._alive = True
+        self.ref_features = True
+        self.feature_queries = []
 
     def is_alive(self):
         return self._alive
+
+    def vid_gen_accepts(self, features):
+        self.feature_queries.append(tuple(features))
+        return self.ref_features
 
     def vid_gen(
         self,
@@ -327,12 +365,75 @@ def test_no_slot_or_kill_switch_or_reference_video_uses_the_cli(tmp_path, monkey
     assert _render(slot, tmp_path) is None
     assert slot.stopped == 1
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV)
+    monkeypatch.setenv("UNSLOTH_H3_SERVER_REFS", "0")
     server = _FakeServer()
     slot = _FakeSlot(server)
     assert _render(slot, tmp_path, _params(ref_videos = ("/frames",))) is None
     assert server.payloads == []
     # sd-cli reloads the whole model: a resident copy must not sit beside it.
     assert slot.released and slot.got == []
+
+
+def _staged_refs(tmp_path):
+    frames = tmp_path / "ref-video-00"
+    frames.mkdir()
+    for name in ("00001.png", "00000.png"):
+        (frames / name).write_bytes(name.encode())
+    (tmp_path / "va.wav").write_bytes(b"RIFF-VA")
+    (tmp_path / "a.wav").write_bytes(b"RIFF-A")
+    return _params(
+        ref_videos = (str(frames),),
+        ref_video_audios = (str(tmp_path / "va.wav"),),
+        ref_audios = (str(tmp_path / "a.wav"),),
+    )
+
+
+def test_reference_video_and_audio_render_on_the_resident_server(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_SERVER_REFS", raising = False)
+    server = _FakeServer(data = b"AVI-REF")
+    slot = _FakeSlot(server)
+    out = _render(slot, tmp_path, _staged_refs(tmp_path))
+    assert out.read_bytes() == b"AVI-REF"
+    assert slot.released == [] and len(slot.got) == 1
+    assert server.feature_queries == [("ref_videos", "ref_video_audios", "ref_audios")]
+    payload = server.payloads[0]
+    assert [base64.b64decode(f) for f in payload["ref_videos"][0]] == [b"00000.png", b"00001.png"]
+    assert base64.b64decode(payload["ref_video_audios"][0]) == b"RIFF-VA"
+    assert base64.b64decode(payload["ref_audios"][0]) == b"RIFF-A"
+
+
+def test_server_without_reference_fields_hands_off_to_the_cli(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_SERVER_REFS", raising = False)
+    server = _FakeServer()
+    server.ref_features = False
+    slot = _FakeSlot(server)
+    params = _staged_refs(tmp_path)
+    assert _render(slot, tmp_path, params) is None
+    assert server.payloads == [] and slot.released and slot.refs_unsupported
+    slot.got.clear()
+    assert _render(slot, tmp_path, params) is None
+    assert slot.got == []
+    assert _render(slot, tmp_path) is not None
+
+
+@pytest.mark.parametrize(
+    "caps,expected",
+    [
+        ({"features_by_mode": {"vid_gen": {"ref_videos": True, "ref_audios": True}}}, True),
+        ({"features_by_mode": {"vid_gen": {"ref_videos": True}}}, False),
+        ({"features_by_mode": {"vid_gen": {"init_image": True}}}, False),
+        ({}, False),
+    ],
+)
+def test_vid_gen_accepts_reads_capabilities_once(patched, caps, expected):
+    client = _FakeClient(get = lambda url: _Resp(200, caps))
+    s = _server_with(_FakePopen(), client)
+    assert s.vid_gen_accepts(("ref_videos", "ref_audios")) is expected
+    assert s.vid_gen_accepts(("ref_videos", "ref_audios")) is expected
+    assert client.get_urls == ["http://127.0.0.1:1234/sdcpp/v1/capabilities"]
+    assert s.vid_gen_accepts(()) is True
 
 
 def test_start_failure_falls_back_and_stays_one_shot(tmp_path, monkeypatch):
