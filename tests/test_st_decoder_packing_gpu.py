@@ -51,8 +51,17 @@ def test_qwen3_embedder_packs_like_padded(monkeypatch, side):
         grads = [p.grad.float().clone() for p in model.parameters() if p.grad is not None]
         return out.detach(), grads
 
+    from unsloth.models._sentence_transformer_unpadding import _decoder_config, _packable
+
+    config = _decoder_config(transformer)
+    why = (
+        config.model_type,
+        config._attn_implementation,
+        sorted(features),
+        _packable(transformer, features, {}),
+    )
     packed, packed_grads = embed()
-    assert transformer._unsloth_packed_calls == 1
+    assert transformer._unsloth_packed_calls == 1, why
     monkeypatch.setenv("UNSLOTH_ST_PACKING", "0")
     padded, padded_grads = embed()
     assert transformer._unsloth_packed_calls == 1

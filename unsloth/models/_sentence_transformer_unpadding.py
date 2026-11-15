@@ -251,6 +251,7 @@ def enable_sentence_transformer_unpadding(model, auto = False):
 # needs transformers 5; this covers 4.x and anything it skips. UNSLOTH_ST_PACKING=0 turns it off.
 _PACKED_DECODERS = frozenset({"qwen3", "qwen2", "llama", "mistral"})
 _TOKEN_KEYS = ("input_ids", "attention_mask")
+_HIDDEN = (None, "last_hidden_state", ("last_hidden_state",), ["last_hidden_state"])
 
 
 def _decoder_config(transformer):
@@ -267,9 +268,20 @@ def _packable(transformer, features, kwargs):
         or not transformer.training
         or torch.compiler.is_compiling()
         or os.environ.get("UNSLOTH_ST_PACKING", "1") == "0"
-        or features.get("modality", "text") != "text"
     ):
         return False
+    # Text, or chat-templated text ("message"): a plain forward reading last_hidden_state.
+    modality = features.get("modality", "text")
+    if modality not in ("text", "message"):
+        return False
+    modalities = getattr(transformer, "modality_config", None)
+    if modalities is not None:
+        spec = modalities.get(modality) or {}
+        if (
+            spec.get("method", "forward") != "forward"
+            or spec.get("method_output_name") not in _HIDDEN
+        ):
+            return False
     ids, mask = features.get("input_ids"), features.get("attention_mask")
     if not (
         isinstance(ids, torch.Tensor)
@@ -279,14 +291,9 @@ def _packable(transformer, features, kwargs):
         and mask.shape == ids.shape
     ):
         return False
-    # Any other per-token input (inputs_embeds, position_ids, token_type_ids) keeps the padded batch.
-    for key, value in features.items():
-        if (
-            key not in _TOKEN_KEYS
-            and isinstance(value, torch.Tensor)
-            and value.shape[:2] == ids.shape
-        ):
-            return False
+    # Any other tensor input (position_ids, token_type_ids, pixels) keeps the padded batch.
+    if any(k not in _TOKEN_KEYS and isinstance(v, torch.Tensor) for k, v in features.items()):
+        return False
     config = _decoder_config(transformer)
     if (
         config is None
@@ -338,14 +345,6 @@ def enable_sentence_transformer_decoder_packing(model) -> bool:
     transformer = modules[0]
     if getattr(transformer, "_unsloth_packing_installed", False):
         return True
-    modalities = getattr(transformer, "modality_config", None)
-    if modalities is not None and modalities.get("text", {}).get("method_output_name") not in (
-        None,
-        "last_hidden_state",
-        ("last_hidden_state",),
-        ["last_hidden_state"],
-    ):
-        return False
     if getattr(transformer, "model_forward_params", None) is not None:
         transformer.model_forward_params = set(transformer.model_forward_params) | {"position_ids"}
     transformer._unsloth_original_forward = transformer.forward
