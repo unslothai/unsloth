@@ -2457,7 +2457,12 @@ def _float32_linear_forward(self: Any, x: Any) -> Any:
             x, build_convrot_hadamard(group, device = x.device, dtype = torch.float32), group
         )
     bias = self.bias
-    return F.linear(x, self.weight.float(), None if bias is None else bias.float())
+    out = F.linear(x, self.weight.float(), None if bias is None else bias.float())
+    # q / k / v come out of a norm: bounded, so attention keeps the storage dtype every backend takes
+    return out.to(self.weight.dtype) if getattr(self, "_unsloth_storage_out", False) else out
+
+
+_ATTENTION_INPUTS = (".attn.to_q", ".attn.to_k", ".attn.to_v")
 
 
 FP16_CONTRACT_ATTR = "_unsloth_h3_fp16_contract"
@@ -2467,8 +2472,9 @@ def conditioning_computes_in_float32(transformer: Any) -> int:
     """fp16 runs only (sm75). The conditioning stream outgrows float16: on a real prompt the Qwen3-VL rows peak near
     15k and ``context_embedder`` writes values past 65504 into the refiner's residual stream, so the refined text is
     inf / NaN and the render black. bf16 has the range, float16 does not; the path runs once per render, so it
-    computes in float32 from its float16 storage (each dense Linear upcasts its weight per call, the norms hold
-    float32) and ``refined_text`` hands the block stack its float16 copy. Returns the Linears switched."""
+    computes in float32 from its float16 storage (each dense Linear upcasts its weight per call, the norms that read
+    the stream hold float32) and ``refined_text`` hands the block stack its float16 copy. Attention itself (q / k / v
+    out of a norm, so bounded) stays float16, which every attention backend takes. Returns the Linears switched."""
     import types
 
     import torch
@@ -2482,8 +2488,11 @@ def conditioning_computes_in_float32(transformer: Any) -> int:
             if hasattr(module.weight, "__tensor_flatten__"):
                 continue  # still quantized (UNSLOTH_H3_IMAGE_QUANT_CONDITIONING=1): its own kernel's dtype
             module.forward = types.MethodType(_float32_linear_forward, module)
+            module._unsloth_storage_out = name.endswith(_ATTENTION_INPUTS)
             count += 1
             continue
+        if ".attn." in name:
+            continue  # norm_q / norm_k: read the float16 q / k
         for key, param in list(module.named_parameters(recurse = False)):
             if param.is_floating_point() and param.dtype is not torch.float32:
                 setattr(

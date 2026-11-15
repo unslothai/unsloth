@@ -1187,14 +1187,21 @@ def test_the_hosted_dit_runs_in_fp16_end_to_end_where_the_card_has_no_bf16(
         dtype = torch.float16,
         text_encoder = te.to(torch.float16),
     )
-    seen, refiner = [], []
-    hooks = [
-        block.register_forward_hook(lambda m, i, o: seen.append(o.dtype))
-        for block in pipe.transformer.transformer_blocks
-    ] + [
-        block.register_forward_hook(lambda m, i, o: refiner.append(o.dtype))
-        for block in pipe.transformer.token_refiner.refiner_blocks
-    ]
+    seen, refiner, attn_in = [], [], []
+    hooks = (
+        [
+            block.attn.norm_q.register_forward_hook(lambda m, i, o: attn_in.append(o.dtype))
+            for block in pipe.transformer.token_refiner.refiner_blocks
+        ]
+        + [
+            block.register_forward_hook(lambda m, i, o: seen.append(o.dtype))
+            for block in pipe.transformer.transformer_blocks
+        ]
+        + [
+            block.register_forward_hook(lambda m, i, o: refiner.append(o.dtype))
+            for block in pipe.transformer.token_refiner.refiner_blocks
+        ]
+    )
     try:
         image = pipe(
             prompt = "a cat",
@@ -1219,6 +1226,9 @@ def test_the_hosted_dit_runs_in_fp16_end_to_end_where_the_card_has_no_bf16(
         == torch.float16
     )
     assert dense["token_refiner.final_norm.weight"] == torch.float32
+    # attention keeps float16 (q / k / v out of a norm), which every attention backend takes
+    assert dense["token_refiner.refiner_blocks.0.attn.norm_q.weight"] == torch.float16
+    assert set(attn_in) == {torch.float16}
     assert tr.transformer_blocks[0].adaln_proj._unsloth_adaln_out_dtype == torch.float16
     assert tr._unsloth_stream_scale == h3i.FP16_STREAM_SCALE
     assert image.size == (64, 64) and np.isfinite(np.asarray(image, dtype = np.float32)).all()
