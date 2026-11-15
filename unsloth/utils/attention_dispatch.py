@@ -1360,10 +1360,6 @@ def is_context_parallel_attention(forward, rl = False) -> bool:
     return isinstance(mark, dict) and (not rl or mark["rl"])
 
 
-# flash-attn 2.7+ registers torch custom ops, so its varlen call traces inside a compiled block.
-_FLASH_ATTN_VARLEN_TRACES = flash_attn_varlen_func is not None and hasattr(
-    getattr(torch.ops, "flash_attn", None), "_flash_attn_varlen_forward"
-)
 # compiled: decoder-block calls prepared for a compiled block; eager: packed calls left to the stock forward.
 PACKED_BLOCK_STATS = {"compiled": 0, "eager": 0}
 _PACKED_BLOCK_PREP = [None]
@@ -1430,10 +1426,8 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
     )
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return False
-    backend = select_attention_backend(use_varlen = True)
-    if backend == FLASH_VARLEN and _FLASH_ATTN_VARLEN_TRACES:
-        return True
-    if backend not in (FLASH_VARLEN, SDPA) or head_dim > 256:
+    # FLASH_VARLEN hosts get torch's bundled flash varlen in the graph (the same FA2 kernel).
+    if select_attention_backend(use_varlen = True) not in (FLASH_VARLEN, SDPA) or head_dim > 256:
         return False
     window = getattr(config, "sliding_window", None)
     window = window if isinstance(window, int) and window > 0 else None
@@ -1519,18 +1513,10 @@ def _prepared_packed_attention(config, context, Q, K, V):
     sliding_window = context.sliding_window
     if sliding_window is not None and sliding_window <= 0:
         sliding_window = None
-    if config.backend == FLASH_VARLEN and _FLASH_ATTN_VARLEN_TRACES:
-        Q_f, K_f, V_f = (
-            x.transpose(1, 2).reshape(bsz * q_len, x.shape[1], head_dim) for x in (Q, K, V)
-        )
-        flash_varlen_kwargs = config.flash_varlen_kwargs or {}
-        if not context.is_causal:
-            flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
-        return flash_attn_varlen_func(
-            Q_f, K_f, V_f, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **flash_varlen_kwargs
-        ).view(bsz, q_len, n_heads, head_dim)
     sdpa_kwargs = config.sdpa_kwargs or {}
     scale = sdpa_kwargs.get("scale")
+    if scale is None:
+        scale = (config.flash_varlen_kwargs or {}).get("softmax_scale")
     if (
         context.is_causal
         and context.attention_mask is None
