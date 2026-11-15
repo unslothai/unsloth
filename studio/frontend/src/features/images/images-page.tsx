@@ -277,10 +277,12 @@ import {
   inputImageWord,
   maxAdditionalImages,
   raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
   seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -1937,8 +1939,8 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
-  // build key the Reference size was last raised for (raiseToEditResolution)
-  const [raisedForReference, setRaisedForReference] = useState<string | null>(null);
+  // build key the Reference size was last raised for (raiseToEditResolution), and the Create size it replaced
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -3860,7 +3862,7 @@ export function ImagesPage({
     setAspect(matched.key);
     setPortrait(matched.portrait);
     // re-arm the Reference raise below for the reseeded size
-    setRaisedForReference(null);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -5146,21 +5148,36 @@ export function ImagesPage({
 
   // Reference renders at Width / Height; once per load, raise a size below the family's edit resolution
   // (Qwen-Image-2.1 references at the 1024 area come out over-sharpened and miss the prompt).
+  // Width / Height are shared with Create, so leaving Reference puts back the size the raise replaced unless it was changed.
   const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
-  if (referenceKey !== null && referenceKey !== raisedForReference) {
-    setRaisedForReference(referenceKey);
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
     const raised = raiseToEditResolution(
       width,
       height,
       status?.conditioning?.edit_output_resolution,
       sizeLimits,
     );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width, height, aspect, portrait } : undefined,
+    });
     if (raised) {
       setWidth(raised.width);
       setHeight(raised.height);
       const m = matchAspect(raised.width, raised.height);
       setAspect(m.key);
       setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    // restored: the next Reference visit raises again; kept (changed by hand): the raise stays spent for this load
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
     }
   }
 

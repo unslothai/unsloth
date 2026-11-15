@@ -90,6 +90,25 @@ export function raiseToEditResolution(
   return raised.width * raised.height > width * height ? raised : null;
 }
 
+/** A Reference raise: the build key it ran for, the size it set and the Create size it replaced. */
+export interface ReferenceRaise {
+  key: string;
+  raised?: { width: number; height: number };
+  from?: { width: number; height: number; aspect: string; portrait: boolean };
+}
+
+/** Leaving Reference: the Create size the raise replaced, when Width / Height still read the raised size; null when
+ *  nothing was raised or the size was changed since (the user's own choice stays). */
+export function sizeAfterReference(
+  width: number,
+  height: number,
+  raise: ReferenceRaise | null | undefined,
+): { width: number; height: number; aspect: string; portrait: boolean } | null {
+  if (!raise?.from || !raise.raised) return null;
+  if (width !== raise.raised.width || height !== raise.raised.height) return null;
+  return raise.from;
+}
+
 export const OFFICIAL_2K_PRESETS: ReadonlyArray<{
   label: string;
   width: number;

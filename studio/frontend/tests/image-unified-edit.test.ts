@@ -15,6 +15,7 @@ import {
   restoreInputsNote,
   seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "../src/features/images/edit-conditioning.ts";
@@ -163,6 +164,18 @@ test("Reference raises a size below the family's edit resolution once, keeping t
   assert.equal(raiseToEditResolution(2048, 2048, 2048, limits), null);
   assert.equal(raiseToEditResolution(2400, 1792, 2048, limits), null);
   assert.equal(raiseToEditResolution(1024, 1024, null, limits), null);
+});
+
+test("leaving Reference puts back the Create size the raise replaced, unless it was changed", () => {
+  const from = { width: 1024, height: 1024, aspect: "1:1", portrait: false };
+  const raise = { key: "k", raised: { width: 2048, height: 2048 }, from };
+  // Back on Create with the raised size untouched: the Create size returns.
+  assert.deepEqual(sizeAfterReference(2048, 2048, raise), from);
+  // Changed by hand while on Reference: the user's size stays.
+  assert.equal(sizeAfterReference(1536, 1536, raise), null);
+  // Nothing was raised (the size was already at the edit area, or the family names none).
+  assert.equal(sizeAfterReference(2048, 2048, { key: "k" }), null);
+  assert.equal(sizeAfterReference(1024, 1024, null), null);
 });
 
 test("the request keeps order, drops empty slots and only sends what the model takes", () => {
