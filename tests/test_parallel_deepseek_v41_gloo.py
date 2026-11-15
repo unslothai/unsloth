@@ -400,8 +400,7 @@ def _spawn(
         ]
         for p in procs:
             p.start()
-        # A rank that raised can leave its peers blocked on it: Windows gloo does not see the peer exit, so the
-        # rest would wait out the timeout. Grace period, then stop them.
+        # Windows gloo does not see a failed rank exit: stop the peers after a grace period.
         deadline, failed_at = time.monotonic() + 900, None
         while any(p.is_alive() for p in procs) and time.monotonic() < deadline:
             if failed_at is None and any(p.exitcode not in (None, 0) for p in procs):

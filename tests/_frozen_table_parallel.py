@@ -264,14 +264,13 @@ def _is_dtensor(t):
     return isinstance(t, DTensor)
 
 
-# RssAnon and the fd table are read from /proc: Linux only. Elsewhere they are None and their checks are skipped.
+# /proc is Linux only: elsewhere RssAnon / fd checks read None and are skipped.
 _PROC = os.path.isfile("/proc/self/status")
 
 
 @contextlib.contextmanager
 def cpu_forwards():
-    """CPU forwards on a GPU host take the torch paths: transformers picks FLA / causal-conv1d by import and Unsloth
-    its MoE backend once per process, not by device, and their Triton kernels reject CPU tensors."""
+    """Force torch paths: FLA / causal-conv1d and the MoE backend are picked per process, not device; Triton rejects CPU."""
     undo = []
     try:
         import transformers.models.qwen4_exp.modeling_qwen4_exp as module
@@ -302,7 +301,7 @@ def cpu_forwards():
 
 
 def _clear_moe_backend():
-    # Every copy of moe_utils (Unsloth's compiled cache holds one) caches its own choice.
+    # The compiled cache holds its own moe_utils copy with its own cache.
     for name, mod in list(sys.modules.items()):
         if "moe_utils" not in name or not isinstance(getattr(mod, "__dict__", None), dict):
             continue
