@@ -274,6 +274,8 @@ def _packable(transformer, features, kwargs):
     modality = features.get("modality", "text")
     if modality not in ("text", "message"):
         return False
+    if getattr(transformer, "module_output_name", "token_embeddings") != "token_embeddings":
+        return False
     modalities = getattr(transformer, "modality_config", None)
     if modalities is not None:
         spec = modalities.get(modality) or {}
