@@ -536,9 +536,7 @@ def _strip_client_id_under_basic_auth(auth) -> None:
 
 
 class _RootSlashIssuer(str):
-    """An expected issuer that equals its root spelling with or without the trailing slash. The SDK
-    checks the metadata issuer against it with a plain ``!=``, so the comparison is the only place
-    the rule can apply. It hashes like the plain string: not for use as a dict or set key."""
+    """The SDK compares issuers with a plain ``!=``, so the rule lives here. Hashes as plain str."""
 
     __slots__ = ()
 
@@ -552,9 +550,7 @@ class _RootSlashIssuer(str):
 
 
 def _accept_root_issuer_slash(auth) -> None:
-    """The SDK takes the expected issuer from the server's resource metadata and wants the issuer
-    document to repeat it exactly. Google lists https://accounts.google.com/ and issues
-    https://accounts.google.com, which fails discovery before sign-in on every call."""
+    """Google advertises https://accounts.google.com/ but issues https://accounts.google.com."""
     expected = getattr(auth, "_expected_issuer", None)
     if expected is None:
         logger.warning("MCP OAuth: _expected_issuer missing; issuer slash fixup skipped")
@@ -567,7 +563,7 @@ def _accept_root_issuer_slash(auth) -> None:
     try:
         auth._expected_issuer = _expected_issuer
     except Exception as exc:  # noqa: BLE001
-        # Must never break OAuth: without the fixup only the mismatched servers fail, as before.
+        # Must never break OAuth; without the fixup only mismatched issuers fail.
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A root issuer with and without its trailing slash is one server; every other difference is not."""
-
 import ast
 import sys
 from pathlib import Path
@@ -51,7 +49,6 @@ def test_different_server(a, b):
 
 
 def test_policy_imports_only_the_standard_library():
-    """The rule must stay testable without the MCP SDK or the rest of the backend."""
     tree = ast.parse(Path(mcp_oauth_issuer.__file__).read_text(encoding = "utf-8"))
     imported = set()
     for node in ast.walk(tree):

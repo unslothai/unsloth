@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""OAuth discovery accepts a root issuer spelled with or without its trailing slash, nothing wider."""
-
 import asyncio
 import types
 
@@ -32,13 +30,11 @@ def _auth(tmp_path, monkeypatch):
     async def no_browser(authorization_url):
         raise _ReachedSignIn(authorization_url)
 
-    # Discovery ends where the browser would open, so a pass shows without one.
     auth.context.redirect_handler = no_browser
     return auth
 
 
 async def _discover(auth, advertised, issuer):
-    """The 401, then the resource metadata naming `advertised`, then the issuer document."""
     flow = auth.async_auth_flow(httpx2.Request("POST", URL, json = {}))
     try:
         request = await flow.__anext__()
@@ -66,7 +62,6 @@ def test_root_issuer_reaches_sign_in(tmp_path, monkeypatch, advertised, issuer):
     auth = _auth(tmp_path, monkeypatch)
     with pytest.raises(_ReachedSignIn, match = "accounts.google.com/o/oauth2/v2/auth"):
         asyncio.run(_discover(auth, advertised, issuer))
-    # Each document keeps its own spelling; only the comparison is relaxed.
     assert auth.context.auth_server_url == advertised
     assert str(auth.context.oauth_metadata.issuer) == issuer
 
@@ -100,7 +95,6 @@ def test_authorization_response_iss_stays_exact(tmp_path, monkeypatch):
 
 
 def test_issuer_stamp_is_stored_as_plain_text(tmp_path, monkeypatch):
-    """A registered client records the expected issuer; it must reload as an ordinary string."""
     auth = _auth(tmp_path, monkeypatch)
     auth.context.auth_server_url = SLASH
     info = OAuthClientInformationFull(
@@ -122,8 +116,6 @@ def test_provider_without_the_hook_is_left_alone():
 
 
 def test_unpatchable_provider_does_not_break_oauth():
-    """If a future SDK makes the provider unwritable, callers still get the strict one."""
-
     class Frozen:
         def _expected_issuer(self):
             return BARE
