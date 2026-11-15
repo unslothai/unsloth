@@ -650,25 +650,30 @@ del _kernel
 
 _LOG2E = 1.4426950408889634
 
-# Fixed (BLOCK_M, BLOCK_N, num_warps, num_stages) per GPU class, timed on Colab at Gemma-4 global layer
-# shapes (16 q heads, 1 kv head, hd 512, S 1K-8K; plans/impl_kh.md). dk / dv: dK and dV in two passes,
-# one fp32 accumulator each; dkdv: one pass for both (faster on L4). Other GPUs keep the autotuned
-# configs and the fused pass.
+# Fixed (BLOCK_M, BLOCK_N, num_warps, num_stages) per head_dim and GPU class, timed on Colab at Gemma-4
+# shapes (plans/impl_kh.md): 512 = global layers (16 q / 1 kv head, S 1K-8K), 256 = zoo's sliding band
+# (16 q / 8 kv heads, window 1024, S 2K-8K). dk / dv: dK and dV in two passes, one fp32 accumulator each;
+# dkdv: one pass for both. Other GPUs / head dims keep the autotuned configs and the fused pass.
 _TILES = {
-    "sm80": {"fwd": (32, 32, 4, 3), "dq": (32, 32, 4, 2), "dk": (16, 64, 8, 2), "dv": (32, 64, 8, 2)},
-    "sm8x_101k": {"fwd": (32, 32, 4, 2), "dq": (16, 32, 4, 2), "dkdv": (16, 32, 8, 1)},
-    "sm12x": {
-        "fwd": (32, 16, 4, 3), "dq": (32, 16, 4, 2), "dk": (16, 32, 4, 2), "dv": (16, 64, 8, 2),
-        "tma": {"fwd": (32, 32, 4, 2), "dq": (32, 64, 8, 1), "dk": (32, 64, 8, 2), "dv": (16, 64, 8, 3)},
+    512: {
+        "sm80": {"fwd": (32, 32, 4, 3), "dq": (32, 32, 4, 2), "dk": (16, 64, 8, 2), "dv": (32, 64, 8, 2)},
+        "sm8x_101k": {"fwd": (32, 32, 4, 2), "dq": (16, 32, 4, 2), "dkdv": (16, 32, 8, 1)},
+        "sm12x": {
+            "fwd": (32, 16, 4, 3), "dq": (32, 16, 4, 2), "dk": (16, 32, 4, 2), "dv": (16, 64, 8, 2),
+            "tma": {"fwd": (32, 32, 4, 2), "dq": (32, 64, 8, 1), "dk": (32, 64, 8, 2), "dv": (16, 64, 8, 3)},
+        },
+    },
+    256: {
+        "sm80": {"fwd": (64, 32, 4, 2), "dq": (64, 64, 4, 2), "dkdv": (64, 64, 8, 1)},
+        "sm12x": {"fwd": (32, 32, 4, 3), "dq": (32, 32, 4, 3), "dkdv": (16, 64, 8, 3)},
     },
 }  # fmt: skip
 _TILE_CLASS = {}
 
 
 def _tiles(device, head_dim = 512):
-    """The fixed tile table for this GPU, or None (autotune, fused dK / dV pass). Timed at head_dim 512
-    only, so other head dims (zoo's Gemma-4 sliding band at 256) keep the autotuned path."""
-    if head_dim != 512 or os.environ.get("UNSLOTH_LH_TILES", "1") == "0":
+    """The fixed tile table for this GPU and head_dim, or None (autotune, fused dK / dV pass)."""
+    if head_dim not in _TILES or os.environ.get("UNSLOTH_LH_TILES", "1") == "0":
         return None
     index = device.index if device.index is not None else torch.cuda.current_device()
     if index not in _TILE_CLASS:
@@ -680,8 +685,7 @@ def _tiles(device, head_dim = 512):
         elif props.major == 12 and smem >= 99 * 1024:
             name = "sm12x"
         _TILE_CLASS[index] = name
-    name = _TILE_CLASS[index]
-    return None if name is None else _TILES[name]
+    return _TILES[head_dim].get(_TILE_CLASS[index])
 
 
 def _launch(kernel, grid, tile, *args, **kwargs):

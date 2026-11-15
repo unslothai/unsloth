@@ -989,7 +989,7 @@ def test_fixed_tiles_match_reference(monkeypatch, tile_class, heads, kind):
         # autotuned fallback, which must then serve every kernel.
         assert ("_lh_bwd_dkdv", None, True, True) in seen
         return
-    table = LH._TILES[tile_class]
+    table = LH._TILES[512][tile_class]
     assert ("_lh_fwd", table["fwd"], None, None) in seen and (
         "_lh_bwd_dq",
         table["dq"],
@@ -1031,7 +1031,7 @@ def test_tile_too_large_for_the_gpu_falls_back_to_autotune(monkeypatch):
     # at launch, the device drops its table and the call finishes on the autotuned configs.
     index = torch.cuda.current_device()
     monkeypatch.setitem(
-        LH._TILES, "too_big", {k: (256, 256, 4, 1) for k in ("fwd", "dq", "dk", "dv")}
+        LH._TILES[512], "too_big", {k: (256, 256, 4, 1) for k in ("fwd", "dq", "dk", "dv")}
     )
     monkeypatch.setitem(LH._TILE_CLASS, index, "too_big")
     case = _gqa_case(64, 8, 2)
@@ -1061,8 +1061,8 @@ def test_tile_classes_by_capability_and_shared_memory(monkeypatch):
         )
         monkeypatch.setattr(LH, "_TILE_CLASS", {})
         tiles = LH._tiles(torch.device("cuda", 0))
-        assert tiles == (LH._TILES[want] if want else None), (major, smem)
-    assert LH._tiles(torch.device("cuda", 0), 256) is None  # timed at head_dim 512 only
+        assert tiles == (LH._TILES[512][want] if want else None), (major, smem)
+    assert LH._tiles(torch.device("cuda", 0), 128) is None  # untimed head dims autotune
     monkeypatch.setenv("UNSLOTH_LH_TILES", "0")
     monkeypatch.setattr(LH, "_TILE_CLASS", {})
     assert LH._tiles(torch.device("cuda", 0)) is None
@@ -1128,11 +1128,11 @@ def test_tma_failure_falls_back_to_the_pointer_kernels(monkeypatch):
 
 
 def test_tma_needs_aligned_descriptor_operands(monkeypatch):
-    tiles = LH._TILES["sm12x"]
+    tiles = LH._TILES[512]["sm12x"]
     monkeypatch.setattr(LH, "TensorDescriptor", object)
     x = torch.zeros(1, 2, 8, 512, dtype = torch.bfloat16)
     assert LH._tma_tiles(tiles, torch.device("cuda", 0), x) is tiles["tma"]
-    assert LH._tma_tiles(LH._TILES["sm80"], torch.device("cuda", 0), x) is None
+    assert LH._tma_tiles(LH._TILES[512]["sm80"], torch.device("cuda", 0), x) is None
     assert (
         LH._tma_tiles(tiles, torch.device("cuda", 0), x.view(-1)[1:4097].view(1, 1, 8, 512)) is None
     )
@@ -1169,15 +1169,43 @@ def test_fullgraph_compile_matches_eager(monkeypatch, tile_class):
 
 
 @pytest.mark.skipif(not _SM80, reason = "the kernel runs on sm80+ only")
-def test_head_dim_256_keeps_the_autotuned_path(monkeypatch):
-    # zoo's Gemma-4 sliding band calls this kernel at head_dim 256; the tables were timed at 512 only.
+@pytest.mark.parametrize("tile_class", ["sm12x", "sm80", "sm8x_101k"])
+def test_head_dim_256_band_uses_its_own_table_and_no_tma(monkeypatch, tile_class):
+    # zoo's Gemma-4 sliding band calls this kernel at head_dim 256: its own table (or autotune where none was
+    # timed), the fused dK / dV pass, never the head_dim 512 TMA kernels.
     index = torch.cuda.current_device()
-    monkeypatch.setitem(LH._TILE_CLASS, index, "sm12x")
+    monkeypatch.setenv("UNSLOTH_LH_TMA", "1")
+    monkeypatch.setitem(LH._TILE_CLASS, index, tile_class)
     seen = _spy_launches(monkeypatch)
     made = []
     monkeypatch.setattr(LH, "_desc", lambda t, rows: made.append(rows))
-    q = torch.randn(1, 8, 300, 256, device = "cuda", dtype = _cuda_dtype(), requires_grad = True)
-    k = torch.randn(1, 2, 300, 256, device = "cuda", dtype = _cuda_dtype(), requires_grad = True)
-    lo, hi = LH._dense_intervals(1, 300, True, q.device)
-    LH.large_head_attention(q, k, k, lo, hi).float().sum().backward()
-    assert seen and all(tile is None for _, tile, *_ in seen) and made == []
+    dtype = _cuda_dtype()
+    torch.manual_seed(0)
+    S, window = 300, 64
+    q = torch.randn(1, 300, 16, 256, device = "cuda", dtype = dtype).transpose(1, 2)
+    k = torch.randn(1, 300, 8, 256, device = "cuda", dtype = dtype).transpose(1, 2)
+    v = torch.randn(1, 300, 8, 256, device = "cuda", dtype = dtype).transpose(1, 2)
+    grad = torch.randn(1, S, 16, 256, device = "cuda", dtype = dtype)
+    i = torch.arange(S, device = "cuda", dtype = torch.int32)
+    lo, hi = (i - window + 1).clamp_min(0)[None].contiguous(), i[None].contiguous()
+    ins = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+    out = LH.large_head_attention(*ins, lo, hi)
+    out.backward(grad)
+    table = LH._TILES[256].get(tile_class)
+    if table is None:
+        assert all(tile is None for _, tile, *_ in seen)
+    else:
+        assert ("_lh_fwd", table["fwd"], None, None) in seen
+        assert ("_lh_bwd_dq", table["dq"], None, None) in seen
+        assert ("_lh_bwd_dkdv", table["dkdv"], True, True) in seen
+    assert made == []
+    j = torch.arange(S, device = "cuda")
+    allowed = ((j[None, :] >= lo[0][:, None]) & (j[None, :] <= hi[0][:, None]))[None, None]
+    ref_in = [x.detach().float().requires_grad_() for x in (q, k, v)]
+    ref = _reference(*ref_in, allowed)
+    ref.backward(grad.float())
+    for a, b in zip([out] + [x.grad for x in ins], [ref] + [x.grad for x in ref_in]):
+        err = (a.float() - b).abs()
+        assert torch.isfinite(a).all()
+        assert err.max() <= 0.03 * b.abs().max() + 0.02
+        assert err.mean() <= 0.01 * b.abs().mean() + 2e-3
