@@ -334,3 +334,9 @@ test("a deferred submit is dropped when the turn was reset first; a sent transcr
   const clear = engine.slice(engine.indexOf("const releaseVoiceText = voiceTextReleaser();"));
   assert.ok(clear.length > 0 && clear.indexOf("releaseVoiceText();") < clear.indexOf("// First message"));
 });
+
+test("the barge-in bar applies only while the reply is audible, not while it is being thought", () => {
+  const engine = readSrc("features/chat/voice/voice-engine.tsx");
+  assert.match(engine, /registerVoicePlayback\(\s*\(\) => isPlayingRef\.current \|\| performance\.now\(\) - playedAtRef\.current < PLAYBACK_TAIL_MS,\s*\)/);
+  assert.match(engine, /if \(isPlayingRef\.current && !isPlaying\) playedAtRef\.current = performance\.now\(\);/);
+});
