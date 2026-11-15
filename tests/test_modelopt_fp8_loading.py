@@ -1011,12 +1011,16 @@ def test_standalone_hf_quant_config_is_rewritten(tmp_path):
     assert method == "fp8" and config.quantization_config["quant_method"] == "fp8"
     assert hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
-    for other in (nvfp4, plain):
-        config = AutoConfig.from_pretrained(str(other))
-        _, _, method = check_and_disable_bitsandbytes_loading(
-            config, load_in_4bit = False, verbose = False
-        )
-        assert method is None and getattr(config, "quantization_config", None) is None
+    config = AutoConfig.from_pretrained(str(plain))
+    _, _, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = False, verbose = False)
+    assert method is None and getattr(config, "quantization_config", None) is None
+
+    # NVFP4 takes the compressed-tensors NVFP4A16 rewrite (modelopt_nvfp4.py), never the fp8 one.
+    config = AutoConfig.from_pretrained(str(nvfp4))
+    _, _, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = False, verbose = False)
+    assert method == "compressed-tensors"
+    assert config.quantization_config["format"] == "nvfp4-pack-quantized"
+    assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
     # vLLM reads ModelOpt itself, but load_in_4bit must still drop so bnb is not requested.
     config = AutoConfig.from_pretrained(str(fp8))

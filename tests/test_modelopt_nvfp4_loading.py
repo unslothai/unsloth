@@ -14,11 +14,11 @@ import unsloth  # noqa: F401
 
 transformers = pytest.importorskip("transformers")
 pytest.importorskip("compressed_tensors")
-if int(transformers.__version__.split(".")[0]) < 5:
-    pytest.skip("fused expert stacks are transformers 5", allow_module_level = True)
 pe = pytest.importorskip("unsloth_zoo.packed_experts")
 if not hasattr(pe, "Nvfp4ExpertParam"):
     pytest.skip("needs unsloth_zoo with packed expert stacks", allow_module_level = True)
+TF5 = int(transformers.__version__.split(".")[0]) >= 5
+fused = pytest.mark.skipif(not TF5, reason = "fused expert stacks are transformers 5")
 
 from unsloth.models import modelopt_nvfp4 as mo
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
@@ -133,14 +133,18 @@ def _write_checkpoint(path, seed = 0):
         state[f"{p}.self_attn.v_proj.v_scale"] = torch.tensor(1.0)
         ex = model.model.layers[l].mlp.experts
         for e in range(E):
-            put(
-                f"{p}.mlp.experts.{e}",
-                [
-                    ("gate_proj", ex.gate_up_proj.data[e, :I]),
-                    ("up_proj", ex.gate_up_proj.data[e, I:]),
-                ],
-            )
-            put(f"{p}.mlp.experts.{e}", [("down_proj", ex.down_proj.data[e])])
+            if TF5:
+                gate, up, down = (
+                    ex.gate_up_proj.data[e, :I],
+                    ex.gate_up_proj.data[e, I:],
+                    ex.down_proj.data[e],
+                )
+            else:
+                gate, up, down = (
+                    getattr(ex[e], n).weight.data for n in ("gate_proj", "up_proj", "down_proj")
+                )
+            put(f"{p}.mlp.experts.{e}", [("gate_proj", gate), ("up_proj", up)])
+            put(f"{p}.mlp.experts.{e}", [("down_proj", down)])
     os.makedirs(path, exist_ok = True)
     save_file(state, os.path.join(path, "model.safetensors"), metadata = {"format": "pt"})
     cfg = model.config.to_dict()
@@ -192,7 +196,16 @@ def _check(model, info, ref):
     for l in range(L):
         layer = model.model.layers[l]
         ex = layer.mlp.experts
-        for stack in ("gate_up_proj", "down_proj"):
+        linears = {
+            f"self_attn.{n}": getattr(layer.self_attn, n)
+            for n in ("q_proj", "k_proj", "v_proj", "o_proj")
+        }
+        if not TF5:
+            # transformers 4 keeps per-expert Linears: they take the same compressed-tensors route.
+            for e in range(E):
+                for n in ("gate_proj", "up_proj", "down_proj"):
+                    linears[f"mlp.experts.{e}.{n}"] = getattr(ex[e], n)
+        for stack in ("gate_up_proj", "down_proj") if TF5 else ():
             p = ex._parameters[stack]
             assert isinstance(p, pe.Nvfp4ExpertParam) and p.packed_global_mode == "multiply"
             got = p.dequantize(torch.float32)
@@ -200,13 +213,12 @@ def _check(model, info, ref):
                 names = ("gate_proj", "up_proj") if stack == "gate_up_proj" else ("down_proj",)
                 want = torch.cat([ref[f"model.layers.{l}.mlp.experts.{e}.{n}"] for n in names])
                 assert torch.equal(got[e], want), (l, stack, e)
-        for n in ("q_proj", "k_proj", "v_proj", "o_proj"):
-            lin = getattr(layer.self_attn, n)
+        for n, lin in linears.items():
             assert "weight" not in lin._parameters
             assert lin.weight_packed.dtype == torch.uint8
             gs = lin.weight_global_scale
             assert gs.dtype == torch.float32 and gs.shape == (1,)
-            want = ref[f"model.layers.{l}.self_attn.{n}"]
+            want = ref[f"model.layers.{l}.{n}"]
             from unsloth.kernels.nvfp4 import nvfp4_dequantize
 
             # compressed-tensors decode: e2m1 * (scale / (1 / ws2)), a few fp32 ulps from e2m1 * scale * ws2.
@@ -244,6 +256,7 @@ def test_modelopt_nvfp4_reload_of_reused_config(ckpt):
         _check(model, info, ref)
 
 
+@fused
 def test_modelopt_nvfp4_16bit_experts_kill_switch(ckpt, monkeypatch):
     path, ref = ckpt
     monkeypatch.setenv("UNSLOTH_PACKED_EXPERTS", "0")
@@ -287,4 +300,25 @@ def test_merged_save_is_refused(ckpt):
 
     mo.refuse_modelopt_nvfp4_merged_save()
     with pytest.raises(RuntimeError, match = "ModelOpt NVFP4"):
-        zoo_saving.check_model_quantization_status(path)
+        zoo_saving.determine_base_model_source(path, None, "merged_16bit")
+
+
+@fused
+def test_save_pretrained_writes_a_reloadable_checkpoint(ckpt, tmp_path):
+    path, _ = ckpt
+    model, _ = _load(path, "rewrite")
+    model.save_pretrained(tmp_path)
+    with open(tmp_path / "config.json") as f:
+        quant = json.load(f)["quantization_config"]
+    assert (
+        quant["quant_method"] == "compressed-tensors" and quant["format"] == "nvfp4-pack-quantized"
+    )
+    reloaded, info = transformers.AutoModelForCausalLM.from_pretrained(
+        tmp_path, dtype = torch.bfloat16, output_loading_info = True
+    )
+    assert not info["missing_keys"] and not info["unexpected_keys"]
+    a, b = model.model.layers[0].self_attn.q_proj, reloaded.model.layers[0].self_attn.q_proj
+    for name in ("weight_packed", "weight_scale", "weight_global_scale"):
+        assert torch.equal(getattr(a, name), getattr(b, name))
+    x = torch.tensor([[1, 2, 3, 4]])
+    assert torch.equal(model(x).logits, reloaded(x).logits)

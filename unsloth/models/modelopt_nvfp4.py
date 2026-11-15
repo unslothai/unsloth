@@ -352,29 +352,33 @@ def _source_is_modelopt_nvfp4(name, token = None) -> bool:
 
 
 def refuse_modelopt_nvfp4_merged_save() -> None:
-    """unsloth_zoo's 16-bit merge rereads the base shards and has no ModelOpt NVFP4 decode: it would treat the
-    uint8 ``weight`` codes as 16-bit weights. Refuse the merge with a clear message instead."""
+    """unsloth_zoo's merges reread the base shards and have no ModelOpt NVFP4 decode: the uint8 ``weight`` codes
+    would be taken for 16-bit weights. Refuse them with a clear message instead."""
     try:
         import unsloth_zoo.saving_utils as zoo_saving
     except Exception:
         return
-    status = getattr(zoo_saving, "check_model_quantization_status", None)
-    if status is None or getattr(status, "_unsloth_modelopt_nvfp4", False):
+    determine = getattr(zoo_saving, "determine_base_model_source", None)
+    if determine is None or getattr(determine, "_unsloth_modelopt_nvfp4", False):
         return
 
-    @functools.wraps(status)
-    def check_model_quantization_status(model_name_or_path, *args, **kwargs):
-        result = status(model_name_or_path, *args, **kwargs)
-        if result == (False, None):
-            token = args[0] if args else kwargs.get("token")
-            if _source_is_modelopt_nvfp4(model_name_or_path, token):
-                raise RuntimeError(
-                    f"Unsloth: `{model_name_or_path}` is a ModelOpt NVFP4 checkpoint, and merging LoRA into it "
-                    "as 16 bit is not supported yet (the merge would read its packed 4-bit codes as 16-bit "
-                    'weights). Save the LoRA adapter instead (`save_method = "lora"` / '
-                    "`model.save_pretrained`), or merge into the original 16-bit model."
-                )
+    @functools.wraps(determine)
+    def determine_base_model_source(
+        model_name,
+        token = None,
+        *args,
+        **kwargs,
+    ):
+        result = determine(model_name, token, *args, **kwargs)
+        source = result[0] if isinstance(result, tuple) and result else model_name
+        if _source_is_modelopt_nvfp4(str(source), token):
+            raise RuntimeError(
+                f"Unsloth: `{source}` is a ModelOpt NVFP4 checkpoint, and merging LoRA into it is not supported "
+                "yet (the merge would read its packed 4-bit codes as 16-bit weights). Save the LoRA adapter "
+                'instead (`save_method = "lora"` / `model.save_pretrained`), or merge into the original '
+                "16-bit model."
+            )
         return result
 
-    check_model_quantization_status._unsloth_modelopt_nvfp4 = True
-    zoo_saving.check_model_quantization_status = check_model_quantization_status
+    determine_base_model_source._unsloth_modelopt_nvfp4 = True
+    zoo_saving.determine_base_model_source = determine_base_model_source
