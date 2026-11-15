@@ -41,6 +41,7 @@ import { useCallback, useEffect, useRef, useState, type FC } from "react";
 let _prevRunning = false;
 
 const PLAYBACK_TAIL_MS = 500;
+const VOICE_APPEND_WAIT_MAX_MS = 120_000;
 const VOICE_COALESCE_MS = 650;
 const VOICE_COALESCE_MAX_RETRIES = 15;
 const VOICE_HEARING_HOLD_MAX_MS = 30000;
@@ -283,7 +284,8 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const msgs = t.getState().messages;
-      if (msgs.length <= before && attempt < VOICE_COALESCE_MAX_RETRIES) {
+      // An attachment's send uploads its original first: wait for the message on the clock, not a tick budget.
+      if (msgs.length <= before && Date.now() - armedAt < VOICE_APPEND_WAIT_MAX_MS) {
         voiceCoalesceTimerRef.current = setTimeout(() => fireCoalescedRun(attempt + 1), VOICE_COALESCE_MS);
         return;
       }
