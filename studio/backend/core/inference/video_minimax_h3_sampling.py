@@ -14,6 +14,8 @@ nothing global is patched.
   condition, in packed-row shape.
 - Ref2VA vision: each two-frame block gets its own pixel budget, from the frames after the ``17 n + 5`` snap.
   ``UNSLOTH_H3_VISION_BUDGET=clip`` restores the whole-clip budget (fewer tokens on long references).
+- Vision tower: float32 compute on the bf16 weights, as the reference runs it (``h3_vision_fp32``;
+  ``UNSLOTH_H3_VISION_FP32=0`` restores bf16).
 - Condition latents: the VAE posterior mean (``video_minimax_h3_ref_encode``).
 - Output frames: truncated to 8 bits, ``(x * 255).clamp(0, 255).byte()``, as the reference's video save does.
 """
@@ -447,7 +449,19 @@ def h3_vision_frame_indices(num_frames: int, fps: float) -> tuple[list, list]:
 @functools.lru_cache(maxsize = None)
 def _ref2va_text_encoder_class(base: type) -> type:
     class StudioMiniMaxH3Ref2VATextEncoderStep(base):
+        def __call__(self, components: Any, state: Any) -> Any:
+            from .h3_vision_fp32 import float32_pixel_sources, h3_vision_float32
+            with float32_pixel_sources(), h3_vision_float32(components.text_encoder):
+                return super().__call__(components, state)
+
         def _gather_vision_features(self, processor: Any, references: list, fps: float) -> tuple:
+            from .h3_vision_fp32 import offer_float32_pixels
+
+            out = self._gather_vision_blocks(processor, references, fps)
+            offer_float32_pixels(*(v for k, v in out[0].items() if k.startswith("pixel_")))
+            return out
+
+        def _gather_vision_blocks(self, processor: Any, references: list, fps: float) -> tuple:
             import numpy as np
             import torch
 
@@ -536,25 +550,32 @@ class _ReferenceImageProcessor:
             )
             pixels.append(flat)
             grids.append([1, gh, gw])
-        return {
+        from .h3_vision_fp32 import offer_float32_pixels
+
+        out = {
             "pixel_values": torch.cat(pixels),
             "image_grid_thw": torch.tensor(grids, dtype = torch.long),
         }
+        offer_float32_pixels(out["pixel_values"])
+        return out
 
 
 @functools.lru_cache(maxsize = None)
 def _fl2va_text_encoder_class(base: type) -> type:
     class StudioMiniMaxH3FL2VATextEncoderStep(base):
         def __call__(self, components: Any, state: Any) -> Any:
+            from .h3_vision_fp32 import float32_pixel_sources, h3_vision_float32
+
             processor = components.processor
             stock = processor.image_processor
-            if isinstance(stock, _ReferenceImageProcessor):
-                return super().__call__(components, state)
-            processor.image_processor = _ReferenceImageProcessor(stock)
-            try:
-                return super().__call__(components, state)
-            finally:
-                processor.image_processor = stock
+            with float32_pixel_sources(), h3_vision_float32(components.text_encoder):
+                if isinstance(stock, _ReferenceImageProcessor):
+                    return super().__call__(components, state)
+                processor.image_processor = _ReferenceImageProcessor(stock)
+                try:
+                    return super().__call__(components, state)
+                finally:
+                    processor.image_processor = stock
 
     StudioMiniMaxH3FL2VATextEncoderStep.__qualname__ = StudioMiniMaxH3FL2VATextEncoderStep.__name__
     return StudioMiniMaxH3FL2VATextEncoderStep

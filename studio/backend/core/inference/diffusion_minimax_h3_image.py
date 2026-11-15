@@ -2422,16 +2422,22 @@ def qwen3vl_hidden_state(
         kwargs["mm_token_type_ids"] = torch.tensor(
             processor.create_mm_token_type_ids([token_ids]), dtype = torch.long, device = device
         )
-    te_dtype = _module_dtype(text_encoder)
+    from .h3_vision_fp32 import h3_vision_float32, vision_pixel_dtype
+
+    # pixels stay float32 for the float32 vision tower (UNSLOTH_H3_VISION_FP32=0: the conditioner dtype)
+    pixel_dtype = vision_pixel_dtype(_module_dtype(text_encoder))
     for name, value in (vision_inputs or {}).items():
-        kwargs[name] = value.to(device, te_dtype) if name.startswith("pixel_") else value.to(device)
+        kwargs[name] = (
+            value.to(device, pixel_dtype) if name.startswith("pixel_") else value.to(device)
+        )
     # hidden_states[layer] is the output of decoder layer ``layer - 1``: captured by a hook instead of keeping every
     # layer's states (~10 GB with 16 references), and the layers past it are cut for the call.
     language_model = getattr(model, "language_model", None)
     layers = getattr(language_model, "layers", None)
     if layers is None or len(layers) < layer:
         kwargs["output_hidden_states"] = True
-        return model(**kwargs).hidden_states[layer]
+        with h3_vision_float32(model):
+            return model(**kwargs).hidden_states[layer]
     captured: dict = {}
 
     def _capture(_module: Any, _args: Any, output: Any) -> None:
@@ -2440,7 +2446,8 @@ def qwen3vl_hidden_state(
 
     handle = layers[layer - 1].register_forward_hook(_capture)
     try:
-        model(**kwargs)
+        with h3_vision_float32(model):
+            model(**kwargs)
     except _ReadLayerReached:
         pass
     finally:
