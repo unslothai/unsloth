@@ -64,10 +64,11 @@ if triton is not None:
         return x
 
     @triton.jit
-    def stats_kernel(
+    def _stats(
         x_ptr,
         c_ptr,
         g_ptr,
+        bh,
         n_rows,
         n_heads,
         x_stride_b,
@@ -79,7 +80,6 @@ if triton is not None:
         MODE: tl.constexpr,
     ):
         # per (batch, head, channel) over every STEP-th token: MODE 0 mean -> c; MODE 1 mid-range -> c, half range -> g
-        bh = tl.program_id(0)
         b = bh // n_heads
         h = bh % n_heads
         cols = tl.arange(0, D)
@@ -111,11 +111,13 @@ if triton is not None:
             tl.store(g_ptr + bh * D + cols, tl.maximum(0.5 * (hi - lo), 1e-12))
 
     @triton.jit
-    def quant_rows_kernel(
+    def _quant_rows(
         x_ptr,
         c_ptr,
         q_ptr,
         s_ptr,
+        bh,
+        blk,
         n_rows,
         n_pad,
         n_heads,
@@ -131,8 +133,6 @@ if triton is not None:
         # R rows of one (batch, head), optionally centred, rotated: int8 = rint(x * 127 / amax), amax per row
         # (scale [BH, n_pad]) or over the R rows (TILE, scale [BH, n_pad / R]); scale = amax / 127 * mul. Padded
         # rows are zeros (with scale 0 per row)
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
         b = bh // n_heads
         h = bh % n_heads
         rows = blk * R + tl.arange(0, R)
@@ -163,12 +163,14 @@ if triton is not None:
         tl.store(q_ptr + (base + rows[:, None]) * D + cols[None, :], q.to(tl.int8))
 
     @triton.jit
-    def quant_v_kernel(
+    def _quant_v(
         x_ptr,
         c_ptr,
         g_ptr,
         q_ptr,
         s_ptr,
+        bh,
+        blk,
         n_rows,
         n_pad,
         n_heads,
@@ -181,8 +183,6 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head): (x - centre) / gain per channel, one scale for the tile,
         # stored key-major [BH, n_pad, D] or (TRANS) channel-major [BH, D, n_pad]
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
         b = bh // n_heads
         h = bh % n_heads
         rows = blk * T + tl.arange(0, T)
@@ -211,9 +211,11 @@ if triton is not None:
             tl.store(q_ptr + (base + rows[:, None]) * D + cols[None, :], q)
 
     @triton.jit
-    def transpose_v_kernel(
+    def _transpose_v(
         x_ptr,
         o_ptr,
+        bh,
+        blk,
         n_rows,
         n_pad,
         n_heads,
@@ -226,8 +228,6 @@ if triton is not None:
     ):
         # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad], padded keys zero; in V's dtype,
         # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert)
-        bh = tl.program_id(0)
-        blk = tl.program_id(1)
         b = bh // n_heads
         h = bh % n_heads
         rows = blk * T + tl.arange(0, T)
@@ -245,6 +245,300 @@ if triton is not None:
             x = tl.minimum(tl.maximum(x.to(tl.float32), -65504.0), 65504.0).to(tl.float16)
         base = bh.to(tl.int64) * n_pad * D
         tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
+
+    # One launch per quantiser, as the call ran before prep_kernel / kv_kernel: kept for tests and tools.
+
+    @triton.jit
+    def stats_kernel(
+        x_ptr,
+        c_ptr,
+        g_ptr,
+        n_rows,
+        n_heads,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        STEP: tl.constexpr,
+        R: tl.constexpr,
+        D: tl.constexpr,
+        MODE: tl.constexpr,
+    ):
+        _stats(
+            x_ptr,
+            c_ptr,
+            g_ptr,
+            tl.program_id(0),
+            n_rows,
+            n_heads,
+            x_stride_b,
+            x_stride_s,
+            x_stride_h,
+            STEP,
+            R,
+            D,
+            MODE,
+        )
+
+    @triton.jit
+    def quant_rows_kernel(
+        x_ptr,
+        c_ptr,
+        q_ptr,
+        s_ptr,
+        n_rows,
+        n_pad,
+        n_heads,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        mul,
+        R: tl.constexpr,
+        D: tl.constexpr,
+        CENTRE: tl.constexpr,
+        TILE: tl.constexpr,
+    ):
+        _quant_rows(
+            x_ptr,
+            c_ptr,
+            q_ptr,
+            s_ptr,
+            tl.program_id(0),
+            tl.program_id(1),
+            n_rows,
+            n_pad,
+            n_heads,
+            x_stride_b,
+            x_stride_s,
+            x_stride_h,
+            mul,
+            R,
+            D,
+            CENTRE,
+            TILE,
+        )
+
+    @triton.jit
+    def quant_v_kernel(
+        x_ptr,
+        c_ptr,
+        g_ptr,
+        q_ptr,
+        s_ptr,
+        n_rows,
+        n_pad,
+        n_heads,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        T: tl.constexpr,
+        D: tl.constexpr,
+        TRANS: tl.constexpr,
+    ):
+        _quant_v(
+            x_ptr,
+            c_ptr,
+            g_ptr,
+            q_ptr,
+            s_ptr,
+            tl.program_id(0),
+            tl.program_id(1),
+            n_rows,
+            n_pad,
+            n_heads,
+            x_stride_b,
+            x_stride_s,
+            x_stride_h,
+            T,
+            D,
+            TRANS,
+        )
+
+    @triton.jit
+    def transpose_v_kernel(
+        x_ptr,
+        o_ptr,
+        n_rows,
+        n_pad,
+        n_heads,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        T: tl.constexpr,
+        D: tl.constexpr,
+        TO_F16: tl.constexpr,
+    ):
+        _transpose_v(
+            x_ptr,
+            o_ptr,
+            tl.program_id(0),
+            tl.program_id(1),
+            n_rows,
+            n_pad,
+            n_heads,
+            x_stride_b,
+            x_stride_s,
+            x_stride_h,
+            T,
+            D,
+            TO_F16,
+        )
+
+    @triton.jit
+    def prep_kernel(
+        q_ptr,
+        k_ptr,
+        v_ptr,
+        qi_ptr,
+        qs_ptr,
+        kc_ptr,
+        vc_ptr,
+        vg_ptr,
+        vh_ptr,
+        sq,
+        sk,
+        n_qpad,
+        n_kpad,
+        n_heads,
+        q_sb,
+        q_ss,
+        q_sh,
+        k_sb,
+        k_ss,
+        k_sh,
+        v_sb,
+        v_ss,
+        v_sh,
+        mul,
+        n_qblk,
+        R: tl.constexpr,
+        STEP: tl.constexpr,
+        SR: tl.constexpr,
+        D: tl.constexpr,
+        V_STATS: tl.constexpr,
+        V_T: tl.constexpr,
+    ):
+        # Everything that reads only the inputs, in one launch, per (batch, head): block 0 the K mean, block 1 the V
+        # range (V_STATS), then the Q row tiles, then (V_T 1: V's dtype, 2: fp16) the channel-major V copy. The
+        # statistics blocks come first so the long serial ones start before the short tiles fill the card. Each
+        # block runs the same code its standalone kernel ran, so the operands are bit for bit the same.
+        bh = tl.program_id(0)
+        blk = tl.program_id(1)
+        j = blk - 1 - V_STATS
+        if blk == 0:
+            _stats(k_ptr, kc_ptr, kc_ptr, bh, sk, n_heads, k_sb, k_ss, k_sh, STEP, SR, D, 0)
+        elif j < 0:
+            if V_STATS:
+                _stats(v_ptr, vc_ptr, vg_ptr, bh, sk, n_heads, v_sb, v_ss, v_sh, STEP, SR, D, 1)
+        elif j < n_qblk:
+            _quant_rows(
+                q_ptr,
+                q_ptr,
+                qi_ptr,
+                qs_ptr,
+                bh,
+                j,
+                sq,
+                n_qpad,
+                n_heads,
+                q_sb,
+                q_ss,
+                q_sh,
+                mul,
+                R,
+                D,
+                False,
+                False,
+            )
+        else:
+            if V_T != 0:
+                _transpose_v(
+                    v_ptr,
+                    vh_ptr,
+                    bh,
+                    j - n_qblk,
+                    sk,
+                    n_kpad,
+                    n_heads,
+                    v_sb,
+                    v_ss,
+                    v_sh,
+                    R,
+                    D,
+                    V_T == 2,
+                )
+
+    @triton.jit
+    def kv_kernel(
+        k_ptr,
+        kc_ptr,
+        ki_ptr,
+        ks_ptr,
+        v_ptr,
+        vc_ptr,
+        vg_ptr,
+        vi_ptr,
+        vs_ptr,
+        sk,
+        n_kpad,
+        n_heads,
+        k_sb,
+        k_ss,
+        k_sh,
+        v_sb,
+        v_ss,
+        v_sh,
+        kmul,
+        n_kblk,
+        RK: tl.constexpr,
+        T: tl.constexpr,
+        D: tl.constexpr,
+        K_TILE: tl.constexpr,
+        V_Q: tl.constexpr,
+    ):
+        # What needs prep_kernel's statistics, in one launch: the K tiles (centred, RK rows each), then (V_Q 1:
+        # key-major, 2: channel-major) the INT8 V tiles of T keys.
+        bh = tl.program_id(0)
+        blk = tl.program_id(1)
+        if blk < n_kblk:
+            _quant_rows(
+                k_ptr,
+                kc_ptr,
+                ki_ptr,
+                ks_ptr,
+                bh,
+                blk,
+                sk,
+                n_kpad,
+                n_heads,
+                k_sb,
+                k_ss,
+                k_sh,
+                kmul,
+                RK,
+                D,
+                True,
+                K_TILE,
+            )
+        else:
+            if V_Q != 0:
+                _quant_v(
+                    v_ptr,
+                    vc_ptr,
+                    vg_ptr,
+                    vi_ptr,
+                    vs_ptr,
+                    bh,
+                    blk - n_kblk,
+                    sk,
+                    n_kpad,
+                    n_heads,
+                    v_sb,
+                    v_ss,
+                    v_sh,
+                    T,
+                    D,
+                    V_Q == 2,
+                )
 
     @triton.jit
     def _attn_tile(
@@ -515,17 +809,25 @@ def prefetch_fix() -> bool:
     return _PREFETCH_FIX_ON
 
 
+_KERNELS: Any = None
+
+
 def kernels() -> Any:
+    global _KERNELS
     if triton is None:
         raise RuntimeError("Triton is not installed")
     prefetch_fix()
-    return types.SimpleNamespace(
-        stats = stats_kernel,
-        quant_rows = quant_rows_kernel,
-        quant_v = quant_v_kernel,
-        transpose_v = transpose_v_kernel,
-        attn = attn_kernel,
-    )
+    if _KERNELS is None:
+        _KERNELS = types.SimpleNamespace(
+            stats = stats_kernel,
+            quant_rows = quant_rows_kernel,
+            quant_v = quant_v_kernel,
+            transpose_v = transpose_v_kernel,
+            prep = prep_kernel,
+            kv = kv_kernel,
+            attn = attn_kernel,
+        )
+    return _KERNELS
 
 
 def _pad(n: int, multiple: int) -> int:
@@ -533,6 +835,232 @@ def _pad(n: int, multiple: int) -> int:
 
 
 PV_MODES = {"half_strided": 0, "half": 1, "int8": 2, "half_t": 3, "int8_t": 4, "f16_t": 3}
+# blocks along y in one launch; a call whose fused launch would need more runs one launch per quantiser
+GRID_LIMIT = 65535
+# A call's launch arithmetic (padded lengths, grids, every argument that is not a tensor), keyed by everything it
+# depends on: a short call is mostly this glue, so it is done once per call signature.
+_PLAN_LIMIT = 256
+_PLANS: dict = {}
+
+
+def _config_key(config: dict) -> tuple:
+    return tuple(
+        (key, tuple(sorted(value.items())) if isinstance(value, dict) else value)
+        for key, value in config.items()
+    )
+
+
+def _strides(x: Any) -> tuple:
+    return x.stride(0), x.stride(1), x.stride(2)
+
+
+def _make_plan(
+    q: Any, k: Any, v: Any, config: dict, pv: Optional[str], scale: Optional[float]
+) -> dict:
+    config = select_config(config, int(k.shape[1]))
+    pv = pv or config.get("pv", "int8")
+    if pv not in PV_MODES:
+        raise ValueError(f"pv {pv!r}")
+    k_tile = config.get("kscale", "key") == "tile"
+    B, Sq, H, D = q.shape
+    Sk = k.shape[1]
+    bm, bn = int(config["bm"]), int(config["bn"])
+    # log2(e) turns 2^x into e^x; 16 is the norm the rotation adds to Q and to K
+    mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / 16.0
+    n_qpad = _pad(Sq, math.lcm(QUANT_ROWS, bm))
+    n_kpad = _pad(Sk, math.lcm(QUANT_ROWS, bn))
+    BH = B * H
+    mode = PV_MODES[pv]
+    int8_v = pv in ("int8", "int8_t")
+    v_t = 2 if pv == "f16_t" else 1 if pv == "half_t" else 0
+    n_qblk = n_qpad // QUANT_ROWS
+    rk = bn if k_tile else QUANT_ROWS
+    n_kblk = n_kpad // rk
+    n_vblk = n_kpad // QUANT_ROWS if v_t else 0
+    n_vqblk = n_kpad // bn if int8_v else 0
+    prep_blocks = 1 + int(int8_v) + n_qblk + n_vblk
+    kv_blocks = n_kblk + n_vqblk
+    sq_, sk_, sv_ = _strides(q), _strides(k), _strides(v)
+    return {
+        "pv": pv,
+        "mode": mode,
+        "k_tile": k_tile,
+        "int8_v": int8_v,
+        "v_t": v_t,
+        "shape": (B, Sq, Sk, H, D),
+        "BH": BH,
+        "n_qpad": n_qpad,
+        "n_kpad": n_kpad,
+        "bm": bm,
+        "bn": bn,
+        "rk": rk,
+        "mul": mul,
+        "strides": (sq_, sk_, sv_),
+        # one launch for what reads only the inputs, one for what needs their statistics
+        "fused": prep_blocks <= GRID_LIMIT and kv_blocks <= GRID_LIMIT,
+        "prep_grid": (BH, prep_blocks),
+        "prep_args": (Sq, Sk, n_qpad, n_kpad, H, *sq_, *sk_, *sv_, mul, n_qblk),
+        "prep_meta": {
+            "R": QUANT_ROWS,
+            "STEP": STATS_STEP,
+            "SR": 32,
+            "D": D,
+            "V_STATS": int(int8_v),
+            "V_T": v_t,
+        },
+        "kv_grid": (BH, kv_blocks),
+        "kv_args": (Sk, n_kpad, H, *sk_, *sv_, 1.0, n_kblk),
+        "kv_meta": {
+            "RK": rk,
+            "T": bn,
+            "D": D,
+            "K_TILE": k_tile,
+            "V_Q": (2 if pv == "int8_t" else 1) if int8_v else 0,
+        },
+        "attn_grid": (n_qpad // bm, BH),
+        # the output is a fresh contiguous [B, Sq, H, D]
+        "attn_args": (Sq, Sk, n_qpad, n_kpad, H, 1.0, 0, 0, 0, 0, 0, 0, *sv_, Sq * H * D, H * D, D),
+        "attn_meta": {
+            "BM": bm,
+            "BN": bn,
+            "D": D,
+            "QK_INT8": True,
+            "K_TILE": k_tile,
+            "PV_MODE": mode,
+            "EVEN_K": Sk % bn == 0,
+            "ACC_IN_DOT": bool(config.get("acc_in_dot", False)),
+            "PREFETCH_FIX": prefetch_fix(),
+            **_launch_options(config),
+        },
+        "config": config,
+    }
+
+
+def _plan(q: Any, k: Any, v: Any, config: dict, pv: Optional[str], scale: Optional[float]) -> dict:
+    key = (
+        q.shape,
+        k.shape,
+        v.shape,
+        q.dtype,
+        k.dtype,
+        v.dtype,
+        q.stride(),
+        k.stride(),
+        v.stride(),
+        _config_key(config),
+        pv,
+        scale,
+    )
+    plan = _PLANS.get(key)
+    if plan is None:
+        plan = _make_plan(q, k, v, config, pv, scale)
+        if len(_PLANS) >= _PLAN_LIMIT:
+            _PLANS.clear()
+        _PLANS[key] = plan
+    return plan
+
+
+def _quantise(plan: dict, q: Any, k: Any, v: Any) -> dict:
+    """The operands of ``attend`` for one call: two launches (``prep_kernel``, ``kv_kernel``)."""
+    import torch
+
+    kk = kernels()
+    dev = q.device
+    BH, n_qpad, n_kpad, D = plan["BH"], plan["n_qpad"], plan["n_kpad"], plan["shape"][4]
+    qi = torch.empty((BH, n_qpad, D), dtype = torch.int8, device = dev)
+    qs = torch.empty((BH, n_qpad), dtype = torch.float32, device = dev)
+    kc = torch.empty((BH, D), dtype = torch.float32, device = dev)
+    ki = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
+    ks = torch.empty(
+        (BH, n_kpad // plan["rk"] if plan["k_tile"] else n_kpad), dtype = torch.float32, device = dev
+    )
+    out = {"qi": qi, "qs": qs, "ki": ki, "ks": ks, "plan": plan, "v": v}
+    vc = vg = vh = vi = vs = qs
+    if plan["int8_v"]:
+        vc = torch.empty((BH, D), dtype = torch.float32, device = dev)
+        vg = torch.empty((BH, D), dtype = torch.float32, device = dev)
+        vi = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
+        vs = torch.empty((BH, n_kpad // plan["bn"]), dtype = torch.float32, device = dev)
+        out.update(vi = vi, vs = vs, vc = vc, vg = vg)
+    elif plan["v_t"]:
+        vh = torch.empty(
+            (BH, D, n_kpad), dtype = torch.float16 if plan["v_t"] == 2 else v.dtype, device = dev
+        )
+        out["vh"] = vh
+    elif plan["pv"] == "half":
+        B, _, Sk, H, _ = plan["shape"]
+        vh4 = torch.empty((B, H, n_kpad, D), dtype = v.dtype, device = dev)
+        vh4[:, :, :Sk].copy_(v.permute(0, 2, 1, 3))
+        if n_kpad > Sk:
+            vh4[:, :, Sk:].zero_()
+        out["vh"] = vh4
+    if not plan["fused"]:
+        _quantise_unfused(kk, plan, q, k, v, out, kc)
+        return out
+    kk.prep[plan["prep_grid"]](
+        q, k, v, qi, qs, kc, vc, vg, vh, *plan["prep_args"], **plan["prep_meta"]
+    )
+    kk.kv[plan["kv_grid"]](k, kc, ki, ks, v, vc, vg, vi, vs, *plan["kv_args"], **plan["kv_meta"])
+    return out
+
+
+def _quantise_unfused(kk: Any, plan: dict, q: Any, k: Any, v: Any, out: dict, kc: Any) -> None:
+    """One launch per quantiser (what every call ran before the fused launches), for grids past ``GRID_LIMIT``."""
+    BH, n_qpad, n_kpad, D = plan["BH"], plan["n_qpad"], plan["n_kpad"], plan["shape"][4]
+    Sq, Sk, H = plan["shape"][1], plan["shape"][2], plan["shape"][3]
+    sq_, sk_, sv_ = plan["strides"]
+    kk.quant_rows[(BH, n_qpad // QUANT_ROWS)](
+        q,
+        q,
+        out["qi"],
+        out["qs"],
+        Sq,
+        n_qpad,
+        H,
+        *sq_,
+        plan["mul"],
+        R = QUANT_ROWS,
+        D = D,
+        CENTRE = False,
+        TILE = False,
+    )
+    kk.stats[(BH,)](k, kc, kc, Sk, H, *sk_, STEP = STATS_STEP, R = 32, D = D, MODE = 0)
+    rk = plan["rk"]
+    kk.quant_rows[(BH, n_kpad // rk)](
+        k,
+        kc,
+        out["ki"],
+        out["ks"],
+        Sk,
+        n_kpad,
+        H,
+        *sk_,
+        1.0,
+        R = rk,
+        D = D,
+        CENTRE = True,
+        TILE = plan["k_tile"],
+    )
+    if plan["int8_v"]:
+        kk.stats[(BH,)](v, out["vc"], out["vg"], Sk, H, *sv_, STEP = STATS_STEP, R = 32, D = D, MODE = 1)
+        kk.quant_v[(BH, n_kpad // plan["bn"])](
+            v,
+            out["vc"],
+            out["vg"],
+            out["vi"],
+            out["vs"],
+            Sk,
+            n_kpad,
+            H,
+            *sv_,
+            T = plan["bn"],
+            D = D,
+            TRANS = plan["pv"] == "int8_t",
+        )
+    elif plan["v_t"]:
+        kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](
+            v, out["vh"], Sk, n_kpad, H, *sv_, T = QUANT_ROWS, D = D, TO_F16 = plan["v_t"] == 2
+        )
 
 
 def quantise(
@@ -548,96 +1076,21 @@ def quantise(
     ``config``: ``bm`` / ``bn`` (query rows / keys per tile), ``warps``, ``stages``, ``pv`` (``int8``, ``half``:
     16-bit P.V on a heads-major copy of V, ``half_strided``: 16-bit P.V reading V in place) and ``kscale``
     (``key``: one K scale per key, ``tile``: one per key tile)."""
-    import torch
-
-    kk = kernels()
-    pv = pv or config.get("pv", "int8")
-    if pv not in PV_MODES:
-        raise ValueError(f"pv {pv!r}")
-    k_tile = config.get("kscale", "key") == "tile"
-    B, Sq, H, D = q.shape
-    Sk = k.shape[1]
-    bm, bn = int(config["bm"]), int(config["bn"])
-    dev = q.device
-    # log2(e) turns 2^x into e^x; 16 is the norm the rotation adds to Q and to K
-    mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / 16.0
-    n_qpad = _pad(Sq, math.lcm(QUANT_ROWS, bm))
-    n_kpad = _pad(Sk, math.lcm(QUANT_ROWS, bn))
-    BH = B * H
-
-    def st(x):
-        return x.stride(0), x.stride(1), x.stride(2)
-
-    qi = torch.empty((BH, n_qpad, D), dtype = torch.int8, device = dev)
-    qs = torch.empty((BH, n_qpad), dtype = torch.float32, device = dev)
-    kk.quant_rows[(BH, n_qpad // QUANT_ROWS)](
-        q, q, qi, qs, Sq, n_qpad, H, *st(q), mul, R = QUANT_ROWS, D = D, CENTRE = False, TILE = False
-    )
-    kc = torch.empty((BH, D), dtype = torch.float32, device = dev)
-    kk.stats[(BH,)](k, kc, kc, Sk, H, *st(k), STEP = STATS_STEP, R = 32, D = D, MODE = 0)
-    ki = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
-    if k_tile:
-        ks = torch.empty((BH, n_kpad // bn), dtype = torch.float32, device = dev)
-        kk.quant_rows[(BH, n_kpad // bn)](
-            k, kc, ki, ks, Sk, n_kpad, H, *st(k), 1.0, R = bn, D = D, CENTRE = True, TILE = True
-        )
-    else:
-        ks = torch.empty((BH, n_kpad), dtype = torch.float32, device = dev)
-        kk.quant_rows[(BH, n_kpad // QUANT_ROWS)](
-            k, kc, ki, ks, Sk, n_kpad, H, *st(k), 1.0, R = QUANT_ROWS, D = D, CENTRE = True, TILE = False
-        )
-    out = {
-        "qi": qi,
-        "qs": qs,
-        "ki": ki,
-        "ks": ks,
-        "n_qpad": n_qpad,
-        "n_kpad": n_kpad,
-        "v": v,
-        "pv": pv,
-        "k_tile": k_tile,
-        "shape": (B, Sq, Sk, H, D),
-        "config": config,
-    }
-    if pv in ("int8", "int8_t"):
-        vc = torch.empty((BH, D), dtype = torch.float32, device = dev)
-        vg = torch.empty((BH, D), dtype = torch.float32, device = dev)
-        kk.stats[(BH,)](v, vc, vg, Sk, H, *st(v), STEP = STATS_STEP, R = 32, D = D, MODE = 1)
-        vi = torch.empty((BH, n_kpad, D), dtype = torch.int8, device = dev)
-        vs = torch.empty((BH, n_kpad // bn), dtype = torch.float32, device = dev)
-        kk.quant_v[(BH, n_kpad // bn)](
-            v, vc, vg, vi, vs, Sk, n_kpad, H, *st(v), T = bn, D = D, TRANS = pv == "int8_t"
-        )
-        out.update(vi = vi, vs = vs, vc = vc, vg = vg)
-    elif pv == "half":
-        vh = torch.empty((B, H, n_kpad, D), dtype = v.dtype, device = dev)
-        vh[:, :, :Sk].copy_(v.permute(0, 2, 1, 3))
-        if n_kpad > Sk:
-            vh[:, :, Sk:].zero_()
-        out["vh"] = vh
-    elif pv in ("half_t", "f16_t"):
-        f16 = pv == "f16_t"
-        vh = torch.empty((BH, D, n_kpad), dtype = torch.float16 if f16 else v.dtype, device = dev)
-        kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](
-            v, vh, Sk, n_kpad, H, *st(v), T = QUANT_ROWS, D = D, TO_F16 = f16
-        )
-        out["vh"] = vh
-    return out
+    return _quantise(_plan(q, k, v, config, pv, scale), q, k, v)
 
 
 def attend(p: dict) -> Any:
     import torch
 
     kk = kernels()
-    B, Sq, Sk, H, D = p["shape"]
-    cfg = p["config"]
-    bm, bn = int(cfg["bm"]), int(cfg["bn"])
+    plan = p["plan"]
+    B, Sq, _, H, D = plan["shape"]
     v = p["v"]
     out = torch.empty((B, Sq, H, D), dtype = v.dtype, device = v.device)
-    mode = PV_MODES[p["pv"]]
-    vv = {0: v, 1: p.get("vh"), 2: p.get("vi"), 3: p.get("vh"), 4: p.get("vi")}[mode]
+    mode = plan["mode"]
+    vv = v if mode == 0 else p["vh"] if mode in (1, 3) else p["vi"]
     dummy = p["qs"]
-    kk.attn[(p["n_qpad"] // bm, B * H)](
+    kk.attn[plan["attn_grid"]](
         p["qi"],
         p["qs"],
         p["ki"],
@@ -647,34 +1100,8 @@ def attend(p: dict) -> Any:
         p.get("vc", dummy),
         p.get("vg", dummy),
         out,
-        Sq,
-        Sk,
-        p["n_qpad"],
-        p["n_kpad"],
-        H,
-        1.0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        v.stride(0),
-        v.stride(1),
-        v.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        BM = bm,
-        BN = bn,
-        D = D,
-        QK_INT8 = True,
-        K_TILE = p["k_tile"],
-        PV_MODE = mode,
-        EVEN_K = Sk % bn == 0,
-        ACC_IN_DOT = bool(cfg.get("acc_in_dot", False)),
-        PREFETCH_FIX = prefetch_fix(),
-        **_launch_options(cfg),
+        *plan["attn_args"],
+        **plan["attn_meta"],
     )
     return out
 
@@ -687,13 +1114,19 @@ def int8_attention(
     pv: Optional[str] = None,
     scale: Optional[float] = None,
 ) -> Any:
-    """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``."""
+    """``softmax(q k^T * scale) v`` with int8 Q.K^T (and int8 P.V for ``pv="int8"``) on ``[B, S, H, D]``: three
+    launches, their arithmetic planned once per call signature."""
     import torch
 
-    config = select_config(config or DEFAULT_CONFIGS[int(q.shape[-1])], int(k.shape[1]))
-    q, k, v = (x if x.stride(3) == 1 else x.contiguous() for x in (q, k, v))
+    if q.stride(3) != 1:
+        q = q.contiguous()
+    if k.stride(3) != 1:
+        k = k.contiguous()
+    if v.stride(3) != 1:
+        v = v.contiguous()
+    plan = _plan(q, k, v, config or DEFAULT_CONFIGS[int(q.shape[-1])], pv, scale)
     with torch.no_grad():
-        return attend(quantise(q, k, v, config, pv, scale))
+        return attend(_quantise(plan, q, k, v))
 
 
 def half_attention(
