@@ -1535,6 +1535,11 @@ _LORA_TARGET_MAP = {
     "k_proj": _LORA_KV_TARGETS,
     "v_proj": _LORA_KV_TARGETS,
     "o_proj": ("self_attn.o_a_proj", "self_attn.o_b_proj"),
+    # Qualified to the shared expert: a bare gate_proj would also hit self_attn.compressor.gate_proj (attention).
+    # The routed experts are 3D Parameters, reached through Unsloth's MoE detection from the caller's bare aliases.
+    "gate_proj": ("mlp.shared_experts.gate_proj",),
+    "up_proj": ("mlp.shared_experts.up_proj",),
+    "down_proj": ("mlp.shared_experts.down_proj",),
 }
 
 
@@ -1721,22 +1726,42 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     ):
         """Unsloth's get_peft_model calls this to translate the usual LoRA names into this model's Linears.
         q_proj -> q_a_proj / q_b_proj, k_proj / v_proj -> the single KV head (kv_proj), the compressor (kv_proj /
-        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj stay
-        leaves, which reach the shared expert and, through Unsloth's MoE detection, the routed experts. None and
-        "all-linear" select all of them (filtered by the attention / mlp families). The indexer (selection only, no
-        gradient) and the routers (frozen) are never targeted. A regex string or names this map does not know pass
-        through unchanged."""
+        gate_proj) and the engram key-value (wkv), o_proj -> o_a_proj (grouped) / o_b_proj; gate / up / down_proj ->
+        the shared expert, qualified so the compressor's gate_proj is not hit (the routed experts are reached by
+        Unsloth's MoE detection from the caller's bare names). None and "all-linear" select all of them. Every list,
+        explicit or automatic, is filtered by the attention family (self_attn, compressor, engram) and the mlp family
+        (shared and routed experts). The indexer (selection only, no gradient) and the routers (frozen) are never
+        targeted. A regex string passes through unchanged, as do names this map cannot place in a family."""
         if isinstance(target_modules, str) and target_modules != "all-linear":
             return target_modules
         if target_modules is None or target_modules == "all-linear":
-            wanted = (["q_proj", "k_proj", "o_proj"] if attention else []) + (
-                ["gate_proj", "up_proj", "down_proj"] if mlp else []
-            )
+            wanted = ["q_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         else:
             wanted = list(target_modules)
+        # Every target, mapped or passed through, is filtered by its family: attention = self_attn (incl. the
+        # compressor and indexer) and the engram, mlp = the shared and routed experts. Unknown leaves stay.
+        attention_parts = {"self_attn", "compressor", "indexer", "engram"}
+        mlp_parts = {"mlp", "shared_experts", "experts"}
+        attention_leaves = {
+            "q_a_proj",
+            "q_b_proj",
+            "kv_proj",
+            "o_a_proj",
+            "o_b_proj",
+            "wkv",
+            "weights_proj",
+        }
+        mlp_leaves = {"gate_up_proj"}
         out = []
         for name in wanted:
             for target in _LORA_TARGET_MAP.get(name, (name,)):
+                parts = str(target).split(".")
+                is_mlp = bool(mlp_parts.intersection(parts)) or parts[-1] in mlp_leaves
+                is_attention = not is_mlp and (
+                    bool(attention_parts.intersection(parts)) or parts[-1] in attention_leaves
+                )
+                if (is_attention and not attention) or (is_mlp and not mlp):
+                    continue
                 if target not in out:
                     out.append(target)
         return out
