@@ -61,3 +61,18 @@ def test_qwen3_embedder_packs_like_padded(monkeypatch, side):
     assert len(packed_grads) == len(padded_grads) > 0
     for a, b in zip(packed_grads, padded_grads):
         assert torch.nn.functional.cosine_similarity(a.flatten(), b.flatten(), dim = 0) > 0.99
+
+
+def test_modernbert_keeps_its_flash_attention_unpadding():
+    pytest.importorskip("flash_attn")
+    import transformers
+    from packaging.version import Version
+    from unsloth import FastSentenceTransformer
+
+    if Version(transformers.__version__).major >= 5 or torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("transformers 4 ModernBERT on an sm80+ GPU")
+    model = FastSentenceTransformer.from_pretrained(
+        "hf-internal-testing/tiny-random-ModernBertModel", max_seq_length = 64
+    )
+    # transformers 4 ModernBERT runs FlashAttention 2 on unpadded tokens when nothing forces SDPA.
+    assert model[0].auto_model.config._attn_implementation == "flash_attention_2"
