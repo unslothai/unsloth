@@ -22,6 +22,19 @@ import _frozen_table_parallel as ftp  # noqa: E402
 pytestmark = pytest.mark.skipif(ftp.available() is not None, reason = str(ftp.available()))
 
 
+@pytest.fixture(autouse = True)
+def _restore_environ():
+    # _base sets UNSLOTH_FROZEN_TABLE / UNSLOTH_ZOO_DISABLE_GPU_INIT for the model it builds; restore them so later
+    # tests (and the subprocesses they spawn) see the session's own environment.
+    saved = {k: os.environ.get(k) for k in ("UNSLOTH_FROZEN_TABLE", "UNSLOTH_ZOO_DISABLE_GPU_INIT")}
+    yield
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def _base(path, mode = "ram"):
     os.environ["UNSLOTH_FROZEN_TABLE"] = mode
     os.environ.setdefault("UNSLOTH_ZOO_DISABLE_GPU_INIT", "1")
