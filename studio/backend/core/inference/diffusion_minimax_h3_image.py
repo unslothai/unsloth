@@ -2492,25 +2492,45 @@ def conditioning_computes_in_float32(transformer: Any) -> int:
     return count
 
 
+def _int8_rescaled(self: Any, y: Any) -> Any:
+    """The output scales ``stream_runs_rescaled`` folds into this Linear, in place on a fresh output (float32 when
+    called from the epilogue)."""
+    out_scale = getattr(self, "_unsloth_out_scale", None)
+    if out_scale is not None:
+        y.mul_(out_scale)
+    value_scale = getattr(self, "_unsloth_value_half_scale", None)
+    if value_scale is not None:
+        y[..., : y.shape[-1] // 2] *= value_scale
+    return y
+
+
 def _int8_float32_epilogue_forward(self: Any, x: Any) -> Any:
     """torchao's dynamic-int8 Int8Tensor linear, op for op, with the rescale kept in float32. torchao casts
     ``int32 acc * x_scale`` to the activation dtype before the weight scale: that product is the unscaled int8 sum,
-    past 65504 in float16 on the H3 blocks, so attention reads inf. Anything else runs the class forward."""
+    past 65504 in float16 on the H3 blocks, so attention reads inf. Anything it does not know (static activation
+    scales, a torchao without these helpers, a non-float16 input) runs the class forward."""
     import torch
 
     weight = self.weight
     kwargs = getattr(weight, "act_quant_kwargs", None)
+    quantize = scaled_matmul = None
     if (
-        x.dtype is not torch.float16
-        or kwargs is None
-        or type(weight).__name__ != "Int8Tensor"
-        or getattr(weight, "act_pre_scale", None) is not None
+        x.dtype is torch.float16
+        and kwargs is not None
+        and type(weight).__name__ == "Int8Tensor"
+        and getattr(weight, "act_pre_scale", None) is None
+        and getattr(weight, "act_quant_scale", None) is None
+        and getattr(weight, "act_quant_zero_point", None) is None
     ):
-        return type(self).forward(self, x)
-    from torchao.kernel import int_scaled_matmul
-    from torchao.quantization.quant_primitives import MappingType
-    from torchao.quantization.quantize_.common import _choose_quant_func_and_quantize_tensor
-
+        try:
+            from torchao.kernel import int_scaled_matmul as scaled_matmul
+            from torchao.quantization.quantize_.common import (
+                _choose_quant_func_and_quantize_tensor as quantize,
+            )
+        except Exception:  # noqa: BLE001 - torchao without them: its own forward
+            quantize = None
+    if quantize is None:
+        return _int8_rescaled(self, type(self).forward(self, x))
     from .diffusion_convrot import (
         build_convrot_hadamard,
         is_rotated_linear,
@@ -2522,26 +2542,18 @@ def _int8_float32_epilogue_forward(self: Any, x: Any) -> Any:
         x = rotate_convrot_activation(
             x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
         )
-    q = _choose_quant_func_and_quantize_tensor(
-        x,
-        kwargs,
-        scale = getattr(weight, "act_quant_scale", None),
-        zero_point = getattr(weight, "act_quant_zero_point", None),
-    )
+    q = quantize(x, kwargs)
     codes = q.qdata.reshape(-1, q.qdata.shape[-1])
     x_scale = q.scale.reshape(-1, 1).float()
-    y = int_scaled_matmul(codes, weight.qdata.contiguous().t(), x_scale)
-    if kwargs.mapping_type == MappingType.ASYMMETRIC and getattr(q, "zero_point", None) is not None:
-        y = y - (q.zero_point.reshape(-1, 1).float() * x_scale) * weight.qdata.sum(dim = -1).float()
+    y = scaled_matmul(codes, weight.qdata.contiguous().t(), x_scale)
+    zero_point = getattr(q, "zero_point", None)
+    if zero_point is not None:
+        # an asymmetric activation's correction (all zeros for the symmetric int8 the hosted files declare)
+        y = y - (zero_point.reshape(-1, 1).float() * x_scale) * weight.qdata.sum(dim = -1).float()
     y = y * weight.scale.flatten().float()
     if self.bias is not None:
         y = y + self.bias.float()
-    out_scale = getattr(self, "_unsloth_out_scale", None)
-    if out_scale is not None:
-        y = y * out_scale
-    value_scale = getattr(self, "_unsloth_value_half_scale", None)
-    if value_scale is not None:
-        y[..., : y.shape[-1] // 2] *= value_scale
+    y = _int8_rescaled(self, y)
     return y.reshape(*x.shape[:-1], y.shape[-1]).to(x.dtype)
 
 
@@ -2565,10 +2577,11 @@ def int8_blocks_rescale_in_float32(transformer: Any) -> int:
     return count
 
 
-# fp16 cards: the block stack's residual stream at 1/STREAM_SCALE. bf16 runs it unscaled; the first block alone
-# already writes ~1e5 (MLP output 4.4e4 plus the stream) and block 36 reaches ~3e6, past float16's 65504.
-FP16_STREAM_SCALE = 1024.0
-# and the SwiGLU product (value half x silu(gate)) at 1/MLP_SCALE: block 39's overflows float16 unscaled.
+# fp16 cards: the block stack's residual stream at 1/STREAM_SCALE. bf16 runs it unscaled; on a real T4 render the
+# first block already writes ~1.3e5 and blocks 39-49 carry ~3.3e7 (32k at 1/1024), past float16's 65504; 1/4096
+# leaves 8x headroom, and the smallest stream values that matter stay normal float16.
+FP16_STREAM_SCALE = 4096.0
+# and the SwiGLU product (value half x silu(gate)) at 1/MLP_SCALE: block 39's (~3.6e5) overflows float16 unscaled.
 FP16_MLP_SCALE = 256.0
 _STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2.inner")
 _MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")

@@ -1270,7 +1270,7 @@ def test_the_fp16_int8_blocks_rescale_in_float32(h3i):
 
 def test_the_fp16_block_stream_runs_rescaled_past_the_fp16_range(h3i):
     """The H3 residual stream outgrows float16 (the first block alone writes ~1e5 on a real render): with the rows
-    entering at 1/1024, the blocks writing at 1/1024 and the stream norms' eps at 1/1024^2, the velocity matches the
+    entering at 1/4096, the blocks writing at 1/4096 and the stream norms' eps at 1/4096^2, the velocity matches the
     float32 forward where plain float16 reads inf / NaN."""
     import torch
 
