@@ -2101,3 +2101,16 @@ def test_cpu_backend_import_registers_deepseek_v41(fresh_cpu_child):
         pytest.skip("this unsloth_zoo has no CPU backend")
     assert probe is not None, out.stdout[-3000:] + out.stderr[-3000:]
     assert probe["cpu"] and probe["type"] == "DeepseekV41Config", probe
+
+
+def test_no_module_attribute_shares_a_def_name():
+    """unsloth_zoo's compiler picks the module attributes whose name is a `def` in this file and is called in it, then
+    swaps them for compiled functions: an imported module named like a method (`import copy` next to
+    DeepseekV41GroupState.copy) is replaced, and `copy.deepcopy` in from_pretrained raises."""
+    import inspect
+    import re
+
+    source = inspect.getsource(dsv41)
+    defs = set(re.findall(r"\bdef\s+(\w+)", source))
+    clashes = sorted(n for n in defs if inspect.ismodule(getattr(dsv41, n, None)))
+    assert not clashes, clashes

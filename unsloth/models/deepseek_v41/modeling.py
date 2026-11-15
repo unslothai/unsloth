@@ -14,10 +14,10 @@
 """DeepSeek-V4.1 text model for training, ported from deepseek-ai's reference (inference/model.py, engram.py);
 citations are model.py:<line> / engram.py:<line>."""
 
-import copy
 import json
 import math
 import os
+from copy import deepcopy
 from functools import lru_cache
 
 import torch
@@ -1657,7 +1657,7 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
         if kwargs.get("config") is not None and not isinstance(
             kwargs["config"], (str, os.PathLike)
         ):
-            kwargs["config"] = copy.deepcopy(kwargs["config"])
+            kwargs["config"] = deepcopy(kwargs["config"])
         if released and not released_needs_conversion():
             from . import _register_conversions
             if not _register_conversions():
