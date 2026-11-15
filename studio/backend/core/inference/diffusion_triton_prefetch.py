@@ -3,7 +3,9 @@
 
 """Skip Triton >= 3.8's sm_8x prefetch pass for 8-bit tt.dot modules (triton-lang/triton#12486: spills, ~7x slower).
 
-The cache key ignores the skip; harmless since only load timing changes, never output.
+Triton and Inductor cache keys ignore a compiler-stage patch, so a cubin compiled without the skip (an older Studio,
+or the kill switch) would be reused under it, and the reverse. Salting the sm_8x backend hash and the FX graph cache
+tag keeps one cache entry per fix state: other cards, and the kill switch, keep their stock keys.
 """
 
 from __future__ import annotations
@@ -24,12 +26,40 @@ _TRITON_PREFETCH_FIRST = (3, 8)  # the first release whose prefetch pass splits 
 _TRITON_PREFETCH_PIPELINE = re.compile(
     r"if\s+capability\s*//\s*10\s*==\s*8\s*:\s*\n\s*passes\.ttgpuir\.add_prefetch\(pm\)"
 )
+_TRITON_PREFETCH_SALT = "unsloth-sm8x-8bit-prefetch-skip-1"
 _INSTALL_LOCK = threading.Lock()
 _TRITON_8BIT_DOT = re.compile(r"\btt\.dot\b[^\n]*?:\s*tensor<[0-9x]*x(?:i8|f8E[0-9A-Za-z]+)>")
 
 
 def _triton_8bit_prefetch_fix_mode():
     return (os.environ.get(_TRITON_PREFETCH_ENV) or "1").strip().lower()
+
+
+def _triton_prefetch_fix_off():
+    return _triton_8bit_prefetch_fix_mode() in ("0", "off", "false", "no")
+
+
+def _prefetch_fix_salt(capability):
+    """Cache-key salt for kernels the patched pipeline compiles: sm_8x only, empty under the kill switch."""
+    if isinstance(capability, int) and capability // 10 == 8 and not _triton_prefetch_fix_off():
+        return _TRITON_PREFETCH_SALT
+    return ""
+
+
+def _salt_backend_hash(backend):
+    """backend.hash() enters every Triton cache key (triton/compiler/compiler.py get_cache_key)."""
+    original = backend.__dict__.get("hash")
+    if not callable(original) or getattr(original, _TRITON_PREFETCH_SENTINEL, False):
+        return
+
+    @functools.wraps(original)
+    def salted_hash(self):
+        key = original(self)
+        salt = _prefetch_fix_salt(getattr(getattr(self, "target", None), "arch", None))
+        return f"{key}-{salt}" if salt else key
+
+    setattr(salted_hash, _TRITON_PREFETCH_SENTINEL, True)
+    backend.hash = salted_hash
 
 
 def _triton_ttir_has_8bit_dot(mod):
@@ -58,6 +88,8 @@ def fix_triton_sm8x_8bit_prefetch():
     if not callable(make_ttgir) or not callable(original_prefetch):
         return False
     if getattr(make_ttgir, _TRITON_PREFETCH_SENTINEL, False):
+        with _INSTALL_LOCK:
+            _salt_backend_hash(backend)  # a copy of this fix from before the salt
         return True
     match = re.match(r"(\d+)\.(\d+)", str(getattr(triton, "__version__", "")))
     version = (int(match.group(1)), int(match.group(2))) if match else None
@@ -76,6 +108,7 @@ def fix_triton_sm8x_8bit_prefetch():
     with _INSTALL_LOCK:
         stage = backend.__dict__.get("make_ttgir")
         if getattr(getattr(stage, "__func__", stage), _TRITON_PREFETCH_SENTINEL, False):
+            _salt_backend_hash(backend)
             return True
         original_prefetch = getattr(ttgpuir, "add_prefetch", None)
         if not callable(original_prefetch):
@@ -114,6 +147,9 @@ def fix_triton_sm8x_8bit_prefetch():
                 state.active = previous
 
         setattr(patched_make_ttgir, _TRITON_PREFETCH_SENTINEL, True)
+        _salt_backend_hash(
+            backend
+        )  # before the stage swap: no compile may see the fix under the stock key
         backend.make_ttgir = staticmethod(patched_make_ttgir)
         return True
 
@@ -184,9 +220,47 @@ def _cover_inductor_workers(module):
     return True
 
 
+def _current_cuda_capability():
+    from .rocm_bf16 import is_rocm_torch
+    torch = sys.modules.get("torch")
+    try:
+        if torch is None or is_rocm_torch(torch) or not torch.cuda.is_initialized():
+            return None
+        major, minor = torch.cuda.get_device_capability()
+        return major * 10 + minor
+    except Exception:
+        return None
+
+
+def _salt_fx_graph_cache(module):
+    """An FX graph cache hit reloads its bundled cubins without a Triton cache lookup: tag its key the same way."""
+    details = getattr(module, "FxGraphHashDetails", None)
+    init = getattr(details, "__init__", None)
+    if init is None or getattr(init, _TRITON_PREFETCH_SENTINEL, False):
+        return False
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        try:
+            salt = triton_prefetch_fix_installed() and _prefetch_fix_salt(
+                _current_cuda_capability()
+            )
+            if salt and isinstance(getattr(self, "cache_key_tag", None), str):
+                self.cache_key_tag = f"{self.cache_key_tag}-{salt}" if self.cache_key_tag else salt
+        except Exception:
+            pass
+
+    setattr(__init__, _TRITON_PREFETCH_SENTINEL, True)
+    details.__init__ = __init__
+    return True
+
+
+_INDUCTOR_CODECACHE_MODULE = "torch._inductor.codecache"
 _POST_IMPORT = {
     _TRITON_COMPILER_MODULE: lambda module: fix_triton_sm8x_8bit_prefetch(),
     _INDUCTOR_POOL_MODULE: _cover_inductor_workers,
+    _INDUCTOR_CODECACHE_MODULE: _salt_fx_graph_cache,
 }
 
 

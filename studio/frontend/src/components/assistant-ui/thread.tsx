@@ -96,8 +96,11 @@ import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import {
   ChatSkillsDialog,
+  contextReportBranch,
+  isContextCommand,
   isRewindCommand,
   isSkillsCommand,
+  useContextReportStore,
   useRewindDialogStore,
 } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
@@ -184,6 +187,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { forkChatThread } from "@/features/chat/api/chat-api";
+import { syncThreadScroll } from "@/features/chat/thread-scroll-flag";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -2159,6 +2163,7 @@ export const Thread: FC<{
       viewportElRef.current = node;
       setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
+      syncThreadScroll(node);
     },
     [viewportRef, runtimeThreadId],
   );
@@ -2372,6 +2377,7 @@ export const Thread: FC<{
             viewportRef={viewportElRef}
           />
           <ForkChatShortcut />
+          <ContextReportMount />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -5781,6 +5787,42 @@ const Composer: FC<{
         });
         return;
       }
+      // Never sent: only a card under the last message.
+      if (!overlay && !hasAttachments && isContextCommand(composerText)) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        // The count endpoint refuses while anything generates.
+        if (
+          threadIsRunning ||
+          aui.thread().getState().isRunning ||
+          Object.values(runtime.runningByThreadId).some(Boolean)
+        ) {
+          toast.error(translate("context.waitForResponse"));
+          return;
+        }
+        // No local tokenizer: the header ring already shows the provider's total.
+        if (isExternalModelId(runtime.params.checkpoint)) {
+          toast.info(translate("context.apiNoBreakdown"));
+          return;
+        }
+        if (!runtime.params.checkpoint || runtime.loadedContextLength == null) {
+          toast.info(translate("context.noModel"));
+          return;
+        }
+        if (aui.thread().getState().messages.length === 0) {
+          toast.info(translate("context.emptyChat"));
+          return;
+        }
+        aui.composer().setText("");
+        useContextReportStore
+          .getState()
+          .showContext(
+            aui.threadListItem().getState().id,
+            contextReportBranch(aui.thread().getState().messages),
+            runtime.params.checkpoint,
+          );
+        return;
+      }
       if (
         !overlay &&
         !hasAttachments &&
@@ -5829,6 +5871,7 @@ const Composer: FC<{
           return;
         }
         requestThreadCompaction(referenceThreadId);
+        useContextReportStore.getState().dismissContext();
         clearStoredDraft();
         aui.composer().setText("");
         return;
@@ -8743,6 +8786,19 @@ const RewindDialogMount: FC = () => {
     </Suspense>
   ) : null;
 };
+
+const LazyContextReport = lazy(() =>
+  import("@/components/assistant-ui/context-report").then((module) => ({
+    default: module.ContextReport,
+  })),
+);
+
+const ContextReportMount: FC = () =>
+  useContextReportStore((s) => s.report !== null) ? (
+    <Suspense fallback={null}>
+      <LazyContextReport />
+    </Suspense>
+  ) : null;
 
 const RewindMessageButton: FC = () => {
   const aui = useAui();

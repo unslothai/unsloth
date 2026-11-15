@@ -97,6 +97,23 @@ def _laya():
     return module
 
 
+def _refuse_private_push_to_public_repo(repo_id, private, api) -> None:
+    # Torch-free twin of save._refuse_private_push_to_public_repo for the MLX pushes, which cannot import save.py.
+    if not private:
+        return
+    try:
+        is_private = getattr(api.repo_info(repo_id = repo_id, repo_type = "model"), "private", None)
+    except Exception as exc:
+        print(f"Unsloth: Could not confirm the visibility of {repo_id} ({exc}); continuing.")
+        return
+    if is_private is False:
+        raise RuntimeError(
+            f"Unsloth: private=True was requested but the Hugging Face repo {repo_id!r} already exists and is "
+            "public. Refusing to upload so private weights are not published. Make the repo private on the Hub, "
+            "push to a new repo id, or pass private=False."
+        )
+
+
 def is_decision_checkpoint(folder) -> bool:
     folder = Path(folder)
     return is_clef_checkpoint(folder) or (

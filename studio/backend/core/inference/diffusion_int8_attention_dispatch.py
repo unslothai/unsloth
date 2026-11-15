@@ -5,7 +5,7 @@
 
 The strided processors (FLUX.3, MiniMax-H3, MiniMax-H3-Image) call the kernel themselves. The rest pass ``[B, S, H, D]`` views to the
 dispatch, the kernel's own layout, so ``install`` gives each such processor an ``Int8Route`` backend and the wrapped
-dispatch sends the calls it can take to ``torch.ops.unsloth_studio.int8_attention_nhd``. These stay on the
+dispatch sends the calls it can take to ``torch.ops.unsloth_studio.int8_attention_nhd`` (in eager, its body directly). These stay on the
 incumbent backend:
 
 * masked or causal calls, dropout, a non-default scale, GQA, LSE requests, extra kwargs, context parallel;
@@ -32,6 +32,8 @@ import os
 import sys
 import threading
 from typing import Any, Optional
+
+from . import diffusion_int8_attention as _I8
 
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
@@ -282,7 +284,7 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
             reason = _cached_reason(backend, args, kwargs)
             _note(reason or "int8")
         if reason is None:
-            return torch.ops.unsloth_studio.int8_attention_nhd(
+            return _I8.int8_attention_call(
                 _arg(args, kwargs, 0, "query"),
                 _arg(args, kwargs, 1, "key"),
                 _arg(args, kwargs, 2, "value"),

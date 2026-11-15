@@ -6812,6 +6812,14 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   --composer-shadow: none !important;
 }
 
+/* thread-scroll-flag.ts: nothing to fade until the thread scrolls under the header. */
+:is(.chat-header-fade, .compare-pane-fade) {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+[data-thread-scrolled] > :is(.chat-header-fade, .compare-pane-fade) {
+  opacity: 1;
+}
 /* Plain glass already uses the page colour; only image wallpapers need the header contrast fade. */
 .chat-wallpaper:not([data-glass-backdrop])::after {
   content: "";
