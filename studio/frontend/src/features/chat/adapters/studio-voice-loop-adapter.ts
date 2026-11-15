@@ -153,6 +153,14 @@ export function voiceWroteBox(text: string): boolean {
 
 // The box minus this loop's last transcript, or null when that transcript is not its tail:
 // dictation prepends a typed draft, so a held fragment sits after it and must go before re-arming.
+// Once a send has cleared the box, its transcript no longer claims later drafts; a newer utterance's does.
+export function voiceTextReleaser(): () => void {
+  const said = voiceBoxText;
+  return () => {
+    if (voiceBoxText === said) voiceBoxText = "";
+  };
+}
+
 export function withoutVoiceText(text: string): string | null {
   const said = voiceBoxText.trim();
   const box = text.trimEnd();
@@ -354,6 +362,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     }
     let noiseFloor = 0;
     let noiseFrames = 0;
+    // A thread switch or Stop queued behind finish() resets the turn: the old words never submit into it.
+    const submitLater = (text: string) =>
+      setTimeout(() => {
+        if (!switchedOff() && epoch === heldEpoch) requestVoiceSubmit(text);
+      }, 0);
     let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
       vadDisabled ? BARGE_UNCONFIRMED_MS : BARGE_CONFIRMED_MS,
@@ -608,7 +621,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         heldJudgeId = null;
         emitSpeech(text, true);
         finish("stopped", text);
-        setTimeout(() => requestVoiceSubmit(text), 0);
+        submitLater(text);
         return;
       }
       if (bargedIn) requestVoiceBargeAbort();
@@ -797,7 +810,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             voiceTrace("hold.userEditAppend", { transcript });
             setTimeout(() => requestVoiceResume(), 0);
           } else {
-            setTimeout(() => requestVoiceSubmit(transcript), 0);
+            submitLater(transcript);
           }
         } else {
           if (bargedIn) {

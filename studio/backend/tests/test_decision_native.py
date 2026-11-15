@@ -1782,3 +1782,15 @@ def test_switching_mlx_decision_models_counts_the_outgoing_one_as_free(monkeypat
     outgoing = dataclasses.replace(target, name = "clef-ft:old")
     monkeypatch.setattr(laya_runtime, "_loaded", outgoing)
     assert laya_runtime._placement(target) == ("beside", None)
+
+
+def test_mlx_footprint_skips_saved_training_checkpoints(monkeypatch, tmp_path):
+    import dataclasses
+
+    (tmp_path / "model.safetensors").write_bytes(b"\0" * 2**20)
+    (tmp_path / "checkpoint-500").mkdir()
+    (tmp_path / "checkpoint-500" / "model.safetensors").write_bytes(b"\0" * 8 * 2**20)
+    clef = catalog.Checkpoint("clef-ft:x", str(tmp_path), None, "", layout = "clef")
+    target = dataclasses.replace(clef, backend = laya_runtime.MLX)
+    monkeypatch.setattr(laya_runtime, "_mlx_dirs", lambda checkpoint, local_only: (tmp_path, None))
+    assert laya_runtime._footprint_mib(target) == int(2**20 * 1.2) // 2**20 + 512

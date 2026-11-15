@@ -635,6 +635,10 @@ def _footprint_mib(checkpoint) -> int | None:
                 for folder in _mlx_dirs(checkpoint, local_only = True)
                 if folder is not None
                 for path in folder.rglob("*.safetensors")
+                # Saved training checkpoints under a run folder are never loaded with it.
+                if not any(
+                    part.startswith("checkpoint-") for part in path.relative_to(folder).parts[:-1]
+                )
             ]
         else:
             return None
