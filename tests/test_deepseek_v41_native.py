@@ -849,10 +849,11 @@ def test_a_direct_native_class_load_registers_the_release_renames_itself(tmp_pat
 def test_each_release_rename_applies_once_per_model_root():
     """transformers collects conversion rules per PreTrainedModel submodule (class name, then model_type): the
     text model nested in a causal LM must not add a second, scoped copy of every rule."""
+    from unsloth.models.deepseek_v41.convert import released_needs_conversion
     from unsloth.models.deepseek_v41.modeling import has_core_model_loading
 
-    if not has_core_model_loading():
-        pytest.skip("transformers without core_model_loading")
+    if not has_core_model_loading() or released_needs_conversion():
+        pytest.skip("transformers without the direct release load (convert.py loads it)")
     from transformers.conversion_mapping import get_model_conversion_mapping
 
     from unsloth.models import deepseek_v41 as pkg
