@@ -133,3 +133,12 @@ def test_unsloth_sft_config_leaves_packing_unset():
 
     source = inspect.getsource(rl._patch_trl_rl_trainers_impl)
     assert '"packing": None' in source
+
+
+def test_a_reused_config_decides_again(monkeypatch):
+    SFT, calls = _patched(monkeypatch)
+    config = _config()
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    assert config.packing is True
+    SFT(model = _Model(), args = config, train_dataset = _text(), data_collator = lambda rows: rows)
+    assert config.packing is False and calls["pack"] == 1

@@ -1868,10 +1868,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
-        # UnslothSFTConfig leaves packing None when the user did not set it (models/rl.py).
-        packing_unset = config_arg is not None and getattr(config_arg, "packing", False) is None
+        # UnslothSFTConfig leaves packing None when the user did not set it (models/rl.py); the mark
+        # lets a config reused for another trainer decide again.
+        packing_unset = config_arg is not None and (
+            getattr(config_arg, "packing", False) is None
+            or getattr(config_arg, "_unsloth_packing_unset", False)
+        )
         if packing_unset:
             setattr(config_arg, "packing", False)
+            setattr(config_arg, "_unsloth_packing_unset", True)
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
