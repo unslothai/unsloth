@@ -57,9 +57,8 @@ def _rocm_build() -> bool:
         return False
 
 
-# Sequence lengths kept out of the attention kernel's compile key, except on ROCm: there the % 16 facts on sq / sk are
-# worth 3% at 75k tokens on gfx1151 (Wan 2.2 A14B 720p), and a run keeps one resolution, so they cost one compile per
-# shape class, not per step. NVIDIA times the same either way.
+# Sequence lengths stay out of the attention kernel's compile key except on ROCm, where the % 16 facts are worth 3%
+# at 75k tokens on gfx1151 and a run keeps one resolution.
 _ATTN_NO_SPECIALIZE = (
     ["n_heads"] if triton is not None and _rocm_build() else ["sq", "sk", "n_heads"]
 )
@@ -1132,8 +1131,7 @@ def _launcher(
             else:
                 value = next(given)
                 if i < len(tensors):
-                    # an open slot, not the tensor: the plan outlives the call, and holding this call's buffers
-                    # would keep them allocated next to the following call's
+                    # an open slot, not the tensor: the plan outlives the call and must not pin its buffers
                     slots.append(i)
                     value = None
                 template.append(value)
@@ -1155,8 +1153,7 @@ def _launch(kernel: Any, plan: dict, name: str, tensors: tuple) -> None:
     if _fast_launch_ok() and isinstance(kernel, triton.runtime.jit.JITFunction):
         from triton.runtime.driver import driver
 
-        # keyed by the card the launch runs on (the operands' card: the public calls hold it via _on_card); a call
-        # whose operands sit on another card takes the regular launch, never another card's compiled kernel
+        # keyed by the operands' card; operands on another card take the regular launch
         dev = driver.active.get_current_device()
         fast = plan.setdefault("fast", {}).get((name, dev))
         if fast and tensors[0].get_device() == dev and all(t.data_ptr() % 16 == 0 for t in tensors):
