@@ -9,6 +9,8 @@ import os
 import queue
 import threading
 
+import torch
+
 _DONE = object()
 
 
@@ -38,10 +40,15 @@ class PrefetchedDataLoader:
     def __iter__(self):
         batches, stop = queue.Queue(self._unsloth_depth), threading.Event()
         loader = self._unsloth_loader
+        # A new thread starts on device 0: under torchrun every rank would open a context there.
+        device = torch.cuda.current_device() if torch.cuda.is_initialized() else None
 
         def produce():
-            iterator = iter(loader)
+            iterator = None
             try:
+                if device is not None:
+                    torch.cuda.set_device(device)
+                iterator = iter(loader)
                 for batch in iterator:
                     while not stop.is_set():
                         try:
