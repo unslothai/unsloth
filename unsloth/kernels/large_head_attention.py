@@ -24,6 +24,9 @@ __all__ = [
 
 # calls: kernel ran; fallback: a qualifying call went back to SDPA after an error.
 LARGE_HEAD_ENGAGED = {"calls": 0, "fallback": 0}
+# Set to True on a 4D mask by unsloth/models/_block_compile.py (eager scan before the compiled
+# block) when the mask is exactly causal with no padding; compiled graphs cannot scan a mask.
+PLAIN_CAUSAL_ATTR = "_unsloth_plain_causal"
 _SUPPORTED_HEAD_DIMS = (512,)
 _INT32_MAX = 2**31 - 1
 
@@ -901,6 +904,15 @@ def _make_router(original):
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
+            elif (
+                compiling
+                and getattr(attention_mask, PLAIN_CAUSAL_ATTR, None) is True
+                and attention_mask.shape[-2] == S
+                and attention_mask.shape[-1] == S
+            ):
+                # Block compile scanned this mask eagerly (no padding, plain causal), so the
+                # graph needs no host sync; the masked SDPA it replaces repeats the kv heads.
+                intervals = _dense_intervals(B, S, True, query.device)
             elif (
                 not compiling
                 and not capturing

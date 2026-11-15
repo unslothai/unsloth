@@ -825,3 +825,26 @@ def test_router_captures_into_a_cuda_graph_with_an_inference_mask():
     assert LH._SELF_CHECK[(str(device), dtype)] is True
     torch.testing.assert_close(masked, eager_masked, atol = 2e-2, rtol = 2e-2)
     torch.testing.assert_close(dense, eager_dense)
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
+    # Block compile scans the mask eagerly and marks it plain causal; the compiled graph then runs
+    # the kernel instead of masked SDPA (which repeats the single kv head 16 times at head_dim 512).
+    calls, original = _sentinel()
+    router = LH._make_router(original)
+    dtype = _cuda_dtype()
+    device = torch.device("cuda", torch.cuda.current_device())
+    assert LH._self_check(device, dtype) is True
+    q = torch.randn(1, 8, 40, 512, device = "cuda", dtype = dtype)
+    kv = torch.randn(1, 1, 40, 512, device = "cuda", dtype = dtype)
+    mask = _causal(40).cuda()[None, None]
+    want = LH.large_head_attention(q, kv, kv, *LH._dense_intervals(1, 40, True, q.device), 1.0)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    assert router(_Module(), q, kv, kv, mask, scaling = 1.0)[0] == "original"  # unverified
+    setattr(mask, LH.PLAIN_CAUSAL_ATTR, False)
+    assert router(_Module(), q, kv, kv, mask, scaling = 1.0)[0] == "original"
+    setattr(mask, LH.PLAIN_CAUSAL_ATTR, True)
+    out, _ = router(_Module(), q, kv, kv, mask, scaling = 1.0)
+    torch.testing.assert_close(out, want, rtol = 0, atol = 0)
+    assert len(calls) == 2

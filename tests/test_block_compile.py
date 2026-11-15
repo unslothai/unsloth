@@ -798,6 +798,25 @@ def test_gemma4_hook_installs_beneath_a_wrapping_router(monkeypatch):
     assert wrapped is not top and wrapped._unsloth_block_band and M._BAND_CHECK[0] is not None
 
 
+def test_gemma4_global_layer_mask_gets_a_causal_verdict(monkeypatch):
+    M = _load()
+    scans = []
+    _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+
+    class Gemma4TextAttention(torch.nn.Module):
+        is_sliding, sliding_window, head_dim = False, None, 512
+
+    layer = torch.nn.Module()
+    layer.self_attn = Gemma4TextAttention()
+    plain_causal, padded = torch.zeros(1, 1, 96, 96), torch.zeros(1, 1, 96, 96)
+    padded._ok = False
+    M._precheck_band(layer, 96, (plain_causal,), {})
+    M._precheck_band(layer, 96, (), {"attention_mask": padded})
+    assert scans == [(96, 96), (96, 96)]
+    assert plain_causal._unsloth_plain_causal is True and padded._unsloth_plain_causal is False
+
+
 def test_kill_switch(monkeypatch):
     M = _load()
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "0")
