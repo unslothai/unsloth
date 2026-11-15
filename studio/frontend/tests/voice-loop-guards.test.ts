@@ -301,7 +301,7 @@ test("a phrase still in VAD/STT holds the coalesced reply; an unmounted engine's
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(loop, /teardown\(\);\s*utterancesPending \+= 1;\s*try \{\s*await finalizeHeard\(\);\s*\} finally \{\s*utterancesPending -= 1;/);
   assert.match(engine, /if \(\(rt\.voiceHearing \|\| rt\.voiceTranscribing \|\| voiceUtterancePending\(\)\) && Date\.now\(\)/);
-  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*(?:\/\/[^\n]*\n\s*)?clearHeldTurn\(\);\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
+  assert.match(engine, /return \(\) => \{\s*rearmSeqRef\.current \+= 1;\s*(?:\/\/[^\n]*\n\s*)?clearHeldTurn\(\);\s*forgetVoiceBox\(\);\s*if \(voiceCoalesceTimerRef\.current\) clearTimeout/);
 });
 
 test("opening and dismissing voice setup keeps typed Send/Stop and the running reply", () => {
