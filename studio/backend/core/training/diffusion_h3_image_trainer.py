@@ -97,6 +97,32 @@ SIGMA_MODE_ENV = "UNSLOTH_H3_IMAGE_TRAIN_SIGMAS"
 TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
 
 
+# A de-distillation "training adapter" merged into the FROZEN base while training only (never saved, never loaded at
+# inference), as ai-toolkit trains this model: "off" (default), "ostris" (ostris/minimax_h3_training_adapter's
+# minimax_h3_image_training_adapter_v1), or a local .safetensors path. Native or diffusers key names both load.
+TRAINING_ADAPTER_ENV = "UNSLOTH_H3_IMAGE_TRAINING_ADAPTER"
+OSTRIS_ADAPTER = (
+    "ostris/minimax_h3_training_adapter",
+    "minimax_h3_image_training_adapter_v1.safetensors",
+)
+
+
+def training_adapter_path(hf_token: Optional[str] = None) -> Optional[str]:
+    value = (os.environ.get(TRAINING_ADAPTER_ENV) or "off").strip()
+    if value.lower() in ("", "0", "off", "none", "false", "no"):
+        return None
+    if value.lower() == "ostris":
+        from huggingface_hub import hf_hub_download
+
+        from core.inference.diffusion import hub_cache_dir
+
+        repo, filename = OSTRIS_ADAPTER
+        return hf_hub_download(repo, filename, token = hf_token, cache_dir = hub_cache_dir())
+    if not Path(value).expanduser().is_file():
+        raise ValueError(f"{TRAINING_ADAPTER_ENV}={value!r} is not 'ostris', 'off' or a LoRA file")
+    return str(Path(value).expanduser())
+
+
 def sigma_mode() -> str:
     value = (os.environ.get(SIGMA_MODE_ENV) or "grid").strip().lower()
     return "continuous" if value == "continuous" else "grid"
@@ -268,7 +294,13 @@ def encode_latent_stats(vae, picture, device) -> tuple[Any, Any]:
     return ((mu - lmean) / lstd).cpu(), (sd / lstd).cpu()
 
 
-def load_transformer(root: Path, device, base_precision: str, table: bool):
+def load_transformer(
+    root: Path,
+    device,
+    base_precision: str,
+    table: bool,
+    lora_deltas: Optional[dict] = None,
+):
     """The converted DiT with the AdaLN table; bf16 straight onto the card, int8 parked on the host (quantized onto
     the card after the adapter attaches)."""
     import torch
@@ -287,6 +319,7 @@ def load_transformer(root: Path, device, base_precision: str, table: bool):
         device = device,
         keep_on_device = keep,
         table = table,
+        lora_deltas = lora_deltas,
     )
     install_h3_image_forward(transformer)
     install_pdd_head_bank(transformer)
@@ -539,7 +572,11 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
     dit_root = _hub_root(
         cfg, tuple(h3i.H3_IMAGE_BASE_PATTERNS) + tuple(h3i.H3_IMAGE_DENSE_DIT_PATTERNS)
     )
-    transformer = load_transformer(dit_root, device, base_precision, table = not dense_adaln)
+    adapter = training_adapter_path(cfg.hf_token)
+    adapter_deltas = h3i.read_lora_deltas([(adapter, 1.0)]) if adapter else None
+    transformer = load_transformer(
+        dit_root, device, base_precision, table = not dense_adaln, lora_deltas = adapter_deltas
+    )
     transformer.requires_grad_(False)
     targets: Any = (
         H3_IMAGE_TARGETS
@@ -615,6 +652,8 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         compiled = False,
         base_precision = base_precision,
         sigma_mode = mode,
+        training_adapter = Path(adapter).name if adapter else None,
+        train_sigmas = [round(sv, 6) for sv, _t, _k in grid_steps],
         sequence_length = max(
             layouts.get(int(embeds_by_text[c].shape[1]), a.shape[-2], a.shape[-1])["seq"]
             for c, (a, _b) in zip(captions, cache)

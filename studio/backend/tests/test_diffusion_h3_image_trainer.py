@@ -360,3 +360,80 @@ def test_sd_cpp_says_h3_image_loras_need_the_diffusers_engine():
         )
         is None
     )
+
+
+def test_training_target_is_the_samplers_velocity_sign():
+    """An Euler step of the inference scheduler fed the training target (x0 - noise) lands exactly on the next noise
+    level of the same (x0, noise) pair, and the x0 estimate is exact; the negated output moves away from x0."""
+    torch = _stack()
+    from core.inference import diffusion_minimax_h3_image as h3i
+    from core.training.diffusion_h3_image_trainer import training_sigmas
+
+    g = torch.Generator().manual_seed(0)
+    x0, noise = torch.randn(64, 96, generator = g), torch.randn(64, 96, generator = g)
+    sched = h3i.MiniMaxH3ImageScheduler(sample_sigmas = list(h3i.H3_IMAGE_SIGMAS))
+    sched.set_timesteps(6, device = "cpu")
+    for k, (sigma, t, head) in enumerate(training_sigmas()):
+        sched._step_index = k
+        x_t = (1 - sigma) * x0 + sigma * noise
+        target = x0 - noise
+        nxt = float(sched.sigmas[k + 1])
+        stepped = sched.step(target, t, x_t)[0]
+        assert torch.allclose(stepped, (1 - nxt) * x0 + nxt * noise, atol = 1e-5)
+        # x0 estimate the sampler forms (x - out * sigma with out = -model_output) is exact
+        assert torch.allclose(x_t + sigma * target, x0, atol = 1e-5)
+        sched._step_index = k
+        wrong = sched.step(-target, t, x_t)[0]
+        if nxt < sigma:
+            assert (wrong - x0).norm() > (stepped - x0).norm()
+
+
+def test_training_sigmas_are_the_samplers_not_the_nominal_grid():
+    _stack()
+    from core.inference import diffusion_minimax_h3_image as h3i
+    from core.training.diffusion_h3_image_trainer import training_sigmas
+
+    used = [s for s, _t, _k in training_sigmas()]
+    nominal = list(h3i.H3_IMAGE_SIGMAS[:-1])
+    assert [round(float(s), 6) for s in h3i.reference_sigmas(6)[:-1]] == [round(s, 6) for s in used]
+    # the sampler's sigmas sit within 1e-3 of the published grid, each nearest its own head
+    for k, (u, n) in enumerate(zip(used, nominal)):
+        assert abs(u - n) < 1e-3
+        assert min(range(6), key = lambda j: abs(nominal[j] - u)) == k
+
+
+def test_native_ai_toolkit_lora_names_merge_like_the_converted_weights():
+    """A LoRA on MiniMax's native modules (fused interleaved qkv, [gate; value] fc1) merged after conversion equals the
+    converter applied to the native weight with the LoRA merged first."""
+    torch = _stack()
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    heads, hd, hidden, ffn, r = 2, 4, 8, 12, 3
+    g = torch.Generator().manual_seed(1)
+    w_qkv = torch.randn(3 * heads * hd, hidden, generator = g)
+    w_fc1 = torch.randn(2 * ffn, hidden, generator = g)
+    lora = {
+        "blocks.0.attn.qkv_proj": [
+            (torch.randn(r, hidden, generator = g), torch.randn(3 * heads * hd, r, generator = g), 0.7)
+        ],
+        "blocks.0.mlp.fc1": [
+            (torch.randn(r, hidden, generator = g), torch.randn(2 * ffn, r, generator = g), 0.5)
+        ],
+        "token_refiner.blocks.1.attn.out_proj": [
+            (torch.randn(r, heads * hd, generator = g), torch.randn(hidden, r, generator = g), 1.0)
+        ],
+    }
+    native = {"blocks.0.attn.qkv_proj.weight": w_qkv, "blocks.0.mlp.fc1.weight": w_fc1}
+    want = {}
+    for key, w in native.items():
+        a, b, s = lora[key[: -len(".weight")]][0]
+        want.update(dict(h3i.convert_native_transformer_tensor(key, w + s * b @ a, heads, hd)))
+    state = {}
+    for key, w in native.items():
+        state.update(dict(h3i.convert_native_transformer_tensor(key, w, heads, hd)))
+    deltas = h3i.native_lora_deltas(lora, heads, hd)
+    assert "token_refiner.refiner_blocks.1.attn.to_out.0" in deltas
+    h3i.merge_lora_deltas_(state, deltas)
+    assert set(state) == set(want)
+    for key in want:
+        assert torch.allclose(state[key], want[key], atol = 1e-5), key

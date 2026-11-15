@@ -3195,6 +3195,46 @@ def read_lora_deltas(loras: Sequence[tuple], into: Optional[dict] = None) -> dic
     return out
 
 
+_NATIVE_LORA_PREFIXES = (
+    "blocks.",
+    "token_refiner.blocks.",
+    "final_layer.",
+    "video_patch_proj",
+    "condition_proj",
+)
+
+
+def native_lora_deltas(deltas: dict, heads: int, head_dim: int) -> dict:
+    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit / ComfyUI LoRAs, ostris' training
+    adapter: ``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) moved onto the diffusers modules, as the checkpoint
+    converter moves the weights: a fused per-head-interleaved qkv B is reordered and split into ``to_q`` / ``to_k`` /
+    ``to_v`` sharing A, and fc1's ``[gate; value]`` B rows become ``ff.net.0.proj``'s ``[value; gate]``. Diffusers
+    names pass through unchanged."""
+    import torch
+
+    out: dict = {}
+    for module, terms in deltas.items():
+        if not module.startswith(_NATIVE_LORA_PREFIXES):
+            out.setdefault(module, []).extend(terms)
+            continue
+        if module.endswith(".attn.qkv_proj"):
+            prefix = native_transformer_key(module + ".weight")[: -len("qkv_proj.weight")]
+            for a, b, scale in terms:
+                q, k, v = reorder_interleaved_qkv(b, heads, head_dim).split(heads * head_dim, dim = 0)
+                for leaf, part in (("to_q", q), ("to_k", k), ("to_v", v)):
+                    out.setdefault(prefix + leaf, []).append((a, part.contiguous(), scale))
+            continue
+        name = native_transformer_key(module + ".weight")
+        if name is None:
+            raise ValueError(f"LoRA layer {module} names a weight the image DiT does not have")
+        target = name[: -len(".weight")]
+        if module.endswith(".mlp.fc1"):
+            target = target.replace(".mlp.fc1", ".ff.net.0.proj")
+            terms = [(a, torch.cat(b.chunk(2, dim = 0)[::-1]).contiguous(), sc) for a, b, sc in terms]
+        out.setdefault(target, []).extend(terms)
+    return out
+
+
 def merge_lora_deltas_(
     state: dict,
     deltas: dict,
@@ -3263,6 +3303,8 @@ def load_h3_image_transformer(
     else:
         config = {k: v for k, v in raw_config.items() if not k.startswith("_")}
     heads, head_dim = int(config["num_attention_heads"]), int(config["attention_head_dim"])
+    if lora_deltas:
+        lora_deltas = native_lora_deltas(lora_deltas, heads, head_dim)
     grid = table_timesteps() if table else None
     curve = adaln_curve_plan(grid) if grid is not None else None
     model = build_transformer_skeleton(config, table_grid = None)
