@@ -653,7 +653,7 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(440px\*var\(--ui-space-scale,1\)\)\]"/,
+    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(420px\*var\(--ui-space-scale,1\)\)\]"/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -1533,9 +1533,11 @@ test("a model with no logo of its own shows no icon", () => {
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
   assert.match(mark, /return null;\s*\}\s*$/);
   assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
+  // A loaded model without a logo still ejects on hover: the slot opens only then.
+  assert.equal(picker.match(/chosenName && chosenLoaded \? \(/g)?.length, 2);
   assert.equal(
     picker.match(
-      /chosenName && chosenLoaded && hasRowMark\(chosenMark\) \? \(/g,
+      /: "-my-0\.5 -mr-1\.5 w-0 overflow-hidden group-hover\/chip:-mx-0\.5 group-hover\/chip:w-\[calc\(18px\*var\(--ui-space-scale,1\)\)\]"/g,
     )?.length,
     2,
   );

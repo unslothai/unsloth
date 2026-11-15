@@ -4937,7 +4937,7 @@ export function ComposerModelPicker({
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-                ) : chosenName && chosenLoaded && hasRowMark(chosenMark) ? (
+                ) : chosenName && chosenLoaded ? (
                   <Hint label="Eject model">
                     {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                     <span
@@ -4952,7 +4952,13 @@ export function ComposerModelPicker({
                           source?.eject();
                         }
                       }}
-                      className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                      className={cn(
+                        "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                        // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
+                        hasRowMark(chosenMark)
+                          ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                          : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                      )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                         <RowMark row={chosenMark} />
@@ -5005,7 +5011,7 @@ export function ComposerModelPicker({
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : chosenName && chosenLoaded && hasRowMark(chosenMark) ? (
+            ) : chosenName && chosenLoaded ? (
               <Hint label="Eject model">
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                 <span
@@ -5020,7 +5026,13 @@ export function ComposerModelPicker({
                       source?.eject();
                     }
                   }}
-                  className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                  className={cn(
+                    "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                    // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
+                    hasRowMark(chosenMark)
+                      ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                      : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                  )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                     <RowMark row={chosenMark} />
@@ -5076,7 +5088,7 @@ export function ComposerModelPicker({
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
           (isExpanded || configTarget) &&
-            "h-[calc(440px*var(--ui-space-scale,1))]",
+            "h-[calc(420px*var(--ui-space-scale,1))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
