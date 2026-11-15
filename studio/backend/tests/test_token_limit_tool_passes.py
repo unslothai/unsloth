@@ -353,6 +353,11 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     # A later pass's failure settles the passes that already reported, on every exit.
     assert source.count("_sf_settle_reported_passes()") == 6  # the def and its five calls
     assert source.count("_sf_settle_streamed_passes()") == 5  # the def and its four calls
+    # A failed JSON drain still records the kept turn's text before settling.
+    assert "_sf_partial_text = raw_text" in source
+    assert "api_monitor.set_reply(monitor_id, _sf_partial_text)" in source
+    # A stopped Studio-tools provider run keeps its summed usage to the passes that reported.
+    assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -755,3 +760,100 @@ def test_a_provider_stream_stopped_before_any_output_settles_as_cancelled(monkey
     assert any(b"[DONE]" in (part if isinstance(part, bytes) else part.encode()) for part in body)
     # Cancelled, not completed: an empty stop gives the override back.
     assert monitor.snapshot()[0]["status"] == "cancelled"
+
+
+def test_the_tool_loop_marks_where_reported_passes_end(monkeypatch):
+    import threading
+
+    import core.inference.studio_tool_loop as loop_mod
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
+
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kwargs: "RESULT")
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    cancel = threading.Event()
+
+    def sse(payload):
+        return "data: " + json.dumps(payload)
+
+    call = {
+        "index": 0,
+        "id": "c1",
+        "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+    }
+    usage = {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+    turns = [
+        [
+            sse({"choices": [{"index": 0, "delta": {"content": "a" * 40}}]}),
+            sse({"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]}),
+            sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+            sse({"choices": [], "usage": usage}),
+            "data: [DONE]",
+        ],
+        # The later pass is stopped mid-answer, before it reports any usage.
+        [sse({"choices": [{"index": 0, "delta": {"content": "b" * 400}}]}), "stop"],
+    ]
+
+    class _Transport:
+        heals_text_tool_calls = True
+
+        def stream(self, **_kwargs):
+            lines = turns.pop(0) if turns else ["data: [DONE]"]
+
+            async def generate():
+                for line in lines:
+                    if line == "stop":
+                        cancel.set()
+                        return
+                    yield line
+
+            return generate()
+
+    streamed = [0]
+    marks = []
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+    }
+
+    async def run():
+        generator = stream_with_studio_tools(
+            _Transport(),
+            run = ToolLoopRun(
+                messages = [{"role": "user", "content": "hi"}], session_id = "s", thread_id = "t"
+            ),
+            policy = ToolLoopPolicy(
+                tools = [tool],
+                max_calls = 25,
+                timeout = 300,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+                on_pass_reported = lambda: marks.append(streamed[0]),
+            ),
+            cancel_event = cancel,
+        )
+        async for line in generator:
+            # Stands in for the relay, which counts each line before reading the next.
+            try:
+                payload = json.loads(line[len("data: ") :])
+            except ValueError:
+                continue
+            for choice in payload.get("choices") or [] if isinstance(payload, dict) else []:
+                content = (choice.get("delta") or {}).get("content")
+                if isinstance(content, str):
+                    streamed[0] += len(content)
+
+    asyncio.run(asyncio.wait_for(run(), timeout = 30.0))
+    # One reported pass, marked after its 40 characters and before the stopped pass's 400.
+    assert marks == [40]
+    assert streamed[0] >= 440

@@ -418,6 +418,8 @@ class ToolLoopPolicy:
     on_withheld_tool_call: Callable[[], None] | None = None
     # Called when a provider turn ends; headerless only, it clears the stripper withheld-call flag, which the wire may not close if a turn ends on DONE alone.
     on_provider_turn_end: Callable[[], None] | None = None
+    # Called once a provider turn's usage is folded into the run's total (a stopped turn has none).
+    on_pass_reported: Callable[[], None] | None = None
     # None keeps the request default (on); explicit booleans win.
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
@@ -1823,6 +1825,8 @@ async def _stream_with_studio_tools(
             context = _pass_context_tokens(turn.usage)
             if context > 0:
                 usage_totals["context_tokens"] = context
+            if policy.on_pass_reported is not None:
+                policy.on_pass_reported()
 
         # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
         # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.

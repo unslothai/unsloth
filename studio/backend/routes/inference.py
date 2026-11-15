@@ -30103,6 +30103,8 @@ async def _proxy_to_external_provider(
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+    # Reply length when a Studio-tools pass last reported usage; None until one does.
+    _covered_chars: list[Optional[int]] = [None]
 
     async def _watch_disconnect() -> None:
         # tool execution may emit no SSE lines for minutes, so poll for disconnects.
@@ -30159,6 +30161,10 @@ async def _proxy_to_external_provider(
                 if not _ui_events:
                     _tool_call_stripper.end_turn()
 
+            def _pass_reported() -> None:
+                # Every line of a reported pass was relayed (and counted) before the loop reads on.
+                _covered_chars[0] = api_monitor.reply_chars(monitor_id)
+
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -30203,6 +30209,7 @@ async def _proxy_to_external_provider(
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
                     on_provider_turn_end = _end_provider_turn,
+                    on_pass_reported = _pass_reported,
                 ),
                 cancel_event = cancel_event,
                 mcp_image = _mcp_image,
@@ -30255,6 +30262,17 @@ async def _proxy_to_external_provider(
                 if managed is not None:
                     managed_finish.see(line)
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
+                if (
+                    cancel_event.is_set()
+                    and _covered_chars[0] is not None
+                    and _is_openai_usage_only_sse(line)
+                ):
+                    # The loop's summed usage covers only the passes that reported before the stop.
+                    try:
+                        _summed = json.loads(line[len("data:") :]).get("usage")
+                    except ValueError:
+                        _summed = None
+                    _monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])
                 if monitor_event is None:
                     try:
                         # stamp TTFT only for delta streams; stream:false reports total latency.
@@ -35473,20 +35491,28 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
             )
 
+        # The kept turn's text so far, and the pass stats in place when it arrived (replaced once
+        # that pass reports): a drain that fails still settles what it generated.
+        _sf_partial_text = ""
+        _sf_text_stats = None
+
         def _sf_settle_reported_passes():
-            # A later pass's failure must not lose the passes that already reported.
+            if _sf_partial_text:
+                api_monitor.set_reply(monitor_id, _sf_partial_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
-                _monitor_usage(monitor_id, _stats.get("usage"))
+                _monitor_usage(
+                    monitor_id,
+                    _stats.get("usage"),
+                    reported_chars = None if _stats is not _sf_text_stats else 0,
+                )
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
             _sf_context_truncation = None
-            # The pass stats in place when the kept turn's text arrived; replaced once that pass reports.
-            _sf_text_stats = None
 
             def _drain_to_text():
-                nonlocal _sf_context_truncation, _sf_text_stats
+                nonlocal _sf_context_truncation, _sf_text_stats, _sf_partial_text
                 full_text = ""
                 # Only the resumed turn skips the generation prompt; track the mode of the kept turn.
                 continued = _sf_continue
@@ -35508,6 +35534,7 @@ async def produce_openai_chat_completions(
                     _event_type = event.get("type")
                     if _event_type == "content":
                         raw_text = event.get("text", "")
+                        _sf_partial_text = raw_text
                         _sf_text_stats = _sf_stats_holder.get("stats")
                         prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
