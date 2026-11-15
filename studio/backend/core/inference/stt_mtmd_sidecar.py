@@ -1207,6 +1207,7 @@ class MtmdSttSidecar:
         on_progress = None,
         *,
         context_length: Optional[int] = None,
+        prompt: Optional[str] = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1253,7 +1254,7 @@ class MtmdSttSidecar:
             self._active_requests += 1
             self._cancel_idle_unload_locked()
         try:
-            payload, _ = _transcription_payload(wav_bytes, audio_seconds, language)
+            payload, _ = _transcription_payload(wav_bytes, audio_seconds, language, prompt)
             input_tokens = self._count_prompt_tokens(
                 port, payload, cancel_event = cancel_event, api_key = api_key
             )
@@ -1551,7 +1552,10 @@ class MtmdSttSidecar:
 
 
 def _transcription_payload(
-    wav_bytes: bytes, audio_seconds: Optional[float], language: Optional[str]
+    wav_bytes: bytes,
+    audio_seconds: Optional[float],
+    language: Optional[str],
+    context: Optional[str] = None,
 ) -> tuple[dict, str]:
     payload = {
         "messages": [
@@ -1573,6 +1577,10 @@ def _transcription_payload(
         "temperature": 0,
         "max_tokens": _transcript_token_budget(audio_seconds),
     }
+    context = (context or "").strip()
+    if context:
+        # Qwen3-ASR reads its context (background text that biases recognition) from the system turn.
+        payload["messages"].insert(0, {"role": "system", "content": context})
     forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
     assistant_prefix = ""
     if forced_language:

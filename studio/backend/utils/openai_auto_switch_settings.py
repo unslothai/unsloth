@@ -563,6 +563,19 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_fast_verify")):
         entry["mlx_fast_verify"] = True
 
+    from core.inference.npu_flm_args import NPU_IMG_PRE_RESIZE_MAX, NPU_POWER_MODES
+
+    if payload.get("npu_power_mode") in NPU_POWER_MODES:
+        entry["npu_power_mode"] = payload["npu_power_mode"]
+    chunk = _bounded_int(payload.get("npu_prefill_chunk_len"), minimum = 1, maximum = 1048576)
+    if chunk is not None:
+        entry["npu_prefill_chunk_len"] = chunk
+    resize = _bounded_int(
+        payload.get("npu_img_pre_resize"), minimum = 0, maximum = NPU_IMG_PRE_RESIZE_MAX
+    )
+    if resize is not None:
+        entry["npu_img_pre_resize"] = resize
+
     for key in ("mlx_ple_offload", "mlx_expert_offload"):
         value = payload.get(key)
         if value == "off" or (

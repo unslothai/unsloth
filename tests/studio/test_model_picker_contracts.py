@@ -1121,7 +1121,7 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        "contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),"
         in page
     )
 
@@ -1240,7 +1240,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, pinsContextLength))" in page
+    assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"

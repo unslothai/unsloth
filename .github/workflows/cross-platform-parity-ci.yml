@@ -50,6 +50,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_uv_managed_python.py'
       - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
@@ -157,6 +158,7 @@ on:
       # The only lane that runs this test; the Windows smoke workflow skips it.
       - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/python/test_windows_uv_managed_python.py'
       - 'tests/python/test_windows_rollback_background_delete.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
       - 'tests/python/test_windows_setup_download_progress.py'
@@ -251,7 +253,7 @@ jobs:
           python-version: '3.12'
       # The CLI import chain test_installer_profile_hardening.py pulls in; rich is imported directly
       # by unsloth_cli. No torch: UNSLOTH_NO_TORCH keeps the suite off it.
-      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich uv==0.13.5
       # -rs: a platform-gated case that silently stopped running still reports green.
       - name: Cross-platform parity tests
         env:
@@ -260,6 +262,7 @@ jobs:
           python -m pytest
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
+          tests/python/test_windows_uv_managed_python.py
           tests/python/test_windows_rollback_background_delete.py
           tests/python/test_windows_setup_output_encoding.py
           tests/python/test_windows_setup_download_progress.py

@@ -245,6 +245,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
   fixedStepsFor,
@@ -2305,11 +2306,17 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
         revert.appliedSteps = recommended.steps;
         revert.appliedGuidance = recommended.guidance;
@@ -5154,8 +5161,15 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
   const loadedFamily = status?.family ?? null;
   const officialPresets = useMemo(

@@ -186,6 +186,7 @@ class SdCppServer:
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
         self._vid_gen_features: Optional[dict] = None
+        self._vid_gen_output_formats: tuple[str, ...] = ()
         self._stopped = False
         atexit.register(self.stop)
 
@@ -203,18 +204,34 @@ class SdCppServer:
         """Read once per server, idle only (capabilities can block behind a job); older builds get False."""
         if not features:
             return True
-        caps = self._vid_gen_features
+        caps = self._vid_gen_capabilities()
         if caps is None:
+            return False
+        return all(caps[0].get(key) is True for key in features)
+
+    def vid_gen_output_formats(self) -> tuple[str, ...]:
+        """The vid_gen ``output_format`` values this server writes (same once-per-server read); () when unknown."""
+        caps = self._vid_gen_capabilities()
+        return () if caps is None else caps[1]
+
+    def _vid_gen_capabilities(self) -> Optional[tuple[dict, tuple[str, ...]]]:
+        """(vid_gen features, vid_gen output formats), read once; None when the read failed (retried next call)."""
+        if self._vid_gen_features is None:
             try:
                 resp = self._client.get(f"{self.base_url}{_CAPABILITIES_PATH}", timeout = 10.0)
                 data = resp.json() if resp.status_code == 200 else {}
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
-                return False
-            modes = data.get("features_by_mode") if isinstance(data, dict) else None
+                return None
+            data = data if isinstance(data, dict) else {}
+            modes = data.get("features_by_mode")
             caps = modes.get("vid_gen") if isinstance(modes, dict) else None
-            caps = caps if isinstance(caps, dict) else {}
-            self._vid_gen_features = caps
-        return all(caps.get(key) is True for key in features)
+            formats = data.get("output_formats_by_mode")
+            formats = formats.get("vid_gen") if isinstance(formats, dict) else None
+            self._vid_gen_features = caps if isinstance(caps, dict) else {}
+            self._vid_gen_output_formats = tuple(
+                f for f in (formats if isinstance(formats, list) else ()) if isinstance(f, str)
+            )
+        return self._vid_gen_features, self._vid_gen_output_formats
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -604,7 +621,7 @@ class SdCppServer:
             "vid_gen",
             _VID_GEN_PATH,
             payload,
-            self._decode_video,
+            self._fetch_video,
             on_step = on_step,
             cancel_event = cancel_event,
             poll_interval = poll_interval,
@@ -741,6 +758,23 @@ class SdCppServer:
             self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout = 5.0)
         except Exception:  # noqa: BLE001 -- cancel is best-effort
             pass
+
+    def _fetch_video(self, job: dict[str, Any]) -> bytes:
+        """The finished job's container: raw bytes from ``result.media_url`` (uncompressed AVI), else base64 JSON."""
+        result = job.get("result") if isinstance(job, dict) else None
+        media_url = result.get("media_url") if isinstance(result, dict) else None
+        if not isinstance(media_url, str) or not media_url.startswith("/sdcpp/v1/jobs/"):
+            return self._decode_video(job)
+        try:
+            resp = self._client.get(f"{self.base_url}{media_url}", timeout = 300.0)
+        except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
+            raise RuntimeError(f"sd-server video download failed: {exc}") from exc
+        expected = result.get("media_size")
+        if resp.status_code != 200 or (isinstance(expected, int) and len(resp.content) != expected):
+            raise RuntimeError(
+                f"sd-server video download failed (HTTP {resp.status_code}, {len(resp.content)} bytes)."
+            )
+        return resp.content
 
     @staticmethod
     def _decode_video(job: dict[str, Any]) -> bytes:
