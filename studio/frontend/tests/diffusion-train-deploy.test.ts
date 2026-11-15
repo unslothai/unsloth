@@ -128,3 +128,17 @@ test("a Qwen-Image-2.1 adapter deploys on Turbo, and a loaded Turbo preselects 2
   // 2.1 itself is the training base, not a distilled pair, so the reverse lookup does not claim it.
   assert.equal(resolveDiffusionTrainingBase(qwen21, "Qwen/Qwen-Image-2.1"), null);
 });
+
+// Qwen-Image-2.1 and Turbo load int8 / fp8 by default, and those builds refuse an adapter picked after the load.
+test("Deploy to Create bakes the trained adapter into the load", async () => {
+  const source = await readSrcAsync("features/images/images-page.tsx");
+  const start = source.indexOf("const handleDeployAdapter = useCallback(");
+  const deploy = source.slice(start, source.indexOf("const deployFromVideo", start));
+  assert.match(deploy, /const deployLoras: LoraSpecInput\[\] = \[\{ id: stem, weight: 1 \}\];/);
+  assert.match(
+    deploy,
+    /handleLoad\(args\.baseRepo, \{ kind: "pipeline" \}, \{\s*\.\.\.currentLoadAdvanced\(args\.baseRepo\),\s*loras: deployLoras,\s*\}\)/,
+  );
+  // A load that never starts leaves the previous model resident, so its own selection comes back.
+  assert.match(deploy, /if \(!started\) \{\s*pendingDeploy\.current = null;\s*setLoras\(prevLoras\);/);
+});
