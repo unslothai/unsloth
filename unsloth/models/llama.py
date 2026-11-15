@@ -68,6 +68,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
     fsdp2_requested,
@@ -1977,6 +1978,24 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
     return logits
 
 
+def logits_to_keep_tensor(num_logits_to_keep, logits_to_keep):
+    """Tensor logits_to_keep (positions or bool mask), else None."""
+    for keep in (logits_to_keep, num_logits_to_keep):
+        if isinstance(keep, torch.Tensor):
+            return keep
+    return None
+
+
+def slice_hidden_to_keep(hidden_states, keep):
+    # Mirrors transformers' slice_logits_to_keep; a (B, T) bool mask flattens to (N, H).
+    keep = keep.to(hidden_states.device)
+    if keep.ndim == 2:
+        if keep.dtype == torch.bool:
+            return hidden_states[keep]
+        return torch.take_along_dim(hidden_states, keep[..., None], dim = 1)
+    return hidden_states[:, keep, :]
+
+
 def _run_backbone(self, **kwargs):
     # The CausalLM forward feeds the final norm's output to lm_head or the fused CE loss, which
     # return a fresh grad, so the norm may write dX over it. Hidden states handed back to the
@@ -2101,7 +2120,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head_device = lm_head.device
 
         dtype = lm_head.dtype
-        # Skip int max() if either is a tensor (HF selective-decode form).
+        keep = logits_to_keep_tensor(num_logits_to_keep, logits_to_keep)
+        if keep is not None and (labels is not None or shift_labels is not None):
+            keep = None
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
             num_logits_to_keep = 0
         else:
@@ -2115,7 +2136,9 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         # Output last hidden states without logits if asked.
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-            if num_logits_to_keep != 0:
+            if keep is not None:
+                hidden_states = slice_hidden_to_keep(hidden_states, keep)
+            elif num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
                 loss = None,
@@ -2125,7 +2148,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attentions = outputs.attentions,
             )
 
-        if bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+        if keep is not None:
+            logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(dtype))
+        elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
@@ -3189,8 +3214,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
         if graphs and _decode_graphs.EAGER_REDOS == redos:
             _decode_graphs.record_need(self, token)
     if graphs and restore_training_mode:
-        # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
-        # decode buffers for training.
+        # Back to training: free the graphs and decode buffers for it, unless they fit beside it
+        # (keep_for_training; they replay the updated adapters after the optimizer step).
         _decode_graphs.release_for_training(self)
     elif graphs and getattr(output, "past_key_values", None) is not None:
         # The returned cache views the persistent decode buffers: hand them over, so a later
@@ -4387,6 +4412,7 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                quantize_moe_experts_if_requested(model)
             elif not fast_inference:
                 # Re-quantized packed checkpoint: use model_config (quant config dropped), not config.json.
                 from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
@@ -4473,6 +4499,7 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                quantize_moe_experts_if_requested(model)
                 if fsdp2_requested():
                     prepare_fsdp2_qlora(model, dtype)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)

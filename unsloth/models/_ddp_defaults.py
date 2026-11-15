@@ -38,6 +38,7 @@ _SKIPPABLE_NAME_MARKERS = (
     "lm_head",
     "embed",
 )
+_CLASSIFIER_HEADS = ("score", "classifier")
 _SUBMODEL_CONFIG_KEYS = ("vision_config", "audio_config", "vision_tower", "speech_config")
 _MOE_CONFIG_KEYS = (
     "num_experts",
@@ -132,14 +133,24 @@ def _lora_uses_every_trainable_param(model):
         != "LORA"
     ):
         return False
-    for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
-        if getattr(cfg, attr, None):
-            return False
     base = getattr(model, "get_base_model", lambda: None)()
+    # A classifier head in modules_to_save runs on every forward.
+    classifier = type(base).__name__.endswith("ForSequenceClassification")
+    for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
+        value = getattr(cfg, attr, None)
+        if (
+            attr == "modules_to_save"
+            and classifier
+            and value
+            and set(value) <= set(_CLASSIFIER_HEADS)
+        ):
+            continue
+        if value:
+            return False
     config = getattr(base, "config", None) or getattr(model, "config", None)
     # Decoder-only causal LMs only: encoder-decoder and speech models can leave adapters idle (t2u_model).
-    if getattr(config, "is_encoder_decoder", False) or not type(base).__name__.endswith(
-        ("ForCausalLM", "LMHeadModel")
+    if getattr(config, "is_encoder_decoder", False) or not (
+        classifier or type(base).__name__.endswith(("ForCausalLM", "LMHeadModel"))
     ):
         return False
     if _config_may_skip(config):
@@ -157,7 +168,9 @@ def _lora_uses_every_trainable_param(model):
         n_trainable += 1
         if id(param) in head_params:
             return False
-        if not any(m in name for m in _LORA_PARAM_MARKERS):
+        if not any(m in name for m in _LORA_PARAM_MARKERS) and not (
+            classifier and ".modules_to_save." in name
+        ):
             return False
         lowered = name.lower()
         if any(m in lowered for m in _SKIPPABLE_NAME_MARKERS):

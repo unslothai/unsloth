@@ -333,8 +333,8 @@ def PatchRL(FastLanguageModel):
                 yield unwrapped_model
             finally:
                 generating_model.generate = original_generate
-                # Back to training: the next optimizer step invalidates the decode graphs, so free
-                # them and their decode buffers (KV cache) for the backward pass now.
+                # Back to training: free the decode graphs and their buffers (KV cache) for the backward
+                # pass, unless they fit beside it (keep_for_training: they replay the updated adapters).
                 _decode_graphs.release_for_training(model)
                 FastLanguageModel.for_training(
                     model,

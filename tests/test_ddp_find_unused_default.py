@@ -203,6 +203,34 @@ def test_modules_to_save_config_keeps_default(ddp_env):
     assert _helper()(_args(), model) is None
 
 
+def _llama_classifier():
+    config = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        num_labels = 3,
+        pad_token_id = 0,
+    )
+    return transformers.LlamaForSequenceClassification(config)
+
+
+def test_sequence_classification_head_defaults_to_false(ddp_env):
+    # True crashed reentrant checkpointing ("ready only once").
+    model = _lora(_llama_classifier(), task_type = "SEQ_CLS")
+    assert any(".modules_to_save." in n and p.requires_grad for n, p in model.named_parameters())
+    assert _helper()(_args(), model) is False
+
+
+def test_sequence_classification_extra_modules_to_save_keep_default(ddp_env):
+    model = _lora(
+        _llama_classifier(), task_type = "SEQ_CLS", modules_to_save = ["score", "embed_tokens"]
+    )
+    assert _helper()(_args(), model) is None
+
+
 def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):
     # An embedding-side Linear (e.g. GPT-NeoX's `embed_out` head on transformers 4.x) gets lora_A / lora_B
     # tensors, so only the name rule keeps it out.

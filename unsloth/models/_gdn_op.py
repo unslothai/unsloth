@@ -77,20 +77,21 @@ def _varlen_kwargs(fn, cu_seqlens):
 
 
 def _chunk_meta(q, k, v, g):
-    # (qn, q_rstd, kn, k_rstd, g_cumsum, A), as fla 0.5 allocates them
+    # (qn, q_rstd, kn, k_rstd, g_cumsum, A), as fla 0.5 allocates them; A is per value head [B, T, HV, 64].
     return (
         (q.shape, q.dtype),
         (q.shape[:-1], torch.float32),
         (k.shape, k.dtype),
         (k.shape[:-1], torch.float32),
         (g.shape, torch.float32),
-        ((*k.shape[:-1], 64), k.dtype),
+        ((*v.shape[:-1], 64), k.dtype),
     )
 
 
+# Inductor/AOTAutograd disk caches key on the op name, not its fake: rename on every fake meta change (_v2: A per value head).
 try:
 
-    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk", mutates_args = ())
+    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk_v2", mutates_args = ())
     def _gdn_chunk(
         q: torch.Tensor,
         k: torch.Tensor,
