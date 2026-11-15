@@ -1123,6 +1123,33 @@ def test_decode_packed_base_keeps_its_matmul(bsz, fp8):
     assert calls == [X.shape]
 
 
+@pytest.mark.parametrize("bsz", [1, 3])
+@pytest.mark.parametrize("tagged", [False, True])
+def test_decode_returns_the_strided_out_with_its_strides(tagged, bsz, monkeypatch):
+    # The MLP writes down_proj into temp_up[..., :hd]: the caller's strided out comes back as is.
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(bsz, 1, 64, generator = g), torch.randn(32, 64, generator = g)
+    A, B = torch.randn(4, 64, generator = g), torch.randn(32, 4, generator = g)
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(kernel_utils, name, lambda proj: False)
+    B_in = _tag(B) if tagged else B
+    monkeypatch.setattr(
+        kernel_utils, "get_lora_parameters_bias", lambda proj: (W, None, A, B_in, 0.5, None)
+    )
+    out = torch.empty(bsz, 1, 40)[:, :, :32]
+    got = kernel_utils.fast_linear_forward(None, X, out = out)
+    assert got.data_ptr() == out.data_ptr() and got.stride() == out.stride()
+    assert (type(got) is _TaggedTensor) == tagged
+    want = X @ W.t() + 0.5 * (X @ A.t()) @ B.t()
+    torch.testing.assert_close(_plain(got), want, rtol = 1e-5, atol = 1e-5)
+
+
 @pytest.mark.parametrize("which", ["A", "B"])
 def test_the_traced_no_grad_accumulate_keeps_a_subclass_result(which, monkeypatch):
     # The opaque op returns nothing, so a subclass operand takes the in-place method and keeps its type.

@@ -282,7 +282,7 @@ pub fn browser_download_open(
     if runs_code(&path) {
         return Err("Programs and scripts open from their folder.".to_string());
     }
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())
+    crate::process::open_detached(&path).map_err(|error| error.to_string())
 }
 
 /// Whether each download is still where it was saved, in the order asked.

@@ -148,16 +148,13 @@ class RawTextDataLoader:
         if not text or not text.strip():
             return []
 
-        # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
-        # Normalise tokenizer return formats
         if hasattr(tokens, "__len__") and len(tokens) > 0:
             if hasattr(tokens[0], "__len__"):
                 tokens = tokens[0]
         elif isinstance(tokens, int):
-            # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
@@ -168,7 +165,6 @@ class RawTextDataLoader:
         num_tokens = len(tokens) + int(reserve_eos)
 
         if num_tokens <= chunk_size:
-            # Fits in a single chunk
             if return_tokenized:
                 tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 if eos_token_id is not None:
@@ -209,7 +205,11 @@ class RawTextDataLoader:
 
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
+                # Literal special tokens are corpus text; clean-up would rewrite spacing (Llama 3 enables it).
+                decode_kwargs = {"skip_special_tokens": False}
+                if getattr(self.tokenizer, "clean_up_tokenization_spaces", False):
+                    decode_kwargs["clean_up_tokenization_spaces"] = False
+                chunk_text = self.tokenizer.decode(chunk_tokens, **decode_kwargs)
                 if is_last:
                     chunk_text += eos_token
 
@@ -400,7 +400,7 @@ class TextPreprocessor:
         """Checks a dataset for min and max sequence lengths, character encoding issues, repeated
         content and empty chunks."""
         stats = {
-            "total_samples": len(dataset),
+            "total_samples": 0,
             "empty_samples": 0,
             "min_length": float("inf"),
             "max_length": 0,
@@ -434,6 +434,7 @@ class TextPreprocessor:
         seen_texts = set()
 
         for i, text in enumerate(texts):
+            stats["total_samples"] += 1
             if not text or len(text.strip()) == 0:
                 stats["empty_samples"] += 1
                 continue

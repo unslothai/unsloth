@@ -26,6 +26,16 @@ _COMPILE_OPTIONS = {
 }
 
 
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
+
+
 def _cudagraph_mode():
     """UNSLOTH_BLOCK_CUDAGRAPHS: "1" always on, unset or "auto" decided per run (see _auto_observe),
     anything else off (before auto, every value but "1" meant off)."""
@@ -705,7 +715,10 @@ def _region_recompile_limit(kinds):
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
-_SKIP = {"GptOssDecoderLayer"}
+# DeepSeek-V4.1 port: the CSA2 top-k gather is [B, S, min(index_topk, T), D]; Inductor's backward codegen fails on the
+# unbound symbol ("For Min(4, s24), expected [s24] to have been codegen-ed", torch 2.14). Its layers also share a
+# per-forward group-state dict that gradient checkpointing replays per layer.
+_SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
 def _enabled():
@@ -804,6 +817,24 @@ def _rebind_class(cls):
             new = _rebind_globals(new)
         if new is not value:
             setattr(cls, key, new)
+
+
+def _relax_strict_dynamic(obj):
+    """Alias tensors that carry a caller's strict mark_dynamic so the block only sees its own maybe marks.
+
+    unsloth_zoo marks input_ids dim 1 for its loss bookkeeping, and Qwen4Exp passes input_ids into every
+    block as ple_input_ids. A length the block specializes then raised ConstraintViolationError and demoted
+    the layer kind to the stock forward. A view drops the mark (it lives on the tensor object), not the data.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape) if getattr(obj, "_dynamo_dynamic_indices", None) else obj
+    if type(obj) in (tuple, list):
+        new = [_relax_strict_dynamic(o) for o in obj]
+        return obj if all(a is b for a, b in zip(new, obj)) else type(obj)(new)
+    if type(obj) is dict:
+        new = {k: _relax_strict_dynamic(v) for k, v in obj.items()}
+        return obj if all(new[k] is obj[k] for k in obj) else new
+    return obj
 
 
 def _mark_seq_dynamic(seq_len, obj):
@@ -1649,6 +1680,7 @@ def _wrap(
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
+            hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
@@ -1672,7 +1704,7 @@ def _wrap(
             return run(self, hidden_states, args, kwargs, mode)
         while True:
             try:
-                with torch._dynamo.config.patch(suppress_errors = False):
+                with _strict_dynamo():
                     out = run(self, hidden_states, args, kwargs, mode)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out

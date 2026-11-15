@@ -25,6 +25,7 @@ import {
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { isNpuModelId } from "@/features/npu";
 import { withSandboxAttachmentPaths } from "../sandbox-attachments";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -136,6 +137,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { withRunThreadScopedSettings } from "../utils/thread-scoped-settings";
 import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
 import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
@@ -188,6 +190,7 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
+  isGeminiApiProviderType,
 } from "../external-providers";
 
 import {
@@ -302,6 +305,8 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  withChatOwnedSettings,
+  withLoadedModelOverrides,
   localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -363,8 +368,11 @@ import {
 } from "../utils/image-input-support";
 import {
   appendCompactionMarker,
+  COMPACTION_NOTICE_LABEL,
+  COMPACTION_NOTICE_TEXT,
   type CompactionMarker,
   compactionAnchorToolCallId,
+  compactionNoticeKind,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -1721,6 +1729,19 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
+/** Strict templates (Qwen3.5) reject a second system turn; the backend joins system parts with "\n\n", so merging is byte-identical there. */
+function prependSystemPrompt<T extends { role: string; content: unknown }>(
+  messages: T[],
+  text: string,
+): void {
+  const first = messages[0];
+  if (first?.role === "system" && typeof first.content === "string") {
+    messages[0] = { ...first, content: `${text}\n\n${first.content}` };
+    return;
+  }
+  messages.unshift({ role: "system", content: text } as T);
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -2227,10 +2248,7 @@ export async function buildLocalTokenCountHistory(
     systemPrompt: safeSystemPrompt,
   });
   if (combinedSystemPrompt) {
-    outboundMessages.unshift({
-      role: "system",
-      content: combinedSystemPrompt,
-    });
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
 
   return {
@@ -2317,6 +2335,7 @@ export async function buildLocalTokenCountExtras(
       }),
       isMlx: state.loadedIsMlx === true,
       isManagedEngine: state.loadedEngine !== "auto",
+      isNpu: isNpuModelId(state.params.checkpoint),
       autoCompactEnabled: state.autoCompactEnabled,
       rolling: isKnownCharacterChat(threadId),
     }),
@@ -2723,6 +2742,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedCtxCheckpoints",
   "cacheRam",
   "loadedCacheRam",
+  "engramPrecision",
+  "loadedEngramPrecision",
   "tensorParallel",
   "loadedTensorParallel",
   "loadedDisableVision",
@@ -2760,6 +2781,9 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxAnePrefillRequested",
   "mlxFastVerify",
   "loadedMlxFastVerifyRequested",
+  "npuPowerMode",
+  "npuPrefillChunkLen",
+  "npuImgPreResize",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2769,6 +2793,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxPleOffloadReason",
   "mlxExpertOffloadReason",
   "loadedMlxOffloadDiskBytes",
+  "loadedNpuContextFit",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -4971,6 +4996,9 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      // The waits below let the user open another chat, whose settings then fill the store.
+      const runtimeAtSend = runtime;
+      const chatOwnedAtSend = withChatOwnedSettings(runtime);
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -5011,6 +5039,12 @@ export function createOpenAIStreamAdapter(
       }
 
       const liveRuntime = useChatRuntimeStore.getState();
+      // A pending read means the store holds defaults, not this chat's settings.
+      const runChatSettingsLive =
+        !liveRuntime.threadScopedSettingsPending &&
+        (liveRuntime.activeThreadId === runtimeAtSend.activeThreadId ||
+          (resolvedThreadId !== undefined &&
+            liveRuntime.activeThreadId === resolvedThreadId));
       runtime = queuedRunSettings
         ? queuedRunSettings.params.checkpoint
           ? { ...liveRuntime, ...queuedRunSettings }
@@ -5072,7 +5106,16 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime?.modelCapabilities ?? null,
               ),
             }
-        : liveRuntime;
+        : runChatSettingsLive
+          ? liveRuntime
+          : // The same model keeps the chat's effective values; a new one re-derives what its load sets.
+            liveRuntime.params.checkpoint === runtimeAtSend.params.checkpoint &&
+              (liveRuntime.activeGgufVariant ?? null) === (runtimeAtSend.activeGgufVariant ?? null)
+            ? withRunThreadScopedSettings(liveRuntime, runtimeAtSend)
+            : withLoadedModelOverrides(
+                withRunThreadScopedSettings(liveRuntime, chatOwnedAtSend),
+                liveRuntime,
+              );
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
       const sandboxSessionId = await resolveSandboxSessionId(
@@ -5177,7 +5220,7 @@ export function createOpenAIStreamAdapter(
       });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
-        externalProvider?.providerType === "gemini" &&
+        isGeminiApiProviderType(externalProvider?.providerType) &&
         imageGenerationEnabledForThisTurn;
       const webSearchEnabledForThisTurn = Boolean(
         externalProvider &&
@@ -5281,7 +5324,7 @@ export function createOpenAIStreamAdapter(
             // A character chat's turns carry the speaker names, notes and turn instructions.
             characterRun ? characterRun.shape(message) : message,
             replayReasoning,
-            externalProvider?.providerType === "gemini",
+            isGeminiApiProviderType(externalProvider?.providerType),
           );
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
@@ -5339,7 +5382,7 @@ export function createOpenAIStreamAdapter(
         : "";
       const hasGeminiReplayContinuation = Boolean(
         continuation &&
-          externalProvider?.providerType === "gemini" &&
+          isGeminiApiProviderType(externalProvider?.providerType) &&
           (continuation.geminiReplayTurns?.length ||
             continuation.thoughtParts?.length ||
             continuation.answerParts?.length ||
@@ -5368,7 +5411,7 @@ export function createOpenAIStreamAdapter(
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         const geminiReplayTurns =
-          externalProvider?.providerType === "gemini"
+          isGeminiApiProviderType(externalProvider?.providerType)
             ? continuation.geminiReplayTurns
             : undefined;
         if (geminiReplayTurns?.length) {
@@ -5421,10 +5464,7 @@ export function createOpenAIStreamAdapter(
             { agentsMd: true },
           );
       if (combinedSystemPrompt) {
-        outboundMessages.unshift({
-          role: "system",
-          content: combinedSystemPrompt,
-        });
+        prependSystemPrompt(outboundMessages, combinedSystemPrompt);
       }
       let disabledToolGuard: string | null = null;
       const disabledToolGuardProviderType = externalProvider?.providerType;
@@ -5638,10 +5678,13 @@ export function createOpenAIStreamAdapter(
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
+      const isNpuForCompaction = isNpuModelId(params.checkpoint);
+      const isCloudForCompaction = isExternalModelId(params.checkpoint);
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
-        (isGgufForCompaction || isMlxForCompaction);
+        (isGgufForCompaction || isMlxForCompaction || isNpuForCompaction ||
+          isCloudForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6921,6 +6964,8 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                autoCompactTokens: externalProvider.autoCompactTokens,
+                compactNow,
               }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -6979,6 +7024,7 @@ export function createOpenAIStreamAdapter(
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
               isManagedEngine: isManagedEngineForCompaction,
+              isNpu: isNpuForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               rolling: characterRun != null,
               compactNow,
@@ -7325,18 +7371,33 @@ export function createOpenAIStreamAdapter(
                   rollingContextNoticeThreads.add(resolvedThreadId);
                   // Once per thread per page load; the durable record is the notice on the turn that compacted.
                   const archived = contextTruncation?.archived_messages ?? 0;
-                  toast.info("This conversation was compacted", {
-                    description: archived
-                      ? "It got long, so older turns were removed from the model's " +
-                        "context. They are saved and searchable, and relevant parts are " +
-                        "brought back automatically."
-                      : contextTruncation?.summarized
-                        ? "The full conversation is still visible and saved. " +
-                          "The provider summarized older turns so the chat can continue."
-                        : "The full conversation is still visible and saved. " +
-                          "Unsloth removed complete older turns from this request so the chat can continue.",
-                    duration: 8000,
-                  });
+                  const noticeKind = compactionNoticeKind(chunk.context_truncated);
+                  if (noticeKind === "compacted" || noticeKind === "summarized-by-provider") {
+                    toast.info("This conversation was compacted", {
+                      description: archived
+                        ? "It got long, so older turns were removed from the model's " +
+                          "context. They are saved and searchable, and relevant parts are " +
+                          "brought back automatically."
+                        : contextTruncation?.summarized
+                          ? "The full conversation is still visible and saved. " +
+                            "The provider summarized older turns so the chat can continue."
+                          : "The full conversation is still visible and saved. " +
+                            "Unsloth removed complete older turns from this request so the chat can continue.",
+                      duration: 8000,
+                    });
+                  } else {
+                    // A cloud chat: say whether history was summarized or had to be dropped.
+                    const dropped = noticeKind !== "summarized";
+                    (dropped ? toast.warning : toast.info)(
+                      COMPACTION_NOTICE_LABEL[noticeKind],
+                      {
+                        description:
+                          `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
+                          "The full conversation is still visible and saved.",
+                        duration: 8000,
+                      },
+                    );
+                  }
                 }
                 continue;
               }
@@ -8160,7 +8221,7 @@ export function createOpenAIStreamAdapter(
                 reasoningFromDetails;
               if (
                 !capturedGeminiThoughtPart &&
-                externalProvider?.providerType === "gemini" &&
+                isGeminiApiProviderType(externalProvider?.providerType) &&
                 (reasoning || geminiThoughtSignature)
               ) {
                 appendGeminiThoughtReplayPart(
@@ -8888,8 +8949,9 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description:
-              "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: isCloudForCompaction
+              ? "There was nothing before your latest message to summarize."
+              : "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
         const finalTiming = withPriorTiming(

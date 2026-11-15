@@ -701,10 +701,10 @@ def _hook_no_placement_ancestors(model):
     }
     if len(placed_devices) < 2:
         return 0
-    names = getattr(model, "_no_placement_params", None) or []
-    owners = {
-        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
-    }
+    from .loader_utils import no_placement_matcher
+
+    match = no_placement_matcher(model)
+    owners = {n.rsplit(".", 1)[0] for n in unplaced if match(n)}
     skip_keys = getattr(model, "_skip_keys_device_placement", None)
     hooked = 0
     for owner in owners:
@@ -3279,6 +3279,10 @@ def _architecture_skip_modules(model_types):
             )
         )
         skip.extend(f"encoder.layers.{i}.attention" for i in range(48))
+    # DeepSeek-V4.1's o_a_proj is a grouped nn.Linear (G weight blocks applied per head group); bitsandbytes swaps it
+    # for a plain Linear4bit whose forward multiplies every group by the whole weight.
+    if any(mt.startswith("deepseek_v41") for mt in model_types):
+        skip.append("o_a_proj")
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.

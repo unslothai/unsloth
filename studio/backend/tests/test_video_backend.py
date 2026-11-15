@@ -11228,6 +11228,20 @@ def test_ticker_never_walks_backwards_or_past_the_total(monkeypatch):
     assert ticker.completed() == 4
 
 
+def test_ticker_caught_up_waits_only_for_steps_before_the_lead(monkeypatch):
+    ticker, events = _ticker(monkeypatch, 4)
+    ticker.record(1)
+    assert ticker.caught_up(1)
+    ticker.record(2)
+    assert not ticker.caught_up(1)
+    events[0].done = True
+    assert ticker.caught_up(1)
+    ticker.record(3)
+    ticker.record(4)
+    # The last step is enqueued: nothing is left to cancel, so the host is never held.
+    assert ticker.caught_up(1)
+
+
 def test_ticker_falls_back_to_the_host_count_without_device_events(monkeypatch):
     # A CPU host has no events and no run-ahead, so the host count IS the progress.
     import core.inference.video as video_mod
@@ -11477,10 +11491,19 @@ def test_decode_phase_covers_the_audio_decoder_too():
     assert "decode" not in audio_vae.__dict__
 
 
-def _patch_events(monkeypatch, *, done: bool = False):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in."""
+def _patch_events(
+    monkeypatch,
+    *,
+    done: bool = False,
+    run_ahead: bool = True,
+):
+    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
+
+    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
     import core.inference.video as video_mod
 
+    if run_ahead:
+        monkeypatch.setattr(video_mod, "_hold_for_device", lambda ticker, cancel: None)
     events: list = []
 
     def _fake_event():
@@ -11526,6 +11549,38 @@ def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkey
         backend.generate(prompt = "a fox", steps = 4)
     assert pipe.scheduler.calls == 1
     assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    ],
+)
+def test_a_cancel_stops_a_denoise_the_device_has_not_caught_up_with(
+    fake_runtime, monkeypatch, repo
+):
+    # A step the host has enqueued cannot be cancelled, so the host must not run ahead of the device.
+    events = _patch_events(monkeypatch, run_ahead = False)
+    backend = VideoBackend()
+    backend.load_pipeline(repo, model_kind = "pipeline")
+    outcome: dict = {}
+
+    def _run():
+        try:
+            backend.generate(prompt = "a fox", steps = 20, num_frames = 9, fps = 24)
+        except BaseException as exc:  # noqa: BLE001 -- asserted below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    worker.join(0.5)
+    backend.cancel_generate()
+    worker.join(10)
+    assert not worker.is_alive()
+    assert VIDEO_CANCELLED_MSG in str(outcome.get("error"))
+    assert len(events) <= 3, len(events)
 
 
 def test_phase_reads_encode_until_the_denoise_loop_starts(fake_runtime, monkeypatch):

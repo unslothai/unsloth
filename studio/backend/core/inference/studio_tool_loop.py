@@ -45,11 +45,17 @@ import urllib.parse
 
 from dataclasses import dataclass, field
 from functools import partial
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
+from core.inference.context_window import (
+    _reply_floor,
+    estimate_messages_tokens_conservative,
+    messages_without_unpriced_media,
+    tool_result_budget,
+)
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
@@ -391,6 +397,8 @@ class ToolLoopRun:
     supports_vision: bool = False
     # Counted toward the loop's image cap so resumed chats cannot exceed it.
     promoted_image_parts: tuple = ()
+    served_window: Callable[[], Awaitable[int | None]] | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen = True)
@@ -414,6 +422,46 @@ class ToolLoopPolicy:
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
     website_policy: dict[str, Any] | None = None
+
+
+def _result_budget_tokens(
+    window: int,
+    max_tokens: int | None,
+    conversation: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    turn: Any,
+    calls: list[dict[str, Any]],
+    tool_messages: list[dict[str, Any]],
+    call_index: int,
+) -> int:
+    thread = messages_without_unpriced_media(conversation)
+    results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
+    rest = [m for m in thread if m.get("role") != "tool"]
+    rest.append(
+        {
+            "role": "assistant",
+            "content": "".join(turn.text),
+            "reasoning_content": "".join(turn.reasoning),
+        }
+    )
+    replayed = [
+        {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
+        for call in calls
+    ]
+    batch = [{"role": "assistant", "tool_calls": replayed}]
+    held = estimate_messages_tokens_conservative(results, dense_ascii = True)
+    spent = (
+        estimate_messages_tokens_conservative(rest)
+        + estimate_messages_tokens_conservative(tools or [])
+        + held
+        + estimate_messages_tokens_conservative(batch, dense_ascii = True)
+    )
+    # Uncounted results get two characters a budget token: fit the window even at one token each.
+    room = min(
+        tool_result_budget(window, max_tokens, spent),
+        tool_result_budget(window, _reply_floor(window), spent + held) // 2,
+    )
+    return room // (len(calls) - call_index)
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1879,6 +1927,8 @@ async def _stream_with_studio_tools(
         turn_executed_real_tool = False
 
         started_fetches.clear()
+        # Read per batch: Ollama reports a window only once the first turn has loaded the model.
+        window = await run.served_window() if run.served_window is not None else None
         for call_index, call in enumerate(calls):
             if cancel_event.is_set():
                 break
@@ -2088,6 +2138,7 @@ async def _stream_with_studio_tools(
                 approved = host_access_approved,
                 strict = strict_isolation,
                 share = image_share,
+                index = call_index,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -2113,9 +2164,20 @@ async def _stream_with_studio_tools(
                     kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
-                # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
+                # 0, not the served window: tools would count with a local GGUF loaded at that window.
                 if accepts_kwarg(execute_tool, "context_tokens"):
                     kwargs["context_tokens"] = 0
+                if window and accepts_kwarg(execute_tool, "result_budget_tokens"):
+                    kwargs["result_budget_tokens"] = _result_budget_tokens(
+                        window,
+                        run.max_tokens,
+                        getattr(transport, "sent_messages", None) or conversation,
+                        controller.active_tools(include_deferred = True),
+                        turn,
+                        calls,
+                        tool_messages,
+                        index,
+                    )
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config

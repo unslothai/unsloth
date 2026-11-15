@@ -1847,20 +1847,22 @@ def fast_linear_forward(
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
+        # Update through a 1-D / 2-D view but return `out` itself: a re-view of a strided buffer
+        # (down_proj writes into temp_up[..., :hd]) breaks torch.matmul's fold to one mm downstream.
         if bsz == 1:
-            out = out.view(out_dim)
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmv_(B, temp_lora, alpha = lora_S)
+            res = out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
         else:
-            out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
-        out = out.view(bsz, 1, out_dim)
+            res = out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
+        # A subclass operand makes the in-place method return its type (#16249).
+        if type(res) is not type(out):
+            out = out.as_subclass(type(res))
 
     if bias is not None:
         out += bias

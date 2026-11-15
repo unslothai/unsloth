@@ -1950,3 +1950,59 @@ def test_parametrized_class_is_reused_per_module(monkeypatch):
     assert type(b) is not seen[0] and torch.equal(
         b.weight, 2 * b.parametrizations["weight"].original
     )
+
+
+def test_relax_strict_dynamic_aliases_only_marked_tensors():
+    M = _load()
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    other = torch.zeros(2, 16)
+    pos = (torch.zeros(1, 16), torch.zeros(1, 16))
+    out = M._relax_strict_dynamic((other, pos, {"ple_input_ids": ids, "x": None}))
+    assert out[0] is other and out[1] is pos
+    alias = out[2]["ple_input_ids"]
+    assert alias is not ids and alias.data_ptr() == ids.data_ptr() and alias.shape == ids.shape
+    assert not getattr(alias, "_dynamo_dynamic_indices", None)
+    assert ids._dynamo_dynamic_indices == {1}  # the caller's tensor keeps its own mark
+    unmarked = (other, {"a": other})
+    assert M._relax_strict_dynamic(unmarked) is unmarked
+
+
+def test_strict_marked_kwarg_does_not_demote_the_block(monkeypatch, capsys):
+    """Qwen4Exp passes input_ids (strictly marked by unsloth_zoo's loss bookkeeping) into every block as
+    ple_input_ids; a length the block specialized raised ConstraintViolationError and the layer kind fell
+    back to the stock forward."""
+    M = _load()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = "eager", fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class PleDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            ple_input_ids = None,
+            **kwargs,
+        ):
+            out = self.proj(hidden_states)
+            if ple_input_ids.shape[1] == 16:  # a block that specializes the length
+                out = out + 1
+            return out
+
+    M._wrap(PleDecoderLayer, {})
+    layer = PleDecoderLayer().train()
+    x = torch.randn(2, 16, 8, requires_grad = True)
+    ids = torch.zeros(2, 16, dtype = torch.long)
+    torch._dynamo.mark_dynamic(ids, 1)
+    layer(x, ple_input_ids = ids).sum().backward()
+    torch._dynamo.reset()
+    assert "block compile failed" not in capsys.readouterr().out
+    assert layer._unsloth_block_mode != M._OFF

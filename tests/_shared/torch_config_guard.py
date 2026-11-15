@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from contextvars import ContextVar
 from typing import Any
 
 CONFIG_MODULES = (
@@ -29,6 +30,19 @@ _LOCK = threading.Lock()
 # (module, key) -> (user_override before the delete, stack of the delete)
 _DELETES: dict[tuple[str, str], tuple[Any, str]] = {}
 _installed = False
+
+
+def _read_override(entry: Any) -> Any:
+    # torch 2.12+ keeps user_override in a ContextVar that __delattr__ resets, so save its value, not the var.
+    override = entry.user_override
+    return override.get() if isinstance(override, ContextVar) else override
+
+
+def _write_override(entry: Any, value: Any) -> None:
+    if isinstance(entry.user_override, ContextVar):
+        entry.user_override.set(value)
+    else:
+        entry.user_override = value
 
 
 def _entries(module_name: str) -> dict[str, Any] | None:
@@ -55,7 +69,7 @@ def install_delete_recorder() -> bool:
         if entry is not None:
             with _LOCK:
                 _DELETES[(self.__name__, name)] = (
-                    entry.user_override,
+                    _read_override(entry),
                     "".join(traceback.format_stack(limit = 16)[:-1]),
                 )
         return original(self, name)
@@ -141,7 +155,7 @@ def restore(hidden: list[tuple[str, str]]) -> str:
         with _LOCK:
             prior = _DELETES.pop((module_name, key), None)
         if prior is not None:
-            entry.user_override = prior[0]
+            _write_override(entry, prior[0])
         entry.hide = False
         module = sys.modules.get(module_name)
         if module is not None:

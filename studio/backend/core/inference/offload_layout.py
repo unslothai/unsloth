@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 import os
 
 from core.inference.lookup_tables import is_per_layer_embedding
@@ -121,8 +121,14 @@ def split_shard_paths(path: str) -> Optional[list[str]]:
     ]
 
 
-def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
-    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present"""
+def layout_from_gguf(
+    path: str,
+    *,
+    all_shards: bool = False,
+    files: Optional[Sequence[str]] = None,
+) -> ModelLayout:
+    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present.
+    ``files`` (with all_shards) is the exact set llama-server reads instead, ``path`` first: a split whose Engram table comes from --ple."""
     try:
         import struct
 
@@ -151,6 +157,10 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
                 return offs - orig_offs, [raw_itype, alen], [], types
 
         readers = [_LayoutReader(path)]
+        if all_shards and files:
+            return _layout_from_readers(
+                readers + [_LayoutReader(p) for p in files[1:]], complete = True
+            )
         if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
             shards = split_shard_paths(path)
             if not shards or not all(os.path.isfile(p) for p in shards):
@@ -172,11 +182,12 @@ def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
 
-def _layout_from_readers(readers) -> ModelLayout:
-    """One reader per shard, the first carrying the metadata."""
+def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
+    """One reader per file, the first carrying the metadata; ``complete`` vouches that they are
+    every file llama-server reads, whatever split.count says."""
     reader = readers[0]
     # Split GGUF: GGUFReader maps one shard, so a partial read undercounts and can OOM under --fit off; abstain unless every shard is given
-    if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
+    if not complete and (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
     arch = str(_field(reader, "general.architecture") or "")

@@ -1380,6 +1380,7 @@ def _push_with_mtp_head(save_kwargs):
         private = save_kwargs["private"],
         exist_ok = True,
     )
+    _refuse_private_push_to_public_repo(repo_id, save_kwargs["private"], api = api)
     revision = save_kwargs["revision"]
     if revision is not None and not revision.startswith("refs/pr/"):
         try:
@@ -1528,7 +1529,10 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
         )
     except (TypeError, ValueError):
         save_method = kwargs.get("save_method")
-    if isinstance(save_method, str) and save_method.lower().strip() in _TP_IN_PLACE_MERGES:
+    if (
+        isinstance(save_method, str)
+        and save_method.lower().strip().replace("-", "_").replace(" ", "_") in _TP_IN_PLACE_MERGES
+    ):
         raise RuntimeError(
             f'Unsloth: `{method}(save_method = "{save_method}")` merges the LoRA weights into the 4-bit base in '
             "place (merge_and_unload). On a tensor parallel model only rank 0 would end up with that merged "
@@ -1642,6 +1646,8 @@ def unsloth_save_model(
     elif "Unsloth 2x faster" not in commit_description:
         commit_description += " (Trained with Unsloth 2x faster)"
 
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -1678,7 +1684,6 @@ def unsloth_save_model(
 
     _collect_garbage(before = clean_gpu_cache)
 
-    save_method = save_method.lower().replace(" ", "_")
     raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
@@ -3422,6 +3427,33 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 """
 
 
+def _refuse_private_push_to_public_repo(
+    repo_id,
+    private,
+    token = None,
+    api = None,
+):
+    """create_repo(private=True) leaves an existing public repo public, so refuse before the first upload.
+
+    No-op when `private` is falsy or the visibility lookup fails. Visibility is never changed here.
+    """
+    if not private:
+        return
+    try:
+        if api is None:
+            api = HfApi(token = token)
+        is_private = getattr(api.repo_info(repo_id = repo_id, repo_type = "model"), "private", None)
+    except Exception as exc:
+        print(f"Unsloth: Could not confirm the visibility of {repo_id} ({exc}); continuing.")
+        return
+    if is_private is False:
+        raise RuntimeError(
+            f"Unsloth: private=True was requested but the Hugging Face repo {repo_id!r} already exists and is "
+            "public. Refusing to upload so private weights are not published. Make the repo private on the Hub, "
+            "push to a new repo id, or pass private=False."
+        )
+
+
 def _determine_username(save_directory, old_username, token):
     username = ""
     save_directory = save_directory.lstrip("./")
@@ -3484,6 +3516,7 @@ def create_huggingface_repo(
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
                 )
+    _refuse_private_push_to_public_repo(save_directory, private, token = token)
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 
@@ -3535,6 +3568,7 @@ def upload_to_huggingface(
                 logger.warning_once(
                     f"Unsloth: Could not update datasets metadata for {save_directory}: {e}"
                 )
+    _refuse_private_push_to_public_repo(save_directory, private, token = token)
 
     if file_location is not None:
         hf_api = HfApi(token = token)
@@ -3608,6 +3642,23 @@ def fix_tokenizer_bos_token(tokenizer):
     return fix_bos_token, chat_template
 
 
+_OLLAMA_SYSTEM_RE = re.compile(r'^SYSTEM """.*?"""[ \t]*\n?', flags = re.DOTALL | re.MULTILINE)
+# Ollama ends a """ value at the first line break preceded by """, so such a message would be cut short.
+_OLLAMA_SYSTEM_CUT_RE = re.compile(r'"""\s*\n')
+
+
+def _set_ollama_system_message(modelfile, system_message):
+    if _OLLAMA_SYSTEM_CUT_RE.search(system_message):
+        raise ValueError(
+            'Unsloth: The system message has a line ending in """, which an Ollama Modelfile cannot hold.'
+        )
+    system_line = f'SYSTEM """{system_message}"""\n' if system_message != "" else ""
+    modelfile, n_found = _OLLAMA_SYSTEM_RE.subn(lambda _: system_line, modelfile, count = 1)
+    if n_found == 0 and system_line:
+        modelfile = modelfile.rstrip("\n") + "\n" + system_line
+    return modelfile
+
+
 def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     """
     Creates an Ollama Modelfile.
@@ -3651,9 +3702,14 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
             __FILE_LOCATION__ = model_location,
         )
 
-    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}").rstrip()
+    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}")
 
-    return modelfile
+    # Applied after formatting, so the message is written verbatim.
+    system_message = getattr(tokenizer, "_ollama_system_message", None)
+    if system_message is not None:
+        modelfile = _set_ollama_system_message(modelfile, system_message)
+
+    return modelfile.rstrip()
 
 
 def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):
@@ -5859,6 +5915,7 @@ def unsloth_push_to_hub_gguf(
             private = private,
             exist_ok = True,
         )
+        _refuse_private_push_to_public_repo(full_repo_id, private, api = api)
         if revision is not None and not revision.startswith("refs/pr/"):
             try:
                 api.create_branch(
@@ -5899,13 +5956,18 @@ def unsloth_push_to_hub_gguf(
         datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
         if datasets_yaml:
             datasets_yaml = "datasets:\n" + datasets_yaml
+        if isinstance(tags, str):
+            tags = [tags]
+        # HfApi has no add_tags: tags reach the Hub only through the card.
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-{"- vision-language-model" if is_vlm else ""}
-{datasets_yaml}---
+{tags_yaml}{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -5975,21 +6037,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                     else f"/tree/{quote(revision, safe = '')}"
                 )
         print(f"Unsloth: Successfully uploaded GGUF to {destination}")
-
-        if tags is None:
-            tags = []
-        tags.extend(["gguf", "llama-cpp", "unsloth"])
-        if is_vlm:
-            tags.append("vision-language-model")
-
-        try:
-            api.add_tags(
-                repo_id = full_repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
@@ -6333,6 +6380,7 @@ def _unsloth_save_lora_gguf(
             private = private,
             exist_ok = True,
         )
+        _refuse_private_push_to_public_repo(save_directory, private, api = api)
         # huggingface_hub>=1.20 refuses create_pr with a revision in upload_folder, so a branch made first would be left behind.
         if revision is not None and not create_pr and not revision.startswith("refs/pr/"):
             api.create_branch(
@@ -6703,6 +6751,7 @@ def _push_merged_to_hub_revision(save_kwargs):
         private = save_kwargs["private"],
         exist_ok = True,
     )
+    _refuse_private_push_to_public_repo(repo_id, save_kwargs["private"], api = api)
     revision = save_kwargs["revision"]
     if revision is not None and not revision.startswith("refs/pr/"):
         try:
@@ -6884,6 +6933,9 @@ def unsloth_generic_save(
     dtype = None,
 ):
     _refuse_mtp_variant(model, variant)
+    # merge_and_overwrite_lora compares save_method exactly, so respellings must be canonical here.
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -7267,10 +7319,15 @@ def _fsdp2_rank():
 
 
 def _merged_save_method(args, kwargs):
-    if "save_method" in kwargs:
-        return kwargs["save_method"]
-    # (save_directory, tokenizer, save_method, ...)
-    return args[2] if len(args) > 2 else "merged_16bit"
+    # (save_directory, tokenizer, save_method, ...); canonical, as unsloth_generic_save sees it.
+    method = (
+        kwargs["save_method"]
+        if "save_method" in kwargs
+        else (args[2] if len(args) > 2 else "merged_16bit")
+    )
+    if isinstance(method, str):
+        method = method.lower().strip().replace("-", "_").replace(" ", "_")
+    return method
 
 
 def _fsdp2_merged_offload(model, args, kwargs):
@@ -8210,6 +8267,7 @@ def _unsloth_save_compressed_tensors(
         # Validate Hub access up front, so a bad token or denied repo fails before the expensive merge and quantization; create_repo is idempotent.
         if push_to_hub:
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             api.create_repo(
                 repo_id = repo_id,
@@ -8217,6 +8275,7 @@ def _unsloth_save_compressed_tensors(
                 private = merge_kwargs.get("private", None),
                 exist_ok = True,
             )
+            _refuse_private_push_to_public_repo(repo_id, merge_kwargs.get("private", None), api = api)
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
@@ -8469,6 +8528,7 @@ def _unsloth_save_torchao(
     try:
         if push_to_hub:
             from huggingface_hub import HfApi
+
             api = HfApi(token = token)
             api.create_repo(
                 repo_id = repo_id,
@@ -8476,6 +8536,7 @@ def _unsloth_save_torchao(
                 private = merge_kwargs.get("private", None),
                 exist_ok = True,
             )
+            _refuse_private_push_to_public_repo(repo_id, merge_kwargs.get("private", None), api = api)
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
@@ -8930,6 +8991,7 @@ def _unsloth_save_openvino(
         if push_to_hub:
             api = HfApi(token = token)
             api.create_repo(repo_id = repo_id, repo_type = "model", private = private, exist_ok = True)
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
         print("Unsloth: Merging to 16bit before OpenVINO export...")
         unsloth_generic_save(
@@ -9022,6 +9084,7 @@ def unsloth_save_pretrained_openvino(
     - is_main_process: Only the main process exports under multi-GPU / DDP.
     - **kwargs: Other `optimum-cli export openvino` options, with underscores for dashes, e.g. group_size = 64, ratio = 0.8, sym = False, awq = True, dataset = "wikitext2". They override the quantization_type preset.
     """
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = save_directory,
@@ -9048,6 +9111,7 @@ def unsloth_push_to_hub_openvino(
     **kwargs,
 ):
     """Export the model to OpenVINO IR format and push it to the Hugging Face Hub. Takes the same options as save_pretrained_openvino."""
+    _assert_export_target_is_not_base_with_lora_layers(self)
     return _unsloth_save_openvino(
         model = self,
         save_directory = repo_id,

@@ -2241,8 +2241,12 @@ def tp_full_state_dict(model, adapters_only = False):
 def _peft_state_dict(model, **kwargs):
     """What PEFT selects for save_pretrained, DTensors gathered; local tensors by reference (PEFT reruns
     its selection inside save_pretrained and must see the same model)."""
+    import inspect
+
     from peft import get_peft_model_state_dict
 
+    # Wrappers (zoo's expert factor swap) return new tensors the id match cannot find; save_pretrained converts.
+    get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
     known = {id(value) for value in raw.values()}
