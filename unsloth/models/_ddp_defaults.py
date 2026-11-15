@@ -13,6 +13,8 @@ Without checkpointing True works (and tolerates an adapter a step never runs), s
 
 Conversely a fully finetuned VLM gets False from transformers, and a text-only batch leaves its
 trainable tower without gradients; Unsloth checkpoints VLMs non-reentrantly, so True is picked (as TRL).
+Gemma 4 / Gemma 3N stay reentrant, where True crashes: with False their towers are kept out of DDP and averaged
+after each synced backward instead.
 """
 
 import os
@@ -336,6 +338,103 @@ def _is_full_finetune(model):
     return any(p.requires_grad for p in model.parameters())
 
 
+def _tower_params(model):
+    """Trainable vision / audio tower weights of a VLM: a text-only batch leaves them without a gradient."""
+    config = getattr(_unwrapped_models(model)[-1], "config", None)
+    if not any(
+        getattr(c, key, None) is not None for c in _configs(config) for key in _SUBMODEL_CONFIG_KEYS
+    ):
+        return [], []
+    names, params = [], []
+    for name, p in model.named_parameters():
+        if p.requires_grad and any(m in name.lower() for m in _TOWER_NAME_MARKERS):
+            names.append(name)
+            params.append(p)
+    return names, params
+
+
+def _exclude_towers_from_ddp(model):
+    """Without unused-parameter search (reentrant checkpointing cannot use it) a skipped tower stalls DDP's
+    reduction. Keep the towers out of DDP; ``_all_reduce_tower_grads`` averages them after each synced backward."""
+    if os.environ.get("UNSLOTH_DDP_TOWER_SYNC", "1") == "0":
+        return False
+    names, params = _tower_params(model)
+    if not params:
+        return False
+    from torch.nn.parallel import DistributedDataParallel
+
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(
+        model, ignored + [n for n in names if n not in seen]
+    )
+    model._unsloth_ddp_tower_params = params
+    _note(
+        "tower",
+        f"Unsloth: DDP averages {len(params)} vision / audio tower weights itself "
+        "(a text-only batch leaves them unused).",
+    )
+    return True
+
+
+def _all_reduce_tower_grads(params, group = None):
+    """Average tower gradients across ranks like DDP(find_unused_parameters = True): a weight no rank used
+    keeps ``grad = None``; one used on some rank is averaged with zeros from the others."""
+    import torch
+    import torch.distributed as dist
+
+    world = dist.get_world_size(group)
+    used = torch.tensor(
+        [p.grad is not None for p in params], dtype = torch.int32, device = params[0].device
+    )
+    dist.all_reduce(used, group = group)
+    buckets, size = [[]], 0
+    for p, u in zip(params, used.tolist()):
+        if not u:
+            continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p)
+        if size > (1 << 26) or (buckets[-1] and buckets[-1][-1].dtype != p.grad.dtype):
+            buckets.append([])
+            size = 0
+        buckets[-1].append(p.grad)
+        size += p.grad.numel()
+    for grads in buckets:
+        if not grads:
+            continue
+        flat = torch._utils._flatten_dense_tensors(grads)
+        dist.all_reduce(flat, group = group)
+        flat.div_(world)
+        for g, s in zip(grads, torch._utils._unflatten_dense_tensors(flat, grads)):
+            g.copy_(s)
+    _TOWER_SYNC_COUNT[0] += 1
+
+
+_TOWER_SYNC_COUNT = [0]
+
+
+def _install_tower_grad_sync(accelerator, ddp_model):
+    wrapped = getattr(accelerator, "_unsloth_tower_ddp", None)
+    if wrapped is None:
+        wrapped = accelerator._unsloth_tower_ddp = []
+    wrapped.append(ddp_model)
+    backward = accelerator.backward
+    if getattr(backward, "_unsloth_tower_sync", False):
+        return
+
+    def _backward_tower_sync(*args, **kwargs):
+        out = backward(*args, **kwargs)
+        for m in accelerator._unsloth_tower_ddp:
+            # Inside no_sync (gradient accumulation) DDP defers its all-reduce; so do the towers.
+            if getattr(m, "require_backward_grad_sync", False):
+                _all_reduce_tower_grads(m.module._unsloth_ddp_tower_params, m.process_group)
+        return out
+
+    _backward_tower_sync._unsloth_tower_sync = True
+    _backward_tower_sync.__wrapped__ = backward
+    accelerator.backward = _backward_tower_sync
+
+
 def _prepare_ddp_handler(accelerator, model):
     from accelerate.utils import DDPCommunicationHookType, DistributedDataParallelKwargs
 
@@ -344,6 +443,8 @@ def _prepare_ddp_handler(accelerator, model):
         handler = DistributedDataParallelKwargs()
     if not isinstance(handler, DistributedDataParallelKwargs):
         return
+    if not handler.find_unused_parameters:
+        _exclude_towers_from_ddp(model)
     changed = False
     # Full finetuning only: gradients become bucket views, one copy instead of two.
     if (
@@ -386,7 +487,14 @@ def install_unsloth_ddp_comm_defaults(trainer):
                     _prepare_ddp_handler(accelerator, model)
                 except Exception as e:
                     _note("err_pre", f"Unsloth: DDP defaults skipped ({e}).")
-            return prepare_model(*args, **kwargs)
+            out = prepare_model(*args, **kwargs)
+            ddp = getattr(out, "_orig_mod", out)
+            if (
+                getattr(model, "_unsloth_ddp_tower_params", None)
+                and getattr(ddp, "module", None) is model
+            ):
+                _install_tower_grad_sync(accelerator, ddp)
+            return out
 
         _prepare_model_ddp_defaults._unsloth_ddp_comm_defaults = True
         _prepare_model_ddp_defaults.__wrapped__ = prepare_model
