@@ -3088,6 +3088,9 @@ class FastSentenceTransformer(FastModel):
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         st_model._unsloth_trust_remote_code = trust_remote_code
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_decoder_packing
+
+        enable_sentence_transformer_decoder_packing(st_model)
         FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
@@ -3223,6 +3226,9 @@ class FastSentenceTransformer(FastModel):
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                if os.environ.get("UNSLOTH_ST_LEAN_LORA", "1") != "0":
+                    from ._lean_lora import apply_lean_lora
+                    apply_lean_lora(peft_model)
                 from ._utils import _mark_unsloth_disable_data_parallel
                 from .llama import _unfreeze_modules_to_save
 
@@ -3430,6 +3436,9 @@ def _patch_sentence_transformer_trainer():
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer.train = _patched_train
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
+    from ._sentence_transformer_prefetch import patch_train_dataloader
+
+    patch_train_dataloader(SentenceTransformerTrainer)
 
 
 def _patch_st_trainer_load_from_checkpoint():
