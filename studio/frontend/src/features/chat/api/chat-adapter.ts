@@ -8064,13 +8064,8 @@ export function createOpenAIStreamAdapter(
                 spokenAudioChunks.push(spokenAudio);
                 publishVoiceSpokenAudio(resolvedThreadId ?? null, spokenAudio);
               }
-              // Rejoined at doubling counts and after the stream: joining on every chunk is quadratic.
-              const spokenCount = spokenAudioChunks.length;
-              if (
-                ((spokenCount & (spokenCount - 1)) === 0 ||
-                  Boolean(chunk.choices?.[0]?.finish_reason)) &&
-                joinSpokenPart()
-              ) {
+              // The player gets one WAV when the stream ends: a new src mid-stream restarts what is playing.
+              if (Boolean(chunk.choices?.[0]?.finish_reason) && joinSpokenPart()) {
                 replayStateChanged = true;
               }
               let geminiReplayStateChanged = false;
