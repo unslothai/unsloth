@@ -879,13 +879,11 @@ def release_for_training(model, force = False):
     for module in model.modules():
         d = module.__dict__
         if "paged_attention" in d:
-            # Kept graphs keep their buffers through the store (the next prefill points these back at them);
-            # the training forward then sees the module as it does after a release (same compiled block).
+            # Buffers live in the store; the training forward sees the module as after a release (same compiled block).
             for name in _BUFFER_NAMES:
                 d.pop(name, None)
     if keep and not _sleep_buffers(model):
-        # A caller still views a VMM cache (e.g. a returned past_key_values): release as before, the views
-        # keep their memory.
+        # A caller still views a VMM cache (e.g. returned past_key_values): release as before.
         release(model)
         keep = False
     model.__dict__[KEEP_CASTS] = keep
@@ -981,7 +979,6 @@ def keep_for_training(model):
         steps = _optimizer_steps()
         released = [getattr(state, "released_at", None) for state in _all_states(model)]
         if steps is None or not any(r is not None and steps > r for r in released):
-            # No training step without the decode memory seen yet: nothing to weigh.
             KEEP_DECISIONS["released"] += 1
             return False
         allocated, _, peak = _allocator(device)

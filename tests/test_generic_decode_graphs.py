@@ -498,7 +498,6 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
     assert GG._fingerprint(llama) == first
     monkeypatch.setattr(K, "_OPTIMIZER_STEPS", K._OPTIMIZER_STEPS + 1)
     assert GG._fingerprint(llama) == first
-    # A new tensor (address) or dtype is a new graph.
     param = next(llama.parameters())
     saved = param.data
     try:

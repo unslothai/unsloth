@@ -717,7 +717,6 @@ def test_auto_keeps_graphs_through_training_only_after_a_measured_step(G, monkey
     _keep_env(G, monkeypatch, steps)
     model = _Model()
     _graphed(G, model)
-    # No training step seen without the decode memory: release, as before.
     assert G.release_for_training(model) is True
     assert model.held() == 0 and not G._state(model).graphs
     steps[0] += 1
@@ -728,9 +727,7 @@ def test_auto_keeps_graphs_through_training_only_after_a_measured_step(G, monkey
     # The store holds the buffers; the training forward sees no decode attributes (as after a release).
     assert not any("paged_attention" in a.__dict__ for a in model.attns)
     assert model.__dict__[G.KEEP_CASTS] is True
-    # The training forward asks again; still kept.
     assert G.release_if_training(model) is False and G._state(model).graphs
-    # Less headroom: released.
     monkeypatch.setattr(G, "_free_bytes", lambda device: 7 * GB)
     assert G.release_for_training(model) is True
     assert model.held() == 0 and not model.__dict__.get(G.KEEP_CASTS)

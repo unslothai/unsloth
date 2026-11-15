@@ -190,8 +190,7 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime, vmm):
     FastLanguageModel.for_training(model)
     _assert_training_got_the_memory(model, vmm)
 
-    # generate() called on a model in training mode returns to training, and it returned its cache (which
-    # views the decode buffers): everything is released, VMM or not.
+    # The returned cache views the decode buffers: everything is released, VMM or not.
     _gen(model, tok)
     assert model.training
     assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
