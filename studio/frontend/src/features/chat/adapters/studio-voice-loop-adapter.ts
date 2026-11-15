@@ -266,6 +266,12 @@ export function isComposerHeldForEdit(): boolean {
   return !heldEdit.autoSend();
 }
 
+// Thread switch or voice off: the box it named belongs to the chat being left, so a matching draft in
+// the next one is the user's. (Not in clearHeldTurn: a stop or typed send keeps this chat's box.)
+export function forgetVoiceBox(): void {
+  voiceBoxText = "";
+}
+
 export function cancelVoiceSession(): void {
   liveSession?.cancel();
 }
