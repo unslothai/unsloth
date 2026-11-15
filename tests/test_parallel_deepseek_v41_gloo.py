@@ -19,6 +19,7 @@ import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 import types  # noqa: E402
 
 import pytest  # noqa: E402
@@ -399,8 +400,19 @@ def _spawn(
         ]
         for p in procs:
             p.start()
+        # A rank that raised can leave its peers blocked on it: Windows gloo does not see the peer exit, so the
+        # rest would wait out the timeout. Grace period, then stop them.
+        deadline, failed_at = time.monotonic() + 900, None
+        while any(p.is_alive() for p in procs) and time.monotonic() < deadline:
+            if failed_at is None and any(p.exitcode not in (None, 0) for p in procs):
+                failed_at = time.monotonic()
+            if failed_at is not None and time.monotonic() - failed_at > 30:
+                break
+            time.sleep(0.2)
         for p in procs:
-            p.join(900)
+            if p.is_alive():
+                p.terminate()
+            p.join(30)
         codes = [p.exitcode for p in procs]
         if not allow_failure:
             assert codes == [0] * world, f"rank exit codes {codes}"

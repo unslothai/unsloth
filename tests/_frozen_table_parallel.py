@@ -264,7 +264,56 @@ def _is_dtensor(t):
     return isinstance(t, DTensor)
 
 
+# RssAnon and the fd table are read from /proc: Linux only. Elsewhere they are None and their checks are skipped.
+_PROC = os.path.isfile("/proc/self/status")
+
+
+@contextlib.contextmanager
+def cpu_forwards():
+    """CPU forwards on a GPU host take the torch paths: transformers picks FLA / causal-conv1d by import and Unsloth
+    its MoE backend once per process, not by device, and their Triton kernels reject CPU tensors."""
+    undo = []
+    try:
+        import transformers.models.qwen4_exp.modeling_qwen4_exp as module
+    except ImportError:
+        module = None
+    for fn in (
+        "torch_chunk_gated_delta_rule",
+        "torch_recurrent_gated_delta_rule",
+        "causal_conv1d_fn",
+        "causal_conv1d_update",
+    ):
+        if module is not None and callable(getattr(module, fn, None)):
+            undo.append((fn, getattr(module, fn)))
+            setattr(module, fn, inspect.unwrap(getattr(module, fn)))
+    backend = os.environ.get("UNSLOTH_MOE_BACKEND")
+    os.environ["UNSLOTH_MOE_BACKEND"] = "native_torch"
+    _clear_moe_backend()
+    try:
+        yield
+    finally:
+        for fn, original in undo:
+            setattr(module, fn, original)
+        if backend is None:
+            os.environ.pop("UNSLOTH_MOE_BACKEND", None)
+        else:
+            os.environ["UNSLOTH_MOE_BACKEND"] = backend
+        _clear_moe_backend()
+
+
+def _clear_moe_backend():
+    # Every copy of moe_utils (Unsloth's compiled cache holds one) caches its own choice.
+    for name, mod in list(sys.modules.items()):
+        if "moe_utils" not in name or not isinstance(getattr(mod, "__dict__", None), dict):
+            continue
+        clear = getattr(mod.__dict__.get("select_moe_backend"), "cache_clear", None)
+        if callable(clear):
+            clear()
+
+
 def _rss_anon_kb():
+    if not _PROC:
+        return None
     with open("/proc/self/status") as f:
         for line in f:
             if line.startswith("RssAnon:"):
@@ -273,6 +322,8 @@ def _rss_anon_kb():
 
 
 def _open_fds(paths):
+    if not _PROC:
+        return None
     paths = {os.path.realpath(p) for p in paths}
     n = 0
     for fd in os.listdir("/proc/self/fd"):
@@ -305,16 +356,17 @@ def _capture(model, sink):
 
 def _reference_ids(path, mode, chunks):
     """The table ids one process computes for each chunk of tokens (same checkpoint, same mode)."""
-    model, _ = load(path, mode)
     out = []
-    with torch.no_grad():
-        for ids in chunks:
-            seen = []
-            hooks = _capture(model, seen)
-            model(input_ids = ids, use_cache = False)
-            for h in hooks:
-                h.remove()
-            out.append([s[1] for s in seen])
+    with cpu_forwards():
+        model, _ = load(path, mode)
+        with torch.no_grad():
+            for ids in chunks:
+                seen = []
+                hooks = _capture(model, seen)
+                model(input_ids = ids, use_cache = False)
+                for h in hooks:
+                    h.remove()
+                out.append([s[1] for s in seen])
     return out
 
 
@@ -466,7 +518,7 @@ def worker_case(
     for h in hooks:
         h.remove()
     rec["stats"] = dict(zoo_store.FROZEN_TABLE_STATS) if zoo_store is not None else {}
-    rec["rss_anon_delta_kb"] = _rss_anon_kb() - rss0
+    rec["rss_anon_delta_kb"] = None if rss0 is None else _rss_anon_kb() - rss0
     rec["fds_after"] = _open_fds(files)
     rec["calls"] = calls
     rec["chunks"] = mine
@@ -553,7 +605,9 @@ def _worker(rank, world, port, tmp, kwargs):
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 300)
     )
     try:
-        torch.save(worker_case(rank, world, tmp, **kwargs), os.path.join(tmp, f"r{rank}.pt"))
+        with cpu_forwards():
+            res = worker_case(rank, world, tmp, **kwargs)
+        torch.save(res, os.path.join(tmp, f"r{rank}.pt"))
     finally:
         dist.destroy_process_group()
 
@@ -668,6 +722,9 @@ def check_ids(
 
 
 def big_checkpoints(tmp_path_factory):
+    if not _PROC:
+        import pytest
+        pytest.skip("anonymous RSS (RssAnon) is read from /proc/self/status: Linux only")
     d = tmp_path_factory.mktemp("big_table")
     return make_checkpoint(str(d / "with"), big = True), make_checkpoint(
         str(d / "without"), big = True, table = False

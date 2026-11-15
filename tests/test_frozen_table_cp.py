@@ -55,13 +55,14 @@ def test_cp_refuses_ngram_tables(key):
 @pytest.mark.skipif(ftp.available() is not None, reason = ftp.available() or "")
 def test_a_sequence_shard_hashes_different_ngram_ids(tmp_path):
     path = ftp.make_checkpoint(str(tmp_path / "q"))
-    model, _ = ftp.load(path, "disk")
     ids, _ = ftp.batch(1)
     calls = []
-    hooks = ftp._capture(model, calls)
-    with torch.no_grad():
-        model(input_ids = ids, use_cache = False)
-        model(input_ids = ids[:, ftp.SEQ // 2 :], use_cache = False)
+    with ftp.cpu_forwards():
+        model, _ = ftp.load(path, "disk")
+        hooks = ftp._capture(model, calls)
+        with torch.no_grad():
+            model(input_ids = ids, use_cache = False)
+            model(input_ids = ids[:, ftp.SEQ // 2 :], use_cache = False)
     for h in hooks:
         h.remove()
     whole, half = calls[0][1], calls[1][1]
