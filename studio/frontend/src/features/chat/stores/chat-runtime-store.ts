@@ -1341,8 +1341,9 @@ function withSavedChatFullAccess(threadId: string, settings: ThreadScopedSetting
   return fullAccess === undefined ? settings : { ...settings, fullAccess };
 }
 
-function saveChatFullAccess(threadId: string, on: boolean): void {
-  if (savedChatFullAccess.get(threadId) === on) return;
+/** `explicit`: the user left Full access here, so record and write it even if the cached flag matches. */
+function saveChatFullAccess(threadId: string, on: boolean, explicit = false): void {
+  if (!explicit && savedChatFullAccess.get(threadId) === on) return;
   chatFullAccessDecidedSinceOpen.add(threadId);
   savedChatFullAccess.set(threadId, on);
   // The open chat's snapshot write carries the flag; a separate patch would supersede its queued edits.
@@ -1359,7 +1360,7 @@ function saveGrantedChats(grants: ChatFullAccessGrants): void {
 
 /** Leaving Full access in the open chat, which also clears what was saved with it. */
 function revokeChatFullAccessAndForget(state: ChatRuntimeStore): ChatFullAccessGrants {
-  if (state.activeThreadId) saveChatFullAccess(state.activeThreadId, false);
+  if (state.activeThreadId) saveChatFullAccess(state.activeThreadId, false, true);
   return revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId);
 }
 

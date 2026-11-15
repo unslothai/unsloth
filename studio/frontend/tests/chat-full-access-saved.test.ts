@@ -194,3 +194,21 @@ test("a grant for another chat while one loads does not block that chat's saved 
   assert.equal(state().bypassPermissions, false);
   await settle();
 });
+
+test("leaving Full access while loading wins even when this tab last read it as off", async () => {
+  threadRows.reset();
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: false });
+  const state = await start("leave-when-cached-off");
+  open(state, CHAT);
+  threadRows.rows.set(CHAT, { permissionMode: "auto", fullAccess: true });
+  open(state, OTHER);
+  state().setActiveThreadId(CHAT);
+  state().applyThreadScopedSettings(null, null);
+  state.module.beginThreadScopedPairing(CHAT);
+  state().setPermissionMode("ask");
+  state().applyThreadScopedSettings(CHAT, sanitizeThreadScopedSettings(threadRows.rows.get(CHAT)));
+  assert.equal(state().permissionMode, "ask");
+  assert.equal(state().bypassPermissions, false);
+  await settle();
+  assert.equal(threadRows.rows.get(CHAT)?.fullAccess, false);
+});
