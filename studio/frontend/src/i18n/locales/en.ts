@@ -4843,6 +4843,7 @@ export const en = {
       notifyFailures: "Only failures",
       notifyNone: "Off",
       archiveSuccessful: "Archive successful runs",
+      webSearch: "Web search",
       project: "Project",
       projectNone: "None",
       model: "Model",

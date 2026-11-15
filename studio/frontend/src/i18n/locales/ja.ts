@@ -4770,6 +4770,7 @@ export const ja = {
       notifyFailures: "失敗時のみ",
       notifyNone: "オフ",
       archiveSuccessful: "成功した実行をアーカイブ",
+      webSearch: "ウェブ検索",
       project: "プロジェクト",
       projectNone: "なし",
       model: "モデル",

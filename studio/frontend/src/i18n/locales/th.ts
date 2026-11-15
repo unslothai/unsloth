@@ -4935,6 +4935,7 @@ export const th = {
       notifyFailures: "เฉพาะที่ล้มเหลว",
       notifyNone: "ปิด",
       archiveSuccessful: "เก็บถาวรการรันที่สำเร็จ",
+      webSearch: "ค้นหาเว็บ",
       project: "โปรเจกต์",
       projectNone: "ไม่มี",
       model: "โมเดล",

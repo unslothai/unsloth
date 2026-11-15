@@ -4901,6 +4901,7 @@ export const he = {
       notifyFailures: "רק בכישלון",
       notifyNone: "כבויות",
       archiveSuccessful: "להעביר לארכיון הרצות שהצליחו",
+      webSearch: "חיפוש באינטרנט",
       project: "פרויקט",
       projectNone: "ללא",
       model: "מודל",

@@ -5180,6 +5180,7 @@ export const cs = {
       notifyFailures: "Pouze selhání",
       notifyNone: "Vypnuto",
       archiveSuccessful: "Archivovat úspěšné běhy",
+      webSearch: "Vyhledávání na webu",
       project: "Projekt",
       projectNone: "Žádný",
       model: "Model",

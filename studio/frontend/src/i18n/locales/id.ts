@@ -5165,6 +5165,7 @@ export const id = {
       notifyFailures: "Hanya kegagalan",
       notifyNone: "Nonaktif",
       archiveSuccessful: "Arsipkan proses yang berhasil",
+      webSearch: "Pencarian web",
       project: "Proyek",
       projectNone: "Tidak ada",
       model: "Model",

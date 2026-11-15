@@ -5161,6 +5161,7 @@ export const tr = {
       notifyFailures: "Yalnızca hatalar",
       notifyNone: "Kapalı",
       archiveSuccessful: "Başarılı çalıştırmaları arşivle",
+      webSearch: "Web araması",
       project: "Proje",
       projectNone: "Yok",
       model: "Model",

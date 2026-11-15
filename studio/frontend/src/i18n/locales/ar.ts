@@ -4819,6 +4819,7 @@ export const ar = {
       notifyFailures: "عند الفشل فقط",
       notifyNone: "إيقاف",
       archiveSuccessful: "أرشفة عمليات التشغيل الناجحة",
+      webSearch: "بحث الويب",
       project: "المشروع",
       projectNone: "بلا",
       model: "النموذج",
