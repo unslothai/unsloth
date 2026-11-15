@@ -116,8 +116,8 @@ def _dequant_kernel() -> Any:
 
 
 def dequantize_nvfp4(weight: Any, block_scales: Any, global_scale: Any, dtype: Any) -> Any:
-    """``dequantize_nvfp4_reference``, as one fused Triton pass on NVIDIA CUDA (bit-identical; reads 0.56 bytes
-    and writes 2 per weight) and the torch math elsewhere."""
+    """``dequantize_nvfp4_reference``, as one fused Triton pass on NVIDIA CUDA (bit-identical) and the torch
+    math elsewhere."""
     import torch
 
     if weight.is_cuda and torch.version.hip is None and dtype in (torch.bfloat16, torch.float16):
@@ -151,8 +151,8 @@ def nvfp4_awq_linear_class() -> Any:
     from torch import nn
 
     class Nvfp4AwqLinear(nn.Module):
-        """A bias-free Linear whose weight stays NVFP4 for its whole residency (15.7 GB for the 50-layer conditioner,
-        against 27.2 GB for the int8 one). Each call dequantizes a transient dense weight, as the int8 path does."""
+        """A bias-free Linear whose weight stays NVFP4 for its whole residency (about half the int8
+        footprint). Each call dequantizes a transient dense weight, as the int8 path does."""
 
         def __init__(self, in_features: int, out_features: int, pre_quant: bool) -> None:
             super().__init__()

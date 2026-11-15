@@ -246,7 +246,7 @@ def test_keyframes_without_a_size_keep_the_reference_canvas(size):
 
 def test_the_int8_decoder_stays_the_default_like_the_reference_template(monkeypatch):
     # The reference templates decode with an int8 ConvRot VAE; Studio's int8 decoder lands as close to that decode
-    # as its float16 one (measured on the same latent) and is faster and smaller, so it stays the default.
+    # as its float16 one and is faster and smaller, so it stays the default.
     from core.inference import video_minimax_h3_vae as H
 
     monkeypatch.delenv(H.H3_VAE_INT8_ENV, raising = False)
