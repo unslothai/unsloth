@@ -379,3 +379,11 @@ test("the gallery's leading popular group shows no heading", () => {
   const gallery = readSrc("features/chat/connection-gallery.tsx");
   assert.match(gallery, /\) : group\.id === "popular" \? null : \(/);
 });
+
+test("the provider dropdown drops the Popular heading too", () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  assert.match(
+    dialog,
+    /\{group\.id === "popular" \? null : \(\s*<SelectLabel>\{group\.label\}<\/SelectLabel>/,
+  );
+});
