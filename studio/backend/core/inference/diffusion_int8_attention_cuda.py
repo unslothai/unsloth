@@ -1188,13 +1188,9 @@ CACHE_MAX_FILES = 64  # images per version directory
 _MAGIC = b"UI8ATTN1"
 _VERSION_DIR = re.compile(r"^v[0-9]+-[0-9a-f]{16}$")
 _OFF = ("0", "off", "false", "no")
-# A cubin that cannot load for one of these ``cuModuleLoadData`` results is unusable on this driver or GPU for good
-# (CUDA Driver API, CUresult): CUDA_ERROR_INVALID_IMAGE (200, "the kernel image is invalid"),
-# CUDA_ERROR_NO_BINARY_FOR_GPU (209, "no kernel image suitable for the device"), CUDA_ERROR_INVALID_PTX (218, "a PTX
-# JIT compilation failed"), CUDA_ERROR_JIT_COMPILER_NOT_FOUND (221, "the PTX JIT compiler library was not found"),
-# CUDA_ERROR_UNSUPPORTED_PTX_VERSION (222, "the provided PTX was compiled with an unsupported toolchain"). The PTX is
-# then used for that key, in this process and (``_PTX_ONLY``) the later ones. Any other result (out of memory, not
-# initialized, a bad context) says nothing about the image: it is raised, and the disk is left as it is.
+# cuModuleLoadData results (cuda.h CUresult) meaning the cubin can never load on this driver or GPU: INVALID_IMAGE
+# (200), NO_BINARY_FOR_GPU (209), INVALID_PTX (218), JIT_COMPILER_NOT_FOUND (221), UNSUPPORTED_PTX_VERSION (222).
+# The PTX is then used for that key (``_PTX_ONLY`` persists it). Other results say nothing about the image and are raised.
 _IMAGE_UNUSABLE = frozenset({200, 209, 218, 221, 222})
 _PTX_ONLY = ".ptx-only"  # suffix of the marker next to a key whose cubin this host cannot load
 # (root, version dir) -> whether images may be read from and written to it (``_usable_dir``), checked once per process
