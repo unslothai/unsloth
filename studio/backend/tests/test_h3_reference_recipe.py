@@ -25,6 +25,16 @@ from core.inference import video_minimax_h3 as VM  # noqa: E402
 from core.inference import video_minimax_h3_sampling as VS  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _restore_condition_encode(monkeypatch):
+    # install_h3_reference_recipe shims Diffusers' module-level condition encode; keep it to this file's tests
+    try:
+        from diffusers.modular_pipelines.minimax_h3 import encoders
+    except Exception:  # noqa: BLE001 - no H3-capable diffusers: nothing to restore
+        return
+    monkeypatch.setattr(encoders, "encode_vae_condition", encoders.encode_vae_condition)
+
+
 # ---- the reference implementation, literally -------------------------------------------------------------------
 
 
@@ -261,9 +271,14 @@ def test_yuv_frames_go_through_float_rgb(tmp_path, size):
             converted = np.asarray(VM.h3_video_frame_rgb(frame))
         assert converted.shape == (size[1], size[0], 3)
         assert np.abs(converted.astype(int) - expect.astype(int)).max() <= 1
+    # truncated like the reference's LANCZOS helper, not rounded
     assert VM.h3_float_rgb_to_uint8(
-        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255], np.float32)
-    ).tolist() == [0, 2, 255]
+        np.array([0.5 / 255, 1.5 / 255, 254.6 / 255, 1.2, -0.1], np.float32)
+    ).tolist() == [0, 1, 254, 255, 0]
+    sweep = np.random.default_rng(0).random((64, 64, 3), dtype = np.float32)
+    assert np.array_equal(
+        VM.h3_float_rgb_to_uint8(sweep), np.clip(255.0 * sweep, 0, 255).astype(np.uint8)
+    )
 
 
 ASPECTS = [
@@ -621,6 +636,10 @@ def test_install_is_idempotent_and_scoped():
         "MiniMaxH3KeyframeVaeEncoderStep": 0,
         "MiniMaxH3Ref2VAReferenceEncoderStep": 0,
         "sampler": None,
+        # a bare pipeline has no processor or denoiser; the condition encode shim is module-level
+        "output_truncated": False,
+        "dense_temb_rounded": False,
+        "condition_latent": "mean",
     }
     other = blocks_mod.MiniMaxH3Blocks().init_pipeline()
     assert (

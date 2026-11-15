@@ -43,10 +43,20 @@ def _pixels(
     return torch.randint(0, 256, (1, 3, frames, height, width), generator = g, dtype = torch.uint8)
 
 
+def _stock_encode():
+    # Diffusers' own function, even when a render's recipe install (another test file) left the shim installed
+    current = encoders.encode_vae_condition
+    while getattr(current, "_unsloth_chunked_ref_encode", False):
+        current = current.__wrapped__
+    return current
+
+
 @pytest.fixture
 def shim(monkeypatch):
+    # These compare the chunked encode with Diffusers' own, so they run its sampled posterior (the explicit switch).
     monkeypatch.delenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, raising = False)
-    original = encoders.encode_vae_condition
+    monkeypatch.setenv(ref_encode.H3_REFERENCE_LATENT_ENV, ref_encode.H3_REFERENCE_LATENT_SAMPLE)
+    original = _stock_encode()
     if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
         pytest.skip("diffusers H3 encoder source this shim does not mirror")
     monkeypatch.setattr(encoders, "encode_vae_condition", original)
@@ -117,6 +127,55 @@ def test_single_frames_short_clips_and_the_switch_keep_stock(shim, monkeypatch):
         vae.encode = vae.encode
         assert torch.equal(installed(vae, p, _MEAN, _STD, 42), original(vae, p, _MEAN, _STD, 42))
     assert seen == []
+
+
+def _ref_mean_latents(vae, pixels):
+    # the reference encode: chunk(moments.float())[0], then (mean - latents_mean) / latents_std; no draw, no fp16
+    x = (
+        pixels.to(torch.float32).div(255.0) - torch.tensor(_MEAN).view(1, -1, 1, 1, 1)
+    ) / torch.tensor(_STD).view(1, -1, 1, 1, 1)
+    moments = vae.encode(x, return_dict = False)[0].parameters
+    mean = torch.chunk(moments.float(), 2, dim = 1)[0]
+    lm = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
+    ls = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1)
+    return (mean - lm) / ls
+
+
+@pytest.mark.parametrize("frames", [1, 17, 22, 39])
+def test_conditions_take_the_posterior_mean_by_default(monkeypatch, frames):
+    monkeypatch.delenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, raising = False)
+    monkeypatch.delenv(ref_encode.H3_REFERENCE_LATENT_ENV, raising = False)
+    original = _stock_encode()
+    if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
+        pytest.skip("diffusers H3 encoder source this shim does not mirror")
+    monkeypatch.setattr(encoders, "encode_vae_condition", original)
+    assert ref_encode.install_h3_chunked_reference_encode()
+    installed = encoders.encode_vae_condition
+    vae = _vae()
+    pixels = _pixels(frames, seed = frames)
+    with torch.no_grad():
+        got = installed(vae, pixels, _MEAN, _STD, 42)
+        expect = _ref_mean_latents(vae, pixels)
+        sampled = original(vae, pixels, _MEAN, _STD, 42)
+    assert got.dtype == torch.float32 and torch.equal(got, expect)
+    assert not torch.equal(got, sampled)  # Diffusers' seeded draw is a different latent
+    monkeypatch.setenv(ref_encode.H3_REFERENCE_LATENT_ENV, "sample")
+    with torch.no_grad():
+        assert torch.equal(installed(vae, pixels, _MEAN, _STD, 42), sampled)
+
+
+def test_the_mean_installs_even_with_chunking_off(monkeypatch):
+    monkeypatch.setenv(ref_encode.H3_CHUNKED_REF_ENCODE_ENV, "0")
+    monkeypatch.delenv(ref_encode.H3_REFERENCE_LATENT_ENV, raising = False)
+    original = _stock_encode()
+    if ref_encode._sha(original) not in ref_encode._KNOWN_SOURCES["encode_vae_condition"]:
+        pytest.skip("diffusers H3 encoder source this shim does not mirror")
+    monkeypatch.setattr(encoders, "encode_vae_condition", original)
+    assert ref_encode.install_h3_chunked_reference_encode()
+    monkeypatch.setattr(encoders, "encode_vae_condition", original)
+    monkeypatch.setenv(ref_encode.H3_REFERENCE_LATENT_ENV, "sample")
+    assert not ref_encode.install_h3_chunked_reference_encode()
+    assert encoders.encode_vae_condition is original
 
 
 def test_unknown_source_is_not_shimmed(monkeypatch):

@@ -243,7 +243,14 @@ import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
 import { videoFailureToast } from "./generation-failure";
-import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
+import {
+  defaultVideoResolution,
+  familyFirstRenderResolution,
+  keyframeSelectsMatchSource,
+  keyframeSupport,
+  matchedCanvas,
+  requestCanvas,
+} from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -1278,6 +1285,8 @@ function VideoGenerator({
     FALLBACK_RESOLUTION_PRESETS[0]!,
   );
   const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
+  // Set once the user picks a size or restores a clip's recipe; a family's first-render size never replaces it.
+  const resolutionChosen = useRef(false);
   const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
@@ -1698,7 +1707,7 @@ function VideoGenerator({
     [durationOptions, durationTargets, fps, frameOffset, frameStep, maxFrames, minFrames],
   );
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution = resolutionPresets[0] ?? [768, 512];
+    const resolution = defaultVideoResolution(status?.defaults, resolutionPresets) ?? [768, 512];
     const recommended =
       pendingModelDefaults ??
       (defaultSteps != null && defaultGuidance != null
@@ -1723,7 +1732,7 @@ function VideoGenerator({
       audioFlowShift: defaultAudioFlowShift,
       fps: presetFps(null),
     };
-  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.defaults, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
@@ -1808,15 +1817,17 @@ function VideoGenerator({
     [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
-  // Select "match source" only after the staged keyframe passes the aspect-ratio check.
+  // Select "match source" only after the staged keyframe passes the aspect-ratio check, and only for a family
+  // whose keyframes do not keep the chosen canvas.
+  const autoMatchSource = keyframeSelectsMatchSource(status?.defaults);
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
     const has = canvasSource != null;
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setMatchSource(has);
-  }, [canvasSource, matchedResolution]);
+    setMatchSource(has && autoMatchSource);
+  }, [autoMatchSource, canvasSource, matchedResolution]);
 
   const prevFamilyRef = useRef<string | null>(null);
   const prevFpsRef = useRef(fps);
@@ -1831,6 +1842,16 @@ function VideoGenerator({
       videoPresets.storedRecipe,
       pickRecipeSuperseded.current?.() ?? false,
     );
+    if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {
+      // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
+      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      if (firstSize) {
+        setResolutionIntent(firstSize);
+        const matched = matchAspect(firstSize[0], firstSize[1]);
+        setAspect(matched.key);
+        setPortrait(matched.portrait);
+      }
+    }
     if (familyChanged && loadedFamily) familySeeded.current = true;
     if (familyChanged && loadedFamily && familyDefaultFrames && applyFamilyDefault) {
       const option =
@@ -1852,6 +1873,8 @@ function VideoGenerator({
     familyDefaultFrames,
     fps,
     loadedFamily,
+    resolutionPresets,
+    status?.defaults,
     videoPresets.storedRecipe,
   ]);
 
@@ -2479,6 +2502,7 @@ function VideoGenerator({
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
       const size = fitVideoSize(video.width, video.height, sizeLimits);
+      resolutionChosen.current = true;
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
       setAspect(matched.key);
@@ -3673,6 +3697,7 @@ function VideoGenerator({
   const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
   const applySize = (width: number, height: number, keepAspect = false) => {
     const size = fitVideoSize(width, height, sizeLimits);
+    resolutionChosen.current = true;
     setResolutionIntent(size);
     setMatchSource(false);
     if (keepAspect) return;
@@ -3774,8 +3799,7 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: sourceSized ? undefined : videoSize[0],
-        height: sourceSized ? undefined : videoSize[1],
+        ...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
         num_frames: numFrames,
         fps,
         steps,
@@ -4323,7 +4347,7 @@ function VideoGenerator({
                   </div>
                 )}
               </div>
-              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && autoMatchSource && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
