@@ -9,6 +9,7 @@ GPU: compiled Qwen3 and Qwen3.5 layers match the stock forward and gradients wit
 (Qwen3.5's fla kernel runs as the opaque op inside the block).
 """
 
+import functools
 import importlib.util
 import os
 import sys
@@ -2006,3 +2007,102 @@ def test_strict_marked_kwarg_does_not_demote_the_block(monkeypatch, capsys):
     torch._dynamo.reset()
     assert "block compile failed" not in capsys.readouterr().out
     assert layer._unsloth_block_mode != M._OFF
+
+
+def _like_transformers_5_23(forward):
+    """GradientCheckpointingLayer.__init_subclass__ (transformers >= 5.23): checkpoint in `forward`."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        if (
+            self.gradient_checkpointing
+            and self.training
+            and type(self).forward is forward_with_checkpointing
+        ):
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
+def _checkpointed_layer(cls, reentrant = False):
+    layer = cls()
+    layer.gradient_checkpointing = True
+    calls = []
+
+    def checkpoint(fn, *args):
+        calls.append(len(args))
+        if reentrant:  # the forward of a reentrant checkpoint runs without grad
+            with torch.no_grad():
+                return fn(*args)
+        return fn(*args)
+
+    layer._gradient_checkpointing_func = checkpoint
+    return layer, calls
+
+
+def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
+    # The block replaced the class forward, so transformers' wrapper ended up inside it, never saw
+    # itself as type(self).forward and every layer trained without checkpointing.
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    M._wrap(cls, {})
+    assert getattr(cls.forward, M._MARK) and cls.forward._unsloth_block_original is stock
+    layer, calls = _checkpointed_layer(cls)
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    out = layer(x, attention_mask = None)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    layer.eval()(x)
+    assert calls == [1]
+    # Wrapping again (a second model load) keeps one checkpoint.
+    M._wrap(cls, {})
+    layer.train()(x)
+    assert calls == [1, 1]
+    # A reentrant checkpoint's no-grad first call runs the block's grad-mode trial, which must call
+    # the block, not the checkpoint shim again (that recursed until RecursionError).
+    fresh, fresh_calls = _checkpointed_layer(cls, reentrant = True)
+    out = fresh(x)
+    torch.testing.assert_close(out, fresh.proj(x) + x)
+    assert fresh_calls == [1]
+
+
+def test_block_leaves_call_level_checkpointing_alone(monkeypatch):
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    assert not getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    layer, calls = _checkpointed_layer(cls)
+    layer(torch.randn(1, 4, 8))
+    assert calls == []  # transformers <= 5.22 checkpoints in __call__, outside the block already
+
+
+def test_block_keeps_real_transformers_checkpointing(monkeypatch):
+    modeling_layers = pytest.importorskip("transformers.modeling_layers")
+    M = _load()
+
+    class ToyGCDecoderLayer(modeling_layers.GradientCheckpointingLayer):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return self.proj(hidden_states) + hidden_states
+
+    if ToyGCDecoderLayer.forward.__code__.co_name != "forward_with_checkpointing":
+        pytest.skip("this transformers checkpoints in __call__")
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    M._wrap(ToyGCDecoderLayer, {})
+    layer, calls = _checkpointed_layer(ToyGCDecoderLayer)
+    layer(torch.randn(1, 4, 8, requires_grad = True))
+    assert calls == [1]
