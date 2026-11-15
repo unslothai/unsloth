@@ -1081,6 +1081,17 @@ def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
     assert payload.run_tools_locally is True
 
 
+def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+
+    generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert producer.payload.tool_choice == "none" and producer.payload.enabled_tools == []
+
+
 def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     producer = FakeProducer(completion("Dawn light.", reasoning = "Short."))
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))

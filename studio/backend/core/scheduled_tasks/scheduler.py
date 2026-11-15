@@ -493,7 +493,10 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
 
 def _tool_fields(web_search: bool) -> dict:
     """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
-    if not web_search:
+    from state.tool_policy import get_tool_policy
+
+    # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
+    if not web_search or get_tool_policy() is False:
         # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
         # means every built-in, python and terminal included.
         return {"tool_choice": "none", "enabled_tools": []}
