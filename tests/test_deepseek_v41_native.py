@@ -185,6 +185,23 @@ def test_candidate_blocks_pin_the_newest_block_and_drop_unreachable_ones():
     assert keep.tolist() == [[True, True, False, False, True, True]]
 
 
+def test_engram_hash_compiles_fullgraph_with_the_host_helpers_disabled(monkeypatch):
+    """The compiled cache wraps compute_hash_multipliers in torch.compiler.disable and compiles the hash forward with
+    fullgraph = True: the forward must not call it (it used to, on the first call per device)."""
+    model = _tiny_model()
+    hasher = model.model.ngram_hash
+    ids = torch.randint(0, 512, (2, 9), generator = torch.Generator().manual_seed(0))
+    want = hasher(ids)
+    hasher._device_cache = {}
+    monkeypatch.setattr(
+        dsv41, "compute_hash_multipliers", torch.compiler.disable(dsv41.compute_hash_multipliers)
+    )
+    torch._dynamo.reset()
+    compiled = torch.compile(type(hasher).forward, fullgraph = True, backend = "eager")
+    assert torch.equal(compiled(hasher, ids), want)
+    torch._dynamo.reset()
+
+
 def test_hyper_connection_mix_is_doubly_stochastic():
     config = _tiny_config().text_config
     hc = dsv41.DeepseekV41HyperConnection(config)
