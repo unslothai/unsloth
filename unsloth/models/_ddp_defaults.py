@@ -427,8 +427,8 @@ def _all_reduce_tower_grads(params, group = None):
         if not grads:
             continue
         flat = torch._utils._flatten_dense_tensors(grads)
+        flat.div_(world)  # before the sum, like DDP: fp16 tower grads would overflow summed first
         dist.all_reduce(flat, group = group)
-        flat.div_(world)
         for g, s in zip(grads, torch._utils._unflatten_dense_tensors(flat, grads)):
             g.copy_(s)
     _TOWER_SYNC_COUNT[0] += 1
@@ -437,7 +437,17 @@ def _all_reduce_tower_grads(params, group = None):
 _TOWER_SYNC_COUNT = [0]
 
 
+def _broadcast_tower_params(params, group = None):
+    """DDP broadcasts the parameters it owns from rank 0 at construction; the excluded towers need the same."""
+    import torch.distributed as dist
+
+    src = dist.get_global_rank(group, 0) if group is not None else 0
+    for p in params:
+        dist.broadcast(p.data, src = src, group = group)
+
+
 def _install_tower_grad_sync(accelerator, ddp_model):
+    _broadcast_tower_params(ddp_model.module._unsloth_ddp_tower_params, ddp_model.process_group)
     wrapped = getattr(accelerator, "_unsloth_tower_ddp", None)
     if wrapped is None:
         wrapped = accelerator._unsloth_tower_ddp = []

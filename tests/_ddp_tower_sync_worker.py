@@ -108,6 +108,10 @@ def run(module, out_dir, ga):
         remove_unused_columns = False,
     )
 
+    if dist.is_initialized() and dist.get_rank() == 1:
+        with torch.no_grad():  # a rank-dependent tower init: rank 0's weights must win, as DDP does
+            model.vision_tower.weight.add_(1.0)
+
     class SeqTrainer(transformers.Trainer):
         def _get_train_sampler(self, *a, **k):
             return torch.utils.data.SequentialSampler(self.train_dataset)
