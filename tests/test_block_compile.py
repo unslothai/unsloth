@@ -233,6 +233,15 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
     assert (
         M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]._base is None
     )
+    # A padding-only (B, 1, 1, L) mask expanded over queries: all True when bidirectional, kept None when causal.
+    padding = torch.tensor([[True] * 6, [True] * 4 + [False] * 2])[:, None, None, :].clone()
+    for causal, want in ((False, torch.ones(2, 1, 6, 6, dtype = torch.bool)), (True, None)):
+        layer = _MaskDecoderLayer().train()
+        layer.self_attn = types.SimpleNamespace(is_causal = causal)
+        M._MATERIALISED[0] = None
+        M._normalise_mask(layer, hidden, {"attention_mask": padding.expand(2, 1, 6, 6)})
+        rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+        assert rebuilt is None if want is None else torch.equal(rebuilt, want)
 
 
 def test_rebind_globals_resolves():

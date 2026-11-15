@@ -1559,9 +1559,15 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
         base = torch.ones(seq_len, dtype = dtype, device = device)
     else:
         full = (batch, heads, seq_len, seq_len)
-        base = torch.ones((seq_len, seq_len), dtype = torch.bool, device = device)
-        if causal:
-            base = base.tril_()
+        if 2 in broadcast:
+            # Query dim broadcast (a padding-only bidirectional mask): a causal mask cannot be stored that way.
+            if causal:
+                return None
+            base = torch.ones((1, seq_len), dtype = torch.bool, device = device)
+        else:
+            base = torch.ones((seq_len, seq_len), dtype = torch.bool, device = device)
+            if causal:
+                base = base.tril_()
     stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
     mask = base.expand(stored).contiguous()
     if view:
@@ -1594,7 +1600,7 @@ def _normalise_mask(layer, hidden_states, kwargs):
     mask = _materialise_mask(
         layout, causal, hidden_states.shape[0], hidden_states.shape[1], hidden_states.device
     )
-    return {**kwargs, _MASK_KWARG: mask}
+    return kwargs if mask is None else {**kwargs, _MASK_KWARG: mask}
 
 
 def _settle_mask_flags(layer, kwargs):
