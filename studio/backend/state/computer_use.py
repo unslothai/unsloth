@@ -55,8 +55,10 @@ def session(key: Key) -> Session:
         found = _sessions.get(key)
         if found is None:
             found = _sessions[key] = Session()
-            while len(_sessions) > _MAX_SESSIONS:
-                _sessions.popitem(last = False)
+            # A stop outlives eviction: forgetting it would let a Full access chat carry on.
+            idle = [k for k, s in _sessions.items() if not s.stopped and k != key]
+            for old in idle[: max(0, len(_sessions) - _MAX_SESSIONS)]:
+                del _sessions[old]
         else:
             _sessions.move_to_end(key)
         return found

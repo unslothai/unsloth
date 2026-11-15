@@ -250,12 +250,14 @@ class MacBackend(Backend):
         self._mouse(_MOUSE_MOVED, x, y)
         time.sleep(0.05)
         self._mouse(_MOUSE_DOWN["left"], x, y, clicks = 1)
-        time.sleep(0.08)
-        for x, y in rest:
-            self._mouse(_MOUSE_DRAGGED["left"], x, y)
-            time.sleep(0.012)
-        time.sleep(0.08)
-        self._mouse(_MOUSE_UP["left"], x, y, clicks = 1)
+        try:
+            time.sleep(0.08)
+            for x, y in rest:
+                self._mouse(_MOUSE_DRAGGED["left"], x, y)
+                time.sleep(0.012)
+            time.sleep(0.08)
+        finally:
+            self._mouse(_MOUSE_UP["left"], x, y, clicks = 1)
 
     def scroll(self, dx: int, dy: int) -> None:
         self._need("input")
@@ -430,8 +432,14 @@ class MacBackend(Backend):
         return FrontWindow(app = app, app_id = bundle, pid = pid)
 
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
+        from ..policy import is_security_prompt
         for layer, window in self._windows():
-            if layer == 0 and window.bounds is not None and window.contains(x, y):
+            if window.bounds is None or not window.contains(x, y):
+                continue
+            # A password prompt floats above normal windows, so it is found at any level.
+            if layer != 0 and is_security_prompt(window):
+                return window
+            if layer == 0:
                 app, bundle, pid = self._front_app()
                 if pid and window.pid == pid:
                     return FrontWindow(app or window.app, bundle, window.title, pid, window.bounds)
