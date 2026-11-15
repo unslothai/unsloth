@@ -1971,19 +1971,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
             or forward_rejects_packing
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
+        requested_padding_free = getattr(config_arg, "padding_free", None) is True
         if boundary_blocker is not None:
             if (
                 not blocked
                 and not requested_pack
-                and (
-                    getattr(config_arg, "padding_free", None) is True
-                    or _should_auto_padding_free(config_arg)
-                )
+                and (requested_padding_free or _should_auto_padding_free(config_arg))
             ):
                 print(
                     f"Unsloth: Padding-free batching off: {boundary_blocker} mixes tokens across "
                     "packed documents."
                 )
+                requested_padding_free = False
             blocked = True
         if blocked:
             if hasattr(config_arg, "packing"):
@@ -1999,7 +1998,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
 
-        if blocked and requested_pack:
+        if blocked and (requested_pack or requested_padding_free):
             reason = "custom data collator"
             if data_collator is None and is_processor:
                 reason = "processor-based model"
@@ -2039,7 +2038,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif data_collator is None:
                 # Several places can set it, so name the flag, not a setter.
                 reason = "UNSLOTH_RETURN_LOGITS=1"
-            logger.warning(f"Unsloth: packing=True ignored ({reason}).")
+            flag = "packing" if requested_pack else "padding_free"
+            logger.warning(f"Unsloth: {flag}=True ignored ({reason}).")
 
         packing_active = False
         if _should_pack(config_arg) and not blocked:
