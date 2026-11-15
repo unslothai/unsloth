@@ -360,6 +360,7 @@ def test_safetensors_finalized_tool_calls_count_unless_their_arguments_streamed(
     assert "_monitor_usage(monitor_id, _summed, reported_chars = _covered_chars[0])" in source
     # Each reported pass's running usage reaches the monitor, so a later failure keeps it.
     assert "_monitor_usage(monitor_id, totals)" in source
+    assert "on_pass_reported = lambda totals: _monitor_usage(codex_monitor_id, totals)," in source
 
 
 def test_a_trimmed_prompt_still_estimates_its_full_length(monkeypatch):
@@ -622,7 +623,10 @@ def _gguf_tool_route(
                 yield event
 
         def generate_chat_completion(self, **kwargs):
-            yield from events
+            for event in events:
+                if event == "boom":
+                    raise RuntimeError("backend died")
+                yield event
 
     receipts = []
     monitor = ApiMonitor()
@@ -884,3 +888,55 @@ def test_a_failed_whole_tool_run_keeps_what_it_generated(monkeypatch, events, ex
     receipt = _gguf_tool_route(monkeypatch, events, status = 500)
     assert receipt.status == "error"
     assert receipt.completion_tokens == expected
+
+
+def test_a_failed_whole_reply_keeps_what_it_generated(monkeypatch):
+    receipt = _gguf_tool_route(monkeypatch, ["r" * 400, "boom"], tools = False, status = 500)
+    assert receipt.status == "error"
+    assert receipt.completion_tokens == 100
+
+
+def test_the_codex_tool_loop_forwards_the_pass_report_hook(monkeypatch):
+    from core.inference import openai_codex_tool_loop as codex_loop
+
+    seen = {}
+
+    def capture(
+        transport,
+        *,
+        run,
+        policy,
+        cancel_event,
+        mcp_image = None,
+    ):
+        seen["hook"] = policy.on_pass_reported
+        return iter(())
+
+    monkeypatch.setattr(codex_loop, "stream_with_studio_tools", capture)
+    hook = lambda totals: None  # noqa: E731
+    policy = SimpleNamespace(
+        tools = [],
+        max_calls = 1,
+        timeout = 1,
+        permission_mode = "off",
+        confirm_calls = False,
+        bypass_permissions = False,
+        rag_scope = None,
+        nudge_tool_calls = None,
+        deduplicate_tool_calls = None,
+        sandbox_level = "high",
+    )
+    run = SimpleNamespace(
+        messages = [],
+        session_id = None,
+        thread_id = None,
+        model = "m",
+        tool_choice = None,
+        continue_final_message = False,
+        supports_vision = False,
+        promoted_image_parts = (),
+    )
+    codex_loop.stream_codex_with_studio_tools(
+        None, run = run, policy = policy, cancel_event = None, on_pass_reported = hook
+    )
+    assert seen["hook"] is hook

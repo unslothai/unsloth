@@ -29699,6 +29699,8 @@ async def _proxy_to_external_provider(
                         policy = policy,
                         cancel_event = cancel_event,
                         mcp_image = _mcp_image,
+                        # The loop sums turns' usage until it ends: settle each reported turn as it lands.
+                        on_pass_reported = lambda totals: _monitor_usage(codex_monitor_id, totals),
                     )
                     if policy
                     else client.stream(
@@ -34441,6 +34443,21 @@ async def produce_openai_chat_completions(
                     detail = _openai_admission_error_body(exc, status_code = 499),
                 )
 
+            # Finished choices' text (covered by their usage), the current one's, and the usage so far.
+            _choices_partial: dict = {"done": "", "current": "", "usage": None}
+
+            def _gguf_choices_settle():
+                done = _choices_partial["done"]
+                if done or _choices_partial["current"]:
+                    api_monitor.set_reply(monitor_id, done + _choices_partial["current"])
+                if _choices_partial["usage"] is not None:
+                    _monitor_usage(
+                        monitor_id,
+                        _choices_partial["usage"],
+                        _monitor_context_length(),
+                        reported_chars = len(done),
+                    )
+
             try:
                 # The single decode slot yields one at a time, so n choices run sequentially.
                 drain_task = None
@@ -34493,6 +34510,7 @@ async def produce_openai_chat_completions(
                                     )
                                 continue
                             full_text = token
+                            _choices_partial["current"] = token
 
                         if _choice_context_truncation is not None and (
                             _context_truncation is None
@@ -34526,6 +34544,13 @@ async def produce_openai_chat_completions(
                             _sum_completion += completion_usage.get("completion_tokens") or 0
                             if _prompt_details is None:
                                 _prompt_details = completion_usage.get("prompt_tokens_details")
+                            _choices_partial["usage"] = {
+                                "prompt_tokens": _prompt_tokens,
+                                "completion_tokens": _sum_completion,
+                                "total_tokens": _prompt_tokens + _sum_completion,
+                            }
+                        _choices_partial["done"] += full_text
+                        _choices_partial["current"] = ""
                     return (
                         _n,
                         _choices,
@@ -34608,10 +34633,12 @@ async def produce_openai_chat_completions(
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_task()
+                _gguf_choices_settle()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
+                _gguf_choices_settle()
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
