@@ -890,3 +890,30 @@ def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
     out, _ = router(_Module(), q, kv, kv, mask, scaling = 1.0)
     torch.testing.assert_close(out, want, rtol = 0, atol = 0)
     assert len(calls) == 2
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+@pytest.mark.parametrize("heads", [(16, 1), (8, 2)])
+def test_dkdv_head_split_matches_unsplit(monkeypatch, heads):
+    # One kv head over a short sequence left most SMs idle in the dK / dV pass; the split sums
+    # per-group fp32 partials, so it matches the single pass to fp32 summation order.
+    H, HKV = heads
+    dtype = _cuda_dtype()
+    torch.manual_seed(H)
+    B, S, D = 1, 96, 512
+    device = torch.device("cuda", torch.cuda.current_device())
+    assert LH._dkdv_splits(device, B * HKV, S, H // HKV) > 1
+    q = torch.randn(B, S, H, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    k = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    v = torch.randn(B, S, HKV, D, device = "cuda", dtype = dtype).transpose(1, 2)
+    grad = torch.randn(B, S, H, D, device = "cuda", dtype = dtype)
+    lo, hi = LH._dense_intervals(B, S, True, q.device)
+    grads = []
+    for split in ("1", "0"):
+        monkeypatch.setenv("UNSLOTH_LH_DKDV_SPLIT", split)
+        ins = [x.detach().clone().requires_grad_() for x in (q, k, v)]
+        LH.large_head_attention(*ins, lo, hi).backward(grad)
+        grads.append([x.grad.float() for x in ins])
+    assert LH._dkdv_splits(device, B * HKV, S, H // HKV) == 1
+    for a, b in zip(*grads):
+        torch.testing.assert_close(a, b, rtol = 2e-2, atol = 2e-2 * b.abs().max().item())
