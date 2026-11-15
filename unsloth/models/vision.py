@@ -313,6 +313,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -4906,6 +4907,7 @@ class FastBaseModel:
                         "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
                     )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                quantize_moe_experts_if_requested(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():

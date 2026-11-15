@@ -68,6 +68,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
     fsdp2_requested,
@@ -4387,6 +4388,7 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                quantize_moe_experts_if_requested(model)
             elif not fast_inference:
                 # Re-quantized packed checkpoint: use model_config (quant config dropped), not config.json.
                 from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
@@ -4473,6 +4475,7 @@ class FastLlamaModel:
                     dtype = dtype,
                 )
                 _prepare_compressed_tensors_model(model)
+                quantize_moe_experts_if_requested(model)
                 if fsdp2_requested():
                     prepare_fsdp2_qlora(model, dtype)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
