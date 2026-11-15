@@ -194,7 +194,6 @@ class _Run:
         self.cancel_event = cancel_event
         self.allowed = allowed
         self.displays = backend.displays()
-        # Actions done so far, and how many were done when the screen was last compared.
         self.done = 0
         self.checked_at: Optional[int] = None
         self.zoomed: Any = None
@@ -405,7 +404,6 @@ class _Run:
             front = self._front(action)
             start = self._target(action["x"], action["y"], front)
             end = self._target(action["to_x"], action["to_y"], front)
-            # Both ends: a drop is input to the app it lands in.
             self._use(self._under(*start, front))
             self._use(self._under(*end, front))
             points = [
