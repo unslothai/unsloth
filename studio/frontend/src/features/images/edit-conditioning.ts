@@ -8,7 +8,13 @@ import type {
   DiffusionGenerateRequest,
   LocalizedEditMode,
 } from "./api";
-import { type SizeLimits, fitSize, matchSourceSize } from "./image-size.ts";
+import {
+  MIN_DIM,
+  type SizeLimits,
+  fitSize,
+  matchSourceSize,
+  snapDim,
+} from "./image-size.ts";
 
 export const ANNOTATION_COLORS: ReadonlyArray<{ name: string; value: string }> =
   [
@@ -200,14 +206,67 @@ function joinWords(words: readonly string[]): string {
 
 export type EditSizing = "source" | "custom";
 
+/** MiniMax-H3-Image's edit size, as the reference edit workflow derives it: Image 1 scaled to 4 MP (aspect kept,
+ *  sides rounded), then cut to the 32 grid (each side floored; sizes already on it, or flooring to 0, are kept).
+ *  Mirrors the backend's reference_edit_size. */
+export function h3ImageSourceSize(width: number, height: number): { width: number; height: number } {
+  const m = 32;
+  const total = 4 * 1024 * 1024;
+  const scale = Math.sqrt(total / (width * height));
+  // Python's round(): halves go to the even neighbour
+  const round = (x: number) => {
+    const f = Math.floor(x);
+    const d = x - f;
+    if (d > 0.5) return f + 1;
+    if (d < 0.5) return f;
+    return f % 2 === 0 ? f : f + 1;
+  };
+  const w = round(width * scale);
+  const h = round(height * scale);
+  const tw = Math.floor(w / m) * m;
+  const th = Math.floor(h / m) * m;
+  if (tw === 0 || th === 0) return { width: w, height: h };
+  return { width: tw, height: th };
+}
+
+/** ``width`` x ``height`` scaled down as one pair (aspect kept, sides floored to the grid) until both the side and
+ *  pixel limits hold; sizes already inside them only snap to the grid. */
+export function boundedSize(
+  width: number,
+  height: number,
+  limits: SizeLimits,
+): { width: number; height: number } {
+  const scale = Math.min(
+    1,
+    limits.maxSide / Math.max(width, height),
+    Math.sqrt(limits.maxPixels / (width * height)),
+  );
+  if (scale >= 1) return fitSize(width, height, limits);
+  const m = limits.multiple;
+  // the short side never drops below the backend minimum; for extreme ratios the long side gives way instead
+  const shortMin = snapDim(MIN_DIM, limits);
+  let w = Math.max(shortMin, Math.floor((width * scale) / m) * m);
+  let h = Math.max(shortMin, Math.floor((height * scale) / m) * m);
+  while (w * h > limits.maxPixels && Math.max(w, h) > shortMin) {
+    if (w >= h) w -= m;
+    else h -= m;
+  }
+  return { width: w, height: h };
+}
+
 export function resolveEditSize(
   sizing: EditSizing,
   source: { width: number; height: number } | null,
   matchResolution: number,
   custom: { width: number; height: number },
   limits: SizeLimits,
+  family?: string | null,
 ): { width: number; height: number } {
   if (sizing === "source" && source && source.width > 0 && source.height > 0) {
+    if (isMinimaxH3Image(family)) {
+      const native = h3ImageSourceSize(source.width, source.height);
+      return boundedSize(native.width, native.height, limits);
+    }
     return matchSourceSize(
       source.width,
       source.height,

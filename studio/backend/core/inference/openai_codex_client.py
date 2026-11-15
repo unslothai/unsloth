@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.http_stream import aiter_sse_lines
 from core.inference import openai_codex_auth as codex_auth
 from core.inference.openai_codex_auth import (
     OPENAI_CODEX_CLIENT_VERSION,
@@ -333,6 +334,21 @@ def offered_subscription_model(provider_id: str, model_id: str) -> dict[str, Any
     return _offered_models.get(provider_id, {}).get(model_id)
 
 
+def restore_subscription_catalog(
+    provider_id: str, bundle: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    saved = (bundle or {}).get("plan_catalog")
+    if (
+        provider_id not in _offered_models
+        and isinstance(saved, dict)
+        and saved.get("account_id") == bundle.get("account_id")
+    ):
+        _offered_models[provider_id] = {model["id"]: model for model in saved["models"]}
+        _catalog_accounts[provider_id] = saved["account_id"]
+        _stale_catalogs.discard(provider_id)
+    return list(_offered_models.get(provider_id, {}).values())
+
+
 def forget_subscription_models(provider_id: str) -> None:
     # Dropping the ticket retires in-flight reads; the never-reissued serial stops a late one matching.
     _catalog_requests.pop(provider_id, None)
@@ -451,11 +467,18 @@ async def list_subscription_models(
     _offered_models[provider_id] = {model["id"]: model for model in models}
     _catalog_accounts[provider_id] = account_id
     _stale_catalogs.discard(provider_id)
+    saved = {"account_id": account_id, "models": models}
+    if current_bundle and current_bundle.get("plan_catalog") != saved:
+        try:
+            await codex_auth.remember_plan_catalog(provider_id, account_id, models)
+        except Exception:
+            # Held in memory either way; a busy credential guard must not fail the listing.
+            pass
     return models
 
 
 async def ensure_subscription_models(provider_id: str) -> set[str]:
-    """Fetches slugs when this process holds none; unreachable upstream returns empty so callers fall back to the seed, not lock the account out."""
+    """Fetches slugs when this process holds none; unreachable upstream returns empty so callers keep to the saved models, not lock the account out."""
     listed = offered_subscription_model_ids(provider_id)
     if listed:
         return listed
@@ -859,7 +882,7 @@ class OpenAICodexClient:
                     cancel_task = asyncio.create_task(_close_on_cancel())
                 event_name, tool_indexes = "", {}
                 try:
-                    async for line in response.aiter_lines():
+                    async for line in aiter_sse_lines(response):
                         if cancel_event is not None and cancel_event.is_set():
                             return
                         if not line:

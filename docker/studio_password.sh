@@ -72,11 +72,14 @@ case "$STATE" in
 esac
 echo "Unsloth Studio login -> ${STUDIO_LINE}"
 
+# Both TLS variables set: `unsloth studio` serves HTTPS on the port (-k: the cert names the host, not 127.0.0.1).
+STUDIO_SCHEME=http
+[[ -n "${UNSLOTH_STUDIO_SSL_CERTFILE:-}" && -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ]] && STUDIO_SCHEME=https
 # Studio's socket opens before torch loads; wait for /api/health 200.
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
+    if [[ -z "$studio_ok" ]] && curl -skf -o /dev/null --max-time 3 --noproxy '*' "${STUDIO_SCHEME}://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
     if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${JUPYTER_PORT}/login"; then
@@ -104,7 +107,7 @@ fi
 rule="$(printf '=%.0s' $(seq 1 72))"
 printf '%s\n' "${_g}${rule}${_r}"
 printf '  %s\n' "${_g}${title}${_r}"
-printf '  Unsloth     %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
+printf '  Unsloth     %s   %s\n' "${_b}${STUDIO_SCHEME}://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
 printf '  JupyterLab  %s   %s\n' "${_b}http://localhost:${JUPYTER_PORT}${_r}" "${_y}${jupyter_text}${_r}"
 printf '  %s\n' "Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
 printf '%s\n' "${_g}${rule}${_r}"

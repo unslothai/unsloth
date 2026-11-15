@@ -506,6 +506,15 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
 
 
+def test_text_extraction_reads_a_utf16_file_without_a_byte_order_mark(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+    source = tmp_path / "wide.txt"
+    source.write_bytes("héllo wörld\n".encode("utf-16-le"))
+
+    assert seed_route._extract_text_from_file(source, ".txt") == "héllo wörld\n"
+
+
 def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
     """With the plugin installed the same call sites still go through it."""
     pytest.importorskip("data_designer_unstructured_seed")

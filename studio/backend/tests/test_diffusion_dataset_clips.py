@@ -459,9 +459,15 @@ def test_deleting_an_image_still_drops_its_sidecar_where_case_is_kept(client, ds
     next cat.png inherits a caption written for something else."""
     import routes.training as tr
 
-    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: False)
     folder = ds_root / "sensitive-case"
     folder.mkdir()
+    # cat.txt and CAT.txt must be two files; on a case-insensitive filesystem (the macOS and
+    # Windows defaults) they are one, so the case-kept layout cannot be built there.
+    (folder / "probe.txt").write_text("", encoding = "utf-8")
+    if (folder / "PROBE.txt").exists():
+        pytest.skip("needs a case-sensitive filesystem to hold cat.txt and CAT.txt apart")
+    (folder / "probe.txt").unlink()
+    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: False)
     _write_png(folder / "cat.png")
     (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
     (folder / "cat.txt").write_text("a cat", encoding = "utf-8")

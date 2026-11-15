@@ -26,6 +26,16 @@ _COMPILE_OPTIONS = {
 }
 
 
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
+
+
 def _cudagraph_mode():
     """UNSLOTH_BLOCK_CUDAGRAPHS: "1" always on, unset or "auto" decided per run (see _auto_observe),
     anything else off (before auto, every value but "1" meant off)."""
@@ -253,6 +263,15 @@ def _packed_kwargs(kwargs):
     )
 
 
+def _grad_side_inputs(args, kwargs):
+    """A non-hidden_states input needing grad (Mllama cross-attention states): its replayed-backward grad lives in
+    graph pool memory the next replay overwrites before it is summed, and only hidden_states is guarded (_CloneGrad)."""
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, torch.Tensor) and value.requires_grad:
+            return True
+    return False
+
+
 def _trainable(layer):
     params = layer.__dict__.get("_unsloth_block_params")
     if params is None:
@@ -262,6 +281,40 @@ def _trainable(layer):
 
 # The grad-mode trial before a checkpointed block's first no-grad call stands in for the recompute.
 _IN_TRIAL = [False]
+
+
+def _same(tensor):
+    return tensor
+
+
+@contextlib.contextmanager
+def _no_output_capture(layer):
+    """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
+    swapped = []
+    for module in layer.modules():
+        fn = module.__dict__.get("forward")
+        # functools.wraps copies __qualname__, not the code object's.
+        code = getattr(fn, "__code__", None)
+        qual = getattr(code, "co_qualname", None)  # Python >= 3.11
+        if qual is None:
+            qual = (
+                "make_capture_wrapper" if getattr(code, "co_name", "") == "wrapped_forward" else ""
+            )
+        if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
+            swapped.append((module, fn))
+            module.forward = fn.__wrapped__
+    try:
+        from transformers.utils.output_capturing import _active_collector
+    except Exception:
+        _active_collector = None
+    token = _active_collector.set(None) if _active_collector is not None else None
+    try:
+        yield
+    finally:
+        if _active_collector is not None:
+            _active_collector.reset(token)
+        for module, fn in swapped:
+            module.forward = fn
 
 
 # output_hidden_states hands block outputs to the caller, who may keep them past the generation.
@@ -405,6 +458,8 @@ def _param_grads_out_of_pool(layer):
 
 def _in_nonreentrant_checkpoint():
     """Non-reentrant checkpoint frees recomputed inputs mid graph recording, which cudagraph trees refuse."""
+    if _IN_TRIAL[0] == "nonreentrant":
+        return True
     try:
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
@@ -518,6 +573,8 @@ def _auto_call_reason(layer, hidden_states, args, kwargs):
     """Why this probed call rules graphs out (None: it does not)."""
     if _packed_kwargs(kwargs):
         return "packed / padding-free rows"
+    if _grad_side_inputs(args, kwargs):
+        return "a side input takes a gradient"
     if _in_nonreentrant_checkpoint():
         return "non-reentrant checkpointing"
     if _graphs_unsafe_moe(layer, note = False):
@@ -705,7 +762,10 @@ def _region_recompile_limit(kinds):
 
 
 # gpt-oss builds its flex mask inside attention: the block broke and recompiled per length.
-_SKIP = {"GptOssDecoderLayer"}
+# DeepSeek-V4.1 port: the CSA2 top-k gather is [B, S, min(index_topk, T), D]; Inductor's backward codegen fails on the
+# unbound symbol ("For Min(4, s24), expected [s24] to have been codegen-ed", torch 2.14). Its layers also share a
+# per-forward group-state dict that gradient checkpointing replays per layer.
+_SKIP = {"GptOssDecoderLayer", "DeepseekV41DecoderLayer"}
 
 
 def _enabled():
@@ -806,6 +866,24 @@ def _rebind_class(cls):
             setattr(cls, key, new)
 
 
+def _relax_strict_dynamic(obj):
+    """Alias tensors that carry a caller's strict mark_dynamic so the block only sees its own maybe marks.
+
+    unsloth_zoo marks input_ids dim 1 for its loss bookkeeping, and Qwen4Exp passes input_ids into every
+    block as ple_input_ids. A length the block specializes then raised ConstraintViolationError and demoted
+    the layer kind to the stock forward. A view drops the mark (it lives on the tensor object), not the data.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape) if getattr(obj, "_dynamo_dynamic_indices", None) else obj
+    if type(obj) in (tuple, list):
+        new = [_relax_strict_dynamic(o) for o in obj]
+        return obj if all(a is b for a, b in zip(new, obj)) else type(obj)(new)
+    if type(obj) is dict:
+        new = {k: _relax_strict_dynamic(v) for k, v in obj.items()}
+        return obj if all(new[k] is obj[k] for k in obj) else new
+    return obj
+
+
 def _mark_seq_dynamic(seq_len, obj):
     if isinstance(obj, torch.Tensor):
         # A float tensor's last dim is a width even when it equals seq_len (mrope ids are int).
@@ -894,9 +972,9 @@ def _gdn_chunk_adapter(original):
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
             scale = q.shape[-1] ** -0.5
             if cu_seqlens is None:
-                out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, scale)
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk_v2(q, k, v, g, beta, scale)
             else:
-                out = torch.ops.unsloth.qwen3_5_gdn_chunk(
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk_v2(
                     q, k, v, g, beta, scale, cu_seqlens.contiguous()
                 )
             return out[0], None
@@ -974,17 +1052,21 @@ def _route_fla_callers(gc):
 
 def _causal_conv1d_adapter(original, depthwise_conv):
     # Inductor's conv backward guards on the exact sequence length: recompile per length.
+    # transformers < 5.15 calls with causal-conv1d kwargs (x = ..., seq_idx = None): pass args through unchanged.
     @functools.wraps(original, updated = ())
-    def causal_conv1d_fn(
-        hidden_states,
-        weight,
-        bias = None,
-        activation = None,
-        **kwargs,
-    ):
+    def causal_conv1d_fn(*args, **kwargs):
+        named = dict(zip(("hidden_states", "weight", "bias", "activation"), args))
+        x_key = "x" if "x" in kwargs else "hidden_states"
+        hidden_states = named.get("hidden_states", kwargs.get(x_key))
+        weight = named.get("weight", kwargs.get("weight"))
+        bias = named.get("bias", kwargs.get("bias"))
+        activation = named.get("activation", kwargs.get("activation"))
         if (
             _IN_BLOCK[0]
             and torch.compiler.is_compiling()
+            and len(args) <= 4
+            and hidden_states is not None
+            and weight is not None
             and weight.dim() == 2
             and activation in (None, "silu", "swish")
             and all(kwargs.get(key) is None for key in ("seq_idx", "cu_seqlens", "initial_states"))
@@ -996,7 +1078,7 @@ def _causal_conv1d_adapter(original, depthwise_conv):
             if activation is not None:
                 out = torch.nn.functional.silu(out)
             return out.to(hidden_states.dtype)
-        return original(hidden_states, weight, bias, activation = activation, **kwargs)
+        return original(*args, **kwargs)
 
     causal_conv1d_fn._unsloth_block_adapter = True
     return causal_conv1d_fn
@@ -1099,6 +1181,10 @@ def _prepare_gdn(layer, hidden_states):
         from ._gdn_op import _fla_ops, varlen_ok
 
         heads, dk, dv = gdn.num_v_heads, gdn.head_k_dim, gdn.head_v_dim
+        # transformers >= 5.23 passes q / k unrepeated (huggingface/transformers#49141).
+        qk_heads = getattr(gdn, "num_k_heads", heads)
+        if not qk_heads or heads % qk_heads:
+            qk_heads = heads
         B, T = hidden_states.shape[0], hidden_states.shape[1]
         dev, dt = hidden_states.device, hidden_states.dtype
 
@@ -1107,8 +1193,8 @@ def _prepare_gdn(layer, hidden_states):
             r = lambda *s, dtype = dt: torch.randn(*s, device = dev, dtype = dtype, generator = gen)
             g = -torch.rand(B, T, heads, device = dev, generator = gen) * 0.1
             return (
-                r(B, T, heads, dk),
-                r(B, T, heads, dk),
+                r(B, T, qk_heads, dk),
+                r(B, T, qk_heads, dk),
                 r(B, T, heads, dv),
                 g,
                 r(B, T, heads).sigmoid(),
@@ -1167,6 +1253,10 @@ def _stable_parametrized_classes():
 # zoo's Gemma-4 sliding router scans the mask (data dependent) and declines while compiling, so
 # the block runs the scan eagerly and a router wrapper reads the verdict stored on the mask.
 _BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
+_FLASH_MODULE = "unsloth_zoo.temporary_patches.gemma4_flash_sliding"
+# Read by unsloth/kernels/large_head_attention.py (PLAIN_CAUSAL_ATTR): a compiled head_dim 512 layer
+# takes the kernel over a causal mask the block verified here, instead of masked SDPA.
+_PLAIN_CAUSAL_ATTR = "_unsloth_plain_causal"
 _BAND_CHECK = [None]
 
 
@@ -1183,8 +1273,13 @@ def _gemma4_router_hook():
         router, "_unsloth_block_band", False
     ):
         return
-    zoo = sys.modules.get(router.__module__)
-    plain = getattr(zoo, "_ORIG_SDPA", [None])[0]
+    # Other routers wrap zoo's (unsloth's head_dim 512 kernel, installed at load before this runs, has no
+    # _ORIG_SDPA), so fall back to zoo's module: without it the hook never installed for Gemma-4.
+    plain = None
+    for name in (router.__module__, _FLASH_MODULE):
+        plain = getattr(sys.modules.get(name), "_ORIG_SDPA", [None])[0]
+        if plain is not None:
+            break
     check = getattr(sys.modules.get(_BAND_MODULE), "_mask_is_plain_band", None)
     if plain is None or not callable(check):
         return
@@ -1233,6 +1328,23 @@ def _gemma4_router_hook():
                     enable_gqa = True,
                 )
                 return out.transpose(1, 2).contiguous(), None
+            if (
+                window
+                and attention_mask is not None
+                and query.shape[2] == key.shape[2]
+                and query.shape[2] > window
+                and not (dropout and module.training)
+                and kwargs.get("softcap", None) is None
+                and getattr(attention_mask, _LONG_BAND_ATTR, False) is True
+                and query.dtype == key.dtype == value.dtype
+                and query.dtype in (torch.float16, torch.bfloat16)
+                and query.shape[-1] == key.shape[-1] == value.shape[-1]
+                and query.shape[1] % key.shape[1] == 0
+                and _band_kernel_checked(query)
+            ):
+                # Longer than the window: masked SDPA computes all S x S scores (and repeats the kv
+                # heads); the interval kernel reads only each row's window (O(S * w)).
+                return _band_kernel_attention(query, key, value, window, scaling), None
             return plain(
                 module,
                 query,
@@ -1260,6 +1372,65 @@ def _gemma4_router_hook():
     ALL_ATTENTION_FUNCTIONS["sdpa"] = sdpa_attention_forward
 
 
+# Set on a sliding layer's 4D mask when it is the plain band, the sequence is longer than the window and
+# the interval kernel passed its self check at this head_dim / dtype; read by the router above.
+_LONG_BAND_ATTR = "_unsloth_block_long_band"
+_BAND_KERNEL_ENV = "UNSLOTH_BLOCK_SLIDING_KERNEL"
+_LH_MODULE = "unsloth.kernels.large_head_attention"
+
+
+def _band_kernel_attention(query, key, value, window, scaling):
+    lh = sys.modules[_LH_MODULE]
+    B, S = query.shape[0], query.shape[2]
+    rows = torch.arange(S, device = query.device, dtype = torch.int32)
+    lo = (rows - (window - 1)).clamp_min(0).expand(B, S).contiguous()
+    hi = rows.expand(B, S).contiguous()
+    scale = scaling if scaling is not None else query.shape[-1] ** -0.5
+    return lh.large_head_attention(query, key, value, lo, hi, scale).contiguous()
+
+
+def _band_kernel_ready(layer, hidden_states):
+    """Eager: the interval kernel may serve this sliding layer (CUDA sm80+, passed its self check at the
+    layer's head_dim). Checked per dtype; the router also reads the verdict for the call's dtype."""
+    if os.environ.get(_BAND_KERNEL_ENV, "1") == "0" or hidden_states is None:
+        return False
+    if not hidden_states.is_cuda or torch.version.hip is not None:
+        return False
+    key = str(hidden_states.device)
+    cached = layer.__dict__.get("_unsloth_band_kernel_ready")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ready = _band_kernel_check(layer, hidden_states.device)
+    layer.__dict__["_unsloth_band_kernel_ready"] = (key, ready)
+    return ready
+
+
+def _band_kernel_check(layer, device):
+    head_dim = None
+    for module in layer.modules():
+        if getattr(module, "is_sliding", False) and getattr(module, "sliding_window", None):
+            head_dim = getattr(module, "head_dim", None)
+            break
+    if head_dim not in (64, 128, 256):
+        return False
+    try:
+        from unsloth.kernels import large_head_attention as lh
+
+        if not lh._enabled() or not lh._measured_faster_on(device):
+            return False
+        dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() else [])
+        return any([bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes])
+    except Exception:
+        return False
+
+
+def _band_kernel_checked(query):
+    lh = sys.modules.get(_LH_MODULE)
+    if lh is None:
+        return False
+    return lh._SELF_CHECK.get((str(query.device), query.dtype, query.shape[-1]), False) is True
+
+
 def _sliding_window(layer):
     window = layer.__dict__.get("_unsloth_block_window", 0)
     if window == 0:
@@ -1272,7 +1443,13 @@ def _sliding_window(layer):
     return window
 
 
-def _precheck_band(layer, seq_len, args, kwargs):
+def _precheck_band(
+    layer,
+    seq_len,
+    args,
+    kwargs,
+    hidden_states = None,
+):
     # Every 4D mask gets a verdict: a missing attribute would recompile.
     check = _BAND_CHECK[0]
     if check is None:
@@ -1287,6 +1464,26 @@ def _precheck_band(layer, seq_len, args, kwargs):
                     obj._unsloth_block_band = False
             elif not hasattr(obj, "_unsloth_block_band"):
                 obj._unsloth_block_band = False
+            # Full-attention layers: a band as wide as the sequence is the plain causal mask
+            # (scan cached on the mask by version, one per forward for every global layer).
+            if window is None:
+                try:
+                    causal = bool(check(obj, seq_len, seq_len))
+                except Exception:
+                    causal = False
+                setattr(obj, _PLAIN_CAUSAL_ATTR, causal)
+            elif not hasattr(obj, _PLAIN_CAUSAL_ATTR):
+                setattr(obj, _PLAIN_CAUSAL_ATTR, False)
+            if window is not None:
+                long_band = False
+                if seq_len > window and _band_kernel_ready(layer, hidden_states):
+                    try:
+                        long_band = bool(check(obj, seq_len, window))
+                    except Exception:
+                        long_band = False
+                setattr(obj, _LONG_BAND_ATTR, long_band)
+            elif not hasattr(obj, _LONG_BAND_ATTR):
+                setattr(obj, _LONG_BAND_ATTR, False)
 
 
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
@@ -1310,6 +1507,52 @@ def _training_flex_options(options):
     if isinstance(options, dict) and not ({"FORCE_USE_FLEX_ATTENTION", "BACKEND"} & options.keys()):
         return {**options, "FORCE_USE_FLEX_ATTENTION": True}
     return options
+
+
+def _sdpa_alignment_without_guard():
+    """Stop Inductor recompiling a block per `seq_len % 8` class: inside torch 2.14's SDPA lowering only,
+    `guard_or_false` becomes `statically_known_true` (False is its documented safe answer), so a dynamic length
+    takes the general unaligned path instead of installing a `Mod(s, 8)` guard (20-44 s recompile per layer kind).
+    UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
+    if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        return False
+    try:
+        import torch._inductor.lowering as lowering
+        from torch._inductor.sizevars import SizeVarAllocator
+        from torch._inductor.virtualized import V
+    except Exception:
+        return False
+    original = getattr(lowering, "sdpa_constraint", None)
+    table = getattr(lowering, "_maybe_layout_constraints", None)
+    if original is None or not isinstance(table, dict):
+        return False
+    if getattr(original, "_unsloth_no_align_guard", False):
+        return True
+    if not hasattr(SizeVarAllocator, "statically_known_true") or not hasattr(
+        SizeVarAllocator, "guard_or_false"
+    ):
+        return False
+
+    @functools.wraps(original)
+    def sdpa_constraint(*args, **kwargs):
+        sizevars = V.graph.sizevars
+        shadowed = "guard_or_false" in sizevars.__dict__
+        previous = sizevars.__dict__.get("guard_or_false")
+        sizevars.guard_or_false = sizevars.statically_known_true
+        try:
+            return original(*args, **kwargs)
+        finally:
+            if shadowed:
+                sizevars.guard_or_false = previous
+            else:
+                del sizevars.guard_or_false
+
+    sdpa_constraint._unsloth_no_align_guard = True
+    replaced = [op for op, fn in table.items() if fn is original]
+    for op in replaced:
+        table[op] = sdpa_constraint
+    lowering.sdpa_constraint = sdpa_constraint
+    return bool(replaced)
 
 
 def _flex_split_hook():
@@ -1435,6 +1678,46 @@ def _layer_kind(layer):
     )
 
 
+def _is_hf_checkpoint_wrapper(fn):
+    """transformers >= 5.23 checkpoints in a wrapper GradientCheckpointingLayer.__init_subclass__ puts on
+    each layer class's `forward` (it was `__call__`); it checkpoints only while it is `type(self).forward`."""
+    code = getattr(fn, "__code__", None)
+    return (
+        code is not None
+        and code.co_name == "forward_with_checkpointing"
+        and callable(getattr(fn, "__wrapped__", None))
+    )
+
+
+# The cache arguments transformers' wrapper clears before it checkpoints (unless _can_checkpoint_with_cache).
+_CHECKPOINT_CACHE_KWARGS = ("past_key_values", "layer_past")
+
+
+def _checkpointing(forward):
+    """transformers' layer checkpoint wrapper around the block forward. The block replaces the class
+    forward, so transformers' own wrapper (now inside the block) never saw itself as outermost and
+    every layer ran without gradient checkpointing (gemma-4-12b QLoRA 2048: 16 GB kept, 8192: OOM)."""
+
+    @functools.wraps(forward)
+    def forward_with_checkpointing(self, *args, **kwargs):
+        outermost = type(self).forward is forward_with_checkpointing or (
+            getattr(self.__dict__.get("forward"), "__func__", None) is forward_with_checkpointing
+        )
+        if self.gradient_checkpointing and self.training and outermost:
+            if kwargs.get("use_cache"):
+                kwargs["use_cache"] = False
+            if not getattr(self, "_can_checkpoint_with_cache", False):
+                for name in _CHECKPOINT_CACHE_KWARGS:
+                    if kwargs.get(name) is not None:
+                        kwargs[name] = None
+            return self._gradient_checkpointing_func(
+                functools.partial(forward, self, **kwargs), *args
+            )
+        return forward(self, *args, **kwargs)
+
+    return forward_with_checkpointing
+
+
 def _wrap(
     cls,
     compile_options,
@@ -1443,6 +1726,10 @@ def _wrap(
     install = True,
 ):
     original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
+    checkpoint_outside = getattr(cls.forward, "_unsloth_block_checkpoint_outside", False)
+    if _is_hf_checkpoint_wrapper(original):
+        # Compile the layer's own forward; checkpointing goes back outside the block (below).
+        original, checkpoint_outside = original.__wrapped__, True
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     try:
@@ -1563,6 +1850,7 @@ def _wrap(
                     or _in_nonreentrant_checkpoint()
                     or _graphs_unsafe_moe(self)
                     or flex
+                    or _grad_side_inputs(args, kwargs)
                 ):
                     if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
                         _release_graph_pool()
@@ -1649,17 +1937,33 @@ def _wrap(
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
+            hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
-            _precheck_band(self, hidden_states.shape[1], args, kwargs)
+            _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
-        if bit == 1 and not checked & 2:
+        nonreentrant = (
+            bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
+        )
+        if (bit == 1 or nonreentrant) and not checked & 2:
             # Grad-mode trial first (RNG forked): a checkpoint recompute must not demote below this call.
+            # Non-reentrant: identity saved-tensor hooks (innermost wins) keep a failed attempt's partly
+            # run graph out of the checkpoint, else its saved count differs from the recompute's.
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
-            with torch.random.fork_rng(devices = devices), torch.enable_grad():
-                _IN_TRIAL[0] = True
+            hooks = (
+                torch.autograd.graph.saved_tensors_hooks(_same, _same)
+                if nonreentrant
+                else contextlib.nullcontext()
+            )
+            with (
+                torch.random.fork_rng(devices = devices),
+                torch.enable_grad(),
+                hooks,
+                _no_output_capture(self),
+            ):
+                _IN_TRIAL[0] = "nonreentrant" if nonreentrant else True
                 try:
                     forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
                 finally:
@@ -1672,7 +1976,7 @@ def _wrap(
             return run(self, hidden_states, args, kwargs, mode)
         while True:
             try:
-                with torch._dynamo.config.patch(suppress_errors = False):
+                with _strict_dynamo():
                     out = run(self, hidden_states, args, kwargs, mode)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
@@ -1708,10 +2012,13 @@ def _wrap(
 
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
+    forward._unsloth_block_checkpoint_outside = checkpoint_outside
     setattr(forward, _MARK, True)
+    # A new name: `forward` is also the closure the grad-mode trial above calls (the shim would recurse).
+    installed = _checkpointing(forward) if checkpoint_outside else forward
     if install:
-        cls.forward = forward
-    return forward
+        cls.forward = installed
+    return installed
 
 
 _TOWER_SEGMENTS = (
@@ -1942,7 +2249,8 @@ def _install_router_capture_hooks(model):
     # recursion does not check that flag, so a module with an already hooked descendant (an earlier eager
     # capturing forward) is skipped: installing it would hook that descendant twice (duplicated outputs).
     for module in model.modules():
-        flags = registry.get(str(type(module))) or {}
+        # dict.get: 5.23's _CanRecordRegistry.get expects the model and returned {} for a string (transformers#49594).
+        flags = dict.get(registry, str(type(module))) or {}
         if "router_logits" not in flags or any(
             getattr(m, "_output_capturing_hooks_installed", False) for m in module.modules()
         ):
@@ -2000,6 +2308,7 @@ def patch_block_compile(model):
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
+    _sdpa_alignment_without_guard()
     _gemma4_router_hook()
     _stable_parametrized_classes()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):

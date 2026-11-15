@@ -430,7 +430,7 @@ function SearchWithFilter({
                   range !== "all" && "text-foreground",
                 )}
               >
-                <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+                <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 -translate-y-[0.5px]" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent

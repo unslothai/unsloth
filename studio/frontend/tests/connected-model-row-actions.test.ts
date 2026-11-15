@@ -171,7 +171,7 @@ test("the deep link waits for the provider and fires once", () => {
     providersDialog,
     /toast\.error\(`Failed to load connections: \$\{message\}`\);\s*\}\s*(\/\/[^\n]*\n\s*)*if \(isMounted\) setProvidersReady\(true\);/,
   );
-  assert.match(providersDialog, /\[openProviderId, providers, providersReady, onOpenProviderConsumed\]/);
+  assert.match(providersDialog, /\[\s*openProviderId,\s*providers,\s*providersReady,\s*onOpenProviderConsumed,\s*registry,?\s*\]/);
   assert.match(providersDialog, /if \(!provider\) return;/);
   assert.match(
     providersDialog,
@@ -239,7 +239,7 @@ test("the connection's own settings hang off the group heading", () => {
   );
   assert.match(
     pickers,
-    /label="Pinned"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
+    /label="Favorites"\s*collapsed=\{pinnedConnectedCollapsed\}\s*onToggle=\{\(\) =>\s*setPinnedConnectedCollapsed/,
   );
 });
 
@@ -643,10 +643,20 @@ test("a served catalogue cannot take away a context window it has no field for",
 });
 
 test("connection saves write back the live store, not the render snapshot", () => {
-  const liveWrites = providersDialog.match(
-    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  assert.match(
+    providersDialog,
+    /onProvidersChange\(\[\s*\.\.\.useExternalProvidersStore\.getState\(\)\.providers\.filter\(/,
   );
-  assert.equal(liveWrites?.length, 3);
+  // Saving and deleting also cover a switched-off row, so they read both lists from one live snapshot.
+  assert.match(
+    providersDialog,
+    /const store = useExternalProvidersStore\.getState\(\);\s*const withEdit =[\s\S]{0,400}?onProvidersChange\(withEdit\(store\.providers\)\);/,
+  );
+  assert.match(
+    providersDialog,
+    /const store = useExternalProvidersStore\.getState\(\);\s*if \(store\.disabledProviders\.some[\s\S]{0,300}?onProvidersChange\(store\.providers\.filter\(/,
+  );
+  assert.doesNotMatch(providersDialog, /onProvidersChange\(\s*providers\.(map|filter)\(/);
   assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
   assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
   assert.match(providersDialog, /updated\.models\?\.length \? updated\.models : existing\.models/);

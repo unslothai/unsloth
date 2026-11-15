@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 import click
 import typer
@@ -218,6 +218,16 @@ _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
+# Headroom for the agent's token estimate running low: 10% of the window, so a 1M window keeps
+# ~33k free (96%, near Claude Code's own ~967K) instead of 100k.
+_CLAUDE_COMPACT_HEADROOM_MAX = 32_768
+
+
+def claude_autocompact_pct(window: int) -> str:
+    headroom = min(window // 10, _CLAUDE_COMPACT_HEADROOM_MAX)
+    return str((window - headroom) * 100 // window)
+
+
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -3342,7 +3352,7 @@ def _claude_local_env(
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = (
             str(int(window)) if int(window) >= _CLAUDE_MIN_AUTO_COMPACT_WINDOW else ""
         )
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = claude_autocompact_pct(int(window))
         # claude reserves min(max output, 20k) + 3k before compacting, so its 32k default output would take 20k of a 32k window; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
@@ -5178,6 +5188,22 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
+def _served_window(base: str, key: str, model_id: str) -> Optional[int]:
+    provider_id, _, model = model_id[len(_CONNECTION_MODEL_PREFIX) :].partition("::")
+    query = urlencode({"model": unquote(model)})
+    try:
+        answer = _http_json(
+            "POST",
+            f"{base}/api/providers/{quote(provider_id, safe = '')}/served-window?{query}",
+            key,
+            timeout = 150,
+        )
+    except (OSError, ValueError):
+        return None
+    window = answer.get("context_length")
+    return window if isinstance(window, int) and window > 0 else None
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -5242,9 +5268,10 @@ def _connect(
                     "`unsloth start codex` and `unsloth start opencode`."
                 )
             typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
-            # A Connection reports no context window; an explicit one lets agents size compaction.
-            if load.max_seq_length > 0:
-                connection["context_length"] = load.max_seq_length
+            served = _served_window(base, key, connection["id"])
+            window = min(filter(None, (served, max(load.max_seq_length, 0))), default = None)
+            if window:
+                connection["context_length"] = window
             else:
                 typer.echo(
                     "Pass --max-seq-length with the model's context window so the agent can "
@@ -5864,7 +5891,10 @@ def _check_agent_context(
         suggested = min(suggested, native)
     if entry.get("connection"):
         # --max-seq-length only labels a Connection's window; it cannot grow the provider's.
-        hint = "A Connection's context is set by its provider, so pick a model with a longer one."
+        hint = (
+            "A Connection's context is set by its provider, so raise it there (Ollama reads "
+            "OLLAMA_CONTEXT_LENGTH) or pick a model with a longer one."
+        )
     elif native and (
         native <= window or _agent_compacts_at(agent, native, max_tokens) < prompt_tokens
     ):

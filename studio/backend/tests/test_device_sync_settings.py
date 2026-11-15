@@ -274,3 +274,34 @@ def test_background_mutations_serialize_file_and_metadata(
         assert stored["image"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
         if operation == "adjust":
             assert stored["adjustments"] == {"visibility": 70}
+
+
+def test_client_preferences_keep_window_material(client):
+    client.put("/api/settings/client-preferences", json = {"spellcheck": False})
+    material = {
+        "material": "liquid-3d",
+        "style": "liquid-3d",
+        "menus": False,
+        "strength": {"light": 60, "dark": 20},
+        "lens": "magnify",
+        "scope": "chats",
+    }
+    client.put("/api/settings/client-preferences", json = {"material": material})
+    body = client.get("/api/settings/client-preferences").json()
+    assert body["material"] == material
+    assert body["spellcheck"] is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"material": "glass"},
+        {"style": "solid"},
+        {"strength": {"light": 101}},
+        {"lens": "zoom"},
+        {"scope": "everywhere"},
+    ],
+)
+def test_client_preferences_reject_bad_window_material(client, bad):
+    response = client.put("/api/settings/client-preferences", json = {"material": bad})
+    assert response.status_code == 422

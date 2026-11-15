@@ -21,6 +21,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  Cursor02Icon,
   ApiIcon,
   BotIcon,
   Cancel01Icon,
@@ -86,6 +87,8 @@ const TAB_LOADERS = {
     import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
   browser: () =>
     import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
+  "computer-use": () =>
+    import("./tabs/computer-use-tab").then((m) => ({ default: m.ComputerUseTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
@@ -305,6 +308,11 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
+  },
+  {
+    id: "computer-use",
+    labelKey: "computerUse.settings.title",
+    icon: Cursor02Icon,
   },
   {
     id: "keyboard-shortcuts",
@@ -583,12 +591,23 @@ export function SettingsDialog() {
 
   const [pendingScroll, setPendingScroll] = useState<PendingScroll | null>(null);
   const clearPendingScroll = useCallback(() => setPendingScroll(null), []);
+  // Last result opened; the query stays so the list can be reused.
+  const [openedResult, setOpenedResult] = useState<{
+    tab: SettingsTab;
+    entry?: string;
+  } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
-    setQuery("");
+    setOpenedResult({ tab, entry });
     setPendingScroll(entry ? { tab, entry } : null);
+  };
+  // A panel link can switch tabs, so mark the opened row only while its tab is shown.
+  const currentResult = openedResult?.tab === activeTab ? openedResult : null;
+  const clearSearch = () => {
+    setQuery("");
+    setOpenedResult(null);
   };
 
   useEffect(() => {
@@ -597,6 +616,7 @@ export function SettingsDialog() {
     }
     const frame = window.requestAnimationFrame(() => {
       setQuery("");
+      setOpenedResult(null);
       setPendingScroll(null);
     });
     return () => window.cancelAnimationFrame(frame);
@@ -610,6 +630,7 @@ export function SettingsDialog() {
     chat: null,
     sandbox: null,
     browser: null,
+    "computer-use": null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
@@ -718,11 +739,14 @@ export function SettingsDialog() {
                 />
                 <input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setOpenedResult(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Escape" && query) {
                       e.stopPropagation();
-                      setQuery("");
+                      clearSearch();
                     }
                   }}
                   data-type-to-activate="settings-search"
@@ -733,7 +757,7 @@ export function SettingsDialog() {
                 {query && (
                   <button
                     type="button"
-                    onClick={() => setQuery("")}
+                    onClick={clearSearch}
                     aria-label={t("settings.dialog.closeAriaLabel")}
                     className="absolute top-1/2 right-[calc(12.5px*var(--ui-space-scale,1))] flex size-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                   >
@@ -753,7 +777,12 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          aria-current={
+                            currentResult?.tab === tab.id && !currentResult.entry
+                              ? "true"
+                              : undefined
+                          }
+                          className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-[current=true]:bg-accent aria-[current=true]:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -771,7 +800,13 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            aria-current={
+                              currentResult?.tab === tab.id &&
+                              currentResult.entry === entry
+                                ? "true"
+                                : undefined
+                            }
+                            className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-[current=true]:bg-accent aria-[current=true]:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>

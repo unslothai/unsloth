@@ -110,7 +110,7 @@ _TAG_ATTR_RE = re.compile(r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'
 _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 # Imports resolve against the module URL. "/" after import may start a comment; after from it may be division (keeping the tag is the safe side).
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
-_MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
+_MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d{1,10})", re.IGNORECASE)
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 # Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
 _INERT_START_RE = re.compile(

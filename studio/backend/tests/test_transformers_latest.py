@@ -1652,10 +1652,17 @@ class TestCustomCodeRouting:
 
     def test_upgrade_offered_when_pypi_is_new_enough(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        monkeypatch.setattr("utils.transformers_version.TRANSFORMERS_510_VERSION", "5.10.2")
         result = check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0"))
         assert result is not None
         assert result["model_type"] == "lfm3_omni" and result["pypi_version"] == "5.13.0"
         assert result["supported_in_pypi"] is True
+
+    def test_no_offer_when_the_513_sidecar_fits(self, tmp_path: Path, monkeypatch):
+        calls = _no_network(monkeypatch)
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.12.0.dev0")) is None
+        assert check_upgrade_for_model(_custom_code_model(tmp_path, "5.13.1")) is None
+        assert calls["n"] == 0
 
     def test_no_offer_when_pypi_too_old(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))

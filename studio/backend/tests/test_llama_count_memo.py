@@ -120,6 +120,20 @@ def test_admission_counts_are_not_memoised(monkeypatch):
     assert paths.count("/v1/chat/completions/input_tokens") == 2
 
 
+def test_a_caller_wanting_the_prompt_gets_a_render(monkeypatch):
+    # /context's breakdown follows the header ring's identical plain count and shows the prompt it priced.
+    backend, paths = _setup(monkeypatch)
+    count = backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True)
+    for _ in range(2):
+        seen = []
+        assert (
+            backend.count_chat_tokens(_MESSAGES, None, _TOOLS, strict = True, on_prompt = seen.append)
+            == count
+        )
+        assert len(seen) == 1 and "hello" in seen[0]
+    assert paths.count("/apply-template") == 3
+
+
 def test_memo_stays_bounded(monkeypatch):
     from core.inference import llama_cpp
 

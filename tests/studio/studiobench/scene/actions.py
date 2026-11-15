@@ -948,13 +948,19 @@ def settings(ctx: ActionContext) -> ActionResult:
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row marked with data-model-picker-option."""
-    trigger = ctx.page.query_selector("button.unsloth-model-selector-trigger")
+    trigger = ctx.page.query_selector(
+        'button[data-tour="chat-model-selector"], button.unsloth-model-selector-trigger'
+    )
     if trigger is None:
         return not_run("no model selector trigger on the page")
     before = _ev(ctx, "() => window.__sb.dom.currentModelLabel()")
     started = time.monotonic()
-    # Click the label: a `span[data-eject-hit]` at the right edge ejects the model.
-    trigger.click(position = {"x": 8, "y": 8})
+    # Click the name: the composer chip's logo (left) and the header trigger's right edge eject.
+    name = trigger.query_selector(".composer-model-chip-name")
+    if name is not None:
+        name.click()
+    else:
+        trigger.click(position = {"x": 8, "y": 8})
     opened_ms = None
     deadline = started + SETTLE_TIMEOUT_MS / 1000
     while time.monotonic() < deadline:
@@ -971,7 +977,11 @@ def model_change(ctx: ActionContext) -> ActionResult:
         """
       (name) => {
         const opts = window.__sb.dom.modelOptions();
-        const target = opts.find(b => (b.textContent || '').trim() === name) || opts[0];
+        // aria-expanded marks a Discover row, which opens its quants instead of loading.
+        const target =
+          opts.find(b => (b.textContent || '').trim() === name) ||
+          opts.find(b => !b.hasAttribute('aria-expanded')) ||
+          opts[0];
         if (!target) return null;
         target.click();
         return (target.textContent || '').trim();
@@ -982,6 +992,10 @@ def model_change(ctx: ActionContext) -> ActionResult:
     ctx.page.wait_for_timeout(300)
     select_ms = (time.monotonic() - select_started) * 1000
     after = _ev(ctx, "() => window.__sb.dom.currentModelLabel()")
+    # The composer picker stays open on its reasoning controls after a pick; Escape closes it.
+    if _ev(ctx, "() => Boolean(document.querySelector('[data-composer-model-picker]'))"):
+        ctx.page.keyboard.press("Escape")
+        ctx.page.wait_for_timeout(200)
     closed = not _ev(ctx, "() => Boolean(window.__sb.dom.modelMenu())")
     ok = picked is not None and closed
     return ActionResult(

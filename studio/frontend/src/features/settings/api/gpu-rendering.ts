@@ -18,6 +18,8 @@ export interface GpuRenderingStatus {
   oldWebkitWarning: string | null;
   /** NVIDIA driver branch; set on Linux X11 below 610, where On keeps compositing off. */
   oldDriverWarning: string | null;
+  /** This launch's web view paints on the CPU (Linux). Missing from older shells. */
+  cpuPainting?: boolean;
 }
 
 export async function loadGpuRendering(): Promise<GpuRenderingStatus> {

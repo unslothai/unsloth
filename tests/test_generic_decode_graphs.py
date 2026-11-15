@@ -492,12 +492,22 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
     _fresh(llama)
     first = GG._fingerprint(llama)
     assert first is not None and first == GG._fingerprint(llama)
+    # In-place edits (optimizer step, fused or not) keep every address a graph reads: the graphs stay.
     with torch.no_grad():
-        next(llama.parameters()).add_(0)  # in-place edit (merge, optimizer step): bumps the version
-    assert GG._fingerprint(llama) != first
-    before = GG._fingerprint(llama)
+        next(llama.parameters()).add_(0)
+    assert GG._fingerprint(llama) == first
     monkeypatch.setattr(K, "_OPTIMIZER_STEPS", K._OPTIMIZER_STEPS + 1)
-    assert GG._fingerprint(llama) != before
+    assert GG._fingerprint(llama) == first
+    param = next(llama.parameters())
+    saved = param.data
+    try:
+        param.data = saved.clone()
+        assert GG._fingerprint(llama) != first
+        param.data = saved.to(torch.float64)
+        assert GG._fingerprint(llama) != first
+    finally:
+        param.data = saved
+    assert GG._fingerprint(llama) == first
     # A step after the optimizer moved re-checks, and a changed fingerprint drops the graphs.
     state = GG._state(llama)
     state.fingerprint = ("stale",)
@@ -721,6 +731,65 @@ def test_real_capture_matches_eager(name, monkeypatch):
     s = GG.stats(model)
     assert torch.equal(eager, graphed), s
     assert s["captures"] == 1 and s["replays"] == 22 and not s["refusals"], s
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda() or torch.version.hip is not None, reason = "NVIDIA CUDA")
+def test_kept_graph_replays_updated_lora_after_optimizer_steps(monkeypatch):
+    """generate, LoRA train step (fused AdamW), generate, ...: with the graph kept through training no round
+    after the first captures, and every round's tokens equal an eager-decoding twin trained the same way."""
+    peft = pytest.importorskip("peft")
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
+    monkeypatch.setattr(G, "ENABLED", None)
+    monkeypatch.setattr(G, "_DEFAULT_OK", True)
+    monkeypatch.setattr(G, "_STUDIO_DEFAULT_OK", True)
+    dtype = (
+        torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation = False) else torch.float16
+    )
+
+    def build():
+        torch.manual_seed(0)
+        model = peft.get_peft_model(
+            AutoModelForCausalLM.from_pretrained(LLAMA, dtype = dtype).cuda(),
+            peft.LoraConfig(r = 8, lora_alpha = 16, init_lora_weights = False, target_modules = ["q_proj", "v_proj", "down_proj"]),
+        )  # fmt: skip
+        base = model.base_model.model
+        base._old_generate = base.generate
+        base.generate = types.MethodType(vision.unsloth_base_fast_generate, base)
+        return model, base
+
+    ids, mask = _ids(build()[1], 2, pad = 1)
+    ids, mask = ids.cuda(), mask.cuda()
+
+    def rounds(graphs):
+        model, base = build()
+        if not graphs:
+            monkeypatch.setenv("UNSLOTH_DECODE_CUDA_GRAPHS", "0")
+        opt = torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad], lr = 1e-2, fused = True
+        )
+        outs, captures = [], []
+        for _ in range(3):
+            base.eval()
+            before = (GG.stats(base) or {}).get("captures", 0)
+            outs.append(base.generate(input_ids = ids, attention_mask = mask, max_new_tokens = 16, min_new_tokens = 16,
+                                      do_sample = False, pad_token_id = 0).cpu())  # fmt: skip
+            captures.append((GG.stats(base) or {}).get("captures", 0) - before)
+            base.train()
+            loss = model(input_ids = ids, attention_mask = mask, labels = ids).loss
+            loss.backward()
+            opt.step()
+            opt.zero_grad(set_to_none = True)
+        monkeypatch.delenv("UNSLOTH_DECODE_CUDA_GRAPHS", raising = False)
+        return outs, captures
+
+    eager, _ = rounds(False)
+    graphed, captures = rounds(True)
+    assert captures == [1, 0, 0], captures
+    assert not torch.equal(
+        eager[0], eager[-1]
+    )  # the steps moved the tokens: the comparison can fail
+    assert all(torch.equal(a, b) for a, b in zip(eager, graphed))
 
 
 def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():

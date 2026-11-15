@@ -113,6 +113,7 @@ export interface HfModelResult {
   smallestResidentGb?: number;
   curatedSizeBytes?: number;
   isGguf: boolean;
+  ggufArchitecture?: string;
   baseModel?: string | null;
   tags?: string[];
   pipelineTag?: string;
@@ -276,6 +277,7 @@ function makeMapModel(
         (m.gguf ? ggufRepoParams(m.name, m.gguf.total) : undefined),
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
+      ggufArchitecture: m.gguf?.architecture,
       baseModel: detectBaseModel(m.tags),
       tags: m.tags,
       pipelineTag,

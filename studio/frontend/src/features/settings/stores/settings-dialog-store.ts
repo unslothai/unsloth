@@ -21,6 +21,7 @@ export const SETTINGS_TABS = [
   "agents",
   "keyboard-shortcuts",
   "browser",
+  "computer-use",
   "debugging",
   "about",
 ] as const;

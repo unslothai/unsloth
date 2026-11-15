@@ -3586,6 +3586,180 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
 
 
+_QUANTIZED_COMPANION_SUFFIXES = (
+    "_packed",
+    "_scale",
+    "_shape",
+    "_global_scale",
+    "_zero_point",
+    "_scale_inv",
+)
+
+
+def fix_transformers_quantizer_unquantized_converters():
+    """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
+
+    For packed formats the quantizer's rewritten copy only matches ``weight_packed`` / ``weight_scale``, so 16-bit
+    tensors were left randomly initialized. Converters match first-wins, so the original is appended after."""
+    try:
+        from transformers.quantizers.base import HfQuantizer
+        from transformers.core_model_loading import WeightConverter
+    except Exception:
+        return
+    classes = [HfQuantizer]
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import (
+            CompressedTensorsHfQuantizer,
+        )
+        classes.append(CompressedTensorsHfQuantizer)
+    except Exception:
+        pass
+
+    def sources_of(converter):
+        patterns = getattr(converter, "_original_source_patterns", None) or getattr(
+            converter, "source_patterns", ()
+        )
+        return [pattern.rstrip("$") for pattern in patterns if isinstance(pattern, str)]
+
+    def captures_companions(converter):
+        # transformers <= 5.20 searches source patterns unanchored: `.weight` would also take a quantized
+        # tensor's `.weight_global_scale` / `.weight_zero_point` / ... and corrupt the restored pipeline.
+        rename = getattr(converter, "rename_source_key", None)
+        if rename is None:
+            return False
+        for source in sources_of(converter):
+            for suffix in _QUANTIZED_COMPANION_SUFFIXES:
+                try:
+                    if rename((source + suffix).replace("*", "0"))[1] is not None:
+                        return True
+                except Exception:
+                    return True
+        return False
+
+    def restorable(converter):
+        if not captures_companions(converter):
+            return converter
+        return WeightConverter(
+            source_patterns = [source + "$" for source in sources_of(converter)],
+            target_patterns = list(
+                getattr(converter, "_original_target_patterns", None) or converter.target_patterns
+            ),
+            operations = list(converter.operations),
+        )
+
+    for cls in classes:
+        method = cls.__dict__.get("update_weight_conversions")
+        if method is None or getattr(method, "_unsloth_keeps_unquantized", False):
+            continue
+
+        def make(method):
+            @functools.wraps(method)
+            def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+                # transformers 5.21+ passes the model; earlier builds did not.
+                updated = method(self, weight_conversions, *args, **kwargs)
+                try:
+                    updated = list(updated)
+                    kept = {id(converter) for converter in updated}
+                    loaded = {
+                        source
+                        for converter in updated
+                        if isinstance(converter, WeightConverter)
+                        for source in sources_of(converter)
+                    }
+                    restored = [
+                        restorable(converter)
+                        for converter in weight_conversions
+                        if isinstance(converter, WeightConverter)
+                        and id(converter) not in kept
+                        and not any(source in loaded for source in sources_of(converter))
+                    ]
+                except Exception:
+                    return updated
+                return updated + restored if restored else updated
+
+            update_weight_conversions._unsloth_keeps_unquantized = True
+            return update_weight_conversions
+
+        cls.update_weight_conversions = make(method)
+    _pass_unquantized_through_compressed_tensors_dequantize()
+
+
+def _pass_unquantized_through_compressed_tensors_dequantize():
+    # transformers 5.23 also feeds the plain `.weight` sources to the dequantize op, whose packed branch keeps only
+    # `*weight_packed` keys: the shards vanish and the Concatenate after it fails. Plain sources without a packed or
+    # scale companion pass through untouched, as its FP8 branch already does for weights that ship no scale.
+    try:
+        from transformers.integrations import compressed_tensors as ct_integration
+    except Exception:
+        return
+    op_cls = getattr(ct_integration, "CompressedTensorsDequantize", None)
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_passes_unquantized", False):
+        return
+
+    @functools.wraps(convert)
+    def convert_keeping_unquantized(self, input_dict, *args, **kwargs):
+        if (
+            not isinstance(input_dict, dict)
+            or "weight" in input_dict
+            or "weight_scale" in input_dict
+        ):
+            return convert(self, input_dict, *args, **kwargs)
+        plain, mixed = {}, []
+        for key in input_dict:
+            if not isinstance(key, str) or not key.endswith(".weight"):
+                continue
+            stem = key[: -len("weight")]
+            if f"{stem}weight_packed" in input_dict:
+                # One pattern collected both 16-bit and packed shards: the packed branch would drop the 16-bit ones.
+                mixed.append(key)
+            elif f"{stem}weight_scale" not in input_dict:
+                plain[key] = input_dict[key]
+        if mixed:
+            raise ValueError(
+                "Unsloth: this compressed-tensors checkpoint stores some tensors of one converter pattern "
+                f"unquantized and others packed ({', '.join(sorted(mixed))}), which cannot be loaded together. "
+                "Quantize all of them or none."
+            )
+        if not plain:
+            return convert(self, input_dict, *args, **kwargs)
+        dtype = _converter_target_dtype(args, kwargs)
+        if dtype is not None:
+            # As the rest of the load: a bf16 checkpoint tensor lands in the parameter's dtype.
+            plain = {key: _cast_floating(value, dtype) for key, value in plain.items()}
+        rest = {key: value for key, value in input_dict.items() if key not in plain}
+        out = dict(convert(self, rest, *args, **kwargs) or {}) if rest else {}
+        out.update(plain)
+        return out
+
+    convert_keeping_unquantized._unsloth_passes_unquantized = True
+    op_cls.convert = convert_keeping_unquantized
+
+
+def _converter_target_dtype(args, kwargs):
+    """dtype of the parameter a conversion op fills (`full_layer_name` on `model`), else None."""
+    model = kwargs.get("model")
+    name = kwargs.get("full_layer_name")
+    if name is None and len(args) > 2:
+        name = args[2]
+    if model is None or not isinstance(name, str):
+        return None
+    try:
+        return model.get_parameter(name).dtype
+    except Exception:
+        return None
+
+
+def _cast_floating(value, dtype):
+    import torch
+
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cast_floating(v, dtype) for v in value)
+    if isinstance(value, torch.Tensor) and value.is_floating_point() and dtype.is_floating_point:
+        return value.to(dtype)
+    return value
+
+
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
     # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
     convert = getattr(op_cls, "convert", None)
@@ -5976,6 +6150,31 @@ def _probe_torchvision_binary(
         ) from error
 
 
+def _torch_in_torchvision_declared_range(torch_version_raw):
+    """True when the installed torchvision's metadata declares a torch range (not only an exact == pin)
+    that contains the installed torch. Exact pins stay with the table / formula below."""
+    try:
+        from packaging.requirements import Requirement
+        requires = importlib_distribution("torchvision").requires or []
+        torch_v = TrueVersion(str(torch_version_raw))
+    except Exception:
+        return False
+    for line in requires:
+        try:
+            requirement = Requirement(line)
+        except Exception:
+            continue
+        if requirement.name.lower() != "torch":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        specifiers = list(requirement.specifier)
+        if not specifiers or all(s.operator in ("==", "===") for s in specifiers):
+            return False
+        return requirement.specifier.contains(torch_v, prereleases = True)
+    return False
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -6007,6 +6206,11 @@ def torchvision_compatibility_check():
         (2, 5): (0, 20),
         (2, 4): (0, 19),
     }
+
+    # torchvision 0.29.1+ declares a torch range, not an exact pin, which the minor formula below would refuse.
+    if _torch_in_torchvision_declared_range(torch_version_raw):
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, tv_v.release[:3])
+        return
 
     torch_release = torch_v.release
     if len(torch_release) < 2:
@@ -9596,6 +9800,8 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
+    # Same shape: transformers (main, November 2026) aliases the dots3-note text model's class.
+    "Dots3NoteTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -12469,6 +12675,8 @@ _TORCHAO_INTMM_MODULES = (
 _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+# "0": copy a transposed int8 weight row-major before cuBLASLt, as torchao does (see _make_safe_int_mm)
+_TORCHAO_INT_MM_TRANSPOSED_ENV = "UNSLOTH_TORCHAO_INT_MM_TRANSPOSED"
 
 # The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
@@ -12495,12 +12703,24 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__.
+    return bool(
+        getattr(getattr(torch, "version", None), "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "") or "").lower()
+    )
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
+    # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -12525,8 +12745,10 @@ def _make_safe_int_mm(mod, original):
                 input.device.type
             )
 
-        if not mat2.is_contiguous():  # silently gives incorrect result without this
-            mat2 = mat2.contiguous()
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
+            mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (
             input.shape[0] % 8 != 0
         ):  # gives cryptic error without this
@@ -13212,6 +13434,44 @@ def fix_transformers_longcat_lsa_config():
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
+
+
+def fix_transformers_deepseek_v41_native():
+    """On AutoConfig's unknown-architecture error for deepseek_v41, register the native implementation and retry."""
+    try:
+        import importlib.util
+        from transformers import AutoConfig
+    except Exception:
+        return
+    try:
+        if importlib.util.find_spec("transformers.models.deepseek_v41") is not None:
+            return
+    except Exception:
+        pass
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_deepseek_v41", False):
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except (ValueError, KeyError) as error:
+            if "deepseek_v41" not in str(error):
+                raise
+            from .models.deepseek_v41 import register_deepseek_v41
+
+            if register_deepseek_v41() is None:
+                raise
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_deepseek_v41 = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: deepseek_v41 configs load on Unsloth's native DeepSeek-V4.1 implementation."
         )
 
 
