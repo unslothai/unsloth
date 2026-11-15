@@ -322,6 +322,8 @@ def load_h3_quantized_text_encoder(
         gguf_weights: set = set()
         if filename.endswith(".gguf"):
             state_dict, quantized, gguf_weights = _h3_gguf_state(encoder, path, dtype)
+        elif _is_nvfp4_awq_path(path):
+            state_dict, quantized = _h3_nvfp4_awq_state(encoder, path, dtype)
         else:
             int8_linear_cls = _int8_convrot_linear_class()
             with safe_open(path, framework = "pt", device = "cpu") as handle:
@@ -423,6 +425,92 @@ def load_h3_quantized_text_encoder(
                 exc,
             )
         return None
+
+
+def _is_nvfp4_awq_path(path: str) -> bool:
+    from safetensors import safe_open
+
+    from .video_minimax_h3_te_nvfp4 import is_nvfp4_awq_file
+    with safe_open(path, framework = "pt", device = "cpu") as handle:
+        return is_nvfp4_awq_file(handle.keys())
+
+
+def _h3_nvfp4_awq_state(encoder: Any, path: str, dtype: Any) -> tuple[dict, set]:
+    """State dict + quantized prefixes for the reference workflow's ``nvfp4_awq`` conditioner file: NVFP4 projections
+    swapped in place (block scales unswizzled once here), the int8 embedding dequantized, dense parts in ``dtype``."""
+    import torch
+    from safetensors import safe_open
+
+    from . import video_minimax_h3_te_nvfp4 as nv
+
+    linear_cls = nv.nvfp4_awq_linear_class()
+    with safe_open(path, framework = "pt", device = "cpu") as handle:
+        names = set(handle.keys())
+        quantized = {
+            n[: -len(nv.GLOBAL_SCALE_SUFFIX)] for n in names if n.endswith(nv.GLOBAL_SCALE_SUFFIX)
+        }
+        state_dict: dict = {}
+        for prefix in sorted(quantized):
+            if prefix + _QUANT_SUFFIX not in names:
+                raise ValueError(f"{prefix}: quantized weight with no {_QUANT_SUFFIX} metadata")
+            nv.validate_quant_meta(
+                handle.get_tensor(prefix + _QUANT_SUFFIX), prefix, nv.NVFP4_AWQ_EXPECTED_QUANT
+            )
+            target = h3_te_remap_key(prefix)
+            parent_path, _, leaf = target.rpartition(".")
+            parent = encoder.get_submodule(parent_path)
+            existing = getattr(parent, leaf)
+            packed = handle.get_tensor(prefix + ".weight")
+            out_features, in_features = int(packed.shape[0]), int(packed.shape[1]) * 2
+            if (existing.out_features, existing.in_features) != (out_features, in_features):
+                raise ValueError(
+                    f"{target}: checkpoint shape {(out_features, in_features)} != model "
+                    f"{(existing.out_features, existing.in_features)}"
+                )
+            if getattr(existing, "bias", None) is not None or prefix + ".bias" in names:
+                raise ValueError(f"{target}: a biased projection is not in this layout")
+            pre_quant = prefix + nv.PRE_QUANT_SUFFIX in names
+            setattr(parent, leaf, linear_cls(in_features, out_features, pre_quant))
+            state_dict[target + ".weight"] = packed.view(torch.uint8)
+            state_dict[target + ".weight_scale"] = nv.plain_block_scales(
+                handle.get_tensor(prefix + ".weight_scale"), out_features, in_features
+            )
+            state_dict[target + ".weight_scale_2"] = (
+                handle.get_tensor(prefix + nv.GLOBAL_SCALE_SUFFIX).to(torch.float32).reshape(())
+            )
+            if pre_quant:
+                state_dict[target + ".pre_quant_scale"] = handle.get_tensor(
+                    prefix + nv.PRE_QUANT_SUFFIX
+                ).to(torch.bfloat16)
+        owned = {
+            p + suffix
+            for p in quantized
+            for suffix in (
+                ".weight",
+                ".weight_scale",
+                nv.GLOBAL_SCALE_SUFFIX,
+                nv.PRE_QUANT_SUFFIX,
+                _QUANT_SUFFIX,
+            )
+        }
+        embed = "model.embed_tokens"
+        for name in sorted(names - owned):
+            if name.endswith(_QUANT_SUFFIX):
+                if name != embed + _QUANT_SUFFIX:
+                    raise ValueError(f"{name}: a quantized tensor this loader does not implement")
+                nv.validate_quant_meta(handle.get_tensor(name), embed, nv.EMBED_EXPECTED_QUANT)
+                continue
+            if name == embed + _SCALE_SUFFIX:
+                continue
+            tensor = handle.get_tensor(name)
+            if name == embed + ".weight" and tensor.dtype == torch.int8:
+                tensor = nv.dequantize_int8_embedding(
+                    tensor, handle.get_tensor(embed + _SCALE_SUFFIX), dtype or torch.bfloat16
+                )
+            elif tensor.is_floating_point() and dtype is not None:
+                tensor = tensor.to(dtype)
+            state_dict[h3_te_remap_key(name)] = tensor
+    return state_dict, quantized
 
 
 def _model_shape(module: Any, name: str) -> Optional[tuple]:
