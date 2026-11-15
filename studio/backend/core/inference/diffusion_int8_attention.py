@@ -880,10 +880,14 @@ def int8_attention_op() -> Any:
         _OP, mutates_args = (), schema = "(Tensor q, Tensor k, Tensor v) -> Tensor"
     )
     def int8_attention_nhd(q, k, v):
-        return int8_attention_impl(q, k, v)
+        # The fake's strides are part of the op contract: Inductor asserts them on the real output. The kernels
+        # write a fresh contiguous [B, S, H, D]; native attention can hand back the permuted [B, H, S, D] layout
+        # (math SDPA does), so it is copied to the fake's layout here (a no-op when it already is).
+        return int8_attention_impl(q, k, v).contiguous()
 
     @int8_attention_nhd.register_fake
     def _(q, k, v):
+        # contiguous [B, S, H, D] in V's dtype: the layout every real output above has
         return v.new_empty(q.shape)
 
     return int8_attention_nhd

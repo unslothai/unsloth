@@ -363,6 +363,47 @@ def test_op_off_cuda_is_native_attention():
     assert I.STATS["native"] == before["native"] + 1 and I.STATS["int8"] == before["int8"]
 
 
+@pytest.mark.parametrize("sdpa", ["default", "math"])
+@pytest.mark.parametrize("heads_first", [False, True], ids = ["bshd", "heads_first"])
+@pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
+def test_the_native_fallback_keeps_the_fake_layout_under_inductor(sdpa, heads_first, dynamic):
+    """The fake promises a contiguous ``[B, S, H, D]`` and Inductor asserts those strides on the real output, so
+    the native fallback must hand back that layout, not SDPA's permuted ``[B, H, S, D]``. opcheck does not catch
+    this: only a compiled graph executing the op does."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    I.int8_attention_op()
+    g = torch.Generator().manual_seed(0)
+
+    def inputs(B, S, H, D):
+        if (
+            heads_first
+        ):  # a [B, H, S, D] buffer viewed as [B, S, H, D], as the strided processors pass it
+            return tuple(torch.randn(B, H, S, D, generator = g).transpose(1, 2) for _ in range(3))
+        return tuple(torch.randn(B, S, H, D, generator = g) for _ in range(3))
+
+    def block(q, k, v):
+        return torch.ops.unsloth_studio.int8_attention_nhd(q, k, v).flatten(2, 3) + 1
+
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(block, backend = "inductor", fullgraph = True, dynamic = dynamic)
+        pin = sdpa_kernel(SDPBackend.MATH) if sdpa == "math" else contextlib.nullcontext()
+        with torch.no_grad(), pin:
+            for shape in ((2, 11, 3, 64), (2, 17, 3, 64), (1, 126, 2, 64)):
+                q, k, v = inputs(*shape)
+                before = I.STATS["native"]
+                # the compiled call first: on a layout mismatch Inductor's stride assertion is what fails
+                out = compiled(q, k, v)
+                assert I.STATS["native"] == before + 1
+                assert torch.allclose(out, block(q, k, v), atol = 1e-5, rtol = 1e-5)
+                got = torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
+                assert got.shape == q.shape and got.is_contiguous()
+                assert torch.equal(got, I.native_attention(q, k, v))
+    finally:
+        torch._dynamo.reset()
+
+
 class _Processor:
     _unsloth_int8 = False
     _unsloth_int8_min_tokens = 0
