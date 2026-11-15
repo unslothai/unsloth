@@ -397,7 +397,7 @@ def _folded_finite(entries, device):
 def _scope(model, entries):
     api = _exact_api()
     device = entries[0][2].device
-    targets, flagged, stream = [], [], None
+    targets, groups, flagged, stream = [], [], [], None
     t0 = time.perf_counter()
     try:
         stream = _side_stream(device)
@@ -412,7 +412,12 @@ def _scope(model, entries):
                     module.scaling[adapter],
                 )
             )
-        info = api.exact_fold(targets, stream = stream)
+        info = {}
+        for group in _fold_groups(targets):
+            # Appended first: a group that fails part way is still undone by _restore.
+            groups.append(group)
+            for key, value in api.exact_fold(group, stream = stream).items():
+                info[key] = info.get(key, 0) + value
         # A finite low-rank product can still overflow W's dtype (fp16 > 65504) once materialised.
         finite = _folded_finite(entries, device)
         for module, adapter, _ in entries:
@@ -424,15 +429,15 @@ def _scope(model, entries):
         if finite:
             _record_fold(info, targets, t1 - t0)
     except Exception:
-        _restore(model, api, targets, flagged, stream)
+        _restore(model, api, groups, flagged, stream)
         _refuse("fold_failed")
         yield False
         return
     except BaseException:
-        _restore(model, api, targets, flagged, stream)
+        _restore(model, api, groups, flagged, stream)
         raise
     if not finite:
-        _restore(model, api, targets, flagged, stream)
+        _restore(model, api, groups, flagged, stream)
         _sync(device)
         _refuse("fold_nonfinite")
         yield False
@@ -442,7 +447,7 @@ def _scope(model, entries):
         yield True
         t2 = time.perf_counter()
     finally:
-        _restore(model, api, targets, flagged, stream)
+        _restore(model, api, groups, flagged, stream)
         _sync(device)
         with _LOCK:
             STATS["restored"] += 1
@@ -489,32 +494,34 @@ def _record_fold(info, targets, fold_s):
         }
 
 
-_RESTORE_CHUNK_BYTES = 64 << 20
+# exact_fold keeps one fix-up store per call and device, and exact_unfold uploads a store whole: folding in
+# weight-bounded groups is what bounds the store each restore uploads while the KV cache is live.
+_FOLD_GROUP_BYTES = 256 << 20
 
 
-def _restore_chunks(targets):
-    chunk, size = [], 0
+def _fold_groups(targets):
+    group, size = [], 0
     for t in targets:
-        n = _store_bytes(t)
-        if chunk and size + n > _RESTORE_CHUNK_BYTES:
-            yield chunk
-            chunk, size = [], 0
-        chunk.append(t)
+        n = t.w.numel() * t.w.element_size()
+        if group and size + n > _FOLD_GROUP_BYTES:
+            yield group
+            group, size = [], 0
+        group.append(t)
         size += n
-    if chunk:
-        yield chunk
+    if group:
+        yield group
 
 
-def _restore(model, api, targets, flagged, stream):
+def _restore(model, api, groups, flagged, stream):
     global _POISONED
     for module in flagged:
         module.merged_adapters.clear()
-    if not targets:
+    if not groups:
         return
     try:
-        # Chunked: the KV cache is still live, so only one chunk's fix-up store is on the GPU at a time.
-        for chunk in _restore_chunks(targets):
-            api.exact_unfold(chunk, stream = stream)
+        # One fold group (one store) at a time: the KV cache is still live.
+        for group in groups:
+            api.exact_unfold(group, stream = stream)
     except BaseException as error:
         # No more folds; this model refuses to generate on its unknown weights.
         _POISONED = repr(error)

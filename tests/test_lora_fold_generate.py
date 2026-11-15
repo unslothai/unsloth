@@ -748,15 +748,29 @@ def test_every_generate_path_is_wrapped(path, name):
         assert all(items.index("_lora_fold_generate(self, args, kwargs)") > i for i in eager), items
 
 
-def test_restore_uploads_fix_up_stores_in_bounded_chunks(_clean, monkeypatch):
-    """The unfold runs while the KV cache is still live: each exact_unfold call gets at most one chunk."""
-    monkeypatch.setattr(fold, "_RESTORE_CHUNK_BYTES", 1)
+def test_restore_unfolds_one_bounded_fold_group_at_a_time(_clean, monkeypatch):
+    """exact_fold keeps one store per call and exact_unfold uploads a store whole, so the fold is split into
+    weight-bounded groups and the restore (KV cache still live) unfolds exactly those groups, one per call."""
+    monkeypatch.setattr(fold, "_FOLD_GROUP_BYTES", 1, raising = False)
+    folded, unfolded = [], []
+    fold_call, unfold_call = _clean.exact_fold, _clean.exact_unfold
+
+    def recording_fold(targets, stream = None):
+        folded.append([id(t) for t in targets])
+        return fold_call(targets, stream = stream)
+
+    def recording_unfold(targets, stream = None):
+        unfolded.append([id(t) for t in targets])
+        return unfold_call(targets, stream = stream)
+
+    monkeypatch.setattr(_clean, "exact_fold", recording_fold)
+    monkeypatch.setattr(_clean, "exact_unfold", recording_unfold)
     model = _make(MODELS[0])
     before = _bits(model)
     engaged, _ = _generate(model)
     assert engaged is True
     targets = fold.stats()["last"]["targets"]
-    assert targets > 1 and _clean.folds == 1 and _clean.unfolds == targets
+    assert targets > 1 and len(folded) == targets and unfolded == folded
     assert _same_bits(before, _bits(model))
     assert fold.stats()["restored"] == 1
 
