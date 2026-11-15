@@ -276,8 +276,10 @@ import {
   familyPresetsWithin,
   inputImageWord,
   maxAdditionalImages,
+  raiseToEditResolution,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
   withLocalizedHint,
   withTransparencyPrompt,
@@ -1935,6 +1937,8 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  // build key the Reference size was last raised for (raiseToEditResolution)
+  const [raisedForReference, setRaisedForReference] = useState<string | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -3855,6 +3859,8 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    // re-arm the Reference raise below for the reseeded size
+    setRaisedForReference(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -5113,6 +5119,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -5127,7 +5134,33 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
+    }
+  }
+
+  // Reference renders at Width / Height; once per load, raise a size below the family's edit resolution
+  // (Qwen-Image-2.1 references at the 1024 area come out over-sharpened and miss the prompt).
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== raisedForReference) {
+    setRaisedForReference(referenceKey);
+    const raised = raiseToEditResolution(
+      width,
+      height,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
     }
   }
 

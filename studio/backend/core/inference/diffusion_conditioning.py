@@ -272,6 +272,7 @@ def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, A
         "max_output_side": int(getattr(fam, "max_output_side", 2048) or 2048),
         "max_output_pixels": int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048),
         "reference_resolutions": list(getattr(fam, "reference_resolutions", ()) or ()),
+        "edit_output_resolution": getattr(fam, "edit_output_resolution", None),
         "unified_edit": unified,
         # Edit-only families whose edit takes the extra images too (the UI shows them on the Edit tab).
         "multi_image_edit": edit_takes_extra_images(fam) and "edit" in workflows,

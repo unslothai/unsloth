@@ -65,6 +65,31 @@ export function seedReferenceResolution(
   return allowed[0];
 }
 
+/** "Match Image 1" output size: the family's edit resolution when it names one (Qwen-Image-2.1 edits at the 1024
+ *  area come out over-sharpened and miss the instruction), else the build's tier. Kept within the side limit. */
+export function seedMatchResolution(
+  tier: number,
+  editOutputResolution: number | null | undefined,
+  maxSide: number,
+): number {
+  if (editOutputResolution == null || editOutputResolution <= 0) return tier;
+  return Math.max(tier, Math.min(editOutputResolution, maxSide));
+}
+
+/** The Reference workflow renders at the shared Width / Height: on a family with an edit resolution, a size below its
+ *  area is raised to it at the same aspect (within the limits). Null when the size is already there or none is named. */
+export function raiseToEditResolution(
+  width: number,
+  height: number,
+  editOutputResolution: number | null | undefined,
+  limits: SizeLimits,
+): { width: number; height: number } | null {
+  if (editOutputResolution == null || editOutputResolution <= 0) return null;
+  if (width * height >= editOutputResolution * editOutputResolution) return null;
+  const raised = matchSourceSize(width, height, editOutputResolution, limits);
+  return raised.width * raised.height > width * height ? raised : null;
+}
+
 export const OFFICIAL_2K_PRESETS: ReadonlyArray<{
   label: string;
   width: number;

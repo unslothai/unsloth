@@ -10,8 +10,10 @@ import {
   conditionedRequestFields,
   maxAdditionalImages,
   presetsWithin,
+  raiseToEditResolution,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
   withLocalizedHint,
   withTransparencyPrompt,
@@ -142,6 +144,25 @@ test("reference detail seeds from the build tier and never picks 2048 on its own
   assert.equal(seedReferenceResolution([512, 1024, 2048], 1024), 1024);
   assert.equal(seedReferenceResolution([512, 1024, 2048], 768), 1024);
   assert.equal(seedReferenceResolution([], 1024), null);
+});
+
+test("an edit's Match Image 1 size seeds from the family's edit resolution, not the build tier", () => {
+  // Qwen-Image-2.1 edits at the 1024 area come out over-sharpened even on upstream's bf16 pipeline.
+  assert.equal(seedMatchResolution(1024, 2048, 2752), 2048);
+  assert.equal(seedMatchResolution(512, 2048, 2752), 2048);
+  assert.equal(seedMatchResolution(1024, 2048, 1536), 1536);
+  assert.equal(seedMatchResolution(1024, null, 2048), 1024);
+  assert.equal(seedMatchResolution(512, undefined, 2048), 512);
+});
+
+test("Reference raises a size below the family's edit resolution once, keeping the aspect", () => {
+  const limits = { multiple: 32, maxSide: 2752, maxPixels: 2400 * 1792 };
+  assert.deepEqual(raiseToEditResolution(1024, 1024, 2048, limits), { width: 2048, height: 2048 });
+  const wide = raiseToEditResolution(1024, 768, 2048, limits);
+  assert.ok(wide && wide.width > wide.height && wide.width * wide.height <= limits.maxPixels);
+  assert.equal(raiseToEditResolution(2048, 2048, 2048, limits), null);
+  assert.equal(raiseToEditResolution(2400, 1792, 2048, limits), null);
+  assert.equal(raiseToEditResolution(1024, 1024, null, limits), null);
 });
 
 test("the request keeps order, drops empty slots and only sends what the model takes", () => {
