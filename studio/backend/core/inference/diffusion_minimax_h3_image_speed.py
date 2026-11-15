@@ -151,8 +151,7 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     resident = getattr(plan, "placement", None) in _RESIDENT_PLACEMENTS
     from .diffusion_minimax_h3_image import FP16_CONTRACT_ATTR
 
-    # An fp16 load (no bf16 on the card) rescales inside each int8 Linear; the fused QKV, the fused int8 GEMMs and the
-    # strided attention's shared QKV quant call the weights around that and are bf16 kernels anyway.
+    # fp16 loads rescale inside each int8 Linear; the fused bf16 kernels would bypass that.
     fp16_contract = bool(transformer.__dict__.get(FP16_CONTRACT_ATTR))
     if fp16_contract:
         resident = False

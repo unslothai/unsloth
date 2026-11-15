@@ -3137,11 +3137,9 @@ def int8_blocks_rescale_in_float32(transformer: Any) -> int:
     return count
 
 
-# fp16 cards: the block stack's residual stream at 1/STREAM_SCALE. bf16 runs it unscaled; on a real T4 render the
-# first block already writes ~1.3e5 and blocks 39-49 carry ~3.3e7 (32k at 1/1024), past float16's 65504; 1/4096
-# leaves 8x headroom, and the smallest stream values that matter stay normal float16.
+# fp16 cards run the residual stream at 1/4096: a T4 render reaches ~3.3e7 in blocks 39-49, past float16's 65504.
 FP16_STREAM_SCALE = 4096.0
-# and the SwiGLU product (value half x silu(gate)) at 1/MLP_SCALE: block 39's (~3.6e5) overflows float16 unscaled.
+# and the SwiGLU product at 1/256 (block 39 reaches ~3.6e5).
 FP16_MLP_SCALE = 256.0
 _STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2.inner")
 _MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")
@@ -3176,12 +3174,9 @@ def _int8_epilogue(module: Any) -> bool:
 
 
 def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
-    """fp16 runs only (sm75). Exact up to rounding: the image and text rows enter the stream at 1/scale
-    (``proj_in`` / ``token_refiner`` outputs), every block writes its attention and MLP output at 1/scale (folded into
-    the float32 epilogue of the int8 out-projections), and the norms that read the stream are scale invariant (RMSNorm,
-    eps / scale^2); the modulation, attention and MLP inputs come out of those norms unscaled, and ``norm_out``
-    hands the PDD heads the unscaled rows. Returns the stream writers rescaled; 0 (nothing changed) on a layout it
-    does not know."""
+    """fp16 runs only (sm75): the stream enters and is written at 1/scale (folded into the writers' float32 epilogue)
+    and every norm reading it is scale invariant (eps / scale^2), so the result is exact up to rounding. Returns the
+    writers rescaled; 0 on a layout it does not know."""
     inv = 1.0 / float(scale)
     blocks = list(getattr(transformer, "transformer_blocks", None) or ())
     norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)
