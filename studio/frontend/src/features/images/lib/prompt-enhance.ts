@@ -28,7 +28,7 @@ export function enhancePromptHint(family: string | null | undefined): string {
   return family === H3_IMAGE_FAMILY ? H3_IMAGE_ENHANCE_PROMPT_HINT : ENHANCE_PROMPT_HINT;
 }
 
-/** A route for one family's enhancer. No family keeps the URL as before (the backend reads the loaded family). */
+/** A route for one family's enhancer. With no family the backend reads the loaded one. */
 export function upsamplerRouteFor(route: string, family: string | null | undefined): string {
   return family ? `${route}?family=${encodeURIComponent(family)}` : route;
 }

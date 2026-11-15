@@ -279,8 +279,7 @@ _KV_BYTES_PER_TOKEN = 8 * 4 * 256 * 2 * 2
 
 
 def _context_kwargs(context_tokens: Optional[int]) -> dict:
-    """``context_tokens`` as a keyword only when one is asked for: the default start passes the same arguments as
-    before."""
+    """``context_tokens`` as a keyword only when one is asked for, so the default start's arguments are unchanged."""
     return {} if context_tokens is None else {"context_tokens": context_tokens}
 
 

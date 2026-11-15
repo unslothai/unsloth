@@ -52790,7 +52790,7 @@ async def clear_diffusion_queue(current_subject: str = Depends(get_current_subje
 
 async def _upsampler_for(family: Optional[str]) -> Any:
     """The enhancer module serving ``family`` (the loaded family when None): MiniMax-H3-Image's own, else the FLUX.3
-    upsampler, as before."""
+    upsampler."""
     from core.inference import flux3_prompt_upsampler as pup
 
     if family is None:
