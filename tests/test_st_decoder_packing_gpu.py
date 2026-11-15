@@ -48,11 +48,14 @@ def test_qwen3_embedder_packs_like_padded(monkeypatch, side):
     assert not bool(features["attention_mask"].all())
     model.train()
 
+    direction = torch.randn(model.get_sentence_embedding_dimension(), device = "cuda")
+
     def embed():
         model.zero_grad(set_to_none = True)
         with torch.autocast("cuda", dtype = torch.bfloat16):
             out = model(dict(features))["sentence_embedding"].float()
-        out.square().sum().backward()
+        # The embeddings are normalized, so a fixed projection, not their norm, carries a gradient.
+        (out @ direction).sum().backward()
         grads = [p.grad.float().clone() for p in model.parameters() if p.grad is not None]
         return out.detach(), grads
 
