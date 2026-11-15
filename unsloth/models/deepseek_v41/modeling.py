@@ -170,6 +170,22 @@ def sparse_attn_window(q, window_kv, compress_kv, compress_idxs, attn_sink, soft
     )
 
 
+_AUTOCAST_DEVICES = frozenset(
+    d
+    for d in ("cuda", "cpu", "xpu", "mps", "hpu")
+    if getattr(torch.amp, "is_autocast_available", lambda _d: _d in ("cuda", "cpu"))(d)
+)
+
+
+def fp32_linear(x, weight):
+    """F.linear in fp32 also inside an autocast region (which would run it in fp16 / bf16): the reference's fp32
+    router logits and mHC projection (model.py:819, 955); the unnormalised mHC projection overflows fp16."""
+    if x.device.type not in _AUTOCAST_DEVICES:
+        return F.linear(x.float(), weight.float())
+    with torch.autocast(device_type = x.device.type, enabled = False):
+        return F.linear(x.float(), weight.float())
+
+
 class DeepseekV41RMSNorm(nn.Module):
     """model.py:281-293: fp32 statistics, weight applied in fp32, cast back."""
 
@@ -360,7 +376,7 @@ class DeepseekV41HyperConnection(nn.Module):
         # unsloth_zoo's compiler matches these lines and the Sinkhorn loop verbatim (model.py:953-956).
         flat = x.flatten(2).float()
         rsqrt = torch.rsqrt(flat.square().mean(-1, keepdim = True) + self.norm_eps)
-        mixes = F.linear(flat, self.fn.float()) * rsqrt
+        mixes = fp32_linear(flat, self.fn) * rsqrt
         scale, base = self.scale.float(), self.base.float()
         # kernel.py:427-462 operation order
         pre = torch.sigmoid(mixes[..., :hc] * scale[0] + base[:hc]) + eps
@@ -648,7 +664,7 @@ class DeepseekV41TopKRouter(nn.Module):
         )
 
     def forward(self, x):
-        scores = F.linear(x.float(), self.weight.float()) / self.gate_temp
+        scores = fp32_linear(x, self.weight) / self.gate_temp
         if self.score_func == "softmax":
             scores = scores.softmax(dim = -1)
         elif self.score_func == "sigmoid":

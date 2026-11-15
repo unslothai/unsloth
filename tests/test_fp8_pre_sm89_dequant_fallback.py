@@ -360,7 +360,7 @@ def test_grouped_fp8_eval_without_the_kernels_package_takes_the_dequant_path(mon
 
     if getattr(fp8, "FP8GroupedLinear", None) is None:
         pytest.skip("this transformers has no FP8GroupedLinear")
-    monkeypatch.setattr(fp8, "_fp8_grouped_eval_kernel_ok", lambda: False, raising = False)
+    monkeypatch.setattr(fp8, "_FP8_GROUPED_EVAL_KERNEL_OK", False, raising = False)
     monkeypatch.setattr(
         fp8, "_fp8_grouped_forward_orig", lambda *a, **k: pytest.fail("reached the hub kernel path")
     )
