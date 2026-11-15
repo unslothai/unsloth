@@ -34,8 +34,8 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     consent: "Allow changing levels, assets and Blueprints and running editor commands in Unreal Editor. Results may be sent to your model provider. Cancelling may not undo changes.",
     link: { label: "Get Unreal MCP plugin", url: "https://github.com/ChiR24/Unreal_mcp" },
     steps: [
-      <>Add the Unreal MCP plugin to your project’s {strong("Plugins")} folder (or install it from Fab) and enable it.</>,
-      <>In {strong("Project Settings → Plugins → EngineWire")}, keep {strong("Enable Native MCP Server")} on. Restart the editor if you changed it.</>,
+      <>Install the {strong("EngineWire")} plugin from Fab (or copy it into your project’s {strong("Plugins")} folder), enable it in {strong("Edit → Plugins")} and restart the editor.</>,
+      <>If the status bar reads {strong("MCP off")}, turn on {strong("Enable Native MCP Server")} in {strong("Project Settings → Plugins → EngineWire")} and restart once more.</>,
       <>Enter your project folder above so Unsloth can read the plugin’s capability token.</>,
     ],
     portHint: "Match the Native MCP Server port in the plugin settings.",

@@ -111,6 +111,8 @@ export function McpComposerButton({
   const [blenderOpen, setBlenderOpen] = useState(false);
   const [blenderBusy, setBlenderBusy] = useState(false);
   const [editorOpen, setEditorOpen] = useState<EditorMcpId | null>(null);
+  // Labels keep the last editor while the dialog fades out after editorOpen is cleared.
+  const [editorShown, setEditorShown] = useState<EditorMcpId>("unity");
   const [editorBusy, setEditorBusy] = useState(false);
   const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
@@ -430,6 +432,7 @@ export function McpComposerButton({
                 key={id}
                 onSelect={() => {
                   setMenuOpen(false);
+                  setEditorShown(id);
                   setEditorOpen(id);
                 }}
                 className={enabled ? "relative text-primary font-medium" : "relative"}
@@ -501,9 +504,9 @@ export function McpComposerButton({
           showCloseButton={!editorBusy}
         >
           <DialogHeader>
-            <DialogTitle>{editorOpen ? EDITOR_MCP[editorOpen].name : ""} MCP</DialogTitle>
+            <DialogTitle>{EDITOR_MCP[editorShown].name} MCP</DialogTitle>
             <DialogDescription>
-              Let the model control {editorOpen ? EDITOR_MCP[editorOpen].name : "the editor"} through MCP.
+              Let the model control {EDITOR_MCP[editorShown].name} through MCP.
             </DialogDescription>
           </DialogHeader>
           {editorOpen && (

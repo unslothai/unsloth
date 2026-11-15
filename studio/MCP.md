@@ -45,7 +45,7 @@ and launches nothing; it connects to `http://127.0.0.1:<port>/mcp` on the backen
 | Editor | Add-on | Default port | Notes |
 |---|---|---|---|
 | Unity | [MCP for Unity](https://github.com/CoplayDev/unity-mcp) | 8080 | Start the server in **Window → MCP for Unity** with the HTTP transport. **Test connection** turns green once an Editor has joined (`/api/instances`). |
-| Unreal Engine | [Unreal MCP](https://github.com/ChiR24/Unreal_mcp) (EngineWire) | 3000 | Keep **Enable Native MCP Server** on. Enter the project folder: Unsloth reads `Saved/MCP/capability-token` on every connection and sends it as `X-MCP-Capability-Token`. |
+| Unreal Engine | [Unreal MCP](https://github.com/ChiR24/Unreal_mcp) (EngineWire) | 3000 | Turn on **Enable Native MCP Server** if the status bar reads `MCP off` (Fab builds ship with it off). Enter the project folder: Unsloth reads `Saved/MCP/capability-token` on every connection and sends it as `X-MCP-Capability-Token`. |
 | Godot 4 | [Godot MCP Native](https://github.com/yurineko73/Godot-MCP-Native) | 9080 | Install from AssetLib and enable the plugin; it starts its HTTP server with the editor. It listens on every network interface, so turn on its auth token on a shared network and add it as a custom server with an `Authorization: Bearer <token>` header instead. |
 
 Like Blender, these tools run code in the editor on this computer, so they follow the same
