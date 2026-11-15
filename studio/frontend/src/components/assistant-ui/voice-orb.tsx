@@ -786,6 +786,9 @@ export const VoiceOrb: FC = () => {
     if (!showOverlay) return;
     // Window capture, before the composer's cancelOnEscape: Escape hides the orb, it never stops the reply.
     const onKeyDown = (e: KeyboardEvent) => {
+      // Chat stays mounted off-route (hidden, inert): there the Escape belongs to whatever is showing.
+      const root = rootRef.current;
+      if (!root || root.closest('[aria-hidden="true"], [inert]') || root.getClientRects().length === 0) return;
       if (e.key === "Escape" && !e.isComposing) {
         e.preventDefault();
         e.stopPropagation();

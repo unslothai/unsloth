@@ -397,7 +397,7 @@ test("a message sent from the composer drops a voice fragment still waiting for 
   const submit = thread.slice(thread.indexOf("const handleSubmit = useCallback("));
   assert.ok(submit.indexOf("noteTypedSend();") > 0 && submit.indexOf("noteTypedSend();") < submit.indexOf("isRewindCommand(composerText)"));
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
-  assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current === "active"\) clearHeldTurn\(\);\s*\}\);/);
+  assert.match(engine, /registerVoiceTypedSend\(\(\) => \{\s*if \(voiceModeRef\.current !== "active"\) return;\s*clearHeldTurn\(\);\s*(?:\/\/[^\n]*\n\s*)?clearPendingVoiceNotes\(\);\s*\}\);/);
 });
 
 test("a clip dropped by a reset re-arms the mic while voice stays on", () => {
@@ -433,4 +433,15 @@ test("a clip heard across voice off runs no VAD or STT and raises no error or do
   assert.ok(firstOff > 0 && firstOff < fin.indexOf("const analysis = ready ?? analyseClip(span);"));
   assert.match(fin, /if \(error instanceof SttModelNotDownloadedError && !switchedOff\(\)\) \{/);
   assert.match(fin, /\} catch \(error\) \{\s*if \(ended\) return;\s*if \(switchedOff\(\)\) \{\s*dropSwitched\(\);\s*return;\s*\}\s*console\.error\("Voice transcription error:"/);
+});
+
+test("the orb's Escape stays out of other pages while Chat is hidden; speech owns the voice slot first", () => {
+  const orb = readSrc("components/assistant-ui/voice-orb.tsx");
+  const listener = orb.slice(orb.indexOf("const onKeyDown = (e: KeyboardEvent) => {"));
+  assert.ok(listener.indexOf("root.closest('[aria-hidden=\"true\"], [inert]') || root.getClientRects().length === 0) return;") < listener.indexOf("e.preventDefault();"));
+  assert.match(orb, /\sref=\{rootRef\}/);
+  const player = readSrc("features/chat/hooks/use-tts-player.ts");
+  const synth = player.slice(player.indexOf("const synthesize = useCallback("));
+  const own = synth.indexOf("if (!(await ensureVoiceSlotLoaded())) return null;");
+  assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
 });
