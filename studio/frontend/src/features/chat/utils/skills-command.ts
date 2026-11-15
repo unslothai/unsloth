@@ -5,7 +5,6 @@
 
 const SKILLS_COMMAND = "/skills";
 
-/** Exactly `/skills`, ignoring surrounding whitespace and case. */
 export function isSkillsCommand(text: string): boolean {
   return text.trim().toLowerCase() === SKILLS_COMMAND;
 }
