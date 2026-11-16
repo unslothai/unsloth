@@ -24,6 +24,7 @@ export function ProjectSwitcher({
   currentProject,
   projects,
   isLoading,
+  loadFailed = false,
   onSelectProject,
   onViewAllProjects,
   open: controlledOpen,
@@ -32,6 +33,7 @@ export function ProjectSwitcher({
   currentProject: ProjectRecord | null;
   projects: ProjectRecord[];
   isLoading: boolean;
+  loadFailed?: boolean;
   onSelectProject: (projectId: string) => void;
   onViewAllProjects: () => void;
   open?: boolean;
@@ -105,7 +107,7 @@ export function ProjectSwitcher({
         ) : null}
         {showEmptyRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">
-            No projects yet
+            {loadFailed ? "Couldn't load projects" : "No projects yet"}
           </DropdownMenuItem>
         ) : null}
         {recentProjects.map((project) => {

@@ -5362,6 +5362,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 [data-config-header-row] > button:first-child {
 	transform: translateY(calc(-0.5 * (var(--config-eyebrow-h) + var(--config-header-gap))));
 	transition: transform 150ms ease;
+	/* Above the row's stuck cover (an absolute ::before), which its -my-1.5 hover circle reaches into. */
+	position: relative;
+	z-index: 1;
 }
 .composer-run-settings[data-header-stuck] [data-config-header-row] > button:first-child {
 	transform: none;

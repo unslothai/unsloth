@@ -11,6 +11,7 @@ export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
   ChatThreadDeletedError,
+  createBrowseFolder,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,

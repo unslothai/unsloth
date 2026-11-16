@@ -1284,14 +1284,99 @@ export async function getChatAgentsMd(
   return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
+export type ProjectFileEntry = {
+  name: string;
+  kind: "dir" | "file";
+  size?: number | null;
+  hidden: boolean;
+};
+
+export type ProjectFileListing = {
+  root: string;
+  path: string;
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+  chosen: boolean;
+};
+
+export type ProjectFileSearch = {
+  results: { path: string; name: string }[];
+  truncated: boolean;
+};
+
+export type ProjectChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export type ProjectChanges = {
+  repo: boolean;
+  branch: string | null;
+  changes: { path: string; status: ProjectChangeStatus }[];
+  truncated: boolean;
+};
+
+function projectFilesUrl(projectId: string, suffix: string): string {
+  return `/api/chat/projects/${encodeURIComponent(projectId)}/${suffix}`;
+}
+
+export async function listProjectFiles(
+  projectId: string,
+  path: string,
+  showHidden: boolean,
+  signal?: AbortSignal,
+): Promise<ProjectFileListing> {
+  const query = new URLSearchParams({ path, show_hidden: String(showHidden) });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileListing>(response);
+}
+
+export async function searchProjectFiles(
+  projectId: string,
+  q: string,
+  signal?: AbortSignal,
+): Promise<ProjectFileSearch> {
+  const query = new URLSearchParams({ q });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files/search")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileSearch>(response);
+}
+
+export async function getProjectChanges(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ProjectChanges> {
+  const response = await authFetch(projectFilesUrl(projectId, "changes"), {
+    signal,
+  });
+  return parseJsonOrThrow<ProjectChanges>(response);
+}
+
+export type SaveChatProjectOptions = {
+  reuseExisting?: boolean;
+};
+
 export async function saveChatProject(
   project: ProjectRecord,
   nativePathLease?: string,
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
+    body: JSON.stringify({
+      ...project,
+      ...(nativePathLease ? { nativePathLease } : {}),
+      ...(nativePathLease && options.reuseExisting ? { reuseExisting: true } : {}),
+    }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
@@ -1333,6 +1418,31 @@ export async function setChatProjectWorkingFolder(
   const project = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();
   return project;
+}
+
+export async function setChatProjectWorkingFolderPath(
+  projectId: string,
+  serverPath: string,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverPath }),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
+export async function getProjectFolderAccess(): Promise<{
+  serverPath: boolean;
+}> {
+  const response = await authFetch("/api/chat/project-folder-access");
+  const body = await parseJsonOrThrow<{ serverPath?: unknown }>(response);
+  return { serverPath: body?.serverPath === true };
 }
 
 /** Member thread ids whose sandbox still holds files, from the route. */
@@ -1618,11 +1728,18 @@ export interface BrowseEntry {
   hidden: boolean;
 }
 
+export interface BrowsePlace {
+  path: string;
+  label: string;
+  kind: "home" | "user" | "drive" | "models";
+}
+
 export interface BrowseFoldersResponse {
   current: string;
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
+  places?: BrowsePlace[];
   truncated?: boolean;
   model_files_here?: number;
 }
@@ -1637,16 +1754,30 @@ export async function browseFolders(
   path?: string,
   showHidden = false,
   signal?: AbortSignal,
+  modelHints = true,
 ): Promise<BrowseFoldersResponse> {
   const params = new URLSearchParams();
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
+  if (!modelHints) params.set("model_hints", "false");
   const qs = params.toString();
   // Forward the signal so a cancelled navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
   );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
+}
+
+export async function createBrowseFolder(
+  parent: string,
+  name: string,
+): Promise<BrowseFoldersResponse> {
+  const response = await authFetch("/api/models/browse-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent, name }),
+  });
   return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
