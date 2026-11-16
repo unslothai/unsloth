@@ -216,7 +216,7 @@ def _require_room_for_dense(config: dict, exc: Exception) -> None:
     if need and free is not None and free < need:
         raise RuntimeError(
             f"The hosted int8 text encoder could not be loaded ({exc}), and quantizing the dense encoder at load "
-            f"needs about {need / 1000**3:.0f} GB of free memory ({free / 1000**3:.0f} GB free)."
+            f"needs about {need / 1000**3:.1f} GB of free memory ({free / 1000**3:.1f} GB free)."
         ) from exc
 
 

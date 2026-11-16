@@ -122,6 +122,144 @@ def test_batch_change_does_not_recompile(monkeypatch, dynamic_batch):
         assert extra >= 1  # the control: without the batch mark the batch change recompiles
 
 
+class _MaskDecoderLayer(torch.nn.Module):
+    """SDPA over a mask that transformers drops (None) for an unpadded micro batch."""
+
+    def __init__(self, causal = True):
+        super().__init__()
+        self.proj = torch.nn.Linear(8, 8)
+        self.self_attn = types.SimpleNamespace(is_causal = causal)
+        self.causal = causal
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+        **kwargs,
+    ):
+        q = self.proj(hidden_states)[:, None]
+        if attention_mask is None:
+            out = torch.nn.functional.scaled_dot_product_attention(q, q, q, is_causal = self.causal)
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, q, q, attn_mask = attention_mask
+            )
+        return out[:, 0]
+
+
+def _compile_counter(monkeypatch):
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+    return counter
+
+
+def _padded_mask(
+    lengths,
+    L,
+    causal = True,
+):
+    keep = torch.arange(L)[None] < torch.tensor(lengths)[:, None]
+    base = torch.ones(L, L, dtype = torch.bool)
+    if causal:
+        base = base.tril()
+    return base[None, None] & keep[:, None, None, :]
+
+
+@pytest.mark.parametrize("causal", [True, False], ids = ["causal", "bidirectional"])
+def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
+    """Padded vs unpadded micro batches must not flip mask/None and recompile."""
+    M = _load()
+    counter = _compile_counter(monkeypatch)
+    M._wrap(_MaskDecoderLayer, {})
+    layer = _MaskDecoderLayer(causal).train()
+    reference = _MaskDecoderLayer(causal).train()
+    reference.load_state_dict(layer.state_dict())
+
+    def step(lengths, L, padded):
+        x = torch.randn(len(lengths), L, 8)
+        mask = _padded_mask(lengths, L, causal) if padded else None
+        xs = x.clone().requires_grad_()
+        out = layer(xs, attention_mask = mask)
+        out.square().sum().backward()
+        xr = x.clone().requires_grad_()
+        ref = _MaskDecoderLayer.forward.__wrapped__(reference, xr, attention_mask = mask)
+        ref.square().sum().backward()
+        torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-5)
+        torch.testing.assert_close(xs.grad, xr.grad, rtol = 1e-5, atol = 1e-5)
+
+    step([16, 12], 16, True)
+    step([20, 17], 20, True)
+    before = counter.frame_count
+    step([24, 24], 24, False)
+    step([18, 9], 18, True)
+    step([14, 14], 14, False)
+    extra = counter.frame_count - before
+    torch._dynamo.reset()
+    assert extra == 0
+
+
+def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
+    M = _load()
+    layer = _MaskDecoderLayer().train()
+    hidden = torch.zeros(2, 6, 8)
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    layer.self_attn = types.SimpleNamespace()
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6)})
+    assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt.dtype == torch.long and rebuilt.shape == (2, 6) and bool((rebuilt == 1).all())
+    # transformers expands its 4D mask (a view) and dynamo guards the base: the rebuilt mask is a view too.
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._normalise_mask(
+        layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).expand(2, -1, 6, 6)}
+    )
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is not None and rebuilt._base.shape == rebuilt.shape
+    assert torch.equal(rebuilt, torch.ones(6, 6, dtype = torch.bool).tril().expand(2, 1, 6, 6))
+    M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6).contiguous()})
+    assert (
+        M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]._base is None
+    )
+    padding = torch.tensor([[True] * 6, [True] * 4 + [False] * 2])[:, None, None, :].clone()
+    for causal, want in ((False, torch.ones(2, 1, 6, 6, dtype = torch.bool)), (True, None)):
+        layer = _MaskDecoderLayer().train()
+        layer.self_attn = types.SimpleNamespace(is_causal = causal)
+        M._MATERIALISED[0] = None
+        M._normalise_mask(layer, hidden, {"attention_mask": padding.expand(2, 1, 6, 6)})
+        rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+        assert rebuilt is None if want is None else torch.equal(rebuilt, want)
+    # Batch size 1: the rebuilt causal mask owns its storage (no 2D base dynamo would guard as a view).
+    layer = _MaskDecoderLayer().train()
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._MATERIALISED[0] = None
+    one = torch.zeros(1, 6, 8)
+    M._normalise_mask(layer, one, {"attention_mask": _padded_mask([6], 6).contiguous()})
+    rebuilt = M._normalise_mask(layer, one, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is None and torch.equal(
+        rebuilt, torch.ones(6, 6, dtype = torch.bool).tril()[None, None]
+    )
+    assert (
+        M._normalise_mask(layer, one, {"attention_mask": None, "is_causal": False})[
+            "attention_mask"
+        ]
+        is None
+    )
+    layer = _MaskDecoderLayer().train()
+    M._MATERIALISED[0] = None
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1], [0]]).expand(2, 6)})
+    rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    assert torch.equal(rebuilt, torch.ones(2, 6, dtype = torch.long))
+
+
 def test_rebind_globals_resolves():
     M = _load()
     ns = {"__name__": "not_a_registered_module", "OFFSET": 3}
@@ -1118,6 +1256,58 @@ def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
             from transformers.utils.output_capturing import _active_collector
             _active_collector.reset(token)
     assert len(recorded) == 1, f"{len(recorded)} recorded outputs for one forward"
+
+
+class _TraceableCollector:
+    """unsloth_zoo's compiled-code mirror of transformers' collector: dynamo traces get() and guards on it."""
+
+    def __init__(self):
+        self.value = None
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        old, self.value = self.value, value
+        return old
+
+    def reset(self, token):
+        self.value = token
+
+
+def test_trial_forward_graph_is_reused_by_the_real_call(monkeypatch):
+    # tiny Gemma-4 vision: a trial hidden from the collector (None) compiled graphs no real call matched.
+    from torch._dynamo.utils import counters
+
+    output_capturing = pytest.importorskip("transformers.utils.output_capturing")
+    M = _load()
+    real_compile = torch.compile
+
+    def eager_compile(fn, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if k not in ("options", "backend")}
+        return real_compile(fn, backend = "eager", **kwargs)
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    collector = _TraceableCollector()
+    monkeypatch.setattr(output_capturing, "_active_collector", collector)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+
+    def hook(module, args, output):
+        collected = output_capturing._active_collector.get()
+        if collected is not None and "attentions" in collected:
+            collected["attentions"].append(output)
+
+    layer.proj.register_forward_hook(hook)
+    collector.set({})  # capture_outputs with nothing requested
+    torch._dynamo.reset()
+    counters.clear()
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():  # reentrant checkpoint forward: grad-mode trial, then the real call
+        layer(x)
+    layer(x.requires_grad_()).sum().backward()  # the recompute
+    assert counters["stats"]["unique_graphs"] == 2, dict(counters["stats"])
 
 
 def test_gdn_self_check_leaves_default_rng_alone():
@@ -2473,8 +2663,7 @@ def _checkpointed_layer(cls, reentrant = False):
 
 
 def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
-    # The block replaced the class forward, so transformers' wrapper ended up inside it, never saw
-    # itself as type(self).forward and every layer trained without checkpointing.
+    # The block replaced the class forward, hiding transformers' wrapper, so nothing was checkpointed.
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
     cls = _toy_class()
@@ -2493,8 +2682,7 @@ def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
     M._wrap(cls, {})
     layer.train()(x)
     assert calls == [1, 1]
-    # A reentrant checkpoint's no-grad first call runs the block's grad-mode trial, which must call
-    # the block, not the checkpoint shim again (that recursed until RecursionError).
+    # The grad-mode trial must call the block, not the checkpoint shim (that recursed until RecursionError).
     fresh, fresh_calls = _checkpointed_layer(cls, reentrant = True)
     out = fresh(x)
     torch.testing.assert_close(out, fresh.proj(x) + x)

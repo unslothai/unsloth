@@ -118,12 +118,19 @@ def _dequant_fp4(
 
 
 def keep_fp4_experts_packed():
-    """fp4 experts stay MXFP4-packed unless UNSLOTH_DSV41_FP4_EXPERTS=bf16 (or 0) asks for a bf16 copy."""
-    return os.environ.get("UNSLOTH_DSV41_FP4_EXPERTS", "mxfp4").strip().lower() not in (
-        "bf16",
-        "0",
-        "dense",
-    )
+    """Packed unless UNSLOTH_DSV41_FP4_EXPERTS=bf16/0; full finetuning needs bf16 (packed uint8 cannot train)."""
+    requested = os.environ.get("UNSLOTH_DSV41_FP4_EXPERTS")
+    full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
+    if requested is None or not requested.strip():
+        return not full_finetuning
+    packed = requested.strip().lower() not in ("bf16", "0", "dense")
+    if packed and full_finetuning:
+        raise RuntimeError(
+            f"Unsloth: full finetuning DeepSeek-V4.1 trains the routed experts, which cannot stay MXFP4-packed "
+            f"(UNSLOTH_DSV41_FP4_EXPERTS={requested}). Unset UNSLOTH_DSV41_FP4_EXPERTS (full finetuning then "
+            "dequantizes them to bf16), or train LoRA on the packed experts instead."
+        )
+    return packed
 
 
 def _e8m0_bytes(scale):

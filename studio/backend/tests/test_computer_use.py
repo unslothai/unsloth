@@ -518,6 +518,14 @@ def test_grid_coordinates_span_the_picture(desktop):
         ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "grid"),
         ("qwen3-vl-plus", "grid"),
         ("gemini-2.5-computer-use-preview", "grid"),
+        ("unsloth/Qwen3.5-9B-GGUF", "grid"),
+        ("unsloth/Qwen3.6-27B-GGUF", "grid"),
+        ("unsloth/Qwen3.8-27B-GGUF", "grid"),
+        ("Qwen3.8-27B-UD-Q4_K_XL.gguf", "grid"),
+        ("unsloth/gemma-4-26B-A4B-it-GGUF", "grid"),
+        ("google/gemma-4-12b-it", "grid"),
+        ("unsloth/gemma-3-27b-it-GGUF", "pixels"),
+        ("unsloth/Qwen3-32B-GGUF", "pixels"),
         ("UI-TARS-7B-DPO", "grid"),
         ("UI-TARS-1.5-7B", "pixels"),
         ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "pixels"),
@@ -976,6 +984,25 @@ def test_an_x11_window_takes_its_launchers_name(tmp_path, monkeypatch):
     assert backend._shown_name(["xterm", "XTerm"]) == ""
     assert backend._desktop_entry("fire")[1] == "Firefox Web Browser"
     assert backend.resolve_app("fire") == backend._shown_name(["Navigator", "firefox"])
+    (tmp_path / "org.gnome.eog.desktop").write_text(
+        "[Desktop Entry]\nName=Image Viewer\nExec=env GDK_BACKEND=x11 /usr/bin/eog %U\n"
+    )
+    backend._launcher = None
+    # Models name an app by its program or the end of its id; the gate still sees the launcher's name.
+    assert backend.resolve_app("eog") == "Image Viewer"
+    assert backend.resolve_app("nautilus") == "Files"
+    assert backend.resolve_app("Image Viewer") == "Image Viewer"
+    assert backend._desktop_entry("gnome") is None
+    (tmp_path / "libreoffice-calc.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice Calc\nExec=libreoffice --calc %U\n"
+    )
+    (tmp_path / "libreoffice.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice\nExec=libreoffice %U\n"
+    )
+    backend._launcher = None
+    # Calc sorts first and starts the same program; an exact name still wins over that alias.
+    assert backend.resolve_app("LibreOffice") == "LibreOffice"
+    assert backend.resolve_app("libreoffice") == "LibreOffice"
 
 
 def test_an_always_allowed_app_never_asks(desktop):

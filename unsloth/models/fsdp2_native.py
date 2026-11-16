@@ -1798,6 +1798,22 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if config.units is None
         else []
     )
+    frozen_split = []
+    if (
+        extra_units
+        and config.shard_frozen is not True
+        and not config.cpu_offload
+        and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
+        and _supports_ignored_params(fully_shard)
+    ):
+        # A frozen split table (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB) would be all-gathered whole
+        # every step: keep it whole on every rank like a frozen lookup table, as on 1 GPU.
+        frozen_split = [m for m in extra_units if not any(p.requires_grad for p in m.parameters())]
+        if frozen_split:
+            extra_units = [m for m in extra_units if not any(m is f for f in frozen_split)]
+            tables = set(tables)
+            for m in frozen_split:
+                tables.update(m.parameters())
     if extra_units:
         check_shard_units(model, units + extra_units, ignored_params = None)
     gather_dtype = param_dtype
@@ -1825,8 +1841,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         ignored, _ = _unify_dtypes(
             model,
             # Root only: every trainable param is in the root group. Otherwise the split root
-            # embedding tables are units of their own, not part of the root's dtype group.
-            [] if layout.root_only else units + list(extra_units),
+            # embedding tables are units of their own, not part of the root's dtype group; so are the
+            # frozen ones kept whole (never upcast with the root).
+            ([] if layout.root_only else units + list(extra_units)) + frozen_split,
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )
@@ -2218,6 +2235,17 @@ def _rebind_swapped_modules(model, units):
                 )
 
 
+def _lazy_init_root(root, units):
+    """FSDP2 roots at the first unit to run forward; a decode loop calling blocks would make a block root."""
+    top = root if isinstance(root, _fsdp_module_class()) else next(iter(units), None)
+    state = getattr(top, "_get_fsdp_state", None)
+    if not callable(state):
+        return
+    state = state()
+    if getattr(state, "_is_root", None) is None:
+        state._lazy_init()
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -2242,6 +2270,7 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
+        _lazy_init_root(root, units)
         # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()

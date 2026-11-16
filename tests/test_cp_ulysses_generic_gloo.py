@@ -282,17 +282,34 @@ def _parity_worker(
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof.
-    if "fork" not in mp.get_all_start_methods():
+    # Fork keeps the conftest CUDA spoof (CPU-only CI). On a GPU host the parent's autograd threads make fork
+    # unsafe, so spawn CPU-only ranks there.
+    spawn = torch.cuda.is_available() or os.environ.get("UNSLOTH_TEST_GLOO_START") == "spawn"
+    if not spawn and "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
-    with tempfile.TemporaryDirectory() as d:
-        mp.start_processes(
-            _entry,
-            args = (world, os.path.join(d, "init"), fn, args),
-            nprocs = world,
-            join = True,
-            start_method = "fork",
-        )
+    # Spawned ranks: GPU hidden (ROCm torch honours it too) and Unsloth's CPU backend allowed.
+    hidden = {"CUDA_VISIBLE_DEVICES": "", "UNSLOTH_DISABLE_CPU_FALLBACK": None} if spawn else {}
+    saved = {k: os.environ.get(k) for k in hidden}
+    for k, v in hidden.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            mp.start_processes(
+                _entry,
+                args = (world, os.path.join(d, "init"), fn, args),
+                nprocs = world,
+                join = True,
+                start_method = "spawn" if spawn else "fork",
+            )
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _entry(rank, world, init_file, fn, args):
