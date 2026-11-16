@@ -286,6 +286,7 @@ from .diffusion_memory import (
     static_reference_release_mib,
     load_covered_reference_need_mib,
     measured_request_extra_mib,
+    placement_measured_activation,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
     with_workflow,
@@ -15611,6 +15612,7 @@ class DiffusionBackend:
                                 getattr(state, "calibrated_placement", False)
                             ),
                             controlnet = workflow == "controlnet" and control_pil is not None,
+                            measured_activation = placement_measured_activation(state.pipe),
                             logger = logger,
                         )
 
