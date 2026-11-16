@@ -258,3 +258,9 @@ def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeyp
     layer.self_attn.attention_dropout = 0.0
     monkeypatch.setenv("UNSLOTH_TORCH_VARLEN", "0")
     assert not AD._packed_block_kernel(layer.train(), hidden)
+    monkeypatch.delenv("UNSLOTH_TORCH_VARLEN")
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with sdpa_kernel([SDPBackend.MATH]):
+        assert not AD._packed_block_kernel(layer.train(), hidden)
+    assert AD._packed_block_kernel(layer.train(), hidden)
