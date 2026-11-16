@@ -598,6 +598,31 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
     assert exc.value.status_code == 403
 
 
+@pytest.mark.parametrize("location", ["current", "previous"])
+@pytest.mark.parametrize("relation", ["same", "parent", "child"])
+def test_working_folder_cannot_overlap_a_saved_project_home(env, monkeypatch, location, relation):
+    from routes import chat_history
+    from utils import native_path_leases, project_workspace_settings
+
+    homes = {name: env.repo / name / "Projects" for name in ("current", "previous")}
+    for root in homes.values():
+        (root / "project-1234").mkdir(parents = True)
+    monkeypatch.setattr(
+        project_workspace_settings, "owner_project_workspaces_roots", lambda: tuple(homes.values())
+    )
+    root = homes[location]
+    candidate = {"same": root, "parent": root.parent, "child": root / "project-1234"}[relation]
+    monkeypatch.setattr(
+        native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(candidate)
+    )
+    body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+    with pytest.raises(HTTPException) as exc:
+        chat_history.set_project_working_folder("p1", body, current_subject = "u")
+    assert exc.value.status_code == 400
+    assert "Unsloth's own folders" in exc.value.detail
+    assert studio_db.get_chat_project("p1")["workingFolder"] is None
+
+
 def test_route_refuses_the_shared_temp_root(env, monkeypatch):
     from routes import chat_history
     from utils import native_path_leases

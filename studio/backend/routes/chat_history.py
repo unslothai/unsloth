@@ -1365,8 +1365,8 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
             exc,
             500,
             f"Could not create the project folder {exc.path}. Check that the "
-            "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
-            "location.",
+            "folder is available and writable. For new projects, choose another "
+            "Projects folder in Settings > System > Storage, or set UNSLOTH_STUDIO_PROJECTS_HOME.",
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
@@ -1429,6 +1429,7 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     from core.inference.tools import shared_sandbox_root
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+    from utils.project_workspace_settings import owner_project_workspaces_roots
     from utils.paths.path_utils import is_path_within
     from utils.paths.storage_roots import (
         shared_project_workspaces_root,
@@ -1449,6 +1450,7 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
+        *owner_project_workspaces_roots(),
         shared_sandbox_root(),
         shared_tmp_root(),
     ):
