@@ -6679,8 +6679,9 @@ class ImageGenerationRequest(BaseModel):
         None,
         max_length = 8,
         description = "[x-unsloth] LoRA adapters for this generation (discovery id + weight), as on "
-        "/images/generate. Omitted: the adapters the loaded model baked in at load time, at their "
-        "load weights (none for a load without baked adapters). An empty list renders without any.",
+        "/images/generate. Omitted: the adapters a diffusers load was loaded with (baked in, or applied "
+        "per generation on a dense build), at their load weights; none for a load that named none, and "
+        "none on the native sd.cpp and MLX engines. An empty list renders without any.",
     )
 
     @field_validator("n", "size", "response_format", mode = "before")
