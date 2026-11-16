@@ -3448,6 +3448,7 @@ from models.inference import (
     validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
+    LoraSpec,
     MediaUnloadOutcome,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
@@ -51395,6 +51396,19 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if request.loras is None:
+            # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
+            if status is None:
+                status = await asyncio.to_thread(backend.status)
+            pairs = _load_lora_defaults(status) if status.get("loaded") else []
+            if pairs:
+                request = request.model_copy(
+                    update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
+                )
+                if expected_load is None:
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
         if txt2img_size_omitted:
             if status is None:
                 status = probe.pop("status", None) if attempt == 0 else None
@@ -53604,6 +53618,12 @@ def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tupl
     """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
     if body.loras is not None:
         return [(spec.id, float(spec.weight)) for spec in body.loras]
+    return _load_lora_defaults(status)
+
+
+def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
+    """The adapters an omitted ``loras`` stands for: the load's baked set, else the set the load named, at
+    their load weights. The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
     pairs = []
     for spec in status.get("baked_lora_specs") or status.get("load_lora_specs") or ():
         try:
