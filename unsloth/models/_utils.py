@@ -6906,6 +6906,45 @@ def _tensor_parallel_trainer_pre(model):
     return tp_trainer_setup(model, phase = "pre")
 
 
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """TRL's DPOTrainer copies the "default" LoRA into a new "ref" adapter when ref_model is None. Under tensor
+    parallel the default factors are DTensor shards and the new "ref" ones are plain full tensors, so the copy
+    fails (and the "ref" adapter would not run in the tp forward). With every default lora_B still zero (a fresh
+    adapter), disabling adapters yields the same reference logits, and TRL then falls back to exactly that.
+    Returns True to skip the "ref" adapter, False off tensor parallel; raises for a trained adapter."""
+    tp = _is_unsloth_tensor_parallel(model)
+    if not tp:
+        try:
+            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
+        except ValueError:
+            tp = False
+    if not tp:
+        return False
+    nonzero, device = 0, torch.device("cpu")
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if ".default." not in name or not ("lora_B" in name or "lora_embedding_B" in name):
+                continue
+            local = param.to_local() if hasattr(param, "to_local") else param
+            device = local.device
+            nonzero += int(torch.count_nonzero(local).item())
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        # Every rank holds a different shard: agree, so no rank raises while another moves on.
+        flag = torch.tensor([float(nonzero)], device = device)
+        dist.all_reduce(flag)
+        nonzero = int(flag.item())
+    if nonzero:
+        raise ValueError(
+            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            'trained (non-zero lora_B) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
+            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
+        )
+    return True
+
+
 def _refuse_model_parallel_export(model, method):
     """Merged / GGUF / torchao / OpenVINO / LoRA exports read every weight of the model in this process. Under
     apply_tensor_parallel each rank holds 1 / tp of the attention / MLP weights; under apply_pipeline_parallel
