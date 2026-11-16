@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The generate guard prices a calibrated placement's tiled VAE decode from the family's measured row.
 
 On a T4 (fp16), FLUX.3 Klein loads int8 with the 6 GiB transformer resident and the text encoder streamed, from the

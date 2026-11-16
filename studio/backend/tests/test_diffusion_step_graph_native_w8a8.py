@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """A step CUDA graph is declined over an uncompiled denoiser whose native int8 W8A8 linears run compiled.
 
 The compiled W8A8 function never runs inside a CUDA-graph capture, so the captured step bakes the eager rotate /
