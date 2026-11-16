@@ -1463,6 +1463,18 @@ def _is_gpt_oss(model):
     )
 
 
+def _has_expert_lora(model):
+    """Whether a LoRA adapter sits on MoE expert weights (a target_parameters ParamWrapper on
+    `experts`, or per-expert Linear LoRA beneath it)."""
+    try:
+        for name, module in model.named_modules():
+            if ".experts" in f".{name}" and getattr(module, "lora_A", None):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _is_vlm(model):
     config = getattr(model, "config", None)
     if config is None:
@@ -5221,6 +5233,14 @@ def unsloth_save_pretrained_gguf(
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
+    if is_gpt_oss and _has_expert_lora(self):
+        # The MXFP4 route keeps the packed experts as downloaded and cannot fold an expert LoRA
+        # into them, so the GGUF would silently ship the base experts. Merge to 16-bit instead.
+        logger.warning_once(
+            "Unsloth: GPT-OSS with LoRA on the MoE experts is exported from a 16-bit merge, "
+            "since the MXFP4 GGUF route would drop the expert adapter."
+        )
+        is_gpt_oss = False
 
     # Will this fit? Ask before the merge. Runs here because `arguments` below snapshots locals(), so a redirected save_directory must be in place first. gpt-oss takes the mxfp4 route, not the merge/convert/quantize one this sizes.
     _gguf_prewarm_ok = True
