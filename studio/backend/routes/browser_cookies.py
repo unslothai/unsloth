@@ -72,9 +72,11 @@ def _path_match(path: str, cookie_path: str) -> bool:
 class _Jar(http.cookiejar.CookieJar):
     """While ``insecure``, a cookie set or deleted over http leaves a Secure one of the same name
     alone when the domains match either way and its path is under the Secure one's (rfc6265bis 5.7
-    step 16). Deletions run inside ``make_cookies`` before any policy check, hence ``clear``."""
+    step 16). Deletions run inside ``make_cookies`` before any policy check, hence ``clear``: one
+    reaches only a cookie of ``request``'s own host, where ``_Policy.set_ok`` would have put it."""
 
     insecure = False
+    request: Optional[urllib.request.Request] = None
 
     def _shadows_secure(self, domain, path, name) -> bool:
         return any(
@@ -96,9 +98,25 @@ class _Jar(http.cookiejar.CookieJar):
         path = None,
         name = None,
     ):
-        if self.insecure and name is not None and self._shadows_secure(domain, path, name):
+        if self.request is None or name is None:
+            if self.insecure and name is not None and self._shadows_secure(domain, path, name):
+                return
+            super().clear(domain, path, name)
             return
-        super().clear(domain, path, name)
+        # Host-only is stored under erhn, Domain=host under ".host", a parent Domain under erhn.
+        req_host, erhn = http.cookiejar.eff_request_host(self.request)
+        if domain in (erhn, "." + req_host):
+            targets = (erhn, "." + req_host)
+        elif domain and domain.startswith(".") and req_host.endswith(domain):
+            targets = (erhn,)
+        else:
+            return
+        for target in targets:
+            if not (self.insecure and self._shadows_secure(target, path, name)):
+                try:
+                    super().clear(target, path, name)
+                except KeyError:
+                    pass
 
 
 def _same_site(cookie: http.cookiejar.Cookie) -> str:
@@ -193,11 +211,11 @@ def store_cookies(subject: str, url: str, headers) -> None:
         return
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        jar.insecure = request.type != "https"
+        jar.insecure, jar.request = request.type != "https", request
         try:
             jar.extract_cookies(_Response(values), request)
         finally:
-            jar.insecure = False
+            jar.insecure, jar.request = False, None
     _trim(jar)
 
 

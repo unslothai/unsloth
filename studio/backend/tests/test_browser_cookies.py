@@ -195,6 +195,56 @@ def test_a_site_signing_out_and_clear_browsing_data_both_forget(monkeypatch):
     assert cookies.cookie_header("user", "https://a.example.com/") is None
 
 
+def test_a_response_deletes_only_cookies_its_own_host_could_set():
+    bank = "https://bank.example/"
+    cookies.store_cookies(
+        "user", bank, _headers("sid=s; Domain=bank.example; Path=/; Secure; HttpOnly")
+    )
+    cookies.store_cookies("user", "https://www.example.com/", _headers("sid=w; Path=/"))
+    cookies.store_cookies("user", "https://example.com/", _headers("sid=e; Path=/"))
+    for url, deletion in (
+        ("https://evil.example/", "sid=; Domain=bank.example; Path=/; Max-Age=0"),
+        ("https://evil.example/", "sid=; Domain=example.com; Path=/; Max-Age=0"),
+        ("https://app.example.com/", "sid=; Domain=example.com; Path=/; Max-Age=0"),
+        ("https://app.example.com/", "sid=; Domain=www.example.com; Path=/; Max-Age=0"),
+    ):
+        cookies.store_cookies("user", url, _headers(deletion))
+    assert cookies.cookie_header("user", bank) == "sid=s"
+    assert cookies.cookie_header("user", "https://www.example.com/") == "sid=w"
+    assert cookies.cookie_header("user", "https://example.com/") == "sid=e"
+
+
+@pytest.mark.parametrize("set_domain", ["", "; Domain=app.example.com", "; Domain=example.com"])
+@pytest.mark.parametrize(
+    "del_domain", ["", "; Domain=app.example.com", "; Domain=.app.example.com"]
+)
+def test_a_site_signing_out_deletes_its_cookie_however_it_names_the_domain(set_domain, del_domain):
+    site = "https://app.example.com/"
+    cookies.store_cookies("user", "https://example.com/", _headers("sid=e; Path=/"))
+    cookies.store_cookies("user", site, _headers(f"sid=1; Path=/; HttpOnly{set_domain}"))
+    assert cookies.cookie_header("user", site) == "sid=1"
+    cookies.store_cookies("user", site, _headers(f"sid=; Path=/; Max-Age=0{del_domain}"))
+    assert cookies.cookie_header("user", site) is None
+    assert cookies.cookie_header("user", "https://example.com/") == "sid=e"
+
+
+def test_a_parent_domain_deletion_removes_the_host_only_cookie_it_would_have_set():
+    site = "https://app.example.com/"
+    cookies.store_cookies("user", site, _headers("sid=1; Path=/; Domain=example.com"))
+    cookies.store_cookies("user", "https://example.com/", _headers("sid=e; Path=/"))
+    cookies.store_cookies("user", site, _headers("sid=; Path=/; Max-Age=0; Domain=example.com"))
+    assert cookies.cookie_header("user", site) is None
+    assert cookies.cookie_header("user", "https://example.com/") == "sid=e"
+
+
+def test_a_page_script_deletes_its_own_cookie_but_not_an_http_only_one():
+    site = "https://app.example.com/"
+    cookies.store_cookies("user", site, _headers("sid=1; Path=/; HttpOnly", "theme=dark; Path=/"))
+    cookies.set_page_cookie("user", site, "sid=/", None)
+    cookies.set_page_cookie("user", site, "theme=/", None)
+    assert cookies.cookie_header("user", site) == "sid=1"
+
+
 def test_the_page_sees_script_readable_cookies_and_its_own_writes_reach_the_site(monkeypatch):
     _site(
         monkeypatch,
