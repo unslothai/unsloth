@@ -2029,7 +2029,8 @@ def _site(url: str) -> Optional[str]:
         return None
     if parsed.scheme not in ("http", "https") or not host:
         return None
-    return host.rstrip(".").lower()
+    # With the scheme: the http form of a host is another site to its https one.
+    return f"{parsed.scheme}://{host.rstrip('.').lower()}"
 
 
 def _fetch(
