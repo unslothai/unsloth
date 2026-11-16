@@ -632,11 +632,12 @@ class LinuxBackend(Backend):
         best: Optional[tuple[int, str, str, str]] = None
         for path, stem, shown, command, _klass in self._entries():
             folded = shown.casefold()
-            ids = {stem.casefold(), stem.casefold().rsplit(".", 1)[-1], _program(command)}
-            if folded == wanted or wanted in ids:
+            if folded == wanted or stem.casefold() == wanted:
                 rank = 0
+            elif wanted in (stem.casefold().rsplit(".", 1)[-1], _program(command)):
+                rank = 1
             elif wanted in folded:
-                rank = 1 + len(folded)
+                rank = 2 + len(folded)
             else:
                 continue
             if best is None or rank < best[0]:

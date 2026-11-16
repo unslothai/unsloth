@@ -985,6 +985,16 @@ def test_an_x11_window_takes_its_launchers_name(tmp_path, monkeypatch):
     assert backend.resolve_app("nautilus") == "Files"
     assert backend.resolve_app("Image Viewer") == "Image Viewer"
     assert backend._desktop_entry("gnome") is None
+    (tmp_path / "libreoffice-calc.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice Calc\nExec=libreoffice --calc %U\n"
+    )
+    (tmp_path / "libreoffice.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice\nExec=libreoffice %U\n"
+    )
+    backend._launcher = None
+    # Calc sorts first and starts the same program; an exact name still wins over that alias.
+    assert backend.resolve_app("LibreOffice") == "LibreOffice"
+    assert backend.resolve_app("libreoffice") == "LibreOffice"
 
 
 def test_an_always_allowed_app_never_asks(desktop):
