@@ -363,6 +363,26 @@ def test_load_registers_the_folder_then_loads_it(runtime):
 
 
 @posix_only
+def test_auto_context_sizes_a_conversion_from_its_staged_folder(runtime, monkeypatch):
+    planned = []
+    real = nb.plan_context
+
+    def plan(model, files, requested):
+        planned.append(files)
+        return real(model, files, requested)
+
+    monkeypatch.setattr(nb, "plan_context", plan)
+    _converted()
+    [local] = nlm.account_local_models()
+    runtime.load(local.id)
+    [files] = planned
+    staged = runtime._flm_model_dir / "models" / local.family
+    assert files is not None and files.folder == staged
+    assert {f.name for f in files.files} >= {"model.q4nx", "config.json"}
+    assert json.loads((files.folder / "config.json").read_text())["num_hidden_layers"] == 28
+
+
+@posix_only
 def test_delete_drops_the_registration_and_keeps_the_export(runtime):
     folder = _converted()
     [local] = nlm.account_local_models()

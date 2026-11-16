@@ -26,6 +26,7 @@ from core.inference import npu_memory
 from core.inference.flm_files import (
     FlmDownloadCancelled,
     FlmDownloadError,
+    FlmFile,
     FlmModelFiles,
     download_files,
     folder_checkpoints,
@@ -928,6 +929,24 @@ class LemonadeNpuBackend:
         except (FlmDownloadError, OSError, ValueError) as exc:
             raise NpuError(f"Fetching {tag}'s config.json failed: {exc}") from exc
 
+    def _local_files(self, local: local_q4nx.LocalQ4nx) -> Optional[FlmModelFiles]:
+        """The staged folder Auto context sizes from; FastFlowLM's manifests do not list it."""
+        binary = self._flm_binary()
+        listing_path = local_q4nx.find_flm_list(binary) if binary is not None else None
+        try:
+            listing = json.loads(listing_path.read_text("utf-8")) if listing_path else None
+            if not isinstance(listing, dict):
+                return None
+            staged = local_q4nx.staged_folder(self._flm_model_dir, listing, local)
+            files = tuple(
+                FlmFile(name = path.name, url = "", size = path.stat().st_size, digest = "", lfs = False)
+                for path in staged.iterdir()
+                if path.is_file()
+            )
+        except (OSError, ValueError):
+            return None
+        return FlmModelFiles(folder = staged, files = files) if files else None
+
     def _unregister_local(self, local: local_q4nx.LocalQ4nx) -> None:
         """Drop the linked copy FastFlowLM reads; the export folder itself is left alone."""
         path = self._local_dir / "registered.json"
@@ -1153,6 +1172,7 @@ class LemonadeNpuBackend:
             replaced = False
             loaded = False
             try:
+                local = None
                 if local_q4nx.is_local_id(model_id):
                     local = self._local_model(model_id)
                     self._require_supported()
@@ -1164,7 +1184,11 @@ class LemonadeNpuBackend:
                     raise NpuError(str(model.local["problem"]))
                 if not model.downloaded:
                     raise NpuError(f"{model.id} is not downloaded yet.")
-                files = self._model_files(model.checkpoint, self._flm_binary())
+                files = (
+                    self._local_files(local)
+                    if local is not None
+                    else self._model_files(model.checkpoint, self._flm_binary())
+                )
                 # Unload first so the free-RAM sample excludes the old weights and caches.
                 if self._loaded is not None:
                     replaced = True
