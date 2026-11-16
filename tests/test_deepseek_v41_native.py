@@ -384,6 +384,30 @@ def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_p
     assert os.listdir(tmp_path / "converted") == stamp
 
 
+def test_the_declared_released_renames_reach_every_module_name():
+    """Every released name the merged export renames must land on the native name."""
+    import re
+
+    mapping = dsv41.DeepseekV41ForCausalLM._unsloth_checkpoint_conversion_mapping
+    assert all("\\" not in target for target in mapping.values()), mapping
+    model = _tiny_model()
+    native = set(model.state_dict())
+    checked = 0
+    for name in _released_state_dict(model):
+        if name.startswith("mtp.") or ".experts." in name and ".shared_experts." not in name:
+            continue
+        if ".engram.embed." in name:
+            continue
+        renamed = name
+        for pattern, target in mapping.items():
+            renamed = re.sub(pattern, target, renamed)
+        if renamed != "lm_head.weight":
+            renamed = "model." + renamed
+        assert renamed in native, (name, renamed)
+        checked += 1
+    assert checked > 20
+
+
 def _fp4_release(tmp_path, model):
     """The tiny model's released files with real fp4 experts (int8 e2m1 pairs + e8m0 per 32)."""
     from safetensors.torch import save_file
@@ -1008,6 +1032,57 @@ def test_packed_sequences_match_each_sequence_run_alone():
     assert model.model.embed_tokens.weight.grad[ids[0, :-1]].abs().sum(-1).gt(0).all()
 
 
+def test_packed_documents_at_every_boundary_match_unpacked_runs_and_never_leak():
+    """Padding-free packing at the window / compressor / indexer boundaries matches per-document runs.
+    16 indexer heads: with 2, relu often zeroes a whole score and top-k ties break by tensor width."""
+    model = _tiny_model(index_n_heads = 16)
+    text = model.config.text_config
+    lengths = [1, text.sliding_window, text.sliding_window + 1, 2, 17, 5]
+    assert 17 > text.index_topk * 2  # past the indexer budget at ratio 1 and 2
+    gen = torch.Generator().manual_seed(3)
+    docs = [torch.randint(0, 512, (n,), generator = gen) for n in lengths]
+    starts = [sum(lengths[:k]) for k in range(len(lengths))]
+    ids = torch.cat(docs).unsqueeze(0)
+    pos = torch.cat([torch.arange(n) for n in lengths]).unsqueeze(0)
+    labels = ids.clone()
+    labels[0, starts] = -100  # no document predicts the next one's first token
+    n_items = int((labels[0, 1:] != -100).sum())
+
+    model.eval()
+    with torch.no_grad():
+        packed = model(input_ids = ids, position_ids = pos).logits[0]
+        for doc, lo in zip(docs, starts):
+            alone = model(input_ids = doc.unsqueeze(0)).logits[0]
+            torch.testing.assert_close(packed[lo : lo + len(doc)], alone, rtol = 1e-5, atol = 1e-5)
+        bumped = ids.clone()
+        bumped[0, starts[2] : starts[2] + lengths[2]] = (
+            bumped[0, starts[2] : starts[2] + lengths[2]] + 7
+        ) % 512
+        moved = model(input_ids = bumped, position_ids = pos).logits[0]
+    for k, (lo, n) in enumerate(zip(starts, lengths)):
+        diff = float((moved[lo : lo + n] - packed[lo : lo + n]).abs().max())
+        assert (diff > 1e-3) if k == 2 else (diff <= 1e-6), (k, diff)
+
+    model.train()
+    model.zero_grad(set_to_none = True)
+    loss = model(input_ids = ids, position_ids = pos, labels = labels, num_items_in_batch = n_items).loss
+    loss.backward()
+    want = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    total = 0.0
+    for doc in docs:
+        doc_labels = doc.clone().unsqueeze(0)
+        doc_labels[0, 0] = -100
+        part = model(input_ids = doc.unsqueeze(0), labels = doc_labels, num_items_in_batch = n_items).loss
+        part.backward()
+        total = total + part.detach()
+    torch.testing.assert_close(total, loss.detach(), rtol = 1e-5, atol = 1e-6)
+    got = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+    assert got.keys() == want.keys()
+    for name in want:
+        torch.testing.assert_close(got[name], want[name], rtol = 1e-4, atol = 1e-6, msg = name)
+
+
 @pytest.mark.parametrize("layout", ["packed", "left_padded"])
 def test_packed_rows_and_left_padding_stay_separated_under_torch_compile(layout):
     """torch.compile keeps the packed-row relayout."""
@@ -1094,6 +1169,68 @@ def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch)
         model.gradient_checkpointing_enable()
 
 
+def test_layer_config_ints_stay_constant_under_dynamic_compile(monkeypatch):
+    """Module ints must stay constant under dynamic=True, else Inductor spends an hour in sympy."""
+    from torch._dynamo.testing import EagerAndRecordGraphs
+
+    model = _tiny_model()
+    assert {
+        l.self_attn.compressor.compress_ratio for l in model.model.layers if l.self_attn.compressor
+    } == {1, 2}
+    backend = EagerAndRecordGraphs()
+    compiled = torch.compile(
+        dsv41.DeepseekV41Compressor.forward, backend = backend, dynamic = True, fullgraph = True
+    )
+    monkeypatch.setattr(dsv41.DeepseekV41Compressor, "forward", lambda self, x: compiled(self, x))
+    torch._dynamo.reset()
+    before = torch._dynamo.config.allow_unspec_int_on_nn_module
+    ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+    try:
+        with torch._dynamo.config.patch(allow_unspec_int_on_nn_module = True), torch.no_grad():
+            model(input_ids = ids)
+    finally:
+        torch._dynamo.reset()
+    lifted = [
+        node.name
+        for graph in backend.graphs
+        for node in graph.graph.nodes
+        if node.op == "placeholder" and isinstance(node.meta.get("example_value"), torch.SymInt)
+    ]
+    assert backend.graphs, "the compressor was never compiled"
+    attribute_ints = [n for n in lifted if "compress_ratio" in n or "head_dim" in n]
+    assert not attribute_ints, (attribute_ints, lifted)
+    assert (
+        torch._dynamo.config.allow_unspec_int_on_nn_module is before
+    )  # the forward's patch did not leak
+
+
+def test_gradient_checkpointing_enable_takes_the_trainer_keywords(monkeypatch):
+    """transformers 5.22+ passes every_n_layers= / offload= to gradient_checkpointing_enable."""
+    import inspect
+
+    from transformers import PreTrainedModel
+
+    monkeypatch.setattr(dsv41, "ensure_checkpoint_replay", lambda: True)
+    model = _tiny_model()
+    layers = list(model.model.layers)
+    assert len(layers) >= 2
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = None, every_n_layers = 1, offload = False
+    )
+    assert all(layer.gradient_checkpointing for layer in layers)
+    model.gradient_checkpointing_disable()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False}, every_n_layers = 2
+    )
+    flags = [bool(layer.gradient_checkpointing) for layer in layers]
+    # 5.22 names every_n_layers, 5.23 takes it through **kwargs, 4.x has neither and the keyword is dropped.
+    params = inspect.signature(PreTrainedModel.gradient_checkpointing_enable).parameters
+    if "every_n_layers" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        assert flags == [i % 2 == 0 for i in range(len(layers))], flags
+    else:
+        assert all(flags), flags
+
+
 @needs_zoo_native
 def test_standard_gradient_checkpointing_gives_exact_gradients_in_a_fresh_process():
     """Building the model and gradient_checkpointing_enable() install the zoo replay."""
@@ -1162,6 +1299,197 @@ def test_labels_with_logits_to_keep_score_the_kept_positions_against_their_own_t
         torch.testing.assert_close(
             model(input_ids = ids, labels = labels).loss, reference(slice(None)), rtol = 1e-5, atol = 1e-6
         )
+
+
+def _zoo_ast_rewriter():
+    """unsloth_zoo's fused-CE AST rewriter, loaded from its file (importing unsloth_zoo initialises the GPU)."""
+    import importlib.util
+    import sys
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    path = os.path.join(locations[0], "fused_losses", "ast_rewriter.py") if locations else ""
+    if not os.path.isfile(path):
+        pytest.skip("unsloth_zoo's fused_losses/ast_rewriter.py is not installed")
+    file_spec = importlib.util.spec_from_file_location("_dsv41_test_ast_rewriter", path)
+    module = importlib.util.module_from_spec(file_spec)
+    sys.modules[file_spec.name] = module
+    file_spec.loader.exec_module(module)
+    return module
+
+
+def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
+    """The fused-CE rewrite also handles labels with logits_to_keep."""
+    import inspect
+    import textwrap
+
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    source = textwrap.dedent(inspect.getsource(dsv41.DeepseekV41ForCausalLM.forward))
+    rewritten, _ = _zoo_ast_rewriter().rewrite_forward_source(source)
+    assert rewritten is not None
+    calls = []
+
+    def fused(
+        hidden,
+        head,
+        labels,
+        vocab_size = None,
+        accelerator_scaler = None,
+        **kwargs,
+    ):
+        calls.append(hidden.shape[1])
+        target = kwargs.get("shift_labels")
+        if target is None:
+            target = torch.nn.functional.pad(labels, (0, 1), value = -100)[..., 1:]
+        logits = head(hidden).float()
+        return torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), target.reshape(-1), ignore_index = -100
+        )
+
+    namespace = dict(vars(dsv41))
+    namespace.update(
+        os = os,
+        unsloth_fused_lm_head_loss = fused,
+        EMPTY_LOGITS = torch.empty(0),
+        _can_fuse_loss = lambda f: True,
+    )
+    exec(rewritten, namespace)
+    forward = namespace["forward"]
+    model = _tiny_model().eval()
+    ids = torch.randint(0, 512, (2, 10), generator = torch.Generator().manual_seed(0))
+    labels = ids.clone()
+    labels[0, 3] = -100
+    with torch.no_grad():
+        for keep in (0, 4, torch.tensor([1, 3, 6])):
+            want = model(input_ids = ids, labels = labels, logits_to_keep = keep).loss
+            got = forward(model, input_ids = ids, labels = labels, logits_to_keep = keep).loss
+            torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-6)
+    assert calls == [10, 4, 3]
+
+
+def test_greedy_generate_equals_full_prefix_recompute_across_the_boundaries():
+    """No KV cache: greedy generate equals argmax of a fresh full-prefix forward."""
+    from peft import LoraConfig, get_peft_model
+
+    model = _tiny_model(index_n_heads = 16)
+    text = model.config.text_config
+    model.generation_config.eos_token_id = None
+    model.generation_config.pad_token_id = 0
+    gen = torch.Generator().manual_seed(5)
+    prompts = [torch.randint(3, 512, (n,), generator = gen) for n in (3, text.sliding_window - 1)]
+    width = max(len(p) for p in prompts)
+    ids = torch.stack(
+        [torch.cat([torch.zeros(width - len(p), dtype = torch.long), p]) for p in prompts]
+    )
+    mask = torch.stack(
+        [torch.cat([torch.zeros(width - len(p)), torch.ones(len(p))]).long() for p in prompts]
+    )
+    # Both rows end past the window (8) and past index_topk (3) compressed blocks at ratio 2.
+    new_tokens = text.sliding_window + 1
+
+    def recompute(m, prompt):
+        seq = prompt.unsqueeze(0)
+        for _ in range(new_tokens):
+            with torch.no_grad():
+                nxt = m(input_ids = seq).logits[:, -1].argmax(-1, keepdim = True)
+            seq = torch.cat([seq, nxt], dim = 1)
+        return seq[0, len(prompt) :]
+
+    def check(m, recompute_too = True):
+        with torch.no_grad():
+            out = m.generate(
+                input_ids = ids, attention_mask = mask, max_new_tokens = new_tokens, do_sample = False
+            )
+        for k, prompt in enumerate(prompts if recompute_too else ()):
+            assert torch.equal(out[k, width:], recompute(m, prompt)), k
+        return out[:, width:]
+
+    model.eval()
+    plain = check(model)
+    peft_model = get_peft_model(
+        model,
+        LoraConfig(
+            r = 4,
+            lora_alpha = 8,
+            target_modules = ["q_a_proj", "kv_proj", "o_b_proj"],
+            init_lora_weights = False,
+        ),
+    ).eval()
+    with_lora = check(peft_model)
+    with peft_model.disable_adapter():
+        assert torch.equal(check(peft_model, recompute_too = False), plain)
+    assert not torch.equal(with_lora, plain)  # the adapter changes the continuation
+
+
+def test_opt_in_fast_lora_matches_peft_on_the_plain_projections(monkeypatch):
+    """UNSLOTH_DSV41_FAST_LORA=1 matches PEFT's loss and gradients; a dropout adapter keeps PEFT's forward."""
+    fast_lora = pytest.importorskip("unsloth.kernels.fast_lora")
+    from peft import LoraConfig, get_peft_model
+
+    targets = [
+        "q_a_proj",
+        "q_b_proj",
+        "self_attn.kv_proj",
+        "o_b_proj",
+        "shared_experts.gate_proj",
+        "shared_experts.up_proj",
+        "shared_experts.down_proj",
+    ]
+
+    def run(fast, dropout = 0.0):
+        monkeypatch.setattr(dsv41, "_FAST_LORA", fast)
+        monkeypatch.setattr(dsv41, "_LoRA_W", fast_lora.LoRA_W, raising = False)
+        monkeypatch.setattr(dsv41, "_fast_lora_apply", fast_lora._apply, raising = False)
+        monkeypatch.setattr(
+            dsv41, "_fast_lora_extras", fast_lora._lora_dropout_and_bias, raising = False
+        )
+        monkeypatch.setattr(
+            dsv41, "_fast_lora_parameters", fast_lora.get_lora_parameters, raising = False
+        )
+        for name in ("_has_multiple_active_adapters", "_has_activation_fake_quantizer"):
+            monkeypatch.setattr(dsv41, name, getattr(fast_lora, name), raising = False)
+        model = get_peft_model(
+            _tiny_model(),
+            LoraConfig(
+                r = 4,
+                lora_alpha = 8,
+                lora_dropout = dropout,
+                target_modules = targets,
+                init_lora_weights = False,
+            ),
+        )
+        model.eval()  # dropout off, so both runs see the same adapter math
+        dsv41.DSV41_STATS["fast_lora"] = 0
+        ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+        loss = model(input_ids = ids, labels = ids).loss
+        loss.backward()
+        grads = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+        return loss.detach(), grads, dsv41.DSV41_STATS["fast_lora"]
+
+    loss0, g0, n0 = run(False)
+    loss1, g1, n1 = run(True)
+    layers = len(_tiny_model().model.layers)
+    assert (n0, n1) == (0, 7 * layers)
+    torch.testing.assert_close(loss1, loss0, rtol = 1e-6, atol = 1e-6)
+    assert g1.keys() == g0.keys() and any(".lora_A." in n for n in g0)
+    for name in g0:
+        torch.testing.assert_close(g1[name], g0[name], rtol = 1e-5, atol = 1e-6, msg = name)
+    assert run(True, dropout = 0.1)[2] == 0  # a dropout module: PEFT's forward
+
+    # Two active adapters: PEFT's forward sums both instead of LoRA_W raising.
+    run(True)
+    model = get_peft_model(
+        _tiny_model(),
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False),
+    )
+    model.add_adapter(
+        "second", LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False)
+    )
+    model.base_model.set_adapter(["default", "second"])
+    dsv41.DSV41_STATS["fast_lora"] = 0
+    ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+    assert torch.isfinite(model(input_ids = ids, labels = ids).loss)
+    assert dsv41.DSV41_STATS["fast_lora"] == 0
 
 
 def test_generation_projects_only_the_last_position():
@@ -1868,3 +2196,14 @@ def test_cpu_backend_import_registers_deepseek_v41(fresh_cpu_child):
         pytest.skip("this unsloth_zoo has no CPU backend")
     assert probe is not None, out.stdout[-3000:] + out.stderr[-3000:]
     assert probe["cpu"] and probe["type"] == "DeepseekV41Config", probe
+
+
+def test_no_module_attribute_shares_a_def_name():
+    """The compiler swaps names matching a `def`, so an `import copy` beside a `.copy` method gets replaced."""
+    import inspect
+    import re
+
+    source = inspect.getsource(dsv41)
+    defs = set(re.findall(r"\bdef\s+(\w+)", source))
+    clashes = sorted(n for n in defs if inspect.ismodule(getattr(dsv41, n, None)))
+    assert not clashes, clashes

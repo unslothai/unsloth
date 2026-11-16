@@ -288,3 +288,19 @@ def test_subfolder_hub_source_prefixes_allow_patterns(tmp_path, cache_root, monk
     assert kwargs == {"revision": "main", "local_files_only": True}
     tensors = _read_converted(dst)
     assert torch.equal(tensors["lm_head.weight"], _tensors(5.0)["head.weight"])
+
+
+def test_full_finetuning_converts_the_fp4_experts_to_bf16(monkeypatch):
+    # Packed uint8 experts cannot require grad: full finetuning used to crash in prepare_model_for_training.
+    monkeypatch.delenv("UNSLOTH_DSV41_FP4_EXPERTS", raising = False)
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    assert convert.keep_fp4_experts_packed()
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "1")
+    assert not convert.keep_fp4_experts_packed()
+    monkeypatch.setenv("UNSLOTH_DSV41_FP4_EXPERTS", "bf16")
+    assert not convert.keep_fp4_experts_packed()
+    monkeypatch.setenv("UNSLOTH_DSV41_FP4_EXPERTS", "mxfp4")
+    with pytest.raises(RuntimeError, match = "full finetuning"):
+        convert.keep_fp4_experts_packed()
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    assert convert.keep_fp4_experts_packed()
