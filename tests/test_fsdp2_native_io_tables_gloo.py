@@ -101,7 +101,14 @@ def test_cpu_lookup_returns_on_the_ids_device():
     assert torch.equal(out, torch.nn.functional.embedding(ids, table.weight))
 
 
-def _worker(rank, world, port, out, replicate):
+def _worker(
+    rank,
+    world,
+    port,
+    out,
+    replicate,
+    gather = "float32",
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -123,7 +130,9 @@ def _worker(rank, world, port, out, replicate):
 
         native = _load_native()
         ref, model = _model(), _model()
-        config = native.FSDP2Config(param_dtype = torch.float32, device = "cpu", fit_layout = False)
+        config = native.FSDP2Config(
+            param_dtype = getattr(torch, gather), device = "cpu", fit_layout = False
+        )
         native.shard_model(model, config)
         units = list(model._unsloth_fsdp2_units)
         unit_bytes = [_group_bytes(u) for u in units]
@@ -135,6 +144,18 @@ def _worker(rank, world, port, out, replicate):
         }
         torch.manual_seed(1)
         ids = torch.randint(0, VOCAB, (2, 16))
+        if gather != "float32":
+            # float32 tables, 16-bit gathers: the head must still see what the root unit's cast gave it.
+            logits = model(input_ids = ids, use_cache = False).logits
+            out.put(
+                {
+                    "rank": rank,
+                    "sharded": sharded,
+                    "logits_dtype": str(logits.dtype),
+                    "finite": bool(torch.isfinite(logits.float()).all()),
+                }
+            )
+            return
         loss = model(input_ids = ids, labels = ids, use_cache = False).loss
         loss.backward()
         ref_loss = ref(input_ids = ids, labels = ids, use_cache = False).loss
@@ -168,13 +189,17 @@ def _worker(rank, world, port, out, replicate):
         dist.destroy_process_group()
 
 
-def _run(replicate):
+def _run(replicate, gather = "float32"):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     mp.start_processes(
-        _worker, args = (2, _free_port(), out, replicate), nprocs = 2, join = True, start_method = "spawn"
+        _worker,
+        args = (2, _free_port(), out, replicate, gather),
+        nprocs = 2,
+        join = True,
+        start_method = "spawn",
     )
     results = [out.get(timeout = 5) for _ in range(2)]
     for r in results:
@@ -247,3 +272,11 @@ def test_sliced_chunk_gather_is_exact():
     for r in [out.get(timeout = 5) for _ in range(2)]:
         assert "error" not in r, r["error"]
         assert r["exact"] and r["dtype"] == "torch.float32", r
+
+
+def test_io_tables_stay_in_the_root_when_the_gather_casts_them():
+    # A float32-stored model sharded with a bfloat16 gather: replicating the tables would skip the root unit's
+    # cast and feed bfloat16 hidden states into a float32 lm_head. They stay in the root, as on main.
+    for r in _run("1", "bfloat16"):
+        assert r["sharded"] == {"embed": True, "head": True}, r
+        assert r["logits_dtype"] == "torch.bfloat16" and r["finite"], r

@@ -1412,7 +1412,13 @@ def _io_embedding_modules(model):
     return found[0], found[1]
 
 
-def _frozen_root_io_tables(model, units, device_bytes, fraction):
+def _frozen_root_io_tables(
+    model,
+    units,
+    device_bytes,
+    fraction,
+    param_dtype = None,
+):
     """[input embedding, output embedding] to keep whole on every rank instead of in the root unit, or [].
 
     Both must be outside every unit, frozen, untied (the fused CE reads lm_head.weight directly, so a tied
@@ -1436,11 +1442,27 @@ def _frozen_root_io_tables(model, units, device_bytes, fraction):
         return []
     if any(_is_quantized_param(p) or not _floating(p) for group in params for p in group):
         return []
+    if param_dtype is not None and any(p.dtype != param_dtype for group in params for p in group):
+        # The root unit gathers them in param_dtype (MixedPrecisionPolicy), so the embeddings output and the
+        # head read that dtype; kept whole they would compute in their storage dtype instead (a float32 head
+        # under a bfloat16 gather gets bfloat16 hidden states and fails). Only an uncast table moves.
+        return []
     inside = set()
     for u in units:
         inside.update(id(p) for p in u.parameters())
     if (ids[0] | ids[1]) & inside:
         return []
+    if param_dtype is None and _fsdp2_checks_frozen_dtypes():
+        # torch < 2.8 with a gather as stored: a root of mixed floating dtypes is upcast to float32 whole
+        # (_unify_dtypes), tables included, so they compute in float32 there; keep that.
+        rest = {
+            p.dtype
+            for p in model.parameters()
+            if id(p) not in inside and id(p) not in ids[0] | ids[1] and _floating(p)
+        }
+        tables = {p.dtype for group in params for p in group}
+        if len(rest | tables) > 1:
+            return []
     owners = {}
     for module in model.modules():
         for p in module.parameters(recurse = False):
@@ -1939,7 +1961,11 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and _supports_ignored_params(fully_shard)
     ):
         io_tables = _frozen_root_io_tables(
-            model, units + extra_units, layout.device_bytes, config.replicate_io_tables
+            model,
+            units + extra_units,
+            layout.device_bytes,
+            config.replicate_io_tables,
+            param_dtype = param_dtype,
         )
         # Device sizes may differ across ranks; the replicated set decides the collectives below.
         if not _io_tables_agreed(dist, device, bool(io_tables), config.mesh):
