@@ -357,9 +357,12 @@ class TextPreprocessor:
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
     # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
     # Language = info string's first word (c++); the lookbehind keeps a failed fence line linear.
-    # A fence opens its line: the end of an inline ```span``` followed by text is not an opener.
+    # Fences fill their own line, so an inline ```span``` is none. The body stops at the next
+    # opener with an info string: unclosed openers stay linear, at the cost of nested fences.
     _STRUCTURE_PATTERN = re.compile(
-        r"^[^\S\n]*```[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
+        r"^([^\S\n]*)```+[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
+        r"((?s:(?:(?!\n[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$).)*?))\n[^\S\n]*```+[^\S\n]*$"
+        r"|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
     _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}
@@ -387,10 +390,10 @@ class TextPreprocessor:
         """Add special tokens for structure (chapters, sections)"""
 
         def tag(match):
-            if match[3] is None:
-                return f"<|code|{match[1]}|>{match[2]}<|/code|>"
-            name = self._HEADING_TAGS[len(match[3])]
-            return f"<|{name}|>{match[4]}<|/{name}|>"
+            if match[4] is None:
+                return f"{match[1]}<|code|{match[2]}|>{match[3]}<|/code|>"
+            name = self._HEADING_TAGS[len(match[4])]
+            return f"<|{name}|>{match[5]}<|/{name}|>"
 
         return self._STRUCTURE_PATTERN.sub(tag, text)
 

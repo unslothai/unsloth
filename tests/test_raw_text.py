@@ -881,12 +881,28 @@ def test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence():
         assert TextPreprocessor().add_structure_tokens(line + block) == line + tagged
 
 
+def test_add_structure_tokens_closer_fills_its_line():
+    text = (
+        "1. Install\n\n   ```bash\n   # deps\n   pip install unsloth\n   ```\n\n"
+        "````markdown\n# Title\n````\n\n"
+        "Run ```nvidia-smi``` first.\n```\n# GPU\n```nvidia-smi``` lists it\n```\n"
+        "```bash\npip install unsloth\n## Usage\n```python\n# load\n```\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "1. Install\n\n   <|code|bash|>   # deps\n   pip install unsloth<|/code|>\n\n"
+        "<|code|markdown|># Title<|/code|>\n\n"
+        "Run ```nvidia-smi``` first.\n<|code||># GPU\n```nvidia-smi``` lists it<|/code|>\n"
+        "```bash\npip install unsloth\n<|section|>Usage<|/section|>\n<|code|python|># load<|/code|>\n"
+    )
+
+
 def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
     import time
     for text in (
         "```" + "a" * 200_000 + " b`",
         "```" + " " * 200_000 + "`",
         "```" + " " * 100_000 + "a" * 100_000 + "`",
+        "```python\nx = 1\n" * 20_000,
     ):
         start = time.perf_counter()
         assert TextPreprocessor().add_structure_tokens(text) == text
@@ -915,5 +931,6 @@ if __name__ == "__main__":
     test_add_structure_tokens_leaves_code_blocks_alone()
     test_add_structure_tokens_reads_any_fence_info_string()
     test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence()
+    test_add_structure_tokens_closer_fills_its_line()
     test_add_structure_tokens_unclosed_long_fence_line_is_linear()
     sys.exit(0 if success else 1)
