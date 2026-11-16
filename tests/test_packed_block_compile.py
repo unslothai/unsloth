@@ -86,7 +86,6 @@ def test_flm_packed_rows_run_the_compiled_block(monkeypatch, capsys):
     assert calls and all(packing.PACKED_BLOCK_KWARG in kw for kw in calls)
     assert seen == [[1, 3]]
     assert "uncompiled" not in capsys.readouterr().out
-    # No traceable varlen kernel: the stock forward, as before.
     calls.clear()
     verdict["ok"] = False
     with torch.no_grad():

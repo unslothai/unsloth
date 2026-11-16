@@ -53,14 +53,11 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
-# Set by attention_dispatch.prepare_packed_block in place of packed_seq_lengths for a compiled block:
-# (cu_seqlens covering the pad tail, a tensor whose length is max_seqlen), both marked dynamic.
+# Set by prepare_packed_block instead of packed_seq_lengths: (cu_seqlens, max_seqlen-length tensor).
 PACKED_BLOCK_KWARG = "_unsloth_packed_varlen"
 
 
 class PackedVarlen(NamedTuple):
-    """seq_info of a prepared packed row: nothing in it needs a host read."""
-
     lengths: torch.Tensor
     cu_seqlens: torch.Tensor
     max_seqlen: Any
@@ -947,8 +944,7 @@ _KWARGS_TRACE: list = [None]
 
 
 def _kernels_func_target(fn):
-    """With the `kernels` package installed, transformers' hub functions are `Func` nn.Module
-    instances whose class forward closes over the decorated function (zoo subclasses that class)."""
+    """With `kernels` installed, hub functions are `Func` modules whose class forward holds the closure."""
     if not isinstance(fn, torch.nn.Module):
         return None
     for cls in type(fn).__mro__:
