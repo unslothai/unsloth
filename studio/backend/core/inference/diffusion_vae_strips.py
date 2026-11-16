@@ -546,16 +546,10 @@ def full_map_ok(vae: Any) -> bool:
     )
 
 
-def full_map_decode(vae: Any, z: Any) -> Any:
-    """Untiled decode of a (B, C, H, W) latent with whole-map GroupNorm, in bounded row strips."""
+def _full_map_run(decoder: Any, z: Any, portable: bool) -> Any:
     torch = fused._torch()
-    decoder = vae.decoder
-    dtype = decoder.conv_in.weight.dtype
-    if getattr(vae, "post_quant_conv", None) is not None:
-        z = vae.post_quant_conv(z.to(vae.post_quant_conv.weight.dtype))
-    z = z.to(dtype)
     prev = getattr(_LOCAL, "portable", False)
-    _LOCAL.portable = not _kernels_ok(decoder, z)
+    _LOCAL.portable = portable
     try:
         # The mid block attends over every latent: where no fused SDPA takes head dim 512 (ROCm, MPS), Studio's
         # chunked mode bounds the score matrix, else the math path holds all of it (37.7 GB at 2048 px on gfx1151).
@@ -564,16 +558,38 @@ def full_map_decode(vae: Any, z: Any) -> Any:
             for i in range(z.shape[0]):
                 one = _decode_one(decoder, z[i : i + 1])
                 if z.shape[0] == 1:
-                    out = one
-                    break
+                    return one
                 if out is None:
                     out = torch.empty(
                         (z.shape[0], *one.shape[1:]), dtype = one.dtype, device = one.device
                     )
                 out[i : i + 1].copy_(one)
                 del one
+            return out
     finally:
         _LOCAL.portable = prev
+
+
+def full_map_decode(vae: Any, z: Any) -> Any:
+    """Untiled decode of a (B, C, H, W) latent with whole-map GroupNorm, in bounded row strips."""
+    decoder = vae.decoder
+    dtype = decoder.conv_in.weight.dtype
+    if getattr(vae, "post_quant_conv", None) is not None:
+        z = vae.post_quant_conv(z.to(vae.post_quant_conv.weight.dtype))
+    z = z.to(dtype)
+    # A strip decode that already failed on this decoder (same kernels) or fails here: the torch ops, not the tiles.
+    kernels = _kernels_ok(decoder, z) and not decoder.__dict__.get(
+        "_unsloth_vae_strips_failed", False
+    )
+    try:
+        out = _full_map_run(decoder, z, portable = not kernels)
+    except Exception as exc:  # noqa: BLE001
+        if not kernels or fused._is_oom(exc):
+            raise
+        decoder._unsloth_vae_strips_failed = True
+        out = None
+    if out is None:
+        out = _full_map_run(decoder, z, portable = True)
     vae._unsloth_vae_full_map_calls = vae.__dict__.get("_unsloth_vae_full_map_calls", 0) + 1
     return out
 

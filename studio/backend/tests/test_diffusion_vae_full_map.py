@@ -227,3 +227,33 @@ def test_the_mid_block_attention_is_chunked_where_no_fused_kernel_takes_it(roomy
     out = _decode(vae, z, tiled = True)
     assert vae._unsloth_vae_full_map_calls == 1 and calls
     assert torch.allclose(out, ref, atol = 2e-5, rtol = 0), float((out - ref).abs().max())
+
+
+def test_a_failing_kernel_path_still_decodes_the_whole_map(roomy, monkeypatch):
+    """The Triton strip kernels raise (a card / Triton build they fail on): the whole map decodes in torch ops instead of
+    falling back to colour-shifting tiles, and the next request skips the failing kernels."""
+    monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: 32 * 32)
+    raised = []
+    real = strips._stats
+
+    def kernel_stats(
+        x,
+        norm,
+        in_bias = None,
+    ):
+        if not strips._portable():
+            raised.append(1)
+            raise RuntimeError("triton: no kernel image for this device")
+        return real(x, norm, in_bias)
+
+    monkeypatch.setattr(strips, "_kernels_ok", lambda decoder, z: True)
+    monkeypatch.setattr(strips, "_stats", kernel_stats)
+    vae = _flux2()
+    vae.enable_tiling()
+    vt.install(vae)
+    z = _latent()
+    ref = _decode(vae, z, tiled = False)
+    for _ in range(2):
+        out = _decode(vae, z, tiled = True)
+        assert torch.allclose(out, ref, atol = 2e-5, rtol = 0), float((out - ref).abs().max())
+    assert vae._unsloth_vae_full_map_calls == 2 and len(raised) == 1
