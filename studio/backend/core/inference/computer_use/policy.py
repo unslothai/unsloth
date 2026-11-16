@@ -23,7 +23,9 @@ _MAX_APP_NAME_CHARS = 80
 
 # Families that answer on a 0-1000 grid whatever the picture's size; the others answer in pixels.
 _GRID_MODEL_RE = re.compile(
-    r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini", re.IGNORECASE
+    r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|qwen[-_ ]?3\.[5-9](?!\d)|gemma[-_ ]?4(?!\d)"
+    r"|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini",
+    re.IGNORECASE,
 )
 
 _TERMINALS = (
