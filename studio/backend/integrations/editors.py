@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-managed MCP for game editors that serve MCP over loopback HTTP from their own add-on."""
+"""Studio-managed MCP for desktop apps that serve MCP themselves: loopback HTTP from an add-on, or a stdio launcher the app ships."""
 
 import asyncio
 import json
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -12,7 +14,12 @@ from typing import Optional
 import httpx
 
 from integrations.installed import is_installed
-from core.inference.mcp_client import list_tools_async, stdio_mcp_disabled_reason, stdio_mcp_enabled
+from core.inference.mcp_client import (
+    join_stdio_command,
+    list_tools_async,
+    stdio_mcp_disabled_reason,
+    stdio_mcp_enabled,
+)
 from models.mcp_servers import EditorSettings, McpBuiltinResponse, McpServerProbeResult
 
 
@@ -21,6 +28,8 @@ class Editor:
     display_name: str
     default_port: int
     not_ready: str
+    path: str = "/mcp"
+    platforms: tuple[str, ...] = ()
 
 
 EDITORS = {
@@ -30,11 +39,11 @@ EDITORS = {
         8080,
         "No Unity Editor is connected. Open Window > MCP for Unity in your project and start the server.",
     ),
-    # Unreal MCP (ChiR24 EngineWire plugin): served by the editor, every request needs the project's token.
+    # Epic's Unreal MCP plugin (UE 5.8+, on by default, no auth). A project folder switches to ChiR24's EngineWire token.
     "unreal": Editor(
         "Unreal Engine",
-        3000,
-        "Unreal Editor is not answering. Open the project with the plugin and its Native MCP Server enabled.",
+        8000,
+        "Unreal Editor is not answering. Open your project with the Unreal MCP plugin enabled.",
     ),
     # Godot MCP Native (yurineko73): served by the editor add-on.
     "godot": Editor(
@@ -42,12 +51,32 @@ EDITORS = {
         9080,
         "Godot is not answering. Open the project with the Godot MCP Native plugin enabled and its server started.",
     ),
+    # Figma desktop app, Dev Mode > MCP server (read-only, needs a Dev or Full seat).
+    "figma": Editor(
+        "Figma",
+        3845,
+        "Figma is not answering. In the Figma desktop app, open a design file, switch to Dev Mode and enable the desktop MCP server.",
+        platforms = ("win32", "darwin"),
+    ),
+    # Roblox Studio ships a stdio launcher; port is unused.
+    "roblox": Editor(
+        "Roblox Studio",
+        0,
+        "Roblox Studio is not answering. Open Studio and turn on Assistant > Manage MCP Servers > Enable Studio as MCP server.",
+        platforms = ("win32", "darwin"),
+    ),
 }
+
+
+def roblox_command() -> list[str]:
+    if sys.platform == "win32":
+        return ["cmd.exe", "/c", os.path.expandvars(r"%LOCALAPPDATA%\Roblox\mcp.bat")]
+    return ["/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP"]
 
 
 def normalize(builtin_id: str, settings: EditorSettings) -> EditorSettings:
     return EditorSettings(
-        port = settings.port or EDITORS[builtin_id].default_port,
+        port = settings.port or EDITORS[builtin_id].default_port or None,
         project_path = settings.project_path.strip(),
     )
 
@@ -79,13 +108,15 @@ def _unreal_token(project_path: str) -> Optional[str]:
 
 
 def _endpoint(builtin_id: str, settings: EditorSettings) -> tuple[str, dict[str, str]]:
+    if builtin_id == "roblox":
+        return join_stdio_command(roblox_command()), {}
     headers = {}
     if builtin_id == "unreal":
         # Read per resolve: the editor writes the token, so a restart or rotation needs no Studio change.
         token = _unreal_token(settings.project_path)
         if token:
             headers["X-MCP-Capability-Token"] = token
-    return f"http://127.0.0.1:{settings.port}/mcp", headers
+    return f"http://127.0.0.1:{settings.port}{EDITORS[builtin_id].path}", headers
 
 
 def resolve_server(row: dict) -> dict:
@@ -101,18 +132,21 @@ def resolve_server(row: dict) -> dict:
     }
 
 
-def unavailable_reason() -> Optional[str]:
+def unavailable_reason(builtin_id: str = "") -> Optional[str]:
+    platforms = EDITORS[builtin_id].platforms if builtin_id in EDITORS else ()
+    if platforms and sys.platform not in platforms:
+        return f"{EDITORS[builtin_id].display_name} MCP runs on Windows and macOS only."
     # Editor tools run code on this computer, so they follow the local-command gate as Blender does.
     return None if stdio_mcp_enabled() else stdio_mcp_disabled_reason()
 
 
 def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
-    reason = unavailable_reason()
+    reason = unavailable_reason(builtin_id)
     settings = settings_for(builtin_id, row)
     return McpBuiltinResponse(
         builtin_id = builtin_id,
         display_name = EDITORS[builtin_id].display_name,
-        port = settings.port,
+        port = settings.port or 0,
         project_path = settings.project_path,
         installed = is_installed(builtin_id),
         server_id = row["id"] if row else None,
@@ -137,22 +171,21 @@ async def probe(
     on_tools = None,
 ) -> McpServerProbeResult:
     editor = EDITORS[builtin_id]
-    reason = unavailable_reason()
+    reason = unavailable_reason(builtin_id)
     if reason:
         return McpServerProbeResult(ok = False, error = reason)
     url, headers = _endpoint(builtin_id, settings)
-    if builtin_id == "unreal" and not headers:
+    if builtin_id == "unreal" and settings.project_path and not headers:
         path = unreal_token_path(settings.project_path)
         return McpServerProbeResult(
             ok = False,
-            error = f"No Unreal capability token at {path}. Open the project in Unreal with the plugin enabled, then retry."
-            if path
-            else "Enter your Unreal project folder so Unsloth can read the plugin's capability token.",
+            error = f"No EngineWire capability token at {path}. Open the project in Unreal with the plugin enabled, or clear the project folder to use Epic's Unreal MCP plugin.",
         )
     try:
         tools = await list_tools_async(url, headers = headers or None, timeout = 15)
     except Exception:
-        return McpServerProbeResult(ok = False, error = f"{editor.not_ready} (port {settings.port})")
+        where = f" (port {settings.port})" if settings.port else ""
+        return McpServerProbeResult(ok = False, error = f"{editor.not_ready}{where}")
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_editor:
         result.editor_ready = True

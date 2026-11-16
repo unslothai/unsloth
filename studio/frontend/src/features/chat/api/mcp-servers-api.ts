@@ -39,7 +39,7 @@ export interface McpServerProbeResult {
   error: string | null;
 }
 
-export type EditorMcpId = "unity" | "unreal" | "godot";
+export type EditorMcpId = "unity" | "unreal" | "godot" | "figma" | "roblox";
 
 export interface McpBuiltinConfig {
   builtin_id: "blender" | EditorMcpId;
@@ -92,7 +92,7 @@ export function testBlenderMcp(
 }
 
 export interface EditorMcpSettings {
-  port: number;
+  port: number | null;
   project_path: string;
 }
 

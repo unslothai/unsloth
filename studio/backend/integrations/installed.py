@@ -109,6 +109,20 @@ def _detect(builtin_id: str, configured_path: str) -> bool:
                 "/opt/UnrealEngine*",
             ]
         )
+    if builtin_id == "figma":
+        return bool(shutil.which("figma-linux")) or _any(
+            [
+                "/Applications/Figma.app",
+                str(_env_path("LOCALAPPDATA") / "Figma/Figma.exe"),
+            ]
+        )
+    if builtin_id == "roblox":
+        return _any(
+            [
+                "/Applications/RobloxStudio.app",
+                str(_env_path("LOCALAPPDATA") / "Roblox/mcp.bat"),
+            ]
+        )
     return True
 
 

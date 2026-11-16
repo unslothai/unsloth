@@ -13,7 +13,10 @@ type EditorCopy = {
   link: { label: string; url: string };
   steps: ReactNode[];
   portHint: string;
-  needsProject?: boolean;
+  // Unreal: optional EngineWire project folder, read for its capability token.
+  projectField?: boolean;
+  // Launched over stdio by Unsloth, so there is no port to set.
+  noPort?: boolean;
   // Listed under the menu's More submenu instead of at the top level.
   more?: boolean;
 };
@@ -34,14 +37,13 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     name: "Unreal Engine",
     duplicate: /unreal/i,
     consent: "Allow changing levels, assets and Blueprints and running editor commands in Unreal Editor. Results may be sent to your model provider. Cancelling may not undo changes.",
-    link: { label: "Get Unreal MCP plugin", url: "https://github.com/ChiR24/Unreal_mcp" },
+    link: { label: "Unreal MCP docs", url: "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor" },
     steps: [
-      <>Install the {strong("EngineWire")} plugin from Fab (or copy it into your project’s {strong("Plugins")} folder), enable it in {strong("Edit → Plugins")} and restart the editor.</>,
-      <>If the status bar reads {strong("MCP off")}, turn on {strong("Enable Native MCP Server")} in {strong("Project Settings → Plugins → EngineWire")} and restart once more.</>,
-      <>Enter your project folder above so Unsloth can read the plugin’s capability token.</>,
+      <>Use Unreal Engine 5.8 or newer. In {strong("Edit → Plugins")}, keep {strong("Unreal MCP")} and {strong("All Toolsets")} on (on by default) and restart the editor if you changed them.</>,
+      <>Its server starts with the editor on port 8000. Using the community {strong("EngineWire")} plugin instead? Set port 3000 and your project folder in Advanced settings.</>,
     ],
-    portHint: "Match the Native MCP Server port in the plugin settings.",
-    needsProject: true,
+    portHint: "Match the Server Port Number in Editor Preferences → Model Context Protocol.",
+    projectField: true,
   },
   godot: {
     name: "Godot",
@@ -54,6 +56,31 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
       <>In the {strong("MCP")} dock, keep the transport on {strong("HTTP")} and start the server if it is not running.</>,
     ],
     portHint: "Match the HTTP port in the MCP dock.",
+    more: true,
+  },
+  figma: {
+    name: "Figma",
+    duplicate: /figma/i,
+    consent: "Allow reading your open Figma design files, including frames, styles and assets. Results may be sent to your model provider.",
+    link: { label: "Figma MCP server guide", url: "https://help.figma.com/hc/en-us/articles/39216419318551-Get-started-with-the-Figma-MCP-server" },
+    steps: [
+      <>Open a design file in the {strong("Figma desktop app")} (needs a Dev or Full seat).</>,
+      <>With nothing selected, switch to {strong("Dev Mode")} and click {strong("Enable desktop MCP server")} in the right sidebar.</>,
+    ],
+    portHint: "The Figma desktop server uses port 3845.",
+    more: true,
+  },
+  roblox: {
+    name: "Roblox Studio",
+    duplicate: /roblox/i,
+    consent: "Allow reading and changing your open Roblox places and running Luau in Studio. Results may be sent to your model provider. Cancelling may not undo changes.",
+    link: { label: "Roblox Studio MCP docs", url: "https://create.roblox.com/docs/studio/mcp" },
+    steps: [
+      <>Open Roblox Studio on Windows or macOS.</>,
+      <>Open {strong("Assistant → … → Manage MCP Servers")} and turn on {strong("Enable Studio as MCP server")}.</>,
+    ],
+    portHint: "Unsloth starts Roblox Studio's own MCP launcher; there is no port.",
+    noPort: true,
     more: true,
   },
 };

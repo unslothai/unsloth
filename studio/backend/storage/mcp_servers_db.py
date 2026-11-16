@@ -175,7 +175,7 @@ def list_servers() -> list[dict]:
 
 
 # Managed rows name their tools mcp__<builtin_id>__; other rows use their random hex id.
-MANAGED_MCP_IDS = frozenset({"blender", "unity", "unreal", "godot"})
+MANAGED_MCP_IDS = frozenset({"blender", "unity", "unreal", "godot", "figma", "roblox"})
 
 
 def get_server_for_tool(key: str) -> Optional[dict]:

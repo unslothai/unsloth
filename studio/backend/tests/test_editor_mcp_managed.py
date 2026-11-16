@@ -109,9 +109,16 @@ def editor_server(tmp_path):
 
 def test_catalog_keeps_blender_first_and_writes_nothing():
     items = routes.list_builtins()
-    assert [item.builtin_id for item in items] == ["blender", "unity", "unreal", "godot"]
+    assert [item.builtin_id for item in items] == [
+        "blender",
+        "unity",
+        "unreal",
+        "godot",
+        "figma",
+        "roblox",
+    ]
     assert items[0].port == 9876 and items[0].min_blender_version
-    assert [item.port for item in items[1:]] == [8080, 3000, 9080]
+    assert [item.port for item in items[1:]] == [8080, 8000, 9080, 3845, 0]
     assert all(item.server_id is None and not item.is_enabled for item in items)
     assert db.list_servers() == []
     for auth in ({"via_api_key": True}, {"no_credential": True}):
@@ -126,7 +133,7 @@ async def test_unknown_editor_and_missing_consent_have_no_side_effects(monkeypat
     probe = AsyncMock()
     monkeypatch.setattr(editors, "probe", probe)
     with pytest.raises(HTTPException) as unknown:
-        await routes.setup_editor("roblox", EditorSetup(is_enabled = True, consent = True))
+        await routes.setup_editor("photoshop", EditorSetup(is_enabled = True, consent = True))
     assert unknown.value.status_code == 404
     with pytest.raises(HTTPException, match = "consent"):
         await routes.setup_editor("unity", EditorSetup(is_enabled = True))
@@ -210,10 +217,12 @@ async def test_real_probe_reports_mcp_and_editor_readiness(editor_server):
 
 
 @pytest.mark.asyncio
-async def test_real_unreal_probe_needs_the_project_token(editor_server, tmp_path):
+async def test_real_unreal_probe_uses_epic_plugin_or_the_enginewire_token(editor_server, tmp_path):
+    official = editor_server()
+    epic = await editors.probe("unreal", EditorSettings(port = official))
+    assert epic.ok and epic.tool_count == 1 and epic.editor_ready is True
     port = editor_server(token = TOKEN)
-    missing = await editors.probe("unreal", EditorSettings(port = port))
-    assert not missing.ok and "project folder" in missing.error
+    assert not (await editors.probe("unreal", EditorSettings(port = port))).ok
     absent = await editors.probe("unreal", EditorSettings(port = port, project_path = str(tmp_path)))
     assert not absent.ok and "capability token" in absent.error
     (tmp_path / "Saved" / "MCP").mkdir(parents = True)
@@ -308,4 +317,37 @@ def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):
     installed = fresh_install_cache
     monkeypatch.setattr(installed, "_detect", lambda builtin_id, path: builtin_id == "godot")
     items = {item.builtin_id: item.installed for item in routes.list_builtins()}
-    assert items == {"blender": False, "unity": False, "unreal": False, "godot": True}
+    assert items == {
+        "blender": False,
+        "unity": False,
+        "unreal": False,
+        "godot": True,
+        "figma": False,
+        "roblox": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_roblox_studio_runs_its_stdio_launcher_on_windows_and_macos(monkeypatch):
+    from pathlib import Path
+
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
+    fixture = Path(__file__).resolve().parent / "fixtures" / "mcp_argument_echo_server.py"
+    monkeypatch.setattr(editors, "roblox_command", lambda: [sys.executable, str(fixture)])
+    monkeypatch.setattr(editors.sys, "platform", "linux")
+    item = editors.catalog_item("roblox")
+    assert not item.available and "Windows and macOS" in item.unavailable_reason
+    assert not (await editors.probe("roblox", EditorSettings())).ok
+    monkeypatch.setattr(editors.sys, "platform", "darwin")
+    assert editors.catalog_item("roblox").available
+    row = editors.resolve_server({"builtin_id": "roblox", "builtin_config_json": "{}"})
+    assert row["url"].endswith("mcp_argument_echo_server.py") and row["headers_json"] is None
+    result = await editors.probe("roblox", EditorSettings())
+    assert result.ok and result.tool_count >= 1
+
+
+def test_figma_row_points_at_the_desktop_server():
+    row = editors.resolve_server({"builtin_id": "figma", "builtin_config_json": "{}"})
+    assert row["url"] == "http://127.0.0.1:3845/mcp"

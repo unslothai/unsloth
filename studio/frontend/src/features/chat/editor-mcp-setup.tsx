@@ -78,7 +78,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
   }, [refresh, onBusyChange]);
 
   const validPort = /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
-  const ready = validPort && (!copy.needsProject || projectPath.trim() !== "");
+  const ready = copy.noPort || validPort;
   const locked = busy;
   const duplicate = servers.some((server) => !server.builtin_id && copy.duplicate.test(`${server.display_name} ${server.url}`));
 
@@ -91,7 +91,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
     setMessage(null);
     setConnection(action === "test" ? "checking" : null);
     try {
-      const settings = { port: Number(port), project_path: projectPath.trim() };
+      const settings = { port: copy.noPort ? null : Number(port), project_path: projectPath.trim() };
       if (action === "test") {
         const result = await testEditorMcp(editorId, { ...settings, consent });
         if (!mounted.current) return;
@@ -159,12 +159,6 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
       </p>}
       {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer. Open Setup help below to install it.</p>}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
-      {copy.needsProject && (
-        <div className="space-y-1">
-          <Label htmlFor={`${editorId}-mcp-project`}>Project folder</Label>
-          <Input id={`${editorId}-mcp-project`} value={projectPath} disabled={locked || !config} placeholder="Folder that holds your .uproject file" onChange={(event) => { setProjectPath(event.target.value); setMessage(null); setConnection(null); }} />
-        </div>
-      )}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
           <Checkbox id={`${editorId}-mcp-consent`} className="mt-0.5" checked={consent} disabled={locked} onCheckedChange={(checked) => setConsent(checked === true)} />
@@ -203,9 +197,15 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4">
-          <p className="text-xs leading-relaxed text-muted-foreground">Loopback only (127.0.0.1). {copy.portHint}</p>
-          <div className="grid gap-3 sm:grid-cols-[100px_1fr]">{portInput}</div>
-          <Button size="sm" variant="outline" disabled={locked || !config || !validPort} onClick={() => void act("save")}>Save &amp; disable</Button>
+          <p className="text-xs leading-relaxed text-muted-foreground">{copy.noPort ? "" : "Loopback only (127.0.0.1). "}{copy.portHint}</p>
+          {!copy.noPort && <div className="grid gap-3 sm:grid-cols-[100px_1fr]">{portInput}</div>}
+          {copy.projectField && (
+            <div className="space-y-1">
+              <Label htmlFor={`${editorId}-mcp-project`}>EngineWire project folder (optional)</Label>
+              <Input id={`${editorId}-mcp-project`} value={projectPath} disabled={locked || !config} placeholder="Folder that holds your .uproject file" onChange={(event) => { setProjectPath(event.target.value); setMessage(null); setConnection(null); }} />
+            </div>
+          )}
+          <Button size="sm" variant="outline" disabled={locked || !config || !ready} onClick={() => void act("save")}>Save &amp; disable</Button>
         </div>
         </CollapsibleContent>
       </Collapsible>
