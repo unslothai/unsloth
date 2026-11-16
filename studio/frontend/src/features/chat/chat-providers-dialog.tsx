@@ -2060,8 +2060,10 @@ export function ChatProvidersSettings({
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
                         {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
-                        <SelectGroup>
-                          <SelectLabel>{group.label}</SelectLabel>
+                        <SelectGroup aria-label={group.label}>
+                          {group.id === "popular" ? null : (
+                            <SelectLabel>{group.label}</SelectLabel>
+                          )}
                           {group.items.map((item, itemIndex) => (
                             <SelectItem
                               key={item.providerType}
@@ -2911,7 +2913,7 @@ export function ChatProvidersSettings({
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-4 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>Enable connections</span>
             <Switch
               className="scale-[0.88]"

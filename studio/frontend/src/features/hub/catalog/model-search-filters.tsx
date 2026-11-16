@@ -128,7 +128,7 @@ const RANGES: readonly RangeSpec[] = [
     format: (n) => `${n / B}B`,
   },
   {
-    label: "Context length",
+    label: "Context window",
     about:
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",

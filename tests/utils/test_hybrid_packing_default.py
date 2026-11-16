@@ -472,7 +472,6 @@ def _kernels_func(func, zoo = False):
 
 
 def test_kernels_hub_func_modules_are_accepted(monkeypatch):
-    # Bench VMs have `kernels` installed: the gate read no closure and rejected every hybrid.
     monkeypatch.delenv(ENV, raising = False)
     name = "fake_modeling_kernels_func_gdn"
     try:

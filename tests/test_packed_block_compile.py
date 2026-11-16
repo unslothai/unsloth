@@ -171,7 +171,6 @@ def test_prepared_attention_is_block_diagonal_and_compiles_once(window):
         torch._dynamo.mark_dynamic(carrier, 0)
         out = compiled(Q, K, V, cu, carrier)
         torch.testing.assert_close(out, _per_document(Q, K, V, lengths, total, window))
-        # Perturbing document 0 leaves every other document unchanged.
         Q2 = Q.clone()
         Q2[:, :, : lengths[0]] += 1.0
         K2 = K.clone()
@@ -252,7 +251,6 @@ def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeyp
     layer.self_attn = types.SimpleNamespace(config = config, head_dim = 16, attention_dropout = 0.0)
     hidden = torch.zeros(1, 8, 64, dtype = torch.bfloat16)
     assert AD._packed_block_kernel(layer.train(), hidden)
-    # Training-time attention dropout keeps the eager, segmented kernels.
     layer.self_attn.attention_dropout = 0.1
     assert not AD._packed_block_kernel(layer.train(), hidden)
     assert AD._packed_block_kernel(layer.eval(), hidden)
