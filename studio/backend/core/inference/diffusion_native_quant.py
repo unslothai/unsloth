@@ -474,9 +474,14 @@ def fused_w8a8_serves(module: Any) -> bool:
 
         if not torch_compile_runtime_available():
             return False
-        return any(
-            is_native_linear(m) and bool(getattr(m, "act_int8", False)) for m in module.modules()
-        )
+        cards = set()
+        for m in module.modules():
+            if is_native_linear(m) and bool(getattr(m, "act_int8", False)):
+                device = getattr(getattr(m, "weight_q", None), "device", None)
+                cards.add(_device_key(device if getattr(device, "type", None) == "cuda" else None))
+        failed = _FUSED_STATE.get("devices", {})
+        # A card whose compiled linear failed runs eager kernels there: no compiled linear left to keep out of a graph.
+        return any(failed.get(card) is None for card in cards)
     except Exception:  # noqa: BLE001 - unknown keeps the caller's default
         return False
 

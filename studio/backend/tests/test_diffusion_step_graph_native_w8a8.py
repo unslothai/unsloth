@@ -37,6 +37,17 @@ def runtime(monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_FUSED_ENV, raising = False)
     monkeypatch.delenv(ds.STEP_GRAPH_NATIVE_W8A8_ENV, raising = False)
     monkeypatch.setitem(nq._FUSED_STATE, "failed", None)
+    monkeypatch.setitem(nq._FUSED_STATE, "devices", {})
+
+
+def test_a_card_whose_compiled_linear_failed_keeps_its_graph(runtime, monkeypatch):
+    # A per-card failure leaves only eager kernels there, so there is no compiled linear to keep out of a graph.
+    dit = _dit(act_int8 = True)
+    card = nq._device_key(None)
+    monkeypatch.setitem(nq._FUSED_STATE, "devices", {card: "RuntimeError('boom')"})
+    assert not nq.fused_w8a8_serves(dit)
+    monkeypatch.setitem(nq._FUSED_STATE, "devices", {card: None})
+    assert nq.fused_w8a8_serves(dit)
 
 
 def test_fused_w8a8_serves_only_act_int8_native_linears(runtime):

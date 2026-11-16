@@ -88,6 +88,20 @@ def test_the_measured_row_never_prices_higher_than_the_flat_estimate(w, h, side,
         ) <= dm.estimate_tiled_image_runtime_mib(**kw)
 
 
+def test_qwen_tiles_are_priced_against_the_512_px_tile_they_were_measured_with():
+    # Qwen-Image-2.1's tiled decode row was measured with 512 px tiles: a 512 px tile is that row, not a quarter of it.
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = False)
+    priced = dm.estimate_tiled_image_runtime_mib(
+        width = 1152,
+        height = 1024,
+        family = "qwen-image-2.1",
+        tile_side = 512,
+        vae_sliced = True,
+        measured = act,
+    )
+    assert priced >= act.tiled_decode_mib
+
+
 def test_an_uncalibrated_placement_ignores_the_measured_row():
     act = calibrated_image_activation("flux.3-klein", max_speed = False, compute_bytes = 2)
     verdict = dm.image_activation_verdict(
