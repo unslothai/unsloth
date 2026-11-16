@@ -15,12 +15,14 @@ import {
   dedupeRows,
   downloadedQuants,
   effortLabel,
+  filterByOrg,
   filterRows,
   findChosenRow,
   isChatTask,
   isTestFixtureRepo,
   localSection,
   orderBySection,
+  orgFilterApplies,
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
@@ -114,24 +116,40 @@ test("a tab lists its own rows; Favorites lists each favorite once; search narro
   );
 });
 
-test("an on-device model also lists under its maker's tab", () => {
+test("an org filter keeps only rows attributed to that org, on Discover and On Device", () => {
   const rows = [
+    row({ key: "g", id: "unsloth/gemma-4-E2B-it-GGUF", org: "google" }),
     row({
-      key: "g",
-      id: "unsloth/gemma-4-E2B-it-GGUF",
-      groups: ["maker:google"],
+      key: "gh",
+      id: "google/gemma-4-E2B-it",
+      tab: RECOMMENDED_TAB,
+      kind: "hub",
+      org: "google",
     }),
-    row({ key: "q", id: "unsloth/Qwen3.8-27B-GGUF", groups: ["maker:qwen"] }),
-    row({ key: "s", id: "hubertsiuzdak/snac_24khz" }),
+    row({ key: "q", id: "unsloth/Qwen3.8-27B-GGUF", org: "qwen" }),
+    // A third-party upload or an NPU offer carries no org, so no filter lists it.
+    row({ key: "b", id: "bartowski/gemma-4-E2B-it-GGUF" }),
+    row({ key: "n", id: "d3-edge-FLM", tab: RECOMMENDED_TAB, kind: "npu" }),
   ];
   assert.deepEqual(
-    filterRows(rows, "maker:google", "", none).map((r) => r.key),
-    ["g"],
+    filterByOrg(rows, "google").map((r) => r.key),
+    ["g", "gh"],
   );
-  assert.deepEqual(
-    filterRows(rows, DEVICE_TAB, "", none).map((r) => r.key),
-    ["g", "q", "s"],
+  assert.deepEqual(filterByOrg(rows, null), rows);
+  assert.equal(orgFilterApplies(DEVICE_TAB), true);
+  assert.equal(orgFilterApplies(RECOMMENDED_TAB), true);
+  assert.equal(orgFilterApplies(FAVORITES_TAB), false);
+  assert.equal(orgFilterApplies(CONNECTED_TAB), false);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
+  // Makers sit on their own row, under the sources, as toggles.
+  assert.match(picker, /\{sourceTabs\.map\(\(t\) => \(/);
+  assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgTabs\.map/);
+  assert.match(picker, /aria-pressed=\{toggle \? shown : undefined\}/);
+  // The org comes from the repo itself, never a fine-tune's base model.
+  assert.match(picker, /return rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
+  assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {

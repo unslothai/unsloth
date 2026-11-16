@@ -216,6 +216,7 @@ import {
   discoverUsesFallback,
   downloadedQuants,
   ejectTargetId,
+  filterByOrg,
   filterRows,
   findChosenRow,
   isChatTask,
@@ -223,6 +224,7 @@ import {
   localSection,
   matchesFormat,
   orderBySection,
+  orgFilterApplies,
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
@@ -239,7 +241,6 @@ import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
   loadedId?: string;
-  makerName?: string;
   gguf?: CachedGgufRepo;
   cached?: CachedModelRepo;
   lora?: LoraModelOption;
@@ -561,6 +562,11 @@ function rowMaker(
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
+/** As rowMaker, without a fine-tune's base model: an org filter lists only that org's own repos. */
+function rowOrg(row: Pick<Row, "kind" | "id">): Maker | null {
+  return rowMaker({ kind: row.kind, id: row.id });
+}
+
 // Logo files pad their art differently: scale each so its drawn part fills the box.
 const LOGO_FIT = new Map<string, string>();
 const FIT_PX = 64;
@@ -744,6 +750,7 @@ interface SourceTab {
 function TabButton({
   tab,
   shown,
+  toggle = false,
   onSelect,
   dragging,
   onDragTab,
@@ -753,6 +760,8 @@ function TabButton({
 }: {
   tab: SourceTab;
   shown: boolean;
+  /** An on/off filter rather than one of a set of tabs. */
+  toggle?: boolean;
   onSelect: () => void;
   dragging: string | null;
   onDragTab: (value: string | null) => void;
@@ -766,8 +775,9 @@ function TabButton({
     <Hint label={tab.label}>
       <button
         type="button"
-        role="tab"
-        aria-selected={shown}
+        role={toggle ? undefined : "tab"}
+        aria-selected={toggle ? undefined : shown}
+        aria-pressed={toggle ? shown : undefined}
         aria-label={tab.label}
         onClick={onSelect}
         draggable={tab.movable}
@@ -2066,11 +2076,7 @@ export function ComposerModelPicker({
     }
     marked.sort((a, b) => Number(!!b.loaded) - Number(!!a.loaded));
     for (const row of marked) {
-      const maker = rowMaker(row);
-      if (maker) {
-        row.groups = [`${MAKER_PREFIX}${maker.id}`];
-        row.makerName = maker.name;
-      }
+      row.org = rowOrg(row)?.id;
     }
     const loadedIds = new Set(
       marked.filter((row) => row.loaded).map((row) => row.id.toLowerCase()),
@@ -2095,6 +2101,7 @@ export function ComposerModelPicker({
             : "checkpoint",
         onDevice: onDisk.has(m.id.toLowerCase()),
         loaded: loadedIds.has(m.id.toLowerCase()),
+        org: rowOrg({ kind: "hub", id: m.id })?.id,
         hub: m,
       }));
     const external: Row[] = (externalModels ?? []).map((m) => ({
@@ -2299,8 +2306,7 @@ export function ComposerModelPicker({
   const makerTabs = useMemo<SourceTab[]>(() => {
     const byMaker = new Map<string, { maker: Maker; ids: Set<string> }>();
     for (const row of rows) {
-      const maker =
-        row.groups && row.kind !== "external" ? rowMaker(row) : null;
+      const maker = row.tab === DEVICE_TAB && row.org ? rowOrg(row) : null;
       if (!maker) {
         continue;
       }
@@ -2421,6 +2427,16 @@ export function ComposerModelPicker({
       .map(({ t }) => t);
     return [...pinned, ...movable];
   }, [externalModels, makerTabs, connectionsOn, tabOrder]);
+  // Sources on the first row; makers on their own, as filters over Discover and On Device.
+  const sourceTabs = tabs.filter((t) => !t.value.startsWith(MAKER_PREFIX));
+  const orgTabs = tabs.filter((t) => t.value.startsWith(MAKER_PREFIX));
+  const [orgPick, setOrgPick] = useState<string | null>(null);
+  // A drag reorders within its own row only.
+  const draggingOrg = draggingTab?.startsWith(MAKER_PREFIX) ?? false;
+  const orgFilter =
+    orgPick && orgTabs.some((t) => t.value === `${MAKER_PREFIX}${orgPick}`)
+      ? orgPick
+      : null;
   const moveTab = (from: string, to: TabDrop) => {
     const order = tabs.filter((t) => t.movable).map((t) => t.value);
     const at = order.indexOf(from);
@@ -2481,7 +2497,9 @@ export function ComposerModelPicker({
   const viewed =
     tab ??
     (hasModels
-      ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
+      ? ((lastTab && sourceTabs.some((t) => t.value === lastTab)
+          ? lastTab
+          : null) ??
         (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
         DEVICE_TAB)
       : RECOMMENDED_TAB);
@@ -2509,12 +2527,15 @@ export function ComposerModelPicker({
       hubQuery !== "" &&
       hubQuery === query.trim() &&
       hubResults.length > 0;
-    const found = filterRows(
-      rows,
-      viewed,
-      query,
-      isFavorite,
-      hubAnswered ? (row) => row.kind === "hub" : undefined,
+    const found = filterByOrg(
+      filterRows(
+        rows,
+        viewed,
+        query,
+        isFavorite,
+        hubAnswered ? (row) => row.kind === "hub" : undefined,
+      ),
+      orgFilterApplies(viewed) ? orgFilter : null,
     );
     if (viewed === RECOMMENDED_TAB) {
       return found.filter((row) => {
@@ -2543,10 +2564,6 @@ export function ComposerModelPicker({
     const lastLoaded = (row: Row) => loadedAt(loadTimes, row.id);
     const favoritesFirst = (list: Row[]) =>
       [...list].sort((a, b) => Number(isFavorite(b)) - Number(isFavorite(a)));
-    // A maker's tab reads like On Device's default: favorites, then last loaded or downloaded.
-    if (viewed.startsWith(MAKER_PREFIX)) {
-      return favoritesFirst(sortDeviceRows(found, "recent", lastLoaded));
-    }
     if (viewed !== DEVICE_TAB) {
       return found;
     }
@@ -2575,6 +2592,7 @@ export function ComposerModelPicker({
     hubCheckpointFits,
     noGpu,
     chosenId,
+    orgFilter,
   ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
@@ -5214,13 +5232,13 @@ export function ComposerModelPicker({
                   }
                 }}
               >
-                {tabs.map((t) => (
+                {sourceTabs.map((t) => (
                   <TabButton
                     key={t.value}
                     tab={t}
                     shown={viewed === t.value}
                     onSelect={() => setTab(t.value)}
-                    dragging={draggingTab}
+                    dragging={draggingOrg ? null : draggingTab}
                     onDragTab={setDraggingTab}
                     drop={tabDrop}
                     onDropTarget={setTabDrop}
@@ -5285,6 +5303,33 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </div>
+            {orgTabs.length > 0 && orgFilterApplies(viewed) ? (
+              <div
+                role="group"
+                aria-label="Filter by organization"
+                className="composer-tab-strip flex shrink-0 items-center gap-1 overflow-x-auto"
+              >
+                {orgTabs.map((t) => {
+                  const org = t.value.slice(MAKER_PREFIX.length);
+                  return (
+                    <TabButton
+                      key={t.value}
+                      tab={t}
+                      toggle={true}
+                      shown={orgFilter === org}
+                      onSelect={() =>
+                        setOrgPick(orgFilter === org ? null : org)
+                      }
+                      dragging={draggingOrg ? draggingTab : null}
+                      onDragTab={setDraggingTab}
+                      drop={tabDrop}
+                      onDropTarget={setTabDrop}
+                      onDropTab={moveTab}
+                    />
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="mt-2 flex h-[calc(32px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full bg-muted pr-2 pl-3">
               <HugeiconsIcon
                 icon={Search01Icon}

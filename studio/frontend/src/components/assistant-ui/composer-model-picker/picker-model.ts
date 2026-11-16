@@ -105,6 +105,8 @@ export interface PickerRow {
   loaded?: boolean;
   onDevice?: boolean;
   groups?: string[];
+  /** The maker by the repo's own owner (or an Unsloth re-upload's known family), never a base model. */
+  org?: string;
   section?: ListSection;
   sizeBytes?: number;
   /** In the listing's own units. */
@@ -269,6 +271,19 @@ export function filterRows<T extends PickerRow>(
       norm(row.providerName).includes(q)
     );
   });
+}
+
+/** Org filters narrow Discover and On Device only. */
+export function orgFilterApplies(tab: string): boolean {
+  return tab === RECOMMENDED_TAB || tab === DEVICE_TAB;
+}
+
+/** Only rows attributed to `org` itself; a row with no org never passes a filter. */
+export function filterByOrg<T extends PickerRow>(
+  rows: T[],
+  org: string | null,
+): T[] {
+  return org ? rows.filter((row) => row.org === org) : rows;
 }
 
 export function dedupeRows<T extends PickerRow>(rows: readonly T[]): T[] {
