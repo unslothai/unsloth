@@ -2728,7 +2728,8 @@ def get_chat_template(
         type_chat_template = chat_template.lower()
         template_name = chat_template
 
-        chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
+        # Template names are all lowercase; read this one as the system-message lookup does.
+        chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[type_chat_template]
 
         if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
             _gemma4_wants_empty_thought(_processor, old_tokenizer):
