@@ -578,6 +578,7 @@ def derive_tp_plan(
         raise ValueError(
             "Unsloth: tensor parallelism found no attention / MLP modules to shard in the decoder layers."
         )
+    _check_kv_shared_sources(regions)
     if user:
         source = "user"
     else:
@@ -591,6 +592,34 @@ def derive_tp_plan(
         replicated_layers = replicated,
         moe_blocks = moe,
     )
+
+
+def _check_kv_shared_sources(regions):
+    """A KV-shared attention reads the keys / values its source layer (the last earlier layer of its type that
+    stores them) computed on this rank: both must hold the same local key / value heads."""
+    sources = {}
+    for region in regions:
+        if (
+            region.kind == "attention"
+            and getattr(region.module, "store_full_length_kv", False) is True
+        ):
+            sources[getattr(region.module, "layer_type", None)] = region
+    for region in regions:
+        if (
+            region.kind != "attention"
+            or getattr(region.module, "is_kv_shared_layer", False) is not True
+        ):
+            continue
+        source = sources.get(getattr(region.module, "layer_type", None))
+        if source is None or (source.kv_heads, source.kv_replicated) != (
+            region.kv_heads,
+            region.kv_replicated,
+        ):
+            raise ValueError(
+                f"Unsloth: tensor parallelism cannot shard the KV-shared attention '{region.path}': its source "
+                f"layer {'is missing' if source is None else repr(source.path)} does not hold the same local key / "
+                "value heads."
+            )
 
 
 def _region(path, module, kind, compiled, text, tp):
@@ -762,6 +791,11 @@ def _replicate_kv_heads(region, path, tp):
             f"projections. Use tp <= {kv_heads}."
         )
     kv = [p for p in region.projs if p.name in _K + _V]
+    if not kv and getattr(region.module, "is_kv_shared_layer", False) is True:
+        # Gemma 4 / Gemma 3n KV-shared layer: no key / value projections, it reads the keys and values of an
+        # earlier layer of its type, whose replicated projections give each rank the head its query heads read.
+        region.kv_replicated = True
+        return
     # Values computed from the keys (Gemma 4 attention_k_eq_v: v_proj = None, value_states = key_states).
     values_from_keys = any(
         n in region.module.__dict__ and region.module.__dict__[n] is None for n in _V

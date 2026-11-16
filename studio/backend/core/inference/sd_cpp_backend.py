@@ -5081,7 +5081,10 @@ class SdCppDiffusionBackend:
             stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
             lora_stages.append(stage)
             materialized = diffusion_lora.materialize_native_dir(
-                lora_resolved, stage, real_files = True
+                lora_resolved,
+                stage,
+                real_files = True,
+                family = getattr(state.family, "name", None),
             )
             return [
                 {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
@@ -5542,7 +5545,9 @@ class SdCppDiffusionBackend:
             lora_dir: Optional[str] = None
             if lora_resolved:
                 materialized = diffusion_lora.materialize_native_dir(
-                    lora_resolved, Path(tmpdir) / "loras"
+                    lora_resolved,
+                    Path(tmpdir) / "loras",
+                    family = getattr(state.family, "name", None),
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")

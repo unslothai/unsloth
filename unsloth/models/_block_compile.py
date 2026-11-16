@@ -304,16 +304,20 @@ def _no_output_capture(layer):
         if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
             swapped.append((module, fn))
             module.forward = fn.__wrapped__
+    # Live collector, trial entries trimmed after: a hidden (None) one compiled a graph no real call reuses.
     try:
         from transformers.utils.output_capturing import _active_collector
+        collected = _active_collector.get()
     except Exception:
-        _active_collector = None
-    token = _active_collector.set(None) if _active_collector is not None else None
+        collected = None
+    lists = []
+    if isinstance(collected, dict):
+        lists = [(v, len(v)) for v in collected.values() if type(v) is list]
     try:
         yield
     finally:
-        if _active_collector is not None:
-            _active_collector.reset(token)
+        for values, length in lists:
+            del values[length:]
         for module, fn in swapped:
             module.forward = fn
 

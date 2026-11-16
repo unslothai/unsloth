@@ -976,6 +976,8 @@ export interface DiffusionTrainableFamily {
   // Deploy previews on this repo instead of the trained checkpoint (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
   deploy_bases?: Record<string, string>;
+  // Families the trained adapter loads on; absent on an older backend (the trained family alone).
+  lora_families?: string[];
   base_specs?: Record<
     string,
     {

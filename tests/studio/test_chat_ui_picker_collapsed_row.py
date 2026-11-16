@@ -69,6 +69,9 @@ def test_the_chat_search_step_expands_before_it_waits_for_the_search():
     start = src.index('step("model picker: open + drive search bar")')
     body = src[start : src.index("\n    step(", start + 1)]
     click = body.index("picker_btn.click()")
+    # Opened before the selector names the loaded model, the picker collapses under the typing.
+    settled = body.index('"select model" not in')
+    assert settled < click
     expand = body.index("expand_collapsed_model_picker(page)", click)
     wait = body.index("search = wait_for_first(", expand)
     assert click < expand < wait

@@ -314,6 +314,7 @@ const TABS: TabDef[] = [
     id: "computer-use",
     labelKey: "computerUse.settings.title",
     icon: Cursor02Icon,
+    badgeKey: "shell.navigation.newBadge",
   },
   {
     id: "keyboard-shortcuts",

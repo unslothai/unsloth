@@ -1258,6 +1258,58 @@ def test_trial_forward_is_not_recorded_as_a_model_output(monkeypatch, style):
     assert len(recorded) == 1, f"{len(recorded)} recorded outputs for one forward"
 
 
+class _TraceableCollector:
+    """unsloth_zoo's compiled-code mirror of transformers' collector: dynamo traces get() and guards on it."""
+
+    def __init__(self):
+        self.value = None
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        old, self.value = self.value, value
+        return old
+
+    def reset(self, token):
+        self.value = token
+
+
+def test_trial_forward_graph_is_reused_by_the_real_call(monkeypatch):
+    # tiny Gemma-4 vision: a trial hidden from the collector (None) compiled graphs no real call matched.
+    from torch._dynamo.utils import counters
+
+    output_capturing = pytest.importorskip("transformers.utils.output_capturing")
+    M = _load()
+    real_compile = torch.compile
+
+    def eager_compile(fn, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if k not in ("options", "backend")}
+        return real_compile(fn, backend = "eager", **kwargs)
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    collector = _TraceableCollector()
+    monkeypatch.setattr(output_capturing, "_active_collector", collector)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+
+    def hook(module, args, output):
+        collected = output_capturing._active_collector.get()
+        if collected is not None and "attentions" in collected:
+            collected["attentions"].append(output)
+
+    layer.proj.register_forward_hook(hook)
+    collector.set({})  # capture_outputs with nothing requested
+    torch._dynamo.reset()
+    counters.clear()
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():  # reentrant checkpoint forward: grad-mode trial, then the real call
+        layer(x)
+    layer(x.requires_grad_()).sum().backward()  # the recompute
+    assert counters["stats"]["unique_graphs"] == 2, dict(counters["stats"])
+
+
 def test_gdn_self_check_leaves_default_rng_alone():
     # Checkpoint recompute replays the default generator for LoRA dropout masks.
     pytest.importorskip("fla.ops.gated_delta_rule.chunk")

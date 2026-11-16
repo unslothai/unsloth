@@ -966,6 +966,12 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    # Gemma 4 26B-style MoE has no router auxiliary loss: pp2 text-only vs one process (losses, every gradient).
+    ("gemma4", "lora", False, "pp"): (
+        "tests/test_pp_vlm_text_only_gloo.py::test_pp2_text_only_matches_one_process[gemma4_moe]",
+    )
+    * 2
+    + ("eager: no compiled region",),
     ("kimi_linear", "full", False, "cp"): (_KIMI_MOE + "[full-sdpa-cp2|full-eager-gc-dp2xcp2]",) * 2
     + (_KIMI_EAGER,),
     ("kimi_linear", "lora", False, "cp"): (_KIMI_MOE + "[lora-eager-gc-cp2]",) * 2 + (_KIMI_EAGER,),
@@ -1040,7 +1046,7 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family != "qwen3_moe":
+        if family not in ("qwen3_moe", "gemma4"):
             return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
@@ -1079,7 +1085,9 @@ def _moe_cells():
                     if evidence:
                         if family in _MOE_ATTENTION:
                             match = {**match, "attention": _MOE_ATTENTION[family]}
-                        if family in _MOE_TEXT_ONLY:
+                        # Pipeline parallel trains a multimodal checkpoint on text (PPConfig.text_only): its evidence ran on one.
+                        text_only = family in _MOE_TEXT_ONLY and mode != "pp"
+                        if text_only:
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
@@ -1093,7 +1101,7 @@ def _moe_cells():
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
                         cells.append(Cell(name, match, *evidence, note = note))
-                        if family in _MOE_TEXT_ONLY:
+                        if text_only:
                             cells.append(
                                 Cell(
                                     name + ", multimodal",

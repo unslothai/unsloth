@@ -131,9 +131,8 @@ export function presetsWithin(limits: SizeLimits) {
 
 export const MINIMAX_H3_IMAGE_FAMILY = "minimax-h3-image";
 
-/** MiniMax-H3-Image's own sizes (its model card): the 4 MP canvas per aspect, then the 16 MP table. It renders
- *  on at least 4 MP and resizes back, so a smaller request costs the 4 MP time. Mirrors the backend's
- *  H3_IMAGE_PRESETS. */
+/** MiniMax-H3-Image's own sizes (its model card): the 4 MP canvas per aspect, then the 16 MP table. Studio
+ *  renders at the requested size (the backend's 4 MP floor is opt-in). Mirrors the backend's H3_IMAGE_PRESETS. */
 export const MINIMAX_H3_IMAGE_PRESETS: ReadonlyArray<{
   label: string;
   width: number;
@@ -181,7 +180,7 @@ export function familyPresetsCopy(family: string | null | undefined): {
   if (isMinimaxH3Image(family)) {
     return {
       label: "Model sizes",
-      hint: "MiniMax-H3-Image's native sizes. It always renders at least 4 MP and resizes back to the size you ask for; the 16 MP sizes take about four times the memory and time.",
+      hint: "MiniMax-H3-Image's native sizes. Its model card gives 4 to 20 MP as the working range, best around 16 MP; the 16 MP sizes take about four times the memory and time.",
     };
   }
   return {
@@ -292,6 +291,12 @@ export function boundedSize(
     else h -= m;
   }
   return { width: w, height: h };
+}
+
+/** Whether "Match Image 1" takes the size picker beside it. MiniMax-H3-Image ignores it: its match size is always
+ *  the reference edit workflow's (Image 1 at 4 MP, ``h3ImageSourceSize``), so the picker is not shown. */
+export function matchSizeChoosable(family: string | null | undefined): boolean {
+  return !isMinimaxH3Image(family);
 }
 
 export function resolveEditSize(

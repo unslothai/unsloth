@@ -5534,7 +5534,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-[calc(9px*var(--ui-space-scale,1))] pb-1.5"
+              className="composer-model-list flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(14px*var(--ui-space-scale,1))]"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (

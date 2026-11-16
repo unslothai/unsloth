@@ -5,11 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  familyPresetsCopy,
   h3ImageSourceSize,
+  matchSizeChoosable,
   resolveEditSize,
 } from "../src/features/images/edit-conditioning.ts";
 import { defaultSizeFor } from "../src/features/images/image-generation-defaults.ts";
 import { sizeLimitsFrom } from "../src/features/images/image-size.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const H3_LIMITS = sizeLimitsFrom({
   dimension_multiple: 32,
@@ -104,4 +108,35 @@ test("a very thin H3-Image source keeps the minimum output side", () => {
   );
   assert.ok(Math.min(size.width, size.height) >= 256, `${size.width}x${size.height}`);
   assert.ok(size.width <= H3_LIMITS.maxSide && size.width * size.height <= H3_LIMITS.maxPixels);
+});
+
+test("Match Image 1 shows no size picker for H3-Image, whose match size ignores it", () => {
+  // the picker's value never reaches an H3-Image request: a 2048 Image 1 renders 2048x2048 at any pick
+  for (const pick of [512, 1024, 2048]) {
+    assert.deepEqual(
+      resolveEditSize(
+        "source",
+        { width: 2048, height: 2048 },
+        pick,
+        { width: 1024, height: 1024 },
+        H3_LIMITS,
+        "minimax-h3-image",
+      ),
+      { width: 2048, height: 2048 },
+    );
+  }
+  assert.equal(matchSizeChoosable("minimax-h3-image"), false);
+  assert.equal(matchSizeChoosable("flux.1-kontext"), true);
+  assert.equal(matchSizeChoosable(null), true);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /editSizing === "source" && matchSizeChoosable\(status\?\.family\) && \(\s*<Select\s+value=\{String\(matchResolution\)\}/,
+  );
+});
+
+test("the H3-Image size hint does not claim a 4 MP floor that is opt-in since the reference defaults", () => {
+  const { hint } = familyPresetsCopy("minimax-h3-image");
+  assert.doesNotMatch(hint, /always renders at least 4 MP/);
+  assert.match(hint, /16 MP/);
 });

@@ -19,7 +19,14 @@ RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "rescale_post_norm": (16.0, 128.0),
     # FLUX.3 residual reaches ~1e7: whole stream at 1/1024, LayerNorm eps by 1/1024^2.
     "rescale_residual": (1024.0, 1024.0),
+    # Undistilled Z-Image (bf16 L4, 1024px, CFG 3): to_k 1.2e6, attention to_out 2.9e6, FFN w2 5.3e7, so (16, 128)
+    # overflows to inf in the first noise_refiner block and the image decodes NaN. Selected per checkpoint below.
+    "rescale_post_norm_wide": (256.0, 4096.0),
 }
+
+# recipe -> (wider recipe, ffn_norm1 weight std above which a checkpoint needs it). The std of layers[n-2].ffn_norm1
+# separates the Z-Image checkpoints (fp16-safe below 0.42): Turbo 0.350, the undistilled base 0.565.
+_HEADROOM: dict[str, tuple[str, float]] = {"rescale_post_norm": ("rescale_post_norm_wide", 0.42)}
 
 
 def fp16_guard_disabled() -> bool:
@@ -138,12 +145,43 @@ def _attention_post_hook(module, args, output):
     return None
 
 
-def _make_ffn_forward(inv: float):
+def _make_ffn_forward(inv: float, finite_out: bool = False):
+    if finite_out:
+        # Wide recipe: a stray w2 overflow saturates before ffn_norm2 instead of turning the whole token NaN.
+        def forward(self, x):
+            import torch.nn.functional as F
+            return _finite(self.w2(_finite(F.silu(self.w1(x)) * (self.w3(x) * inv))))
+
+        return forward
+
     def forward(self, x):
         import torch.nn.functional as F
         return self.w2(_finite(F.silu(self.w1(x)) * (self.w3(x) * inv)))
 
     return forward
+
+
+def _norm1_weight_std(root: Any) -> Optional[float]:
+    """Std of layers[n-2].ffn_norm1.weight (Turbo 0.350, base 0.565), or None when the model has no such norm."""
+    try:
+        layers = getattr(root, "layers", None)
+        if layers is None or len(layers) < 2:
+            return None
+        w = getattr(getattr(layers[len(layers) - 2], "ffn_norm1", None), "weight", None)
+        if w is None or w.numel() < 2 or w.device.type == "meta":
+            return None
+        return float(w.detach().float().std(unbiased = False))
+    except Exception:  # noqa: BLE001 - unreadable weight: keep the declared recipe
+        return None
+
+
+def resolve_checkpoint_recipe(root: Any, recipe: Optional[str]) -> Optional[str]:
+    """The declared recipe, widened when this checkpoint's activations need more fp16 headroom."""
+    wide = _HEADROOM.get(recipe) if recipe is not None else None
+    if wide is None:
+        return recipe
+    std = _norm1_weight_std(root)
+    return wide[0] if std is not None and std >= wide[1] else recipe
 
 
 def _block_sites(block: Any) -> Optional[tuple[Any, ...]]:
@@ -285,7 +323,12 @@ def _install_rescale_residual(root: Any, scale: float) -> int:
     return len(found)
 
 
-def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -> int:
+def _install_rescale_post_norm(
+    root: Any,
+    attn_scale: float,
+    ffn_scale: float,
+    finite_out: bool = False,
+) -> int:
     import types
 
     sites = 0
@@ -302,11 +345,15 @@ def _install_rescale_post_norm(root: Any, attn_scale: float, ffn_scale: float) -
         _scale_eps(attn.norm_k, a_inv * a_inv)
         _scale_eps(attn_norm2, a_inv * a_inv)
         _scale_eps(ffn_norm2, f_inv * f_inv)
-        handles = (
-            attn.register_forward_pre_hook(_attention_pre_hook(a_inv), with_kwargs = True),
-            attn.register_forward_hook(_attention_post_hook),
-        )
-        ffn.forward = types.MethodType(_make_ffn_forward(f_inv), ffn)
+        norm1 = getattr(block, "attention_norm1", None) if finite_out else None
+        if norm1 is not None:
+            # Wide recipe: scale attention_norm1's output, ahead of the adaLN multiply (scale_msa reaches 5.4e4 in
+            # the base checkpoint, so norm1(x) * scale_msa itself overflows before an attention pre-hook sees it).
+            scale_in = norm1.register_forward_hook(_scale_output_hook(a_inv))
+        else:
+            scale_in = attn.register_forward_pre_hook(_attention_pre_hook(a_inv), with_kwargs = True)
+        handles = (scale_in, attn.register_forward_hook(_attention_post_hook))
+        ffn.forward = types.MethodType(_make_ffn_forward(f_inv, finite_out), ffn)
         block.__dict__[_MARK] = (attn_scale, ffn_scale, handles)
         sites += 1
     return sites
@@ -329,11 +376,17 @@ def install_fp16_guard(
         return 0
     if not callable(getattr(root, "named_modules", None)):
         return 0
-    attn_scale, ffn_scale = scales
+    recipe = resolve_checkpoint_recipe(root, recipe)
+    attn_scale, ffn_scale = RECIPES[recipe]
     if recipe == "rescale_residual":
         sites = _install_rescale_residual(root, attn_scale)
     else:
-        sites = _install_rescale_post_norm(root, attn_scale, ffn_scale)
+        sites = _install_rescale_post_norm(
+            root,
+            attn_scale,
+            ffn_scale,
+            finite_out = recipe == "rescale_post_norm_wide",
+        )
     if logger is not None:
         if sites:
             logger.info(

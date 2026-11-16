@@ -135,8 +135,21 @@ def _split_for(model, mesh, schedule, config):
     v = resolve_stages_per_rank(spec, config.stages_per_rank)
     pp, rank = mesh.size(), mesh.get_local_rank()
     parts = _find_parts(model)
-    # Structural refusals before anything is read; the rest run again at apply_pipeline_parallel.
-    _refuse_unsupported(model, parts, at_load = True, allow_moe = False)
+    if parts.ple is not None:
+        raise ValueError(
+            "Unsloth: pipeline_sharded_loading does not split per-layer input tables (Gemma 4 E2B / E4B) yet; load "
+            "the whole model, then apply_pipeline_parallel."
+        )
+    # The structural refusals (MoE, MLA, ...) before anything is read. Every weight of a fresh load is
+    # trainable until get_peft_model freezes it: those refusals run again at apply_pipeline_parallel.
+    flags = [(p, p.requires_grad) for p in model.parameters()]
+    for p, _ in flags:
+        p.requires_grad_(False)
+    try:
+        _refuse_unsupported(model, parts, allow_moe = False)
+    finally:
+        for p, flag in flags:
+            p.requires_grad_(flag)
     bounds = derive_pp_split(model, pp * v, config)
     local = stage_indices(spec, rank, pp, v)
     return parts, spec, v, bounds, tuple(local)

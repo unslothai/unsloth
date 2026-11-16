@@ -3142,6 +3142,10 @@ class FastSentenceTransformer(FastModel):
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
 
+                from ._utils import reject_alora
+
+                reject_alora(inner_model, kwargs.get("alora_invocation_tokens"))
+
                 is_quantized = (
                     getattr(inner_model, "is_quantized", False)
                     or getattr(inner_model.config, "quantization_config", None) is not None
@@ -3216,6 +3220,7 @@ class FastSentenceTransformer(FastModel):
                 from transformers import set_seed as transformers_set_seed
 
                 transformers_set_seed(random_state)
+                lora_options = inspect.signature(LoraConfig).parameters
                 lora_config = LoraConfig(
                     r = r,
                     lora_alpha = lora_alpha,
@@ -3229,7 +3234,7 @@ class FastSentenceTransformer(FastModel):
                     modules_to_save = modules_to_save,
                     init_lora_weights = init_lora_weights,
                     loftq_config = loftq_config or {},
-                    task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
+                    **{k: v for k, v in kwargs.items() if k in lora_options},
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
