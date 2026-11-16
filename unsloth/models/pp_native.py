@@ -90,10 +90,8 @@ _PP_HYBRID_FAMILIES = {
     "Qwen3_5ForCausalLM": {"linear_attention"},
     "Qwen3_5ForConditionalGeneration": {"linear_attention"},
 }
-# Config keys of the towers a multimodal checkpoint adds next to its language model. Under pipeline parallelism
-# they stay out of the pipeline (PPConfig.text_only): frozen, unused, off the GPU.
 _MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
-# Batch keys that carry media into a multimodal forward: a text-only pipeline refuses them, never drops them.
+# A text-only pipeline refuses these batch keys, never drops them.
 _MEDIA_INPUT_KEYS = (
     "pixel_values",
     "pixel_values_videos",
@@ -137,8 +135,7 @@ class PPConfig:
     keep_replica: bool = False
     # Frozen table rows kept for checkpoint recomputes; None = this stage's in-flight micro-batches (at least 2).
     frozen_table_memo_slots: Optional[int] = None
-    # A vision / audio language checkpoint trained on text only: its towers stay out of the pipeline (frozen,
-    # moved to the CPU, saved unchanged) and a batch carrying media is refused. None refuses such a checkpoint.
+    # Multimodal checkpoint trained on text: towers kept out of the pipeline. None refuses such a checkpoint.
     text_only: Optional[bool] = None
 
 
@@ -340,7 +337,7 @@ class _Parts:
     norms: list  # [(name, module)]: other parameter-holding decoder children (final norm)
     source: str  # "transformers" (base_model_pp_plan) / "structural"
     tied: bool
-    # [(container, name, module)]: vision / audio towers of a multimodal checkpoint (kept out of the pipeline)
+    # [(container, name, module)]
     towers: list = dataclasses.field(default_factory = list)
 
 
@@ -877,9 +874,8 @@ def _refuse_unsupported(
     allow_moe = True,
     text_only = None,
 ):
-    """Refusals before anything is cut (at_load: the structural ones only, before LoRA freezes the base; the
-    text-only decision for a multimodal checkpoint is made at the split). Returns the _MoEAux of a
-    mixture-of-experts family whose router auxiliary loss PipelineParallel carries (allow_moe), else None."""
+    """Refusals before anything is cut (at_load: structural only, text-only decided at the split). Returns the
+    _MoEAux whose router aux loss PipelineParallel carries (allow_moe), else None."""
     text = _text_config(model)
     inner = parts.inner
     media = _media_keys(inner)
@@ -983,8 +979,7 @@ def _forward_function(module):
 
 
 def _layer_loop_source(decoder, layers_name):
-    """Source of the decoder forward that loops over its layers, found through __wrapped__ and the closures of
-    wrappers that drop it (Unsloth Zoo's Gemma 4 KV-sharing forward)."""
+    """Layer-loop forward source; also searches closures (Unsloth Zoo's Gemma 4 wrapper drops __wrapped__)."""
     first = _forward_function(decoder)
     for fn in [first, *_forward_candidates(decoder)]:
         try:
@@ -1223,9 +1218,6 @@ class _PPPassThrough(_CheckpointLayer):
 
 
 class _PPTowerStub(nn.Module):
-    """A vision / audio tower of a multimodal checkpoint trained on text only (PPConfig.text_only): not part of
-    the pipeline, so no stage runs it."""
-
     def __init__(self, name, source):
         super().__init__()
         for key, value in _simple_attrs(source).items():
@@ -1254,8 +1246,7 @@ def _refuse_media_inputs(kwargs, what):
 
 
 def _tower_adapter_state(model, parts):
-    """{adapter: {key: tensor}} of the PEFT adapter entries inside the towers, as one process saves them: the
-    towers never train under a text-only pipeline, so pp rank 0 writes these values next to every stage's."""
+    """Tower PEFT entries (never trained under text-only), saved by pp rank 0."""
     adapters = list(getattr(model, "peft_config", {}) or {})
     if not adapters or not parts.towers:
         return None
@@ -1845,7 +1836,7 @@ class PipelineParallel:
         self.replica = (
             None  # pp_env: the whole model is in place (for_inference / generate / exports)
         )
-        self._tower_adapter = None  # pp rank 0: the towers' adapter entries (PPConfig.text_only)
+        self._tower_adapter = None
 
     # composition with FSDP2 (dp) / tensor parallelism (tp): every other mesh dimension must be applied
     @property
@@ -2774,8 +2765,6 @@ def apply_pipeline_parallel(
     layers = parts.layers
     kept = [] if config.keep_replica else None
     if parts.towers:
-        # The towers leave the pipeline: frozen, never run, on the CPU (kept) or dropped. Pipeline rank 0 holds
-        # their adapter entries for the save.
         if rank == 0:
             pp_stage._tower_adapter = _tower_adapter_state(model, parts)
         stubs = []

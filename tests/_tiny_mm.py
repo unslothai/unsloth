@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tiny random vision / audio language checkpoints built from code (no download), fp32 CPU: Qwen3.5
-(Qwen3_5ForConditionalGeneration, gated delta net + full attention), Gemma 4 (vision + audio towers; E2B style
-per-layer inputs and KV-shared layers; 26B style mixture of experts), Gemma 4 unified (12B) and Muse Glimmer."""
+"""Tiny random vision / audio language checkpoints built from code (no download), fp32 CPU."""
 
 import torch
 
@@ -157,9 +155,7 @@ def build(
     target_modules = "all-linear",
     causal_lm = False,
 ):
-    """A fresh random model (the same weights for the same seed). Linear weights at std 1 / sqrt(fan in): at the
-    default 0.02 Gemma 4's value / per-layer-input RMSNorms rescale ~1e-3 vectors to unit size, which turns fp32
-    rounding into O(1) gradient differences within a few steps (one process alone)."""
+    """Linear weights at std 1 / sqrt(fan in): at 0.02 Gemma 4's RMSNorms blow fp32 rounding up to O(1) grads."""
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 
     config = config_for(arch, layers)

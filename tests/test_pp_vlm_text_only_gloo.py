@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel over vision / audio language checkpoints trained on text only (PPConfig.text_only): the
-towers stay out of the pipeline, the language model's embed / layers / norm / lm_head are split as for a text
-model. gloo CPU world (pp 2) vs one process on the same batch, fp32; the saved adapter equals the one-process
-adapter, tower entries included. A batch with media is refused, never dropped."""
+"""PPConfig.text_only: gloo pp 2 vs one process, fp32 (losses, grads, saved adapter); media batches refused."""
 
 import multiprocessing
 import os
@@ -85,7 +82,6 @@ def pipeline(
 
 
 def _towers_left(model):
-    """(tower name, parameter count) of every tower module still in the model."""
     inner = ppn._unwrap(model)
     out = []
     for name, module in inner.named_modules():
@@ -251,8 +247,7 @@ def check_parity(
     grad_tol = 1e-3,
     loss_tol = 1e-5,
 ):
-    """Losses within loss_tol at every step on every rank; every trainable parameter's gradient (each on the
-    stage that owns it) within grad_tol of the one-process gradient at every step. Returns the worst error."""
+    """Losses and every owned gradient within tolerance of one process at every step; returns the worst error."""
     ref_losses, ref_grads = results[0]["ref"]
     worst = (0.0, None)
     for step, want in enumerate(ref_grads):
