@@ -57,9 +57,16 @@ CTX = 32
 def _transformer_cls():
     try:
         from diffusers import Flux3Transformer2DModel
-    except Exception as exc:  # noqa: BLE001 -- diffusers older than 0.42
+    except Exception as exc:  # noqa: BLE001 -- diffusers older than 0.42, or none (the CPU CI shard)
         pytest.skip(f"diffusers FLUX.3 classes unavailable: {exc}")
     return Flux3Transformer2DModel
+
+
+def _needs_flux3_pipeline():
+    """Resolving / starting a FLUX.3 run checks the installed diffusers can build it (0.42+); skip where it cannot."""
+    from core.inference.diffusion_flux3 import flux3_available
+    if not flux3_available():
+        pytest.skip("this diffusers cannot build FLUX.3 (needs 0.42+)")
 
 
 def _tiny_transformer(
@@ -206,16 +213,26 @@ def test_family_trains_on_base_and_deploys_on_klein():
     assert fam is not None and fam.name == FAMILY and fam.trainable
     assert fam.train_base_repos == (BASE,)
     assert fam.deploy_base_for(BASE) == KLEIN
-    assert resolve_trainable_family(BASE, None) == FAMILY
     klein = detect_family(KLEIN)
     assert klein.name == DISTILLED_FAMILY and not klein.trainable
+    _needs_flux3_pipeline()
+    assert resolve_trainable_family(BASE, None) == FAMILY
     with pytest.raises(ValueError):
         resolve_trainable_family(KLEIN, None)
 
 
-def test_train_ui_pairs_the_base_with_klein_and_says_where_it_runs():
-    from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS, family_train_infos
+def test_train_ui_note_says_where_the_adapter_runs():
+    from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
+    assert (
+        _FAMILY_TRAIN_SPECS[FAMILY]["note"] == "Trains on FLUX.3 Klein Base, runs on Klein or Base."
+    )
 
+
+def test_train_ui_pairs_the_base_with_klein():
+    from core.training.diffusion_train_common import family_train_infos
+
+    # family_train_infos drops a family whose pipeline the installed diffusers lacks.
+    _needs_flux3_pipeline()
     info = next(i for i in family_train_infos() if i["name"] == FAMILY)
     assert info["default_base"] == BASE and info["label"] == "FLUX.3 Klein Base"
     # The mirror the trainer fetches pairs with Klein's own mirror (both hold the upstream diffusers folders).
@@ -224,14 +241,13 @@ def test_train_ui_pairs_the_base_with_klein_and_says_where_it_runs():
         "unsloth/flux-3-image-klein-base-FP8": "unsloth/flux-3-image-klein-FP8",
     }
     assert info["supports_samples"] and info["max_train_batch_size"] is None
-    assert (
-        _FAMILY_TRAIN_SPECS[FAMILY]["note"] == "Trains on FLUX.3 Klein Base, runs on Klein or Base."
-    )
+    assert info["lora_families"] == [FAMILY, DISTILLED_FAMILY]
 
 
 def test_defaults_sit_on_the_16_grid_and_off_grid_resolutions_are_refused(tmp_path):
     d = train_defaults(FAMILY)
     assert d["resolution"] % 16 == 0 and d["lora_rank"] > 0 and d["learning_rate"] > 0
+    _needs_flux3_pipeline()
     base = dict(
         base_model = BASE,
         data_dir = str(tmp_path),
@@ -281,12 +297,14 @@ def test_the_catalog_offers_a_published_adapter_to_both_families(tmp_path, monke
         {"transformer.single_transformer_blocks.0.attn.to_q.lora_A.weight": torch.zeros(4, 8)},
         str(tmp_path / "tarot.safetensors"),
     )
+    # The resolved fields the sidecar reads, without normalized() (which checks the installed diffusers).
     cfg = DiffusionLoraConfig(
         base_model = BASE,
         data_dir = str(tmp_path),
         output_dir = str(tmp_path / "o"),
         instance_prompt = "trtcrd",
-    ).normalized()
+        resolved_family = FAMILY,
+    )
     _write_lora_sidecar(tmp_path / "tarot.json", cfg, 10)
     families, _w = diffusion_lora._read_lora_sidecar(tmp_path / "tarot.safetensors")
     assert families == (FAMILY, DISTILLED_FAMILY)
@@ -325,6 +343,7 @@ def test_targets_adapt_every_attention_and_mlp_linear_and_nothing_else():
 
 
 def test_nf4_keeps_the_inference_keep_list_dense():
+    _transformer_cls()
     cfg = dit._flux3_nf4_config()
     assert cfg.load_in_4bit and cfg.bnb_4bit_quant_type == "nf4"
     skip = set(cfg.llm_int8_skip_modules)
@@ -565,7 +584,11 @@ def test_loss_falls_on_a_fixed_batch():
 
 
 def test_saved_lora_has_diffusers_keys_and_reloads_at_the_trained_strength(tmp_path):
-    from diffusers.loaders import Flux3LoraLoaderMixin
+    _transformer_cls()
+    try:
+        from diffusers.loaders import Flux3LoraLoaderMixin
+    except ImportError as exc:  # a build with the transformer but no FLUX.3 LoRA loader
+        pytest.skip(f"diffusers FLUX.3 LoRA loader unavailable: {exc}")
     from peft.utils import get_peft_model_state_dict
     from safetensors.torch import load_file
 
