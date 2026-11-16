@@ -1472,10 +1472,13 @@ _install_launchd_user_agent() {
     fi
     # The desktop app's "Run Unsloth at login" agent already keeps a Studio backend up; a second
     # server on the same home would fight it for the port.
-    if [ -f "$HOME/Library/LaunchAgents/Unsloth.plist" ]; then
-        step "launchd" "desktop app's Run at login is on; skipped" "$C_WARN"
-        return 0
-    fi
+    _ld_account_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+    for _ld_h in "$HOME" "$_ld_account_home"; do
+        if [ -n "$_ld_h" ] && [ -f "$_ld_h/Library/LaunchAgents/Unsloth.plist" ]; then
+            step "launchd" "desktop app's Run at login is on; skipped" "$C_WARN"
+            return 0
+        fi
+    done
     _ld_script=$(_resolve_launchd_install_script)
     if [ -z "$_ld_script" ] || [ ! -f "$_ld_script" ]; then
         step "launchd" "agent helper not found in this install; skipped" "$C_WARN"

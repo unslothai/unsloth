@@ -117,7 +117,10 @@ mkdir -p "$_run_home"
 _exe_dir="$(dirname "$_UNSLOTH_EXE")"
 _path="$_exe_dir:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-_agent_dir="$HOME/Library/LaunchAgents"
+# launchd scans the login account's home at login, not a redirected $HOME.
+_account_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+case "$_account_home" in /*) ;; *) _account_home="$HOME" ;; esac
+_agent_dir="$_account_home/Library/LaunchAgents"
 mkdir -p "$_agent_dir"
 _plist_path="$_agent_dir/$LABEL.plist"
 if [ -e "$_plist_path" ] && [ "$(sed -n 2p "$_plist_path" 2>/dev/null)" != "$MARKER" ]; then

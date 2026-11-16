@@ -689,6 +689,11 @@ _unsloth_uninstall_main() {
         [ "$_os" = "Darwin" ] || return 0
         _ld_label="ai.unsloth.studio.server"
         _ld_plist="$HOME/Library/LaunchAgents/$_ld_label.plist"
+        # The installer writes it under the login account's home, which a redirected $HOME hides.
+        if [ ! -f "$_ld_plist" ] && command -v dscl >/dev/null 2>&1; then
+            _ld_pw=$(dscl . -read "/Users/$(id -un 2>/dev/null)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+            case "$_ld_pw" in /*) _ld_plist="$_ld_pw/Library/LaunchAgents/$_ld_label.plist" ;; esac
+        fi
         [ -f "$_ld_plist" ] || return 0
         [ "$(sed -n 2p "$_ld_plist" 2>/dev/null)" = "<!-- unsloth-studio-managed-launchd -->" ] || return 0
         # The $HOME owner's domain, not id -u: under sudo (HOME kept) the agent lives in gui/<owner>.

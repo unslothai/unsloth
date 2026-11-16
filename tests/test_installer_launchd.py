@@ -265,6 +265,18 @@ def test_helper_rejects_values_that_break_the_agent(tmp_path, args, env):
     assert not _plist_path(tmp_path).exists()
 
 
+def test_agent_goes_to_the_login_accounts_home_when_home_is_redirected(tmp_path):
+    account = tmp_path / "account"
+    _fake_bin(tmp_path, "dscl", f"echo 'NFSHomeDirectory: {account}'")
+    _fake_mac(tmp_path)
+    r = _run_helper(tmp_path)
+    assert r.returncode == 0, r.stderr
+    real = account / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+    assert r.stdout.strip() == str(real)
+    assert real.read_text().splitlines()[1] == MARKER
+    assert not _plist_path(tmp_path).exists()
+
+
 def test_helper_never_replaces_an_agent_the_user_wrote(tmp_path):
     plist = _plist_path(tmp_path)
     plist.parent.mkdir(parents = True)
@@ -378,6 +390,17 @@ def test_opt_in_defers_to_the_desktop_apps_login_agent(tmp_path):
     out = _run_installer_tail(tmp_path, _INSTALL_LAUNCHD = "true")
     assert "Run at login is on; skipped" in out
     assert "STARTED=false SKIP_AUTOSTART=false" in out
+    assert "--unsloth-exe" not in out
+
+
+def test_opt_in_sees_the_desktop_agent_in_the_login_accounts_home(tmp_path):
+    account = tmp_path / "account"
+    desktop = account / "Library" / "LaunchAgents" / "Unsloth.plist"
+    desktop.parent.mkdir(parents = True)
+    desktop.write_text("<plist/>\n")
+    _fake_bin(tmp_path, "dscl", f"echo 'NFSHomeDirectory: {account}'")
+    out = _run_installer_tail(tmp_path, _INSTALL_LAUNCHD = "true")
+    assert "Run at login is on; skipped" in out
     assert "--unsloth-exe" not in out
 
 
@@ -502,6 +525,17 @@ def test_uninstall_under_sudo_unloads_the_home_owners_agent(tmp_path):
     assert not _plist_path(tmp_path).exists()
 
 
+def test_uninstall_finds_the_agent_in_the_login_accounts_home(tmp_path):
+    account = tmp_path / "account"
+    real = account / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+    real.parent.mkdir(parents = True)
+    real.write_text(_OURS)
+    _fake_bin(tmp_path, "dscl", f"echo 'NFSHomeDirectory: {account}'")
+    out = _run_uninstall_removal(tmp_path, None, "exit 0")
+    assert f"bootout gui/501/{LABEL}" in out
+    assert not real.exists()
+
+
 def test_uninstall_unloads_the_agent_before_kill_sweep():
     source = UNINSTALL_SH.read_text(encoding = "utf-8")
     assert source.index("\n    _remove_launchd_user_agent\n") < source.index(
@@ -573,6 +607,7 @@ def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
     exe.chmod(0o755)
     env = {**os.environ, "HOME": str(tmp_path / "home")}
     target = f"gui/{os.getuid()}/{LABEL}"
+    plist = None
     try:
         r = subprocess.run(
             [
@@ -589,6 +624,7 @@ def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
             env = env,
         )
         assert r.returncode == 0, r.stderr
+        plist = Path(r.stdout.strip())
         first = _wait(lambda: _port_open(port) and _job_pid(target), 60)
         assert first, (log.read_text() if log.exists() else "no server log") + subprocess.run(
             ["launchctl", "print", target], capture_output = True, text = True
@@ -616,7 +652,9 @@ def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
         )
         assert "Removed launchd user agent" in out.stdout
         assert "could not unload" not in out.stderr
-        assert not _plist_path(tmp_path).exists()
+        assert not plist.exists()
         assert subprocess.run(["launchctl", "print", target], capture_output = True).returncode != 0
     finally:
         subprocess.run(["launchctl", "bootout", target], capture_output = True)
+        if plist and plist.is_file() and plist.read_text().splitlines()[1:2] == [MARKER]:
+            plist.unlink()
