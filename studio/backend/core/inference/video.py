@@ -510,7 +510,9 @@ def assert_video_precision_available(
                 if gpu_ordinal is None
                 else resolve_diffusion_device_target(ordinal = gpu_ordinal)
             )
-            shortfall = h3_fp16_host_shortfall(fam, target, model_kind = model_kind)
+            shortfall = h3_fp16_host_shortfall(
+                fam, target, model_kind = model_kind, text_encoder_quant = text_encoder_quant
+            )
         if shortfall is not None:
             raise RuntimeError(shortfall)
     if precision_fallback_allowed():
@@ -881,10 +883,17 @@ def _h3_hosted_fp8_native(fam: Any, target: Any, scheme: Optional[str]) -> bool:
     return h3_hosted_fp8_native(target)
 
 
-def h3_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Optional[str]:
+def h3_fp16_host_shortfall(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+) -> Optional[str]:
     """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bfloat16, else None. There the hosted INT8 /
     FP8 parts never engage (``_h3_auto_precision_ok``), so every precision lands on the released bf16 components,
-    promoted to float32, all of which the offload rotation keeps in host RAM. Refused before the eviction and the pull
+    promoted to float32, all of which the offload rotation keeps in host RAM; only an explicit hosted conditioner
+    (``text_encoder_quant='int8'``) still engages there, priced at its int8 size. Refused before the eviction and the pull
     instead of downloading 144 GB and exhausting host RAM. Never raises; unreadable sizes or RAM refuse nothing."""
     try:
         import torch
@@ -900,7 +909,15 @@ def h3_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Optiona
         if len(sizes) != 3:
             return None
         scale = 2.0 if fp16_promotes_to_fp32(fam) else 1.0
-        need_gb = sum(sizes) * scale
+        # An explicit hosted conditioner (int8) still engages without bf16 and stays int8: price it, not the dense one.
+        te_scheme = (
+            None
+            if _h3_precision_unset(text_encoder_quant)
+            or _h3_precision_pinned_dense(text_encoder_quant)
+            else h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
+        )
+        te_gb = h3_te_resident_gb(te_scheme, bf16_gb = sizes[1] * scale)
+        need_gb = (sizes[0] + sizes[2]) * scale + te_gb
         from .diffusion_memory import _host_ram_capacity_mib
 
         host_mib = _host_ram_capacity_mib()
@@ -911,8 +928,8 @@ def h3_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Optiona
     dtype = "float32" if scale == 2.0 else "float16"
     return (
         f"{getattr(fam, 'label', None) or 'MiniMax-H3'} cannot load on this GPU: it has no native bfloat16, so the "
-        f"hosted INT8 / FP8 weights cannot run here and every precision falls back to the released weights in "
-        f"{dtype}, about {need_gb:.0f} GB (denoiser {sizes[0] * scale:.1f}, text encoder {sizes[1] * scale:.1f}, "
+        f"hosted INT8 / FP8 denoisers cannot run here and every precision falls back to the released weights in "
+        f"{dtype}, about {need_gb:.0f} GB (denoiser {sizes[0] * scale:.1f}, text encoder {te_gb:.1f}, "
         f"VAEs {sizes[2] * scale:.1f}) that must sit in system RAM, which has {host_mib / 953.674:.0f} GB. "
         "Load the MiniMax-H3 GGUF build instead, or use a bfloat16 GPU (NVIDIA Ampere or newer)."
     )

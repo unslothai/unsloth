@@ -81,3 +81,16 @@ def test_unreadable_host_ram_refuses_nothing(host, monkeypatch):
     host(torch.float16, 51)
     monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: None)
     assert v.h3_fp16_host_shortfall(H3, _target(torch.float16), model_kind = "pipeline") is None
+
+
+@pytest.mark.parametrize("host_gb, refused", [(200, False), (256, False), (180, True)])
+def test_explicit_int8_conditioner_is_priced_at_its_hosted_size(host, host_gb, refused):
+    # An explicit hosted int8 conditioner engages without bf16 (ConvRot dequantizes, then F.linear) and stays int8:
+    # 132.6 + 27.2 + 22.2 = 182 GB, not the 288 GB dense float32 sum, so a 200-256 GB T4 / V100 host still loads.
+    host(torch.float16, host_gb)
+    if not refused:
+        v.assert_video_precision_available(H3, model_kind = "pipeline", text_encoder_quant = "int8")
+        return
+    with pytest.raises(RuntimeError) as err:
+        v.assert_video_precision_available(H3, model_kind = "pipeline", text_encoder_quant = "int8")
+    assert "about 182 GB" in str(err.value) and "text encoder 27.2" in str(err.value)
