@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Writes (and with --enable/--start, loads) the optional launchd user agent for Unsloth Studio on macOS.
-# Bash 3.2 (macOS /bin/bash) compatible.
+# Writes (and with --enable/--start, loads) Studio's optional launchd user agent. Must stay bash 3.2 compatible.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,9 +32,7 @@ Options:
 EOF
 }
 
-# A plist <string> holds any text once &, < and > are escaped (& first). Matches xml_escaped in
-# studio/src-tauri/src/main.rs. sed, not ${v//&/...}: bash 5.2 reads & in the replacement as the
-# match, and bash 3.2 keeps the quotes that would stop it. Values never hold a newline (rejected above).
+# sed, not ${v//&/...}: bash 5.2 reads & in the replacement as the match, bash 3.2 keeps quotes that would stop it.
 _xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
@@ -129,7 +126,6 @@ if [ -e "$_plist_path" ] && [ "$(sed -n 2p "$_plist_path" 2>/dev/null)" != "$MAR
 fi
 _tmp="$(mktemp "$_agent_dir/.$LABEL.XXXXXX")"
 trap 'rm -f "$_tmp"' EXIT
-# Placeholders sit on lines of their own and are replaced whole, so no value is ever parsed as a pattern.
 while IFS= read -r _line || [ -n "$_line" ]; do
     case "$_line" in
         *"<string>@@UNSLOTH_EXE@@</string>") printf '    <string>%s</string>\n' "$(_xml_escape "$_UNSLOTH_EXE")" ;;
@@ -153,8 +149,7 @@ if [ "$_DO_ENABLE" != true ]; then
     exit 0
 fi
 
-# A plist left behind after a failed load would still start at next login, next to whatever
-# install.sh falls back to; remove it so a failure leaves nothing running later.
+# A plist left after a failed load would still start at next login.
 _fail_load() {
     rm -f "$_plist_path"
     echo "ERROR: $1; removed $_plist_path so it does not start at next login." >&2
@@ -164,11 +159,9 @@ _fail_load() {
 # Clears a `launchctl disable` override, which would otherwise keep it from loading at login.
 launchctl enable "$_domain/$LABEL" || _fail_load "launchctl enable $_domain/$LABEL failed"
 if [ "$_DO_START" = true ]; then
-    # No stop hook: `unsloth studio stop` would also stop every other Studio on this home.
     if launchctl print "$_domain/$LABEL" >/dev/null 2>&1; then
         launchctl bootout "$_domain/$LABEL" >/dev/null 2>&1 || true
-        # bootstrap fails with "5: Input/output error" while the old instance is still unloading.
-        # Wait past the plist's ExitTimeOut (120s), so a Studio finishing a slow shutdown is not cut off.
+        # bootstrap fails ("5: Input/output error") until the old job unloads; wait past ExitTimeOut (120s).
         _waited=0
         while launchctl print "$_domain/$LABEL" >/dev/null 2>&1; do
             if [ "$_waited" -ge 130 ]; then
