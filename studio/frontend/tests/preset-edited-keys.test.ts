@@ -303,3 +303,46 @@ test("a stale tab's prompt edit does not erase a key another tab moved", async (
   assert.equal(sampling().temperature, 0.2);
   settingsHttp.settings = {};
 });
+
+test("an older `modified` still keeps every key after a pre-hydration edit is saved", async () => {
+  load(QWEN);
+  await settled();
+  settingsHttp.settings = { activePreset: "Default", activePresetSource: "modified" };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  saveSystemPrompt("Be terse.");
+  settingsHttp.release?.();
+  await hydrating;
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
+  moveSlider("topK", 5);
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
+  settingsHttp.settings = {};
+});
+
+test("a stale tab's edit does not bring back a key another tab cleared", async () => {
+  load(QWEN);
+  await settled();
+  await rehydrate({
+    activePreset: "Default",
+    activePresetSource: "modified",
+    presetEditedKeys: { temperature: true },
+  });
+  // Another tab picked Default, clearing every key.
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    presetEditedKeys: Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false])),
+  };
+  settingsHttp.puts.length = 0;
+  moveSlider("topK", 5);
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, ["topK"]);
+  settingsHttp.settings = {};
+});

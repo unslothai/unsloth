@@ -3352,16 +3352,22 @@ function heldPresetEditedKeys(
   return [...new Set(editedKeys)];
 }
 
-// Saved per key, so another tab's kept key survives this one's edit; only leaving `modified` clears.
-function presetEditedKeysPatch(
+function keptKeysMap(
   keys: readonly RecommendedSamplingKey[],
-  source: ChatPresetSource,
+  kept: boolean,
 ): Partial<Record<RecommendedSamplingKey, boolean>> {
-  return Object.fromEntries(
-    source === "modified"
-      ? keys.map((key) => [key, true])
-      : RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false]),
-  );
+  return Object.fromEntries(keys.map((key) => [key, kept]));
+}
+
+// Only this edit's key, so a key another tab cleared or kept is left alone; leaving `modified` clears all.
+function presetEditedKeysPatch(
+  source: ChatPresetSource,
+  editedKey: RecommendedSamplingKey | undefined,
+): Pick<PersistedChatSettings, "presetEditedKeys"> {
+  if (source !== "modified") {
+    return { presetEditedKeys: keptKeysMap(RECOMMENDED_SAMPLING_KEYS, false) };
+  }
+  return editedKey ? { presetEditedKeys: keptKeysMap([editedKey], true) } : {};
 }
 
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
@@ -4747,6 +4753,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
+          const hydrated = get();
+          if (
+            fromServer &&
+            hydratedSettings.activePresetSource === "modified" &&
+            hydratedSettings.presetEditedKeys === undefined &&
+            hydrated.activePresetSource === "modified"
+          ) {
+            // Spell out the every-key hold a `modified` saved before the keys existed means, before a
+            // per-key write turns the missing map into a partial one.
+            saveSettingsPatch({
+              presetEditedKeys: keptKeysMap(hydrated.presetEditedKeys, true),
+            });
+          }
           if (checkpointMovedDuringConfirm) {
             scheduleLegacyQwenDefaultsRetry(null);
           }
@@ -4928,7 +4947,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       saveSettingsPatch({
         activePresetSource,
-        presetEditedKeys: presetEditedKeysPatch(presetEditedKeys, activePresetSource),
+        ...presetEditedKeysPatch(activePresetSource, editedKey),
       });
       return { activePresetSource, presetEditedKeys };
     });
