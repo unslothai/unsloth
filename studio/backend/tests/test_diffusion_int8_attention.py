@@ -151,8 +151,9 @@ def reference_quantise(
 
 def reference_v_range(vh, vstep, nvc, vrows):
     """(centre, gain, clip) per head in fp64, as the quantisers' v_range: the full range of every channel, or, where
-    some channel's full range is more than SINK_RATIO times its range without the stats chunk that holds the head's
-    largest |v| (an attention sink), that robust range widened by SINK_MARGIN (at most the full range), clipped."""
+    some channel's full range is more than SINK_RATIO (8) times its range without the stats chunk that holds the
+    head's largest |v| (an attention sink), that robust range widened by SINK_MARGIN (2) (at most the full range),
+    clipped."""
     BH, Sk, D = vh.shape
     lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
     vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
@@ -171,17 +172,17 @@ def reference_v_range(vh, vstep, nvc, vrows):
     ratio = ((hi - lo) / (hir - lor).clamp_min(1e-30)).amax(-1)
     clip = (ratio > 8.0) & (nvc > 1) & (vstep == 1)
     rc = 0.5 * (hir + lor)
-    rg = torch.minimum(1.5 * 0.5 * (hir - lor), 0.5 * (hi - lo)).clamp_min(1e-12)
+    rg = torch.minimum(2.0 * 0.5 * (hir - lor), 0.5 * (hi - lo)).clamp_min(1e-12)
     return torch.where(clip[:, None], rc, vc), torch.where(clip[:, None], rg, vg), clip
 
 
 def reference_residuals(vh, vc, vg, clip):
-    """(rcnt, ridx, rres) of the residual job: per clipping head, the keys whose (v - centre) / gain leaves [-1, 1],
-    in key order, and the part clipped off."""
+    """(rcnt, ridx, rres) of the residual job: per clipping head, the keys whose (v - centre) / gain leaves [-1, 1]
+    by more than 0.25 in some channel, in key order, and the part clipped off."""
     BH, Sk, D = vh.shape
     x = (vh - vc[:, None, :]) / vg[:, None, :]
     res = x - x.clamp(-1, 1)
-    out = (res != 0).any(-1) & clip[:, None]
+    out = (res.abs() > 0.25).any(-1) & clip[:, None]
     rcnt = out.sum(1)
     n = max(1, int(rcnt.max()))
     ridx = torch.zeros(BH, n, dtype = torch.long, device = vh.device)
@@ -1411,9 +1412,9 @@ def _sink_case(
 def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
     """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
     without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back in the
-    epilogue. Its error against fp32 stays within 2.5x that of the same call without the sinks (it was 4.5x or more
-    with the range over every key), the kernel matches its torch model, and the heads without sinks keep the full
-    range (no clipped keys)."""
+    epilogue. Its error against fp32 stays within 3x that of the same call without the sinks (at most 2.4x in the
+    fp64 model; 4.5x or more with the range over every key), the kernel matches its torch model, and the heads
+    without sinks keep the full range (no clipped keys)."""
     shape = (1, 4128, 4, head_dim)
     dtype = _card_dtype()
     config = _cuda_config(head_dim)
@@ -1427,7 +1428,7 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
         return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
 
     sink_heads, other = list(range(0, 4, 2)), list(range(1, 4, 2))
-    assert err(out, ref, sink_heads) < 2.5 * err(plain_out, plain, sink_heads), (
+    assert err(out, ref, sink_heads) < 3.0 * err(plain_out, plain, sink_heads), (
         err(out, ref, sink_heads),
         err(plain_out, plain, sink_heads),
     )

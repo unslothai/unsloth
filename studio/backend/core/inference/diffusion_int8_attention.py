@@ -20,7 +20,7 @@ How the values are quantised (ideas from the cited papers, written from scratch 
 * V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
   key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
   tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
-  adds the clipped-off parts back exactly in the epilogue, so the sink no longer costs every other key its
+  adds the far-out parts back exactly in the epilogue, so the sink no longer costs every other key its
   resolution (CUDA kernel; the Triton kernel keeps the range over every key).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``

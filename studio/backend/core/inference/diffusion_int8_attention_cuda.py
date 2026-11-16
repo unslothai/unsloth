@@ -1109,11 +1109,14 @@ extern "C" __global__ void unsloth_i8stats_q(
 // set every channel's range and cost every other key its resolution, while they draw well under 1% of the
 // attention. So when the full range of some channel is more than SINK_RATIO times its range without the chunk that
 // holds the head's largest |v|, the head uses that robust range (widened by SINK_MARGIN, never past the full range):
-// that chunk's keys are clipped to it in place and the parts clipped off are added back exactly by the attention
-// kernel (unsloth_i8quant_kv's residual job, the epilogue of unsloth_i8attn). Any other head keeps the full range,
-// bit for bit. smc / smr get the centre and 1 / gain of channels c < HD; returns whether the head clips.
+// that chunk's keys are clipped to it in place and the parts clipped off by more than SINK_MIN (in units of the
+// gain) are added back exactly by the attention kernel (unsloth_i8quant_kv's residual job, the epilogue of
+// unsloth_i8attn); each costs the epilogue about a fifth of a key tile, so only the sinks and the few keys near them
+// go there (FLUX.3 / Z-Image: 1-13 keys a head). Any other head keeps the full range, bit for bit. smc / smr get the
+// centre and 1 / gain of channels c < HD; returns whether the head clips.
 #define SINK_RATIO 8.0f
-#define SINK_MARGIN 1.5f
+#define SINK_MARGIN 2.0f
+#define SINK_MIN 0.25f
 __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict__ vsink, i64 bh, int nvc,
                         int vstep, float* smc, float* smr, float (*smx)[HD], float* smw, int* sc_out, u32 tid,
                         u32 nt) {
@@ -1171,8 +1174,8 @@ __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict
 // vt [BH, n_kpad / BN, HD, BN] int8 ((v - centre) / gain over the tile scale, zeros past n_k) in the key order of
 // the kernel's operand registers; vs [BH, n_kpad / BN] the tile scales; vc / vg [BH, HD] centre and gain, merged from
 // vpart by every V block (HD threads) and written by tile 0 (v_range: a head with an attention sink clips one chunk).
-// rcnt [BH] / ridx [BH, rstride] / rres [BH, rstride, HD]: the keys a head clipped, in key order, and the parts of
-// their (v - centre) / gain clipped off (the residual job, the last one of the grid).
+// rcnt [BH] / ridx [BH, rstride] / rres [BH, rstride, HD]: the keys a head clipped by more than SINK_MIN, in key
+// order, and the parts of their (v - centre) / gain clipped off (the residual job, the last one of the grid).
 // ki [BH, n_kpad, HD] int8 rotated (k - kc) (zeros past n_k); ks [BH, n_kpad / 32, 4] = the maximum over the keys
 // of a run of 32 with the same (key % 8) / 2, over 127
 // grid (BH, jobs): job = job0 + y of n_kpad / BN + n_kpad / KROWS, NTKV threads. Job < n_kpad / BN is a V tile,
@@ -1215,7 +1218,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
         for (int i = 0; i < 16; ++i) {
           const float y = (x[i] - smc[16 * g16 + i]) * smr[16 * g16 + i];
           x[i] = y - fminf(fmaxf(y, -1.f), 1.f);
-          out |= x[i] != 0.f;
+          out |= fabsf(x[i]) > SINK_MIN;
         }
       }
 #pragma unroll
