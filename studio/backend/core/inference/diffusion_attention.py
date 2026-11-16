@@ -3584,7 +3584,7 @@ def apply_attention_backend(
     the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
     diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
     wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
-    ``speed_active`` is False (speed off stays bit-identical)."""
+    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
     if target is not None:
         try:
