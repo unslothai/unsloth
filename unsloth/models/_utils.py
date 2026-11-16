@@ -6806,6 +6806,7 @@ def _pipeline_parallel_env_refusals(
     compute_loss_func = kwargs.get("compute_loss_func")
     train_dataset = kwargs.get("train_dataset")
     eval_dataset = kwargs.get("eval_dataset")
+    data_collator = kwargs.get("data_collator")
     if training_args is None or args:
         try:
             import inspect
@@ -6815,6 +6816,7 @@ def _pipeline_parallel_env_refusals(
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
             train_dataset = bound.arguments.get("train_dataset", train_dataset)
             eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
+            data_collator = bound.arguments.get("data_collator", data_collator)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6839,6 +6841,7 @@ def _pipeline_parallel_env_refusals(
         model = model,
         train_dataset = train_dataset,
         eval_dataset = eval_dataset,
+        data_collator = data_collator,
     )
 
 
