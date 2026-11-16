@@ -664,7 +664,7 @@ def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_si
     )
 
 
-from .flash_impl import flash_impl_allows  # noqa: E402
+from .flash_impl import active_flash_impl, flash_impl_allows  # noqa: E402
 
 
 def _torch_varlen_takes(
@@ -1367,9 +1367,18 @@ _PACKED_BLOCK_PREP = [None]
 _PACKED_VARLEN_OK = {}
 
 
-def _packed_varlen_ok_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
-    """aten's flash varlen runs this shape here: one real forward and backward, cached."""
-    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+def _packed_varlen_ok_eager(
+    device_index,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    window,
+    impl = None,
+):
+    """aten's flash varlen runs this shape here: one real forward and backward, cached per impl
+    (active_flash_impl: the FA4 / FA3 behind torch's flash op, None for the bundled kernel)."""
+    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window, impl)
     if key not in _PACKED_VARLEN_OK:
         from .flash_impl import flash_impl_allows
         from .hf_packed_attention import _flash_varlen, _no_saved_tensor_hooks
@@ -1431,14 +1440,15 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
     )
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return False
-    # The graph always runs torch's bundled FA2 varlen, exact over the same documents (probed below).
+    # The graph runs aten's flash varlen: torch's bundled FA2, or the FA4 / FA3 flash_impl activated
+    # inside train(); exact over the same documents (probed below per impl).
     if head_dim > 256:
         return False
     window = getattr(config, "sliding_window", None)
     window = window if isinstance(window, int) and window > 0 else None
-    index = hidden_states.device.index
+    index, impl = hidden_states.device.index, active_flash_impl()
     return all(
-        _packed_varlen_ok_eager(index, hidden_states.dtype, head_dim, n_heads, n_kv_heads, w)
+        _packed_varlen_ok_eager(index, hidden_states.dtype, head_dim, n_heads, n_kv_heads, w, impl)
         for w in {None, window}
     )
 
@@ -1549,7 +1559,13 @@ def _prepared_packed_attention(config, context, Q, K, V):
     ):
         from .hf_packed_attention import _flash_varlen
         if _packed_varlen_ok(
-            Q.device.index, Q.dtype, head_dim, n_heads, K.shape[1], sliding_window
+            Q.device.index,
+            Q.dtype,
+            head_dim,
+            n_heads,
+            K.shape[1],
+            sliding_window,
+            active_flash_impl(),
         ):
             if scale is None:
                 scale = head_dim**-0.5
