@@ -310,30 +310,31 @@ def test_every_n_layers_zero_is_rejected(patched, via_dict):
 
 def _vision_nonre_checkpoint(offload_hooks):
     """vision.py's _nonre_checkpoint (DDP vision models, DeepSeek-V4.1) with use_gradient_checkpointing = "unsloth"."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_non_reentrant_checkpoint",
+        os.path.join(HERE, "unsloth", "models", "non_reentrant_checkpoint.py"),
+    )
+    factory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(factory)
     src = open(VISION, encoding = "utf-8").read()
     for node in ast.walk(ast.parse(src)):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        if not any(isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint" for n in body):
-            continue
-        ns = {
-            "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
-            "_offload": True,
-            "_offload_activation_hooks": offload_hooks,
-            "_gc_checkpoint_owner": lambda function: None,
-        }
-        for n in body:
-            if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
-                exec(ast.get_source_segment(src, n), ns)
-            elif isinstance(n, ast.Assign) and any(
-                isinstance(t, ast.Attribute)
-                and isinstance(t.value, ast.Name)
-                and t.value.id == "_nonre_checkpoint"
-                for t in n.targets
-            ):
-                exec(ast.get_source_segment(src, n), ns)
-        return ns["_nonre_checkpoint"]
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_nonre_checkpoint" for t in node.targets)
+            and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", None) == "non_reentrant_checkpoint"
+        ):
+            ns = {
+                "non_reentrant_checkpoint": factory.non_reentrant_checkpoint,
+                "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
+                "_offload": True,
+                "_offload_activation_hooks": offload_hooks,
+                "_gc_checkpoint_owner": lambda function: None,
+            }
+            exec(ast.get_source_segment(src, node), ns)
+            return ns["_nonre_checkpoint"]
     pytest.fail("_nonre_checkpoint not found in vision.py")
 
 

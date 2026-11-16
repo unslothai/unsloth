@@ -6202,17 +6202,14 @@ class FastBaseModel:
             )
             _offload = use_gradient_checkpointing == "unsloth"
             _register_gc_offload_root(model, _offload)
+            from .non_reentrant_checkpoint import non_reentrant_checkpoint
 
-            def _nonre_checkpoint(function, *args, **kwargs):
-                kwargs["use_reentrant"] = False
-                if not _offload:
-                    return _orig_checkpoint(function, *args, **kwargs)
-                with _offload_activation_hooks(_gc_checkpoint_owner(function)):
-                    return _orig_checkpoint(function, *args, **kwargs)
-
-            _nonre_checkpoint._unsloth_original = _orig_checkpoint
-            # Already offloads through _offload_activation_hooks: transformers' offload=True would nest it.
-            _nonre_checkpoint._unsloth_offloads = _offload
+            _nonre_checkpoint = non_reentrant_checkpoint(
+                _orig_checkpoint,
+                (lambda function: _offload_activation_hooks(_gc_checkpoint_owner(function)))
+                if _offload
+                else None,
+            )
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
         else:
