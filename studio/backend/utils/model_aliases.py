@@ -63,6 +63,15 @@ def alias_config_matches(backend: Any, config: dict) -> bool:
     if not config:
         return True
     intent = getattr(backend, "last_load_intent", None)
+    if intent is not None:
+        from utils.openai_auto_switch_settings import strip_args_shadowed_by
+
+        extras = getattr(backend, "requested_extra_args", None)
+        if extras is None:
+            extras = getattr(intent, "extra_args", None)
+        # Scalars are not authoritative when a manual launch supplied overriding flags.
+        if extras and strip_args_shadowed_by(extras, config) != list(extras):
+            return False
     return intent is not None and all(
         getattr(intent, field, None) == config[key]
         for key, field in (
@@ -161,7 +170,9 @@ def resolve_model_alias(name: Any) -> Optional[str]:
 
 
 def alias_model_objects(
-    objects: list[dict], pinned_object: Optional[Callable[[str, list[dict]], Optional[dict]]] = None
+    objects: list[dict],
+    pinned_object: Optional[Callable[[str, list[dict]], Optional[dict]]] = None,
+    loaded_config_matches: Optional[Callable[[str, dict], bool]] = None,
 ) -> list[dict]:
     """``/v1/models`` rows for aliases whose target is in ``objects``, the caller's visible
     catalog, so the listing never advertises a name that would 404. An alias the rewrite would
@@ -182,6 +193,15 @@ def alias_model_objects(
             continue
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
         row = {k: v for k, v in listed.items() if k not in ("display_name", "quant")}
+        config = alias.get("load_config")
+        if config and not (
+            listed.get("loaded")
+            and loaded_config_matches is not None
+            and loaded_config_matches(target, config)
+        ):
+            # Like an unloaded quant pin, this configuration has no resident context or lease.
+            row = {k: row[k] for k in ("object", "created", "owned_by", "task") if k in row}
+            row["loaded"] = False
         row.update(id = alias["name"], alias_for = target)
         rows.append(row)
     return rows

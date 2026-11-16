@@ -11451,13 +11451,15 @@ async def _maybe_auto_switch_model(
     def _config_matches() -> bool:
         return alias_config_matches(get_llama_cpp_backend(), alias_config)
 
-    def _config_requires_switch() -> None:
-        if alias_config and not _config_matches():
+    async def _config_requires_switch() -> None:
+        if alias_config and (
+            not _config_matches() or not await asyncio.to_thread(_loaded_satisfies, requested_model)
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = openai_error_body(
-                    "The alias configuration is not loaded. Enable automatic model switching "
-                    "with a credential allowed to load models.",
+                    "The requested alias configuration is not loaded. Automatic switching "
+                    "requires permission to load this model and a compatible, unshared runtime.",
                     status = 409,
                     code = "model_configuration_not_loaded",
                     param = "model",
@@ -11505,7 +11507,7 @@ async def _maybe_auto_switch_model(
         elif account_access.resident_hidden("chat", _loaded_slot_ident()):
             raise HTTPException(status_code = 404, detail = "Model not found")
     if routed is not None:
-        _config_requires_switch()
+        await _config_requires_switch()
         return
 
     async def _refuse_foreign_resident() -> None:
@@ -11592,7 +11594,7 @@ async def _maybe_auto_switch_model(
         return
     # Preview route opts out so callers cannot switch away from the pinned checkpoint.
     if _auto_switch_opted_out(fastapi_request):
-        _config_requires_switch()
+        await _config_requires_switch()
         return
     if (
         named_model
@@ -11604,7 +11606,7 @@ async def _maybe_auto_switch_model(
         if not await asyncio.to_thread(_loaded_identity_satisfies, named_model):
             raise HTTPException(status_code = 404, detail = "Model not found")
         await _refuse_foreign_resident()
-        _config_requires_switch()
+        await _config_requires_switch()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
@@ -11643,7 +11645,7 @@ async def _maybe_auto_switch_model(
         # Reject before claiming the slot.
         await _reject_unservable_model(requested_model, fastapi_request)
         await _refuse_foreign_resident()
-        _config_requires_switch()
+        await _config_requires_switch()
         # Auto-switch off: this non-preview turn uses the resident model, claim it.
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -11666,11 +11668,11 @@ async def _maybe_auto_switch_model(
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
-            _config_requires_switch()
+            await _config_requires_switch()
             return
 
     if alias_config and not auto_switch_on:
-        _config_requires_switch()
+        await _config_requires_switch()
 
     from core.inference.npu_backend import is_npu_model_path
 
@@ -12332,10 +12334,13 @@ async def _maybe_auto_switch_model(
                                 load_request._gguf_companion_roots_set = True
                                 load_request._override_alias_id = override_id
                                 await _switch_load(load_request)
-                            _switch_loaded_ok = True
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
                             target_backend._loaded_by_user_action = False
+                            # A shared-runtime join may intentionally ignore ordinary capacity defaults.
+                            # Explicit alias settings must still hold before this request can generate.
+                            await _config_requires_switch()
+                            _switch_loaded_ok = True
                             _raise_if_generation_cancelled()
                         finally:
                             if not claim_resident:
@@ -38385,13 +38390,21 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 
 
 async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
-    from utils.model_aliases import alias_model_objects
+    from utils.model_aliases import alias_config_matches, alias_model_objects
+
+    def config_is_loaded(model: str, config: dict) -> bool:
+        backend = get_llama_cpp_backend()
+        return (
+            backend.is_loaded and _loaded_satisfies(model) and alias_config_matches(backend, config)
+        )
 
     if quant_pins:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
-    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
+    aliases = await asyncio.to_thread(
+        alias_model_objects, objects, _pinned_quant_row, config_is_loaded
+    )
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases

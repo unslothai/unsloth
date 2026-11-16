@@ -463,3 +463,76 @@ def test_configured_alias_uses_one_settings_snapshot(monkeypatch):
     seen = _run_middleware(b'{"model":"long"}')
     assert json.loads(seen["body"])["model"] == "org/before"
     assert aliases_mod.request_alias_load_config(seen["scope"], "org/before") == _CONFIG
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--ctx-size", "2048"],
+        ["--cache-type-k", "q4_0"],
+        ["--cache-type-v=q4_0"],
+        ["--spec-type", "none"],
+    ],
+)
+def test_alias_config_does_not_trust_scalars_shadowed_by_extra_flags(extras):
+    # A manually loaded server's flags can disagree with the scalar intent it retained.
+    from types import SimpleNamespace
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    intent = GgufLoadIntent(
+        model_identifier = "org/model",
+        n_ctx = 98304,
+        cache_type_kv = "q5_1",
+        speculative_type = "ngram",
+        extra_args = extras,
+    )
+    backend = SimpleNamespace(last_load_intent = intent, requested_extra_args = extras)
+    assert not aliases_mod.alias_config_matches(backend, _CONFIG)
+
+
+def test_configured_alias_catalog_reports_only_matching_runtime_loaded(store, monkeypatch):
+    # An unloaded configuration cannot advertise another configuration's live context or residency.
+    import routes.inference as inf
+    from core.inference.llama_cpp import GgufLoadIntent
+    from types import SimpleNamespace
+
+    set_model_aliases(
+        [
+            {"name": "long", "model": "org/model", "load_config": _CONFIG},
+            {
+                "name": "short",
+                "model": "org/model",
+                "load_config": {**_CONFIG, "max_seq_length": 2048},
+            },
+        ]
+    )
+
+    async def catalog(**kwargs):
+        return [
+            {
+                "id": "org/model",
+                "object": "model",
+                "loaded": True,
+                "context_length": 98304,
+                "max_model_len": 98304,
+                "residency": {"loaded": True},
+            }
+        ]
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        last_load_intent = GgufLoadIntent(
+            model_identifier = "org/model",
+            n_ctx = 98304,
+            cache_type_kv = "q5_1",
+            speculative_type = "ngram",
+        ),
+    )
+    monkeypatch.setattr(inf, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf, "_loaded_satisfies", lambda model: model == "org/model")
+    rows = asyncio.run(inf._openai_catalog_with_aliases())
+    long = next(row for row in rows if row["id"] == "long")
+    short = next(row for row in rows if row["id"] == "short")
+    assert long["loaded"] is True and long["context_length"] == 98304
+    assert short == {"id": "short", "object": "model", "loaded": False, "alias_for": "org/model"}

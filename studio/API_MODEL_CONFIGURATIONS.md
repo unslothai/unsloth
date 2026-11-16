@@ -1,6 +1,6 @@
 # Select a GGUF configuration through the API
 
-An API client can select different launch configurations of the same downloaded GGUF by choosing a model alias. Each configured alias appears as a separate name in `GET /v1/models`, subject to the underlying model's visibility. Ordinary aliases continue to work unchanged.
+An API client can select different launch configurations of the same downloaded GGUF by choosing a model alias. Each configured alias appears as a separate name in `GET /v1/models`, subject to the underlying model's visibility. A configuration is reported as loaded only when the resident model and its requested launch settings match; other configurations omit live context and residency fields. Ordinary aliases continue to work unchanged.
 
 This initial version supports GGUF text generation with **Keep multiple models loaded** set to **Off**. Enable automatic model switching in Settings > API and use a credential allowed to load models. A loaded-only credential can use a configuration already loaded but cannot change it. Configured aliases do not download missing models or load non-GGUF models, and are not supported for embeddings.
 
@@ -49,8 +49,8 @@ Use the same server URL and authentication you already use for Studio's OpenAI-c
 }
 ```
 
-Switching aliases may reload the local inference server and rebuild its cache. It reuses the downloaded weights; it does not keep two model copies resident. Repeating an already loaded configuration avoids a configuration reload. Auto speculation compares the original requested mode, even if the engine chooses a specific algorithm at runtime.
+Switching aliases may reload the local inference server and rebuild its cache. It reuses the downloaded weights; it does not keep two model copies resident. Repeating an already loaded configuration avoids a configuration reload. Conflicting manual launch flags require a clean configured load before reuse. Auto speculation compares the original requested mode, even if the engine chooses a specific algorithm at runtime.
 
-A mismatch with automatic switching disabled or a loaded-only credential returns 409 rather than answering with the wrong settings. A target not available locally returns 404; unsupported backend/multi-model/embedding combinations return 400 before loading. Existing model access restrictions and lifecycle policies still apply. A plain alias or bare model id retains the existing behavior of using that model's currently loaded configuration.
+A mismatch with automatic switching disabled or a loaded-only credential returns 409 rather than answering with the wrong settings. With switching enabled, a target not available locally returns 404; unsupported backend/multi-model/embedding combinations return 400 before loading. Existing model access restrictions and lifecycle policies still apply. If another account's shared runtime cannot be reconfigured, the request returns 409 rather than accepting its different context or cache. A plain alias or bare model id retains the existing behavior of using that model's currently loaded configuration.
 
 These example context sizes reproduce #17820's intended distinction; they are not a promise that a particular GPU can hold either configuration. For a quick local demonstration, use a small GGUF and windows such as 2048 and 4096, then verify the active context/cache/speculation in Studio status after each request.

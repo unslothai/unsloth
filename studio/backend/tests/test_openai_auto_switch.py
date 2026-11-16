@@ -13506,3 +13506,24 @@ def test_alias_config_target_authorization_precedes_switch(monkeypatch):
         )
     assert exc.value.status_code == 404
     assert not rec.calls
+
+
+def test_alias_config_disabled_switch_refuses_other_weights_with_matching_settings(monkeypatch):
+    # Legacy unknown-name fallback must not satisfy a configured alias with unrelated weights.
+    from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
+
+    backend, rec = _wire_alias_config(monkeypatch, enabled = False, resolves = False)
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        model_identifier = backend.model_identifier,
+        n_ctx = 98304,
+        cache_type_kv = "q5_1",
+        speculative_type = "ngram",
+    )
+    request = _alias_config_request(_ALIAS_LONG)
+    request.scope[MODEL_ALIAS_CONFIG_SCOPE_KEY]["model"] = "missing-local-model"
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model("missing-local-model", request, "tester")
+        )
+    assert exc.value.status_code == 409
+    assert not rec.calls

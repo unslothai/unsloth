@@ -220,3 +220,40 @@ def test_a_retired_loader_is_not_seeded_back(strict, accounts):
     access.retire_resident_shares(accounts["bob"].account_id)
     assert load(accounts["alice"]).status == "already_loaded"
     assert access._resident_sharers["chat"] == {accounts["alice"].account_id}
+
+
+def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, accounts):
+    # The real loader's ordinary shared-runtime join cannot count as applying an explicit alias config.
+    from dataclasses import replace
+    from fastapi import HTTPException
+    from core.inference import local_model_resolver as resolver
+    from utils import openai_auto_switch_settings as settings
+    from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
+
+    strict.last_load_intent = replace(
+        strict.last_load_intent, n_ctx = 2048, cache_type_kv = "q4_0", speculative_type = "off"
+    )
+    strict._requested_spec_mode = "off"
+    target = f"{RESIDENT}:{VARIANT}"
+    config = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda *a, **k: (RESIDENT, VARIANT, RESIDENT)
+    )
+    request = SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+        scope = {MODEL_ALIAS_CONFIG_SCOPE_KEY: {"model": target, "load_config": config}},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        run_as(
+            accounts["alice"],
+            lambda: asyncio.run(
+                inference._maybe_auto_switch_model(target, request, accounts["alice"].username)
+            ),
+        )
+    assert exc.value.status_code == 409
+    assert strict.last_load_intent.n_ctx == 2048
+    assert strict.last_load_intent.cache_type_kv == "q4_0"
+    assert not strict.unloaded
