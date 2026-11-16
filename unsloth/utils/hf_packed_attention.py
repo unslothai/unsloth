@@ -13,6 +13,8 @@ import weakref
 
 import torch
 
+from .flash_impl import active_flash_impl
+
 __all__ = ["enable_hf_packed_attention", "HF_PACKED_ATTENTION_STATS"]
 
 _FLAG = "_unsloth_hf_packed_varlen"
@@ -435,10 +437,15 @@ def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     """aten's flash varlen, what torch's varlen_attn runs for these rows, called directly: a native op
     with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
     compiled step) that takes grouped K / V heads as they are."""
+    query, key, value = (x[0].transpose(0, 1) for x in (query, key, value))
+    # torch's FA4 / FA3 impls return a contiguous output and grads where the op's fake kernel follows
+    # the input layout, so a compiled graph fails its stride check: give them contiguous rows.
+    if torch.compiler.is_compiling() and active_flash_impl() is not None:
+        query, key, value = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.ops.aten._flash_attention_forward(
-        query[0].transpose(0, 1),
-        key[0].transpose(0, 1),
-        value[0].transpose(0, 1),
+        query,
+        key,
+        value,
         cu_seqlens,
         cu_seqlens,
         max_seqlen,
@@ -540,6 +547,7 @@ def _sdpa_packed_varlen(
                 int(query.shape[1]),
                 int(key.shape[1]),
                 window,
+                active_flash_impl(),
             )
         ):
             # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
@@ -829,10 +837,19 @@ _leaves_block = _constant_probe(_leaves_block_eager)
 _VARLEN_IN_GRAPH = {}
 
 
-def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
-    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+def _varlen_in_graph_eager(
+    device_index,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    window,
+    impl = None,
+):
+    # impl: the FA4 / FA3 behind torch's flash op when probed (active_flash_impl); each answers for itself.
+    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window, impl)
     if key not in _VARLEN_IN_GRAPH:
-        _VARLEN_IN_GRAPH[key] = _varlen_in_graph_probe(*key)
+        _VARLEN_IN_GRAPH[key] = _varlen_in_graph_probe(*key[:-1])
     return _VARLEN_IN_GRAPH[key]
 
 

@@ -16,6 +16,7 @@ __all__ = [
     "deactivate_flash_attention_impl",
     "scope_flash_attention_impl_to_train",
     "flash_impl_allows",
+    "active_flash_impl",
     "FLASH_IMPL_STATE",
 ]
 
@@ -164,6 +165,13 @@ try:
     from torch.nn.attention import _registry as _TORCH_FLASH_REGISTRY
 except Exception:
     _TORCH_FLASH_REGISTRY = None
+
+
+def active_flash_impl():
+    """ "FA4" / "FA3" while one is swapped in behind torch's flash op, else None. A plain attribute read:
+    traced code guards on the name, so activating or restoring an impl retraces instead of reusing a graph."""
+    active = getattr(_TORCH_FLASH_REGISTRY, "_FLASH_ATTENTION_ACTIVE", None)
+    return None if active is None else active[0]
 
 
 def flash_impl_allows(head_dim, window, device) -> bool:
