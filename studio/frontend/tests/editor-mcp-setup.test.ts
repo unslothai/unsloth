@@ -17,8 +17,10 @@ test("the MCP menu keeps Blender and adds the three managed editors after it", (
   }
   assert.match(API, /export type EditorMcpId = "unity" \| "unreal" \| "godot";/);
   const blender = COMPOSER.indexOf('<span className="truncate">Blender</span>');
-  const editors = COMPOSER.indexOf("(Object.keys(EDITOR_MCP) as EditorMcpId[]).map");
-  assert.ok(blender > 0 && editors > blender);
+  const editors = COMPOSER.indexOf(".filter((id) => !EDITOR_MCP[id].more)");
+  const more = COMPOSER.indexOf("<DropdownMenuSubTrigger>More</DropdownMenuSubTrigger>");
+  assert.ok(blender > 0 && editors > blender && more > editors);
+  assert.match(CATALOG, /godot: \{[\s\S]*?more: true,/);
   assert.match(COMPOSER, /<BlenderMcpSetup/);
   assert.match(COMPOSER, /<EditorMcpSetup\s+key=\{editorOpen\}\s+editorId=\{editorOpen\}/);
 });

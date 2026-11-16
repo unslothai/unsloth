@@ -14,6 +14,8 @@ type EditorCopy = {
   steps: ReactNode[];
   portHint: string;
   needsProject?: boolean;
+  // Listed under the menu's More submenu instead of at the top level.
+  more?: boolean;
 };
 
 export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
@@ -52,5 +54,6 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
       <>In the {strong("MCP")} dock, keep the transport on {strong("HTTP")} and start the server if it is not running.</>,
     ],
     portHint: "Match the HTTP port in the MCP dock.",
+    more: true,
   },
 };

@@ -21,6 +21,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -251,6 +254,28 @@ export function McpComposerButton({
   ).length;
   const active = usable && mcpEnabledForChat && enabledCount > 0;
 
+  function renderEditorRow(id: EditorMcpId) {
+    const enabled = servers.some((server) => server.builtin_id === id && server.is_enabled);
+    return (
+      <DropdownMenuItem
+        key={id}
+        onSelect={() => {
+          setMenuOpen(false);
+          setEditorShown(id);
+          setEditorOpen(id);
+        }}
+        className={enabled ? "relative text-primary font-medium" : "relative"}
+      >
+        <span className="truncate">{EDITOR_MCP[id].name}</span>
+        {enabled ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : notInstalled.has(id) ? (
+          <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
+        ) : null}
+      </DropdownMenuItem>
+    );
+  }
+
   async function toggleServer(args: {
     url: string;
     displayName: string;
@@ -436,27 +461,17 @@ export function McpComposerButton({
               <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
             ) : null}
           </DropdownMenuItem>
-          {(Object.keys(EDITOR_MCP) as EditorMcpId[]).map((id) => {
-            const enabled = servers.some((server) => server.builtin_id === id && server.is_enabled);
-            return (
-              <DropdownMenuItem
-                key={id}
-                onSelect={() => {
-                  setMenuOpen(false);
-                  setEditorShown(id);
-                  setEditorOpen(id);
-                }}
-                className={enabled ? "relative text-primary font-medium" : "relative"}
-              >
-                <span className="truncate">{EDITOR_MCP[id].name}</span>
-                {enabled ? (
-                  <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-                ) : notInstalled.has(id) ? (
-                  <span className="ml-auto text-xs text-muted-foreground">Not installed</span>
-                ) : null}
-              </DropdownMenuItem>
-            );
-          })}
+          {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+            .filter((id) => !EDITOR_MCP[id].more)
+            .map(renderEditorRow)}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>More</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="unsloth-plus-menu mcp-menu">
+              {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+                .filter((id) => EDITOR_MCP[id].more)
+                .map(renderEditorRow)}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
           {customServers.map((server) =>
             renderRow({
