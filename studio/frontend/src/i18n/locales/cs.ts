@@ -1133,6 +1133,7 @@ export const cs = {
       videoChecking: "Zjišťuje se, zda tento počítač podporuje video...",
       more: "Další",
       customizeSidebar: "Přizpůsobit postranní panel",
+      customizeProfileMenu: "Přizpůsobit nabídku profilu",
       newBadge: "Nové",
       export: "Export",
       recents: "Nedávné",

@@ -1031,6 +1031,7 @@ export const ja = {
       videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
+      customizeProfileMenu: "プロフィールメニューをカスタマイズ",
       newBadge: "新機能",
       export: "エクスポート",
       recents: "履歴",

@@ -1138,6 +1138,7 @@ export const uk = {
       videoChecking: "Перевірка підтримки відео на цьому комп’ютері...",
       more: "Більше",
       customizeSidebar: "Налаштувати бічну панель",
+      customizeProfileMenu: "Налаштувати меню профілю",
       newBadge: "Нове",
       export: "Експорт",
       recents: "Нещодавні",
