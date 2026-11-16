@@ -695,6 +695,47 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
         logger.warning(msg, type(vae).__name__, reason)
 
 
+def full_map_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+) -> Any:
+    """FLUX.2-class VAEs: the whole-map strip decode instead of tiles when it fits the free memory (tiles cut from a
+    large latent take their own GroupNorm stats and shift colour); None to tile. See diffusion_vae_strips."""
+    try:
+        import torch
+
+        from . import diffusion_vae_strips as strips
+
+        if (
+            torch.compiler.is_compiling()
+            or z.dim() != 4
+            or (os.environ.get(MAX_TILE_ENV) or "").strip()
+            or not strips.full_map_ok(vae)
+        ):
+            return None
+        free = _free_mib(vae, z)
+        if free is None:
+            free = _host_free_mib(vae, z)
+        if free is None or strips.full_map_decode_mib(vae, z) > FREE_FRACTION * free[0]:
+            return None
+    except Exception:  # noqa: BLE001 - unknown figures: the tiles
+        return None
+    try:
+        dec = strips.full_map_decode(vae, z)
+    except Exception as exc:  # noqa: BLE001 - the tiles are the fallback
+        _clear_partial(vae, z)
+        logger = vae.__dict__.get("_unsloth_wide_logger")
+        if logger is not None and not _is_oom(exc):
+            logger.warning("diffusion.vae_tiling: whole-map decode failed, tiling: %s", exc)
+        return None
+    if not return_dict:
+        return (dec,)
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    return DecoderOutput(sample = dec)
+
+
 def install(vae: Any, logger: Any = None) -> bool:
     """Route ``vae``'s tiled decode / encode through the wide tiles where stock falls under the floor. Idempotent;
     False when not covered. ``_unsloth_decode_tile_side`` carries the real decode tile side for the memory estimates."""
@@ -718,6 +759,9 @@ def install(vae: Any, logger: Any = None) -> bool:
         z: Any,
         return_dict: bool = True,
     ) -> Any:
+        full = full_map_decode(self, z, return_dict)
+        if full is not None:
+            return full
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
             return _stock(z, return_dict)
         # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles. Before
