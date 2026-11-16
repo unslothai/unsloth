@@ -544,6 +544,49 @@ def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
     assert out.dtype == torch.float32
 
 
+def test_ring_downcast_fp32_inputs_never_take_the_efficient_kernel(monkeypatch):
+    import contextlib
+
+    if cp.SDPBackend is None:
+        pytest.skip("torch without SDPBackend")
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    kernels, active = [], []
+
+    @contextlib.contextmanager
+    def record(backends):
+        active.append(list(backends))
+        yield
+        active.pop()
+
+    monkeypatch.setattr(ad, "_sdpa_kernel", record)
+    monkeypatch.setattr(
+        ad,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **k: (kernels.append((Q.dtype, active[-1] if active else None)), Q)[1],
+    )
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 4, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 4,
+        head_dim = 8,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.zeros(1, 4, 4, 8, dtype = torch.float32)
+    manager = _manager()
+    manager.mesh = None
+    manager._ring_float32 = True  # an fp32 model: the step-wide list allows efficient attention
+    with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+        ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    ((dtype, pinned),) = kernels
+    assert dtype in (torch.bfloat16, torch.float16)
+    assert pinned is not None and cp.SDPBackend.EFFICIENT_ATTENTION not in pinned
+
+
 @pytest.mark.parametrize("distributed_type, fsdp_version", [("DEEPSPEED", None), ("FSDP", 1)])
 def test_deepspeed_and_fsdp1_are_refused(monkeypatch, distributed_type, fsdp_version):
     import types
