@@ -384,6 +384,7 @@ import {
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
@@ -5988,6 +5989,7 @@ export function createOpenAIStreamAdapter(
       }
       // Keep the <think> block open across reasoning deltas; answer content closes it.
       let reasoningContentOpen = resumesInsideThought;
+      let reasoningContentSeen = resumesInsideThought;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -8637,17 +8639,22 @@ export function createOpenAIStreamAdapter(
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                  appendCumulative(`<think>${reasoning}`);
+                  appendCumulative(`<think>${markLiteralThinkTags(reasoning)}`);
                   reasoningContentOpen = true;
+                  reasoningContentSeen = true;
                 } else {
-                  appendCumulative(reasoning);
+                  appendCumulative(markLiteralThinkTags(reasoning));
                 }
               }
               if (delta) {
                 if (reasoningContentOpen) {
                   closeReasoningContent();
                 }
-                appendCumulative(delta);
+                if (reasoningContentSeen && typeof rawDelta === "string") {
+                  appendCumulative(markLiteralThinkTags(delta));
+                } else {
+                  appendCumulative(delta);
+                }
               }
               streamedChars += reasoning.length + delta.length;
               producedReplyText = true;

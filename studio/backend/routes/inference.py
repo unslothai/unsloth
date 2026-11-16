@@ -33421,12 +33421,15 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_think_prov: dict = {"wrapped": 0}
+
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
                 parse_think_markers = _responses_should_parse_think_markers(
                     payload,
                     llama_backend,
-                )
+                ),
+                think_provenance = _gguf_think_prov,
             )
 
         _gguf_monitor_callback = (
@@ -33656,6 +33659,7 @@ async def produce_openai_chat_completions(
                     permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    reasoning_provenance = _gguf_think_prov,
                     live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
@@ -34529,6 +34533,7 @@ async def produce_openai_chat_completions(
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
+                reasoning_provenance = _gguf_think_prov,
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 temperature = payload.temperature,
@@ -40415,13 +40420,17 @@ class _ResponsesReasoningExtractor:
         parse_think_markers: bool = False,
         reasoning_prefilled: bool = False,
         single_block: bool = False,
+        think_provenance: Optional[dict] = None,
     ) -> None:
         self._buffer = ""
         # Prefilled template opens an unclosed <think>, so start in reasoning.
         self._in_reasoning = reasoning_prefilled and not single_block
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
-        self._single_block = single_block
+        self._single_block = single_block or think_provenance is not None
+        self._provenance = think_provenance
+        self._wrap = None
+        self._wrap_taken = 0
 
     def feed(
         self,
@@ -40441,6 +40450,21 @@ class _ResponsesReasoningExtractor:
             return "".join(reasoning_parts), "".join(visible_parts)
 
         while self._buffer:
+            if self._wrap is not None:
+                take = int(self._wrap.get("len", 0)) - self._wrap_taken
+                if take > 0:
+                    reasoning_parts.append(self._buffer[:take])
+                    self._wrap_taken += min(take, len(self._buffer))
+                    self._buffer = self._buffer[take:]
+                    continue
+                if self._buffer.startswith(_RESPONSES_THINK_CLOSE):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_CLOSE) :]
+                elif _RESPONSES_THINK_CLOSE.startswith(self._buffer):
+                    break
+                self._wrap = None
+                self._parse_think_markers = False
+                continue
+
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
@@ -40464,7 +40488,9 @@ class _ResponsesReasoningExtractor:
             if self._single_block:
                 if self._buffer.startswith(_RESPONSES_THINK_OPEN):
                     self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
-                    self._in_reasoning = True
+                    self._wrap = self._claim_wrap()
+                    self._wrap_taken = 0
+                    self._in_reasoning = self._wrap is None
                     continue
                 if _RESPONSES_THINK_OPEN.startswith(self._buffer):
                     break  # still short of the opener; it may yet arrive
@@ -40497,6 +40523,17 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
+    def _claim_wrap(self):
+        # The recorded length keeps a literal </think> inside the trace from ending it early.
+        if self._provenance is None:
+            return None
+        claimed = self._provenance.get("claimed", 0)
+        wraps = self._provenance.get("wraps") or []
+        if claimed >= len(wraps):
+            return None
+        self._provenance["claimed"] = claimed + 1
+        return wraps[claimed]
+
     def finish(self) -> tuple[str, str]:
         if not self._buffer:
             return "", ""
@@ -40504,6 +40541,10 @@ class _ResponsesReasoningExtractor:
         self._buffer = ""
         if not self._parse_think_markers:
             return "", remaining
+        if self._wrap is not None:
+            # Only an unfinished closing tag is ever left over.
+            self._wrap = None
+            return "", ""
         if self._in_reasoning:
             self._in_reasoning = False
             return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""

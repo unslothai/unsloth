@@ -7,6 +7,19 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
+// A noncharacter after "<" keeps a literal tag (or one split across deltas) from parsing as a marker.
+const LITERAL_TAG_MARK = "\uFDD0";
+const LITERAL_TAG_START = /<(?=\/?(?:think>|t(?:h(?:i(?:nk?)?)?)?$|$))/g;
+
+export function markLiteralThinkTags(text: string): string {
+  return text.replace(LITERAL_TAG_START, `<${LITERAL_TAG_MARK}`);
+}
+
+function unmarkLiteralThinkTags(text: string): string {
+  return text.includes(LITERAL_TAG_MARK)
+    ? text.replaceAll(LITERAL_TAG_MARK, "")
+    : text;
+}
 
 export function extractDeltaText(delta: unknown): {
   text: string;
@@ -89,6 +102,7 @@ export function extractDeltaText(delta: unknown): {
 // ContentPart fields are readonly (TS2540), so replace the last element instead.
 
 export function appendTextPart(parts: ContentPart[], text: string): void {
+  text = unmarkLiteralThinkTags(text);
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "text") {
@@ -99,6 +113,7 @@ export function appendTextPart(parts: ContentPart[], text: string): void {
 }
 
 export function appendReasoningPart(parts: ContentPart[], text: string): void {
+  text = unmarkLiteralThinkTags(text);
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
