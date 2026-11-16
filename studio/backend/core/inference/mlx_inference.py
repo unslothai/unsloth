@@ -6838,6 +6838,55 @@ class MLXInferenceBackend:
         entry.update(fields)
         return fields
 
+    def retune(
+        self,
+        max_seq_length = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        prefill_batch = None,
+        prompt_cache_mib = None,
+    ):
+        """Apply settings the held weights serve as they are: these, a smaller context, a smaller
+        prompt cache. None, with nothing changed, where a fresh load could decide differently."""
+        entry = self.models.get(self.active_model_name)
+        if entry is None:
+            return None
+        chosen_cache = (
+            prompt_cache_mib if prompt_cache_mib is not None and prompt_cache_mib >= 0 else None
+        )
+        cache_changes = chosen_cache != self._prompt_cache_mib
+        if cache_changes:
+            recommended = self._memory_limits_applied.get("recommended_gb")
+            # A larger cache takes memory the load gave its context.
+            if _prompt_cache_max_bytes(recommended, chosen_cache) > _prompt_cache_max_bytes(
+                recommended, self._prompt_cache_mib
+            ):
+                return None
+        fields = {}
+        if max_seq_length is not None:
+            fields = self.narrow_context(max_seq_length)
+            if fields is None:
+                return None
+        self._reasoning_budget = -1 if reasoning_budget is None else int(reasoning_budget)
+        self._reasoning_budget_message = reasoning_budget_message or ""
+        self._prefill_batch = _positive_int(prefill_batch)
+        if cache_changes:
+            self._prompt_cache_mib = chosen_cache
+            room = self._prompt_cache_room
+            self._clear_prompt_cache()
+            self._prompt_cache_room = room
+        fields = {
+            **fields,
+            "reasoning_budget": self._reasoning_budget,
+            "reasoning_budget_message": self._reasoning_budget_message,
+            "n_batch": self._prefill_batch,
+            "cache_ram": self._prompt_cache_mib,
+            # A budget needs per-row logits processors, which decide whether vision rows batch.
+            "context_unbounded_when_batched": self._vision_batch_is_available(),
+        }
+        entry.update(fields)
+        return fields
+
     def _warm_resident_batch(self):
         """Warm the request batch Zoo's warm-up misses: twice greedy (Qwen4 scopes build kernels only after a reply), then sampled."""
         if self.resident_unavailable_reason({}) is not None:

@@ -1021,13 +1021,21 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_narrow_context(backend, cmd: dict, resp_queue: Any) -> None:
+def _handle_retune(backend, cmd: dict, resp_queue: Any) -> None:
     try:
-        fields = backend.narrow_context(cmd.get("max_seq_length"))
+        fields = backend.retune(
+            cmd.get("max_seq_length"),
+            reasoning_budget = cmd.get("reasoning_budget", -1),
+            reasoning_budget_message = cmd.get("reasoning_budget_message", ""),
+            prefill_batch = cmd.get("prefill_batch"),
+            prompt_cache_mib = cmd.get("prompt_cache_mib"),
+        )
+        if fields is not None:
+            fields["can_batch"] = _load_can_batch(backend)
     except Exception as exc:
-        logger.warning("Could not narrow the context in place: %s", exc)
+        logger.warning("Could not apply the settings in place: %s", exc)
         fields = None
-    _send_response(resp_queue, {"type": "context_narrowed", "fields": fields})
+    _send_response(resp_queue, {"type": "retuned", "fields": fields})
 
 
 def _drain_skip_generate(
@@ -2448,11 +2456,11 @@ def run_inference_process(
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
-                elif cmd_type == "narrow_context":
+                elif cmd_type == "retune":
                     batch.cancel_all()
                     batch.close()
                     _abandon_held_commands(deferred, resp_queue)
-                    _handle_narrow_context(backend, cmd, resp_queue)
+                    _handle_retune(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
                     batch.cancel_all()
                     batch.close()

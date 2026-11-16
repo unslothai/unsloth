@@ -457,6 +457,15 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     }
 
 
+# MLX settings the worker holding the weights applies as they are; see MLXInferenceBackend.retune.
+_RETUNABLE = {
+    "reasoning_budget": "reasoning_budget",
+    "reasoning_budget_message": "reasoning_budget_message",
+    "mlx_prefill_batch": "prefill_batch",
+    "mlx_prompt_cache_mib": "prompt_cache_mib",
+}
+
+
 def _load_settings(sub_config: dict) -> dict:
     """What decides the weights and runtime a worker holds; the rest changes with each request."""
     return {
@@ -2404,9 +2413,7 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            if self._narrow_context_in_place(
-                sub_config, model_name, parallel_slots, load_cancel_event
-            ):
+            if self._retune_in_place(sub_config, model_name, parallel_slots, load_cancel_event):
                 self.loading_models.discard(model_name)
                 if on_prior_worker_released is not None:
                     on_prior_worker_released()
@@ -2659,25 +2666,33 @@ class InferenceOrchestrator:
         finally:
             self._release_load_downloads()
 
-    def _narrow_context_in_place(
+    def _retune_in_place(
         self,
         sub_config: dict,
         model_name: str,
         parallel_slots,
         cancel_event = None,
     ) -> bool:
-        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        """Whether the idle MLX worker holding this load took the change in place: a smaller
+        context and the settings in _RETUNABLE, everything else as it loaded."""
         proc = self._proc
         entry = self.models.get(model_name)
-        held = getattr(self, "_worker_load_settings", None)
+        held_proc, held = getattr(self, "_worker_load_settings", None) or (None, None)
+        wanted = _load_settings(sub_config)
+        fixed = lambda settings: {k: v for k, v in settings.items() if k not in _RETUNABLE}
+        pinned = sub_config["max_seq_length"] or 0
+        narrows = 0 < pinned < ((entry or {}).get("context_length") or 0)
+        retunes = any(wanted.get(key) != (held or {}).get(key) for key in _RETUNABLE)
         if (
             sub_config["device_backend"] != "mlx"
             or sub_config["mlx_distributed"]
             or entry is None
             or self.active_model_name != model_name
             or entry.get("parallel_slots") != parallel_slots
-            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
-            or held != (proc, _load_settings(sub_config))
+            or not (narrows or (retunes and pinned == (entry.get("requested_context_length") or 0)))
+            or held_proc is not proc
+            or held is None
+            or fixed(held) != fixed(wanted)
             or not proc.is_alive()
             or self._replies_in_flight()
         ):
@@ -2685,7 +2700,7 @@ class InferenceOrchestrator:
         with self._dispatcher_lifecycle_lock:
             if self._worker_reserved_for is not None:
                 return False
-            self._worker_reserved_for = "the context is being narrowed"
+            self._worker_reserved_for = "the settings are being applied in place"
         acquired = False
         try:
             # A running dispatcher would drop the reply.
@@ -2699,9 +2714,13 @@ class InferenceOrchestrator:
                     return False
             with self._send_order_lock:
                 self._send_cmd(
-                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                    {
+                        "type": "retune",
+                        "max_seq_length": pinned if narrows else None,
+                        **{arg: wanted.get(key) for key, arg in _RETUNABLE.items()},
+                    }
                 )
-                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+                fields = self._wait_response("retuned", timeout = 60.0).get("fields")
             if not fields:
                 return False
             from utils.process_lifetime import is_process_shutting_down
@@ -2715,14 +2734,13 @@ class InferenceOrchestrator:
                 ):
                     return False
                 entry.update(fields)
+                self._worker_load_settings = (proc, wanted)
                 self.load_generation += 1
                 self._loaded_by_user_action = False
-            logger.info(
-                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
-            )
+            logger.info("Model '%s' took %s in place", model_name, sorted(fields))
             return True
         except Exception as exc:
-            logger.warning("Could not narrow the context in place: %s", exc)
+            logger.warning("Could not apply the settings in place: %s", exc)
             return False
         finally:
             if acquired:
