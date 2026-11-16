@@ -15,7 +15,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * Dictation into a text box outside Chat, on the engine picked in Voice settings. Each finished
  * phrase goes to `onTranscript`. A second stop while the last phrase transcribes cancels it.
  */
-export function useDictation(onTranscript: (transcript: string) => void) {
+export function useDictation(
+  onTranscript: (transcript: string) => void,
+  language?: string,
+) {
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [dictating, setDictating] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
@@ -23,6 +26,8 @@ export function useDictation(onTranscript: (transcript: string) => void) {
   const finalizingRef = useRef(false);
   const deliver = useRef(onTranscript);
   deliver.current = onTranscript;
+  const languageRef = useRef(language);
+  languageRef.current = language;
 
   const end = useCallback((session: StudioDictationSession) => {
     if (sessionRef.current === session) sessionRef.current = null;
@@ -40,7 +45,10 @@ export function useDictation(onTranscript: (transcript: string) => void) {
     let session: StudioDictationSession;
     try {
       // No chat: the recording is transcribed, never attached to a message.
-      session = new StudioDictationAdapter({ chatId: null }).listen();
+      session = new StudioDictationAdapter({
+        chatId: null,
+        language: languageRef.current,
+      }).listen();
     } catch {
       notifyStudioDictationUnavailable();
       return;

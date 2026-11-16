@@ -48,8 +48,12 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "@/features/chat/external-providers";
+import { externalModelLabel } from "@/features/chat/lib/external-model-label";
 import { useDeviceInventorySources } from "@/features/hub";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import {
+  modelDisplayName,
+  modelIdsMatch,
+} from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
@@ -65,6 +69,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { isTranslationOnlyRepo } from "@/lib/translation-models";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft02Icon,
@@ -430,14 +435,34 @@ function ModelMenu({
 }) {
   const t = useT();
   const busy = useTranslateStore((state) => state.phase !== null);
+  const preparing = useTranslateStore(
+    (state) => state.phase !== null && state.phase.kind !== "translating",
+  );
+  const chatPick = useChatRuntimeStore((s) => s.params.checkpoint);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // What the server holds: the chip names a model, and offers Eject, only while it is in memory.
+  // What the server holds: loaded rows, Eject, and the chat model when Chat has no pick yet.
   const [loaded, setLoaded] = useState<string[]>([]);
+  const [serverChatModel, setServerChatModel] = useState<string | null>(null);
   const refreshLoaded = useCallback(() => {
     getInferenceStatus()
-      .then((status) => setLoaded(status.loaded ?? []))
+      .then((status) => {
+        setLoaded(status.loaded ?? []);
+        const active = status.active_model;
+        setServerChatModel(
+          active &&
+            !status.is_audio &&
+            !status.is_diffusion &&
+            !isTranslationOnlyRepo(active)
+            ? active
+            : null,
+        );
+      })
       .catch(() => undefined);
   }, []);
+  const chatModelId = chatPick || serverChatModel;
+  const chatPickName = chatModelId
+    ? (externalModelLabel(chatModelId) ?? modelDisplayName(chatModelId))
+    : null;
   // On arrival, when a run ends (its model is now loaded), and when the menu opens.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `busy` is the trigger, not an input.
   useEffect(refreshLoaded, [refreshLoaded, busy]);
@@ -447,10 +472,9 @@ function ModelMenu({
         ? custom.id
         : null
       : (dedicatedTranslateModel(value)?.repo ?? null);
-  const ejectable =
-    localModel !== null && loaded.some((id) => modelIdsMatch(id, localModel));
-  // A model this page loads is named only while loaded, as the model picker's chip does.
-  const named = localModel === null || ejectable;
+  const isLoaded = (repo: string) =>
+    loaded.some((id) => modelIdsMatch(id, repo));
+  const ejectable = localModel !== null && isLoaded(localModel);
   const eject = async () => {
     if (!localModel) return;
     try {
@@ -488,7 +512,12 @@ function ModelMenu({
     });
   };
   const customNote = custom
-    ? [custom.variant, formatModelBytes(custom.sizeBytes ?? 0)]
+    ? [
+        custom.variant,
+        !isExternalModelId(custom.id) && isLoaded(custom.id)
+          ? t("translate.model.loaded")
+          : formatModelBytes(custom.sizeBytes ?? 0),
+      ]
         .filter(Boolean)
         .join(" · ")
     : "";
@@ -518,17 +547,15 @@ function ModelMenu({
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
-            aria-label={t("translate.model.label")}
+            aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
             className="unsloth-thinking-pill composer-model-chip max-w-56"
           >
-            <span
-              className={cn(
-                "unsloth-thinking-label composer-model-chip-name truncate",
-                !named && "text-muted-foreground",
-              )}
-            >
-              {named ? label : t("translate.model.label")}
+            {preparing && (
+              <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+            )}
+            <span className="unsloth-thinking-label composer-model-chip-name truncate">
+              {label}
             </span>
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
@@ -564,13 +591,20 @@ function ModelMenu({
                     {model.label}
                   </span>
                   <span className="text-ui-12 leading-normal text-muted-foreground">
-                    {t(MODEL_NOTE[model.id])}
-                    {" · "}
-                    {downloaded[model.id]
-                      ? t("translate.model.downloaded")
-                      : t("translate.model.downloadSize", {
-                          size: formatModelBytes(model.sizeBytes),
-                        })}
+                    {[
+                      t(MODEL_NOTE[model.id]),
+                      isLoaded(model.repo)
+                        ? t("translate.model.loaded")
+                        : downloaded[model.id]
+                          ? t("translate.model.downloaded")
+                          : downloaded[model.id] === false
+                            ? t("translate.model.downloadSize", {
+                                size: formatModelBytes(model.sizeBytes),
+                              })
+                            : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </span>
                 </span>
               </DropdownMenuRadioItem>
@@ -584,7 +618,9 @@ function ModelMenu({
                   {t("translate.model.chat")}
                 </span>
                 <span className="text-ui-12 leading-normal text-muted-foreground">
-                  {t("translate.model.chatDescription")}
+                  {chatPickName
+                    ? t("translate.model.chatPicked", { model: chatPickName })
+                    : t("translate.model.chatNone")}
                 </span>
               </span>
             </DropdownMenuRadioItem>
@@ -614,7 +650,7 @@ function ModelMenu({
               onSelect={() => void eject()}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} />
-              {t("settings.general.rag.ejectModel")}
+              {t("translate.model.eject")}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
@@ -983,14 +1019,17 @@ export function TranslatePage() {
     });
   };
 
-  const dictation = useDictation((transcript) => {
-    const draft = useTranslateStore.getState().source;
-    setSource(
-      draft && !/\s$/.test(draft)
-        ? `${draft} ${transcript}`
-        : draft + transcript,
-    );
-  });
+  const dictation = useDictation(
+    (transcript) => {
+      const draft = useTranslateStore.getState().source;
+      setSource(
+        draft && !/\s$/.test(draft)
+          ? `${draft} ${transcript}`
+          : draft + transcript,
+      );
+    },
+    prefs.from === AUTO_SOURCE ? undefined : translateSpeechTag(prefs.from),
+  );
   const readAloud = useReadAloud();
   const stopReading = readAloud.stop;
   // A reading of text that is no longer on screen stops.
