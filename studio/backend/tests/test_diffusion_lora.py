@@ -1283,3 +1283,71 @@ def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
     with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
         b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
+
+
+def test_hunyuanimage_21_is_gated_off_for_lora():
+    """diffusers' HunyuanImagePipeline has no LoRA loader: refuse up front, not with an AttributeError mid-generate."""
+    assert not dl.diffusers_lora_family_supported("hunyuanimage-2.1")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+        assert "no LoRA loader" in dl.lora_unavailable_reason(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+
+
+# Families not checkable via ``getattr(diffusers, pipeline_class)``; any other missing class fails.
+_LORA_LOADER_CHECK_EXCEPTIONS = {
+    "flux.3-klein-base": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
+    "flux.3-klein": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
+    "moss-image": "in-tree MOSSImagePipeline with its own loader methods, asserted below",
+    "minimax-h3-image": "in-tree pipeline; Studio merges its adapters at load, there is no per-generation loader",
+}
+
+
+def test_every_diffusers_pipeline_family_has_a_lora_loader_or_is_gated_off():
+    """A family whose diffusers pipeline class lacks load_lora_weights must be listed as unsupported."""
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_families import _FAMILIES
+
+    missing, unchecked = [], []
+    for fam in _FAMILIES:
+        name = getattr(fam, "pipeline_class", None)
+        if not name or not dl.diffusers_lora_family_supported(fam.name):
+            continue  # already gated off
+        try:
+            cls = getattr(diffusers, name, None)
+        except Exception as exc:  # noqa: BLE001 - the pipeline's own imports fail in this environment
+            pytest.skip(f"cannot import diffusers.{name}: {exc}")
+        if cls is None:
+            if fam.name not in _LORA_LOADER_CHECK_EXCEPTIONS:
+                unchecked.append(f"{fam.name} ({name})")
+            continue
+        if not hasattr(cls, "load_lora_weights"):
+            missing.append(fam.name)
+    assert unchecked == [], "pipeline class missing from diffusers and not an allowed exception"
+    assert missing == []
+
+
+def test_lora_loader_check_exceptions_hold():
+    """Each allowed exception is true: in-tree MOSS carries the loader, and FLUX.3 has one wherever it imports."""
+    from core.inference.diffusion_families import _FAMILIES
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    names = {fam.name for fam in _FAMILIES}
+    assert set(_LORA_LOADER_CHECK_EXCEPTIONS) <= names
+    for method in ("load_lora_weights", "set_adapters", "unload_lora_weights"):
+        assert callable(getattr(MOSSImagePipeline, method, None)), method
+    diffusers = pytest.importorskip("diffusers")
+    for fam in _FAMILIES:
+        if fam.name.startswith("flux.3"):
+            cls = getattr(diffusers, fam.pipeline_class, None)
+            if cls is not None:
+                assert hasattr(cls, "load_lora_weights"), fam.name

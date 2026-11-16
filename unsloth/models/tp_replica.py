@@ -402,10 +402,13 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
-        if saved is not None:
-            for key, value in saved.items():
-                replica.set(module, key, value)
+        owners = [module] + [o for o, _, _ in getattr(region, "child_params", ())]
+        for owner in {id(o): o for o in owners}.values():
+            # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
+            saved = owner.__dict__.get("_unsloth_tp_saved_attrs")
+            if saved is not None:
+                for key, value in saved.items():
+                    replica.set(owner, key, value)
         for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
             if key in module.__dict__:
                 replica.set(module, key, tpn._MISSING)

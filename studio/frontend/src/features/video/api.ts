@@ -4,7 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
-import type { DiffusionDownloadPlan } from "@/features/images/api";
+import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -111,6 +111,10 @@ export interface VideoStatus {
   // nothing is loaded or the backend does not record it.
   // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
+  // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
+  baked_loras?: string[];
+  baked_lora_specs?: LoraSpecInput[];
+  lora_refusal?: string | null;
 }
 
 export interface VideoGenerateProgress {
@@ -180,6 +184,8 @@ export interface VideoLoadRequest {
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
   // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
   allow_oversized_load?: boolean;
+  // Catalog ids merged into the bf16 denoiser at load, so a new set or weight needs a reload. Pipeline loads only.
+  loras?: LoraSpecInput[];
 }
 
 export interface VideoReferenceVideo {
@@ -251,6 +257,8 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  // Adapters the load baked in; absent on older sidecars.
+  baked_loras?: string[];
   created_at: string;
   // Library state, not recipe; absent on older sidecars.
   pinned?: boolean;

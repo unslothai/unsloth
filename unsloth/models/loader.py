@@ -3107,11 +3107,20 @@ class FastModel(FastBaseModel):
         for disable_name in FORCE_FLOAT32:
             # Add a comma to model_types_all so an exact match at the end still matches.
             if (
-                disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
-                or disable_name.lower() in model_types_all
-            ) and (
-                # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
-                dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+                (
+                    disable_name.lower()
+                    == model_type_arch.lower().replace("-", "").replace("_", "")
+                    or disable_name.lower() in model_types_all
+                )
+                and (
+                    # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
+                    dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+                )
+                and not (
+                    # An explicit float32 16-bit load stays float32 without bf16 (else bf16-loaded fp16 weights).
+                    user_float32
+                    and not (load_in_4bit or load_in_8bit or quantization_config is not None)
+                )
             ):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True

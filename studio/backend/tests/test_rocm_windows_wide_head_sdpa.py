@@ -4,7 +4,6 @@
 """Windows ROCm: SDPA calls with a head wider than 256 (Gemma 4's global layers) must run on the math backend, since
 the fused kernels that take them there compute them wrong. Heads up to 256 and every other platform are untouched."""
 
-import contextlib
 import sys
 import types
 
@@ -26,12 +25,11 @@ def _q(head_dim, device = "cuda"):
 def recorder(monkeypatch):
     entered = []
 
-    @contextlib.contextmanager
-    def fake_kernel(backends):
+    def fake_set(backends):
         entered.append(list(backends))
-        yield
 
-    monkeypatch.setattr(attention, "sdpa_kernel", fake_kernel)
+    monkeypatch.setattr(attention, "_sdpa_kernel", fake_set)
+    monkeypatch.setattr(attention, "_cur_sdpa_kernel_backends", lambda: ["saved"])
     calls = []
 
     def sdpa(q, k, v, *args, **kwargs):
@@ -46,7 +44,7 @@ def test_wide_cuda_head_runs_on_math(recorder, head_dim):
     entered, calls, sdpa = recorder
     q = _q(head_dim)
     assert G.guard_sdpa(sdpa)(q, q, q, is_causal = True, enable_gqa = True) == "out"
-    assert entered == [[attention.SDPBackend.MATH]]
+    assert entered == [[attention.SDPBackend.MATH], ["saved"]]
     assert calls[0][1] == {"is_causal": True, "enable_gqa": True}
 
 
@@ -89,3 +87,43 @@ def test_llm_workers_install_the_guard(worker):
     assert src.index("install_windows_rocm_wide_head_sdpa_guard(") > src.index(
         "install_torchao_windows_rocm_stub()"
     )
+
+
+def test_overlapping_wide_head_calls_restore_the_callers_backends_once():
+    """The first of two overlapping wide-head calls returning first must not put the fused kernels back under the
+    second; the caller's backends come back once, after the last returns."""
+    import threading
+
+    seen = {}
+    inside = {n: threading.Event() for n in "ab"}
+    release = {n: threading.Event() for n in "ab"}
+
+    def sdpa(
+        q,
+        k,
+        v,
+        *args,
+        name = None,
+        **kwargs,
+    ):
+        inside[name].set()
+        release[name].wait(5)
+        seen[name] = set(attention._cur_sdpa_kernel_backends())
+        return "out"
+
+    guarded = G.guard_sdpa(sdpa)
+    before = set(attention._cur_sdpa_kernel_backends())
+    q = _q(512)
+    threads = {
+        n: threading.Thread(target = guarded, args = (q, q, q), kwargs = {"name": n}) for n in "ab"
+    }
+    threads["a"].start()
+    assert inside["a"].wait(5)
+    threads["b"].start()
+    assert inside["b"].wait(5)
+    release["a"].set()
+    threads["a"].join(5)
+    release["b"].set()
+    threads["b"].join(5)
+    assert seen == {"a": {attention.SDPBackend.MATH}, "b": {attention.SDPBackend.MATH}}
+    assert set(attention._cur_sdpa_kernel_backends()) == before

@@ -123,6 +123,23 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "core/inference/model_ids.py",
         monkeypatch,
     )
+    # routes/models.py imports these inside _scan_models_dir. Without stubs the scan only worked when an earlier
+    # test in the same process had already imported the real modules, so this file failed when run on its own.
+    diffusion_lora = types.ModuleType("core.inference.diffusion_lora")
+    diffusion_lora.is_image_lora_file = lambda path: False
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_lora", diffusion_lora)
+    local_files = types.ModuleType("core.inference.diffusion_local_files")
+    local_files.resolve_local_single_file = lambda path: None
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_local_files", local_files)
+    hub_pkg = types.ModuleType("hub")
+    hub_pkg.__path__ = []
+    hub_utils = types.ModuleType("hub.utils")
+    hub_utils.__path__ = []
+    comfy_models = types.ModuleType("hub.utils.comfy_models")
+    comfy_models.loose_diffusion_checkpoints = lambda models_dir: []
+    monkeypatch.setitem(sys.modules, "hub", hub_pkg)
+    monkeypatch.setitem(sys.modules, "hub.utils", hub_utils)
+    monkeypatch.setitem(sys.modules, "hub.utils.comfy_models", comfy_models)
 
     utils_pkg = types.ModuleType("utils")
     utils_pkg.__path__ = []
