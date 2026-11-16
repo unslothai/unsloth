@@ -201,9 +201,9 @@ test("the composer's accept attribute is the union, so the picker offers video",
   }
 });
 
-test("the composer cap is exactly 64 MiB", () => {
-  assert.equal(MAX_VIDEO_SIZE, 64 * 1024 * 1024);
-  assert.equal(MAX_VIDEO_SIZE, 67108864);
+test("the composer cap is exactly 256 MiB", () => {
+  assert.equal(MAX_VIDEO_SIZE, 256 * 1024 * 1024);
+  assert.equal(MAX_VIDEO_SIZE, 268435456);
 });
 
 test("a clip of exactly the cap is accepted, one byte over is refused", () => {
@@ -216,7 +216,7 @@ test("a clip of exactly the cap is accepted, one byte over is refused", () => {
 test("the backend ceiling admits every clip this composer admits", () => {
   // _MAX_VIDEO_B64_CHARS in routes/inference.py, padded base64 of the same cap.
   const backendCeiling = 4 * Math.ceil(MAX_VIDEO_SIZE / 3);
-  assert.equal(backendCeiling, 89478488);
+  assert.equal(backendCeiling, 357913944);
   const encodedAtCap = 4 * Math.ceil(MAX_VIDEO_SIZE / 3);
   assert.ok(encodedAtCap <= backendCeiling, "the largest allowed clip must not 413");
   assert.ok(Math.floor((MAX_VIDEO_SIZE * 4) / 3) < encodedAtCap);
@@ -307,7 +307,7 @@ test("the recount declines a video turn, as it already declines image and audio"
 });
 
 test("the video bail is paid before the branch signature hashes the base64", () => {
-  // branchSignature stringifies every part on the UI thread; a 64 MB clip is ~85 MB of base64.
+  // branchSignature stringifies every part on the UI thread; a 256 MB clip is ~341 MB of base64.
   const bail = recountSource.indexOf("findLatestUserVideoBase64(runMessages)");
   const hash = recountSource.indexOf("countedBranch = branchSignature(");
   assert.ok(bail >= 0 && hash >= 0);

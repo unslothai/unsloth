@@ -67,11 +67,11 @@ const AUDIO_NAME_RE = new RegExp(
 // boundary, not END, since stems run into versions ("flux1") but not "fluxion".
 const FAMILY_END = "(?![a-z])";
 const IMAGE_GEN_NAME_RE = new RegExp(
-  `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart)${FAMILY_END}`,
+  `${SEP}(?:flux|sdxl|sd3|stable[-_]?diffusion|z[-_]?image|qwen[-_]?image|hidream|ideogram|lumina|hunyuanimage|krea|kolors|playground|pixart|minimax[-_]?h\\d[-_.]?image)${FAMILY_END}`,
   "i",
 );
 const VIDEO_GEN_NAME_RE = new RegExp(
-  `${SEP}(?:wan\\d|ltx|hunyuanvideo|minimax[-_]?h\\d|cogvideox?|mochi|animatediff|svd|zeroscope)${FAMILY_END}`,
+  `${SEP}(?:wan\\d|ltx|hunyuanvideo|minimax[-_]?h\\d(?![-_.]?image)|cogvideox?|mochi|animatediff|svd|zeroscope)${FAMILY_END}`,
   "i",
 );
 

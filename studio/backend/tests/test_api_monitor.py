@@ -1628,3 +1628,108 @@ def test_progress_updates_advance_updated_at_on_a_frozen_clock(monkeypatch):
     seen.append(monitor.snapshot()[0]["updated_at"])
 
     assert seen[0] < seen[1] < seen[2]
+
+
+def test_mistral_reasoning_stream_reaches_the_client_and_the_monitor(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import httpx
+
+    from core.inference import external_provider as ep
+    from models.inference import ChatCompletionRequest
+
+    thinking = [{"type": "thinking", "thinking": [{"type": "text", "text": "Multiply 17 by 23."}]}]
+    deltas = [
+        {"role": "assistant", "content": thinking},
+        {
+            "content": [
+                {"type": "thinking", "thinking": [{"type": "text", "text": ""}]},
+                {"type": "text", "text": "17 * 23"},
+            ]
+        },
+        {"content": " = 391"},
+    ]
+    chunks = [
+        {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]} for delta in deltas
+    ]
+    chunks.append({"choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}]})
+    sse = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+
+    def handle(_request):
+        return httpx.Response(
+            200, headers = {"content-type": "text/event-stream"}, content = sse.encode()
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as client:
+            monkeypatch.setattr(ep, "_http_client", client)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inference_route, "api_monitor", monitor)
+            payload = ChatCompletionRequest(
+                messages = [{"role": "user", "content": "What is 17 * 23?"}],
+                stream = True,
+                provider_type = "mistral",
+                external_model = "mistral-medium-latest",
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = False),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            response = await inference_route._proxy_to_external_provider(payload, request)
+            body = [part async for part in response.body_iterator]
+            return body, monitor
+
+    body, monitor = asyncio.run(run())
+    sent = []
+    for part in body:
+        part = part.decode() if isinstance(part, bytes) else part
+        for line in part.splitlines():
+            if line.startswith("data: {"):
+                sent.append(json.loads(line[6:]))
+    assert not [chunk for chunk in sent if "error" in chunk]
+    contents = [
+        choice["delta"]["content"]
+        for chunk in sent
+        for choice in chunk.get("choices") or []
+        if choice.get("delta", {}).get("content")
+    ]
+    assert contents == [delta["content"] for delta in deltas]
+    row = monitor.snapshot()[0]
+    assert row["status"] == "completed"
+    assert row["reply"] == "17 * 23 = 391"
+
+
+def test_a_monitor_failure_does_not_abort_the_stream(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("monitor bug")
+
+    monkeypatch.setattr(monitor, "append_reply", boom)
+    line = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "hi"}}]})
+
+    assert inference_route._monitor_openai_sse_line(entry_id, line) is None
+
+
+def test_mistral_thinking_part_starts_token_generation(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+    thinking = [{"type": "thinking", "thinking": [{"type": "text", "text": "Hmm."}]}]
+    line = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": thinking}}]})
+
+    inference_route._monitor_openai_sse_line(entry_id, line)
+
+    row = monitor.snapshot()[0]
+    assert row["running_phase"] == "token_generation"
+    assert row["reply"] == ""

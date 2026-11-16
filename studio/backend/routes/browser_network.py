@@ -131,7 +131,7 @@ BROWSER_NETWORK_JS = r"""
           // Past the relay's body limit a write stays the browser's, as before relaying existed.
           if (body === undefined) return nativeFetch(request);
           const reply = await relay(
-            { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect, integrity: request.integrity },
+            { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect, integrity: request.integrity, credentials: request.credentials },
             request.signal,
           );
           // redirect: "manual" stopped at a redirect, which a page sees only as an opaque one.

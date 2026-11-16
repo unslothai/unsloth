@@ -238,11 +238,13 @@ def _completeness(browser, mode: str, **kwargs) -> tuple[dict, list[str]]:
 def test_a_virtualised_thread_passes_the_completeness_probe(browser):
     out, _ = _completeness(browser, "windowed")
     assert out["head_reached"] is True, out
-    # The default 2,000px step jumps straight past this 2,160px thread, so coverage is unmeasured.
-    assert out["ordinal_coverage_complete"] is None, out
-    assert out["sweep_continuous"] is False
-    assert "never in view" in out["coverage_reason"]
-    assert out["ordinal_coverage_state"] == COVERAGE_UNMEASURED, out
+    # The default 2,000px step is capped to 3/4 of the 400px viewport, so the stops overlap and
+    # coverage is measured on a windowed arm without any step override.
+    assert out["traverse_step_px"] == 300, out
+    assert out["sweep_continuous"] is True, out
+    assert out["ordinal_coverage_complete"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
+    assert out["ordinals_seen_count"] == MESSAGES
 
 
 def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(browser):
@@ -253,6 +255,16 @@ def test_a_virtualised_thread_covers_every_ordinal_when_the_sweep_is_continuous(
     assert out["ordinal_coverage_complete"] is True, out
     assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
     assert out["ordinals_seen_count"] == MESSAGES
+    assert out["ordinals_missing"] == []
+
+
+def test_a_scroll_anchor_jump_does_not_leave_coverage_unmeasured(browser):
+    """A re-anchoring jump can carry one step past a row even below the step cap; the traversal
+    steps back until that row mounts, so coverage stays measured and complete."""
+    out, _ = _completeness(browser, "windowed_anchor_jump")
+    assert out["head_reached"] is True, out
+    assert out["sweep_continuous"] is True, out
+    assert out["ordinal_coverage_state"] == COVERAGE_COMPLETE, out
     assert out["ordinals_missing"] == []
 
 
@@ -709,3 +721,17 @@ def test_a_windowed_thread_with_no_viewport_is_refused(browser):
         page.close()
 
     assert "viewport_present" in str(caught.value), str(caught.value)
+
+
+def test_residual_stabilizer_padding_settles_the_pin():
+    """use-intent-aware-autoscroll keeps `--aui-scroll-stabilizer` as residual padding after the
+    pin ends and drops it only when the user scrolls up, on fully mounted builds too."""
+    residual = _windowed_probe(pinning = True, stabilizer = "24px")
+    assert evaluate(residual, None, 18, MODE_WINDOWED)["pin_settled"] is False
+    assert evaluate(residual, dict(residual), 18, MODE_WINDOWED)["pin_settled"] is True
+    moving = _windowed_probe(pinning = True, stabilizer = "12px")
+    assert evaluate(residual, moving, 18, MODE_WINDOWED)["pin_settled"] is False
+    growing = _windowed_probe(pinning = True, stabilizer = "24px", scroll_height = 90)
+    assert evaluate(residual, growing, 18, MODE_WINDOWED)["pin_settled"] is False
+    cleared = _windowed_probe()
+    assert evaluate(cleared, residual, 18, MODE_WINDOWED)["pin_settled"] is True

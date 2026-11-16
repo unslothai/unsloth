@@ -6,6 +6,7 @@ all-or-nothing try, plus per-device verify()"""
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 import weakref
@@ -26,6 +27,13 @@ _VERIFIED: dict[int, tuple] = {}
 _QUANT_FN: dict[int, tuple] = {}
 _GEMM_PLAN: dict = {}
 _TRANSPOSED: dict = {}
+# device index -> (runner, workspace, tactic count): everything in a plan except the tactic.
+_RUNNERS: dict[int, tuple] = {}
+# One tune at a time: profiling launches must not overlap, and 0.6.6's tuning mode is process-global.
+_TUNE_LOCK = threading.Lock()
+_BUCKET_CONFIGS: dict = {}
+# Own op name: a stock mm_fp4 entry (measured at some other M) must never answer a bucket.
+BUCKET_OP = "fp4_gemm.studio_m_bucket"
 
 
 def fast_dispatch_env() -> str:
@@ -254,23 +262,164 @@ def gemm_plan(
     *,
     force: bool = False,
 ):
-    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), also for a COLD key under capture."""
+    """``(runner, tactic, workspace)``, or None (use ``mm_fp4``), also for a COLD key under capture.
+    Keyed by M bucket; ``force`` (verify) keeps the exact-M AutoTuner lookup and caches nothing."""
+    from . import diffusion_nvfp4_tactics as tactics
     from .diffusion_nvfp4_ops import _device_index, _is_capturing
 
     device = xq.device
-    key = (xq.shape[0], xq.shape[1], n, backend, _device_index(device))
+    bucketed = tactics.bucketed_enabled() and not force
+    m = int(xq.shape[0])
+    key = (tactics.m_bucket(m) if bucketed else m, xq.shape[1], n, backend, _device_index(device))
     got = _GEMM_PLAN.get(key)
     if got is not None:
         return got
-    if backend != "cutlass" or not (force or enabled(device)) or _is_capturing():
+    if backend != "cutlass" or not (force or enabled(device)):
         return None
+    if _is_capturing():
+        # Never a build or a tune here; a bucket already tuned (this process or on disk) is fine.
+        return _warm_plan(key, device) if bucketed else None
+    operands = [xq, wq_t, x_sf, w_sf_t, alpha, out]
     try:
-        return _build_plan(key, device, [xq, wq_t, x_sf, w_sf_t, alpha, out])
+        if bucketed:
+            return _build_bucket_plan(key, device, operands)
+        return _build_plan(key, device, operands, store = not force)
     except Exception:  # noqa: BLE001 - no plan means the public API
         return None
 
 
-def _build_plan(key: tuple, device: Any, operands: list):
+def _runner(device: Any, index: int) -> tuple:
+    got = _RUNNERS.get(index)
+    if got is not None:
+        return got
+    import torch
+
+    from flashinfer.gemm.gemm_base import (
+        DEFAULT_WORKSPACE_SIZE,
+        _get_cache_buf,
+        get_cutlass_fp4_gemm_module,
+    )
+    from flashinfer.utils import get_compute_capability
+
+    with torch.cuda.device(device):
+        workspace = _get_cache_buf("mm_fp4_workspace", DEFAULT_WORKSPACE_SIZE, device)
+        major, minor = get_compute_capability(device)
+        runner = get_cutlass_fp4_gemm_module(major, minor).cutlass_fp4_gemm_runner()
+        try:
+            # Static per module (an index into the cutlass config table); it ignores both arguments.
+            count = len(runner.get_valid_tactics(None, None))
+        except Exception:  # noqa: BLE001 - unknown table size: tactics stay in memory only
+            count = None
+    with _LOCK:
+        return _RUNNERS.setdefault(index, (runner, workspace, count))
+
+
+def _warm_plan(key: tuple, device: Any):
+    """A plan from cached parts only (no allocation, no profiling), for use inside a capture."""
+    from . import diffusion_nvfp4_tactics as tactics
+
+    bucket, half_k, n, backend, index = key
+    parts = _RUNNERS.get(index)
+    if parts is None:
+        return None
+    runner, workspace, count = parts
+    try:
+        env = tactics.device_environment(device, count, backend)
+        tactic = tactics.lookup(env, half_k * 2, n, bucket)
+    except Exception:  # noqa: BLE001 - a cold bucket under capture takes the public API
+        return None
+    if tactic is None:
+        return None
+    plan = (runner, tactic, workspace)
+    with _LOCK:
+        return _GEMM_PLAN.setdefault(key, plan)
+
+
+def _build_bucket_plan(key: tuple, device: Any, operands: list):
+    from . import diffusion_nvfp4_tactics as tactics
+
+    bucket, half_k, n, backend, index = key
+    runner, workspace, count = _runner(device, index)
+    env = tactics.device_environment(device, count, backend)
+    k = half_k * 2
+    tactic = tactics.lookup(env, k, n, bucket)
+    if tactic is None:
+        with _TUNE_LOCK:
+            tactic = tactics.lookup(env, k, n, bucket)
+            if tactic is None:
+                try:
+                    tuned = _tune_bucket(device, runner, workspace, operands, bucket)
+                except Exception:  # noqa: BLE001 - the default tactic, this process only
+                    tuned = None
+                # -1 is FlashInfer's "nothing ran" (every tactic failed, or an OOM): never persisted.
+                persist = tuned is not None and tuned >= 0
+                tactic = tactics.record(
+                    env, k, n, bucket, -1 if tuned is None else tuned, persist = persist
+                )
+    plan = (runner, tactic, workspace)
+    with _LOCK:
+        return _GEMM_PLAN.setdefault(key, plan)
+
+
+def _constant_bucket(bucket: int, _m: int) -> int:
+    return bucket
+
+
+def bucket_config(base: Any, bucket: int):
+    """``base`` profiling exactly one M (``bucket``) and keying every M to it; memoised per bucket so
+    FlashInfer's nearest-profile cache sees a stable spec."""
+    cache_key = (id(base), int(bucket))
+    got = _BUCKET_CONFIGS.get(cache_key)
+    if got is not None and got[0] is base:
+        return got[1]
+    spec = base.dynamic_tensor_specs[0]
+    pinned = dataclasses.replace(
+        spec,
+        gen_tuning_buckets = (int(bucket),),
+        map_to_tuning_buckets = partial(_constant_bucket, int(bucket)),
+    )
+    config = dataclasses.replace(base, dynamic_tensor_specs = (pinned,))
+    with _LOCK:
+        return _BUCKET_CONFIGS.setdefault(cache_key, (base, config))[1]
+
+
+def _tune_bucket(device: Any, runner: Any, workspace: Any, operands: list, bucket: int) -> int:
+    """FlashInfer's own profiler (its timing, failure handling and blocklist), at M = ``bucket`` only."""
+    import time
+
+    import flashinfer
+    import torch
+
+    from flashinfer.autotuner import AutoTuner
+    from flashinfer.gemm.gemm_base import _MM_FP4_TUNING_CONFIG_128x4
+
+    config = bucket_config(_MM_FP4_TUNING_CONFIG_128x4, bucket)
+    xq, wq_t, x_sf, w_sf_t, alpha, out = operands
+    inputs = [xq, wq_t, x_sf, w_sf_t, alpha, torch.bfloat16, out, 16, True, workspace]
+    start = time.perf_counter()
+    with torch.cuda.device(device):
+        with flashinfer.autotune(True):
+            _, tactic = AutoTuner.get().choose_one(BUCKET_OP, [runner], config, inputs)
+    from .diffusion_nvfp4_tactics import logger
+
+    logger.info(
+        "nvfp4.tactics: tuned mm_fp4 K=%d N=%d at M bucket %d -> tactic %s (%.2f s)",
+        int(xq.shape[1]) * 2,
+        int(out.shape[1]),
+        int(bucket),
+        tactic,
+        time.perf_counter() - start,
+    )
+    return int(tactic)
+
+
+def _build_plan(
+    key: tuple,
+    device: Any,
+    operands: list,
+    *,
+    store: bool = True,
+):
     import torch
 
     from flashinfer.autotuner import AutoTuner
@@ -293,6 +442,8 @@ def _build_plan(key: tuple, device: Any, operands: list):
             "fp4_gemm", [runner], _MM_FP4_TUNING_CONFIG_128x4, inputs
         )
     plan = (runner, tactic, workspace)
+    if not store:
+        return plan
     with _LOCK:
         return _GEMM_PLAN.setdefault(key, plan)
 
@@ -313,13 +464,16 @@ def reset() -> None:
         _QUANT_FN.clear()
         _GEMM_PLAN.clear()
         _TRANSPOSED.clear()
+        _RUNNERS.clear()
 
 
 def describe() -> dict:
+    from . import diffusion_nvfp4_tactics as tactics
     return {
         "available": available()[0],
         "reason": available()[1],
         "verified_devices": sorted(index for index, rec in _VERIFIED.items() if rec[0]),
         "plans": len(_GEMM_PLAN),
         "transposed": len(_TRANSPOSED),
+        "tactics": tactics.describe(),
     }

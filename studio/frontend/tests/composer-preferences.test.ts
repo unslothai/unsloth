@@ -8,6 +8,7 @@ import {
   effectiveSendShortcut,
   followUpSubmitIntent,
   normalizeComposerPreferences,
+  parkedSendSteer,
   type ComposerKeyEvent,
 } from "../src/features/chat/utils/composer-preferences.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
@@ -237,4 +238,13 @@ test("sharing switched on by another window's rehydrate still adopts this tab's 
   await prefs.persist.rehydrate();
   assert.equal(prefs.getState().shareComposerDraft, true);
   assert.equal(drafts.latestDraft(drafts.composerDraftKey("", true)), "typed here");
+});
+
+test("steering a parked attachment stops the response only when nothing else holds it", () => {
+  const parked = { behavior: "steer" as const, parkedBehindResponse: true, otherHoldActive: false, promptQueueActive: false, researchActive: false, threadRunning: true };
+  assert.deepEqual(parkedSendSteer(parked), { cancelRun: true });
+  assert.deepEqual(parkedSendSteer({ ...parked, threadRunning: false }), { cancelRun: false });
+  for (const hold of [{ behavior: "queue" as const }, { promptQueueActive: true }, { researchActive: true }, { parkedBehindResponse: false }, { otherHoldActive: true }]) {
+    assert.equal(parkedSendSteer({ ...parked, ...hold }), null);
+  }
 });

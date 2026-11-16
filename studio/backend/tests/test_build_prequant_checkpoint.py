@@ -362,3 +362,19 @@ def test_int8_and_fp8_keep_their_pickle_upload_names():
     zimage = detect_family("Tongyi-MAI/Z-Image-Turbo")
     assert build.upload_destination(zimage, "int8", rotated = False) == "transformer_int8.pt"
     assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
+
+
+def test_the_weight_quant_flag_is_refused_off_nvfp4_before_any_load(capsys):
+    build = _script()
+    argv = [
+        "--base",
+        "Tongyi-MAI/Z-Image-Turbo",
+        "--family",
+        "z-image",
+        "--scheme",
+        "fp8",
+        "--out",
+        "x.pt",
+    ]
+    assert build.main([*argv, "--nvfp4-weight-quant", "4over6"]) == 2
+    assert "error:" in capsys.readouterr().out

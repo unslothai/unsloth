@@ -411,7 +411,7 @@ def converted_host_bytes(
     keep_key: Any = None,
 ) -> int:
     """Host RAM bytes loading path at dtype from the header; same-dtype mmapped tensors cost 0;
-    nvfp4 widens 2 elements per byte; unreadable header returns 0 (no claim)."""
+    nvfp4 widens 2 elements per byte (packed W4A8 / W6A8 2 and 4/3); unreadable header returns 0 (no claim)."""
     from .diffusion_comfy_quant import _read_header
 
     try:
@@ -439,7 +439,8 @@ def converted_host_bytes(
         else:
             verdict = dequantized(key)
         if verdict is not None:
-            total += numel * int(verdict) * _ST_ITEMSIZE[target]
+            # a fraction for packed sub-byte codes (6-bit: 4/3 elements per stored byte)
+            total += int(numel * float(verdict)) * _ST_ITEMSIZE[target]
             continue
         if stored not in _ST_FLOATS:
             continue

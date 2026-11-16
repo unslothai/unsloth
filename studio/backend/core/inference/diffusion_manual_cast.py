@@ -177,6 +177,47 @@ def apply_manual_cast_(module: Any, compute_dtype: Any) -> int:
     return kept_bytes
 
 
+def undo_same_width_manual_cast_(module: Any) -> int:
+    """Revert same-width manual-cast Linear / Embedding (bf16 for fp16 compute) to plain compute-dtype modules,
+    since that cast saves no memory; returns bytes converted. Call after a quant rebuilt the big Linears."""
+    import torch
+
+    if not _CLASSES:
+        return 0
+    linear_cls, embedding_cls = _CLASSES["linear"], _CLASSES["embedding"]
+    plain = {linear_cls: torch.nn.Linear, embedding_cls: torch.nn.Embedding}
+    converted = 0
+    with torch.no_grad():
+        for sub in module.modules():
+            base = plain.get(type(sub))
+            if base is None:
+                # never read .weight of anything else: a quantised Linear dequantises it on access
+                continue
+            dtype = getattr(sub, "_unsloth_compute_dtype", None)
+            weight = getattr(sub, "weight", None)
+            if not isinstance(dtype, torch.dtype) or not isinstance(weight, torch.Tensor):
+                continue
+            if (
+                weight.dtype != dtype
+                and weight.element_size() != torch.empty(0, dtype = dtype).element_size()
+            ):
+                continue
+            for name in ("weight", "bias"):
+                t = getattr(sub, name, None)
+                if isinstance(t, torch.Tensor) and t.is_floating_point() and t.dtype != dtype:
+                    converted += t.numel() * t.element_size()
+                    t.data = t.data.to(dtype)
+            sub.__class__ = base
+            del sub._unsloth_compute_dtype
+    info = manual_cast_info(module)
+    if info is not None:
+        if any(type(sub) in plain for sub in module.modules()):
+            info["kept_bytes"] = max(0, int(info.get("kept_bytes", 0)) - converted)
+        else:
+            delattr(module, MANUAL_CAST_ATTR)
+    return converted
+
+
 def manual_cast_info(module: Any) -> Optional[dict]:
     info = getattr(module, MANUAL_CAST_ATTR, None)
     return info if isinstance(info, dict) else None

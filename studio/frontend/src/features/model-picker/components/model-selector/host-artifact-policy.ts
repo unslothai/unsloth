@@ -46,9 +46,10 @@ export function hostRunsDenseQuant(host: HostClass): boolean {
 /** The two H3 rows differ by roughly 10x in throughput. */
 const H3_PIPELINE_ID = "minimaxai/minimax-h3";
 
-/** Refused without an accelerator, keyed by id: only MiniMax-H3's Modular workflow is
-  *  unplaceable (enable_auto_cpu_offload needs mem_get_info). */
-const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID]);
+/** Refused without an accelerator, keyed by id: MiniMax-H3's Modular workflow is unplaceable
+  *  (enable_auto_cpu_offload needs mem_get_info), and the MiniMax-H3-Image pipeline streams through
+  *  CUDA / ROCm; its GGUF row runs there instead. */
+const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID, "minimaxai/minimax-h3-image"]);
 
 /** Only browse rows are filtered; a model already on disk keeps its row. */
 export function curatedArtifactIsOfferable(

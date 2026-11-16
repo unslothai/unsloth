@@ -4,6 +4,7 @@
 import { createRoute } from "@tanstack/react-router";
 import { lazy } from "react";
 import { requireGuest } from "../auth-guards";
+import { queryParam } from "@/features/chat/chat-search";
 import { Route as rootRoute } from "./__root";
 
 const LoginPage = lazy(() =>
@@ -14,6 +15,7 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   staticData: { titleKey: "routes.login", isAuthFlow: true },
-  beforeLoad: () => requireGuest(),
+  validateSearch: (search: Record<string, unknown>): { q?: string } => ({ q: queryParam(search) }),
+  beforeLoad: ({ search }) => requireGuest(search.q),
   component: LoginPage,
 });

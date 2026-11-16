@@ -168,12 +168,13 @@ test("tool panes avoid measurement and height keyframes; the sidebar keeps its a
 
 test("reduced motion is reached by the transition, not bypassed by it", () => {
   const indexCss = readText("../src/index.css");
-  // Both reduced-motion blankets force transition-duration too, covering the grid collapse.
+  // Both reduced-motion blocks shorten an element's transition when a Tailwind class declares it,
+  // which covers the grid collapse (`transition-[grid-template-rows]`), so its transitionend fires.
   assert.ok(indexCss.includes("html.force-reduced-motion *"));
   assert.ok(indexCss.includes("@media (prefers-reduced-motion: reduce)"));
   assert.equal(
-    indexCss.match(/transition-duration: 0\.01ms !important;/g)?.length,
+    indexCss.match(/:is\(\[class\*="transition"\][^{]*\{\s*transition-duration: 0\.01ms !important;/g)?.length,
     2,
-    "both reduced-motion blankets must force transition-duration, not only animation-duration",
+    "both reduced-motion blocks must shorten class-declared transitions, not only animation-duration",
   );
 });

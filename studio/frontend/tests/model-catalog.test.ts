@@ -16,13 +16,17 @@ const {
   setProviderModelCatalog,
 } = await import("../src/features/chat/model-catalog.ts");
 const {
+  externalStopWindow,
   getExternalReasoningCapabilities,
   getPublishedExternalMaxOutputTokens,
   reasoningFieldsAfterCatalogRefresh,
 } = await import("../src/features/chat/provider-capabilities.ts");
-const { providerModelSupportsVision } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  isGeminiApiProviderType,
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
 
 test("an OpenRouter route exposes the snapshot's effort ladder", () => {
   const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
@@ -425,4 +429,71 @@ test("a mandatory OpenRouter alias keeps its catalog effort ladder", () => {
   const fallback = getExternalReasoningCapabilities("openrouter", "~google/gemini-pro-latest");
   assert.equal(fallback.reasoningAlwaysOn, true);
   assert.equal(fallback.supportsReasoningOff, false);
+});
+
+test("a model is older only when the served catalog dates it over a year back", async () => {
+  const { isOlderModel, setModelsDevCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  setModelsDevCatalog({
+    fetched_at: 1_700_000_000,
+    providers: {
+      gemini: {
+        "gemini-old": { released: "2025-06-17" },
+        "gemini-new": { released: "2026-10-13" },
+        "gemini-undated": {},
+      },
+    },
+  });
+  const now = Date.parse("2026-11-14");
+  assert.equal(isOlderModel("gemini", "gemini-old", now), true);
+  assert.equal(isOlderModel("gemini", "Gemini-Old", now), true);
+  assert.equal(isOlderModel("gemini", "gemini-new", now), false);
+  assert.equal(isOlderModel("gemini", "gemini-undated", now), false);
+  assert.equal(isOlderModel("llama_cpp", "gemini-old", now), false);
+});
+
+test("NVIDIA NIM offers no reasoning control, since no request field reaches its models", () => {
+  setProviderModelCatalog(
+    "nvidia",
+    [
+      {
+        id: "nvidia/nemotron-3-super-120b-a12b",
+        input_modalities: ["text"],
+        reasoning: { supported_efforts: ["low", "medium"], mandatory: false },
+      },
+    ],
+    1,
+  );
+  try {
+    for (const id of ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-nano-30b-a3b"]) {
+      assert.equal(getExternalReasoningCapabilities("nvidia", id).supportsReasoning, false);
+    }
+  } finally {
+    clearProviderModelCatalog("nvidia");
+  }
+});
+
+test("SGLang and Vertex connections read the registry entry they are sent as", () => {
+  setProviderModelCapabilities("custom", { "*": { studio_tools: true } });
+  setProviderModelCapabilities("gemini", { "gemini-3-pro": { studio_tools: true, vision: true } });
+  try {
+    assert.equal(providerModelSupportsStudioTools("sglang", "qwen3"), true);
+    assert.equal(providerModelSupportsStudioTools("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsVision("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsStudioTools("cohere", "command-a"), null);
+  } finally {
+    setProviderModelCapabilities("custom", undefined);
+    setProviderModelCapabilities("gemini", undefined);
+  }
+});
+
+test("Vertex is the Gemini API for replay and stop handling", () => {
+  assert.equal(isGeminiApiProviderType("vertex"), true);
+  assert.equal(isGeminiApiProviderType("gemini"), true);
+  assert.equal(isGeminiApiProviderType("openrouter"), false);
+  const vertex = "https://aiplatform.googleapis.com/v1/publishers/google";
+  assert.equal(externalStopWindow("vertex", vertex), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://generativelanguage.googleapis.com/v1beta"), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://litellm.example/v1"), null);
 });

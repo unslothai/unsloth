@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { ApiKeyAccess } from "../api/api-keys";
+
+const ACCESS_OPTIONS: ApiKeyAccess[] = ["full", "inference"];
 
 function selectToken(input: HTMLInputElement | null) {
   if (!input) return;
@@ -21,11 +30,26 @@ function selectToken(input: HTMLInputElement | null) {
 export function KeyRevealCard({
   rawKey,
   onDone,
+  access,
+  onAccessChange,
 }: {
   rawKey: string;
   onDone: () => void;
+  access?: ApiKeyAccess;
+  onAccessChange?: (access: ApiKeyAccess) => Promise<void>;
 }) {
   const t = useT();
+  const pillId = useId();
+  const [saving, setSaving] = useState(false);
+  const pickAccess = async (option: ApiKeyAccess) => {
+    if (!onAccessChange || saving || option === access) return;
+    setSaving(true);
+    try {
+      await onAccessChange(option);
+    } finally {
+      setSaving(false);
+    }
+  };
   const [copied, setCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -91,15 +115,52 @@ export function KeyRevealCard({
         <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}
         </p>
-        <Button
-          type="button"
-          variant="dark"
-          size="sm"
-          onClick={onDone}
-          className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {t("common.done")}
-        </Button>
+        <div className="flex items-center gap-2">
+          {access && onAccessChange ? (
+            <div className="hub-tab-toggle inline-flex h-control items-center rounded-full">
+              {ACCESS_OPTIONS.map((option) => {
+                const active = access === option;
+                return (
+                  <Tooltip key={option}>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        onClick={() => void pickAccess(option)}
+                        aria-pressed={active}
+                        disabled={saving}
+                        className={cn(
+                          "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60",
+                          active
+                            ? "text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {active && <SegmentedPill group={`${pillId}-access`} />}
+                        {option === "full"
+                          ? t("settings.apiKeys.accessFull")
+                          : t("settings.apiKeys.accessInference")}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" sideOffset={6}>
+                      {option === "full"
+                        ? t("settings.apiKeys.accessFullHint")
+                        : t("settings.apiKeys.accessInferenceHint")}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          ) : null}
+          <Button
+            type="button"
+            variant="dark"
+            size="sm"
+            onClick={onDone}
+            className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("common.done")}
+          </Button>
+        </div>
       </div>
     </div>
   );

@@ -42,9 +42,13 @@ def test_flux3_thresholds_are_one():
     assert diffusion._negative_prompt_guidance_threshold(by_name["flux.3-klein-base"]) == 1.0
 
 
-def test_only_the_distilled_flux3_graph_ignores_guidance_as_a_family():
-    # Flux3DistilledModularPipeline has no guider, so diffusion_flux3._set_guidance drops the value.
-    assert [f.name for f in _FAMILIES if not f.uses_guidance] == ["flux.3-klein"]
+def test_only_the_guidance_distilled_graphs_ignore_guidance_as_a_family():
+    # Flux3DistilledModularPipeline has no guider, so diffusion_flux3._set_guidance drops the value; MiniMax-H3-Image
+    # is guidance-distilled to 6 PDD steps and only takes guidance 1.
+    assert [f.name for f in _FAMILIES if not f.uses_guidance] == [
+        "flux.3-klein",
+        "minimax-h3-image",
+    ]
 
 
 @pytest.mark.parametrize(

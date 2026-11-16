@@ -30,8 +30,8 @@ import {
   setActiveAction,
   useBrowserAgentStore,
 } from "./agent-store";
-import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
-import { type SiteRule, ruleFor } from "./permissions";
+import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks, siteOfUrl } from "./gate";
+import { type SiteRule, ruleFor, scriptRunsWithoutAsking, scriptSiteRule } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
 import { waitForPage } from "./page-wait";
@@ -223,7 +223,7 @@ function record(session: Session, op: string, url: string): void {
 
 function admit(url: string, gate: Gate, context: Run): void {
   if (context.fullAccess === true) return;
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (!host) return;
   context.session.reachedHosts.add(host);
   if (!(gate.kind === "allow" && gate.linked)) context.session.knownHosts.add(host);
@@ -545,11 +545,12 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, context: Run, remember = true): Promise<string | null> {
+async function pass(gate: Gate, context: Run, remember = true, onAlways?: () => void): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, context, remember);
+  const allowed = await askInPanel({ ask, host, name, detail }, context, remember, Boolean(onAlways));
+  if (allowed === "always") onAlways?.();
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -577,8 +578,8 @@ function notifyOffScreenQuestion(chat: string): void {
 }
 
 /** Questions show in the chat's agent bar: the panel opens for one in the chat on screen, and one
- *  from a chat off screen waits there, with a toast to go answer it. A script is asked every time. */
-async function askInPanel(question: Question, context: Run, remember = true): Promise<Answer> {
+ *  from a chat off screen waits there, with a toast to go answer it. A script is never kept for the chat. */
+async function askInPanel(question: Question, context: Run, remember = true, offerAlways = false): Promise<Answer> {
   // As askUser does: a stopped action isn't answered, even by Always allow.
   if (context.signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
@@ -593,7 +594,7 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
   if (chatOnScreen(context)) store.openPanel();
   else notifyOffScreenQuestion(context.session.chat);
-  const answer = await askUser(context.session.chat, question, context.signal, keep);
+  const answer = await askUser(context.session.chat, question, context.signal, keep || offerAlways);
   if (answer === "always" && keep) granted.add(key);
   return answer;
 }
@@ -718,6 +719,8 @@ function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
     actions: "allow",
     downloads: rule.downloads === "block" ? "block" : "allow",
     unlabelled: "allow",
+    // Full access doesn't cover scripts: only Run scripts or the site's own Scripts rule skips that prompt.
+    scripts: rule.scripts,
   });
   return { defaults: allow(saved.defaults), sites: Object.fromEntries(Object.entries(saved.sites).map(([site, rule]) => [site, allow(rule)])) };
 }
@@ -729,7 +732,7 @@ function navigationContext(action: BrowserAction, context: Run) {
   return {
     policy: action.policy,
     permissions: permissions(context),
-    currentUrl: reachedHosts.has(hostOfUrl(currentUrl)) ? currentUrl : "",
+    currentUrl: reachedHosts.has(siteOfUrl(currentUrl)) ? currentUrl : "",
     knownHosts,
     pageLinks,
     userText: context.userText,
@@ -849,7 +852,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
         ? { kind: "block", reason: blocked }
-        : hostOfUrl(destination) === hostOfUrl(before) && reachedHosts.has(hostOfUrl(before))
+        : siteOfUrl(destination) === siteOfUrl(before) && reachedHosts.has(siteOfUrl(before))
           ? { kind: "allow" }
           : gateNavigation(destination, navigationContext(action, context));
       const refused = await pass(gate, context);
@@ -982,7 +985,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && gated.formAction ? gated.formAction : "";
   const formGate =
-    formAction && hostOfUrl(formAction) !== hostOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
+    formAction && siteOfUrl(formAction) !== siteOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
   if (formAction) {
     // A submit button's own click gate already asks what a submit would.
     if (!info.submits) gates.push(gateElement("submit", info, here, action.policy, permissions(context)));
@@ -1447,7 +1450,7 @@ function gateable(info: ElementInfo, context: Run): ElementInfo {
 /** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
 function opaqueGate(info: ElementInfo, pageUrl: string, context: Run): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
-  const host = hostOfUrl(pageUrl);
+  const host = siteOfUrl(pageUrl);
   const rule = ruleFor(pageUrl, permissions(context)).rule;
   if (!host || context.session.opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
@@ -1463,7 +1466,11 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 const SCRIPT_WAIT_MS = 15_000;
 const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
-/** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
+function scriptAllowed(url: string, context: Pick<Run, "fullAccess" | "inFile">): boolean {
+  return scriptRunsWithoutAsking(useBrowserAgentStore.getState().scriptAccess, url, permissions(context));
+}
+
+/** A script bypasses every rule above, so it is shown verbatim and asked unless Run scripts or the site's Scripts rule allows it. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
@@ -1471,8 +1478,18 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
-  if (refused) return { ok: false, error: refused };
+  if (!scriptAllowed(before, context)) {
+    // Always allow saves the site's Scripts rule, as Settings would: no chat keeps a script answer.
+    const agent = useBrowserAgentStore.getState;
+    const save = () => {
+      const saved = scriptSiteRule(before, agent().permissions);
+      if (saved) agent().setSiteRule(saved.site, saved.rule);
+    };
+    const offer = scriptSiteRule(before, agent().permissions) !== null;
+    const gate: Gate = { kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" };
+    const refused = await pass(gate, context, true, offer ? save : undefined);
+    if (refused) return { ok: false, error: refused };
+  }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // Settings can change while the question is open.
   if (useBrowserAgentStore.getState().scriptAccess === "never") return { ok: false, error: SCRIPTS_OFF };
@@ -1533,11 +1550,11 @@ async function arrive(
   note?: string,
 ): Promise<Result> {
   const url = tabUrl(tab);
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (url) {
     const blocked = navigationBlocks(url, action.policy, permissions(context));
     if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
-    if (host && host !== hostOfUrl(requested) && !context.session.reachedHosts.has(host)) {
+    if (host && host !== siteOfUrl(requested) && !context.session.reachedHosts.has(host)) {
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
@@ -1546,6 +1563,8 @@ async function arrive(
     if (host && context.fullAccess !== true) context.session.reachedHosts.add(host);
     record(context.session, action.op, url);
   }
+  // The last page's links don't vouch for addresses once the tab has moved.
+  context.session.pageLinks = new Set();
   return observeLoaded(tab, context, since, note);
 }
 
@@ -1553,7 +1572,7 @@ async function arrive(
  *  its own, or the user declined where a redirect landed and it is still loaded. */
 async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Run): Promise<string | null> {
   const url = tabUrl(tab);
-  const host = hostOfUrl(url);
+  const host = siteOfUrl(url);
   if (!host) return null;
   const blocked = navigationBlocks(url, action.policy, permissions(context));
   if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;

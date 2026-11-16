@@ -66,11 +66,9 @@ for (const [path, read] of [
     const source = readSrc(path);
     for (const pin of [
       'if (p.phase === "saving_chat_context") {',
-      'title="Saving chat context…"',
-      `message="Saving the chat model's context so it can resume after this load."`,
-      // The same toast id, keeping Cancel, fenced on a cancel or a newer load.
-      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {",
-      "toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));",
+      'title: "Saving chat context…",',
+      `message: "Saving the chat model's context so it can resume after this load.",`,
+      "if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {\n          loadToast.update(SAVING_PROGRESS);",
     ]) {
       assert.ok(source.includes(pin), `missing: ${pin}`);
     }
@@ -78,7 +76,7 @@ for (const [path, read] of [
       source.indexOf("const handleLoad = useCallback("),
     );
     const order = [
-      "loadToastId.current = toast(",
+      "loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));",
       `const savePoll = watchSavingPhase(${read}, () => {`,
       "const answer = await startRequest;",
       "savePoll.stop();",

@@ -44,7 +44,7 @@ requests==2.34.2
 rich==15.0.0
 ruff==0.6.9
 safetensors==0.8.0
-soupsieve==2.9.2
+soupsieve==4.0
 sqlite-vec==0.1.9
 starlette==1.6.0
 structlog==26.1.0

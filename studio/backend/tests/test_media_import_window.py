@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -177,3 +179,78 @@ def test_close_dynamo_import_window_claims_the_media_window():
         ),
     )
     assert "claim_media_import_window(" in src
+
+
+# The background side imports nothing, so diffusers appearing before it lets go means the module did not wait.
+_H3_FIRST_IMPORT_PROBE = """
+import sys, threading, time
+from utils import torch_warmup as warm
+warm._dynamo_done = True  # only the media window matters here
+assert "diffusers" not in sys.modules, "diffusers was already imported"
+held = threading.Event()
+released = []
+
+def background():
+    with warm.background_media_import() as window_open:
+        assert window_open
+        held.set()
+        time.sleep(1.5)
+        released.append((time.perf_counter(), "diffusers" in sys.modules))
+
+bg = threading.Thread(target = background)
+bg.start()
+assert held.wait(30)
+import core.inference.diffusion_minimax_h3_image as h3i
+imported = time.perf_counter()
+bg.join(30)
+at_release, diffusers_while_held = released[0]
+print("diffusers imported while the window was held:", diffusers_while_held)
+print("module import finished after the window was released:", imported >= at_release)
+print("pipeline base:", h3i.MiniMaxH3ImagePipeline.__mro__[1].__name__)
+"""
+
+
+def test_the_h3_image_module_waits_for_a_background_import_before_its_diffusers_import():
+    """A cold-start pick racing the /api/system probe failed with "cannot import name 'MixedModel'
+    from partially initialized module 'peft.tuners'"."""
+    pytest.importorskip("diffusers")
+    out = subprocess.run(
+        [sys.executable, "-c", _H3_FIRST_IMPORT_PROBE],
+        cwd = _BACKEND,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr[-3000:]
+    assert "diffusers imported while the window was held: False" in out.stdout, out.stdout
+    assert "module import finished after the window was released: True" in out.stdout, out.stdout
+    assert "pipeline base: DiffusionPipeline" in out.stdout, out.stdout
+
+
+@pytest.mark.parametrize("name", ["_scheduler_bases", "_pipeline_base"])
+def test_each_h3_image_import_time_diffusers_import_closes_the_window_first(name):
+    tree = ast.parse(
+        (_BACKEND / "core" / "inference" / "diffusion_minimax_h3_image.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+    def _first_call(fn, callee):
+        return min(
+            (
+                n.lineno
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == callee
+            ),
+            default = None,
+        )
+
+    assert _first_call(fns["_close_diffusers_import_window"], "close_dynamo_import_window")
+    guard = _first_call(fns[name], "_close_diffusers_import_window")
+    imports = [
+        n.lineno
+        for n in ast.walk(fns[name])
+        if isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] == "diffusers"
+    ]
+    assert imports and guard is not None and guard < min(imports)

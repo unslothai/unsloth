@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -208,6 +209,13 @@ def main(argv = None) -> int:
         "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
+        "--nvfp4-weight-quant",
+        default = None,
+        choices = ["max6", "4over6"],
+        help = "nvfp4 block-scale choice: max6 (torchao's) or 4over6 (per 16-block max/6 vs max/4, "
+        "per-tensor scale for an E4M3 top of 256). Default: UNSLOTH_NVFP4_WEIGHT_QUANT, else 4over6.",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
@@ -227,6 +235,9 @@ def main(argv = None) -> int:
             "give --out a .safetensors path",
             flush = True,
         )
+        return 2
+    if (args.scheme or "").strip().lower() != "nvfp4" and args.nvfp4_weight_quant:
+        print("error: --nvfp4-weight-quant applies to --scheme nvfp4 only", flush = True)
         return 2
 
     sys.path.insert(0, str(BACKEND))
@@ -365,6 +376,14 @@ def main(argv = None) -> int:
             flush = True,
         )
 
+    weight_quant = None
+    if scheme == "nvfp4":
+        from core.inference.diffusion_nvfp4_weight_quant import WEIGHT_QUANT_ENV, resolve_method
+
+        weight_quant = resolve_method(args.nvfp4_weight_quant)
+        os.environ[WEIGHT_QUANT_ENV] = weight_quant
+        print(f"  nvfp4 weight scales: {weight_quant}", flush = True)
+
     quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     state_dict = {
@@ -388,6 +407,8 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
+    if weight_quant is not None:
+        metadata["nvfp4_weight_quant"] = weight_quant
     from core.inference.diffusion_prequant import canonical_weight_fingerprint
 
     # Version-neutral, so a file built on one torchao generation verifies on every other.

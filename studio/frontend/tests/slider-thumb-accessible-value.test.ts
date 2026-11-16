@@ -41,7 +41,7 @@ test("the wrapper can express a spoken value for a position", () => {
 test("the context slider says Auto rather than zero", () => {
   // aria-valuenow carries the raw position, so Auto needs saying in words.
   assert.match(panel, /thumbValueText=\{\(v\) =>/);
-  assert.match(panel, /v !== 0 \? `\$\{v\.toLocaleString\(\)\} tokens`/);
+  assert.match(panel, /!\(isMaxPosition\(v\) && value === 0\)/);
   assert.match(panel, /: "Auto"/);
 });
 

@@ -473,6 +473,35 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+_QAT_MODULE_PREFIXES = ("torchao.quantization.qat.", "torchao.prototype.qat.")
+_IS_QAT_LINEAR = {}
+
+
+def _is_qat_linear(module):
+    # torchao QAT linears fake-quantize the weight and / or input inside forward(); memoized per class.
+    cls = type(module)
+    is_qat = _IS_QAT_LINEAR.get(cls)
+    if is_qat is None:
+        is_qat = _IS_QAT_LINEAR[cls] = any(
+            c.__module__.startswith(_QAT_MODULE_PREFIXES) for c in cls.__mro__
+        )
+    return is_qat
+
+
+def _has_qat_linear(proj):
+    # Decode reads raw weights, so QAT (base or adapter) must run the module forward.
+    modules = proj._modules
+    if _is_qat_linear(modules.get("base_layer", proj)):
+        return True
+    for name in ("lora_A", "lora_B"):
+        adapters = modules.get(name)
+        if adapters is not None:
+            for module in adapters._modules.values():
+                if _is_qat_linear(module):
+                    return True
+    return False
+
+
 def _has_packed_qweight(proj):
     # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
     base_layer = proj._modules.get("base_layer", proj)
@@ -1765,9 +1794,42 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
         )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
-        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        if cache is not None and _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+            # Same tensors, new values: a captured decode graph reading them stays valid.
+            cache = (key, cache[1], cache[2])
+        else:
+            cache = (key, *_new_lora_cast(lora_A, lora_B, dtype))
         lora_A._fast_lora = cache
     return cache[1], cache[2]
+
+
+def _new_lora_cast(lora_A, lora_B, dtype):
+    if torch.is_inference_mode_enabled() and not _is_compiling():
+        # Normal tensors, so a later refresh can write them in place outside inference mode too.
+        with torch.inference_mode(False), torch.no_grad():
+            return lora_A.to(dtype), lora_B.to(dtype)
+    return lora_A.to(dtype), lora_B.to(dtype)
+
+
+def _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+    """Copies the adapters into the cached casts in place (addresses kept) when they still fit."""
+    A, B = cache[1], cache[2]
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
+    pairs = [(cast, source) for cast, source in ((A, lora_A), (B, lora_B)) if cast is not source]
+    for cast, source in pairs:
+        if (
+            cast.dtype != dtype
+            or cast.shape != source.shape
+            or cast.device != source.device
+            or cast.requires_grad
+            or cast._base is not None
+            or (cast.is_inference() and not torch.is_inference_mode_enabled())
+        ):
+            return False
+    for cast, source in pairs:
+        cast.copy_(source)
+    return True
 
 
 def fast_linear_forward(
@@ -1782,6 +1844,7 @@ def fast_linear_forward(
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)
+        or _has_qat_linear(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)
@@ -1847,20 +1910,22 @@ def fast_linear_forward(
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
 
+        # Update through a 1-D / 2-D view but return `out` itself: a re-view of a strided buffer
+        # (down_proj writes into temp_up[..., :hd]) breaks torch.matmul's fold to one mm downstream.
         if bsz == 1:
-            out = out.view(out_dim)
             temp_lora = torch_mv(A, X.ravel(), out = temp_lora)
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmv_(B, temp_lora, alpha = lora_S)
+            res = out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
         else:
-            out = out.view(bsz, out_dim)
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out = out.addmm_(temp_lora, B.t(), alpha = lora_S)
-        out = out.view(bsz, 1, out_dim)
+            res = out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
+        # A subclass operand makes the in-place method return its type (#16249).
+        if type(res) is not type(out):
+            out = out.as_subclass(type(res))
 
     if bias is not None:
         out += bias

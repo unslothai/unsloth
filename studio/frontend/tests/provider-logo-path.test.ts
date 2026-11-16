@@ -17,16 +17,19 @@ test("connections use the model hub's canonical provider images", () => {
     ["deepseek", "deepseek-ai"],
     ["mistral", "mistralai"],
     ["huggingface", "huggingface"],
-    ["kimi", "moonshotai"],
     ["qwen", "qwen"],
     ["qwencloud", "qwen"],
-    ["zai", "zai-org"],
     ["minimax", "minimax"],
   ]) {
     const hubLogo = PROVIDER_LOGOS.find(({ id }) => id === hubId);
     assert.ok(hubLogo, hubId);
     assert.equal(providerLogoPath(connection), hubLogo.logoPath, connection);
   }
+});
+
+test("boxed hub images give way to transparent marks that follow the theme", () => {
+  assert.equal(providerLogoPath("kimi"), "/provider-logos/moonshot.svg");
+  assert.equal(providerLogoPath("zai"), "/provider-logos/zai.svg");
 });
 
 test("Gemini keeps its own logo, separate from Google's hub image", () => {

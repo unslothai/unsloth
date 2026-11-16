@@ -122,6 +122,8 @@ class StreamEncode:
         self._torch = torch
         # the soundtrack's rate, declared before the first frame like encode_x264; None = a video-only file
         self.audio_sample_rate = int(audio_sample_rate) if audio_sample_rate else None
+        # encode_x264's reference=True file (MiniMax-H3): CRF 18, BT.709, float AAC
+        self.reference = False
         # the last frames may come from the final clip at take() (H3 finishes its tail only when the decode ends)
         self._tail_ok = False
         self._container = None
@@ -303,16 +305,27 @@ class StreamEncode:
                 frames = host.numpy()
                 if container is None:
                     container = av.open(self.path, mode = "w", format = "mp4")
-                    from .video_encode import add_x264_stream
+                    from .video_encode import add_x264_stream, x264_frame, x264_reformatter
 
-                    stream = add_x264_stream(container, self.fps, frames.shape[2], frames.shape[1])
+                    reformatter = x264_reformatter(av, reference = self.reference)
+
+                    # the flag only for H3, so every other family opens the stream exactly as encode_x264 does
+                    stream = add_x264_stream(
+                        container,
+                        self.fps,
+                        frames.shape[2],
+                        frames.shape[1],
+                        **({"reference": True} if self.reference else {}),
+                    )
                     if self.audio_sample_rate is not None:
                         from diffusers.utils.export_utils import _prepare_audio_stream
                         self._audio_stream = _prepare_audio_stream(
                             container, self.audio_sample_rate
                         )
                 for frame in frames:
-                    for packet in stream.encode(av.VideoFrame.from_ndarray(frame, format = "rgb24")):
+                    for packet in stream.encode(
+                        x264_frame(av, frame, reference = self.reference, reformatter = reformatter)
+                    ):
                         container.mux(packet)
                 # the last ``frame`` is a view that would pin the whole chunk
                 frames = host = frame = None
@@ -484,9 +497,11 @@ class StreamEncode:
                         import av
                         from diffusers.utils.export_utils import _write_audio
 
+                        from .video_encode import write_reference_audio
+
                         if self._container is None or self._audio_stream is None:
                             raise RuntimeError("no open container")
-                        _write_audio(
+                        (write_reference_audio if self.reference else _write_audio)(
                             self._container, self._audio_stream, audio, self.audio_sample_rate, av
                         )
                     except Exception as exc:  # noqa: BLE001 - the stock exporter writes the clip instead
@@ -538,6 +553,8 @@ class H3StreamEncode(StreamEncode):
         pixel_mean = kwargs.pop("pixel_mean")
         pixel_std = kwargs.pop("pixel_std")
         super().__init__(vae, processor, fps, logger, **kwargs)
+        # the same file the reference export writes (encode_x264 reference=True)
+        self.reference = True
         self._tail_ok = True
         self._pixel = (tuple(float(v) for v in pixel_mean), tuple(float(v) for v in pixel_std))
         self._overlap = None

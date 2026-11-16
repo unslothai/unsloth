@@ -6,6 +6,7 @@ PyMuPDF is not thread safe, so the server renders each export in a child process
 
 import html
 import io
+import itertools
 import json
 import sys
 from datetime import datetime, timezone
@@ -16,12 +17,13 @@ _PAGE_MARGIN_PT = 54
 
 # MuPDF's HTML engine takes a CSS subset; unknown families fall back to its bundled Noto/Droid fonts.
 _PDF_CSS = """
-body { font-family: sans-serif; font-size: 10.5pt; line-height: 1.45; color: #1f2328; }
+body { font-family: sans-serif; font-size: 10.5pt; line-height: 1.45; color: #1f2328; overflow-wrap: break-word; }
 h1 { font-size: 17pt; margin: 0 0 4pt 0; }
 .meta { color: #6e7781; font-size: 8.5pt; margin: 0 0 14pt 0; }
 .conversation-title { font-size: 13.5pt; margin: 16pt 0 8pt 0; }
 .message { margin: 0 0 12pt 0; padding: 6pt 10pt; border-left: 2pt solid #d0d7de; }
 .message.user { background-color: #f6f8fa; border-left: 2pt solid #8c959f; }
+.message.user .content, .message.system .content { white-space: pre-wrap; }
 .message.system { border-left: 2pt solid #bf8700; }
 .message.tool { border-left: 2pt solid #8250df; }
 .role { font-size: 8.5pt; font-weight: bold; color: #57606a; margin: 0 0 4pt 0; }
@@ -30,7 +32,7 @@ p { margin: 0 0 6pt 0; }
 pre { background-color: #f6f8fa; padding: 6pt; font-family: monospace; font-size: 8.5pt; white-space: pre-wrap; }
 code { font-family: monospace; font-size: 9pt; }
 blockquote { margin: 0 0 6pt 0; padding: 0 0 0 10pt; border-left: 2pt solid #d0d7de; color: #57606a; }
-th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; }
+th, td { border: 1px solid #d0d7de; padding: 2pt 5pt; overflow-wrap: normal; }
 details { color: #57606a; margin: 0 0 6pt 0; }
 summary { font-style: italic; }
 a { color: #0969da; }
@@ -53,16 +55,45 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     mediabox = pymupdf.paper_rect("a4")
-    where = mediabox + (_PAGE_MARGIN_PT, _PAGE_MARGIN_PT, -_PAGE_MARGIN_PT, -_PAGE_MARGIN_PT)
+    width = mediabox.width - 2 * _PAGE_MARGIN_PT
+    height = mediabox.height - 2 * _PAGE_MARGIN_PT
     pages = 0
+    links = []
+
+    def add_link(position):
+        if position.open_close & 1 and (position.href or "").startswith(
+            ("http:", "https:", "mailto:")
+        ):
+            rect = pymupdf.Rect(position.rect) * matrix
+            last = links[-1] if links else None
+            # One box per word: merge only touching boxes, so text between two anchors stays unlinked.
+            if (
+                last
+                and last[:2] == (pages, position.href)
+                and last[2].y0 == rect.y0
+                and abs(last[2].x1 - rect.x0) < 0.01
+            ):
+                last[2].include_rect(rect)
+            else:
+                links.append((pages, position.href, rect))
+
     more = 1
     while more:
         if pages >= MAX_EXPORT_PAGES:
             writer.close()
             raise ChatPdfTooLong(f"export exceeds {MAX_EXPORT_PAGES} pages")
         device = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(device)
+        scale = 1.0
+        more, filled = story.place(pymupdf.Rect(0, 0, width, height))
+        # MuPDF never shrinks a table below its natural width: re-place this page shrunk to fit it, so no column is cut off.
+        for _ in range(4):
+            if filled[2] <= width / scale * 1.001:
+                break
+            scale = width / filled[2]
+            more, filled = story.place(pymupdf.Rect(0, 0, width / scale, height / scale))
+        matrix = pymupdf.Matrix(scale, 0, 0, scale, _PAGE_MARGIN_PT, _PAGE_MARGIN_PT)
+        story.element_positions(add_link)
+        story.draw(device, matrix)
         writer.end_page()
         pages += 1
     writer.close()
@@ -70,6 +101,10 @@ def render_chat_pdf(title: str, body_html: str) -> bytes:
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
+        for number, group in itertools.groupby(links, key = lambda link: link[0]):
+            page = pdf[number]
+            for _, uri, rect in group:
+                page.insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": uri})
         # The CJK fallback font alone is ~2 MB; keep only the glyphs used.
         pdf.subset_fonts()
         return pdf.tobytes(garbage = 3, deflate = True)

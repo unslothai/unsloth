@@ -51,7 +51,7 @@ test("the Steps slider reaches every model's default: Krea-2-raw ships 52", () =
   const page = readSrc("features/images/images-page.tsx");
   assert.match(
     page,
-    /max=\{stepsSliderMax\(pendingModelDefaults\?\.steps \?\? residentSteps, steps\)\}/,
+    /max=\{maxSteps \?\? stepsSliderMax\(pendingModelDefaults\?\.steps \?\? residentSteps, steps\)\}/,
   );
   assert.doesNotMatch(page, /label="Steps"[\s\S]{0,300}max=\{50\}/);
 });

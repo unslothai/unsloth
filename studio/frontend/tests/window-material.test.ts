@@ -77,6 +77,22 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	);
 });
 
+test("the thread fades out under the see-through header of a background or macOS glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\),\nhtml\[data-glass="macos"\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\n  mask-image:\n    linear-gradient\(to bottom, transparent var\(--thread-header-offset, -1\.5rem\), #000 calc\(var\(--thread-header-offset, -1\.5rem\) \+ 1\.5rem\)\),/,
+	);
+});
+
+test("the header fade covers both thread edges, unmasking only a classic scrollbar's strip", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/\+ 1\.5rem\)\),\n    linear-gradient\(#000, #000\);\n  mask-size: 100% 100%, min\(var\(--thread-scrollbar-gutter, 10px\), var\(--classic-scrollbar-width, 0px\)\) 100%;\n  mask-position: 0 0, right;/,
+	);
+});
+
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);

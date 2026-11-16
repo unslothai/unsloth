@@ -137,9 +137,7 @@ pub fn browser_file_open(
         return Err("Programs and scripts open from their folder.".to_string());
     }
     match with {
-        None => {
-            tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())
-        }
+        None => crate::process::open_detached(&path).map_err(|error| error.to_string()),
         Some(with) => open_with(&path, &with),
     }
 }

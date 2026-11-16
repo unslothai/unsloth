@@ -21,7 +21,7 @@ from core.inference import diffusion_families as df
 from core.inference import sd_cpp_backend as bk
 from core.inference.diffusion import DiffusionBackend
 
-from .test_image_fetch_ids_unsloth import _CARD_BASES
+from .test_image_fetch_ids_unsloth import _CARD_BASES, _UNMIRRORED
 
 # Third-party DENOISER rows the catalog still offers (no unsloth GGUF exists): the pick's own repo, never a companion.
 _PICK_ONLY_EXCEPTIONS = frozenset({"quantstack/flux.1-krea-dev-gguf"})
@@ -137,6 +137,9 @@ def _vendor_calls(asked: list[tuple[str, str]], pick: str) -> list[tuple[str, st
         if t.startswith("api/models/"):
             t = t.split("/", 2)[2]
         if t.startswith("unsloth/"):
+            return True
+        # Bases deliberately fetched from upstream (no unsloth mirror is made), e.g. the H3-Image VAE.
+        if any(t == base or t.startswith(base + "/") for base in _UNMIRRORED):
             return True
         return pick.lower() in _PICK_ONLY_EXCEPTIONS and t.startswith(pick.lower())
 

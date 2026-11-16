@@ -75,7 +75,16 @@ async def get_job(
 
 
 async def run_recipe(
-    recipe: dict[str, Any], mode: Literal["validate", "preview", "full"] = "validate"
+    recipe: dict[str, Any],
+    mode: Literal["validate", "preview", "full"] = "validate",
+    rows: Annotated[
+        Optional[int],
+        Field(
+            ge = 1,
+            le = 200_000,
+            description = "Rows to generate; default 5 for a preview, 1000 for a full run.",
+        ),
+    ] = None,
 ) -> RecipeResult:
     """Validate a Data Recipe, or run it. "validate" checks it and returns any errors; "preview" generates a few rows; "full" generates the whole dataset and saves it. A run returns a job id at once: follow it with get_job(kind="recipe"). Recipes that define a local (stdio) MCP server, or take a provider key from a server environment variable (api_key_env), can only be run from the Unsloth Studio UI."""
     if mode == "validate":
@@ -89,10 +98,13 @@ async def run_recipe(
             if isinstance(e, dict)
         ]
         return RecipeResult(mode = mode, valid = payload.get("valid") is True, errors = errors)
+    if rows is None:
+        rows = 5 if mode == "preview" else 1000
+    run = {"execution_type": mode, "rows": rows, "run_config": {"buffer_size": rows}}
     created = await route_json(
         "POST",
         f"{RECIPE_ROUTES}/jobs",
-        json_body = {"recipe": recipe, "run": {"execution_type": mode}},
+        json_body = {"recipe": recipe, "run": run},
     )
     job_id = opt_text(created.get("job_id")) if isinstance(created, dict) else None
     if job_id is None:

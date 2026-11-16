@@ -975,9 +975,9 @@ OLLAMA_TEMPLATES["qwen-2"] = qwen25_ollama
 
 # =========================================== Phi-4
 _phi4_ollama_template = (
-    "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"
-    "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"
-    "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
+    "{{ if .System }}<|im_start|>system<|im_sep|>{{ .System }}<|im_end|>{{ end }}"
+    "{{ if .Prompt }}<|im_start|>user<|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"
+    "<|im_start|>assistant<|im_sep|>{{ .Response }}<|im_end|>"
 )
 
 # The ollama.com/library/phi4 template is different.

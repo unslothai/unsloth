@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import codecs
 
+import pytest
+
 from core.rag import parsers
 
 GREETING = "Sehr geehrte Frau Müller,\nviele Grüße aus Köln – 5 €.\n"
@@ -51,6 +53,48 @@ def test_a_utf8_byte_order_mark_wins_over_a_damaged_byte_and_a_declared_charset(
 
 def test_a_utf16_file_is_read_by_its_byte_order_mark(tmp_path):
     assert _text(tmp_path, "wide.txt", GREETING.encode("utf-16")) == GREETING
+
+
+def test_a_utf16_file_without_a_byte_order_mark_still_reads_as_text(tmp_path):
+    for codec in ("utf-16-le", "utf-16-be"):
+        assert _text(tmp_path, f"no_bom_{codec}.txt", GREETING.encode(codec)) == GREETING, codec
+    assert _text(tmp_path, "tiny.txt", b"H\x00i\x00!\x00!\x00") == "Hi!!"
+
+
+def test_a_utf16_source_file_without_a_byte_order_mark_is_not_mistaken_for_binary(tmp_path):
+    table = "name,score\nalpha,1\nbeta,2\n"
+    assert _text(tmp_path, "scores.csv", table.encode("utf-16-le")) == table
+
+
+def test_utf16_detection_survives_an_astral_or_ideographic_character(tmp_path):
+    text = "first line 😀 second line, more text follows here. 次\u3000の行\n"
+    for codec in ("utf-16-le", "utf-16-be"):
+        assert _text(tmp_path, f"astral_{codec}.txt", text.encode(codec)) == text
+
+
+def test_a_jpeg_header_is_not_read_as_utf16(tmp_path):
+    jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00\x48\x00\x48\x00\x00" + bytes(64)
+    assert "JFIF" in _text(tmp_path, "photo.txt", jpeg)
+
+
+def test_a_binary_file_is_still_refused_under_a_source_extension(tmp_path):
+    blob = bytes(range(256)) * 8
+    path = tmp_path / "blob.csv"
+    path.write_bytes(blob)
+    with pytest.raises(ValueError, match = "binary"):
+        parsers.parse(str(path))
+
+
+def test_a_nul_shaped_binary_is_still_refused_under_a_source_extension(tmp_path):
+    for name, blob in (("readings.csv", b"\x01\x00" * 300), ("flags.csv", b"\x80\x00" * 300)):
+        path = tmp_path / name
+        path.write_bytes(blob)
+        with pytest.raises(ValueError, match = "binary"):
+            parsers.parse(str(path))
+
+
+def test_a_short_utf16_fragment_is_left_to_the_existing_heuristics(tmp_path):
+    assert _text(tmp_path, "short.txt", b"H\x00i\x00") == "H\x00i\x00"
 
 
 def test_an_html_page_is_read_in_the_charset_it_declares(tmp_path):

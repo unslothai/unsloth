@@ -100,6 +100,7 @@ from utils.datasets.pretokenized import (
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
+    EVAL_SPLITS,
     dataset_files_in_dir,
     ensure_dir,
     resolve_dataset_path,
@@ -116,7 +117,12 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
+from .dataset_bounds import (
+    bound_dataset_rows,
+    slice_dataset_rows,
+    world_size_env_report,
+    world_size_from_env,
+)
 
 logger = get_logger(__name__)
 
@@ -3139,14 +3145,14 @@ class UnslothTrainer:
         return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
-    def _resolve_local_files(file_paths: list) -> list[str]:
+    def _resolve_local_files(file_paths: list, splits: tuple[str, ...] = ("train",)) -> list[str]:
         """Resolve a list of local dataset paths to concrete file paths."""
         all_files: list[str] = []
         for dataset_file in file_paths:
             file_path_obj = UnslothTrainer._resolve_local_path(dataset_file)
 
             if file_path_obj.is_dir():
-                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+                all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             else:
                 all_files.append(str(file_path_obj))
         return all_files
@@ -3317,7 +3323,7 @@ class UnslothTrainer:
                     eval_all_files = (
                         []
                         if eval_saved is not None
-                        else self._resolve_local_files(local_eval_datasets)
+                        else self._resolve_local_files(local_eval_datasets, EVAL_SPLITS)
                     )
                     if eval_saved is not None:
                         eval_dataset = eval_saved
@@ -3635,11 +3641,9 @@ class UnslothTrainer:
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
-                start = dataset_slice_start if dataset_slice_start is not None else 0
-                end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                start = max(0, min(start, total_rows - 1))
-                end = max(start, min(end, total_rows - 1))
-                dataset = dataset.select(range(start, end + 1))
+                dataset, start, end = slice_dataset_rows(
+                    dataset, dataset_slice_start, dataset_slice_end
+                )
                 logger.info(
                     f"Sliced dataset to rows [{start}, {end}]: {len(dataset)} of {total_rows} rows\n"
                 )
@@ -3846,6 +3850,7 @@ class UnslothTrainer:
             logger.info(f"Dataset formatted successfully ({final_n} samples, {detected})\n")
 
             if has_separate_eval_source and eval_dataset is not None:
+                _raise_if_empty_train_split(eval_dataset, "in the eval split")
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(

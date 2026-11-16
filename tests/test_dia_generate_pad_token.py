@@ -50,6 +50,7 @@ def _captured_generate_kwargs(config, **generate_kwargs):
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),
+        "_lora_fold_generate": lambda model, args, kwargs: nullcontext(),
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
         "NUM_LOGITS_TO_KEEP": {"DiaForConditionalGeneration": None},
         "DEVICE_TYPE_TORCH": "cuda",

@@ -2300,6 +2300,67 @@ def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
+def test_prefill_progress_renews_the_first_output_budget(monkeypatch):
+    """A long prompt eval on an offloaded model streams only prefill-progress comments (#17907)."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.1)
+
+    class _LongPrefillThenServed:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for _ in range(15):
+                await asyncio.sleep(0.04)
+                yield research_runs._PREFILL_PROGRESS_COMMENT
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_LongPrefillThenServed()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop", None)
+
+
+def test_prefill_progress_marker_matches_the_inference_route():
+    from routes import inference as inference_route
+    assert inference_route._OPENAI_PREFILL_PROGRESS_SSE.startswith(
+        research_runs._PREFILL_PROGRESS_COMMENT
+    )
+
+
+def test_prefill_progress_after_output_does_not_reset_the_idle_guard(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.1)
+
+    class _OutputThenProgressOnly:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield research_runs._PREFILL_PROGRESS_COMMENT
+
+    _install_fake_client(monkeypatch, [_OutputThenProgressOnly()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelOutputIdleTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0
+
+
 def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
     """Queue wait is not charged to the model budget; the budget starts when the slot is granted."""
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.3)

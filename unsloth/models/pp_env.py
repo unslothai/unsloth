@@ -880,6 +880,55 @@ def _cpu_chunked_ce_model(trainer, model):
     return None
 
 
+def _compute_loss_adds_router_aux(compute_loss):
+    """TRL >= 1.15 SFTTrainer.compute_loss adds router_aux_loss_coef x aux / accumulation steps itself; older
+    ones (1.14 already has the attribute) leave it to the model forward. Read from the code, not the version."""
+    for _ in range(8):
+        names = getattr(getattr(compute_loss, "__code__", None), "co_names", ())
+        if "router_aux_loss_coef" in names and "current_gradient_accumulation_steps" in names:
+            return True
+        compute_loss = getattr(compute_loss, "__wrapped__", None)
+        if compute_loss is None:
+            return False
+    return False
+
+
+def _trainer_router_aux(
+    trainer,
+    stage,
+    num_items_in_batch,
+    chunked,
+    train = True,
+):
+    """(coef, divisor) when stock TRL's compute_loss adds the router aux loss in one process (CPU backend, zoo's
+    chunked CE not armed), else None: the model forward adds it. Its coef, not the CausalLM's stale cached one."""
+    if getattr(getattr(stage, "ctx", None), "moe", None) is None or (train and chunked is not None):
+        return None
+    compute_loss = getattr(type(trainer), "compute_loss", None)
+    if not getattr(compute_loss, "_unsloth_cpu", False):
+        return None
+    if not _compute_loss_adds_router_aux(compute_loss):
+        return None
+    if not getattr(trainer, "aux_loss_enabled", False):
+        return None
+    coef = getattr(trainer, "router_aux_loss_coef", None)
+    if coef is None:
+        return None
+    steps = 1
+    if train and num_items_in_batch is not None:
+        steps = int(
+            getattr(trainer, "current_gradient_accumulation_steps", 0)
+            or trainer.args.gradient_accumulation_steps
+        )
+    return float(coef), float(max(steps, 1))
+
+
+def _set_trainer_aux(stage, value):
+    ctx = getattr(stage, "ctx", None)
+    if ctx is not None:
+        ctx.trainer_aux = value
+
+
 def _pp_training_step(
     self,
     model,
@@ -915,6 +964,7 @@ def _pp_training_step(
     chunked = _cpu_chunked_ce_model(self, model)
     if chunked is not None:
         chunked._unsloth_cpu_chunked_ce_active = True
+    _set_trainer_aux(stage, _trainer_router_aux(self, stage, n, chunked))
     try:
         loss = stage.step(
             input_ids,
@@ -926,6 +976,7 @@ def _pp_training_step(
             **extra,
         )
     finally:
+        _set_trainer_aux(stage, None)
         if chunked is not None:
             chunked._unsloth_cpu_chunked_ce_active = False
     del inputs
@@ -980,7 +1031,14 @@ def _pp_prediction_step(
     m, pad = resolve_microbatches(stage, input_ids.shape[0], train = False)
     _refuse_split_router_aux(stage, m)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-    loss = stage.eval_loss(input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra)
+    # TRL's prediction step passes no num_items_in_batch: the aux term is added once per batch.
+    _set_trainer_aux(stage, _trainer_router_aux(self, stage, None, None, train = False))
+    try:
+        loss = stage.eval_loss(
+            input_ids, labels, num_items_in_batch = count, n_microbatches = m, **extra
+        )
+    finally:
+        _set_trainer_aux(stage, None)
     return (loss.detach().to(self.args.device), None, None)
 
 

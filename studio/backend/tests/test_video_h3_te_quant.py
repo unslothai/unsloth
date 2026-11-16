@@ -86,7 +86,8 @@ def test_the_hosted_filename_comes_from_an_unsloth_repo():
 
 def test_every_hosted_scheme_is_a_valid_text_encoder_quant_request():
     from core.inference.diffusion_precision import normalize_te_quant
-    for scheme in H3_TE_QUANT_FILES:
+    from core.inference.video_minimax_h3_te import H3_TE_AUTO_ONLY_SCHEMES
+    for scheme in set(H3_TE_QUANT_FILES) - H3_TE_AUTO_ONLY_SCHEMES:
         assert normalize_te_quant(scheme) == scheme
 
 

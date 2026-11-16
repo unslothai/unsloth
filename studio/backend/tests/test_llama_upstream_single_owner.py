@@ -415,12 +415,17 @@ class _BlockedRespawnBackend(_Backend):
             self.finished.set()
 
 
+# Only a cap: _until returns as soon as the predicate holds. 1 s was too short for a loaded 2-core
+# runner under xdist, where the backend thread's next turn can come later than that.
+_UNTIL_TIMEOUT_S = 15
+
+
 async def _until(predicate):
     async def poll():
         while not predicate():
             await asyncio.sleep(0.005)
 
-    await asyncio.wait_for(poll(), timeout = 1)
+    await asyncio.wait_for(poll(), timeout = _UNTIL_TIMEOUT_S)
 
 
 _STREAM_ROUTES = [_ROUTES[i] for i in (0, 3, 4, 6)]

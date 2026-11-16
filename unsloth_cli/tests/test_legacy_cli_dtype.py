@@ -70,6 +70,7 @@ def test_dtype_reaches_the_loader_as_none_or_unchanged(monkeypatch, spelling, ex
         dtype = spelling,
         load_in_4bit = True,
         use_dora = False,
+        use_gradient_checkpointing = "unsloth",
     )
     with pytest.raises(_Stop):
         legacy_cli.run(args)
