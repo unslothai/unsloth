@@ -7875,8 +7875,7 @@ html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-con
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
 }
-/* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block.
-   One blurred layer per row frosts what scrolls under it instead; the row itself stays clear, as a backdrop root would hide that. */
+/* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block: one blurred layer per row frosts what scrolls under it instead. */
 html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {
   background: none;
   -webkit-backdrop-filter: none;
@@ -8175,6 +8174,7 @@ html[data-glass][data-glass-motion] [data-settings-main-scroll] {
 html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving],
 html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving]::before,
 html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .sticky,
+html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-glass-moving] .composer-run-settings :is([data-config-header-row], [data-pinned-footer])::before,
 html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"],
 html:is([data-glass],[data-glass-clear])[data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
   -webkit-backdrop-filter: none !important;
@@ -8195,6 +8195,9 @@ html[data-glass="macos"][data-glass-motion] :is(.unsloth-composer-surface, .unsl
 }
 html[data-glass][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
   background-color: color-mix(in srgb, var(--glass-page-popover) 96%, transparent) !important;
+}
+html[data-glass][data-glass-menus][data-glass-motion] [data-glass-moving] .composer-run-settings :is([data-config-header-row], [data-pinned-footer])::before {
+  background: color-mix(in srgb, var(--glass-page-popover) 96%, transparent);
 }
 html[data-glass][data-glass-menus][data-glass-motion] :is(.tooltip-compact, .tooltip-rich)[data-glass-moving] {
   background-color: var(--tooltip-bg) !important;
