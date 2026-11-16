@@ -18367,7 +18367,8 @@ class LlamaCppBackend:
                 return None
             if self._host_offload_fits_without_gpus(argv, total_ram_mib):
                 return None
-            probed = self._get_gpu_memory(binary)
+            # Only the GPUs llama-server can run: an uncovered iGPU's total-0 row would void the check.
+            probed = self._get_gpu_memory(binary, for_llama_server = True)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
                 return None

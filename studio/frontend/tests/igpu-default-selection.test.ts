@@ -355,3 +355,34 @@ test("a shared-memory GPU llama.cpp can run stays offered, unticked", () => {
   assert.deepEqual(hooks.cachedPinnableGpuIndices(), [0, 1, 2]);
   assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true).ids, [0, 1]);
 });
+
+test("fit capacity counts only the cards each engine can run", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", visible_ordinal: 0, ...R9700 },
+      { index: 1, index_kind: "physical", visible_ordinal: 1, ...R9700 },
+      {
+        index: 2,
+        index_kind: "physical",
+        visible_ordinal: 2,
+        ...IGPU_SHARED,
+        no_llama_kernels: true,
+        no_torch_kernels: true,
+      },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  // Hub and recommended-model badges read these; the iGPU's 36 GiB once made it 100.
+  for (const info of [hooks.useGpuInfo(), hooks.useInferenceGpuInfo()]) {
+    assert.equal(info.memoryTotalGb, 63.72);
+    assert.equal(info.deviceCount, 2);
+    assert.equal(info.maxDeviceMemoryGb, 31.86);
+    assert.equal(info.unifiedMemory, false);
+  }
+  // Each view drops only what its own engine cannot run.
+  gpu.devices[1] = { ...gpu.devices[1], no_llama_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useInferenceGpuInfo().memoryTotalGb, 31.86);
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 63.72);
+});

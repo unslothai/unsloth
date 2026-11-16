@@ -201,8 +201,15 @@ function toGpuInfo(
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
-  const memoryTotals = gpuMemoryTotalsGb(devices);
-  const loadDevice = pickLoadDevice(devices);
+  // Capacity counts only cards this view's engine can run: llama.cpp for GGUF, torch otherwise.
+  // RAM math below still sees every device, since a shared pool is host RAM either way.
+  const runnable = devices.filter((device) =>
+    source === "inference_gpu"
+      ? device.no_llama_kernels !== true
+      : device.no_torch_kernels !== true,
+  );
+  const memoryTotals = gpuMemoryTotalsGb(runnable);
+  const loadDevice = pickLoadDevice(runnable);
   return {
     ...base,
     // Raw: folding first collapsed multi-socket unified pools into one.
@@ -212,7 +219,7 @@ function toGpuInfo(
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
     // some(), unlike sharedMemory: one unified part already stops the total being a VRAM ceiling.
-    unifiedMemory: devices.some((device) => device.unified_memory === true),
+    unifiedMemory: runnable.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
@@ -220,7 +227,7 @@ function toGpuInfo(
     dedicatedMemoryTotalGb: memoryTotals.dedicated,
     defaultMemoryTotalGb: defaultGpuMemoryTotalGb(devices),
     memorySharedGb: memoryTotals.shared,
-    maxDeviceMemoryGb: devices.reduce(
+    maxDeviceMemoryGb: runnable.reduce(
       (max, d) => Math.max(max, d.memory_total_gb ?? 0),
       0,
     ),
@@ -231,7 +238,7 @@ function toGpuInfo(
       sharedMemory: loadDevice?.shared_memory === true,
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
-    deviceCount: devices.length,
+    deviceCount: runnable.length,
     unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
     unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, true),
   };
