@@ -432,7 +432,12 @@ def test_cookie_snapshots_are_ordered_by_store_changes(monkeypatch):
     assert cookies.versioned_page_cookies("user", "https://app.example.com/")[0][1] > newer[1]
 
 
-def _write_page_cookie(page, key, value, same_site = None):
+def _write_page_cookie(
+    page,
+    key,
+    value,
+    same_site = None,
+):
     asyncio.run(
         browser_mod.browser_page_cookie(
             browser_mod.BrowserPageCookie(page = page, key = key, value = value, same_site = same_site),
@@ -454,7 +459,11 @@ def test_a_script_cookies_samesite_holds_on_cross_site_requests():
     assert cookies.cookie_header("user", site, cross_site = True, method = "POST") == "none=1"
     # The frame's form never carries the attribute, and the page still sees every one.
     assert [key for key, _ in cookies.page_cookies("user", site)] == [
-        "strict=/", "lax=/", "plain=/", "odd=/", "none=/"
+        "strict=/",
+        "lax=/",
+        "plain=/",
+        "odd=/",
+        "none=/",
     ]
     # SameSite=None needs Secure, which a script cookie over http never has.
     _write_page_cookie("http://plain.example/", "none=/", "|1", "none")
