@@ -94,6 +94,7 @@ def test_unset_packing_packs_a_text_dataset(monkeypatch, capsys):
         "stream",
         "no_dataset",
         "no_text",
+        "max_steps",
     ],
 )
 def test_default_packing_stays_off(monkeypatch, case):
@@ -113,6 +114,8 @@ def test_default_packing_stays_off(monkeypatch, case):
         kwargs["train_dataset"] = None
     elif case == "no_text":
         kwargs["train_dataset"] = datasets.Dataset.from_dict({"image": ["x"]})
+    elif case == "max_steps":  # a step-capped run (notebooks' max_steps = 60) keeps its runtime
+        config.max_steps = 60
     SFT(model = _Model(), args = config, **kwargs)
     assert config.packing is False and calls["pack"] == 0
 

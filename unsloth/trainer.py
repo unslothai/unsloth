@@ -2084,6 +2084,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             and not is_processor
             and getattr(config_arg, "padding_free", None) is None
             and _default_packing_env_on()
+            # Epoch runs only: a packed step holds several documents, so a fixed max_steps would run longer.
+            and (getattr(config_arg, "max_steps", -1) or -1) <= 0
         ):
             try:
                 bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
