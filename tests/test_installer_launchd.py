@@ -408,9 +408,9 @@ def test_installer_asks_no_launchd_question():
     assert _GATE.search(source).start() < source.index("Start Unsloth Studio now? [Y/n]")
 
 
-def _run_uninstall_removal(tmp_path: Path, plist_text: str | None, launchctl: str) -> str:
+def _uninstall_removal_script(uid: str = "501") -> str:
     source = UNINSTALL_SH.read_text(encoding = "utf-8")
-    parts = ["_os=Darwin\n_uid=501\n"]
+    parts = [f"_os=Darwin\n_uid={uid}\n"]
     for name in ("_set_marker", "_remove_path"):
         m = re.search(rf"^{name}\(\) \{{.*?^\}}", source, flags = re.DOTALL | re.MULTILINE)
         parts.append(m.group(0))
@@ -421,13 +421,17 @@ def _run_uninstall_removal(tmp_path: Path, plist_text: str | None, launchctl: st
     )
     assert m is not None
     parts.append(m.group(0) + "\n_remove_launchd_user_agent\n")
+    return "\n".join(parts)
+
+
+def _run_uninstall_removal(tmp_path: Path, plist_text: str | None, launchctl: str) -> str:
     if plist_text is not None:
         plist = _plist_path(tmp_path)
         plist.parent.mkdir(parents = True)
         plist.write_text(plist_text)
     log = _fake_mac(tmp_path, launchctl)
     r = subprocess.run(
-        ["sh", "-c", "\n".join(parts)],
+        ["sh", "-c", _uninstall_removal_script()],
         capture_output = True,
         text = True,
         env = _env(tmp_path),
@@ -484,3 +488,114 @@ def test_uninstall_unloads_the_agent_before_kill_sweep():
     assert source.index("\n    _remove_launchd_user_agent\n") < source.index(
         "\n    _pkill_studio\n"
     )
+
+
+def _real_gui_domain() -> bool:
+    if sys.platform != "darwin" or not (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        or os.environ.get("UNSLOTH_TEST_REAL_LAUNCHD") == "1"
+    ):
+        return False
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}"], capture_output = True)
+    return r.returncode == 0
+
+
+_FAKE_STUDIO = """
+import http.server, signal, sys
+port = int(sys.argv[sys.argv.index("-p") + 1])
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+http.server.HTTPServer(("127.0.0.1", port), http.server.BaseHTTPRequestHandler).serve_forever()
+"""
+
+
+def _job_pid(target: str) -> int | None:
+    r = subprocess.run(["launchctl", "print", target], capture_output = True, text = True)
+    m = re.search(r"^\s*pid = (\d+)", r.stdout, flags = re.MULTILINE)
+    return int(m.group(1)) if r.returncode == 0 and m else None
+
+
+def _wait(pred, timeout: float):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = pred()
+        if value:
+            return value
+        time.sleep(0.5)
+    return pred()
+
+
+def _port_open(port: int) -> bool:
+    import socket
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+# Real launchd: disposable CI Macs only (or UNSLOTH_TEST_REAL_LAUNCHD=1), since it loads the real label.
+@pytest.mark.skipif(
+    not _real_gui_domain(), reason = "needs a macOS GUI launchd domain on a CI runner"
+)
+def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
+    import signal
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = tmp_path / "fake_studio.py"
+    server.write_text(_FAKE_STUDIO)
+    exe = tmp_path / "venv" / "bin" / "unsloth"
+    exe.parent.mkdir(parents = True)
+    exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{server}" "$@"\n')
+    exe.chmod(0o755)
+    env = {**os.environ, "HOME": str(tmp_path / "home")}
+    target = f"gui/{os.getuid()}/{LABEL}"
+    try:
+        r = subprocess.run(
+            [
+                "bash",
+                str(LAUNCHD_INSTALL_SH),
+                "--unsloth-exe",
+                str(exe),
+                "--port",
+                str(port),
+                "--start",
+            ],
+            capture_output = True,
+            text = True,
+            env = env,
+        )
+        assert r.returncode == 0, r.stderr
+        first = _wait(lambda: _port_open(port) and _job_pid(target), 30)
+        assert first, subprocess.run(
+            ["launchctl", "print", target], capture_output = True, text = True
+        ).stdout
+
+        os.kill(first, signal.SIGKILL)
+        second = _wait(
+            lambda: (pid := _job_pid(target)) not in (None, first) and _port_open(port) and pid, 40
+        )
+        assert second, "KeepAlive did not restart the agent after a crash"
+
+        os.kill(second, signal.SIGTERM)
+        assert _wait(lambda: _job_pid(target) is None and not _port_open(port), 15)
+        import time
+
+        time.sleep(15)  # past ThrottleInterval: a clean exit must stay stopped
+        assert _job_pid(target) is None and not _port_open(port)
+
+        out = subprocess.run(
+            ["sh", "-c", _uninstall_removal_script(str(os.getuid()))],
+            capture_output = True,
+            text = True,
+            env = env,
+            check = True,
+        )
+        assert "Removed launchd user agent" in out.stdout
+        assert "could not unload" not in out.stderr
+        assert not _plist_path(tmp_path).exists()
+        assert subprocess.run(["launchctl", "print", target], capture_output = True).returncode != 0
+    finally:
+        subprocess.run(["launchctl", "bootout", target], capture_output = True)
