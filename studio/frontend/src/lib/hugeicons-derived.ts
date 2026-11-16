@@ -15,7 +15,6 @@ export const MessageCircleIcon = BubbleChatIcon.slice(
   1,
 ) as typeof BubbleChatIcon;
 
-// filter-horizontal with round knobs instead of its rounded squares.
 export const FilterHorizontalCircleIcon: IconSvgElement = [
   ...FilterHorizontalIcon.slice(0, 4),
   ["circle", { cx: "9", cy: "7", r: "3", stroke: "currentColor", strokeWidth: "1.5", key: "4" }],
