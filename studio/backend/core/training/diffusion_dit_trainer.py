@@ -2764,13 +2764,14 @@ def _guard_vae_attention(vae) -> int:
 
 
 def _compile_toolchain_missing() -> Optional[str]:
-    """Why torch.compile cannot build its kernels here, else None. Windows only: inductor resolves its host C++
+    """Why torch.compile cannot build its kernels here, else None. Windows ROCm only: inductor resolves its host C++
     compiler (``CXX``, else ``cl``) when a compiled training graph carries a CPU kernel, and a stock Windows install has
     none, so the first training step raised "Compiler: cl is not found" past dynamo's suppress_errors and the run died
-    (gfx1151 Windows 11, FLUX.2 klein and FLUX.3 Klein bf16; ``auto`` picks bf16 there). Asks torch's own lookup."""
+    (gfx1151 Windows 11, FLUX.2 klein and FLUX.3 Klein bf16; ``auto`` picks bf16 there). Asks torch's own lookup.
+    Windows CUDA is left alone: unmeasured there, and a gate must not turn off a compile that may have been running."""
     import sys
 
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not torch_is_rocm():
         return None
     try:
         from torch._inductor.cpp_builder import get_cpp_compiler

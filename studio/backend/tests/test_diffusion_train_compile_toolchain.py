@@ -26,8 +26,15 @@ def _cfg():
     return DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o")
 
 
-def _compile(monkeypatch, platform, compiler):
+def _compile(
+    monkeypatch,
+    platform,
+    compiler,
+    rocm = True,
+):
     import torch._inductor.cpp_builder as cpp_builder
+
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: rocm)
 
     def lookup():
         if compiler is None:
@@ -58,6 +65,14 @@ def test_compile_unchanged_where_the_compiler_resolves_or_off_windows(
     monkeypatch, platform, compiler
 ):
     compiled, calls, warnings = _compile(monkeypatch, platform, compiler)
+    assert compiled is True
+    assert calls == 1
+    assert warnings == []
+
+
+def test_windows_cuda_keeps_its_compile(monkeypatch):
+    # Unmeasured on Windows CUDA: the gate must not turn off a compile that may have been running there.
+    compiled, calls, warnings = _compile(monkeypatch, "win32", None, rocm = False)
     assert compiled is True
     assert calls == 1
     assert warnings == []

@@ -75,3 +75,19 @@ def test_dit_trainer_routes_its_vae_attention_on_rocm(rocm):
     with torch.no_grad():
         # Exact: the routed path is the same math on CPU.
         assert torch.equal(vae.encode(x).latent_dist.mode(), ref)
+
+
+class _UNet2DConditionModel:
+    pass
+
+
+@pytest.mark.parametrize("platform, allowed", [("win32", False), ("linux", True)])
+def test_vae_decode_compile_stays_eager_on_windows_rocm(monkeypatch, rocm, platform, allowed):
+    # A compiled decode bypasses the eager routing; a U-Net pipe otherwise always compiles its VAE decode.
+    from core.inference import diffusion_speed as S
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(S, "_fused_vae_planned", lambda pipe: False)
+    monkeypatch.setattr(S, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}))
+    pipe = types.SimpleNamespace(unet = _UNet2DConditionModel(), vae = object())
+    assert S._vae_decode_compile_allowed(pipe, "default") is allowed

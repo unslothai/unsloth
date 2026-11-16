@@ -87,14 +87,23 @@ def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
 WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
 
 
-def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+def windows_rocm(torch: Any = None) -> bool:
     import sys
+
+    if sys.platform != "win32":
+        return False
+    if torch is None:
+        try:
+            import torch
+        except Exception:  # noqa: BLE001
+            return False
+    return is_rocm_torch(torch)
+
+
+def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     shape = getattr(q, "shape", None) or ()
     return (
-        sys.platform == "win32"
-        and is_rocm_torch(torch)
-        and len(shape) > 0
-        and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM
+        len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
     )
 
 
