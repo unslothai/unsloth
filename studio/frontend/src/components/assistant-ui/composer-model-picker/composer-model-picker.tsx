@@ -131,6 +131,8 @@ import {
 import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
 import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
   type NpuModel,
   NpuSetupNotice,
   npuDownloadLabel,
@@ -235,6 +237,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -1206,6 +1209,9 @@ function modelFacts(
   } else if (format) {
     facts.push(["Format", format]);
   }
+  if (row.kind === "npu") {
+    facts.push(["NPU", NPU_TAG_TEXT[NPU_CATALOG_TAG]]);
+  }
   const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
   if (size && size > 0) {
     facts.push(["Disk space", formatBytes(size)]);
@@ -2006,21 +2012,8 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    const npuRows = npuPickerRows(npuModels);
+    device.push(...npuRows.device);
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2107,18 +2100,7 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    return [...marked, ...npuRows.offers, ...hub, ...external];
   }, [
     inventory.cachedGguf,
     inventory.cachedModels,
