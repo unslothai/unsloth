@@ -108,7 +108,10 @@ def test_cookies_stay_with_their_site_scheme_and_account(monkeypatch):
         ],
     )
     _load("https://app.example.com/")
-    assert cookies.cookie_header("user", "https://app.example.com/x") == "sid=abc; parent=1; tld=1; wide=1"
+    assert (
+        cookies.cookie_header("user", "https://app.example.com/x")
+        == "sid=abc; parent=1; tld=1; wide=1"
+    )
     assert cookies.cookie_header("user", "http://app.example.com/x") == "parent=1; tld=1; wide=1"
     # A Domain wider than the host (no public suffix list here) stays on the host.
     assert cookies.cookie_header("user", "https://api.app.example.com/") == "wide=1"

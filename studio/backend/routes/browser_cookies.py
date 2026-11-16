@@ -43,7 +43,9 @@ def _jar(subject: str) -> http.cookiejar.CookieJar:
         jar = _jars.get(subject)
         if jar is None:
             # Host-only cookies go back to the exact host that set them, never its subdomains.
-            policy = _Policy(strict_ns_domain = http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain)
+            policy = _Policy(
+                strict_ns_domain = http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain
+            )
             jar = _jars[subject] = http.cookiejar.CookieJar(policy)
             while len(_jars) > _MAX_ACCOUNTS:
                 _jars.popitem(last = False)
