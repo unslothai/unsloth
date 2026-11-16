@@ -1959,6 +1959,10 @@ def get_packed_info_from_kwargs(
             host = tuple(lengths.tolist())
 
     max_seqlen = max(host)
+    # Compiled callers (Ulysses attention in a compiled block) read this eager cache entry: the document
+    # count changes every packed batch, so without the mark each new count recompiled them.
+    torch._dynamo.maybe_mark_dynamic(lengths, 0)
+    torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
     result = (lengths, cu_seqlens, max_seqlen)
     # Meta shapes carry symbolic host scalars without allocating device memory.
     row_shape = torch.empty((sum(host), max_seqlen), device = "meta")
