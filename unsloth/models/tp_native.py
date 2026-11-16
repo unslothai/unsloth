@@ -51,6 +51,7 @@ import copy
 import dataclasses
 import functools
 import inspect
+import math
 import re
 import types
 from typing import Optional
@@ -1295,25 +1296,40 @@ def quant_state_copy(state, device):
     return out
 
 
-def _shard_params4bit(path, base, weight, style, parts, rank, tp):
-    """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32."""
+def _shard_params4bit(
+    path,
+    base,
+    weight,
+    style,
+    parts,
+    rank,
+    tp,
+    local_codes = None,
+):
+    """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32.
+    `local_codes`: this rank's packed codes already read (sharded_loading); `weight` then only carries the
+    whole QuantState and the storage dtype."""
     import bitsandbytes as bnb
 
     _check_params4bit(path, weight, style, tp)
     state = weight.quant_state
     blocksize = state.blocksize
     out_features, in_features = state.shape
-    codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
+    codes = local_codes
+    if codes is None:
+        codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
     absmax = state.absmax
     if state.nested:
         absmax = bnb.functional.dequantize_blockwise(state.absmax, state.state2) + state.offset
     absmax = absmax.float().view(out_features, in_features // blocksize)
     if style == COLWISE:
-        codes = shard_slice(codes, 0, parts, rank, tp)
+        if local_codes is None:
+            codes = shard_slice(codes, 0, parts, rank, tp)
         absmax = shard_slice(absmax, 0, parts, rank, tp)
         shape = (sum(parts) // tp, in_features)
     else:
-        codes = shard_slice(codes, 1, (in_features // 2,), rank, tp)
+        if local_codes is None:
+            codes = shard_slice(codes, 1, (in_features // 2,), rank, tp)
         absmax = shard_slice(absmax, 1, (in_features // blocksize,), rank, tp)
         shape = (out_features, in_features // tp)
     storage = weight.data.dtype
@@ -1343,6 +1359,7 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
     base._parameters["weight"] = new
     if "quant_state" in base.__dict__:
         base.quant_state = local_state
+    return new
 
 
 def _all_reduce(tensor, group):
@@ -2014,7 +2031,7 @@ def apply_tensor_parallel(
                     "parallelism v1 shards every projection once."
                 )
             covered.update((id(weight), id(base.bias)))
-            if _is_params4bit(weight):
+            if _is_params4bit(weight) and _preloaded(weight) is None:
                 _check_params4bit(path, weight, proj.style, tp)
         for name, norm in region.norms:
             for p in norm.parameters():
@@ -2180,6 +2197,8 @@ def _shard_projection(region, proj, mesh, rank, tp):
     in_parts = (_logical_shape(weight, base)[1],)
     if proj.style == KV_REPLICATED:
         _shard_kv_replicated(region, proj, mesh, rank, tp)
+    elif _preloaded(weight) is not None and _is_params4bit(weight):
+        pass
     elif _preloaded(weight) is not None:
         _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
     elif _is_params4bit(weight):
@@ -2711,6 +2730,9 @@ class _SliceReader:
     def __init__(self, index):
         self.index, self.handles = index, {}
         self.full_bytes = self.slice_bytes = 0
+        self.quant = (
+            None  # bnb_sharded_load.QuantReads of a pre-quantized bitsandbytes 4-bit checkpoint
+        )
 
     def _open(self, key):
         path = self.index[key]
@@ -2850,10 +2872,16 @@ def _fill_from_checkpoint(
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
-    Meta buffers come from the checkpoint or a meta-parameter skeleton of the same class (RoPE tables).
-    Returns (reader, sharded numel, whole numel)."""
+    A bitsandbytes Linear4bit weight (pre-quantized checkpoint) is `reader.quant.module(old)`; read whole it is
+    the Params4bit transformers builds. Meta buffers come from the checkpoint or a meta-parameter skeleton of
+    the same class (RoPE tables). Returns (reader, sharded numel, whole numel)."""
+    from .bnb_sharded_load import QuantReads, quantized_weights
+
     index = _checkpoint_index(name, kwargs)
     reader = _SliceReader(index)
+    quantized = quantized_weights(model)
+    if quantized:
+        reader.quant = QuantReads(reader, quantized)
     aliases = None
     sharded_numel = full_numel = 0
 
@@ -2882,13 +2910,26 @@ def _fill_from_checkpoint(
                 f"Unsloth: {label} sharded loading found no checkpoint tensor for '{names[0]}'; load "
                 f"this model without sharded loading ({fallback})."
             )
-        if reader.shape(key) != tuple(old.shape):
+        quantized_module = quantized.get(id(old))
+        if quantized_module is not None:
+            shape = (quantized_module.out_features, quantized_module.in_features)
+            stored = reader.shape(key)
+            nbytes = math.prod(stored) * reader.quant.packed_dtype(key).itemsize
+            if len(stored) != 2 or stored[1] != 1 or nbytes * 2 != math.prod(shape):
+                raise ValueError(
+                    f"Unsloth: {label} sharded loading: checkpoint tensor '{key}' ({stored}) is not the packed "
+                    f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
+                )
+        elif reader.shape(key) != tuple(old.shape):
             raise ValueError(
                 f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
                 f"{tuple(old.shape)}."
             )
         new = read_local(old, reader, key)
-        if new is None:
+        if new is None and quantized_module is not None:
+            new = reader.quant.whole(key, quantized_module, device)
+            full_numel += old.numel()
+        elif new is None:
             value = reader.full(key).to(device = device, dtype = old.dtype)
             new = nn.Parameter(value, requires_grad = old.requires_grad)
             full_numel += old.numel()
@@ -2936,6 +2977,13 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         if shard is None:
             return None
         proj, dim, parts = shard
+        module = reader.quant.module(old) if reader.quant is not None else None
+        if module is not None:
+            new = _read_params4bit_shard(module, reader, key, proj, rank, tp, device)
+            new._unsloth_tp_full_shape = (module.out_features, module.in_features)
+            new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
+            setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
+            return new
         local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
         # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
         # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
@@ -2971,6 +3019,34 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
     return stats
 
 
+def _read_params4bit_shard(module, reader, key, proj, rank, tp, device):
+    """This rank's 4-bit shard of a pre-quantized projection, as _shard_params4bit cuts the whole weight: the
+    column shard's packed rows are read alone, a row shard's columns from the whole packed tensor."""
+    state = reader.quant.quant_state(key, device)
+    storage = reader.quant.packed_dtype(key)
+    carrier = types.SimpleNamespace(quant_state = state, data = torch.empty(0, dtype = storage))
+    path = key.removesuffix(".weight")
+    _check_params4bit(path, carrier, proj.style, tp)
+    out_features, in_features = state.shape
+    half = in_features // 2
+    if proj.style == COLWISE:
+        itemsize = storage.itemsize
+        pieces, offset = [], 0
+        for size in proj.parts:
+            step = size // tp
+            start = offset + rank * step
+            rows = reader.rows(key, start * half // itemsize, (start + step) * half // itemsize)
+            pieces.append(rows.reshape(-1).view(torch.uint8).view(step, half))
+            offset += size
+        codes = torch.cat(pieces, 0) if len(pieces) > 1 else pieces[0]
+    else:
+        whole = reader.full(key).reshape(-1).view(torch.uint8).view(out_features, half)
+        codes = shard_slice(whole, 1, (half,), rank, tp)
+    return _shard_params4bit(
+        path, module, carrier, proj.style, proj.parts, rank, tp, local_codes = codes.to(device)
+    )
+
+
 def _load_device(device_map, mesh):
     if mesh.device_type != "cuda":
         return torch.device(mesh.device_type)
@@ -2985,16 +3061,90 @@ def _load_device(device_map, mesh):
     return torch.device("cuda", torch.cuda.current_device())
 
 
+def _text_config_quantized(config):
+    text = getattr(config, "get_text_config", None)
+    return any(
+        getattr(c, "quantization_config", None)
+        for c in (config, text() if callable(text) else None)
+    )
+
+
+def _whole_load_exceeds_device(name, kwargs, mesh, device):
+    """Collective over `mesh`: whether the checkpoint's files exceed 90% of the free memory of some rank's GPU
+    (a whole load there would not fit)."""
+    import os
+
+    if device.type != "cuda":
+        return False
+    try:
+        nbytes = sum(os.path.getsize(p) for p in set(_checkpoint_index(name, kwargs).values()))
+    except Exception:
+        nbytes = 0
+    free = torch.cuda.mem_get_info(device)[0]
+    flag = torch.tensor([int(nbytes > 0.9 * free)], device = device)
+    import torch.distributed as dist
+
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = mesh.get_group())
+    return bool(flag.item())
+
+
 def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     if state["active"]:
         return original(cls, name, *args, **kwargs)  # a nested load inside from_pretrained
-    config = kwargs.get("config")
+    from .bnb_sharded_load import (
+        bnb4_quantization,
+        checkpoint_quantization,
+        meta_state_dict,
+        prequantized_skeleton,
+    )
+
     label = state.get("label", "tensor parallel")
+    if callable(state["mesh"]):
+        state["mesh"] = state["mesh"]()
+    original_kwargs = kwargs
+    # A pre-quantized bitsandbytes 4-bit checkpoint loads sharded; quantizing on load does not.
+    resolved = dict(kwargs)
+    try:
+        config, quantized = checkpoint_quantization(cls, name, resolved)
+        other = quantized is None and _text_config_quantized(config)
+    except Exception:
+        quantized, other = None, False
+    asked = kwargs.get("quantization_config")
+    if quantized is not None and (
+        asked is None or bnb4_quantization(types.SimpleNamespace(quantization_config = asked))
+    ):
+        kwargs = dict(resolved, config = config)
+    else:
+        quantized = None
+    if state.get("prequantized_only") and quantized is None:
+        return original(cls, name, *args, **original_kwargs)
+    if state.get("auto"):
+        # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
+        # default); quantizing on load keeps the full load, which quantizes layer by layer.
+        mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
+        on_load = other or (
+            quantized is None
+            and any(
+                original_kwargs.get(k)
+                for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+            )
+        )
+        if (
+            on_load
+            or mesh.ndim != 1
+            or not _whole_load_exceeds_device(
+                name, original_kwargs, mesh, _load_device(original_kwargs.get("device_map"), mesh)
+            )
+        ):
+            return original(cls, name, *args, **original_kwargs)
+    config = kwargs.get("config")
     for key in _UNSUPPORTED_LOAD_KWARGS:
+        if quantized is not None and key in ("load_in_4bit", "quantization_config"):
+            continue
         if kwargs.get(key) or (key == "quantization_config" and getattr(config, key, None)):
             raise ValueError(
-                f"Unsloth: {label} sharded loading supports 16-bit safetensors checkpoints only "
-                f"(got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
+                f"Unsloth: {label} sharded loading supports 16-bit and pre-quantized bitsandbytes 4-bit "
+                f"safetensors checkpoints only (got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
             )
     mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
     if mesh.ndim != 1:
@@ -3004,20 +3154,28 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             )
         )
     device = _load_device(kwargs.get("device_map"), mesh)
-    kwargs = dict(kwargs, device_map = "meta")
     state["active"] = True
     try:
-        with torch.random.fork_rng(devices = []):
-            model = original(cls, name, *args, **kwargs)
+        if quantized is not None:
+            reader = _SliceReader(_checkpoint_index(name, kwargs))
+            model = prequantized_skeleton(
+                original, cls, name, args, kwargs, kwargs["config"], meta_state_dict(reader)
+            )
+        else:
+            kwargs = dict(kwargs, device_map = "meta")
+            with torch.random.fork_rng(devices = []):
+                model = original(cls, name, *args, **kwargs)
     finally:
         state["active"] = False
     text = _text_config(model)
-    if getattr(text, "quantization_config", None) or getattr(
-        model.config, "quantization_config", None
+    if quantized is None and (
+        getattr(text, "quantization_config", None)
+        or getattr(model.config, "quantization_config", None)
     ):
         raise ValueError(
-            f"Unsloth: {label} sharded loading supports 16-bit checkpoints only; this checkpoint is "
-            f"pre-quantized. {state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
+            f"Unsloth: {label} sharded loading supports 16-bit and bitsandbytes 4-bit checkpoints only; this "
+            f"checkpoint is quantized otherwise. "
+            f"{state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
     materialize = state.get("materialize", _materialize_sharded)
     materialize(model, name, kwargs, mesh, state["plan"], device)
