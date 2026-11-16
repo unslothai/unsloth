@@ -215,6 +215,30 @@ def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
     assert any("_flash_attention_forward" in c for c in calls), calls
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_prepared_attention_downcasts_fp32_projections_to_flash_varlen():
+    """DoRA's fp32 q/k/v keep flash varlen, not a dense mask over the whole packed row."""
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("flash varlen needs sm80+")
+    calls = []
+
+    def backend(gm, example_inputs):
+        calls.extend(str(n.target) for n in gm.graph.nodes if n.op == "call_function")
+        return gm.forward
+
+    lengths, total = [3, 1, 50, 10], 64
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    Q = torch.randn(1, 4, total, 64, generator = g, device = "cuda")
+    K, V = (torch.randn(1, 2, total, 64, generator = g, device = "cuda") for _ in range(2))
+    cu, carrier = (t.cuda() for t in _prepared(lengths, total))
+    out = torch.compile(_attend(None, None), backend = backend, fullgraph = True)(Q, K, V, cu, carrier)
+    assert any("_flash_attention_forward" in c for c in calls), calls
+    torch.testing.assert_close(
+        out.float(), _per_document(Q, K, V, lengths, total), atol = 2e-2, rtol = 2e-2
+    )
+
+
 def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeypatch):
     import types
 
