@@ -6436,6 +6436,24 @@ def live_reference_shortfall_mib(
         return None
 
 
+def placement_measured_activation(pipe: Any) -> Optional[CalibratedImageActivation]:
+    """The measured activation row the load placed ``pipe`` from (its family, speed tier and compute width, as recorded
+    in ``_unsloth_measured_reserve``), else None: the generate guard then keeps the flat estimate. Never raises."""
+    try:
+        reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
+        if len(reserve) < 3:
+            return None
+        family, speed_mode = reserve[1], reserve[2]
+        compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
+        return calibrated_image_activation(
+            family,
+            max_speed = str(speed_mode or "").strip().lower() == "max",
+            compute_bytes = int(compute_bytes),
+        )
+    except Exception:  # noqa: BLE001 - unknown keeps the flat estimate
+        return None
+
+
 def measured_request_extra_mib(
     pipe: Any,
     *,
@@ -9320,6 +9338,20 @@ def _family_activation_multiplier(family: Optional[str]) -> float:
     return multiplier
 
 
+# Tile side each family's measured tiled decode used (``_MEASURED_IMAGE_ACTIVATION_MIB``); others tile at the default.
+_MEASURED_TILED_DECODE_SIDE: dict[str, int] = {"qwen-image-2.1": 512}
+
+
+def _measured_tiled_decode_side(family: Optional[str]) -> int:
+    # The generate guard passes the load's variant hint (family name, then file / repo / base, space-joined).
+    parts = str(family or "").lower().split()
+    fam = parts[0] if parts else ""
+    for name, side in _MEASURED_TILED_DECODE_SIDE.items():
+        if fam == name or fam.startswith(name + "-"):
+            return side
+    return DEFAULT_VAE_TILE_SIDE
+
+
 def estimate_tiled_image_runtime_mib(
     *,
     width: Optional[int],
@@ -9329,21 +9361,30 @@ def estimate_tiled_image_runtime_mib(
     condition_pixels: int = 0,
     tile_side: Optional[int] = None,
     vae_sliced: bool = False,
+    measured: Optional["CalibratedImageActivation"] = None,
 ) -> int:
     """Per-call MiB with the VAE tiled: max(one-tile decode, denoiser); unsliced tiles carry the whole batch.
-    Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens."""
+    Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens. ``measured``: the
+    family's measured row the placement was sized from; its tiled decode (taken at 1024x1024 with the family's measured
+    tile side, scaled by tile area)
+    caps the flat one-tile figure, which prices a 1024 px DiT VAE tile like a U-Net's whole render."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     cond = max(0, int(condition_pixels or 0))
     side = int(tile_side or DEFAULT_VAE_TILE_SIDE)
     megapixel = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    vae_batch = 1 if vae_sliced else batch
     vae = estimate_image_runtime_mib(
         width = min(w, side),
         height = min(h, side),
-        batch_size = 1 if vae_sliced else batch,
+        batch_size = vae_batch,
         family = family,
     )
+    if measured is not None:
+        cal_side = min(DEFAULT_IMAGE_WIDTH, _measured_tiled_decode_side(family))
+        tile_scale = max(0.25, min(w, side) * min(h, side) * vae_batch / float(cal_side * cal_side))
+        vae = min(vae, max(1024, int(measured.tiled_decode_mib * tile_scale)))
     denoise = batch * (
         DENOISE_MIB_PER_MEGAPIXEL * (w * h / megapixel) * _family_activation_multiplier(family)
         + 8192 * (cond / megapixel)
@@ -9414,8 +9455,10 @@ def image_activation_verdict(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
 ) -> ImageActivationVerdict:
-    """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown."""
+    """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
+    ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode."""
     override = bool(allow_oversized) or _oversized_generate_override()
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
@@ -9464,6 +9507,7 @@ def image_activation_verdict(
                 condition_pixels = condition_pixels,
                 tile_side = vae_tile_side,
                 vae_sliced = vae_sliced,
+                measured = measured_activation if calibrated_placement else None,
             )
     except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
         return ImageActivationVerdict(ACTIVATION_RUN)
@@ -9532,6 +9576,7 @@ def image_activation_shortfall_message(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -9548,6 +9593,7 @@ def image_activation_shortfall_message(
         allow_oversized = allow_oversized,
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
+        measured_activation = measured_activation,
     ).message
 
 
@@ -9567,6 +9613,7 @@ def raise_on_image_activation_shortfall(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Raises ValueError so the route answers 400 with the reason; RuntimeError becomes an opaque 500."""
@@ -9585,6 +9632,7 @@ def raise_on_image_activation_shortfall(
         allow_oversized = allow_oversized,
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
+        measured_activation = measured_activation,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:

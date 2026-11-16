@@ -408,6 +408,14 @@ class BrowseEntry(BaseModel):
     )
 
 
+class BrowsePlace(BaseModel):
+    path: str
+    label: str
+    kind: str = Field(
+        ..., description = "`home`, `user`, `drive` or `models`: picks the icon and group"
+    )
+
+
 class BrowseFoldersResponse(BaseModel):
     """Response schema for the folder browser endpoint."""
 
@@ -433,6 +441,10 @@ class BrowseFoldersResponse(BaseModel):
             "Handy starting points (home, HF cache, already-registered "
             "scan folders). Rendered as quick-pick chips above the list."
         ),
+    )
+    places: List[BrowsePlace] = Field(
+        default_factory = list,
+        description = "The suggestions again, each with a short label and a kind.",
     )
     truncated: bool = Field(
         False,

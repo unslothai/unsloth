@@ -19,7 +19,7 @@ function dataUrl(blob: Blob): Promise<string | null> {
 
 async function load(url: string): Promise<string | null> {
   try {
-    const page = await fetchBrowserPage({ url, maxBytes: MAX_ICON_BYTES }, new AbortController().signal);
+    const page = await fetchBrowserPage({ url, maxBytes: MAX_ICON_BYTES, credentials: "omit" }, new AbortController().signal);
     if (page.kind !== "raw" || !page.contentType.startsWith("image/") || page.blob.size > MAX_ICON_BYTES) {
       return null;
     }

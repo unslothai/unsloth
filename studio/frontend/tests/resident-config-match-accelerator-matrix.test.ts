@@ -492,6 +492,10 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     "selectedGpuIndexKind",
     // Compared through standing.splitRatio, which the caller seeds from it.
     "tensorSplit",
+    // NPU picks never adopt a resident: loadNpuModel always reaches /load, which compares them.
+    "npuPowerMode",
+    "npuPrefillChunkLen",
+    "npuImgPreResize",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),

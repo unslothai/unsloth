@@ -2287,6 +2287,7 @@ async def _admit_training_request(
             raise HTTPException(status_code = 409, detail = str(exc))
         if not effective_load_in_4bit:
             training_kwargs["load_in_4bit"] = False
+            training_kwargs["load_in_4bit_forced_16bit"] = True
             logger.info(
                 "Latest-transformers sidecar active for %s - sizing and "
                 "training in 16-bit (4-bit is disabled for brand-new "
@@ -3787,8 +3788,8 @@ async def start_diffusion_training(
             detail = (
                 "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
                 "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
-                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
-                "z-image, krea-2), which reuses conditioning across runs."
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, flux.3-klein-base, "
+                "qwen-image, z-image, krea-2), which reuses conditioning across runs."
             ),
         )
 
@@ -3856,6 +3857,7 @@ async def start_diffusion_training(
         _assert_trusted_base_model(
             config.get("base_model", ""),
             allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+            family = normalized_cfg.resolved_family,
         )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))

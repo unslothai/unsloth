@@ -1226,18 +1226,23 @@ def _torch_reports_another_vendors_runtime() -> bool:
 
 # Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel family, since this decides whether a repair could change anything. Most specific first.
 _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
-    (r"9070|9080|R9700", "gfx1201"),
-    (r"9060", "gfx1200"),
+    (r"9070|9080|R9700|R9600D", "gfx1201"),
+    (r"9060|RX 9050", "gfx1200"),
     (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
-    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", "gfx1150"),
-    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", "gfx1152"),
+    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme", "gfx1150"),
+    (r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330", "gfx1153"),
+    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35", "gfx1152"),
     (r"RX 7900|PRO W7900|PRO W7800", "gfx1100"),
     (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),
-    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),
-    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
-    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
-    (r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
+    (
+        r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|RX 7400|RX 7300|PRO W7400|Steam Machine",
+        "gfx1102",
+    ),
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme", "gfx1103"),
+    (r"RX 6750 GRE 10|RX 6800S|RX 6700S|RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
+    (r"RX 6850|RX 6800M|RX 6750|RX 6700", "gfx1031"),
+    (r"RX 6950|RX 6900|RX 6800|PRO W6800|PRO W6900|PRO V620", "gfx1030"),
+    (r"6550S|RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
     (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
@@ -3633,6 +3638,8 @@ _ROCM_WIN_COUNTER_SPACING = 4.0
 _ROCM_WIN_COUNTER_MAX_AGE_S = 10.0
 # Empty combined reading (localized names, hung PowerShell): each counter runs its own call until this retry.
 _ROCM_WIN_COUNTER_EMPTY_RETRY_S = 60.0
+# -f formats with the host culture: de-DE prints 12,5, which float() rejects.
+_ROCM_WIN_INVARIANT_COOKED = "$_.CookedValue.ToString([cultureinfo]::InvariantCulture)"
 _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("vram", "Dedicated Usage"): (
         "D",
@@ -3647,7 +3654,7 @@ _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
     ("util", "3D"): (
         "U",
         "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
-        "$_.CookedValue",
+        _ROCM_WIN_INVARIANT_COOKED,
     ),
 }
 
@@ -3753,8 +3760,8 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         ps = (
             "$s=(Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
-            "else{'__NONE__'}"
+            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,"
+            f"{_ROCM_WIN_INVARIANT_COOKED}}}}}else{{'__NONE__'}}"
         )
         stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
         if stdout is None:
@@ -3784,6 +3791,86 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
         if not matched:
             return None
         return round(min(total, 100.0), 1)
+    except Exception:
+        return None
+
+
+# Task Manager's NPU graph source: GPU Engine counters for the LUID in DEVPKEY_GPU_LUID. amdxdna has none.
+_NPU_LUID_PS = (
+    "$d=Get-PnpDevice -InstanceId 'PCI\\VEN_1022&DEV_17F0*' -PresentOnly"
+    " -ErrorAction SilentlyContinue|Select-Object -First 1;"
+    "if($d){(Get-PnpDeviceProperty -InstanceId $d.InstanceId"
+    " -KeyName '{60b193cb-5276-4d0f-96fc-f173abad3ec6} 2' -ErrorAction SilentlyContinue).Data}"
+)
+_NPU_LOAD_TTL_S = 3.0
+_NPU_LUID_TTL_S = 60.0
+_npu_load_lock = threading.Lock()
+_npu_hardware: Optional[Dict[str, Any]] = None
+_npu_luid: Optional[int] = None
+_npu_luid_at = 0.0
+# (completed_at, spawn seconds, load)
+_npu_load_cache: Optional[tuple[float, float, Optional[float]]] = None
+
+
+def _npu_engine_load(luid: int) -> Optional[float]:
+    ps = (
+        f"$s=(Get-Counter '\\GPU Engine(*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*)"
+        "\\Utilization Percentage' -ErrorAction SilentlyContinue).CounterSamples;"
+        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue.ToString([cultureinfo]::InvariantCulture)}}else{'__NONE__'}"
+    )
+    stdout = _rocm_windows_counter_stdout_uncached(ps)
+    if stdout is None:
+        raise RuntimeError("GPU Engine counters unreadable")
+    by_engine: dict[str, float] = {}
+    for line in stdout.splitlines():
+        instance, sep, raw = line.strip().rpartition("|")
+        if not sep or _engine_instance_luid(instance) != luid:
+            continue
+        engine = re.search(r"_eng_(\d+)", instance)
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if engine is None or value != value or value == float("inf") or value < 0:
+            continue
+        by_engine[engine.group(1)] = by_engine.get(engine.group(1), 0.0) + value
+    # Per engine, processes add up; the adapter is as busy as its busiest engine, as in Task Manager.
+    return round(min(max(by_engine.values()), 100.0), 1) if by_engine else None
+
+
+def npu_load_percent() -> Optional[float]:
+    """The supported NPU's utilization, or None where no counter reports it (Linux, no NPU, no LUID)."""
+    global _npu_hardware, _npu_luid, _npu_luid_at, _npu_load_cache
+    if platform.system() != "Windows":
+        return None
+    try:
+        with _npu_load_lock:
+            if _npu_hardware is None:
+                from utils.hardware.npu import detect_amd_npu
+                _npu_hardware = detect_amd_npu()
+            if not _npu_hardware.get("supported"):
+                return None
+            now = time.monotonic()
+            cached = _npu_load_cache
+            if cached is not None and now - cached[0] < max(_NPU_LOAD_TTL_S, 4 * cached[1]):
+                return cached[2]
+            try:
+                # Once a minute, not per sample, when the NPU reports no LUID.
+                if _npu_luid is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
+                    raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
+                    _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
+                    _npu_luid_at = now
+                load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
+            except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
+                # Windows reassigns LUIDs on a driver restart: look it up again next time.
+                load = _npu_luid = None
+                _npu_luid_at = 0.0
+            # An idle NPU lists no counters either, so a stale LUID is only rechecked now and then.
+            if load is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
+                _npu_luid = None
+            done = time.monotonic()
+            _npu_load_cache = (done, done - now, load)
+            return load
     except Exception:
         return None
 

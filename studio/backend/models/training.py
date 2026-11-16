@@ -1382,6 +1382,8 @@ class DiffusionTrainableFamily(BaseModel):
     deploy_base: Optional[str] = None
     # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Must be declared or Pydantic drops it and Deploy to Create loses the Klein Base adapter on Klein.
+    lora_families: Optional[List[str]] = None
     # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 

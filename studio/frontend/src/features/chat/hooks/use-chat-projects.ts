@@ -5,6 +5,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   CHAT_PROJECTS_UPDATED_EVENT,
+  type SaveChatProjectOptions,
 } from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
@@ -108,6 +109,7 @@ export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
+  loadFailed: boolean;
 } {
   const projects = useSyncExternalStore(
     subscribeToProjects,
@@ -116,6 +118,7 @@ export function useChatProjects(): {
   );
   const [isLoading, setIsLoading] = useState(!projectsLoaded);
   const [hasLoaded, setHasLoaded] = useState(projectsLoaded);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,6 +128,10 @@ export function useChatProjects(): {
       if (!cancelled && !projectsLoaded) setIsLoading(true);
       try {
         await loadProjects(force, followUpIfPending);
+        if (!cancelled) setLoadFailed(false);
+      } catch (error) {
+        console.warn("Could not load projects", error);
+        if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) {
           setHasLoaded(true);
@@ -154,7 +161,7 @@ export function useChatProjects(): {
     };
   }, []);
 
-  return { projects, isLoading, hasLoaded };
+  return { projects, isLoading, hasLoaded, loadFailed };
 }
 
 /** Newest chat or own last edit: `updatedAt` alone moves only on a rename or instructions change. */
@@ -171,8 +178,9 @@ export async function createChatProject(
   name: string,
   nativePathLease?: string,
   id?: string,
+  options?: SaveChatProjectOptions,
 ): Promise<ProjectRecord> {
-  return createStoredChatProject(name, nativePathLease, id);
+  return createStoredChatProject(name, nativePathLease, id, options);
 }
 
 export async function renameChatProject(

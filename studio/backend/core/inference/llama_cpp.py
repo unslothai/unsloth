@@ -26,6 +26,7 @@ import os
 import re
 import struct
 from core.inference.inference_gate import holds_inference
+from core.inference.http_stream import SSE_LINE_END
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -500,9 +501,8 @@ from core.inference.mcp_images import (
     is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -7594,7 +7594,7 @@ def _effective_lazy_mode(
         return "off"
     if value:
         mode = value.strip().lower()
-    return mode if mode in ("auto", "on") else "off"
+    return mode if mode in ("auto", "on", "on-direct") else "off"
 
 
 def _lazy_read_bytes(
@@ -11565,7 +11565,7 @@ class LlamaCppBackend:
                 extra_args, _env, flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
             )
             if mode != "auto":
-                return mode == "on"
+                return mode in ("on", "on-direct")
             tensor = (
                 _effective_tensor_parallel(extra_args, False, _env)
                 if tensor_parallel is None
@@ -11783,7 +11783,7 @@ class LlamaCppBackend:
         except OSError:
             return frozenset()
         backends = set()
-        for backend in ("base", "cpu", "cuda", "hip", "vulkan"):
+        for backend in ("base", "cpu", "cuda", "hip", "sycl", "vulkan"):
             stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
             if any(name == stem or name.startswith(stem + ".") for name in files):
                 backends.add(backend)
@@ -12127,6 +12127,12 @@ class LlamaCppBackend:
         backend."""
         backends = LlamaCppBackend._installed_ggml_backends(binary)
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
+
+    @staticmethod
+    def _is_sycl_only_backend(binary: Optional[str] = None) -> bool:
+        """A split-library SYCL build with no CUDA, HIP or Vulkan lib beside it."""
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        return "sycl" in backends and not backends.intersection({"cuda", "hip", "vulkan"})
 
     _SYSMEM_FALLBACK_RISK: dict[Optional[str], bool] = {}
 
@@ -12726,6 +12732,95 @@ class LlamaCppBackend:
             return any(_i in unified for _i in gpu_indices)
         except Exception:
             return False
+
+    def _windows_rocm_apu_carve_out_credit(
+        self,
+        model_size: int,
+        *,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
+        gpu_indices,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        gpu_memory_mode: Optional[str] = None,
+        gpu_layers: Optional[int] = None,
+        n_cpu_moe: int = 0,
+        cpu_child: bool = False,
+    ) -> int:
+        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
+        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
+
+        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
+        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
+            return 0
+        if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
+            return 0
+        argv = [str(arg) for arg in extra_args or ()]
+        # Mirrors the launch: manual -1 is Auto and stays with the fitter.
+        if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
+            moe = self._resolve_cpu_moe_flag(
+                n_cpu_moe, self.n_moe_layers, self._leading_dense_block_count or 0
+            )
+            argv = [
+                "--gpu-layers",
+                str(gpu_layers),
+                "--fit",
+                "off",
+                *(["--n-cpu-moe", str(moe)] if moe is not None else []),
+                *argv,
+            ]
+        if not self._launch_forces_full_offload(argv, env):
+            return 0
+        try:
+            carve_out = self._igpu_dedicated_memory_bytes(gpu_indices, rocm_fallback = False)
+            scan = self._gguf_tensor_scan(model_path) if carve_out else None
+            used = self._windows_apu_gpu_used_bytes() if scan is not None else None
+        except Exception:
+            return 0
+        if not carve_out or carve_out <= 0 or scan is None or used is None:
+            return 0
+        lazy_mode = (
+            _effective_lazy_mode(
+                argv, env, flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode")
+            )
+            if (caps or {}).get("supports_lazy_mode")
+            else "off"
+        )
+        on_device = int(model_size) - _host_pinned_input_bytes(scan, argv, env, lazy_mode = lazy_mode)
+        # Managed (GGML_CUDA_ENABLE_UNIFIED_MEMORY) allocations are host-backed, not carve-out.
+        source_env = os.environ if env is None else env
+        if not self._unified_memory_opted_out(source_env) and (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY" in source_env
+            or self._unified_memory_for_launch(
+                gpu_indices, on_device, opted_in = self._unified_memory_opted_in(source_env)
+            )
+        ):
+            return 0
+        # Used (dedicated + shared) fills the carve-out first, so this never over-credits.
+        credit = max(0, min(int(carve_out) - int(used), on_device))
+        if credit:
+            logger.info(
+                "Windows ROCm APU full offload: %.1f GiB of weights sit in the %.1f GiB "
+                "carve-out, not Windows RAM.",
+                credit / (1024**3),
+                carve_out / (1024**3),
+            )
+        return credit
+
+    @staticmethod
+    def _windows_apu_gpu_used_bytes() -> Optional[float]:
+        """System-wide APU bytes in use from the WDDM counters; an idle adapter under the counter
+        floor reads as the floor; None when unreadable or ambiguous."""
+        from utils.hardware import hardware as hw
+
+        dedicated = hw._rocm_windows_perf_counter_vram_by_adapter()
+        if not dedicated:
+            return None
+        used = hw._rocm_windows_unified_used_bytes(dedicated)
+        if used is None and all(v < hw._ROCM_WIN_ADAPTER_MIN_BYTES for _n, v in dedicated):
+            return float(hw._ROCM_WIN_ADAPTER_MIN_BYTES)
+        return used
 
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
@@ -14974,6 +15069,9 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        if LlamaCppBackend._is_sycl_only_backend(binary):
+            # The probes below size NVIDIA / AMD cards a SYCL build never runs on (#17787); unsized, --fit on sizes the SYCL device itself.
+            return []
         from utils.hardware import mig
 
         mig_rows = mig.visible_devices(fresh = True, listing = True)
@@ -15721,7 +15819,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _igpu_dedicated_memory_bytes(
-        gpu_indices = None, *, ordinals_are_vulkan = False
+        gpu_indices = None,
+        *,
+        ordinals_are_vulkan = False,
+        rocm_fallback = True,
     ) -> Optional[int]:
         """Dedicated iGPU bytes: Windows registry first (cheap), then the ROCm pool; None rather
         than guess."""
@@ -15755,9 +15856,10 @@ class LlamaCppBackend:
             if adapters:
                 # Two adapters need a LUID join to attribute; staying silent beats advising the wrong GPU.
                 return None
-        if ordinals_are_vulkan:
+        if ordinals_are_vulkan or not rocm_fallback:
             # No Linux reading for Vulkan: gpu_indices are Vulkan ordinals, not HIP ids, and probing
-            # would create a HIP context (~800 MiB) in this process.
+            # would create a HIP context (~800 MiB) in this process. rocm_fallback=False: the HIP
+            # total on Windows includes shared RAM, so it is not a carve-out.
             return None
         pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
         return int(pool_mib) * 1024 * 1024 if pool_mib and pool_mib > 0 else None
@@ -29309,9 +29411,28 @@ class LlamaCppBackend:
                         is_vulkan_backend = False,
                         cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
                     )
+                    _apu_cpu_child = sys.platform == "win32" and self._child_runs_on_cpu(
+                        binary,
+                        _apu_lazy_extras,
+                        _apu_lazy_env,
+                        cpu_forced = _paravirtual_cpu_forced or _arch_gate_forced_cpu,
+                        tensor_parallel = tensor_parallel,
+                    )
                     _apu_resident_model_size = max(
                         1,
                         model_size
+                        - self._windows_rocm_apu_carve_out_credit(
+                            model_size,
+                            model_path = model_path,
+                            caps = server_caps,
+                            gpu_indices = _apu_child_order,
+                            extra_args = _apu_lazy_extras,
+                            env = _apu_lazy_env,
+                            gpu_memory_mode = gpu_memory_mode,
+                            gpu_layers = gpu_layers,
+                            n_cpu_moe = n_cpu_moe,
+                            cpu_child = _apu_cpu_child,
+                        )
                         - self._lazy_read_host_bytes(
                             model_path,
                             caps = server_caps,
@@ -32830,6 +32951,16 @@ class LlamaCppBackend:
                             _apu_resident_model_size = max(
                                 1,
                                 model_size
+                                - self._windows_rocm_apu_carve_out_credit(
+                                    model_size,
+                                    model_path = model_path,
+                                    caps = server_caps,
+                                    gpu_indices = _remaining,
+                                    extra_args = cmd,
+                                    env = env,
+                                    cpu_child = sys.platform == "win32"
+                                    and self._child_runs_on_cpu(binary, cmd, env),
+                                )
                                 - self._lazy_read_host_bytes(
                                     model_path,
                                     caps = server_caps,
@@ -37310,7 +37441,7 @@ class LlamaCppBackend:
     def _sse_event_payload(event: str) -> Optional[dict]:
         """Decode one complete SSE event's ``data:`` payload, or None."""
         payload_lines = [
-            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+            line[5:].lstrip() for line in SSE_LINE_END.split(event) if line.startswith("data:")
         ]
         if not payload_lines:
             return None
@@ -38934,8 +39065,7 @@ class LlamaCppBackend:
         # A browser task is many steps, each a chance to announce the next one and stop: there the
         # budget is one nudge per tool turn, as in the external loop, not one per request.
         _browser_turns = any(
-            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
-            for tool in (tools or [])
+            ((tool.get("function") or {}).get("name") in STEPWISE) for tool in (tools or [])
         )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
@@ -40723,6 +40853,7 @@ class LlamaCppBackend:
                             never_needs = never_needs_approval,
                             sandbox_level = sandbox_level,
                             session_id = session_id,
+                            thread_id = thread_id,
                         ) or requires_os_isolation(
                             confirm_tool_calls = bool(confirm_tool_calls),
                             bypass_permissions = _bypass,
@@ -40834,6 +40965,7 @@ class LlamaCppBackend:
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -42549,8 +42681,10 @@ class LlamaCppBackend:
         should_abort = None,
         prefer_native: bool = False,
         template_options = None,
+        on_prompt = None,
     ) -> int:
-        """Strict callers raise: the text-only fallback is an approximation, not a count; others get 0."""
+        """Strict callers raise: the text-only fallback is an approximation, not a count; others get 0.
+        ``on_prompt`` receives the rendered prompt the count priced."""
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
@@ -42605,9 +42739,10 @@ class LlamaCppBackend:
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
             # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            # A memo hit has no text for on_prompt.
             memo_key = (
                 None
-                if prefer_native
+                if prefer_native or on_prompt is not None
                 else _count_memo_key(
                     self,
                     template_messages,
@@ -42667,7 +42802,7 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native:
+                        if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
                             try:
@@ -42693,7 +42828,10 @@ class LlamaCppBackend:
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt), False
+                            count = _tokenize(prompt)
+                            if on_prompt is not None:
+                                on_prompt(prompt)
+                            return count, False
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise

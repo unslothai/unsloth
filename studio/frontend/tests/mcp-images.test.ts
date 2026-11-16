@@ -548,6 +548,7 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
 test("sandbox image viewer replays bounded images without trusting arbitrary tools", () => {
   assert.equal(isImageToolName("view_image"), true);
   assert.equal(isImageToolName("python"), false);
+  assert.equal(isImageToolName("computer"), true);
   assert.equal(isImageToolName("mcp__files__image"), true);
   const messages = [
     { role: "tool", name: "view_image", content: RESULT },

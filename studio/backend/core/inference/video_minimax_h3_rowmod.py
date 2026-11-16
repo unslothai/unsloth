@@ -10,6 +10,7 @@ disables it.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import threading
@@ -138,6 +139,17 @@ def _eligible(x: Any, idx: Any, *tables: Any) -> bool:
     return all(_table_ok(t, x) for t in tables)
 
 
+def _on_card(t: Any) -> Any:
+    """Triton launches on the current device and stream: switch to the operand's card when another one is current
+    (a pooled or unpinned render thread on a multi-GPU host). Same card: no switch."""
+    import torch
+
+    index = t.device.index
+    if index is None or index == torch.cuda.current_device():
+        return contextlib.nullcontext()
+    return torch.cuda.device(index)
+
+
 def _launch_modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
     import torch
     import triton
@@ -146,9 +158,10 @@ def _launch_modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
     n_cols = int(x.shape[-1])
     y = torch.empty(x.shape, dtype = x.dtype, device = x.device)
     if n_rows:
-        _kernels()[0][(n_rows, triton.cdiv(n_cols, _BLOCK))](
-            x, scale, shift, idx, y, n_cols, stride, scale.stride(0), BLOCK = _BLOCK, num_warps = 4
-        )
+        with _on_card(x):
+            _kernels()[0][(n_rows, triton.cdiv(n_cols, _BLOCK))](
+                x, scale, shift, idx, y, n_cols, stride, scale.stride(0), BLOCK = _BLOCK, num_warps = 4
+            )
     return y
 
 
@@ -161,19 +174,20 @@ def _launch_gated(residual: Any, gate: Any, out: Any, idx: Any) -> Any:
     n_cols = int(residual.shape[-1])
     y = torch.empty(residual.shape, dtype = residual.dtype, device = residual.device)
     if n_rows:
-        _kernels()[1][(n_rows, triton.cdiv(n_cols, _BLOCK))](
-            residual,
-            gate,
-            out,
-            idx,
-            y,
-            n_cols,
-            r_stride,
-            o_stride,
-            gate.stride(0),
-            BLOCK = _BLOCK,
-            num_warps = 4,
-        )
+        with _on_card(residual):
+            _kernels()[1][(n_rows, triton.cdiv(n_cols, _BLOCK))](
+                residual,
+                gate,
+                out,
+                idx,
+                y,
+                n_cols,
+                r_stride,
+                o_stride,
+                gate.stride(0),
+                BLOCK = _BLOCK,
+                num_warps = 4,
+            )
     return y
 
 
@@ -278,7 +292,19 @@ def _use(x: Any, idx: Any, *tables: Any) -> bool:
     return bool(v and v["use"])
 
 
+def _tracing() -> bool:
+    """Under torch.compile the stock math is traced as is: no ``STATS`` counters (a changing Python int is a
+    recompile guard) and no cold ``verdict`` probe (its lock and timing cannot be traced)."""
+    try:
+        import torch
+        return bool(torch.compiler.is_compiling())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
+    if _tracing():
+        return reference_modulate(x, scale, shift, idx)
     if _use(x, idx, scale, shift):
         STATS["fused"] += 1
         return _launch_modulate(x, scale, shift, idx)
@@ -287,6 +313,8 @@ def modulate(x: Any, scale: Any, shift: Any, idx: Any) -> Any:
 
 
 def gated_residual(residual: Any, gate: Any, out: Any, idx: Any) -> Any:
+    if _tracing():
+        return reference_gated_residual(residual, gate, out, idx)
     if (
         out.dtype == residual.dtype
         and out.shape == residual.shape

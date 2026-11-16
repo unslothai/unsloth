@@ -145,6 +145,7 @@ test("a GPU that llama.cpp could not use is not a size problem", () => {
     gpuBackendUnavailable: true,
   });
   assert.match(broken?.description ?? "", /could not use it/);
+  assert.match(broken?.description ?? "", /Repair installation/);
   assert.doesNotMatch(broken?.description ?? "", /may leave room|may let more/);
   assert.match(
     offloadWarning({ offloaded: 0, total: 60 })?.description ?? "",

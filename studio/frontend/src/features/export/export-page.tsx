@@ -95,7 +95,10 @@ import {
 } from "./components/export-summary-card";
 import { ImageLoraExportCard } from "./components/image-lora-export-card";
 import { MethodPicker } from "./components/method-picker";
-import { Q4nxConvertCard } from "./components/q4nx-convert-card";
+import {
+  Q4nxConvertCard,
+  type Q4nxSummary,
+} from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
 import { ReapCard } from "./components/reap-card";
 import {
@@ -128,6 +131,7 @@ import {
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
+import { Q4NX_GUIDE_STEPS } from "./lib/q4nx-source";
 import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
 import {
   type SourceMode,
@@ -313,7 +317,9 @@ export function ExportPage() {
   const [destination, setDestination] = useState<"local" | "hub">("local");
   // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
   const [npuStatus] = useNpuStatus();
-  const hasNpu = !!npuStatus?.supported;
+  // An AMD NPU feature: only with a supported NPU and FastFlowLM installed, never on NVIDIA.
+  const hasNpu = !!npuStatus?.supported && !!npuStatus?.ready;
+  const [q4nxSummary, setQ4nxSummary] = useState<Q4nxSummary | null>(null);
   const effectiveNpuQ4nx =
     hasNpu && npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
@@ -2302,7 +2308,21 @@ export function ExportPage() {
           </TabsContent>
           {hasNpu && (
             <TabsContent value="q4nx" forceMount className={TAB_PANEL}>
-              <Q4nxConvertCard />
+              <div className="@container/export-configure">
+                <div className="grid grid-cols-1 gap-8 @4xl/export-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/export-configure:gap-10">
+                  <div className="min-w-0">
+                    <Q4nxConvertCard onSummary={setQ4nxSummary} />
+                  </div>
+                  <div className="@4xl/export-configure:sticky @4xl/export-configure:top-6 @4xl/export-configure:self-start">
+                    {/* The Q4NX card converts with its own button. */}
+                    <ExportSummaryCard
+                      ready={q4nxSummary?.ready ?? false}
+                      rows={q4nxSummary?.rows ?? []}
+                      steps={Q4NX_GUIDE_STEPS}
+                    />
+                  </div>
+                </div>
+              </div>
             </TabsContent>
           )}
         </Tabs>

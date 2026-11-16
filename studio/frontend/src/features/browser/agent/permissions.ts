@@ -10,13 +10,20 @@ export type ActionsRule = "ask" | "allow";
 export type DownloadsRule = "ask" | "allow" | "block";
 /** Clicks and drags on a target with no role, name or link (a canvas), asked once per site per chat. */
 export type UnlabelledRule = "ask" | "allow";
-export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule; unlabelled: UnlabelledRule };
+export type ScriptsRule = "ask" | "allow";
+export type SiteRule = {
+  browsing: BrowsingRule;
+  actions: ActionsRule;
+  downloads: DownloadsRule;
+  unlabelled: UnlabelledRule;
+  scripts: ScriptsRule;
+};
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
-/** No "allow": approving each script is the only check a script passes. */
-export type ScriptAccess = "ask" | "never";
+/** Approving a script is the only check it passes, so `allow` is never a default. */
+export type ScriptAccess = "ask" | "allow" | "never";
 
-export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask" };
+export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" };
 export const DEFAULT_PERMISSIONS: AgentPermissions = { defaults: DEFAULT_RULE, sites: {} };
 export const MAX_SITE_RULES = 200;
 
@@ -67,10 +74,29 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };
 }
 
+/** A page with no host (about:blank) asks even when the default rule allows scripts. */
+export function scriptRunsWithoutAsking(access: ScriptAccess, url: string, permissions: AgentPermissions): boolean {
+  if (access === "never") return false;
+  if (access === "allow") return true;
+  return Boolean(hostOf(url)) && ruleFor(url, permissions).rule.scripts === "allow";
+}
+
+/** Always allow on a script prompt: the page's own host, keeping the rules that apply there, opened like a site added in Settings. */
+export function scriptSiteRule(url: string, permissions: AgentPermissions): { site: string; rule: SiteRule } | null {
+  const site = normalizeSitePattern(url);
+  if (!site || !hostOf(url)) return null;
+  const saved = permissions.sites[site];
+  if (saved) return { site, rule: { ...saved, scripts: "allow" } };
+  if (Object.keys(permissions.sites).length >= MAX_SITE_RULES) return null;
+  const { rule } = ruleFor(url, permissions);
+  return { site, rule: { ...rule, browsing: rule.browsing === "block" ? "block" : "allow", scripts: "allow" } };
+}
+
 const BROWSING = new Set(["allow", "ask", "block"]);
 const ACTIONS = new Set(["ask", "allow"]);
 const DOWNLOADS = new Set(["ask", "allow", "block"]);
 const UNLABELLED = new Set(["ask", "allow"]);
+const SCRIPTS = new Set(["ask", "allow"]);
 
 /** Persisted values, checked: an unknown value falls back to the default rather than to allow. */
 export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): SiteRule {
@@ -80,6 +106,7 @@ export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): 
     actions: ACTIONS.has(raw.actions as string) ? (raw.actions as ActionsRule) : fallback.actions,
     downloads: DOWNLOADS.has(raw.downloads as string) ? (raw.downloads as DownloadsRule) : fallback.downloads,
     unlabelled: UNLABELLED.has(raw.unlabelled as string) ? (raw.unlabelled as UnlabelledRule) : fallback.unlabelled,
+    scripts: SCRIPTS.has(raw.scripts as string) ? (raw.scripts as ScriptsRule) : fallback.scripts,
   };
 }
 

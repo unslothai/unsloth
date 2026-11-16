@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Windows ROCm: SDPA calls with a head wider than 256 (Gemma 4's global layers) must run on the math backend, since
+the fused kernels that take them there compute them wrong. Heads up to 256 and every other platform are untouched."""
+
+import contextlib
+import sys
+import types
+
+import pytest
+
+torch = pytest.importorskip("torch")
+attention = pytest.importorskip("torch.nn.attention")
+
+from core import _rocm_windows_sdpa as G  # noqa: E402
+
+
+def _q(head_dim, device = "cuda"):
+    return types.SimpleNamespace(
+        shape = (1, 8, 128, head_dim), device = types.SimpleNamespace(type = device)
+    )
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    entered = []
+
+    @contextlib.contextmanager
+    def fake_kernel(backends):
+        entered.append(list(backends))
+        yield
+
+    monkeypatch.setattr(attention, "sdpa_kernel", fake_kernel)
+    calls = []
+
+    def sdpa(q, k, v, *args, **kwargs):
+        calls.append((q, kwargs))
+        return "out"
+
+    return entered, calls, sdpa
+
+
+@pytest.mark.parametrize("head_dim", [384, 512])
+def test_wide_cuda_head_runs_on_math(recorder, head_dim):
+    entered, calls, sdpa = recorder
+    q = _q(head_dim)
+    assert G.guard_sdpa(sdpa)(q, q, q, is_causal = True, enable_gqa = True) == "out"
+    assert entered == [[attention.SDPBackend.MATH]]
+    assert calls[0][1] == {"is_causal": True, "enable_gqa": True}
+
+
+@pytest.mark.parametrize("head_dim, device", [(128, "cuda"), (256, "cuda"), (512, "cpu")])
+def test_other_calls_keep_the_stock_dispatch(recorder, head_dim, device):
+    entered, calls, sdpa = recorder
+    q = _q(head_dim, device)
+    assert G.guard_sdpa(sdpa)(q, q, q) == "out"
+    assert entered == []
+
+
+def test_install_wraps_sdpa_on_windows_rocm_only(monkeypatch):
+    F = torch.nn.functional
+    stock = F.scaled_dot_product_attention
+    monkeypatch.setattr(F, "scaled_dot_product_attention", stock)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert G.install_windows_rocm_wide_head_sdpa_guard() is False
+    assert F.scaled_dot_product_attention is stock
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(torch.version, "hip", "7.14.0", raising = False)
+    assert G.install_windows_rocm_wide_head_sdpa_guard() is True
+    wrapped = F.scaled_dot_product_attention
+    assert getattr(wrapped, "_unsloth_windows_rocm_wide_head_guard", False)
+    assert G.install_windows_rocm_wide_head_sdpa_guard() is True
+    assert F.scaled_dot_product_attention is wrapped  # idempotent: no double wrap
+
+    # A real CPU call still computes the stock answer through the wrapper.
+    q = torch.randn(1, 2, 8, 16)
+    assert torch.equal(wrapped(q, q, q, is_causal = True), stock(q, q, q, is_causal = True))
+
+
+@pytest.mark.parametrize("worker", ["core/inference/worker.py", "core/training/worker.py"])
+def test_llm_workers_install_the_guard(worker):
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / worker).read_text(encoding = "utf-8")
+    assert "install_windows_rocm_wide_head_sdpa_guard(" in src
+    # Before transformers or unsloth load the model: right after the torchao stub.
+    assert src.index("install_windows_rocm_wide_head_sdpa_guard(") > src.index(
+        "install_torchao_windows_rocm_stub()"
+    )

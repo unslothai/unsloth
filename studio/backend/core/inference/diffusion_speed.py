@@ -484,6 +484,34 @@ def _fp16_compile_capable(target: Any) -> bool:
         return False
 
 
+# 1 keeps the step graph over an eager denoiser whose native int8 W8A8 linears run compiled outside a capture.
+STEP_GRAPH_NATIVE_W8A8_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8"
+STEP_GRAPH_EAGER_W8A8_REASON = (
+    "the uncompiled denoiser's native int8 linears run as compiled functions, which a captured step would replace "
+    "with their slower eager kernels"
+)
+
+
+def step_graph_bakes_eager_w8a8(pipe: Any) -> bool:
+    """Whether a step CUDA graph over this (uncompiled) denoiser would capture its native int8 W8A8 linears as eager
+    kernels: the compiled W8A8 function never runs inside a capture (diffusion_native_quant._forward_fused). On a T4,
+    FLUX.3 Klein int8 at Speed default rendered 42.5 s per image with the graph and 34 s without (speed off, same
+    pixels): the step is compute-bound there, so the unfused rotate / quantise kernels cost more than graph replay
+    saves. ``UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8=1`` keeps the graph. Never raises."""
+    if (os.environ.get(STEP_GRAPH_NATIVE_W8A8_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    try:
+        from .diffusion_native_quant import fused_w8a8_serves  # noqa: PLC0415 - heavy import, load time only
+        return any(fused_w8a8_serves(dit) for dit in _denoiser_dits(pipe))
+    except Exception:  # noqa: BLE001 - unknown keeps the graph
+        return False
+
+
 def apply_speed_optims(
     pipe: Any,
     target: Any,
@@ -690,6 +718,14 @@ def apply_speed_optims(
                 logger = logger,
                 offloaded = after_placement,
             )
+            # fp16 cards only: measured there (T4, and the sm120 fp16 path); bf16 loads keep the graph unchanged.
+            if (
+                ok
+                and not applied["compiled"]
+                and _is_float16(getattr(target, "dtype", None))
+                and step_graph_bakes_eager_w8a8(pipe)
+            ):
+                ok, reason = False, STEP_GRAPH_EAGER_W8A8_REASON
             if ok and after_placement:
                 # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
                 ok, reason = False, "armed after placement"
@@ -1849,8 +1885,14 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE. Never on
+    Windows ROCm: a compiled decode skips the eager routing (diffusion_vae_attn_chunked) that keeps the VAE's head-512
+    attention off the fused kernels that miscompute it there."""
     if _fused_vae_planned(pipe):
+        return False
+    from .diffusion_vae_attn_chunked import windows_rocm
+
+    if windows_rocm():
         return False
     if _denoiser_unet(pipe) is not None:
         return True

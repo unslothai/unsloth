@@ -17,6 +17,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -63,6 +64,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -85,6 +87,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_chat_query.py'
       - 'tests/studio/playwright_tooltip_switch.py'
       - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
@@ -131,6 +134,7 @@ on:
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
+      - 'tests/studio/playwright_library_suggested_order.py'
       - 'tests/studio/_code_block_flicker_analysis.py'
       - 'tests/studio/test_code_block_flicker_contract.py'
       - 'tests/studio/_playwright_robust.py'
@@ -456,6 +460,11 @@ jobs:
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
+      - name: Query-link routing and draft isolation
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 4
+        run: python3 tests/studio/playwright_chat_query.py
+
       # Keep data settings separate from the shorter checks. Each group owns its cache.
       # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
       # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
@@ -643,6 +652,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 8
         run: python3 tests/studio/playwright_gallery_strip_renders.py
+
+      - name: Browser check for the Library's Suggested order when an item is opened
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_library_suggested_order.py
 
       # Two small sizes and one repetition on Chromium: enough to prove the fixture still
       # renders every kind of content it claims to and that the curve still rises, which is all

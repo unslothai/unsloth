@@ -28,6 +28,7 @@ from core.inference.external_provider import _SERVED_WINDOW_PROVIDERS, ExternalP
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.providers import validate_provider_base_url
+from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
@@ -151,6 +152,8 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent only while llama-server's prompt eval advances, so a long prefill is progress, not a stall.
+_PREFILL_PROGRESS_COMMENT = ": prefill-progress"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -1611,7 +1614,7 @@ class ResearchSupervisor:
         response: httpx.Response,
         semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
-        iterator = response.aiter_lines().__aiter__()
+        iterator = aiter_sse_lines(response).__aiter__()
 
         def wait_timeout() -> float:
             if semantic_deadline is None:
@@ -1719,6 +1722,12 @@ class ResearchSupervisor:
             "qwen",
             "qwencloud",
             "mistral",
+            "xai",
+            "nvidia",
+            "cohere",
+            "vercel",
+            "azure",
+            "bedrock",
         ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
@@ -1996,7 +2005,10 @@ class ResearchSupervisor:
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
-                            elif line.startswith(_ADMISSION_DONE_COMMENT):
+                            elif line.startswith(_ADMISSION_DONE_COMMENT) or (
+                                line.startswith(_PREFILL_PROGRESS_COMMENT)
+                                and semantic_output_at is None
+                            ):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()

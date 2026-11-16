@@ -377,23 +377,45 @@ def _openable_host_for_bind(run_mod, host: str) -> str:
     return share_host
 
 
+_SSL_CERTFILE_ENV = "UNSLOTH_STUDIO_SSL_CERTFILE"
+_SSL_KEYFILE_ENV = "UNSLOTH_STUDIO_SSL_KEYFILE"
+
+
+def _tls_pair_from_env(
+    ssl_certfile: Optional[Path], ssl_keyfile: Optional[Path]
+) -> tuple[Optional[Path], Optional[Path], bool]:
+    """The env pair, only when neither flag is given. Never for the Desktop backend: its shell talks plain HTTP to it."""
+    if ssl_certfile is not None or ssl_keyfile is not None:
+        return ssl_certfile, ssl_keyfile, False
+    if os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri":
+        return None, None, False
+    cert = os.environ.get(_SSL_CERTFILE_ENV, "").strip()
+    key = os.environ.get(_SSL_KEYFILE_ENV, "").strip()
+    return (Path(cert) if cert else None), (Path(key) if key else None), bool(cert or key)
+
+
 def _require_valid_tls_flags(
     ssl_certfile: Optional[Path],
     ssl_keyfile: Optional[Path],
     *,
     secure: bool,
     cloudflare: Optional[bool],
+    from_env: bool = False,
 ) -> None:
     """Fail on a bad --ssl-certfile/--ssl-keyfile launch before the password gate can change or strip credentials.
     run_server re-checks the same rules (utils/studio_tls.py) for direct `run.py` callers."""
     if ssl_certfile is None and ssl_keyfile is None:
         return
+    cert_name, key_name = (
+        (_SSL_CERTFILE_ENV, _SSL_KEYFILE_ENV) if from_env else ("--ssl-certfile", "--ssl-keyfile")
+    )
     if ssl_certfile is None or ssl_keyfile is None:
-        typer.echo("Error: --ssl-certfile and --ssl-keyfile must be passed together.", err = True)
+        verb = "set" if from_env else "passed"
+        typer.echo(f"Error: {cert_name} and {key_name} must be {verb} together.", err = True)
         raise typer.Exit(2)
     if secure or cloudflare:
         typer.echo(
-            "Error: --ssl-certfile/--ssl-keyfile serve HTTPS directly; do not combine them "
+            f"Error: {cert_name}/{key_name} serve HTTPS directly; do not combine them "
             "with --secure or --cloudflare.",
             err = True,
         )
@@ -1949,7 +1971,8 @@ def studio_default(
         None,
         "--ssl-certfile",
         help = "Serve HTTPS with this certificate (PEM, full chain), e.g. a Tailscale or "
-        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare.",
+        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare. "
+        "Without either flag, UNSLOTH_STUDIO_SSL_CERTFILE + UNSLOTH_STUDIO_SSL_KEYFILE are used.",
     ),
     ssl_keyfile: Optional[Path] = typer.Option(
         None,
@@ -2056,7 +2079,10 @@ def studio_default(
         return
 
     _require_bind_host(host)
-    _require_valid_tls_flags(ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare)
+    ssl_certfile, ssl_keyfile, tls_from_env = _tls_pair_from_env(ssl_certfile, ssl_keyfile)
+    _require_valid_tls_flags(
+        ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare, from_env = tls_from_env
+    )
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
