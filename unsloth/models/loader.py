@@ -2870,9 +2870,7 @@ class FastModel(FastBaseModel):
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
         elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
-            # DeepSeek-V4.1 port: its layers checkpoint non-reentrant, so a compiled region must save the same tensors
-            # in the recompute as in the forward. unsloth_zoo's prepare_compiled_checkpoint makes that hold; an older
-            # unsloth_zoo without it keeps torch.compile off for the model's forward as before.
+            # Non-reentrant checkpointing needs prepare_compiled_checkpoint (newer unsloth_zoo); else keep compile off.
             try:
                 from unsloth_zoo.temporary_patches.deepseek_v41 import prepare_compiled_checkpoint
             except ImportError:

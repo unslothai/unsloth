@@ -139,7 +139,6 @@ def test_ragged_padding_composes_over_the_zoo_partial_block_patch(monkeypatch):
     zoo = pytest.importorskip("unsloth_zoo.temporary_patches.fp8_partial_block_dequant")
     if not hasattr(fp8.Fp8Dequantize, "_dequantize_one"):
         pytest.skip("this transformers has no Fp8Dequantize._dequantize_one")
-    # Start from transformers' own op; monkeypatch restores whatever the session had.
     monkeypatch.setattr(
         fp8.Fp8Dequantize, "_dequantize_one", _op_cls(patched = False)._dequantize_one
     )

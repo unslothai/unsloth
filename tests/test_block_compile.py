@@ -2611,8 +2611,7 @@ def _checkpointed_layer(cls, reentrant = False):
 
 
 def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
-    # The block replaced the class forward, so transformers' wrapper ended up inside it, never saw
-    # itself as type(self).forward and every layer trained without checkpointing.
+    # The block replaced the class forward, hiding transformers' wrapper, so nothing was checkpointed.
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
     cls = _toy_class()
@@ -2631,8 +2630,7 @@ def test_block_keeps_transformers_layer_checkpointing(monkeypatch):
     M._wrap(cls, {})
     layer.train()(x)
     assert calls == [1, 1]
-    # A reentrant checkpoint's no-grad first call runs the block's grad-mode trial, which must call
-    # the block, not the checkpoint shim again (that recursed until RecursionError).
+    # The grad-mode trial must call the block, not the checkpoint shim (that recursed until RecursionError).
     fresh, fresh_calls = _checkpointed_layer(cls, reentrant = True)
     out = fresh(x)
     torch.testing.assert_close(out, fresh.proj(x) + x)
