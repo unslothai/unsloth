@@ -273,14 +273,24 @@ def test_the_run_banner_offers_no_endpoint_an_npu_model_refuses():
     assert banner.index("if not npu_path:") < banner.index('typer.echo("OpenAI Responses:")')
 
 
-def _npu_load_payload(monkeypatch, status, model = "lemonade:qwen3-0.6b-FLM", max_seq_length = None):
+def _npu_load_payload(
+    monkeypatch,
+    status,
+    model = "lemonade:qwen3-0.6b-FLM",
+    max_seq_length = None,
+):
     """The /api/inference/load body `unsloth chat` sends with `status` resident."""
     from unsloth_cli._inference import HttpChatBackend
 
     backend = HttpChatBackend("http://127.0.0.1:8888", "token")
     sent = []
 
-    def _request(method, path, payload = None, timeout = None):
+    def _request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
         if path == "/api/inference/status":
             return io.BytesIO(json.dumps(status).encode())
         sent.append(payload)
@@ -322,7 +332,11 @@ def test_a_typed_context_length_wins_over_the_resident_one(monkeypatch):
 
 
 def test_a_gguf_resident_never_lends_its_context(monkeypatch):
-    status = {"is_gguf": True, "model_identifier": "unsloth/Qwen3-0.6B-GGUF", "requested_context_length": 4096}
+    status = {
+        "is_gguf": True,
+        "model_identifier": "unsloth/Qwen3-0.6B-GGUF",
+        "requested_context_length": 4096,
+    }
     payload = _npu_load_payload(monkeypatch, status, model = "unsloth/Qwen3-0.6B-GGUF")
     assert payload["max_seq_length"] == 0
 
