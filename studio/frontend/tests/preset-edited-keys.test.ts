@@ -396,3 +396,54 @@ test("spelling out an older `modified` yields to another tab's Default pick", as
   settingsHttp.beforeConditionalApply = null;
   settingsHttp.settings = {};
 });
+
+test("spelling out an older `modified` lands before this tab's next edit", async () => {
+  load(QWEN);
+  await settled();
+  settingsHttp.settings = { activePreset: "Default", activePresetSource: "modified" };
+  settingsHttp.puts.length = 0;
+  let releaseConditional = () => {};
+  settingsHttp.conditionalGate = new Promise<void>((resolve) => {
+    releaseConditional = resolve;
+  });
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  moveSlider("topK", 5);
+  await settled();
+  // The compare-and-set reads what reached the server by the time it runs.
+  settingsHttp.settings = stored();
+  settingsHttp.puts.length = 0;
+  settingsHttp.conditionalGate = null;
+  releaseConditional();
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
+  settingsHttp.settings = {};
+});
+
+test("a startup prompt edit does not bring back a key another tab cleared during hydration", async () => {
+  load(QWEN);
+  await settled();
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "modified",
+    presetEditedKeys: { temperature: true },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  saveSystemPrompt("Be terse.");
+  // Another tab picked Default after this tab's read.
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    presetEditedKeys: Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false])),
+  };
+  settingsHttp.release?.();
+  await hydrating;
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, []);
+  settingsHttp.settings = {};
+});

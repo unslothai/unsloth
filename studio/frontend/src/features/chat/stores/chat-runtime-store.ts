@@ -596,15 +596,21 @@ function settingsWritesAreDrained(): boolean {
   );
 }
 
-function enqueueSettingsFlush(): Promise<void> {
+/** Runs `write` after every settings write queued so far and before any queued later. */
+function enqueueSettingsWrite(write: () => Promise<unknown>): Promise<void> {
   unsettledFlushes += 1;
   inflightFlush = inflightFlush
     .catch(() => undefined)
-    .then(() => flushSettingsPatch())
+    .then(write)
+    .then(() => undefined)
     .finally(() => {
       unsettledFlushes -= 1;
     });
   return inflightFlush;
+}
+
+function enqueueSettingsFlush(): Promise<void> {
+  return enqueueSettingsWrite(() => flushSettingsPatch());
 }
 
 function scheduleSettingsFlush(): void {
@@ -4730,11 +4736,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
         const hydratedSettings = migration.settings;
         let applied = false;
+        let startupEditedKeys: RecommendedSamplingKey[] = [];
         set((state) => {
           if (state.settingsHydrated) {
             return state;
           }
           applied = true;
+          startupEditedKeys = state.presetEditedKeys;
           const nextState: Partial<ChatRuntimeStore> = {
             settingsHydrated: true,
             ...getHydratedPresetState(
@@ -4759,18 +4767,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           flushPreHydrationSettings();
           const hydrated = get();
           if (fromServer && hydrated.activePresetSource === "modified") {
-            const presetEditedKeys = keptKeysMap(hydrated.presetEditedKeys, true);
             if (hydratedSettings.presetEditedKeys === undefined) {
-              // Spells out an older `modified`'s every-key hold, or saves this session's first map;
-              // conditional, so a map another tab wrote meanwhile wins.
-              void savePersistedChatSettingsPatchIfCurrent({}, { presetEditedKeys }, [
-                "presetEditedKeys",
-              ]).catch(() => undefined);
+              // Spells out an older `modified`'s every-key hold, or saves this session's first map.
+              // Conditional, so a map another tab wrote meanwhile wins; queued, so this tab's own
+              // later edits land after it.
+              const patch = {
+                presetEditedKeys: keptKeysMap(hydrated.presetEditedKeys, true),
+              };
+              void enqueueSettingsWrite(() =>
+                savePersistedChatSettingsPatchIfCurrent({}, patch, ["presetEditedKeys"]),
+              );
             } else if (
               activePresetSourceMutationVersion !==
               hydrationVersions.presets.activePresetSource
             ) {
-              saveSettingsPatch({ presetEditedKeys });
+              // Only the startup edits: the restored keys may be stale against another tab.
+              saveSettingsPatch({ presetEditedKeys: keptKeysMap(startupEditedKeys, true) });
             }
           }
           if (checkpointMovedDuringConfirm) {
