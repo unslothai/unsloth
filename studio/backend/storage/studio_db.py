@@ -3332,6 +3332,23 @@ def set_chat_project_working_folder(
         conn.close()
 
 
+def find_chat_project_by_working_folder(path: str) -> Optional[dict]:
+    """The most recently updated unarchived project whose chosen folder is *path*."""
+    want = os.path.normcase(path)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM chat_projects WHERE archived = 0 AND working_folder IS NOT NULL "
+            "ORDER BY updated_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        if os.path.normcase(row["working_folder"]) == want:
+            return _chat_project_from_row(row)
+    return None
+
+
 def _working_folder_state(project: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
     """(status, real path). Status is None without a chosen folder; the path is set only for "ok"."""
     path = (project or {}).get("workingFolder")
