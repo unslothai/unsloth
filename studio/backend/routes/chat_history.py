@@ -324,7 +324,6 @@ class ChatProject(BaseModel):
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
-    # "ok", "missing" or "replaced": tools fall back to the managed folder unless it is "ok".
     workingFolderStatus: Optional[str] = None
     workingFolderDisplay: Optional[str] = None
     workingFolderBranch: Optional[str] = None
@@ -335,7 +334,6 @@ class ChatProject(BaseModel):
 
 
 class ChatProjectWorkingFolder(BaseModel):
-    """One of a Desktop grant or, on a server only this machine can reach, a path."""
 
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
     native_path_lease: Optional[str] = Field(default = None, alias = "nativePathLease", min_length = 1)
@@ -356,7 +354,6 @@ class ChatProjectFolderAccess(BaseModel):
 
 class ChatProjectCreate(ChatProject):
     nativePathLease: Optional[str] = Field(default = None, min_length = 1)
-    # Open Folder: return the project already working in the picked folder instead of a second one.
     reuseExisting: bool = False
 
 
@@ -1384,7 +1381,6 @@ def delete_attachment(
 
 
 def _project_out(project: dict) -> ChatProject:
-    """The stored project plus the live state of its chosen folder, which only the disk knows."""
     from utils.paths.folder_info import git_head_branch, tilde_path
 
     folder = project.get("workingFolder")
@@ -1434,7 +1430,6 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
         if payload.reuseExisting:
             existing = find_chat_project_by_working_folder(working_folder[0])
             if existing is not None:
-                # The fresh grant re-pins the identity, so a folder recreated at the same path is usable again.
                 path, (device, inode) = working_folder
                 if existing.get("workingFolderIdentity") != f"{device}:{inode}":
                     existing = (
@@ -1530,7 +1525,6 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
 
 
 def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, int]]:
-    """A typed or browsed path stands in for the Desktop grant only while nothing off this machine can send it."""
     from core.rag import folder_sync
     from routes.models import _build_browse_allowlist, _resolve_browse_target
 
@@ -1542,7 +1536,6 @@ def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, in
                 "access off. Use Unsloth Desktop, or turn off remote access."
             ),
         )
-    # The same places the folder browser can show, so the route takes nothing the dialog could not.
     target = _resolve_browse_target(server_path, _build_browse_allowlist())
     try:
         path = folder_sync.validate_folder_path(str(target))
@@ -1552,7 +1545,6 @@ def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, in
 
 
 def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
-    """Studio's own roots are reserved: they hold every account's data."""
     from core.inference.tools import shared_sandbox_root
     from utils.paths.path_utils import is_path_within
     from utils.paths.storage_roots import (

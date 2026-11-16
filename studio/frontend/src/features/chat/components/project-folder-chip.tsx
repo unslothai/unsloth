@@ -26,7 +26,6 @@ import {
 } from "../utils/project-folder-state";
 import { OpenProjectFolderItem } from "./open-chat-folder-item";
 
-/** Where this project's tools read and write, with the actions that act on that place. */
 export function ProjectFolderChip({
   project,
   onChange,
@@ -34,7 +33,6 @@ export function ProjectFolderChip({
   project: ProjectRecord;
   onChange: () => void;
 }) {
-  // A managed account's tools run in its own sandbox, which the project record does not name.
   const isOwner = useIsAccountOwner();
   if (!isOwner) return null;
   const folder = projectFolderState(project);

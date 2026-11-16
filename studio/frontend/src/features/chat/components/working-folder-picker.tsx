@@ -30,7 +30,6 @@ const FolderBrowser = lazy(() =>
   ).then((module) => ({ default: module.FolderBrowser })),
 );
 
-/** A folder picked in the in-app browser, named by its path on the server. */
 export type ServerFolderSelection = { serverPath: string; displayName: string };
 export type WorkingFolderSelection =
   | NativeDocumentFolderSelection
@@ -38,7 +37,6 @@ export type WorkingFolderSelection =
 
 let serverPickAllowed: Promise<boolean> | null = null;
 
-/** Whether this browser session may name a folder by path; asked once, false until answered. */
 function useServerFolderPick(enabled: boolean): boolean {
   const [allowed, setAllowed] = useState(false);
   useEffect(() => {
@@ -61,7 +59,6 @@ function useServerFolderPick(enabled: boolean): boolean {
   return enabled && allowed;
 }
 
-/** Live facts about a saved folder: what the row names, and why tools may not be using it. */
 export type WorkingFolderDetail = {
   path?: string | null;
   branch?: string | null;
@@ -95,7 +92,6 @@ export function WorkingFolderPicker({
     };
   }, []);
   const native = isTauri && supported && isOwner;
-  // The Desktop grant is the stronger proof, so the in-app browser is only the web's way in.
   const browse = useServerFolderPick(!isTauri && isOwner);
   const available = native || browse;
   const [browsing, setBrowsing] = useState(false);
@@ -160,7 +156,6 @@ export function WorkingFolderPicker({
                 chosen && detail?.path && "font-mono text-ui-13",
               )}
               title={detail?.path ?? value ?? undefined}
-              // A path is cut from its start, so the folder's own name stays in view.
               dir={chosen && detail?.path ? "rtl" : undefined}
             >
               <bdi dir="ltr">{value ?? MANAGED_FOLDER_LABEL}</bdi>

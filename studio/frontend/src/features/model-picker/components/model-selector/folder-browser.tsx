@@ -64,8 +64,6 @@ export interface FolderBrowserProps {
   description?: string;
   confirmLabel?: string;
   showModelHints?: boolean;
-  /** Offer to pick a typed path the browser may not open (outside its places), for callers that
-   * register the folder themselves; the server still validates it on that call. */
   acceptUnbrowsable?: boolean;
 }
 
@@ -148,7 +146,6 @@ export function FolderBrowser({
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return;
-        // A half-typed last name is not a folder yet: open its parent and narrow to it.
         const split =
           opts?.typed && target && errorStatus(err) === 404
             ? splitTypedPath(target)
@@ -180,7 +177,6 @@ export function FolderBrowser({
       });
   }
 
-  // Fetch only on closed -> open; the open folder is deliberately not a dependency.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only reopening resets navigation to the initial path
   useEffect(() => {
     if (!open) return;
@@ -243,8 +239,7 @@ export function FolderBrowser({
     if (current) navigate(joinChild(current, name), showHidden);
   }
 
-  // Handled keys stop here: React bubbles portal events, and a parent dialog (Edit project) saves on
-  // Cmd/Ctrl+Enter.
+  // Handled keys stop here: React bubbles portal events, and a parent dialog saves on Cmd/Ctrl+Enter.
   function onInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -315,7 +310,6 @@ export function FolderBrowser({
           event.preventDefault();
           inputRef.current?.focus();
         }}
-        // Escape leaves the name row first; the dialog's own listener sits above any key handler in here.
         onEscapeKeyDown={(event) => {
           if (!naming) return;
           event.preventDefault();
@@ -332,8 +326,6 @@ export function FolderBrowser({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Fixed height on the row, so the list fills whatever the sidebar leaves; the actions sit
-            under the list, so the places run to the bottom. */}
         <div className="flex h-[calc(27rem*var(--ui-space-scale,1))] min-h-0 border-t border-border">
           <nav
             aria-label="Places"
@@ -547,7 +539,6 @@ export function FolderBrowser({
                 listFadeClass,
               )}
             >
-              {/* One child, so the fade hook's ResizeObserver sees every content change. */}
               <div>
                 {error && (
                   <div

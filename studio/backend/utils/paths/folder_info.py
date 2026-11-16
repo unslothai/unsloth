@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Display facts about a folder the user picked: a short path and its git branch."""
-
 import os
 import re
 import stat
@@ -13,7 +11,6 @@ _SHA_RE = re.compile(r"\A[0-9a-f]{40,64}\Z")
 
 
 def tilde_path(path: str, home: Optional[str] = None) -> str:
-    """*path* with the home directory written as ``~``; unchanged outside it."""
     home = home if home is not None else os.path.expanduser("~")
     if not path or not home or home == os.path.dirname(home):
         return path
@@ -38,7 +35,6 @@ def _read_small_file(path: str) -> Optional[str]:
 
 
 def git_head_branch(folder: str) -> Optional[str]:
-    """The checked-out branch of the repository rooted at *folder*, a short hash when detached, else None."""
     git = os.path.join(folder, ".git")
     try:
         is_pointer = os.path.isfile(git)

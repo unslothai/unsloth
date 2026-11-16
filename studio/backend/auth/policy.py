@@ -109,9 +109,7 @@ def api_full_access_refused() -> bool:
 
 
 def server_folder_pick_permitted() -> bool:
-    """Whether the owner may name a project folder by path instead of a Desktop grant. A chosen folder runs
-    tools outside the sandbox, so this holds only on a loopback bind with no tunnel or LAN listener, where
-    every caller is already on this machine. The bind itself decides, not the stdio MCP env override."""
+    """Path-named folders run tools unsandboxed: only on a loopback bind with no tunnel/LAN (the bind decides, not the MCP env)."""
     from utils.account_context import is_owner_context, via_api_key_context
     from utils.host_policy import serves_this_machine_only
 

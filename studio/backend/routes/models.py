@@ -1558,7 +1558,6 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
 _BROWSE_MODEL_HINT_PROBE = 64
 # Hard cap on subdirectory entries so browsing ``/usr/lib`` can't stat-storm the process.
 _BROWSE_ENTRY_CAP = 2000
-# Bounds the listing itself: a folder of files costs no stat per entry, so this can sit well above the row cap.
 _BROWSE_VISIT_CAP = 50_000
 
 
@@ -1791,7 +1790,6 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
-    """The child spelled *name*; else the only one differing by case, so a typed `~/documents` opens."""
     folded = name.casefold()
     loose: list[Path] = []
     try:
@@ -1919,14 +1917,12 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
 
 
 def _browse_scope(path: Optional[str]):
-    """(path, managed, media roots, drive roots, allowed roots) for one browse request."""
     from utils.paths import external_media
     from utils.paths.storage_roots import workspace_root
 
     managed = account_access.managed_account()
     if managed:
         path = account_access.private_directory(path or str(workspace_root()), "")
-    # A managed account browses its workspace only; no media/drive roots or chips outside it.
     media_roots = (
         []
         if managed
@@ -2035,7 +2031,6 @@ def browse_folders(
                     continue
                 if contains_sensitive_path_component(name):
                     continue
-                # Hide denied system dirs (Windows, /etc); resolve first so symlinks into them are hidden
                 try:
                     resolved_child = os.path.realpath(child.path)
                 except (OSError, ValueError):
@@ -2054,7 +2049,6 @@ def browse_folders(
         logger.warning("browse-folders: partial enumeration of %s: %s", target, exc)
         truncated = True
 
-    # Sorted before the cut: listing order is arbitrary, so a cut taken first drops folders at random.
     names.sort(key = str.lower)
     if len(names) > _BROWSE_ENTRY_CAP:
         truncated = True
@@ -2106,7 +2100,6 @@ def browse_folders(
             trimmed = resolved.rstrip("\\/")
             name = os.path.basename(trimmed) or ("Computer" if resolved == os.sep else resolved)
             if name.lower() in ("models", "hub"):
-                # `models` alone names nothing: keep the folder that says whose they are.
                 name = f"{os.path.basename(os.path.dirname(trimmed)).lstrip('.')}/{name}"
             places.append(BrowsePlace(path = resolved, label = label or name, kind = kind))
 
@@ -2119,7 +2112,6 @@ def browse_folders(
         for name in ("Desktop", "Documents", "Downloads"):
             _add_sug(home / name, kind = "user")
         for p in (*media_roots, *drive_roots):
-            # A volume resolves to `/` or a bare drive, so its own name is the label.
             _add_sug(p, p.name or None, "drive")
         try:
             _add_sug(hf_default_cache_dir(), "Hugging Face cache")
@@ -2153,7 +2145,6 @@ class BrowseFolderCreate(BaseModel):
 
 
 _NEW_FOLDER_NAME_RE = _re.compile(r'\A[^<>:"/\\|?*\x00-\x1f]{1,255}\Z')
-# Names Windows resolves to a device whatever the extension.
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{n}" for n in range(1, 10)}
@@ -2189,7 +2180,6 @@ def create_browse_folder(
     target = _resolve_logged_browse_target(parent, allowed_roots)
     created = target / name
     if not managed:
-        # Studio's own data lives here; only its outputs and exports are places a user saves into.
         inside_studio = is_path_within(created, studio_root())
         saves_here = any(is_path_within(created, root) for root in (outputs_root(), exports_root()))
         if inside_studio and not saves_here:

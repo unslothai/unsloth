@@ -48,7 +48,6 @@ function ProjectWorkingFolder({
   disabled: boolean;
   onPendingChange: (pending: boolean) => void;
 }) {
-  // The saved record, so the row follows what the backend says the folder is now.
   const [saved, setSaved] = useState(project);
   const seed = `${project.id}\n${project.workingFolder ?? ""}\n${project.workingFolderStatus ?? ""}`;
   const [seededFor, setSeededFor] = useState(seed);

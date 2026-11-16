@@ -6,9 +6,7 @@ import type { ProjectRecord } from "../types";
 export const MANAGED_FOLDER_LABEL = "Unsloth-managed folder";
 
 export type ProjectFolderState = {
-  /** A folder of the user's is set, whether or not it can still be used. */
   chosen: boolean;
-  /** Tools are not running where the project says: the chosen folder is gone or was swapped. */
   unavailable: boolean;
   label: string;
   path: string | null;
@@ -54,7 +52,6 @@ export function projectFolderState(project: FolderFields): ProjectFolderState {
   };
 }
 
-/** Keeps the end of a long path, where the project's own name is. */
 export function shortenFolderLabel(label: string, max = 48): string {
   if (label.length <= max) return label;
   const tail = label.slice(-(max - 1));

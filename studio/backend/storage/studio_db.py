@@ -3333,7 +3333,6 @@ def set_chat_project_working_folder(
 
 
 def find_chat_project_by_working_folder(path: str) -> Optional[dict]:
-    """The most recently updated unarchived project whose chosen folder is *path*."""
     want = os.path.normcase(path)
     conn = get_connection()
     try:
@@ -3350,7 +3349,6 @@ def find_chat_project_by_working_folder(path: str) -> Optional[dict]:
 
 
 def _working_folder_state(project: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
-    """(status, real path). Status is None without a chosen folder; the path is set only for "ok"."""
     path = (project or {}).get("workingFolder")
     if not path:
         return None, None
@@ -3374,7 +3372,6 @@ def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
     """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
     if not is_owner_context():
         return None
-    # The folder is host access the owner granted in the Unsloth UI; an API key stays in the sandbox (#14345).
     from auth.policy import api_full_access_refused
 
     if api_full_access_refused():
@@ -3383,7 +3380,6 @@ def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
 
 
 def project_working_folder_status(project: Optional[dict]) -> Optional[str]:
-    """ "ok", "missing" or "replaced" for a project with a chosen folder, else None."""
     return _working_folder_state(project)[0]
 
 

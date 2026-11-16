@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A project reports whether its chosen folder is still the one tools run in, and an API key never reaches it."""
-
 import os
 
 import pytest
@@ -39,7 +37,6 @@ def test_status_follows_the_folder_on_disk(tmp_path):
     assert studio_db.project_working_folder_status(project) == "missing"
     assert studio_db.available_project_working_folder(project) is None
 
-    # A new directory at the old path is not the folder that was picked.
     repo.mkdir()
     (repo / "x").write_text("x")
     if _project(repo)["workingFolderIdentity"] != project["workingFolderIdentity"]:
@@ -63,7 +60,6 @@ def test_an_api_key_never_reaches_the_chosen_folder(tmp_path, monkeypatch):
     monkeypatch.delenv(_OPT_IN, raising = False)
     api = as_api_caller(OWNER)
     assert run_as(api, studio_db.available_project_working_folder, project) is None
-    # The status is a fact about the disk, not a grant, so it does not change with the caller.
     assert run_as(api, studio_db.project_working_folder_status, project) == "ok"
 
     monkeypatch.setenv(_OPT_IN, "1")

@@ -2538,7 +2538,6 @@ function ProjectLanding({
                   </div>
                 }
               >
-                {/* Keyed on the effective root: a folder change must drop the old tree and its fetches. */}
                 <ProjectFilesPanel
                   key={`${currentProject?.workingFolder ?? ""}|${currentProject?.workingFolderStatus ?? ""}`}
                   projectId={projectId}

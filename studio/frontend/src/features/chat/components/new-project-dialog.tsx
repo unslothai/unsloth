@@ -75,7 +75,6 @@ export function NewProjectDialog({
   const [busy, setBusy] = useState(false);
   const [workingFolder, setWorkingFolder] =
     useState<NativeDocumentFolderSelection | null>(null);
-  // Picked in the in-app browser: a path, applied after the create, with no grant to spend or expire.
   const [serverFolder, setServerFolder] = useState<ServerFolderSelection | null>(
     null,
   );

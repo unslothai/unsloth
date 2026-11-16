@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A project folder can be named by path from the browser, but only on a server nothing off this machine reaches."""
-
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -32,7 +30,6 @@ def test_permitted_only_for_the_owner_on_an_unpublished_loopback_server(local, m
     monkeypatch.setattr(host_policy, "_lan_connector_active", True)
     assert policy.server_folder_pick_permitted() is False
     monkeypatch.setattr(host_policy, "_lan_connector_active", False)
-    # An explicit UNSLOTH_STUDIO_ALLOW_STDIO_MCP leaves the loopback default unset; the bind still decides.
     monkeypatch.setattr(host_policy, "_auto_enabled", False)
     assert policy.server_folder_pick_permitted() is True
     monkeypatch.setattr(host_policy, "_local_bind", False)
@@ -84,7 +81,6 @@ def test_a_path_goes_through_the_browser_allowlist_and_the_folder_checks(
     with pytest.raises(HTTPException) as exc_info:
         chat_history._resolve_server_working_folder(str(outside))
     assert exc_info.value.status_code == 403
-    # Unsloth's own folder, and a folder holding it, stay reserved.
     for reserved in (studio, home):
         with pytest.raises(HTTPException) as exc_info:
             chat_history._resolve_server_working_folder(str(reserved))

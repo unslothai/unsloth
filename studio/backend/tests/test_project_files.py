@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Files tab reads only the folder a project's tools run in, and git there cannot run a repository's programs."""
-
 import os
 import platform
 import shutil
@@ -28,7 +26,6 @@ needs_symlinks = pytest.mark.skipif(
 
 @pytest.fixture
 def projects_home(tmp_path):
-    """macOS tmp_path is under /private, which the project-delete guard refuses."""
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
     check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
@@ -44,7 +41,6 @@ def projects_home(tmp_path):
 
 @pytest.fixture
 def repo_parent(tmp_path):
-    """macOS tmp_path is under /private, which Link folder refuses as a system directory."""
     from hub.storage.scan_folders import is_denied_system_path
 
     if not is_denied_system_path(os.path.realpath(tmp_path)):
@@ -223,7 +219,6 @@ def test_search_ranks_name_matches_before_path_matches(tmp_path):
 
     found = project_files.search_files(str(tmp_path), "main")
     paths = [r["path"] for r in found["results"]]
-    # Prefix of the name, then contained in the name, then contained in the path, then a subsequence.
     assert paths == [
         "main.py",
         "src/main.py",
@@ -305,13 +300,11 @@ def test_search_bounds_hold_inside_one_large_folder(tmp_path, monkeypatch):
     assert len(found["results"]) <= 5
 
     monkeypatch.setattr(project_files, "SEARCH_MAX_ENTRIES", 200000)
-    # The deadline passes mid-listing: the root is only partly read.
     ticks = iter([0.0, 0.0] + [0.0] * 3 + [99.0] * 1000)
     found = project_files.search_files(str(tmp_path), "f", clock = lambda: next(ticks))
     assert found["truncated"] is True
     assert len(found["results"]) <= 3
 
-    # Subfolders past the dir cap are not queued (or probed).
     monkeypatch.setattr(project_files, "SEARCH_MAX_DIRS", 3)
     assert project_files.search_files(str(tmp_path), "x")["truncated"] is True
 
@@ -468,14 +461,12 @@ def test_a_repositorys_config_cannot_make_git_run_a_program(tmp_path):
     for hook in ("post-index-change", "pre-commit"):
         (hooks / hook).write_text(f"#!/bin/sh\ntouch '{marker}'\n")
         (hooks / hook).chmod(0o755)
-    # A stat-dirty but unchanged file makes git compare content, which runs a clean filter.
     os.utime(repo / "keep.py", (1, 1))
     (repo / "edit.py").write_text("changed\n")
     out = project_files.git_changes(str(repo))
     assert out["repo"] is True
     assert ("edit.py", "modified") in [(c["path"], c["status"]) for c in out["changes"]]
     assert not marker.exists()
-    # The setup is live: plain git does run the repository's program.
     subprocess.run(["git", "status", "--porcelain"], cwd = repo, capture_output = True)
     assert marker.exists()
 
@@ -560,7 +551,6 @@ def test_a_managed_account_never_reaches_the_owners_folder(env, monkeypatch):
         )
     assert caught.value.status_code == 404
 
-    # Even a project row naming the owner's folder resolves to the account's own sandbox.
     monkeypatch.setattr(env.tools, "is_owner_context", lambda: False)
     monkeypatch.setattr(studio_db, "is_owner_context", lambda: False)
     listing = chat_history.list_project_files("p1", path = "", show_hidden = False, current_subject = "u")

@@ -30,7 +30,6 @@ export function joinProjectPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name;
 }
 
-/** "src/app/main.py" -> { dir: "src/app", name: "main.py" }. */
 export function splitProjectPath(path: string): { dir: string; name: string } {
   const trimmed = path.replace(/\/+$/, "");
   const slash = trimmed.lastIndexOf("/");
@@ -97,7 +96,6 @@ export function toggleOpenPath(
   return next;
 }
 
-/** Folders opened under `path` are closed with it, so reopening it does not jump several levels deep. */
 export function closeSubtree(
   open: ReadonlySet<string>,
   path: string,
@@ -114,7 +112,6 @@ export function dirStateAt(
   return Object.hasOwn(dirs, path) ? dirs[path] : undefined;
 }
 
-/** Open folders whose listing has not been requested yet. */
 export function pathsToLoad(
   dirs: Readonly<Record<string, DirState>>,
   open: ReadonlySet<string>,
@@ -122,7 +119,6 @@ export function pathsToLoad(
   return ["", ...open].filter((path) => !Object.hasOwn(dirs, path));
 }
 
-/** The visible tree, depth-first, with a status row under each open folder that has no entries to show. */
 export function flattenFileTree(
   dirs: Readonly<Record<string, DirState>>,
   open: ReadonlySet<string>,

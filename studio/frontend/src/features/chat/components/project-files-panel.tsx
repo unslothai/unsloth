@@ -273,7 +273,6 @@ export function ProjectFilesPanel({
     changesController.current?.abort();
     const controller = new AbortController();
     changesController.current = controller;
-    // A refresh keeps the last answer on screen, so the view toggle does not blink away.
     setChanges((prev) =>
       prev.status === "ready" ? prev : { status: "loading" },
     );
@@ -314,7 +313,6 @@ export function ProjectFilesPanel({
       return;
     }
     const controller = new AbortController();
-    // Earlier results stay up while the next query is typed.
     setSearch((prev) =>
       prev?.status === "ready" ? prev : { status: "loading" },
     );
@@ -436,7 +434,6 @@ export function ProjectFilesPanel({
     body = rows.map((row) => {
       const key = `${row.type}:${row.path}`;
       if (row.type === "loading") {
-        // A folder being opened shows its spinner on its own row.
         return row.depth === 0 ? (
           <StatusRow key={key}>
             <Spinner className="size-3" />

@@ -8,7 +8,6 @@ export interface Crumb {
 
 export function splitBreadcrumb(path: string): Crumb[] {
   if (!path) return [];
-  // Detect path style before normalizing: `\` is a valid POSIX filename char.
   const isWindowsDrive =
     /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
@@ -18,7 +17,6 @@ export function splitBreadcrumb(path: string): Crumb[] {
   const parts: Crumb[] = [];
 
   if (segments[0] === "") {
-    // No "/" crumb: the filesystem root is not browsable. Shown only when it is the open folder.
     if (!segments.some(Boolean)) return [{ label: "/", value: "/" }];
     let cur = "";
     for (const seg of segments.slice(1)) {
@@ -29,7 +27,6 @@ export function splitBreadcrumb(path: string): Crumb[] {
     return parts;
   }
 
-  // Use `C:/` so the crumb goes to the drive root (`C:` alone is CWD-on-C).
   if (/^[A-Za-z]:$/.test(segments[0])) {
     const driveRoot = `${segments[0]}/`;
     let cur = driveRoot;
@@ -49,8 +46,7 @@ export function joinChild(current: string, name: string): string {
   return /[\\/]$/.test(current) ? `${current}${name}` : `${current}/${name}`;
 }
 
-/** Text that names a place rather than narrowing the list: `~/code`, `/srv`, `C:\x`, `src/app`. A
- * backslash separates only on a Windows server (`src\app`, `..\models`); on POSIX it is a name character. */
+/** Text that names a place rather than narrowing the list: `~/code`, `/srv`, `C:\x`, `src/app`; `\` separates only on a Windows server. */
 export function isPathLike(text: string, windowsServer = false): boolean {
   const value = text.trim();
   return (
@@ -61,21 +57,18 @@ export function isPathLike(text: string, windowsServer = false): boolean {
   );
 }
 
-/** A drive (`C:\`) or UNC (`\\host\share`) path, i.e. the server lists Windows folders. */
 export function isWindowsPath(path: string | undefined): boolean {
   return (
     !!path && (/^[A-Za-z]:([\\/]|$)/.test(path) || path.startsWith("\\\\"))
   );
 }
 
-/** The absolute or home-relative path typed text names, read against the open folder. */
 export function resolveTypedPath(current: string, text: string): string {
   const value = text.trim();
   if (/^(~|\/|\\|[A-Za-z]:)/.test(value)) return value;
   return joinChild(current, value);
 }
 
-/** `~/code/uns` -> `~/code` plus `uns`, so a half-typed last name can narrow its parent. */
 export function splitTypedPath(
   path: string,
 ): { parent: string; leaf: string } | null {
@@ -85,14 +78,12 @@ export function splitTypedPath(
   const leaf = trimmed.slice(cut + 1);
   if (!leaf) return null;
   const parent = trimmed.slice(0, cut);
-  // The root keeps its separator: `/us` narrows `/`, `C:/us` narrows `C:/`.
   if (parent === "" || /^[A-Za-z]:$/.test(parent)) {
     return { parent: trimmed.slice(0, cut + 1), leaf };
   }
   return { parent, leaf };
 }
 
-/** Names starting with the query first, then names containing it; case-insensitive. */
 export function filterEntries<T extends { name: string }>(
   entries: T[],
   query: string,
@@ -109,7 +100,6 @@ export function filterEntries<T extends { name: string }>(
   return [...starts, ...contains];
 }
 
-/** The trail cut to its last `keep` crumbs; `hidden` holds the ones folded behind the ellipsis. */
 export function collapseCrumbs(
   crumbs: Crumb[],
   keep = 3,
@@ -145,7 +135,6 @@ export function readRecentFolders(store: RecentStore | undefined): string[] {
   }
 }
 
-/** Most recent first, without repeats. */
 export function rememberRecentFolder(
   store: RecentStore | undefined,
   path: string,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The folder browser's one text box both narrows the open folder and takes a typed path.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -109,7 +107,6 @@ test("the browser keeps the last good folder on screen when a path fails", async
   const source = readSrc(
     "features/model-picker/components/model-selector/folder-browser.tsx",
   );
-  // The listing is not gated on the error, and the confirm button no longer is either.
   assert.doesNotMatch(source, /!error && data/);
   assert.match(source, /disabled=\{!current \|\| loading\}/);
   assert.match(

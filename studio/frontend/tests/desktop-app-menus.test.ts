@@ -155,7 +155,6 @@ test("Open Folder makes the folder the working folder and reuses the project alr
     openFolder,
     /return await createChatProject\(\s*selected\.displayName,\s*selected\.token,\s*undefined,\s*\{ reuseExisting: true \},\s*\);/,
   );
-  // The single-use grant pays for the working folder, so nothing links it as a source.
   assert.doesNotMatch(openFolder, /createLinkedFolder|markProjectSourcesPending|@\/features\/rag/);
   assert.doesNotMatch(openFolder, /deleteChatProject/);
   assert.match(landing, /hasProjectSourcesPending\(projectId\) \? "sources" : "chats"/);
@@ -208,7 +207,6 @@ test("Open Folder is disabled until the open in progress finishes", () => {
   assert.match(openFolder, /if \(opening\) return null;\s*setOpening\(true\);/);
   assert.match(openFolder, /\} finally \{\s*setOpening\(false\);/);
   assert.match(ROOT, /routeShortcutEnabled && pathLeasesSupported && !openingFolder/);
-  // It no longer links a RAG source, so RAG being unavailable does not disable it.
   assert.doesNotMatch(ROOT, /ragUnavailable/);
 });
 

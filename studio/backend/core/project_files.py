@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read-only views of the folder a project's tools run in: one directory level, a file search and git changes."""
-
 import heapq
 import os
 import re
@@ -19,7 +17,6 @@ LIST_MAX_ENTRIES = 500
 LIST_MAX_VISITED = 20000
 SEARCH_MAX_DIRS = 5000
 SEARCH_MAX_FILES = 50000
-# Every directory entry read, files or not: bounds a folder of millions of subfolders or skipped names.
 SEARCH_MAX_ENTRIES = 200000
 SEARCH_BUDGET_SECONDS = 2.0
 SEARCH_MAX_LIMIT = 200
@@ -48,7 +45,6 @@ def _hidden_name(name: str) -> bool:
 
 
 def relative_parts(path: Optional[str]) -> list[str]:
-    """The segments of a client-supplied relative path, or ProjectPathError for anything that could leave the root."""
     if not path:
         return []
     if len(path) > _MAX_RELATIVE_PATH or _CONTROL_RE.search(path):
@@ -64,7 +60,6 @@ def relative_parts(path: Optional[str]) -> list[str]:
     for segment in re.split(r"[\\/]", path):
         if segment in ("", "."):
             continue
-        # `.git` is hidden as an entry, so it is not a place to open either.
         if (
             segment == ".."
             or segment.lower() == ".git"
@@ -77,7 +72,6 @@ def relative_parts(path: Optional[str]) -> list[str]:
 
 
 def contained_dir(root: str, parts: list[str]) -> str:
-    """Real path of root/parts, which must be a directory at or under root."""
     target = os.path.realpath(os.path.join(root, *parts))
     if not _within(root, target) or not os.path.isdir(target):
         raise ProjectPathError("/".join(parts))
@@ -146,8 +140,6 @@ def _is_subsequence(needle: str, haystack: str) -> bool:
 
 
 def match_rank(rel_path: str, query: str) -> Optional[int]:
-    """0 exact name, 1 name prefix, 2 name contains, 3 path contains, 4 path subsequence; None for no match.
-    Both arguments are lower-cased with "/" separators; a query with "/" is matched against the whole path."""
     name = rel_path.rsplit("/", 1)[-1]
     subject = rel_path if "/" in query else name
     if subject == query:
@@ -164,7 +156,6 @@ def match_rank(rel_path: str, query: str) -> Optional[int]:
 
 
 def _skips_dir(base: str, name: str) -> bool:
-    # A virtualenv is marked by its pyvenv.cfg, whatever it is named.
     return name in _SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
 
 
@@ -175,7 +166,6 @@ def search_files(
     *,
     clock = time.monotonic,
 ) -> dict:
-    """Files under root ranked by match_rank, then shorter path, then name; the walk is bounded."""
     query = (query or "").strip().replace("\\", "/").lower()
     limit = max(1, min(int(limit), SEARCH_MAX_LIMIT))
     if not query or not os.path.isdir(root):
@@ -195,7 +185,6 @@ def search_files(
         rel_dir, abs_dir = pending.popleft()
         dirs_seen += 1
         try:
-            # Streamed, not sorted: a huge flat folder must hit the bounds before it is all read.
             listing = os.scandir(abs_dir)
         except OSError:
             continue
@@ -216,7 +205,6 @@ def search_files(
                         if not _within(root, real) or not os.path.isfile(real):
                             continue
                     elif entry.is_dir(follow_symlinks = False):
-                        # Folders past the dir cap are never walked, so skip their venv probe too.
                         if dirs_seen + len(pending) >= SEARCH_MAX_DIRS:
                             truncated = True
                         elif not _skips_dir(abs_dir, name):
@@ -283,12 +271,9 @@ def _run_git(git: str, root: str, args: list[str], config: list[str], deadline: 
 
 
 def _disabled_filters(git: str, root: str, deadline: float) -> list[str]:
-    """Blank every configured filter driver: `git status` runs a clean filter to compare a stat-dirty file,
-    and the repository's own config names that program."""
     try:
         out = _run_git(git, root, ["config", "-z", "--get-regexp", r"^filter\."], [], deadline)
     except subprocess.CalledProcessError as exc:
-        # Exit 1 means no key matched.
         if exc.returncode == 1:
             return []
         raise
@@ -305,7 +290,6 @@ def _disabled_filters(git: str, root: str, deadline: float) -> list[str]:
 
 
 def change_status(xy: str) -> Optional[str]:
-    """Porcelain v1 XY code to the label the Files tab shows; None for ignored entries."""
     if xy == "??":
         return "untracked"
     if xy == "!!":
@@ -322,7 +306,6 @@ def change_status(xy: str) -> Optional[str]:
 
 
 def parse_porcelain(data: bytes) -> list[dict]:
-    """Entries of `git status --porcelain=v1 -z`: "XY path", and for a rename or copy the source path as the next field."""
     fields = data.split(b"\0")
     changes = []
     i = 0
@@ -342,7 +325,6 @@ def parse_porcelain(data: bytes) -> list[dict]:
 
 
 def git_changes(root: str) -> dict:
-    """Changed files of the repository rooted at root; any failure reads as "not a repository"."""
     none = {"repo": False, "branch": None, "changes": [], "truncated": False}
     if not os.path.isdir(root):
         return none

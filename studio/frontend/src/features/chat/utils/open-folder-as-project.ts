@@ -25,14 +25,12 @@ export function useOpeningFolder(): boolean {
   );
 }
 
-/** The picked folder becomes the project's working folder; a project already working there is returned instead. */
 export async function openFolderAsProject(): Promise<ProjectRecord | null> {
   if (opening) return null;
   setOpening(true);
   try {
     const selected = await pickNativeDocumentFolder();
     if (!selected) return null;
-    // The grant is single-use, so it pays for the working folder only, not a linked source too.
     return await createChatProject(
       selected.displayName,
       selected.token,

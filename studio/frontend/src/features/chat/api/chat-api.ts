@@ -1292,12 +1292,10 @@ export type ProjectFileEntry = {
 };
 
 export type ProjectFileListing = {
-  /** The folder's path with the home directory written as `~`. */
   root: string;
   path: string;
   entries: ProjectFileEntry[];
   truncated: boolean;
-  /** False when the tools run in the managed folder. */
   chosen: boolean;
 };
 
@@ -1363,7 +1361,6 @@ export async function getProjectChanges(
 }
 
 export type SaveChatProjectOptions = {
-  /** With a lease: return the project already working in that folder instead of creating one. */
   reuseExisting?: boolean;
 };
 
@@ -1423,7 +1420,6 @@ export async function setChatProjectWorkingFolder(
   return project;
 }
 
-/** Sets the folder by path: the backend takes one only where nothing off this machine can reach it. */
 export async function setChatProjectWorkingFolderPath(
   projectId: string,
   serverPath: string,
@@ -1743,7 +1739,6 @@ export interface BrowseFoldersResponse {
   parent: string | null;
   entries: BrowseEntry[];
   suggestions: string[];
-  /** Absent on a backend that predates named places. */
   places?: BrowsePlace[];
   truncated?: boolean;
   model_files_here?: number;

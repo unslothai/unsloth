@@ -109,7 +109,6 @@ export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
-  /** The last load failed, so an empty list means unknown rather than no projects. */
   loadFailed: boolean;
 } {
   const projects = useSyncExternalStore(

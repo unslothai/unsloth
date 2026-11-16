@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The project Files tab: sizes, paths, change labels and the lazy tree it renders.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -86,7 +84,6 @@ test("opening and closing folders, with a closed folder's descendants closed too
   assert.deepEqual([...open], ["src", "src/app", "docs"]);
   assert.deepEqual([...closeSubtree(open, "src")], ["docs"]);
   assert.deepEqual([...toggleOpenPath(open, "docs")], ["src", "src/app"]);
-  // "src2" is not inside "src".
   assert.deepEqual(
     [...closeSubtree(new Set(["src", "src2"]), "src")],
     ["src2"],
@@ -201,7 +198,6 @@ test("Open Folder sends the lease as the working folder and asks to reuse a proj
     api,
     /nativePathLease && options\.reuseExisting \? \{ reuseExisting: true \} : \{\}/,
   );
-  // The Create project dialog still makes a new project for the same folder.
   const dialog = readSrc("features/chat/components/new-project-dialog.tsx");
   assert.match(
     dialog,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A project says where its tools run, and says so when the chosen folder is no longer that place.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -79,7 +77,6 @@ test("the landing page and the edit dialog both read the live folder state", () 
   const dialog = readSrc("features/chat/components/edit-project-dialog.tsx");
   assert.match(dialog, /const folder = projectFolderState\(saved\);/);
   assert.match(dialog, /detail=\{folder\}/);
-  // The row reseeds when the folder's state changes, not only when its path does.
   assert.match(dialog, /project\.workingFolderStatus \?\? ""/);
 });
 
@@ -101,7 +98,6 @@ test("a failed project load is not shown as an empty list", () => {
 
 test("the web picks a working folder by path, and only when the backend allows it", () => {
   const picker = readSrc("features/chat/components/working-folder-picker.tsx");
-  // The Desktop grant stays first; the browser is asked for only outside the app.
   assert.match(picker, /const browse = useServerFolderPick\(!isTauri && isOwner\);/);
   assert.match(picker, /const available = native \|\| browse;/);
   assert.match(picker, /if \(choose && !native && !picked\) \{\n\s*setBrowsing\(true\);/);

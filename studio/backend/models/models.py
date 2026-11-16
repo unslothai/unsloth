@@ -409,7 +409,6 @@ class BrowseEntry(BaseModel):
 
 
 class BrowsePlace(BaseModel):
-    """A named starting point shown beside the folder list."""
 
     path: str
     label: str

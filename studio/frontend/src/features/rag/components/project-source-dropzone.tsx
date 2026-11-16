@@ -335,8 +335,6 @@ export function ProjectSourceDropzone({
           e.preventDefault();
           if (disabled) return;
           endDrag();
-          // A browser folder drop is walked to its files; the desktop links folders instead.
-          // Pending until the files are staged, so Create cannot run without them.
           const claimed = generation.current;
           addPending(1);
           void filesFromDrop(e.dataTransfer, isSupportedSourceName)
