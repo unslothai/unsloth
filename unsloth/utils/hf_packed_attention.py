@@ -604,7 +604,6 @@ def _sdpa_packed_varlen(
     window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
     if window is not _NO_WINDOW:
         if head_dim > 256:
-            # Past every flash kernel: large head kernel, else efficient per segment.
             large_head = _large_head_takes(query, key, value, dropout, window, kwargs)
             efficient = large_head or _efficient_varlen_takes(query, window)
         elif not _sdpa_requested(query, key):
