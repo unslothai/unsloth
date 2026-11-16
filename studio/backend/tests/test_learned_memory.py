@@ -221,16 +221,19 @@ def test_memory_budget_uses_serving_window_after_routing(db, monkeypatch, hosted
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True))
     parsed = []
     extract = inf._extract_content_parts
+
     def record_parse(*args, **kwargs):
         result = extract(*args, **kwargs)
         parsed.append(result)
         return result
+
     monkeypatch.setattr(inf, "_extract_content_parts", record_parse)
 
     async def switch(*args, **kwargs):
         resident["window"] = 16384
 
     monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+
     class Captured(Exception):
         pass
 
@@ -254,6 +257,6 @@ def test_memory_budget_uses_serving_window_after_routing(db, monkeypatch, hosted
     )
     request = SimpleNamespace(headers = {}, scope = {}, state = SimpleNamespace())
     with pytest.raises(Captured):
-        asyncio.run(inf.produce_openai_chat_completions(
-            payload, request, "t", cancel_on_disconnect = False
-        ))
+        asyncio.run(
+            inf.produce_openai_chat_completions(payload, request, "t", cancel_on_disconnect = False)
+        )
