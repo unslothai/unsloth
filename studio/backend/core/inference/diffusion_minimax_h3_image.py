@@ -3494,7 +3494,7 @@ _NATIVE_LORA_PREFIXES = (
 
 
 def native_lora_deltas(deltas: dict, heads: int, head_dim: int) -> dict:
-    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit / ComfyUI LoRAs, ostris' training
+    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit LoRAs, ostris' training
     adapter: ``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) moved onto the diffusers modules, as the checkpoint
     converter moves the weights: a fused per-head-interleaved qkv B is reordered and split into ``to_q`` / ``to_k`` /
     ``to_v`` sharing A, and fc1's ``[gate; value]`` B rows become ``ff.net.0.proj``'s ``[value; gate]``. Diffusers
