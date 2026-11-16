@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallelism over a forced float32 model (UNSLOTH_FORCE_FLOAT32: 16-bit weights, float32 wire).
-
-The wire between stages is float32, but most forced families keep 16-bit hidden states (Qwen3.5 / Qwen3.5-MoE /
-Qwen3-MoE on a T4): the next stage must get them back in that dtype, not as float32 against 16-bit weights
-("expected mat1 and mat2 to have the same dtype"). A family whose layers really return float32 (gpt-oss' experts)
-keeps float32. gloo CPU world of 2 vs gradient accumulation over the same micro-batches in one process, bf16."""
+"""PP over a forced float32 model: stages get back their sender's 16-bit dtype off the float32 wire (gpt-oss
+style upcasting layers keep float32). gloo world of 2 vs single-process grad accumulation."""
 
 import multiprocessing
 import os
@@ -43,8 +39,7 @@ def _model(arch, upcast):
             with_kwargs = True,
         )
     if upcast:
-        # gpt-oss under the force: float32 residual stream, every decoder layer computes in 16-bit and
-        # returns float32.
+        # gpt-oss style: layers compute in 16-bit and return float32.
         def to_bf16(module, args, kwargs):
             if args:
                 return (args[0].to(torch.bfloat16), *args[1:]), kwargs
@@ -167,7 +162,6 @@ def test_pp2_forced_float32_matches_one_process(arch, upcast, schedule):
     for rank, res in enumerate(results):
         assert res["wire"] == "torch.float32", res["wire"]
         assert res["restores"] or upcast, rank  # float32 hidden states already arrive as they are
-        # Every layer of a stage gets the dtype it gets in one process: bf16, or float32 after an upcasting layer.
         start, end = res["bounds"][rank]
         assert res["seen"] == [s for s in res["ref_seen"] if start <= s[0] < end], (
             rank,

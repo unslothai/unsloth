@@ -1516,7 +1516,6 @@ class _StageContext:
         self.ple = None
         self.ple_input = None
         self.ple_output = None
-        # _WireDtypes when the wire is wider than the model's 16-bit weights (forced float32), else None.
         self.wire_dtypes = None
 
     def configure(self, start, end, is_first, is_last):
@@ -1554,15 +1553,11 @@ _WIRE_DTYPE_KEYS = itertools.count()
 
 
 class _WireDtypes:
-    """The dtypes a stage's carried tensors had before the wire cast, told to the next stage.
+    """Pre-wire-cast dtypes of a stage's carried tensors, so the next stage can cast back.
 
-    A forced float32 model (UNSLOTH_FORCE_FLOAT32, float16 weights on a GPU without bfloat16) sends float32, but
-    only some families keep float32 hidden states (Gemma 3's embedding, gpt-oss' experts upcast); Qwen3.5 and
-    Qwen3.5-MoE stay float16, and a float32 input then meets float16 weights on the next stage ("expected mat1 and
-    mat2 to have the same dtype"). The receive buffers must be declared before the first step, so the wire keeps
-    the wide dtype and the receiver casts back to what the sender really had: the dtype one GPU passes into that
-    layer. The sender publishes it once per (boundary layer, train / grad mode) in the process group's store,
-    before its send; the receiver reads it after its receive, so it is always there."""
+    Forced float32 sends a float32 wire, but some families (Qwen3.5) keep 16-bit hidden states; float32 input
+    against 16-bit weights fails ("expected mat1 and mat2 to have the same dtype"). Published in the store per
+    (boundary, mode) before the send, read after the receive, so it is always there."""
 
     def __init__(self, group_ranks):
         import torch.distributed as dist
@@ -1675,13 +1670,11 @@ class _PPStageModule(nn.Module):
         return (self.model.training, torch.is_grad_enabled())
 
     def _publish(self, tensors):
-        """Tell the next stage the dtypes of what this stage sends, before the wire cast."""
         wire = self._pp_ctx.wire_dtypes
         if wire is not None:
             wire.publish(self._pp_ctx.end, self._mode(), [t.dtype for t in tensors])
 
     def _restore(self, tensors):
-        """The received tensors in the dtypes the previous stage had before the wire cast."""
         wire = self._pp_ctx.wire_dtypes
         if wire is None:
             return tensors
@@ -3022,7 +3015,6 @@ def apply_pipeline_parallel(
         carry = carry,
     )
     if pp > 1 and dtype != parts.embed.weight.dtype:
-        # A wire wider than the weights (forced float32): each stage gets back the dtype its sender had.
         pp_stage.ctx.wire_dtypes = _WireDtypes(pp_stage._global_ranks)
     stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
     if carry is not None and callable(stage_fn) and moe is None:
