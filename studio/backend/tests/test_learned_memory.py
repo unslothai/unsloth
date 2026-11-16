@@ -201,3 +201,59 @@ def test_responses_conversion_preserves_memory_context(db, stream):
     memory.apply_to_request(chat, 8192)
     assert chat.thread_id == "chat"
     assert "personal.language" in chat.messages[0].content
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_memory_budget_uses_serving_window_after_routing(db, monkeypatch, hosted):
+    import asyncio
+    from types import SimpleNamespace
+    from routes import inference as inf
+    from auth import authentication
+    from core.inference import npu_backend
+
+    # Fits a 16K memory allowance, but not the previously resident model's 4K allowance.
+    memory.update(None, "long_fact", "Amber " * 50, 0)
+    resident = {"window": 4096}
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: resident["window"])
+    monkeypatch.setattr(inf, "_should_validate_before_switch", lambda: True)
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _: False)
+    monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: None)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True))
+    parsed = []
+    extract = inf._extract_content_parts
+    def record_parse(*args, **kwargs):
+        result = extract(*args, **kwargs)
+        parsed.append(result)
+        return result
+    monkeypatch.setattr(inf, "_extract_content_parts", record_parse)
+
+    async def switch(*args, **kwargs):
+        resident["window"] = 16384
+
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+    class Captured(Exception):
+        pass
+
+    def capture(payload):
+        assert "personal.long_fact" in payload.messages[0].content
+        if not hosted:
+            assert "personal.long_fact" in parsed[-1][0]
+        raise Captured()
+
+    async def proxy(payload, *args):
+        capture(payload)
+
+    monkeypatch.setattr(inf, "_proxy_to_external_provider", proxy)
+    monkeypatch.setattr(inf, "_normalize_chat_reasoning_controls", capture)
+    payload = ChatCompletionRequest(
+        model = "target",
+        thread_id = "chat",
+        stream = True,
+        messages = [{"role": "user", "content": "What do you remember?"}],
+        **({"provider_type": "openai", "context_window": 16384} if hosted else {}),
+    )
+    request = SimpleNamespace(headers = {}, scope = {}, state = SimpleNamespace())
+    with pytest.raises(Captured):
+        asyncio.run(inf.produce_openai_chat_completions(
+            payload, request, "t", cancel_on_disconnect = False
+        ))

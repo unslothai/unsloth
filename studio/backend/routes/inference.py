@@ -32308,7 +32308,6 @@ async def produce_openai_chat_completions(
     """GGUF models route to llama-server, others to the transformers backend; stream defaults to false."""
     from core.chat_memory import apply_to_request
 
-    apply_to_request(payload, _monitor_context_length())
     request = _DisconnectPolicyRequest(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
@@ -32362,6 +32361,8 @@ async def produce_openai_chat_completions(
                 status_code = 400,
                 detail = "Audio input is only supported on a local model with audio support.",
             )
+        # A hosted request must not inherit an unrelated local model's window.
+        apply_to_request(payload, payload.context_window)
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     _mcp_image = await _request_mcp_image(payload, _ui_events)
@@ -32548,7 +32549,14 @@ async def produce_openai_chat_completions(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded and routed_slot.get() is None:
+    _using_npu = _npu is not None and _npu.is_loaded and routed_slot.get() is None
+    # Auto-switching also selects kept slots: budget facts against the serving model.
+    apply_to_request(
+        payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
+    )
+    if _pre_parsed is not None:
+        _pre_parsed = _extract_content_parts(payload.messages, keep_tool_images = True)
+    if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
 
@@ -43976,8 +43984,8 @@ async def chat_count_tokens(
         payload.messages = [*payload.messages, ChatMessage(role = "user", content = "")]
     from core.chat_memory import apply_to_request
 
-    apply_to_request(payload, _monitor_context_length())
     await _route_to_extra_slot(payload.model)
+    apply_to_request(payload, _monitor_context_length())
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
