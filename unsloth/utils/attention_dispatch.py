@@ -1466,11 +1466,22 @@ def prepare_packed_block(layer, hidden_states, kwargs):
         or hidden_states.shape[0] != 1
         or kwargs.get("prefix_seg_info") is not None
         or kwargs.get("attention_mask") is not None
+        or torch.is_inference(seq_lengths)  # no version counter to key the cache on
     ):
         return None
     total = hidden_states.shape[1]
     device = hidden_states.device
-    key = (seq_lengths, seq_lengths._version, total, device, type(layer), hidden_states.dtype)
+    # The SDPA flash switch and deterministic mode decide eligibility, so a cache hit must see them too.
+    key = (
+        seq_lengths,
+        seq_lengths._version,
+        total,
+        device,
+        type(layer),
+        hidden_states.dtype,
+        torch.backends.cuda.flash_sdp_enabled(),
+        torch.are_deterministic_algorithms_enabled(),
+    )
     entry = _PACKED_BLOCK_PREP[0]
     if entry is not None and entry[0] is seq_lengths and entry[1] == key[1:]:
         prepared = entry[2]
