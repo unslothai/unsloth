@@ -494,3 +494,26 @@ test("a hard cut never lands inside a surrogate pair", () => {
     assert.equal(chunk.text.length % 2, 0);
   }
 });
+
+test("a stopped load is cancelled on the server and a serving repo counts only at the picked quant", () => {
+  const runner = readText("../src/features/translate/translate-runner.ts");
+  const ensure = runner.slice(
+    runner.indexOf("async function ensureLocalModel"),
+    runner.indexOf("async function chatModel"),
+  );
+  // A bare repo id would let a resident Q4_K_M answer for a picked Q8_0.
+  assert.match(ensure, /`\$\{model\.repo\}:\$\{model\.variant\}`/);
+  assert.match(ensure, /getInferenceStatus\(signal, requestModel\)/);
+  assert.match(
+    ensure,
+    /status\.gguf_variant\?\.toLowerCase\(\) === model\.variant\.toLowerCase\(\)/,
+  );
+  assert.match(ensure, /\}\s*return requestModel;\s*\}/);
+  // Aborting the fetch alone leaves the server loading: cancel by the load's own id.
+  assert.match(ensure, /load_request_id: loadRequestId/);
+  assert.match(
+    ensure,
+    /unloadModel\(\{\s*model_path: model\.repo,\s*cancel_load_request_id: loadRequestId,\s*\}\)\.catch\(\(\) => \{\}\)/,
+  );
+  assert.match(ensure, /signal\.removeEventListener\("abort", cancelLoad\)/);
+});

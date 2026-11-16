@@ -6,6 +6,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  unloadModel,
 } from "@/features/chat/api/chat-api";
 import {
   isExternalModelId,
@@ -24,6 +25,7 @@ import {
 } from "@/features/hub/download-manager/download-manager-controller";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isTranslationHeldSlot,
   isTranslationOnlyRepo,
@@ -236,8 +238,18 @@ async function ensureLocalModel(
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
 ): Promise<string> {
-  const status = await getInferenceStatus(signal);
-  if (isServing(status, model.repo)) return model.repo;
+  // A bare repo id matches any loaded quant of it, so the picked quant is part of the id.
+  const requestModel = model.variant
+    ? `${model.repo}:${model.variant}`
+    : model.repo;
+  const status = await getInferenceStatus(signal, requestModel);
+  if (
+    isServing(status, model.repo) &&
+    (!model.variant ||
+      (modelIdsMatch(status.active_model, model.repo) &&
+        status.gguf_variant?.toLowerCase() === model.variant.toLowerCase()))
+  )
+    return requestModel;
 
   const hfToken = useHfTokenStore.getState().token || null;
   // An unreadable listing is left to the load, which fetches a missing file itself.
@@ -248,20 +260,42 @@ async function ensureLocalModel(
   }
   signal.throwIfAborted();
   onPhase({ kind: "loading" });
-  await loadModel(
-    {
+  // A dropped fetch does not stop the server's load; this cancel id does, and never unloads a resident model.
+  const loadRequestId = createNavigationNonce();
+  let sent = false;
+  const cancelLoad = () => {
+    if (!sent) return;
+    void unloadModel({
       model_path: model.repo,
-      gguf_variant: model.variant,
-      hf_token: hfToken,
-      max_seq_length: TRANSLATE_CONTEXT_TOKENS,
-      load_in_4bit: true,
-      is_lora: false,
-      // Beside the chat model under Keep multiple models loaded; the server ignores this when off.
-      alongside: true,
-    },
-    { signal, runtime: "translate" },
-  );
-  return model.repo;
+      cancel_load_request_id: loadRequestId,
+    }).catch(() => {});
+  };
+  signal.addEventListener("abort", cancelLoad, { once: true });
+  try {
+    await loadModel(
+      {
+        model_path: model.repo,
+        gguf_variant: model.variant,
+        hf_token: hfToken,
+        max_seq_length: TRANSLATE_CONTEXT_TOKENS,
+        load_in_4bit: true,
+        is_lora: false,
+        // Beside the chat model under Keep multiple models loaded; the server ignores this when off.
+        alongside: true,
+        load_request_id: loadRequestId,
+      },
+      {
+        signal,
+        runtime: "translate",
+        onRequestStart: () => {
+          sent = true;
+        },
+      },
+    );
+  } finally {
+    signal.removeEventListener("abort", cancelLoad);
+  }
+  return requestModel;
 }
 
 /** The model picked in Chat when it is a connected provider's, else the one loaded on the server. */
