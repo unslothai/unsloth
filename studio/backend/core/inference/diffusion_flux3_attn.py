@@ -303,9 +303,8 @@ def verify_cards(
     cards: Any,
     logger: Any = None,
 ) -> int:
-    """Probe each split card for the cuDNN strided call (install probed the primary only); any failure restores stock
-    processors on the cuDNN-backed ones. A native-backed strided processor (``ensure_strided_processors``: it carries
-    the INT8 kernel where cuDNN did not apply, as on sm75) never makes that call, so it keeps its class. Never raises."""
+    """Probe each split card (install probed the primary only); a failure restores stock on the cuDNN-backed strided
+    processors only, since native-backed ones (INT8 carriers) never make the cuDNN call. Never raises."""
     try:
         import torch
         from diffusers.models.transformers import transformer_flux3 as tf3
