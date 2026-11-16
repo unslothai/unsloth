@@ -180,7 +180,7 @@ def test_tp_dpo_trained_adapter_is_refused():
         assert "tensor parallel" in res["init_error"]
 
 
-@pytest.mark.parametrize("change", ["none", "embedding", "saved_module"])
+@pytest.mark.parametrize("change", ["none", "embedding", "saved_module", "trainable_tokens"])
 def test_tp_dpo_fresh_check_sees_embedding_and_saved_modules(monkeypatch, change):
     from peft import LoraConfig, get_peft_model
     from unsloth.models import _utils
@@ -198,7 +198,10 @@ def test_tp_dpo_fresh_check_sees_embedding_and_saved_modules(monkeypatch, change
         def forward(self, x):
             return self.head(self.proj(self.embed(x)))
 
-    config = LoraConfig(r = 2, target_modules = ["embed", "proj"], modules_to_save = ["head"])
+    if change == "trainable_tokens":
+        config = LoraConfig(r = 2, target_modules = ["proj"], trainable_token_indices = {"embed": [1, 2]})
+    else:
+        config = LoraConfig(r = 2, target_modules = ["embed", "proj"], modules_to_save = ["head"])
     model = get_peft_model(Tiny(), config)
     with torch.no_grad():
         if change == "embedding":

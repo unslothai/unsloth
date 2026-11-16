@@ -6922,6 +6922,10 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
     with torch.no_grad():
         for name, param in params.items():
             local = param.to_local() if hasattr(param, "to_local") else param
+            if "trainable_tokens_delta" in name:
+                # PEFT's trainable token rows: equivalence with the disabled adapter is not checked, refuse.
+                nonzero += 1
+                continue
             if ".modules_to_save.default." in name:
                 # A trained saved module differs from the original the disabled-adapter reference runs.
                 original = params.get(
