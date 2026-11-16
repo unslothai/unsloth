@@ -1604,7 +1604,7 @@ def plan_placement(
         peak = dit_host + te_gb + 1.0
         if host_gb < peak:
             raise RuntimeError(
-                f"MiniMax-H3-Image needs about {peak:.0f} GB of free system memory on this GPU "
+                f"MiniMax-H3-Image needs about {peak:.1f} GB of free system memory on this GPU "
                 f"({choice} placement: {dit_host:.1f} GB of DiT blocks on the host plus the {te_gb:.1f} GB "
                 f"text encoder while it loads), and {host_gb:.1f} GB is available. Close other applications or "
                 f"use a machine with more memory."
