@@ -322,7 +322,11 @@ def _run_case(case, device):
         gqa, k_in, v_in = {"enable_gqa": True}, k, v
     else:
         gqa, k_in, v_in = {}, k.repeat_interleave(ratio, dim = 1), v.repeat_interleave(ratio, dim = 1)
-    with torch.enable_grad():
+    # torch 2.15's varlen_attn takes cuDNN first wherever it is eligible (sm90 / sm100), and no impl
+    # replaces cuDNN: pin flash so the probe runs the op FA4 / FA3 take over (and the bundled reference).
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with torch.enable_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
         out = varlen_attn(
             q,
             k_in,

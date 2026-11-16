@@ -360,6 +360,39 @@ def test_probe_repeats_kv_heads_without_enable_gqa(monkeypatch, native_gqa):
     assert dk.shape == dv.shape == (sum([200, 1, 333, 64, 130]), 2, 64)
 
 
+def test_probe_pins_varlen_to_flash(monkeypatch):
+    """torch 2.15's varlen_attn takes cuDNN first where eligible, which no impl replaces: the probe
+    (reference and impl arm alike) must run with only flash enabled."""
+    varlen = pytest.importorskip("torch.nn.attention.varlen")
+    seen = []
+
+    def fake(
+        q,
+        k,
+        v,
+        cu_q,
+        cu_k,
+        max_q,
+        max_k,
+        window_size = (-1, -1),
+        enable_gqa = False,
+    ):
+        seen.append(
+            (
+                torch.backends.cuda.flash_sdp_enabled(),
+                torch.backends.cuda.cudnn_sdp_enabled(),
+                torch.backends.cuda.mem_efficient_sdp_enabled(),
+                torch.backends.cuda.math_sdp_enabled(),
+            )
+        )
+        return q * (k.float().mean() + v.float().mean()).to(q.dtype)
+
+    monkeypatch.setattr(varlen, "varlen_attn", fake)
+    fi._run_case(("varlen", 64, 4, None, torch.float32), "cpu")
+    assert seen == [(True, False, False, False)]
+    assert torch.backends.cuda.cudnn_sdp_enabled()
+
+
 def test_scope_skipped_when_off(fake, monkeypatch):
     monkeypatch.setenv(fi._ENV, "off")
 
