@@ -39,7 +39,12 @@ def _app():
     app = FastAPI()
 
     async def handler(subject: str = Depends(authentication.get_current_subject)):
-        return {"subject": subject, "policy": lp.current_load_policy().value}
+        from state.tool_policy import get_tool_policy
+        return {
+            "subject": subject,
+            "policy": lp.current_load_policy().value,
+            "tools_off": get_tool_policy() is False,
+        }
 
     for method, path in ALLOWED + REFUSED:
         app.add_api_route(path, handler, methods = [method])
@@ -58,6 +63,7 @@ def test_a_full_key_keeps_every_route(method, path):
         response = _app().request(method, path, headers = _key(access))
         assert response.status_code == 200, response.text
         assert response.json()["policy"] == "any"
+        assert response.json()["tools_off"] is False
 
 
 @pytest.mark.usefixtures("owner_auth")
@@ -66,6 +72,8 @@ def test_an_inference_key_chats_but_never_loads(method, path):
     response = _app().request(method, path, headers = _key("inference"))
     assert response.status_code == 200, response.text
     assert response.json()["policy"] == "never"
+    # Server-side tools (python, terminal, skill writes) stay off, as for keyless access.
+    assert response.json()["tools_off"] is True
 
 
 @pytest.mark.usefixtures("owner_auth")

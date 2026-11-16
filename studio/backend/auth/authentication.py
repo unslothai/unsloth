@@ -489,6 +489,10 @@ async def _get_current_credential(
             raise HTTPException(
                 status_code = status.HTTP_403_FORBIDDEN, detail = INFERENCE_ONLY_KEY_DETAIL
             )
+        if record.get("key_access") == API_KEY_ACCESS_INFERENCE:
+            # Server-side tools (python, terminal, skill and memory writes) act on this host, as for keyless access.
+            from state.tool_policy import force_disable_tools_for_request
+            force_disable_tools_for_request()
         generation = credential_generation(secret)
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
         bind_account(
