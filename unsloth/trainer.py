@@ -586,6 +586,73 @@ def _uses_multimodal_rope(model_config) -> bool:
     return False
 
 
+_KNOWN_MODEL_PACKAGES = ("transformers", "unsloth", "unsloth_zoo", "peft")
+
+
+def _packed_rows_verdict(model, model_config):
+    """Numeric check that packed rows keep documents apart, for mRoPE models (Qwen2-VL / 2.5-VL build no
+    packed mask from 2D position_ids) and remote-code / unknown classes. None (not probed), "as_is",
+    "text_prepended" (needs [4, B, T] position_ids, text plane first) or "mixes"."""
+    import torch
+
+    if model is None or isinstance(model, str) or not isinstance(model, torch.nn.Module):
+        return None
+    target = model.get_base_model() if callable(getattr(model, "get_base_model", None)) else model
+    mrope = _uses_multimodal_rope(model_config)
+    unknown = type(target).__module__.split(".")[0] not in _KNOWN_MODEL_PACKAGES
+    if not (mrope or unknown):
+        return None
+    # Verified per-document families; a backbone probe would also skip the hybrid varlen wrapper.
+    model_type = str(getattr(model_config, "model_type", "") or "").removesuffix("_text")
+    if not unknown and model_type in _PROCESSOR_TEXT_PACKING_MROPE_MODELS:
+        return None
+    cached = getattr(target, "_unsloth_packed_rows_verdict", None)
+    if cached is not None:
+        return cached
+    config = getattr(target, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    vocab = getattr(text_config, "vocab_size", None)
+    if next(target.parameters(), None) is None or not isinstance(vocab, int) or vocab < 20:
+        return None
+    from .models.rl import _packing_honored, _text_prepended_position_ids
+
+    # Remote code probed whole (its head may drop position_ids); others at the backbone (compiled heads may return no logits).
+    probe = target
+    if not unknown:
+        probe = getattr(target, "model", None)
+        if not isinstance(probe, torch.nn.Module):
+            probe = getattr(target, "base_model", target)
+    verdict = "mixes"
+    if _packing_honored(probe, None, packed_lengths = True):
+        verdict = "as_is"
+    elif mrope and _packing_honored(probe, _text_prepended_position_ids, packed_lengths = True):
+        verdict = "text_prepended"
+    try:
+        target._unsloth_packed_rows_verdict = verdict
+    except Exception:
+        pass
+    return verdict
+
+
+def _install_text_prepended_position_ids(model):
+    """Packed batches (they carry packed_seq_lengths) reach the model with [4, B, T] position_ids."""
+    if getattr(model, "_unsloth_text_prepended_position_ids", False):
+        return
+    from .models.rl import _text_prepended_position_ids
+
+    def pre_hook(module, args, kwargs):
+        position_ids = kwargs.get("position_ids")
+        if kwargs.get("packed_seq_lengths") is None or position_ids is None:
+            return None
+        if position_ids.dim() != 2:
+            return None
+        kwargs["position_ids"] = _text_prepended_position_ids(position_ids)
+        return args, kwargs
+
+    model.register_forward_pre_hook(pre_hook, with_kwargs = True)
+    model._unsloth_text_prepended_position_ids = True
+
+
 # mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
 # so packed text rows get the per-document mask, exactly as with processing_class=processor.tokenizer.
 # qwen4_exp (Qwen3.8-Flash-Next): its QSA indexer reads that mask, so block selection stays per document.
@@ -2057,6 +2124,25 @@ def _patch_sft_trainer_auto_packing(trl_module):
         )
         requested_pack = bool(getattr(config_arg, "packing", False))
         requested_padding_free = getattr(config_arg, "padding_free", None) is True
+        packed_rows = None
+        if (
+            boundary_blocker is None
+            and not blocked
+            and (
+                _should_pack(config_arg)
+                or requested_padding_free
+                or _should_auto_padding_free(config_arg)
+            )
+        ):
+            try:
+                packed_rows = _packed_rows_verdict(model, model_config)
+            except Exception as error:
+                packed_rows = "mixes"
+                logger.info(f"Unsloth: packed-row check failed ({type(error).__name__}: {error}).")
+            if packed_rows == "mixes":
+                boundary_blocker = (
+                    f"{model_types[0] if model_types else type(model).__name__} (packed rows)"
+                )
         if boundary_blocker is not None:
             if (
                 not blocked
@@ -2271,6 +2357,12 @@ def _patch_sft_trainer_auto_packing(trl_module):
             else:
                 _unpacked_for_evaluation(self, collator)
 
+        if (
+            packed_rows == "text_prepended"
+            and not blocked
+            and (trainer_packing or trainer_padding_free)
+        ):
+            _install_text_prepended_position_ids(self.model)
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
             if default_packing:

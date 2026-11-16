@@ -5039,9 +5039,14 @@ def _text_prepended_position_ids(position_ids):
 
 
 @torch.no_grad()
-def _packing_honored(backbone, position_transform = None):
+def _packing_honored(
+    backbone,
+    position_transform = None,
+    packed_lengths = False,
+):
     # Runs the backbone the way the fused head does: a second packed sequence must match itself run alone far more
     # closely than when it can see the first one. Numeric, so it covers every attention and mixer implementation.
+    # packed_lengths: also pass packed_seq_lengths, as the SFT padding-free collator does.
     params = next(backbone.parameters(), None)
     if params is None:
         return False
@@ -5061,25 +5066,46 @@ def _packing_honored(backbone, position_transform = None):
     training = [(module, module.training) for module in backbone.modules()]
     # Train mode as in the trainer (gpt-oss differs), dropout off for a deterministic compare.
     backbone.train()
+    rates = []
     for module in backbone.modules():
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):
             module.training = False
+        # Functional attention dropout (`dropout_p = self.attention_dropout if self.training`).
+        for attr in ("attention_dropout", "dropout"):
+            value = getattr(module, attr, None)
+            if type(value) is float and value > 0:
+                rates.append((module, attr, value))
+                setattr(module, attr, 0.0)
 
-    def hidden(input_ids, position_ids):
+    def hidden(input_ids, position_ids, lengths):
+        extra = {}
+        if packed_lengths:
+            extra["packed_seq_lengths"] = torch.tensor(lengths, dtype = torch.int32, device = device)
         with torch.autocast(device.type, dtype = dtype, enabled = device.type in ("cuda", "xpu")):
             out = backbone(
-                input_ids = input_ids, position_ids = transform(position_ids), use_cache = False
+                input_ids = input_ids,
+                position_ids = transform(position_ids),
+                use_cache = False,
+                **extra,
             )
-        return out.last_hidden_state.float()
+        # A backbone output, a causal LM output (remote code probed whole) or a bare tensor.
+        for name in ("last_hidden_state", "logits"):
+            value = getattr(out, name, None)
+            if isinstance(value, torch.Tensor):
+                return value.float()
+        return (out[0] if isinstance(out, (tuple, list)) else out).float()
 
     try:
         arange = lambda n: torch.arange(n, device = device)[None]
-        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1))[0, first:]
-        alone = hidden(ids[:, first:], arange(second))[0]
-        crossed = hidden(ids, arange(first + second))[0, first:]
+        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1), [first, second])
+        packed = packed[0, first:]
+        alone = hidden(ids[:, first:], arange(second), [second])[0]
+        crossed = hidden(ids, arange(first + second), [first + second])[0, first:]
     finally:
         for module, mode in training:
             module.training = mode
+        for module, attr, value in rates:
+            setattr(module, attr, value)
     leak = (packed - alone).abs().mean()
     control = (crossed - alone).abs().mean()
     return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
