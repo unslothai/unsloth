@@ -373,6 +373,31 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     assert b._mtp_runtime_fallback_in_progress is False
 
 
+def test_runtime_recovery_preserves_auto_alias_configuration(monkeypatch):
+    # Recovery commits an Off snapshot but preserves Auto as the requested mode.
+    from utils.model_aliases import alias_config_matches
+
+    backend = _recovery_backend()
+    backend._last_load_intent = replace(backend.last_load_intent, cache_type_kv = "q4_0")
+
+    def load_fallback(intent):
+        backend._last_load_intent = intent
+        backend._requested_spec_mode = intent.speculative_type
+        return True
+
+    monkeypatch.setattr(backend, "load_model", load_fallback)
+    assert backend._maybe_recover_from_mtp_crash(RuntimeError("peer closed")) is True
+    deadline = time.monotonic() + 5
+    while backend._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert backend._mtp_runtime_fallback_in_progress is False
+    assert backend.last_load_intent.speculative_type == "off"
+    assert backend.requested_spec_mode == "auto"
+    config = {"max_seq_length": 4096, "cache_type_kv": "q4_0", "speculative_type": "auto"}
+    assert alias_config_matches(backend, config)
+    assert not alias_config_matches(backend, {**config, "speculative_type": "off"})
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

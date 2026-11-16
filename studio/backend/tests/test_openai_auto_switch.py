@@ -13280,6 +13280,91 @@ def test_alias_config_overrides_saved_settings_and_conflicting_flags(monkeypatch
     assert saved == original
 
 
+@pytest.mark.parametrize("same_source", [True, False])
+def test_alias_config_reloads_unsaved_inherited_flags(monkeypatch, same_source):
+    # A configured reload applies the existing same-model inheritance and flag-stripping rules.
+    backend, rec = _wire_alias_config(monkeypatch)
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        model_identifier = backend.model_identifier,
+        n_ctx = _ALIAS_LONG["max_seq_length"],
+        cache_type_kv = _ALIAS_LONG["cache_type_kv"],
+        speculative_type = _ALIAS_LONG["speculative_type"],
+    )
+    backend.extra_args = ["--cache-type-k", "q4_0", "--gpu-layers", "99", "--threads", "2"]
+    backend.requested_extra_args = list(backend.extra_args)
+    backend.extra_args_source = (
+        backend.model_identifier if same_source else "org/Other-GGUF",
+        backend.hf_variant,
+    )
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *a: ("model", {"gpu_memory_mode": "manual", "gpu_layers": 0}),
+    )
+
+    async def load(request, *args, **kwargs):
+        # The resident can deduplicate an inherited request unless a fresh load is required.
+        if not request.force_reload:
+            return
+        extras = inference_route._resolve_inherited_extra_args(
+            request,
+            SimpleNamespace(is_gguf = True, gguf_variant = request.gguf_variant),
+            request.model_path,
+            request.llama_extra_args,
+        )
+        await rec(request, *args, **kwargs)
+        backend.extra_args = list(extras or [])
+        backend.requested_extra_args = list(extras or [])
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    for _ in range(2):
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
+            )
+        )
+    assert len(rec.calls) == 1
+    assert rec.calls[0].force_reload is True
+    assert backend.requested_extra_args == (["--threads", "2"] if same_source else [])
+
+
+@pytest.mark.parametrize("policy", ["disabled", "loaded-only"])
+@pytest.mark.parametrize(
+    "path", ["/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions"]
+)
+def test_alias_config_conflict_uses_endpoint_error_envelope(monkeypatch, policy, path):
+    # The HTTP handler must preserve each API's envelope when a configuration cannot load.
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from utils.api_errors import install_api_error_handlers
+
+    backend, rec = _wire_alias_config(monkeypatch, enabled = policy != "disabled")
+    app = FastAPI()
+    install_api_error_handlers(app)
+
+    @app.post(path)
+    async def endpoint(request: Request):
+        request.scope.update(_alias_config_request(_ALIAS_LONG).scope)
+        if policy == "loaded-only":
+            request.scope[inference_route.LOADED_MODELS_ONLY_SCOPE_KEY] = True
+        await inference_route._maybe_auto_switch_model(_ALIAS_TARGET, request, "tester")
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.post(path)
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["type"] == "conflict_error"
+    if path.startswith("/v1/messages"):
+        assert body["type"] == "error"
+        assert "request_id" in body
+        assert set(body["error"]) == {"type", "message"}
+    else:
+        assert body["error"]["code"] == "model_configuration_not_loaded"
+        assert body["error"]["param"] == "model"
+    assert not rec.calls
+
+
 def test_alias_config_failed_load_does_not_adopt_configuration(monkeypatch):
     # A failed switch cannot make a later identical request skip the required load.
     backend, rec = _wire_alias_config(monkeypatch, fail = True)

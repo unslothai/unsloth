@@ -11457,7 +11457,8 @@ async def _maybe_auto_switch_model(
         ):
             raise HTTPException(
                 status_code = 409,
-                detail = openai_error_body(
+                detail = error_body_for_path(
+                    getattr(getattr(fastapi_request, "url", None), "path", ""),
                     "The requested alias configuration is not loaded. Automatic switching "
                     "requires permission to load this model and a compatible, unshared runtime.",
                     status = 409,
@@ -12226,6 +12227,13 @@ async def _maybe_auto_switch_model(
                         if stashed_intent is not None and target_is_gguf:
                             load_kwargs.update(_replay_load_kwargs(stashed_intent, override_kwargs))
                         load_kwargs.update(override_kwargs)
+                        if (
+                            alias_config
+                            and load_kwargs.get("llama_extra_args") is None
+                            and getattr(target_backend, "requested_extra_args", None)
+                        ):
+                            # Inherited flags must not deduplicate a configuration change.
+                            load_kwargs["force_reload"] = True
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
                         if remote_code_fingerprint:

@@ -72,12 +72,19 @@ def alias_config_matches(backend: Any, config: dict) -> bool:
         # Scalars are not authoritative when a manual launch supplied overriding flags.
         if extras and strip_args_shadowed_by(extras, config) != list(extras):
             return False
-    return intent is not None and all(
-        getattr(intent, field, None) == config[key]
-        for key, field in (
-            ("max_seq_length", "n_ctx"),
-            ("cache_type_kv", "cache_type_kv"),
-            ("speculative_type", "speculative_type"),
+    # Crash recovery records an Off load, then restores the original requested mode.
+    requested_spec_mode = getattr(
+        backend, "requested_spec_mode", getattr(intent, "speculative_type", None)
+    )
+    return (
+        intent is not None
+        and (requested_spec_mode or "auto") == config["speculative_type"]
+        and all(
+            getattr(intent, field, None) == config[key]
+            for key, field in (
+                ("max_seq_length", "n_ctx"),
+                ("cache_type_kv", "cache_type_kv"),
+            )
         )
     )
 
