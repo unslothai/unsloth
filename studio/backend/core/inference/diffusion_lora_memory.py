@@ -14,6 +14,7 @@ every LoRA load."""
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 from dataclasses import dataclass
@@ -23,7 +24,8 @@ LORA_MEASURED_ENV = "UNSLOTH_DIFFUSION_LORA_MEASURED"
 PRICED_ATTR = "_unsloth_lora_priced"
 _DENOISERS = ("transformer", "transformer_2", "unconditional_transformer", "unet")
 # DiT families patchify an 8x (or coarser) latent 2x2: at most one image token per 16x16 pixels; the text sequence
-# joins it in joint-attention blocks (FLUX: 512 tokens, Qwen-Image: up to 1024).
+# joins it in joint-attention blocks (FLUX: 512 tokens, Qwen-Image: up to 1024). A pipeline whose own
+# ``max_sequence_length`` default is longer (Ideogram-4 2048, MOSS 4096, FLUX.3 8192) is priced at that default.
 _DIT_PIXELS_PER_TOKEN = 16 * 16
 _DIT_TEXT_TOKENS = 1024
 # U-Net conv / attention layers run on the 8x latent itself.
@@ -43,6 +45,7 @@ class LoraPricing:
     unet: bool
     branches: int
     mib: int
+    text_tokens: int = _DIT_TEXT_TOKENS
 
 
 def enabled() -> bool:
@@ -116,12 +119,34 @@ def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[i
     return widest
 
 
-def _tokens(unet: bool, width: Optional[int], height: Optional[int]) -> int:
+def _text_window(pipe: Any) -> int:
+    """Text tokens a DiT joint block may carry: the pipeline's ``max_sequence_length`` default when longer than
+    the 1024 floor."""
+    try:
+        param = inspect.signature(type(pipe).__call__).parameters.get("max_sequence_length")
+        default = getattr(param, "default", None)
+        if (
+            isinstance(default, int)
+            and not isinstance(default, bool)
+            and default > _DIT_TEXT_TOKENS
+        ):
+            return int(default)
+    except (TypeError, ValueError):
+        pass
+    return _DIT_TEXT_TOKENS
+
+
+def _tokens(
+    unet: bool,
+    width: Optional[int],
+    height: Optional[int],
+    text_tokens: int = _DIT_TEXT_TOKENS,
+) -> int:
     w = max(64, int(width or _DEFAULT_SIDE))
     h = max(64, int(height or _DEFAULT_SIDE))
     if unet:
         return math.ceil(w * h / _UNET_PIXELS_PER_TOKEN)
-    return math.ceil(w * h / _DIT_PIXELS_PER_TOKEN) + _DIT_TEXT_TOKENS
+    return math.ceil(w * h / _DIT_PIXELS_PER_TOKEN) + max(_DIT_TEXT_TOKENS, int(text_tokens))
 
 
 def _mib(
@@ -131,10 +156,11 @@ def _mib(
     width: Optional[int],
     height: Optional[int],
     batch_size: int,
+    text_tokens: int = _DIT_TEXT_TOKENS,
 ) -> int:
     nbytes = (
         pricing_bytes
-        * _tokens(unet, width, height)
+        * _tokens(unet, width, height, text_tokens)
         * max(1, int(branches))
         * max(1, int(batch_size or 1))
     )
@@ -175,12 +201,14 @@ def price_attached_loras(
         if not found or widest <= 0:
             return None  # adapters named but no unfused LoRA layer: merged elsewhere, unpriced
         branches = 2 if cfg else 1
+        text_tokens = _text_window(pipe)
         pricing = LoraPricing(
             signature = lora_signature(pipe),
             bytes_per_token = int(widest),
             unet = unet,
             branches = branches,
-            mib = _mib(widest, unet, branches, None, None, 1),
+            mib = _mib(widest, unet, branches, None, None, 1, text_tokens),
+            text_tokens = text_tokens,
         )
         setattr(pipe, PRICED_ATTR, pricing)
         return pricing
@@ -215,5 +243,13 @@ def request_extra_mib(
     pricing = priced(pipe)
     if pricing is None:
         return 0
-    need = _mib(pricing.bytes_per_token, pricing.unet, pricing.branches, width, height, batch_size)
+    need = _mib(
+        pricing.bytes_per_token,
+        pricing.unet,
+        pricing.branches,
+        width,
+        height,
+        batch_size,
+        pricing.text_tokens,
+    )
     return max(0, int(need) - int(pricing.mib))

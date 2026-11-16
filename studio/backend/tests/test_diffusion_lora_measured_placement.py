@@ -196,6 +196,28 @@ def test_pricing_counts_the_widest_unfused_layer_per_branch():
 
 
 @needs_lm
+@pytest.mark.parametrize("window, mib", [(512, 1088), (2048, 1344), (8192, 2624)])
+def test_pricing_covers_the_pipelines_text_window(window, mib):
+    # FLUX.3 encodes up to 8192 text tokens and Ideogram-4 2048: the joint blocks carry them beside the image
+    class _LongText(_Pipe):
+        def __call__(
+            self,
+            prompt = None,
+            max_sequence_length: int = window,
+        ):
+            raise AssertionError("not rendered")
+
+    pipe = _pipe()
+    pipe.__class__ = _LongText
+    pricing = lm.price_attached_loras(pipe, cfg = True, compute_bytes = 2)
+    assert pricing.text_tokens == max(1024, window)
+    assert pricing.mib == mib
+    # the request guard prices the same window: the default canvas needs nothing beyond the load's reserve
+    assert lm.request_extra_mib(pipe, width = 1024, height = 1024) == 0
+    assert lm.request_extra_mib(pipe, width = 2048, height = 2048) > 0
+
+
+@needs_lm
 def test_unpriceable_sets_keep_the_unknown_build(monkeypatch):
     assert lm.price_attached_loras(_pipe(dora = True), cfg = True) is None
     merged = _pipe()
