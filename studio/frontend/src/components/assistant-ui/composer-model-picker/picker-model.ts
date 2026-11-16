@@ -3,6 +3,9 @@
 
 // No path aliases here, so node:test can import it directly.
 
+import { formatBytes } from "../../../features/hub/lib/format.ts";
+import { extractParamLabel } from "../../../lib/model-size.ts";
+
 export const FAVORITES_TAB = "favorites";
 export const RECOMMENDED_TAB = "recommended";
 export const DEVICE_TAB = "device";
@@ -538,4 +541,45 @@ export function ejectTargetId(
   chosenId: string | undefined,
 ): string | undefined {
   return row.id === chosenId ? undefined : (row.loadedId ?? row.id);
+}
+
+export interface RowSizeInput {
+  kind: RowKind;
+  id: string;
+  format?: FormatTone;
+  baseModel?: string;
+  partial?: boolean;
+  /** The row's own bytes on disk: its quant when it stands for one. */
+  sizeBytes?: number | null;
+  /** Discover only: the Hub's estimate, unquantized weights, so a GGUF repo's never shows. */
+  estimatedBytes?: number | null;
+  /** Discover only: params already resolved from the search result. */
+  hubParams?: string | null;
+}
+
+/** "Model size and parameters" setting. Unknown stays blank: no guessing past the data. */
+export function rowSizeMeta(row: RowSizeInput): {
+  params: string | null;
+  size: string | null;
+} {
+  if (row.kind === "external") {
+    return { params: null, size: null };
+  }
+  const params =
+    row.kind === "hub"
+      ? (row.hubParams ?? null)
+      : extractParamLabel(row.baseModel ?? row.id);
+  // A partial download's bytes are what arrived, not the model.
+  const bytes = row.partial
+    ? null
+    : row.kind === "hub"
+      ? row.format === "gguf"
+        ? null
+        : row.estimatedBytes
+      : row.sizeBytes;
+  const size =
+    bytes != null && Number.isFinite(bytes) && bytes > 0
+      ? `${row.kind === "hub" ? "~" : ""}${formatBytes(bytes)}`
+      : null;
+  return { params, size };
 }

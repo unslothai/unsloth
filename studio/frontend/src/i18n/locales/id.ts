@@ -3378,6 +3378,9 @@ export const id = {
         showMemoryBar: "Bilah penggunaan VRAM",
         showMemoryBarDescription:
           "Tampilkan perkiraan VRAM untuk bobot model, konteks, dan decoding spekulatif.",
+        showModelSizes: "Ukuran dan parameter model",
+        showModelSizesDescription:
+          "Tampilkan ukuran dan jumlah parameter setiap model di barisnya pada pemilih model. Kosong jika tidak diketahui.",
         fitOnDeviceOnly: "Hanya tampilkan model yang muat",
         fitOnDeviceOnlyDescription:
           "Sembunyikan model yang terlalu besar untuk memori GPU dan RAM perangkat ini di pemilih model dan Hub. Model yang sudah diunduh tetap terlihat.",

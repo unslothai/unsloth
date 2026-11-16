@@ -3146,6 +3146,9 @@ export const ptBR = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Mostra abaixo da linha de cada modelo baixado o uso estimado de VRAM: pesos, cache KV no comprimento de contexto com que será carregado e qualquer reserva de rascunho especulativo.",
+        showModelSizes: "Tamanho e parâmetros do modelo",
+        showModelSizesDescription:
+          "Mostra o tamanho e a quantidade de parâmetros de cada modelo na linha dele no seletor de modelos. Fica em branco quando não se sabe.",
         fitOnDeviceOnly: "Mostrar apenas modelos que cabem",
         fitOnDeviceOnlyDescription:
           "Oculta no seletor de modelos e no Hub os modelos grandes demais para a memória da GPU e a RAM deste dispositivo. Os modelos baixados continuam visíveis.",

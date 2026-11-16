@@ -232,6 +232,7 @@ import {
   readBounded,
   repoSection,
   sectionsHaveRows,
+  rowSizeMeta,
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
@@ -933,6 +934,31 @@ function ParamChip({ label }: { label: string }) {
       )}
     >
       {label}
+    </span>
+  );
+}
+
+/** Fixed widths so params and sizes line up down the list; an unknown leaves its slot blank. */
+function RowSizeColumns({
+  params,
+  size,
+  dimmed,
+}: {
+  params: string | null;
+  size: string | null;
+  dimmed: boolean;
+}) {
+  return (
+    <span
+      data-row-size=""
+      className={cn("flex shrink-0 items-center gap-1.5", dimmed && DIM_CLASS)}
+    >
+      <span className="flex w-[4.4em] shrink-0 justify-end text-ui-10">
+        {params ? <ParamChip label={params} /> : null}
+      </span>
+      <span className="w-[5.2em] shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums">
+        {size}
+      </span>
     </span>
   );
 }
@@ -1689,6 +1715,7 @@ export function ComposerModelPicker({
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
+  const showModelSizes = useChatRuntimeStore((s) => s.showModelSizes);
   const loadFreesResident =
     !keepModelsLoaded &&
     typeof checkpoint === "string" &&
@@ -1800,6 +1827,13 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults]);
+  const hubEstimates = useMemo(
+    () =>
+      new Map(
+        hubResults.map((r) => [r.id.toLowerCase(), r.estimatedSizeBytes]),
+      ),
+    [hubResults],
+  );
   const noGpu = !(inferenceGpu.memoryTotalGb > 0);
   const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
     useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
@@ -3958,6 +3992,22 @@ export function ComposerModelPicker({
           : onDisk.length === 1
             ? onDisk[0]
             : undefined;
+    const sizeMeta = showModelSizes
+      ? rowSizeMeta({
+          kind: row.kind,
+          id: row.id,
+          format: row.format,
+          baseModel: row.lora?.baseModel,
+          partial: row.partial,
+          sizeBytes: savedVariant
+            ? quantBytes(savedVariant)
+            : onDisk.length === 1
+              ? quantBytes(onDisk[0])
+              : row.sizeBytes,
+          estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
+          hubParams: paramLabel,
+        })
+      : null;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta = savedVariant
       ? ggufMeta(row, savedVariant, true, true, row.gguf?.has_vision)
@@ -4007,6 +4057,8 @@ export function ComposerModelPicker({
           chatModels,
           row.npu ? npuCatalog : null,
           paramLabel,
+          sizeMeta?.params,
+          sizeMeta?.size,
         ]}
         render={() => (
           <div
@@ -4121,7 +4173,7 @@ export function ComposerModelPicker({
                     compact={true}
                   />
                 ) : null}
-                {paramLabel ? (
+                {paramLabel && !sizeMeta ? (
                   <span className={cn("flex", dimmed && DIM_CLASS)}>
                     <ParamChip label={paramLabel} />
                   </span>
@@ -4134,6 +4186,14 @@ export function ComposerModelPicker({
               </span>
             ) : row.kind === "npu" ? (
               <QuantPill quant="NPU" />
+            ) : null}
+            {sizeMeta && row.kind !== "external" ? (
+              <RowSizeColumns
+                params={sizeMeta.params}
+                // An NPU offer already prints its size.
+                size={npuOffer || npuProgress ? null : sizeMeta.size}
+                dimmed={dimmed}
+              />
             ) : null}
             {isChosen && !row.loaded && row.kind !== "external" ? (
               <HugeiconsIcon

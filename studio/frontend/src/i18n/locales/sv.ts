@@ -3293,6 +3293,9 @@ export const sv = {
         showMemoryBar: "Stapel för VRAM-användning",
         showMemoryBarDescription:
           "Visa uppskattat VRAM för modellvikter, kontext och spekulativ avkodning.",
+        showModelSizes: "Modellstorlek och parametrar",
+        showModelSizesDescription:
+          "Visa varje modells storlek och antal parametrar på dess rad i modellväljaren. Tomt när det är okänt.",
         fitOnDeviceOnly: "Visa bara modeller som får plats",
         fitOnDeviceOnlyDescription:
           "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",

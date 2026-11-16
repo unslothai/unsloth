@@ -3376,6 +3376,9 @@ export const tr = {
         showMemoryBar: "VRAM kullanım çubuğu",
         showMemoryBarDescription:
           "Model ağırlıkları, bağlam ve spekülatif kod çözme için tahmini VRAM'i gösterin.",
+        showModelSizes: "Model boyutu ve parametreleri",
+        showModelSizesDescription:
+          "Model seçicide her modelin satırında boyutunu ve parametre sayısını gösterir. Bilinmiyorsa boş kalır.",
         fitOnDeviceOnly: "Yalnızca sığan modelleri göster",
         fitOnDeviceOnlyDescription:
           "Model seçicide ve Hub'da bu cihazın GPU belleği ve RAM'i için çok büyük modelleri gizleyin. İndirilen modeller görünür kalır.",
