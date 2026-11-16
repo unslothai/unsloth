@@ -984,6 +984,25 @@ def test_an_x11_window_takes_its_launchers_name(tmp_path, monkeypatch):
     assert backend._shown_name(["xterm", "XTerm"]) == ""
     assert backend._desktop_entry("fire")[1] == "Firefox Web Browser"
     assert backend.resolve_app("fire") == backend._shown_name(["Navigator", "firefox"])
+    (tmp_path / "org.gnome.eog.desktop").write_text(
+        "[Desktop Entry]\nName=Image Viewer\nExec=env GDK_BACKEND=x11 /usr/bin/eog %U\n"
+    )
+    backend._launcher = None
+    # Models name an app by its program or the end of its id; the gate still sees the launcher's name.
+    assert backend.resolve_app("eog") == "Image Viewer"
+    assert backend.resolve_app("nautilus") == "Files"
+    assert backend.resolve_app("Image Viewer") == "Image Viewer"
+    assert backend._desktop_entry("gnome") is None
+    (tmp_path / "libreoffice-calc.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice Calc\nExec=libreoffice --calc %U\n"
+    )
+    (tmp_path / "libreoffice.desktop").write_text(
+        "[Desktop Entry]\nName=LibreOffice\nExec=libreoffice %U\n"
+    )
+    backend._launcher = None
+    # Calc sorts first and starts the same program; an exact name still wins over that alias.
+    assert backend.resolve_app("LibreOffice") == "LibreOffice"
+    assert backend.resolve_app("libreoffice") == "LibreOffice"
 
 
 def test_an_always_allowed_app_never_asks(desktop):
