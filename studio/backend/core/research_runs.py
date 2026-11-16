@@ -152,6 +152,8 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Sent only while llama-server's prompt eval advances, so a long prefill is progress, not a stall.
+_PREFILL_PROGRESS_COMMENT = ": prefill-progress"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Also the ceiling for any budget, so the poll loop stays bounded however long generation itself runs.
@@ -2003,7 +2005,10 @@ class ResearchSupervisor:
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
-                            elif line.startswith(_ADMISSION_DONE_COMMENT):
+                            elif line.startswith(_ADMISSION_DONE_COMMENT) or (
+                                line.startswith(_PREFILL_PROGRESS_COMMENT)
+                                and semantic_output_at is None
+                            ):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()
