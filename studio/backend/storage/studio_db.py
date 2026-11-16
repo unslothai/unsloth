@@ -3332,25 +3332,55 @@ def set_chat_project_working_folder(
         conn.close()
 
 
-def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
-    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+def find_chat_project_by_working_folder(path: str) -> Optional[dict]:
+    want = os.path.normcase(path)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM chat_projects WHERE archived = 0 AND working_folder IS NOT NULL "
+            "ORDER BY updated_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        if os.path.normcase(row["working_folder"]) == want:
+            return _chat_project_from_row(row)
+    return None
+
+
+def _working_folder_state(project: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
     path = (project or {}).get("workingFolder")
-    if not path or not is_owner_context():
-        return None
+    if not path:
+        return None, None
     try:
         st = os.lstat(path)
     except OSError:
-        return None
+        return "missing", None
     if not stat.S_ISDIR(st.st_mode):
-        return None
+        return "replaced", None
     identity = (project or {}).get("workingFolderIdentity")
     if identity and identity != f"{st.st_dev}:{st.st_ino}":
-        return None
+        return "replaced", None
     real = os.path.realpath(path)
     # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
     if os.path.normcase(real) != os.path.normcase(path):
+        return "replaced", None
+    return "ok", real
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    if not is_owner_context():
         return None
-    return real
+    from auth.policy import api_full_access_refused
+
+    if api_full_access_refused():
+        return None
+    return _working_folder_state(project)[1]
+
+
+def project_working_folder_status(project: Optional[dict]) -> Optional[str]:
+    return _working_folder_state(project)[0]
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:

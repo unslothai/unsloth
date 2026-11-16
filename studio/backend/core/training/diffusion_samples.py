@@ -22,6 +22,7 @@ SAMPLE_FAMILIES: frozenset[str] = frozenset(
         "flux.1",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "qwen-image",
         "qwen-image-2.1",
         "krea-2",
@@ -90,6 +91,9 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         return SampleSettings(8, 0.0, mode)
     if family == "flux.2-klein":
         return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
+    if family == "flux.3-klein-base":
+        # Klein Base runs CFG 3.5 (Studio's and the pipeline's default) over 50 steps; previews take a shorter schedule.
+        return SampleSettings(28, 3.5)
     if family == "flux.2-dev":
         # Guidance-distilled: the forward feeds the guidance embedding (4.0, the pipeline default) instead of true CFG.
         return SampleSettings(28, 0.0)

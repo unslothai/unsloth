@@ -363,6 +363,22 @@ def test_op_off_cuda_is_native_attention():
     assert I.STATS["native"] == before["native"] + 1 and I.STATS["int8"] == before["int8"]
 
 
+def _cpu_inductor_missing() -> str:
+    """Why Inductor cannot compile a CPU graph on this host ("" when it can). Its CPU backend builds C++ with the
+    host compiler; Windows has none unless MSVC's ``cl`` is on PATH (the gfx1151 Windows runners have none), and a
+    missing compiler fails every CPU graph with "Compiler: cl is not found", whatever the graph."""
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+    except Exception:  # noqa: BLE001 -- an older layout: let the test say what happens
+        return ""
+    try:
+        get_cpp_compiler()
+    except Exception as exc:  # noqa: BLE001
+        return f"Inductor has no C++ compiler for CPU graphs here: {exc}"[:300]
+    return ""
+
+
+@pytest.mark.skipif(bool(_cpu_inductor_missing()), reason = _cpu_inductor_missing() or "n/a")
 @pytest.mark.parametrize("sdpa", ["default", "math"])
 @pytest.mark.parametrize("heads_first", [False, True], ids = ["bshd", "heads_first"])
 @pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])

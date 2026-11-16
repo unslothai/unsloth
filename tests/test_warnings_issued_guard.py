@@ -372,7 +372,7 @@ def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
     They were computed and then dropped whenever `args` was given."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
-    assert config.packing is False and config.max_length != 2048
+    assert not config.packing and config.max_length != 2048
 
     trainer = Trainer(
         model = _Bare(),

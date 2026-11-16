@@ -250,7 +250,16 @@ def triton_available() -> bool:
     Windows)."""
     try:
         from . import diffusion_int8_attention_triton as triton_kernel
-        return triton_kernel.triton is not None
+
+        if triton_kernel.triton is None:
+            return False
+        # NVIDIA Triton 3.3 cannot compile the Q / K rotation ('tt.join' op); a rewrite that does was 1.3-2.9x
+        # slower than native attention (L4, A100), so the race would keep native anyway.
+        try:
+            version = tuple(int(x) for x in triton_kernel.triton.__version__.split(".")[:2])
+        except Exception:  # noqa: BLE001 -- unparsable: read as a current Triton
+            return True
+        return not (version == (3, 3) and not triton_kernel._rocm_build())
     except Exception:  # noqa: BLE001
         return False
 

@@ -53601,11 +53601,11 @@ async def openai_image_generations(
 
 
 def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tuple[str, float]]:
-    """The request's adapters; omitted means the ones the load baked in, so a deployed LoRA is never dropped silently."""
+    """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
     if body.loras is not None:
         return [(spec.id, float(spec.weight)) for spec in body.loras]
     pairs = []
-    for spec in status.get("baked_lora_specs") or ():
+    for spec in status.get("baked_lora_specs") or status.get("load_lora_specs") or ():
         try:
             lora_id, weight = str(spec["id"]), float(spec["weight"])
         except Exception:  # noqa: BLE001 - a malformed status row names no adapter

@@ -92,6 +92,7 @@ function parseSearchResults(raw: string): ParsedSource[] {
 
 const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   args,
+  argsText,
   result,
   status,
   toolCallId,
@@ -298,6 +299,20 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               >
                 {resultText}
               </ScrollPane>
+            ) : null}
+            {/* The exact call the model sent, so an empty or odd card can be audited. Inert text: untrusted. */}
+            {argsText ? (
+              <details data-slot="tool-web-search-args" className="text-xs">
+                <summary className="cursor-pointer select-none text-muted-foreground">
+                  Arguments
+                </summary>
+                <ScrollPane
+                  className="mt-1 rounded-lg bg-muted/50 px-2 py-1"
+                  scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-all text-foreground/85"
+                >
+                  <code dir="ltr">{escapeBidiControls(argsText)}</code>
+                </ScrollPane>
+              </details>
             ) : null}
           </div>
         )}

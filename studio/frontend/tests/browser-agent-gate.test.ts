@@ -306,3 +306,24 @@ test("a script runs without asking only under Always allow or its site's Scripts
   assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);
 });
+
+test("Always allow on a script prompt saves the page's own host, keeping the rules that apply there", async () => {
+  const { DEFAULT_RULE, MAX_SITE_RULES, scriptSiteRule } = await import("../src/features/browser/agent/permissions.ts");
+  const wide = { defaults: DEFAULT_RULE, sites: { "example.com": { ...DEFAULT_RULE, downloads: "block" as const } } };
+  assert.deepEqual(scriptSiteRule("https://docs.example.com/x", wide), {
+    site: "docs.example.com",
+    rule: { ...DEFAULT_RULE, browsing: "allow", downloads: "block", scripts: "allow" },
+  });
+  const own = { defaults: DEFAULT_RULE, sites: { "example.com": { ...DEFAULT_RULE, actions: "allow" as const } } };
+  assert.deepEqual(scriptSiteRule("https://www.example.com/", own), {
+    site: "example.com",
+    rule: { ...DEFAULT_RULE, actions: "allow", scripts: "allow" },
+  });
+  assert.equal(scriptSiteRule("about:blank", own), null);
+  const full = {
+    defaults: DEFAULT_RULE,
+    sites: Object.fromEntries(Array.from({ length: MAX_SITE_RULES }, (_, i) => [`s${i}.example`, DEFAULT_RULE])),
+  };
+  assert.equal(scriptSiteRule("https://new.example/", full), null);
+  assert.equal(scriptSiteRule("https://s1.example/", full)?.rule.scripts, "allow");
+});

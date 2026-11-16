@@ -167,6 +167,7 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -275,6 +276,7 @@ import {
   familyPresetsCopy,
   familyPresetsWithin,
   inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
   raiseToEditResolution,
   type ReferenceRaise,
@@ -2220,7 +2222,9 @@ export function ImagesPage({
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad.current at load start.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  const pendingDeploy = useRef<{ loraId: string; family: string; families: string[] } | null>(
+    null,
+  );
   // Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
@@ -2402,7 +2406,8 @@ export function ImagesPage({
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
-      if (!deploy.family || deploy.family === fam) {
+      // The adapter runs on every family it was published for (Klein Base trains, Klein deploys).
+      if (!deploy.family || (fam != null && deploy.families.includes(fam))) {
         setLoras([{ id: deploy.loraId, weight: 1 }]);
       } else {
         toast.error(
@@ -5009,7 +5014,13 @@ export function ImagesPage({
   );
 
   const handleDeployAdapter = useCallback(
-    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+    (args: {
+      baseRepo: string;
+      family: string;
+      families?: string[];
+      catalogPath: string;
+      trigger: string;
+    }) => {
       if (busy !== null) {
         toast.error("Finish the current model load before deploying the adapter.");
         return;
@@ -5024,7 +5035,11 @@ export function ImagesPage({
       pickGuard.cancel();
       pickToast.dismissAll();
       setExternalModelId(null);
-      pendingDeploy.current = { loraId: stem, family: args.family };
+      pendingDeploy.current = {
+        loraId: stem,
+        family: args.family,
+        families: args.families?.length ? args.families : [args.family],
+      };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
@@ -6480,6 +6495,11 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -6963,7 +6983,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}

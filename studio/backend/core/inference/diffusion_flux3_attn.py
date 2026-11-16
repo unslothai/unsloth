@@ -303,7 +303,8 @@ def verify_cards(
     cards: Any,
     logger: Any = None,
 ) -> int:
-    """Probe each split card (install probed the primary only); any failure restores stock processors. Never raises."""
+    """Probe each split card (install probed the primary only); a failure restores stock on the cuDNN-backed strided
+    processors only, since native-backed ones (INT8 carriers) never make the cuDNN call. Never raises."""
     try:
         import torch
         from diffusers.models.transformers import transformer_flux3 as tf3
@@ -313,7 +314,10 @@ def verify_cards(
             return 0
         cls = strided_processor_class()
         swapped = [
-            m for m in _attention_modules(transformer) if type(getattr(m, "processor", None)) is cls
+            m
+            for m in _attention_modules(transformer)
+            if type(getattr(m, "processor", None)) is cls
+            and _backend_value(getattr(m.processor, "_attention_backend", None)) == _CUDNN
         ]
         if not swapped:
             return 0
