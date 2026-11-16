@@ -103,10 +103,13 @@ def test_mistral_kill_switch_and_loss_steps_stay_eager(runtime):
     runtime.delenv(ENV)
     with G.generate_scope(), pytest.raises(RuntimeError, match = "eager"):
         _decode(model, labels = torch.tensor([[1]]))
+    # A tensor logits_to_keep row selector is applied by the eager path only.
+    with G.generate_scope(), pytest.raises(RuntimeError, match = "eager"):
+        _decode(model, logits_to_keep = torch.tensor([0]))
     # Outside generate() (a hand-written loop) the unset default is eager too.
     with pytest.raises(RuntimeError, match = "eager"):
         _decode(model)
-    assert calls == [] and len(eager) == 3
+    assert calls == [] and len(eager) == 4
 
 
 # GPU: bitwise against eager through the real generate().

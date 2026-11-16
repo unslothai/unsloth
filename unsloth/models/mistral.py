@@ -213,6 +213,9 @@ def MistralForCausalLM_fast_forward(
         and input_ids.shape[1] == 1
         and labels is None
         and shift_labels is None
+        # A tensor row selector is applied by the eager path below; the graph returns every row.
+        and not isinstance(logits_to_keep, torch.Tensor)
+        and not isinstance(num_logits_to_keep, torch.Tensor)
         and _decode_graphs.enabled()
     ):
         # The Llama decode step (window-sliced eager attention core), replayed as in CausalLM_fast_forward.
