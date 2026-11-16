@@ -1716,6 +1716,12 @@ def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_r
     ]
     for proc, (index, head_dim) in zip(procs, ((0, 128), (1, 128), (0, 64))):
         I.register_route(index, head_dim, I._raise_processor_floor(proc))
+    stock = object()
+    strided = types.SimpleNamespace(
+        _unsloth_int8 = True, _unsloth_int8_min_tokens = 2560, _unsloth_stock = stock
+    )
+    module = types.SimpleNamespace(processor = strided)
+    I.register_route(0, 128, I._raise_processor_floor(strided, module))
     route = D.Int8Route("native", 2560, torch.bfloat16, 0, 128, cards = {0: 2560, 1: 3072})
     I.register_route(0, 128, D._raise_route_floor(route, 0))
     D._DECISIONS["stale"] = (route, None)
@@ -1729,6 +1735,8 @@ def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_r
     }
     assert I._choose_path(plan, race = lambda: "native")[0] == "native"
     assert [p._unsloth_int8_min_tokens for p in procs] == [4352, 2560, 2560]
+    # a processor that replaced a stock one gives it back, so the module's calls compile as before the install
+    assert module.processor is stock and strided._unsloth_int8_min_tokens == 2560
     assert route.cards == {0: 4352, 1: 3072} and route.min_tokens == 3072 and not D._DECISIONS
     assert I._decisions() == {("bucket",): "native"}
     I.forget_plans()

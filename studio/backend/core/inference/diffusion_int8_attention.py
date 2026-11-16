@@ -517,8 +517,15 @@ def _drop_routes(plan: dict) -> None:
             raise_floor(floor)
 
 
-def _raise_processor_floor(proc: Any) -> Callable:
+def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
+    """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
+    its calls compile as they did before the install; any other raises its token floor."""
+
     def raise_floor(tokens: int) -> None:
+        stock = getattr(proc, "_unsloth_stock", None)
+        if stock is not None and module is not None and getattr(module, "processor", None) is proc:
+            module.processor = stock
+            return
         proc._unsloth_int8_min_tokens = max(
             int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
         )
@@ -1642,7 +1649,7 @@ def _install(
                 continue
             proc._unsloth_int8 = True
             proc._unsloth_int8_min_tokens = int(minimum)
-            register_route(index, head_dim, _raise_processor_floor(proc))
+            register_route(index, head_dim, _raise_processor_floor(proc, m))
             engaged += 1
             for card in _secondary_cards(index, transformer):
                 if implementation(card, head_dim) is None:
@@ -1674,7 +1681,7 @@ def _install(
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
         if not force:
-            register_route(index, head_dim, _raise_processor_floor(proc))
+            register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
         # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
         # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's).

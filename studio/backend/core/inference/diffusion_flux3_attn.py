@@ -172,6 +172,8 @@ def _ensure_strided(pipe: Any, target: Any, logger: Any) -> int:
         new._attention_backend = proc._attention_backend
         new._parallel_config = proc._parallel_config
         new._unsloth_probe_dtype = dtype
+        # the processor the module had: a plan that decides torch's attention gives it back (_raise_processor_floor)
+        new._unsloth_stock = proc
         attn.set_processor(new)
         count += 1
     return count
