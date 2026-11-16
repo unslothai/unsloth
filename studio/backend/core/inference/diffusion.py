@@ -286,6 +286,7 @@ from .diffusion_memory import (
     static_reference_release_mib,
     load_covered_reference_need_mib,
     measured_request_extra_mib,
+    placement_measured_activation,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
     with_workflow,
@@ -15591,6 +15592,16 @@ class DiffusionBackend:
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
 
+                    # The measured row the placement was sized from: the load's reserve, else the same row the plan read.
+                    guard_measured = placement_measured_activation(state.pipe)
+                    if guard_measured is None and getattr(state, "calibrated_placement", False):
+                        try:
+                            guard_measured = _calibrated_activation(
+                                fam, guard_target, fp32_scaled = True
+                            )
+                        except Exception:  # noqa: BLE001 - unknown keeps the flat estimate
+                            guard_measured = None
+
                     def _guard_kwargs() -> dict:
                         return dict(
                             # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
@@ -15611,6 +15622,7 @@ class DiffusionBackend:
                                 getattr(state, "calibrated_placement", False)
                             ),
                             controlnet = workflow == "controlnet" and control_pil is not None,
+                            measured_activation = guard_measured,
                             logger = logger,
                         )
 
