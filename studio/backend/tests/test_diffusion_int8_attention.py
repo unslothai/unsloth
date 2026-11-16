@@ -1391,14 +1391,14 @@ def _sink_case(
     sinks,
     seed = 0,
 ):
-    """q / k / v of ``_case`` with attention sinks in V: the keys ``sinks`` 60x out in most channels (the first text
+    """q / k / v of ``_case`` with attention sinks in V: the keys ``sinks`` 120 out in most channels (the first text
     tokens of a joint sequence carry such values) on every other head."""
     q, k, v = _case(shape, dtype, seed = seed)
     g = torch.Generator(device = "cuda").manual_seed(seed + 1)
     v = v.clone()
     H, D = shape[2], shape[3]
     for key in sinks:
-        bump = torch.randn(shape[0], 1, H, D, generator = g, device = "cuda").sign() * 60
+        bump = torch.randn(shape[0], 1, H, D, generator = g, device = "cuda").sign() * 120
         bump[:, :, 1::2] = 0
         bump[..., : D // 8] = 0
         v[:, key : key + 1] += bump.to(dtype)
@@ -1411,21 +1411,14 @@ def _sink_case(
 def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
     """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
     without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back in the
-    epilogue. Its error against fp32 stays at the level of the same call without the sinks (it was several times
-    that), the kernel matches its torch model, and the heads without sinks keep the full range (no clipped keys)."""
+    epilogue. Its error against fp32 stays within 2.5x that of the same call without the sinks (it was 4.5x or more
+    with the range over every key), the kernel matches its torch model, and the heads without sinks keep the full
+    range (no clipped keys)."""
     shape = (1, 4128, 4, head_dim)
     dtype = _card_dtype()
     config = _cuda_config(head_dim)
     q, k, v = _sink_case(shape, dtype, sinks, seed = 11)
-    p = I.quantise(q, k, v, config)
-    counts = p["rcnt"].tolist()
-    assert all(c > 0 for c in counts[::2]) and all(c == 0 for c in counts[1::2]), counts
-    keys = {int(x) for x in p["ridx"][0, : counts[0]].tolist()}
-    assert set(sinks) <= keys and keys == set(sorted(keys)), keys
-    out = I.attend(p)
-    want = emulate(p)
-    rel = ((out.float() - want).abs().mean() / want.abs().mean()).item()
-    assert rel < 4e-3, rel
+    out = I.int8_attention(q, k, v, config = config)
     ref = I.reference_attention(q, k, v)
     plain = I.reference_attention(*_case(shape, dtype, seed = 11))
     plain_out = I.int8_attention(*_case(shape, dtype, seed = 11), config = config)
@@ -1434,11 +1427,21 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
         return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
 
     sink_heads, other = list(range(0, 4, 2)), list(range(1, 4, 2))
-    assert err(out, ref, sink_heads) < 1.5 * err(plain_out, plain, sink_heads), (
+    assert err(out, ref, sink_heads) < 2.5 * err(plain_out, plain, sink_heads), (
         err(out, ref, sink_heads),
         err(plain_out, plain, sink_heads),
     )
     assert err(out, ref, other) < 1.5 * err(plain_out, plain, other)
+    p = I.quantise(q, k, v, config)
+    counts = p["rcnt"].tolist()
+    assert all(c > 0 for c in counts[::2]) and all(c == 0 for c in counts[1::2]), counts
+    keys = {int(x) for x in p["ridx"][0, : counts[0]].tolist()}
+    assert set(sinks) <= keys and keys == set(sorted(keys)), keys
+    got = I.attend(p)
+    assert torch.equal(got, out)
+    want = emulate(p)
+    rel = ((got.float() - want).abs().mean() / want.abs().mean()).item()
+    assert rel < 4e-3, rel
 
 
 @needs_kernel
