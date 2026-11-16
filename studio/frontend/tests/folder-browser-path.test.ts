@@ -145,3 +145,15 @@ test("a folder is named by its last segment", () => {
   assert.equal(folderName("C:\\Users\\me"), "me");
   assert.equal(folderName("/"), "/");
 });
+
+test("a navigation during New folder wins over the create response", () => {
+  const source = readSrc(
+    "features/model-picker/components/model-selector/folder-browser.tsx",
+  );
+  const create = source.slice(source.indexOf("async function createFolder()"));
+  const claim = create.indexOf("abortRef.current = ctrl;");
+  const request = create.indexOf("await createBrowseFolder(");
+  const guard = create.indexOf("if (ctrl.signal.aborted) return;");
+  assert.ok(claim > 0 && claim < request && request < guard);
+  assert.ok(guard < create.indexOf("setData(created)"));
+});

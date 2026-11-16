@@ -264,15 +264,23 @@ export function FolderBrowser({
     if (!name || !current || creating) return;
     setCreating(true);
     setError(null);
+    // Shares navigation's controller: a later navigation wins over this response.
+    abortRef.current?.abort();
+    setLoading(false);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const created = await createBrowseFolder(current, name);
+      if (ctrl.signal.aborted) return;
       setData(created);
       setQuery("");
       setActive(0);
       setNewName(null);
       inputRef.current?.focus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!ctrl.signal.aborted) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setCreating(false);
     }
