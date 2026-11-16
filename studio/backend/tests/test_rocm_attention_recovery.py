@@ -33,12 +33,14 @@ def flags():
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
+    att._ROCM_APU_SDPA_SKIP_LOGGED.clear()
     yield
     for value, write in before:
         write(value)
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
+    att._ROCM_APU_SDPA_SKIP_LOGGED.clear()
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -289,3 +291,47 @@ def test_any_completed_half_precision_probe_applies_its_answer(monkeypatch, dtyp
     assert att.sdpa_math_only(SimpleNamespace(device = "cuda:0", dtype = getattr(torch, dtype)))
     assert torch.backends.cuda.flash_sdp_enabled() is not disabled
     assert torch.backends.cuda.mem_efficient_sdp_enabled() is not disabled
+
+
+def test_rocm_apu_skips_fused_sdpa_child_probes(monkeypatch):
+    """#17985: fused child probes hang Radeon 780M mid-load."""
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd[-1])
+        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + '"available"')
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
+    monkeypatch.delenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, raising = False)
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == ("math",)
+    assert calls == []
+    assert torch.backends.cuda.flash_sdp_enabled() is False
+    assert torch.backends.cuda.mem_efficient_sdp_enabled() is False
+
+
+def test_rocm_apu_fused_probe_opt_in_still_runs_children(monkeypatch):
+    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
+    monkeypatch.setenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, "1")
+    monkeypatch.setattr(
+        att,
+        "_run_rocm_sdpa_children",
+        lambda device, dtype: ("math", "flash", "mem_efficient"),
+    )
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == (
+        "math",
+        "flash",
+        "mem_efficient",
+    )
+
+
+def test_rocm_auto_flash_skips_integrated_gpus(monkeypatch):
+    monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
+    monkeypatch.setattr(att, "_flash_attn_installed", lambda: True)
+    monkeypatch.setattr(att, "_rocm_flash_attn_runs", lambda t: True)
+    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
+    monkeypatch.delenv(att.ROCM_FLASH_ENV, raising = False)
+    target = SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16)
+    assert att._rocm_auto_flash(target) is False
+    monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
+    assert att._rocm_auto_flash(target) is True

@@ -134,9 +134,43 @@ def read_only_sdpa_probe():
         _SDPA_PROBE_READ_ONLY.reset(token)
 
 
+_ROCM_APU_SDPA_SKIP_LOGGED: list = []
+
+
+def _rocm_device_is_integrated(device: str) -> bool:
+    """True for a ROCm APU (e.g. Radeon 780M) sharing host RAM; never raises."""
+    try:
+        from .host_pinning import device_is_integrated
+
+        return bool(device_is_integrated(device))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
 
+    # ROCm APUs: concurrent fused-SDPA child probes hang the GPU and abort Studio
+    # mid-load (#17985: HW Exception … GPU Hang → SIGABRT on 780M). Keep MATH unless
+    # the user opts into fused kernels with UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1.
+    if _rocm_device_is_integrated(device) and _rocm_guard_allowed():
+        available = (SDPA_MATH,)
+        if not _ROCM_APU_SDPA_SKIP_LOGGED:
+            _ROCM_APU_SDPA_SKIP_LOGGED.append(True)
+            _module_logger().info(
+                "diffusion.attention: ROCm integrated GPU — skipping fused SDPA child probes "
+                "(they can hang the GPU); using MATH. %s=1 re-enables fused probing.",
+                ROCM_FUSED_SDPA_ALLOW_ENV,
+            )
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
+            try:
+                _apply_rocm_guard(available)
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
+        return available
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
@@ -767,6 +801,10 @@ def _flash_attn_installed() -> bool:
 
 def _rocm_auto_flash(target: Any, family: Any = None) -> bool:
     if not _is_cuda_rocm(target) or _rocm_flash_mode() == "0":
+        return False
+    # Auto flash on ROCm APUs: the block probe / flash path has hung 780M GPUs during
+    # Z-Image load and encode (#17985). UNSLOTH_DIFFUSION_ROCM_FLASH=1 still forces it.
+    if _rocm_flash_mode() != "1" and _rocm_device_is_integrated(_target_device(target)):
         return False
     return _flash_attn_installed() and _rocm_flash_attn_runs(target)
 
