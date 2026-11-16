@@ -472,6 +472,12 @@ RESID_BLOCKS = 128
 # calling in here, so a plan undecided by then keeps the sink path in the graph).
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
+# A plan's decision holds for every plan of its shape whose query and key counts fall in the same DECIDE_BUCKET
+# tokens (a new prompt length): they take it at once, with no calls to learn from and no race.
+DECIDE_BUCKET = 256
+# The sink race keeps the kernels without the sink path only where their error against torch's attention on the
+# deciding call is at most this many times the sink path's (Qwen-Image-2.1: ~1.03, Z-Image-Turbo: ~1.6).
+PLAIN_ERROR_SLACK = 1.15
 _RACE = (
     threading.local()
 )  # .path: the path _median_ms's timed calls take on this thread (None outside it)
@@ -484,6 +490,40 @@ def _plans() -> dict:
     if found is None:
         found = _LOADED["plans"] = {}
     return found
+
+
+def _decisions() -> dict:
+    """What the plans decided (_choose_path), per decision key (``plan["decision"]``)."""
+    found = _LOADED.get("decisions")
+    if found is None:
+        found = _LOADED["decisions"] = {}
+    return found
+
+
+# (card, head dim, raise_floor(tokens)) of the routes a race engaged: a plan on that card and head dim that decides
+# torch's attention raises their token floor past its bucket, so those calls leave the op (and its graph) entirely
+_ROUTES: list = []
+
+
+def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
+    _ROUTES.append((int(index), int(head_dim), raise_floor))
+
+
+def _drop_routes(plan: dict) -> None:
+    _, Sq, Sk, _, D = plan["shape"]
+    floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    for index, head_dim, raise_floor in list(_ROUTES):
+        if index == plan["index"] and head_dim == D:
+            raise_floor(floor)
+
+
+def _raise_processor_floor(proc: Any) -> Callable:
+    def raise_floor(tokens: int) -> None:
+        proc._unsloth_int8_min_tokens = max(
+            int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
+        )
+
+    return raise_floor
 
 
 def _config_key(config: dict) -> tuple:
@@ -520,6 +560,17 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     plan = plans.get(key)
     if plan is not None:
         return plan
+    decision = (
+        index,
+        _config_key(config),
+        q.shape[0],
+        q.shape[2],
+        q.shape[3],
+        q.dtype,
+        scale,
+        q.shape[1] // DECIDE_BUCKET,
+        k.shape[1] // DECIDE_BUCKET,
+    )
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     config = select_config(config, Sk)
@@ -609,7 +660,8 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
         # the sink path, decided by the plan's first calls (_choose_path)
         "calls": 0,
-        "sinks": None,
+        "sinks": _decisions().get(decision),
+        "decision": decision,
         "checks": [],
         "shared": shared,
         "stats_grids": grids(stats_jobs),
@@ -652,9 +704,12 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
 
 
 def forget_plans() -> None:
-    """Drops the launch plans, and with them what their first calls decided about attention sinks (_choose_path):
-    a new pipeline's calls decide again, even where they share a plan's shapes with the last one's."""
+    """Drops the launch plans, and with them what their first calls decided about attention sinks (_choose_path)
+    and the routes those decisions raise: a new pipeline's calls decide again, even where they share a plan's shapes
+    with the last one's."""
     _plans().clear()
+    _decisions().clear()
+    _ROUTES.clear()
 
 
 def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
@@ -761,7 +816,11 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
                     seen = seen or bool(host.any())
                 plan["checks"] = []
-                plan["sinks"] = seen if not seen or race is None or race() else "native"
+                plan["sinks"] = False if not seen else (True if race is None else race())
+                if "decision" in plan:
+                    _decisions()[plan["decision"]] = plan["sinks"]
+                    if plan["sinks"] == "native":
+                        _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
 
 
@@ -771,39 +830,67 @@ def _outside_capture() -> Any:
     return hold_off_capture()
 
 
-def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int) -> bool:
-    """Whether the attention-sink path beats torch's attention by RACE_MARGIN on this call (timed like the card race,
-    interleaved, median), for a plan whose first calls clipped; the verdict is logged."""
+def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int) -> Any:
+    """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
+    the faster of the sink path and the kernels without it (only where their error against torch's attention here is
+    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native". The
+    verdict is logged."""
     import torch
 
     stream = _raw_stream(index)
 
-    def sinks() -> Any:
-        i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = q.device)
-        out = torch.empty(plan["out_shape"], dtype = v.dtype, device = q.device)
-        _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, True)
-        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, True)
-        return out
+    def kernels(sinks: bool) -> Callable:
+        def run() -> Any:
+            i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = q.device)
+            out = torch.empty(plan["out_shape"], dtype = v.dtype, device = q.device)
+            _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, sinks)
+            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, sinks)
+            return out
 
+        return run
+
+    def torch_attention() -> Any:
+        return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
+
+    fns = {"incumbent": torch_attention, "sinks": kernels(True), "plain": kernels(False)}
     try:
-
-        def torch_attention() -> Any:
-            return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
-
-        ms = _median_ms({"incumbent": torch_attention, "int8": sinks})
+        ref = torch_attention().float()
+        norm = float(ref.norm())
+        err = {
+            name: float((fns[name]().float() - ref).norm()) / max(norm, 1e-30)
+            for name in ("sinks", "plain")
+        }
+        ref = None
+        ms = _median_ms(fns)
     except torch.OutOfMemoryError:
-        return False
-    won = ms["int8"] < RACE_MARGIN * ms["incumbent"]
+        return "native"
+    path = _pick_path(ms, err)
     _log().info(
-        "diffusion.int8_attention: attention sinks in %s keys x %s heads, sink path %.4f ms vs torch %.4f ms: %s",
+        "diffusion.int8_attention: attention sinks in %s keys x %s heads, sink path %.4f ms (error %.4g), without it "
+        "%.4f ms (error %.4g), torch %.4f ms: %s",
         plan["shape"][2],
         plan["shape"][3],
-        ms["int8"],
+        ms["sinks"],
+        err["sinks"],
+        ms["plain"],
+        err["plain"],
         ms["incumbent"],
-        "kept" if won else "torch's attention from here on",
+        {True: "the sink path", False: "the kernels without it"}.get(
+            path, "torch's attention from here on"
+        ),
     )
     plan["sink_race"] = {name: round(value, 4) for name, value in ms.items()}
-    return won
+    plan["sink_error"] = {name: round(value, 6) for name, value in err.items()}
+    return path
+
+
+def _pick_path(ms: dict, err: dict) -> Any:
+    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain)."""
+    paths = {"sinks": True, "plain": False}
+    if err["plain"] > PLAIN_ERROR_SLACK * err["sinks"]:
+        paths.pop("plain")
+    best = min(paths, key = lambda name: ms[name])
+    return paths[best] if ms[best] < RACE_MARGIN * ms["incumbent"] else "native"
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
@@ -1555,6 +1642,7 @@ def _install(
                 continue
             proc._unsloth_int8 = True
             proc._unsloth_int8_min_tokens = int(minimum)
+            register_route(index, head_dim, _raise_processor_floor(proc))
             engaged += 1
             for card in _secondary_cards(index, transformer):
                 if implementation(card, head_dim) is None:
@@ -1585,6 +1673,8 @@ def _install(
             minimum = int(found["min_tokens"])
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
+        if not force:
+            register_route(index, head_dim, _raise_processor_floor(proc))
         engaged += 1
         # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
         # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's).

@@ -274,6 +274,17 @@ def _cached_reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]
 _MISSING = object()
 
 
+def _raise_route_floor(route: Int8Route, card: int):
+    """For ``register_route``: a plan on ``card`` that decided torch's attention raises the route's floor there."""
+
+    def raise_floor(tokens: int) -> None:
+        route.cards[card] = max(route.cards.get(card, route.min_tokens), int(tokens))
+        route.min_tokens = min(route.cards.values())
+        _DECISIONS.clear()
+
+    return raise_floor
+
+
 def _note(outcome: str) -> None:
     ROUTE_STATS[outcome] = ROUTE_STATS.get(outcome, 0) + 1
 
@@ -680,7 +691,7 @@ def _install(
                 impl = impl or found.get("impl")
         if not floors:
             continue
-        proc._attention_backend = Int8Route(
+        proc._attention_backend = route = Int8Route(
             incumbent,
             floors.get(index, min(floors.values())),
             dtype,
@@ -689,6 +700,9 @@ def _install(
             impl,
             cards = floors,
         )
+        if not forced:
+            for card in floors:
+                I8.register_route(card, head_dim, _raise_route_floor(route, card))
         routed += 1
     if logger is not None:
         for (card, heads, head_dim, name), found in report.items():

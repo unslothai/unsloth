@@ -1514,7 +1514,7 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
         q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
     else:
         q, k, v = _case(shape, _card_dtype(), seed = 3)
-    I._plans().clear()
+    I.forget_plans()
     first = I.int8_attention(q, k, v, config = config)
     (plan,) = I._plans().values()
     launched = []
@@ -1543,19 +1543,35 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
 
 
 @needs_kernel
+def test_a_new_prompt_length_takes_its_buckets_decision(monkeypatch):
+    """A plan whose query and key counts share a DECIDE_BUCKET with a decided plan's takes that decision at once: no
+    calls on the sink path to learn from, no reads, no race."""
+    monkeypatch.setattr(I, "_sink_race", lambda *a: pytest.fail("no sinks: no race"))
+    config = _cuda_config(128)
+    I.forget_plans()
+    q, k, v = _case((1, 700, 4, 128), _card_dtype(), seed = 3)
+    for _ in range(I.SINK_DECIDE_AT + 1):
+        I.int8_attention(q, k, v, config = config)
+    q, k, v = _case((1, 710, 4, 128), _card_dtype(), seed = 4)
+    I.int8_attention(q, k, v, config = config)
+    first, second = I._plans().values()
+    assert first["sinks"] is False and second["sinks"] is False and second["checks"] == []
+
+
+@needs_kernel
 def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch):
     """A plan with attention sinks races the sink path against torch's attention on its deciding call's own inputs
     (the guarded op's path, _cuda_attention); where the path loses, that call and the next ones run torch's
     attention."""
     races = []
     monkeypatch.setattr(
-        I, "_sink_race", lambda plan, q, k, v, scale, index: races.append(q.shape) or False
+        I, "_sink_race", lambda plan, q, k, v, scale, index: races.append(q.shape) or "native"
     )
     shape = (1, 700, 4, 128)
     config = _cuda_config(128)
     q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
     index = torch.cuda.current_device()
-    I._plans().clear()
+    I.forget_plans()
     for _ in range(I.SINK_DECIDE_AT):
         I._cuda_attention(q, k, v, config, None, index)
     (plan,) = I._plans().values()
@@ -1573,15 +1589,21 @@ def test_the_sink_race_times_the_sink_path_on_the_call(monkeypatch):
     inputs, counted toward no decision; its verdict is kept on the plan."""
     shape = (1, 2100, 4, 128)
     q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 5)
-    I._plans().clear()
+    I.forget_plans()
     I.int8_attention(q, k, v, config = _cuda_config(128))
     (plan,) = I._plans().values()
     calls = plan["calls"]
-    won = I._sink_race(plan, q, k, v, None, torch.cuda.current_device())
+    path = I._sink_race(plan, q, k, v, None, torch.cuda.current_device())
     assert (
-        isinstance(won, bool)
-        and set(plan["sink_race"]) == {"incumbent", "int8"}
+        path in (True, False, "native")
+        and set(plan["sink_race"]) == {"incumbent", "sinks", "plain"}
+        and set(plan["sink_error"]) == {"sinks", "plain"}
         and plan["calls"] == calls
+    )
+    # the kernels without the sink path are picked only within PLAIN_ERROR_SLACK of its error
+    assert (
+        path is not False
+        or plan["sink_error"]["plain"] <= I.PLAIN_ERROR_SLACK * plan["sink_error"]["sinks"]
     )
 
 
@@ -1609,8 +1631,8 @@ def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
         assert all(paths[: I.SINK_DECIDE_AT + 1 if keeps else I.SINK_DECIDE_AT])
         assert all(path is keeps for path in paths[I.SINK_DECIDE_AT :])
         assert plan["sinks"] is keeps and plan["checks"] == []
-    # a plan with sinks keeps the path where its race wins, and runs torch's attention where it loses
-    for won in (True, False):
+    # a plan with sinks takes the path its race picks: the sink path, the kernels without it, or torch's attention
+    for won in (True, False, "native"):
         races = []
         plan = {
             "calls": I.SINK_DECIDE_AT,
@@ -1618,7 +1640,7 @@ def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
             "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
         }
         path, _ = I._choose_path(plan, race = lambda: races.append(1) or won)
-        assert path == (True if won else "native") == plan["sinks"] and races == [1]
+        assert path == won == plan["sinks"] and races == [1]
         assert I._choose_path(plan, race = lambda: races.append(1) or won)[0] == path and races == [1]
     plan = {
         "calls": I.SINK_DECIDE_AT,
@@ -1659,8 +1681,58 @@ def test_a_plan_reads_and_decides_no_sinks_while_another_thread_records(monkeypa
     assert I._choose_path(plan, race = race) == (True, I.SINK_DECIDE_AT)
     assert plan["sinks"] is None and len(plan["checks"]) == 1
     monkeypatch.setattr(G, "_CAPTURE_DEPTH", 0)
-    assert I._choose_path(plan, race = lambda: False) == ("native", I.SINK_DECIDE_AT + 1)
+    assert I._choose_path(plan, race = lambda: "native") == ("native", I.SINK_DECIDE_AT + 1)
     assert plan["sinks"] == "native" and plan["checks"] == []
+
+
+def test_the_sink_race_keeps_the_faster_path_as_accurate_as_the_sink_path():
+    """_pick_path: the faster of the sink path and the kernels without it, those only within PLAIN_ERROR_SLACK of the
+    sink path's error (Qwen-Image-2.1-Turbo keeps the old kernels where faster, Z-Image-Turbo's sinks keep the path),
+    and torch's attention unless that beats it by RACE_MARGIN."""
+    pick = I._pick_path
+    near, far = {"sinks": 0.020, "plain": 0.0207}, {"sinks": 0.021, "plain": 0.034}
+    assert pick({"incumbent": 1.53, "sinks": 1.40, "plain": 1.30}, near) is False
+    assert pick({"incumbent": 1.53, "sinks": 1.40, "plain": 1.30}, far) is True
+    assert pick({"incumbent": 1.53, "sinks": 1.30, "plain": 1.40}, near) is True
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, near) is False
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, far) == "native"
+    assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.24}, near) == "native"
+
+
+def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_routes(monkeypatch):
+    """A plan that decides torch's attention raises the token floor of every raced route on its card and head dim
+    past its DECIDE_BUCKET, so those calls leave the op (and its compiled graph) for good; the decision holds for the
+    bucket's other plans, and a pipeline load forgets both."""
+    from core.inference import diffusion_int8_attention_dispatch as D
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    I.forget_plans()
+    procs = [
+        types.SimpleNamespace(_unsloth_int8 = True, _unsloth_int8_min_tokens = 2560) for _ in range(3)
+    ]
+    for proc, (index, head_dim) in zip(procs, ((0, 128), (1, 128), (0, 64))):
+        I.register_route(index, head_dim, I._raise_processor_floor(proc))
+    route = D.Int8Route("native", 2560, torch.bfloat16, 0, 128, cards = {0: 2560, 1: 3072})
+    I.register_route(0, 128, D._raise_route_floor(route, 0))
+    D._DECISIONS["stale"] = (route, None)
+    plan = {
+        "calls": I.SINK_DECIDE_AT,
+        "sinks": None,
+        "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
+        "index": 0,
+        "shape": (1, 4176, 4176, 24, 128),
+        "decision": ("bucket",),
+    }
+    assert I._choose_path(plan, race = lambda: "native")[0] == "native"
+    assert [p._unsloth_int8_min_tokens for p in procs] == [4352, 2560, 2560]
+    assert route.cards == {0: 4352, 1: 3072} and route.min_tokens == 3072 and not D._DECISIONS
+    assert I._decisions() == {("bucket",): "native"}
+    I.forget_plans()
+    assert I._decisions() == {} and I._ROUTES == []
 
 
 def test_the_races_time_the_path_of_a_plan_without_sinks(monkeypatch):
@@ -1726,7 +1798,7 @@ def test_a_call_signature_is_planned_once(head_dim):
     shape = (2, 333, 3, head_dim)
     config = _cuda_config(head_dim)
     q, k, v = _case(shape, _card_dtype(), seed = 5, strided = True)
-    I._plans().clear()
+    I.forget_plans()
     first = I.quantise(q, k, v, config)
     plan = first["plan"]
     assert len(I._plans()) == 1 and len(plan["stats_grids"]) == len(plan["kv_grids"]) == 1
@@ -1790,7 +1862,7 @@ def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
     q, k, v = _case((2, 700, 2, head_dim), _card_dtype(), seed = 11)
     want = I.int8_attention(q, k, v)
     monkeypatch.setattr(I, "GRID_LIMIT", 3)
-    I._plans().clear()
+    I.forget_plans()
     got = I.int8_attention(q, k, v)
     (plan,) = I._plans().values()
     assert len(plan["stats_grids"]) > 3 and len(plan["kv_grids"]) > 3
@@ -2111,7 +2183,7 @@ def test_each_card_loads_its_own_kernels(head_dim):
         index: I.probe_inputs(torch.device("cuda", index), dtype, 700, 3, head_dim)
         for index in (0, OTHER)
     }
-    I._plans().clear()
+    I.forget_plans()
     assert torch.cuda.current_device() == 0
     out = {index: I.int8_attention(*calls[index]) for index in (0, OTHER)}
     assert out[OTHER].device == there and torch.cuda.current_device() == 0
