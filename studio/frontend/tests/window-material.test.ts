@@ -243,7 +243,7 @@ test("glass drops the thread mask on the welcome view in Chromium, so the compos
 	const ready = String.raw`:is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
 	// The header fade masks the viewport, and a masked ancestor is Chromium's backdrop root.
 	assert.match(css, new RegExp(`${ready} \\.aui-thread-viewport:not\\(\\.chat-full-view-dock \\*\\),[^{]*\\{\\n  mask-image:`));
-	assert.match(css, new RegExp(`html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n  mask-image: none;\\n\\}`));
+	assert.match(css, new RegExp(`html\\[data-glass\\] ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n  mask-image: none;\\n\\}`));
 	// The welcome composer is portaled into that viewport; an open chat's composer docks beside it.
 	const thread = readFileSync(new URL("../src/components/assistant-ui/thread.tsx", import.meta.url), "utf8");
 	assert.match(thread, /createPortal\(\n\s*<>\n\s*\{!hideWelcome && \([\s\S]*?<ThreadWelcome [\s\S]*?<\/>,\n\s*viewportEl,/);

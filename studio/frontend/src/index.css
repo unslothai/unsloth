@@ -6861,9 +6861,9 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Chromium makes a masked ancestor the backdrop root, so the welcome composer inside the viewport blurred
-   nothing and the image showed through it sharp. WebKit (data-glass-layers) blurs through and keeps the fade. */
-html[data-glass]:not([data-glass-layers]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
+/* A masked ancestor is the backdrop root (Chromium and WebKit), so the welcome composer inside the viewport
+   blurred nothing and the image showed through it sharp. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
   mask-image: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
