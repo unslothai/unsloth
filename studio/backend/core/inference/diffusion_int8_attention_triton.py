@@ -1097,6 +1097,8 @@ _FAST_LAUNCH: dict = {"ok": None}
 
 
 def _fast_launch_ok() -> bool:
+    if triton is None:  # no Triton (or a test's stand-in kernels): only the regular launch exists
+        return False
     if _FAST_LAUNCH["ok"] is None:
         import os
         _FAST_LAUNCH["ok"] = os.environ.get(FAST_LAUNCH_ENV, "1").strip() != "0"
