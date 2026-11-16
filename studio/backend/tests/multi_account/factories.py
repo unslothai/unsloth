@@ -140,6 +140,12 @@ CORE_FACTORIES = {
         "chat", {"messages": [MESSAGE]}, fragment = SENTINEL
     ),
     "routes.chat_history:GET:/projects/{project_id}": Factory("project", fragment = SENTINEL),
+    # #17849: the project's folder browser and git status, read through the project's own lookup.
+    "routes.chat_history:GET:/projects/{project_id}/files": Factory("project"),
+    "routes.chat_history:GET:/projects/{project_id}/files/search": Factory(
+        "project", query = {"q": "notes"}
+    ),
+    "routes.chat_history:GET:/projects/{project_id}/changes": Factory("project"),
     "routes.chat_history:PATCH:/projects/{project_id}": Factory(
         "project", {"name": EDITED}, fragment = EDITED
     ),
