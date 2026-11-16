@@ -150,6 +150,9 @@ class ProviderRegistryEntry(BaseModel):
     )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    api_key_url: Optional[str] = Field(
+        None, description = "Provider console page where an API key is created"
+    )
     base_url_editable: bool = True
     model_ids_editable: bool = True
     model_list_mode: Literal["remote", "curated"] = Field(
@@ -199,6 +202,16 @@ class ProviderCreate(ExtraHeadersMixin):
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
     )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = 2_000_000,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -230,6 +243,16 @@ class ProviderUpdate(ExtraHeadersMixin):
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
         description = "Optional maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 1_000,
+        le = 2_000_000,
+        description = (
+            "Optional token count after which chats on this connection compact, "
+            "instead of the default three quarters of the model's context window"
+        ),
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -283,6 +306,10 @@ class ProviderResponse(BaseModel):
     max_output_tokens: Optional[int] = Field(
         None,
         description = "Configured maximum Max Tokens cap for this connection",
+    )
+    auto_compact_tokens: Optional[int] = Field(
+        None,
+        description = "Configured auto-compact trigger for this connection, in tokens",
     )
     extra_headers: dict[str, str] = Field(
         default_factory = dict,
@@ -379,3 +406,15 @@ class ProviderTestResult(BaseModel):
     models_count: Optional[int] = Field(
         None, description = "Number of models found (if test succeeded)"
     )
+    error_kind: Optional[
+        Literal[
+            "auth",
+            "billing",
+            "rate_limit",
+            "not_found",
+            "unreachable",
+            "timeout",
+            "invalid_url",
+            "other",
+        ]
+    ] = Field(None, description = "Why a failed test failed, for the UI to point at the fix")

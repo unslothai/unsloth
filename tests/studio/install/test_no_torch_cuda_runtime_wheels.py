@@ -254,3 +254,91 @@ def test_cublas_without_cublaslt_still_installs(tmp_path, monkeypatch):
     install.mkdir()
     _install(install, "app-b1-windows-x64-cuda13-newer.zip", "windows-cuda")
     assert ip._missing_cuda_runtime_wheels(install) == ("nvidia-cuda-runtime", "nvidia-cublas")
+
+
+def test_uv_off_path_is_still_used(tmp_path, monkeypatch):
+    # A Desktop-started backend can lack uv's dir on PATH, and the uv-made venv has no pip.
+    name = "uv.exe" if ip.os.name == "nt" else "uv"
+    uv = tmp_path / ".local" / "bin" / name
+    uv.parent.mkdir(parents = True)
+    uv.write_text("")
+    uv.chmod(0o755)
+    monkeypatch.setattr(ip.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(ip.Path, "home", classmethod(lambda cls: tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        ip.subprocess,
+        "run",
+        lambda cmd, **kw: calls.append(cmd) or ip.subprocess.CompletedProcess(cmd, 0),
+    )
+    assert ip._install_cuda_runtime_wheels(("nvidia-cuda-runtime",))
+    assert calls[0][:3] == [str(uv), "pip", "install"]
+
+
+def _tiny_wheel(directory):
+    import zipfile
+
+    wheel = directory / "unsloth_uv_probe-1.0-py3-none-any.whl"
+    dist = "unsloth_uv_probe-1.0.dist-info"
+    files = {
+        "unsloth_uv_probe.py": "OK = True\n",
+        f"{dist}/METADATA": "Metadata-Version: 2.1\nName: unsloth-uv-probe\nVersion: 1.0\n",
+        f"{dist}/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    with zipfile.ZipFile(wheel, "w") as zf:
+        for name, text in files.items():
+            zf.writestr(name, text)
+        zf.writestr(f"{dist}/RECORD", "".join(f"{n},,\n" for n in [*files, f"{dist}/RECORD"]))
+    return wheel
+
+
+def test_a_pipless_uv_venv_with_uv_off_path_gets_the_wheels(tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("needs uv")
+    venv = tmp_path / "venv"
+    subprocess.run([uv, "venv", str(venv), "--python", sys.executable], check = True)
+    py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents = True)
+    # lint-allow: AV009 copies the uv found on PATH, not a system binary; System32 only goes on the child's PATH below
+    shutil.copy2(uv, home / ".local" / "bin" / pathlib.Path(uv).name)
+    system_dirs = [
+        os.environ.get("SystemRoot", ""),
+        os.path.join(os.environ.get("SystemRoot", ""), "System32"),
+    ]
+    env = dict(
+        os.environ,
+        PATH = os.pathsep.join([str(py.parent), *(d for d in system_dirs if os.name == "nt")]),
+        HOME = str(home),
+        USERPROFILE = str(home),
+        UV_CACHE_DIR = str(tmp_path / "uv-cache"),
+        UV_OFFLINE = "1",
+    )
+    code = (
+        f"import sys; sys.path.insert(0, {str(REPO_ROOT / 'studio')!r}); "
+        "import install_llama_prebuilt as ip; "
+        f"sys.exit(0 if ip._install_cuda_runtime_wheels(({str(_tiny_wheel(tmp_path))!r},)) else 1)"
+    )
+    assert subprocess.run([str(py), "-c", code], env = env, timeout = 300).returncode == 0
+    assert subprocess.run([str(py), "-c", "import unsloth_uv_probe"], env = env).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "installed, still_missing, says_cpu",
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_a_runtime_still_missing_after_its_install_is_reported(
+    monkeypatch, tmp_path, installed, still_missing, says_cpu
+):
+    answers = iter([("nvidia-cuda-runtime",), ("nvidia-cuda-runtime",) if still_missing else ()])
+    monkeypatch.setattr(ip, "_missing_cuda_runtime_wheels", lambda d: next(answers))
+    monkeypatch.setattr(ip, "_install_cuda_runtime_wheels", lambda wheels: installed)
+    logged = []
+    monkeypatch.setattr(ip, "log", logged.append)
+    ip.ensure_cuda_runtime_wheels(tmp_path)
+    assert any("llama.cpp will run on the CPU" in line for line in logged) is says_cpu

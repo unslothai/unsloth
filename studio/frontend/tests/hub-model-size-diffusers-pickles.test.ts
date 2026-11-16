@@ -71,6 +71,28 @@ test("SDXL checkpoint candidates include both Animagine variants and exclude com
   ]);
 });
 
+test("a single-file repo offers its .safetensors files, subfolders included, as checkpoints", async () => {
+  stubSiblings({
+    "README.md": 1,
+    "split_files/diffusion_models/flux-2-klein-4b.safetensors": 7751105712,
+    "split_files/text_encoders/qwen_3_4b.safetensors": 8044982048,
+    "split_files/model-00001-of-00002.safetensors": 5,
+  });
+  const info = await fetchModelSize("Comfy-Org/Flux-2-Klein-4B");
+  assert.deepEqual(info?.imageCheckpointCandidates, [
+    { filename: "split_files/diffusion_models/flux-2-klein-4b.safetensors", bytes: 7751105712 },
+    { filename: "split_files/text_encoders/qwen_3_4b.safetensors", bytes: 8044982048 },
+  ]);
+});
+
+test("a pipeline or transformers repo offers no checkpoint files", async () => {
+  for (const marker of ["model_index.json", "config.json"]) {
+    stubSiblings({ [marker]: 1, "transformer/model.safetensors": 5, "model.safetensors": 5 });
+    const info = await fetchModelSize(`acme/${marker}`);
+    assert.equal(info?.imageCheckpointCandidates, undefined);
+  }
+});
+
 function deferredResponse() {
   let resolve!: (response: Response) => void;
   const promise = new Promise<Response>((done) => { resolve = done; });
@@ -97,7 +119,12 @@ test("reopening a model while its canceled metadata lookup settles starts one fr
   await new Promise<void>((resolve) => setImmediate(resolve));
   const secondReader = fetchModelSize(repo);
   fresh.resolve(Response.json({ siblings: [{ rfilename: "weights.safetensors", size: 42 }] }));
-  const expected = { totalBytes: 42, weightsBytes: 42 };
+  const expected = {
+    totalBytes: 42,
+    weightsBytes: 42,
+    imageCheckpointCandidates: [{ filename: "weights.safetensors", bytes: 42 }],
+    revision: undefined,
+  };
   assert.deepEqual(await reopened, expected);
   assert.deepEqual(await secondReader, expected);
   assert.equal(fetch.mock.callCount(), 2);
@@ -142,6 +169,9 @@ test("confirmed SDXL checkpoints survive a reload for offline reopening", async 
   for (let i = 0; i < 60; i++) rememberSdxlCheckpoints(`acme/r${i}`, files);
   assert.equal(rememberedSdxlCheckpoints("acme/sdxl"), undefined);
   assert.deepEqual(rememberedSdxlCheckpoints("acme/r59"), files);
-  window.localStorage.setItem("unsloth.hub.sdxlCheckpoints", JSON.stringify({ "acme/x": [{ filename: "../a.safetensors" }] }));
+  const nested = [{ filename: "split_files/diffusion_models/flux-2-klein-4b.safetensors", bytes: 7 }];
+  rememberSdxlCheckpoints("Comfy-Org/Flux-2-Klein-4B", nested);
+  assert.deepEqual(rememberedSdxlCheckpoints("comfy-org/flux-2-klein-4b"), nested);
+  window.localStorage.setItem("unsloth.hub.sdxlCheckpoints", JSON.stringify({ "acme/x": [{ filename: "../a.safetensors" }, { filename: "a/../../b.safetensors" }] }));
   assert.deepEqual(rememberedSdxlCheckpoints("acme/x"), []);
 });

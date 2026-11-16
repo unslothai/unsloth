@@ -21,6 +21,7 @@ _DENOISER_OFFLOAD_POLICIES = ("model", "sequential", "streaming")
 # priced as twice the largest block, at least 1 GiB, never above the plan's denoise headroom.
 _WORKING_SET_BLOCKS = 2
 _WORKING_SET_MIN_MIB = 1024
+FIT_DECLINE = "layer split does not fit the selected cards"
 _TE_ONLY_HEADROOM_MIB = (
     1024  # diffusion_multigpu.TEXT_ENCODER_HEADROOM_MIB: an encoder-only phase on a card
 )
@@ -372,7 +373,7 @@ def plan_layer_split(
         else "no cut of the blocks fits every card"
     )
     return None, (
-        f"layer split does not fit the selected cards ({need_total - te_mib} MiB of denoiser and VAE weights with "
+        f"{FIT_DECLINE} ({need_total - te_mib} MiB of denoiser and VAE weights with "
         f"the text encoders streamed, {shortfall_text} after the per-card reserves and "
         f"{max(denoise, decode, encode if te_mib else 0)} MiB "
         f"of activations on cuda:{primary})"

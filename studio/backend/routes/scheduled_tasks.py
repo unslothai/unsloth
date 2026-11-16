@@ -57,6 +57,7 @@ class ScheduledTaskCreate(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
+    webSearch: bool = False
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -74,6 +75,7 @@ class ScheduledTaskUpdate(BaseModel):
     allowModelLoad: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
+    webSearch: Optional[bool] = None
 
 
 class RunNowRequest(BaseModel):
@@ -118,6 +120,7 @@ class ScheduledTask(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
+    webSearch: bool = False
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
     createdAt: int
@@ -208,6 +211,7 @@ def create_scheduled_task(
         "allowModelLoad": payload.allowModelLoad,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
+        "webSearch": payload.webSearch,
         "createdAt": now,
         "updatedAt": now,
     }

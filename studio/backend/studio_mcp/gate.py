@@ -28,6 +28,7 @@ NEED_KEY = "Unsloth Studio MCP needs an Unsloth Studio API key (sk-unsloth-…).
 ONE_HEADER = "Send one Authorization header"
 INVALID_KEY = "Invalid or expired API key"
 WORKFLOW_KEY = "Workflow keys cannot use Unsloth Studio MCP"
+INFERENCE_ONLY_KEY = "Inference only API keys cannot use Unsloth Studio MCP; use a full access key"
 RETIRED_TOKEN = (
     "The MCP static token is no longer supported; use an Unsloth Studio API key (sk-unsloth-…)"
 )
@@ -77,6 +78,8 @@ def _validate_key(token: str) -> tuple[Optional[dict], str]:
         # Recipe and Deep Research keys carry narrower authority than every MCP tool.
         if storage.is_internal_api_key(token):
             return None, WORKFLOW_KEY
+        if verified[0].get("key_access") == storage.API_KEY_ACCESS_INFERENCE:
+            return None, INFERENCE_ONLY_KEY
     except Exception:
         return None, INVALID_KEY
     return verified[0], ""

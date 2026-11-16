@@ -78,6 +78,7 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    _publish_to_lora_catalog,
     training_fetch_repo,
     _latent_cache_forced,
     _latent_cache_over_budget,
@@ -814,12 +815,15 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     lora_path: Optional[str] = None
     ema_path: Optional[str] = None
+    catalog_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         layers = get_peft_model_state_dict(transformer)
         # Save the trained config so alpha survives the round trip; 'default' is the add_adapter name.
         adapter_config = dict(transformer.peft_config["default"].to_dict())
         _save_lora(str(out_dir), layers, adapter_config)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+        # The Video load's ``loras`` resolve through this catalog, family-gated by the sidecar written here.
+        catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
                 ema_dir = save_ema_adapter(
@@ -837,7 +841,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         output_dir = str(out_dir),
         lora_path = lora_path,
         ema_path = ema_path,
-        catalog_path = None,
+        catalog_path = catalog_path,
         family = cfg.resolved_family,
         base_model = cfg.base_model,
         stopped = stopped,

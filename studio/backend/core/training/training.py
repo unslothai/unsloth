@@ -261,6 +261,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "training_type": values.get("training_type", "LoRA/QLoRA"),
         "hf_token": values.get("hf_token", ""),
         "load_in_4bit": values.get("load_in_4bit", True),
+        "load_in_4bit_forced_16bit": bool(values.get("load_in_4bit_forced_16bit", False)),
         "max_seq_length": values.get("max_seq_length", 2048),
         "vision_image_size": values.get("vision_image_size"),
         "hf_dataset": values.get("hf_dataset", ""),

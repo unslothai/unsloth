@@ -1074,6 +1074,7 @@ def _download_gguf_variant(
     hf_token: str | None,
     mode: str,
     tqdm_class: type | None = None,
+    engram_precision: str | None = None,
 ) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -1095,6 +1096,15 @@ def _download_gguf_variant(
                 file = sys.stderr,
             )
             sys.exit(1)
+        if engram_precision:
+            if plan.engram_table(engram_precision) is None:
+                print(
+                    f"{repo_id} publishes no {engram_precision} Engram table",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+            # The standalone table in place of the quant's own table shard.
+            plan = plan.with_engram(engram_precision)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         main_blob_hashes = plan.main_hashes
@@ -1114,6 +1124,18 @@ def _download_gguf_variant(
             print(
                 f"Metadata unavailable and no manifest to resume GGUF "
                 f"variant '{variant}' for {repo_id}",
+                file = sys.stderr,
+            )
+            sys.exit(1)
+        from core.inference.engram_tables import engram_table_precision
+
+        recorded = {engram_table_precision(f.path) for f in manifest.expected_files} - {None}
+        if {p.upper() for p in recorded} != (
+            {engram_precision.upper()} if engram_precision else set()
+        ):
+            print(
+                f"Metadata unavailable and the existing manifest for GGUF variant '{variant}' of "
+                f"{repo_id} fetches a different Engram table; retry when metadata is available.",
                 file = sys.stderr,
             )
             sys.exit(1)
@@ -1461,6 +1483,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
     parser.add_argument("--variant", default = None)
+    parser.add_argument("--engram", default = None)
     parser.add_argument("--dataset", action = "store_true")
     parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
     parser.add_argument("--parent-pid", type = int, default = None)
@@ -1503,7 +1526,14 @@ def main() -> None:
                 args.repo_id, args.variant, scoped_files, hf_token, args.transport, progress
             )
         elif args.variant:
-            _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport, progress)
+            _download_gguf_variant(
+                args.repo_id,
+                args.variant,
+                hf_token,
+                args.transport,
+                progress,
+                engram_precision = args.engram,
+            )
         else:
             _download_snapshot(args.repo_id, hf_token, args.transport, progress)
         sys.exit(0)

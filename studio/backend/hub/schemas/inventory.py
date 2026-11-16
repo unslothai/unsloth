@@ -26,6 +26,15 @@ LocalArtifactKind = Literal[
 ]
 
 
+class EngramTableDetail(BaseModel):
+    """A standalone Engram table a GGUF repo publishes (engram/*-engram-<PRECISION>.gguf_file)."""
+
+    precision: str = Field(..., description = "Precision label from the file name, e.g. 'Q8_0'")
+    filename: str = Field(..., description = "Repo path of the table file")
+    size_bytes: int = Field(0, description = "File size in bytes")
+    downloaded: bool = Field(False, description = "Whether the table is in the local HF cache")
+
+
 class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
@@ -72,7 +81,11 @@ class GgufVariantDetail(BaseModel):
         ),
     )
     downloaded: bool = Field(
-        False, description = "Whether this variant is already in the local HF cache"
+        False,
+        description = (
+            "Whether this variant is already in the local HF cache: with its own Engram "
+            "table, or with a cached standalone one in its place (engram_ready)"
+        ),
     )
     update_available: bool = Field(
         False, description = "Whether a newer main GGUF blob is available on Hugging Face"
@@ -101,6 +114,21 @@ class GgufVariantDetail(BaseModel):
             "Whether THIS partial can be continued byte for byte, which is what picks "
             "Resume over Continue. False for a Xet partial, and for an HTTP one no "
             "installed writer can reopen."
+        ),
+    )
+    engram_precision: Optional[str] = Field(
+        None,
+        description = (
+            "Precision of the Engram table this quant ships in its own split shard, when "
+            "the repo publishes standalone tables to swap it for; None otherwise"
+        ),
+    )
+    engram_ready: List[str] = Field(
+        default_factory = list,
+        description = (
+            "Engram table precisions this quant loads with without downloading anything: "
+            "its own when downloaded, and each cached standalone table when every other "
+            "file is cached"
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -155,6 +183,20 @@ class GgufVariantsResponse(BaseModel):
         description = (
             "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
             "quants; None for GGUF"
+        ),
+    )
+    engram_tables: List[EngramTableDetail] = Field(
+        default_factory = list,
+        description = (
+            "Standalone Engram tables a load can use in place of a quant's own "
+            "(engram_precision), most precise first"
+        ),
+    )
+    engram_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether this server's llama.cpp loads a standalone Engram table (--ple); "
+            "None when the repo publishes none or the build could not be probed"
         ),
     )
 

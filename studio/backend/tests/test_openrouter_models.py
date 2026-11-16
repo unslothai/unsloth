@@ -82,10 +82,50 @@ def _client(api_key: str = "") -> ExternalProviderClient:
     )
 
 
-def test_registry_uses_live_catalog_with_live_defaults():
+def test_registry_uses_live_catalog_and_names_no_model():
     info = get_provider_info("openrouter")
     assert info.get("model_list_mode", "remote") == "remote"
-    assert "openrouter/free" in info["default_models"]
+    assert "default_models" not in info
+
+
+def test_the_routers_own_models_and_latest_aliases_lead_the_list(monkeypatch):
+    listed = [
+        ("acme/new", 400),
+        ("~acme/chat-latest", 100),
+        ("openrouter/auto", 50),
+        ("~other/pro-latest", 300),
+        ("openrouter/free", 200),
+        ("acme/old", 10),
+    ]
+    payload = {
+        "data": [
+            {
+                "id": model_id,
+                "created": created,
+                "architecture": {"output_modalities": ["text"]},
+                "endpoints": ["/api/v1/chat/completions"],
+            }
+            for model_id, created in listed
+        ]
+    }
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(
+            transport = httpx.MockTransport(lambda _request: httpx.Response(200, json = payload))
+        ),
+    )
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog", {})
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog_locks", {})
+    models = asyncio.run(_client().list_models())
+    assert [m["id"] for m in models] == [
+        "openrouter/free",
+        "openrouter/auto",
+        "~other/pro-latest",
+        "~acme/chat-latest",
+        "acme/new",
+        "acme/old",
+    ]
 
 
 def test_filters_non_chat_models_and_sorts_newest_first(catalog_server):

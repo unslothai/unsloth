@@ -3,7 +3,7 @@
 
 """Pydantic schemas for the Authentication API."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -103,6 +103,15 @@ class CreateApiKeyRequest(BaseModel):
         le = 36500,
         description = "Number of days until the key expires (None = never)",
     )
+    access: Literal["full", "inference"] = Field(
+        "full",
+        description = "inference: only the chat, completions, embeddings and model list endpoints; "
+        "no model loads, downloads or settings",
+    )
+
+
+class UpdateApiKeyRequest(BaseModel):
+    access: Literal["full", "inference"]
 
 
 class ApiKeyResponse(BaseModel):
@@ -117,6 +126,7 @@ class ApiKeyResponse(BaseModel):
     is_active: bool
     # Read-only: set by the server at mint ("unsloth_start" for the desktop `unsloth start` key).
     purpose: Optional[str] = None
+    access: Literal["full", "inference"] = "full"
 
 
 class CreateApiKeyResponse(BaseModel):

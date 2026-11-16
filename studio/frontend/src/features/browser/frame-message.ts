@@ -50,6 +50,8 @@ export type FrameMessage =
 
 export type RedirectMode = "follow" | "error" | "manual";
 
+export type CredentialsMode = "omit" | "same-origin" | "include";
+
 export type PageRequest = {
   url: string;
   method: string;
@@ -58,9 +60,11 @@ export type PageRequest = {
   redirect: RedirectMode;
   /** Fetch's integrity metadata, checked against the body. */
   integrity: string;
+  credentials: CredentialsMode;
 };
 
 const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
+const CREDENTIALS_MODES = new Set<unknown>(["omit", "same-origin", "include"]);
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -178,8 +182,9 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   if (body !== null && !(body instanceof ArrayBuffer && body.byteLength <= MAX_REQUEST_BODY_BYTES)) return null;
   const redirect = message.redirect ?? "follow";
   const integrity = text(message.integrity ?? "", 4096);
-  if (!REDIRECT_MODES.has(redirect) || integrity === null) return null;
-  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
+  const credentials = message.credentials ?? "same-origin";
+  if (!REDIRECT_MODES.has(redirect) || integrity === null || !CREDENTIALS_MODES.has(credentials)) return null;
+  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity, credentials: credentials as CredentialsMode };
 }
 
 function fileName(value: unknown): string | null {

@@ -289,6 +289,30 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon 880M Graphics": "gfx1150",
     "AMD Radeon 860M Graphics": "gfx1152",
     "AMD Radeon 840M Graphics": "gfx1152",
+    # RDNA 2 by die (pci.ids 73bf / 73df / 73ef / 73ff; LLVM AMDGPUUsage). Windows device packs are per arch.
+    "AMD Radeon RX 6800 XT": "gfx1030",
+    "AMD Radeon RX 6900 XT": "gfx1030",
+    "AMD Radeon RX 6700 XT": "gfx1031",
+    "AMD Radeon RX 6750 XT": "gfx1031",
+    "AMD Radeon RX 6800M": "gfx1031",
+    "AMD Radeon RX 6850M XT": "gfx1031",
+    "AMD Radeon RX 6700S": "gfx1032",
+    "AMD Radeon RX 6800S": "gfx1032",
+    "AMD Radeon RX 6650 XT": "gfx1032",
+    "AMD Radeon RX 6600M": "gfx1032",
+    # One name, two dies: libdrm amdgpu.ids 73DF (Navi 22) vs 73FF (Navi 23).
+    "AMD Radeon RX 6750 GRE 12GB": "gfx1031",
+    "AMD Radeon RX 6750 GRE 10GB": "gfx1032",
+    "AMD Radeon 6550S": "gfx1034",
+    "AMD Radeon Pro V620": "gfx1030",
+    # Navi 33 / 44 / 48 names from libdrm amdgpu.ids (7499, 7590, 7551).
+    "AMD Radeon RX 7400": "gfx1102",
+    "AMD Radeon RX 7300": "gfx1102",
+    "AMD Radeon Pro W7400": "gfx1102",
+    "AMD Radeon RX 9050": "gfx1200",
+    "AMD Radeon AI Pro R9600D": "gfx1201",
+    # amd.com: Zen 5 + RDNA 3.5 with 16 CUs is Strix Point, not Phoenix.
+    "AMD Ryzen Z2 Extreme": "gfx1150",
 }
 
 
@@ -345,11 +369,8 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
-# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
-_SPOOF_DIVERGENCES = {
-    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
-}
+# The spoof fixture maps gfx -> name, an independent witness.
+_SPOOF_DIVERGENCES: dict[str, str] = {}
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
@@ -399,6 +420,14 @@ class TestGpuNameArchParity:
             assert (
                 arch == expected_arch
             ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
+
+    @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
+    def test_rdna2_igpus_stay_unmapped(self, gpu_name):
+        """No copy may route these APUs to ROCm torch by name: RDNA 2 iGPU training is unmeasured
+        and gfx1033 computes wrong answers (studio/ROCM_RDNA2_APU.md)."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,

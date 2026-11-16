@@ -224,7 +224,9 @@ export function describeInferenceStatus(
         ? "GGUF"
         : status.is_mlx
           ? "MLX"
-          : "Transformers";
+          : status.is_npu
+            ? "NPU"
+            : "Transformers";
     entries.push({
       id: `chat:${active}`,
       kind: isTts ? "tts" : isStt ? "stt" : "text",

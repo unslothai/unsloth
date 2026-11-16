@@ -104,7 +104,7 @@ test("the defaults are captured when pairing begins, not reconstructed later", (
   // On the first pairing there is no earlier capture, so the default is sampled up front.
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(begin, /pairingWindowDefaults =/);
-  assert.match(begin, /readThreadScopedSettings\(/);
+  assert.match(begin, /(?:readThreadScopedSettings|readInstallationDefaults)\(/);
   const capture = slice(
     store,
     "if (threadScopedSettingsThreadId === null) {",
@@ -242,7 +242,7 @@ test("the defaults sample is never taken from the outgoing chat's values", () =>
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(
     begin,
-    /threadScopedSettingsThreadId === null\s*\?\s*readThreadScopedSettings\(/,
+    /threadScopedSettingsThreadId === null\s*\?\s*(?:readThreadScopedSettings|readInstallationDefaults)\(/,
   );
   assert.match(begin, /:\s*globalThreadScopedDefaults;/);
 });
@@ -621,7 +621,7 @@ test("the in-memory defaults follow the model defaults that were just written", 
   // Not ??: a cleared seed is stored as null and must not fall through to the installation pin.
   assert.match(
     store,
-    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*(?:npuPillDefault\([^)]*\),\s*)?globalThreadScopedDefaults\?\.\[key\],/,
   );
 });
 
