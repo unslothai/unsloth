@@ -72,6 +72,15 @@ def test_the_chat_search_step_expands_before_it_waits_for_the_search():
     expand = body.index("expand_collapsed_model_picker(page)", click)
     wait = body.index("search = wait_for_first(", expand)
     assert click < expand < wait
+    # An attached but hidden search field would pass the wait and time out in fill().
+    assert '.locator("visible=true")' in body[wait : body.index("timeout_ms", wait)]
+
+
+def test_the_expand_helper_only_trusts_controls_on_screen():
+    src = (HERE / "_playwright_robust.py").read_text(encoding = "utf-8")
+    start = src.index("def expand_collapsed_model_picker(")
+    body = src[start : src.index("\ndef ", start + 1)]
+    assert body.count(">> visible=true") == 2
 
 
 def test_open_picker_expands_after_clicking_the_trigger():

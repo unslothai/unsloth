@@ -500,8 +500,9 @@ RUN_SETTINGS_CONTEXT_LABEL = "Context"
 
 def expand_collapsed_model_picker(scope: Any, *, timeout_ms: int = 10_000) -> bool:
     """Expands an open model picker that shows only its loaded model's row. True when it clicked."""
-    show_all = scope.locator(f'button[aria-label$="{PICKER_SHOW_ALL_SUFFIX}"]')
-    expanded = scope.locator(PICKER_SOURCES_TABLIST)
+    # On screen only: a hidden mounted copy is neither clickable nor proof the picker expanded.
+    show_all = scope.locator(f'button[aria-label$="{PICKER_SHOW_ALL_SUFFIX}"] >> visible=true')
+    expanded = scope.locator(f"{PICKER_SOURCES_TABLIST} >> visible=true")
     if wait_for_first(expanded.or_(show_all), timeout_ms = timeout_ms) is None:
         return False
     if expanded.count() or not show_all.count():

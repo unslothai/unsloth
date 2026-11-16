@@ -1422,8 +1422,9 @@ with sync_playwright() as p:
         # The model loaded above opens the picker collapsed to its own row.
         if expand_collapsed_model_picker(page):
             info("model picker opened collapsed; expanded it")
+        # Visible only: an attached but hidden search field takes the fill below to its 60 s timeout.
         search = wait_for_first(
-            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)).locator("visible=true"),
             timeout_ms = 10_000,
         )
         shoot("03c-model-picker-open")
