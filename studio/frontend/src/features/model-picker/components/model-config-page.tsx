@@ -601,9 +601,16 @@ function GgufContextLengthSetting({
   // far right is the real maximum, and only the reset button returns to Auto. Within a step of max
   // counts, as Radix rounds steps from min and may never land on max itself.
   const isMaxPosition = (v: number) => v > max - CONTEXT_SLIDER_STEP;
+  // A key press below an off-grid max lands within that step too, so the keyboard would snap back
+  // to max (or Auto) forever; a keyed move down is a real decrement.
+  const keyed = useRef(false);
   const toSlider = (v: number) => (v === 0 ? max : v);
   const fromSlider = (v: number) =>
-    isMaxPosition(v) ? (value === 0 ? 0 : max) : v;
+    isMaxPosition(v) && !(keyed.current && v < max)
+      ? value === 0
+        ? 0
+        : max
+      : v;
   const { draft, sliderProps } = useSliderDraft(toSlider(value), (v) =>
     onChange(fromSlider(v)),
   );
@@ -652,6 +659,12 @@ function GgufContextLengthSetting({
             max={max}
             step={CONTEXT_SLIDER_STEP}
             {...sliderProps}
+            onKeyDownCapture={() => {
+              keyed.current = true;
+            }}
+            onPointerDownCapture={() => {
+              keyed.current = false;
+            }}
             className="ml-12 mr-7 min-w-0 flex-1"
             aria-label="Context"
             thumbValueText={(v) =>

@@ -79,7 +79,12 @@ test("the existing info hint owns the mode explanation and fitted result", () =>
 test("once a number is set, the far right is the real maximum and only reset returns to Auto", () => {
   assert.match(
     panelCode,
-    /const fromSlider = \(v: number\) => isMaxPosition\(v\) \? \(value === 0 \? 0 : max\) : v;/,
+    /const fromSlider = \(v: number\) => isMaxPosition\(v\) && !\(keyed\.current && v < max\) \? value === 0 \? 0 : max : v;/,
+  );
+  // An off-grid max: a key press down lands within a step of max and must still count as a decrement.
+  assert.match(
+    panelCode,
+    /onKeyDownCapture=\{\(\) => \{ keyed\.current = true; \}\} onPointerDownCapture=\{\(\) => \{ keyed\.current = false; \}\}/,
   );
   assert.match(
     panelCode,
