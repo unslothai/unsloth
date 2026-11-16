@@ -6,7 +6,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { rowSizeMeta } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
+import {
+  rowOwnBytes,
+  rowSizeMeta,
+} from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const GB = 1e9;
@@ -95,6 +98,16 @@ test("Discover rows: the Hub estimate reads as approximate, never for a GGUF rep
   );
 });
 
+test("a favorite quant row sizes that quant, and only that quant", () => {
+  assert.equal(rowOwnBytes("Q4_K_M", 2 * GB, null, 9 * GB), 2 * GB);
+  // Pinned quant deleted while a sibling stays: not the sibling's bytes, not the repo's.
+  assert.equal(rowOwnBytes("Q4_K_M", null, 3 * GB, 3 * GB), null);
+  assert.equal(rowOwnBytes("Q4_K_M", null, null, 9 * GB), null);
+  assert.equal(rowOwnBytes(undefined, null, 3 * GB, 9 * GB), 3 * GB);
+  assert.equal(rowOwnBytes(undefined, null, null, 9 * GB), 9 * GB);
+  assert.equal(rowOwnBytes(undefined, null, null, undefined), null);
+});
+
 test("connected API models get neither", () => {
   assert.deepEqual(
     rowSizeMeta({ kind: "external", id: "meta-llama/llama-3.1-70b", sizeBytes: GB }),
@@ -138,9 +151,8 @@ test("rows only draw the columns when the setting is on", () => {
     picker,
     /recommended\.some\(\s*\(m\) => !m\.isGguf && \(hubEstimates\.get\(m\.id\.toLowerCase\(\)\) \?\? 0\) > 0/,
   );
-  // A favorite quant row sizes that quant, not the whole repo.
   assert.match(
     picker,
-    /sizeBytes: savedVariant\s*\?\s*quantBytes\(savedVariant\)\s*:\s*onDisk\.length === 1\s*\?\s*quantBytes\(onDisk\[0\]\)\s*:\s*row\.sizeBytes/,
+    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*savedVariant \? quantBytes\(savedVariant\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.sizeBytes,\s*\)/,
   );
 });

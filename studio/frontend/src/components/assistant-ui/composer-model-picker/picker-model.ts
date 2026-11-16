@@ -557,6 +557,19 @@ export interface RowSizeInput {
   hubParams?: string | null;
 }
 
+/** A favorited quant row is that quant: if it is no longer on disk its size is unknown, not a sibling's. */
+export function rowOwnBytes(
+  favoriteQuant: string | undefined,
+  favoriteBytes: number | null,
+  soleQuantBytes: number | null,
+  repoBytes: number | undefined,
+): number | null {
+  if (favoriteQuant) {
+    return favoriteBytes;
+  }
+  return soleQuantBytes ?? repoBytes ?? null;
+}
+
 /** "Model size and parameters" setting. Unknown stays blank: no guessing past the data. */
 export function rowSizeMeta(row: RowSizeInput): {
   params: string | null;

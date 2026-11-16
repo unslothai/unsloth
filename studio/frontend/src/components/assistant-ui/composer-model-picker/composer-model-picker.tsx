@@ -232,6 +232,7 @@ import {
   readBounded,
   repoSection,
   sectionsHaveRows,
+  rowOwnBytes,
   rowSizeMeta,
   sortConnectedRows,
   sortDeviceRows,
@@ -4011,11 +4012,12 @@ export function ComposerModelPicker({
           format: row.format,
           baseModel: row.lora?.baseModel,
           partial: row.partial,
-          sizeBytes: savedVariant
-            ? quantBytes(savedVariant)
-            : onDisk.length === 1
-              ? quantBytes(onDisk[0])
-              : row.sizeBytes,
+          sizeBytes: rowOwnBytes(
+            row.favoriteQuant,
+            savedVariant ? quantBytes(savedVariant) : null,
+            onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
+            row.sizeBytes,
+          ),
           estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
           hubParams: paramLabel,
         })
