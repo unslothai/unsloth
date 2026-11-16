@@ -279,7 +279,7 @@ export function ChatBackgroundControls() {
 			title={t("chatBackground.title")}
 			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
-				// With an image set: one-word, icon-free actions (Remove as plain text); empty keeps the icon Upload.
+				// With an image: one-word, icon-free actions; empty keeps the icon Upload.
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-2">
 					{value && (
 						<Button

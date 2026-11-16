@@ -16,7 +16,6 @@ const ARTWORK = readSrc("features/chat-background/artwork.tsx");
 const BACKGROUND = readSrc("features/chat-background/background.tsx");
 
 test("the baked box is where CSS paints a no-repeat background for every sizing", () => {
-  // A 400 x 200 image in a 1000 x 1000 box.
   assert.deepEqual(imageBox(1000, 1000, 400, 200, "cover", "50% 50%"), {
     x: -500,
     y: 0,
@@ -110,7 +109,6 @@ test("only the current frame bakes; a departing frame fades out with the live fi
 });
 
 test("adjust: a drag moves the image with the pointer, a zoom keeps the point under it", () => {
-  // The image's leading edge after imageBox and scale(zoom) around the position.
   const edge = (p: number, box: number, drawn: number, zoom: number) =>
     p * (box - drawn * zoom);
   const box = 400;
@@ -120,10 +118,8 @@ test("adjust: a drag moves the image with the pointer, a zoom keeps the point un
   assert.ok(
     Math.abs(edge(p, box, drawn, z) - (edge(0.5, box, drawn, z) + 30)) < 1e-9,
   );
-  // Clamped at the image's edge, and inert where the image does not overflow.
   assert.equal(dragPosition(0, 5000, box, drawn, z), 0);
   assert.equal(dragPosition(0.3, 50, 400, 400, 1), 0.3);
-  // The image point under the cursor stays under it across a zoom.
   const at = 120;
   const q = zoomPosition(0.5, at, box, drawn, 1, 2);
   const along = (at - edge(0.5, box, drawn, 1)) / (drawn * 1);
@@ -138,7 +134,6 @@ test("adjust: framing lives in a dialog, not the sizing menu or a zoom slider", 
   assert.doesNotMatch(controls, /PositionField|POSITIONS\.map/);
   assert.doesNotMatch(controls, /key: "zoom", label: "chatBackground\.zoom"/);
   const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
-  // A draft until Apply, which writes whole percents the model accepts.
   assert.match(
     dialog,
     /position: `\$\{Math\.round\(draft\.x \* 100\)\}% \$\{Math\.round\(draft\.y \* 100\)\}%`/,
@@ -171,15 +166,12 @@ test("adjust: one-word buttons and no text selection", () => {
 
 test("adjust previews the whole wallpaper area scaled down, so any sizing and window shape match", () => {
   const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
-  // No square floor: a portrait window keeps its own aspect.
   assert.doesNotMatch(dialog, /Math\.max\(1, w \/ Math\.max\(1, h\)\)/);
   assert.match(dialog, /const aspect = area\.w \/ area\.h;/);
-  // The artwork renders at page size and is scaled, so Original size is not shown at natural px.
   assert.match(
     dialog,
     /width: area\.w,\s*height: area\.h,\s*transform: `scale\(\$\{scale\}\)`/,
   );
-  // Geometry runs in page px: pointer deltas and zoom anchors divide by the preview scale.
   assert.match(dialog, /dragPosition\(from\.x, dx \/ scale, area\.w, drawn\.w/);
   assert.match(dialog, /\{ x: at\.x \/ scale, y: at\.y \/ scale \}/);
 });
@@ -200,7 +192,6 @@ test("adjust: the page area follows a resize or rotation while the dialog is ope
 
 test("adjust: a two-finger touch pinch zooms where WebKit gesture events do not exist", () => {
   const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
-  // The second finger starts a pinch from the current zoom and spread; moves zoom around the midpoint.
   assert.match(
     dialog,
     /if \(pointers\.current\.size === 2\) \{[\s\S]*?touchPinch\.current = \{\s*dist: Math\.hypot\(a\.x - b\.x, a\.y - b\.y\) \|\| 1,\s*zoom: draftRef\.current\.zoom,/,
@@ -209,13 +200,11 @@ test("adjust: a two-finger touch pinch zooms where WebKit gesture events do not 
     dialog,
     /\(spread\.zoom \* Math\.hypot\(a\.x - b\.x, a\.y - b\.y\)\) \/ spread\.dist/,
   );
-  // Lifting one finger hands the drag to the other instead of jumping.
   assert.match(dialog, /onPointerUp=\{release\}\s*onPointerCancel=\{release\}/);
 });
 
 test("adjust: the preview URL survives StrictMode's double setup", () => {
   const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
-  // Each effect setup creates its own URL and revokes only that one.
   assert.match(
     dialog,
     /const next = URL\.createObjectURL\(value\.blob\);\s*setUrl\(next\);\s*return \(\) => URL\.revokeObjectURL\(next\);/,

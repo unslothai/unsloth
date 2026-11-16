@@ -35,10 +35,7 @@ function draftOf(value: ChatBackgroundValue): Draft {
   return { x: x / 100, y: y / 100, zoom: value.zoom };
 }
 
-/**
- * The page area the wallpaper paints, in CSS px. The preview renders this whole area and scales it
- * down, so every sizing (Original included) and any window shape frames what the page will show.
- */
+/** The page area the wallpaper paints (CSS px); the preview renders it scaled down. */
 function pageArea(fade: boolean): { w: number; h: number } {
   const w = Math.max(1, window.innerWidth);
   const h = fade
@@ -47,10 +44,7 @@ function pageArea(fade: boolean): { w: number; h: number } {
   return { w, h: Math.max(1, h) };
 }
 
-/**
- * Frames the wallpaper: drag to reposition, scroll or pinch to zoom
- * around the pointer, a Reset / zoom row, and Cancel / Apply. Edits stay a draft until Apply.
- */
+/** Frames the wallpaper: drag, scroll or pinch to zoom; edits stay a draft until Apply. */
 export function WallpaperAdjustDialog({
   open,
   onOpenChange,
@@ -67,19 +61,15 @@ export function WallpaperAdjustDialog({
   const [dragging, setDragging] = useState(false);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [box, setBox] = useState<{ w: number; h: number } | null>(null);
-  // State, not a ref: the preview mounts in the dialog's portal after `open` flips, so effects keyed
-  // on `open` would find no node and never measure it or attach the wheel and pinch listeners.
+  // State, not a ref: the preview mounts in the portal after `open` flips, so effects key on it.
   const [preview, setPreview] = useState<HTMLDivElement | null>(null);
-  // The pointer's last position: moves apply as increments to the current draft, so a zoom made
-  // mid-drag (wheel or pinch) is kept rather than replayed from the press.
+  // Last pointer position: moves apply to the current draft, so a mid-drag zoom is kept.
   const drag = useRef<{ id: number; x: number; y: number } | null>(null);
   const pinch = useRef<number | null>(null);
-  // Touch pinch for browsers without WebKit gesture events: every pointer down, and the spread and
-  // zoom when the second finger landed.
+  // Touch pinch without WebKit gesture events: pointers down, and spread and zoom at the second finger.
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const touchPinch = useRef<{ dist: number; zoom: number } | null>(null);
-  // State from an effect, not a memo: StrictMode's setup, cleanup, setup would otherwise revoke the
-  // one memoized URL and leave the preview blank.
+  // Effect state, not a memo: StrictMode would revoke a memoized URL and blank the preview.
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     const next = URL.createObjectURL(value.blob);
@@ -87,7 +77,7 @@ export function WallpaperAdjustDialog({
     return () => URL.revokeObjectURL(next);
   }, [value.blob]);
   const [area, setArea] = useState(() => pageArea(fade));
-  // Follows the window while open (a resize or a phone rotation), as the wallpaper itself does.
+  // Follows resizes and rotation while open.
   useEffect(() => {
     if (!open) {
       return;
@@ -161,7 +151,7 @@ export function WallpaperAdjustDialog({
           y: dragPosition(from.y, dy / scale, area.h, drawn.h, from.zoom / 100),
         }
       : from;
-  // A lifted finger ends a pinch; the one still down carries on dragging from where things are.
+  // A lifted finger ends a pinch; the other finger carries on dragging.
   const release = (event: { pointerId: number }) => {
     pointers.current.delete(event.pointerId);
     if (pointers.current.size < 2) {
@@ -268,7 +258,7 @@ export function WallpaperAdjustDialog({
           style={
             {
               aspectRatio: String(aspect),
-              // 300px tall at most, so a portrait window gives a narrow preview, not a square one.
+              // At most 300px tall, so a portrait window gets a narrow preview.
               width: `min(100%, calc(300px * ${aspect} * var(--ui-space-scale, 1)))`,
             } as CSSProperties
           }
@@ -276,8 +266,7 @@ export function WallpaperAdjustDialog({
             if (event.button !== 0 || !ready) {
               return;
             }
-            // A press would otherwise start a text selection that the drag sweeps across the dialog.
-            // Focus by hand, as the default focus is cancelled too.
+            // Stops a text selection; focus by hand, as the default focus is cancelled too.
             event.preventDefault();
             window.getSelection()?.removeAllRanges();
             event.currentTarget.focus({ preventScroll: true });
@@ -338,7 +327,7 @@ export function WallpaperAdjustDialog({
           onPointerCancel={release}
           onKeyDown={(event) => {
             const step = event.shiftKey ? NUDGE * 3 : NUDGE;
-            // The image moves the way the arrow points, as a drag moves it with the pointer.
+            // The image moves the way the arrow points.
             const delta = new Map([
               ["ArrowLeft", [-step, 0]],
               ["ArrowRight", [step, 0]],
