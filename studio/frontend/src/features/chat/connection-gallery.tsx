@@ -191,7 +191,7 @@ export function ConnectionGallery({
                     />
                   </button>
                 ) : group.id === "popular" ? null : (
-                  // The leading group needs no heading: it is what the gallery opens with.
+                  // The leading group needs no heading.
                   <span className="px-3 pb-1 text-ui-11 font-medium text-muted-foreground/80">
                     {group.label}
                   </span>

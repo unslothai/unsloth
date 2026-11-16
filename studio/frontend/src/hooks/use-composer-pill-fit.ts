@@ -109,8 +109,7 @@ export function useComposerPillFit(forceCompact: boolean) {
     if (row.parentElement) {
       resize.observe(row.parentElement);
     }
-    // The model chip after the row can widen (its logo, a reasoning label) without resizing either:
-    // unwatched, the row wraps until something else re-measures, and stays collapsed once it shrinks.
+    // The chip after the row can widen (logo, reasoning label) without resizing either: watch it.
     for (
       let sibling = row.nextElementSibling;
       sibling;

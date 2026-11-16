@@ -338,8 +338,7 @@ const TABS: TabDef[] = [
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
-/** The rail's groups: everyday pages first, headed groups after, system pages last. Within a group,
- *  tabs keep their TABS order. */
+/** Rail groups; within one, tabs keep their TABS order. */
 export const SETTINGS_NAV_GROUPS: {
   headingKey: TranslationKey | null;
   ids: SettingsTab[];
@@ -804,7 +803,6 @@ export function SettingsDialog() {
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            // 1920px screens get a 960px height.
             "3xl:w-[min(1220px,calc(100vw-2rem))] 3xl:!max-w-[min(1220px,calc(100vw-2rem))] 3xl:h-[min(960px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
@@ -934,7 +932,7 @@ export function SettingsDialog() {
                 {navGroups.map((group, index) => {
                   const headingId = group.headingKey ? `settings-nav-group-${index}` : undefined;
                   return (
-                    // Stacked, the rail is one row of tabs: groups and headings drop out of the layout.
+                    // Stacked, the rail is one tab row: groups and headings drop out.
                     <div
                       key={group.headingKey ?? `group-${index}`}
                       className="flex flex-col gap-0.5 [&:not(:first-child)]:mt-4 group-data-stacked/settings:contents"
@@ -976,7 +974,7 @@ export function SettingsDialog() {
                 <div
                   ref={mainScrollRef}
                   data-settings-main-scroll=""
-                  // Native bar hidden (index.css); the drawn thumb overlays the edge, so both sides pad alike.
+                  // Native bar hidden (index.css); the drawn thumb overlays the edge.
                   className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-12 py-6"
                 >
                   <SettingsPanelPane
@@ -987,8 +985,7 @@ export function SettingsDialog() {
                     scrollRef={mainScrollRef}
                   />
                 </div>
-                {/* Drawn, not native: a macOS overlay bar insets its thumb and ignores ::-webkit-scrollbar, so only
-                    this sits on the dialog's very edge; it keeps the native bar's look (index.css). */}
+                {/* Drawn: a macOS overlay bar insets its thumb and ignores ::-webkit-scrollbar. */}
                 <ListScrollbar
                   target={mainScrollRef}
                   flush={true}

@@ -19,11 +19,11 @@ export function ListScrollbar({
 }: {
   target: RefObject<HTMLDivElement | null>;
   edge?: boolean;
-  /** Thumb on the very edge (right: 0), for a scroller that ends at its container's edge. */
+  /** Thumb at right: 0, on the container's edge. */
   flush?: boolean;
-  /** Track gap at top and bottom, e.g. to clear a rounded container's corners. */
+  /** Track gap at top and bottom. */
   inset?: number;
-  /** Replaces the thumb's look (colour, width), e.g. to match a native scrollbar. */
+  /** Overrides the thumb's look. */
   thumbClassName?: string;
   /** A pinned element at the list's foot; the track ends at its top rather than running under it. */
   stopAt?: string;

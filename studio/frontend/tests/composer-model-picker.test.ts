@@ -323,18 +323,15 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
-  // A load seen in flight is fresh: collapsed, whatever was stored for that model.
   assert.match(picker, /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/);
   assert.match(
     picker,
     /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
   );
-  // A user toggle is stored against the resident model.
   assert.match(
     picker,
     /if \(residentKeyRef\.current\) \{\s+writeModelExpanded\(residentKeyRef\.current, next\);/,
   );
-  // An eject drops that model's choice and expands.
   assert.match(
     picker,
     /writeModelExpanded\(prev, null\);\s+setExpanded\(true\);/,
@@ -1533,7 +1530,6 @@ test("a model with no logo of its own shows no icon", () => {
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
   assert.match(mark, /return null;\s*\}\s*$/);
   assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
-  // A loaded model without a logo still ejects on hover: the slot opens only then.
   assert.equal(picker.match(/chosenName && chosenLoaded \? \(/g)?.length, 2);
   assert.equal(
     picker.match(
@@ -1547,7 +1543,6 @@ test("a loaded cache path keeps its maker logo before the inventory lands", () =
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // After a refresh the chip knows only the snapshot path until rows load.
   assert.match(
     picker,
     /hubParts\(row\.id \? \(hfCacheRepoId\(row\.id\) \?\? undefined\) : undefined\)/,
@@ -1566,8 +1561,6 @@ test("run settings keep Back and the title pinned, as the Library header", () =>
   const page = readSrc(
     "features/model-picker/components/model-config-page.tsx",
   );
-  // The eyebrow sits outside the sticky row, so it scrolls away instead of collapsing; neither is
-  // wrapped, since a sticky row only sticks within its parent (here, the whole page).
   assert.match(
     page,
     /<>\s*<div\s+data-config-eyebrow=""[\s\S]*?Run settings\s*<\/div>\s*<div\s+data-config-header=""\s+data-config-header-row=""\s+className="mt-1\.5 flex items-center gap-2\.5 pb-5"\s*>/,
@@ -1581,7 +1574,6 @@ test("run settings keep Back and the title pinned, as the Library header", () =>
     css,
     /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/,
   );
-  // Back keeps its centred spot at rest and only slides level with the title once pinned.
   assert.match(
     css,
     /\[data-config-header-row\] > button:first-child \{\s*transform: translateY\(calc\(-0\.5 \* \(var\(--config-eyebrow-h\) \+ var\(--config-header-gap\)\)\)\);/,
@@ -1597,7 +1589,6 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  // modelLoading also runs for unloads, so a fresh load needs the load pick that only loads set.
   assert.match(
     picker,
     /const loadPicked = useChatRuntimeStore\(\(s\) => s\.loadingModelPick !== null\);/,
