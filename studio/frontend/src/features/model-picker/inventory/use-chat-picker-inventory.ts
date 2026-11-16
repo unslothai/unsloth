@@ -16,6 +16,7 @@ import {
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
+import { pickerLocalCacheSnapshots } from "./local-cache-snapshot";
 import {
   allowedHiddenModelIdMatches,
   umbrellaFolderRowAllowed,
@@ -154,12 +155,21 @@ export function useChatPickerInventory(
         .map((row) => toCachedModelRepo(row, options.opaqueKind)),
     [inventory.cachedRows, options.allowedHiddenModelIds, options.opaqueKind],
   );
+  const cacheSnapshots = useMemo(
+    () =>
+      pickerLocalCacheSnapshots(
+        inventory.localRows,
+        inventory.cachedRows,
+        inventory.hfCacheGgufLoadIds,
+      ),
+    [inventory.localRows, inventory.cachedRows, inventory.hfCacheGgufLoadIds],
+  );
   const localModels = useMemo(
     () =>
       inventory.localRows
         .filter(
           (row) =>
-            PICKER_LOCAL_SOURCES.has(row.source) &&
+            (PICKER_LOCAL_SOURCES.has(row.source) || cacheSnapshots.has(row)) &&
             // Skip non-chat rows (a weightless path), except generation-task rows the diffusion pickers can load.
             // toLocalModelInfo drops capabilities, so this is the only place for the guard.
             (row.capabilities.canChat ||
@@ -173,7 +183,7 @@ export function useChatPickerInventory(
               )),
         )
         .map((row) => toLocalModelInfo(row, options.opaqueKind)),
-    [inventory.localRows, options.allowedHiddenModelIds, options.opaqueKind],
+    [inventory.localRows, cacheSnapshots, options.allowedHiddenModelIds, options.opaqueKind],
   );
 
   return {

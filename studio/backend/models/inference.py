@@ -3776,6 +3776,12 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
         "tool loop, so a count that never sees it prices a catalog the relay does not render.",
     )
+    breakdown: bool = Field(
+        False,
+        description = "[x-unsloth] Also split the total into system, tools (schemas and the tool "
+        "nudge) and messages, and return the rendered prompt (GGUF only; null elsewhere). Studio's "
+        "/context. Costs two more renders.",
+    )
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod
@@ -6108,6 +6114,11 @@ class PromptUpsamplerPreviewRequest(BaseModel):
         None,
         description = "Sampling variant; null = the loaded FLUX.3 family's (distilled when none is loaded)",
     )
+    family: Optional[str] = Field(
+        None,
+        description = "Image family whose enhancer runs (minimax-h3-image: its Qwen3.5-9B enhancer); null = the "
+        "loaded family's, FLUX.3's upsampler for every other family",
+    )
 
     @field_validator("reference_images")
     @classmethod
@@ -6416,7 +6427,8 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Image-conditioning limits of the loaded model on the active engine: "
         "max_condition_images (total, including the source), alpha, dimension_multiple, "
-        "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
+        "max_output_side, max_output_pixels, reference_resolutions, edit_output_resolution (the output "
+        "size an edit should default to, or null) and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
     engine: Optional[str] = Field(
@@ -6663,6 +6675,13 @@ class ImageGenerationRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "[x-unsloth] What to avoid, on models that take a negative prompt."
     )
+    loras: Optional[list[LoraSpec]] = Field(
+        None,
+        max_length = 8,
+        description = "[x-unsloth] LoRA adapters for this generation (discovery id + weight), as on "
+        "/images/generate. Omitted: the adapters the loaded model baked in at load time, at their "
+        "load weights (none for a load without baked adapters). An empty list renders without any.",
+    )
 
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
@@ -6677,6 +6696,20 @@ class ImageGenerationRequest(BaseModel):
     def _minus_one_seed_means_random(cls, value):
         # -1 = random (A1111, sd.cpp); seed was ignored here before, so -1 must not start 400ing.
         return None if value == -1 else value
+
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
+        # Repeated ids would stack the same adapter past the weight bound.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
+                seen.add(spec.id)
+        return value
 
 
 class ImageGenerationData(BaseModel):
@@ -7723,8 +7756,8 @@ class VideoGenerateRequest(BaseModel):
         None,
         max_length = 32 * 1024 * 1024,
         description = "Base64/data-URL image the clip starts from (image-to-video). With width "
-        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
-        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "and height omitted it picks the canvas: MiniMax-H3 keeps its default 1344x768 (as the "
+        "reference workflow does) and stretches the frame on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
         "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
         "frame (status supports_first_frame).",
     )
@@ -7836,7 +7869,7 @@ class VideoGenerateRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
-        # Keyframe only: a half-specified canvas is silently replaced by the source aspect; other families resolve the missing axis from a preset.
+        # Keyframe only: a half-specified canvas would silently drop the sent axis for the default canvas; other families resolve the missing axis from a preset.
         if not (self.first_frame or self.last_frame):
             return self
         if (self.width is None) != (self.height is None):
@@ -8037,6 +8070,18 @@ class VideoGenerationDefaults(BaseModel):
         description = "True when a first frame without width/height takes the resolution preset "
         "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
         "canvas_short_edge rule",
+    )
+    keyframe_keeps_canvas: bool = Field(
+        False,
+        description = "True when a keyframe without width/height renders at the family default "
+        "canvas (stretched / centre-cropped on, as MiniMax-H3's reference workflow does) rather "
+        "than a canvas matched to its aspect",
+    )
+    default_resolution: Optional[list[int]] = Field(
+        None,
+        description = "(width, height) of the page's Default preset when it differs from resolution_presets[0] "
+        "(MiniMax-H3: the reference templates' 864x480); a request without a size still takes "
+        "resolution_presets[0]",
     )
     flow_shift: Optional[float] = Field(
         None,

@@ -94,7 +94,15 @@ import {
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import {
+  ChatSkillsDialog,
+  contextReportBranch,
+  isContextCommand,
+  isRewindCommand,
+  isSkillsCommand,
+  useContextReportStore,
+  useRewindDialogStore,
+} from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -179,6 +187,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { forkChatThread } from "@/features/chat/api/chat-api";
+import { syncThreadScroll } from "@/features/chat/thread-scroll-flag";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -433,6 +442,7 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -2154,6 +2164,7 @@ export const Thread: FC<{
       viewportElRef.current = node;
       setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
+      syncThreadScroll(node);
     },
     [viewportRef, runtimeThreadId],
   );
@@ -2367,6 +2378,7 @@ export const Thread: FC<{
             viewportRef={viewportElRef}
           />
           <ForkChatShortcut />
+          <ContextReportMount />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -3051,6 +3063,7 @@ const Composer: FC<{
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
   const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
     useState(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   useEffect(() => {
     if (!researchUsed) return;
     if (hasResearchMessage && researchThreadId) {
@@ -4027,6 +4040,10 @@ const Composer: FC<{
     registeringVideoDrops ||
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
+  const hasMaterializingAttachments =
+    hasMaterializingImageAttachments ||
+    hasMaterializingAudioAttachments ||
+    hasMaterializingVideoAttachments;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
@@ -5772,6 +5789,55 @@ const Composer: FC<{
         });
         return;
       }
+      // Never sent: only a card under the last message.
+      if (!overlay && !hasAttachments && isContextCommand(composerText)) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        // The count endpoint refuses while anything generates.
+        if (
+          threadIsRunning ||
+          aui.thread().getState().isRunning ||
+          Object.values(runtime.runningByThreadId).some(Boolean)
+        ) {
+          toast.error(translate("context.waitForResponse"));
+          return;
+        }
+        // No local tokenizer: the header ring already shows the provider's total.
+        if (isExternalModelId(runtime.params.checkpoint)) {
+          toast.info(translate("context.apiNoBreakdown"));
+          return;
+        }
+        if (!runtime.params.checkpoint || runtime.loadedContextLength == null) {
+          toast.info(translate("context.noModel"));
+          return;
+        }
+        if (aui.thread().getState().messages.length === 0) {
+          toast.info(translate("context.emptyChat"));
+          return;
+        }
+        aui.composer().setText("");
+        useContextReportStore
+          .getState()
+          .showContext(
+            aui.threadListItem().getState().id,
+            contextReportBranch(aui.thread().getState().messages),
+            runtime.params.checkpoint,
+          );
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
+        !hasMaterializingAttachments &&
+        isSkillsCommand(composerText)
+      ) {
+        event.preventDefault();
+        clearStoredDraft();
+        aui.composer().setText("");
+        setSkillsDialogOpen(true);
+        return;
+      }
       if (
         !overlay &&
         !hasAttachments &&
@@ -5807,6 +5873,7 @@ const Composer: FC<{
           return;
         }
         requestThreadCompaction(referenceThreadId);
+        useContextReportStore.getState().dismissContext();
         clearStoredDraft();
         aui.composer().setText("");
         return;
@@ -5965,6 +6032,7 @@ const Composer: FC<{
       disabled,
       disableQueue,
       hasAttachments,
+      hasMaterializingAttachments,
       hasPendingAudio,
       enqueueSend,
       interceptSend,
@@ -6044,6 +6112,7 @@ const Composer: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+        <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
         <ImagesToggle />
         <KnowledgeBaseComposerButton side={effectiveMenuSide} />
         {mcpEnabledForChat ? (
@@ -6081,6 +6150,15 @@ const Composer: FC<{
       />
     ),
     [researchWebsiteAccessOpen, effectiveDeepResearchEnabled],
+  );
+  const skillsDialog = useMemo(
+    () => (
+      <ChatSkillsDialog
+        open={skillsDialogOpen}
+        onOpenChange={setSkillsDialogOpen}
+      />
+    ),
+    [skillsDialogOpen],
   );
 
   const composerContent = (
@@ -6219,6 +6297,7 @@ const Composer: FC<{
         )}
       </div>
       {researchWebsiteAccessDialog}
+      {skillsDialog}
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
@@ -7052,6 +7131,7 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ) : null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -8710,6 +8790,19 @@ const RewindDialogMount: FC = () => {
     </Suspense>
   ) : null;
 };
+
+const LazyContextReport = lazy(() =>
+  import("@/components/assistant-ui/context-report").then((module) => ({
+    default: module.ContextReport,
+  })),
+);
+
+const ContextReportMount: FC = () =>
+  useContextReportStore((s) => s.report !== null) ? (
+    <Suspense fallback={null}>
+      <LazyContextReport />
+    </Suspense>
+  ) : null;
 
 const RewindMessageButton: FC = () => {
   const aui = useAui();

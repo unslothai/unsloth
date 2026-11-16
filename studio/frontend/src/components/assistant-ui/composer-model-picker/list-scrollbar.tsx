@@ -12,10 +12,19 @@ const MIN_THUMB = 24;
 export function ListScrollbar({
   target,
   edge = false,
+  flush = false,
+  inset = INSET,
+  thumbClassName,
   stopAt,
 }: {
   target: RefObject<HTMLDivElement | null>;
   edge?: boolean;
+  /** Thumb at right: 0, on the container's edge. */
+  flush?: boolean;
+  /** Track gap at top and bottom. */
+  inset?: number;
+  /** Overrides the thumb's look. */
+  thumbClassName?: string;
   /** A pinned element at the list's foot; the track ends at its top rather than running under it. */
   stopAt?: string;
 }) {
@@ -45,13 +54,13 @@ export function ListScrollbar({
       // Pinned to the foot, so its own height is what it covers; layout size, not the open animation's scale.
       const foot = stopAt ? el.querySelector<HTMLElement>(stopAt) : null;
       const under = foot?.offsetHeight ?? 0;
-      const track = el.clientHeight - under - INSET * 2;
+      const track = el.clientHeight - under - inset * 2;
       const height = Math.min(
         track,
         Math.max(MIN_THUMB, (track * el.clientHeight) / el.scrollHeight),
       );
       setThumb({
-        top: el.offsetTop + INSET + ((track - height) * el.scrollTop) / max,
+        top: el.offsetTop + inset + ((track - height) * el.scrollTop) / max,
         height,
         track,
       });
@@ -73,7 +82,7 @@ export function ListScrollbar({
       observer.disconnect();
       mutations.disconnect();
     };
-  }, [target, stopAt]);
+  }, [target, stopAt, inset]);
 
   if (!thumb) {
     return null;
@@ -119,8 +128,14 @@ export function ListScrollbar({
     >
       <div
         className={cn(
-          "composer-list-thumb absolute inset-y-0 w-[calc(4px*var(--ui-space-scale,1))] rounded-full opacity-0 transition-[width,opacity] duration-150 group-hover/bar:w-[calc(6px*var(--ui-space-scale,1))]",
-          edge ? "right-px" : "right-[calc(5px*var(--ui-space-scale,1))]",
+          "absolute inset-y-0 rounded-full opacity-0 transition-[width,opacity] duration-150",
+          thumbClassName ??
+            "composer-list-thumb w-[calc(4px*var(--ui-space-scale,1))] group-hover/bar:w-[calc(6px*var(--ui-space-scale,1))]",
+          flush
+            ? "right-0"
+            : edge
+              ? "right-px"
+              : "right-[calc(5px*var(--ui-space-scale,1))]",
           (listHover || barHover || dragging) && "opacity-100",
         )}
       />

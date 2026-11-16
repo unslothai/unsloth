@@ -421,7 +421,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 id="password"
                 aria-describedby={loginMode === "multi" ? "setup-code-hint" : undefined}
                 type={showPassword ? "text" : "password"}
-                className="pr-10"
+                className="pr-10 tracking-[0.02em]"
                 autoComplete="current-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -457,7 +457,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                       changingFromSetupCode ? "current-setup-code-hint" : undefined
                     }
                     type={showPassword ? "text" : "password"}
-                    className="pr-10"
+                    className="pr-10 tracking-[0.02em]"
                     autoComplete="current-password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
@@ -494,7 +494,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
                 <Input
                   id="new-password"
                   type={showNewPassword ? "text" : "password"}
-                  className="pr-10"
+                  className="pr-10 tracking-[0.02em]"
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
@@ -521,6 +521,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               <Input
                 id="confirm-password"
                 type="password"
+                className="tracking-[0.02em]"
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
@@ -549,7 +550,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           <p className="text-center text-sm text-amber-600">{helperText}</p>
         )}
         {error && (
-          <p className="text-center text-sm text-destructive [overflow-wrap:anywhere]">
+          <p className="text-center text-xs text-destructive [overflow-wrap:anywhere]">
             {error}
           </p>
         )}
