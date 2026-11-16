@@ -82,6 +82,7 @@ def _case_parity(
     layers_per_stage = None,
     fault = None,
     n_mb = 2,
+    keep_replica = False,
 ):
     from safetensors.torch import load_file
     from torch.distributed.device_mesh import init_device_mesh
@@ -97,7 +98,11 @@ def _case_parity(
         ref.save_pretrained(os.path.join(tmp, "ref"))
     model = tiny.build("gemma4_e2b", **build)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
-    config = ppn.PPConfig(text_only = not causal_lm or None, layers_per_stage = layers_per_stage)
+    config = ppn.PPConfig(
+        text_only = not causal_lm or None,
+        layers_per_stage = layers_per_stage,
+        keep_replica = keep_replica,
+    )
     pp = ppn.apply_pipeline_parallel(
         model, mesh["pp"], n_microbatches = n_mb, schedule = schedule, config = config
     )
@@ -117,6 +122,13 @@ def _case_parity(
     if rank == 0:
         out["saved_ref"] = load_file(os.path.join(tmp, "ref", "adapter_model.safetensors"))
         out["saved_pp"] = load_file(os.path.join(tmp, "pp", "adapter_model.safetensors"))
+    if keep_replica:
+        # The whole model back (full per-layer table, one-process per-layer input path): same loss as one process.
+        vlm._load("pp_env").gather_replica(model, "generate")
+        with torch.no_grad():
+            out["replica_loss"] = float(model(input_ids = ids, labels = labels, use_cache = False).loss)
+            out["ref_loss"] = float(ref(input_ids = ids, labels = labels, use_cache = False).loss)
+        out["replica_table"] = type(decoder.embed_tokens_per_layer).__name__
     return out
 
 
@@ -166,6 +178,17 @@ def _check(
 def test_pp2_per_layer_inputs_match_one_process(causal_lm):
     results = spawn("ple_parity", causal_lm = causal_lm)
     print("worst gradient error", _check(results, 2))
+
+
+def test_pp2_per_layer_inputs_keep_replica_restores_the_whole_model():
+    results = spawn("ple_parity", keep_replica = True)
+    _check(results, 2)
+    for res in results:
+        assert res["replica_table"] == "Gemma4TextScaledWordEmbedding", res["replica_table"]
+        assert abs(res["replica_loss"] - res["ref_loss"]) < 1e-5, (
+            res["replica_loss"],
+            res["ref_loss"],
+        )
 
 
 def test_pp2_per_layer_inputs_frozen_projection_match_one_process():
