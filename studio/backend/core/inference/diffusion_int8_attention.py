@@ -481,7 +481,9 @@ PLAIN_ERROR_SLACK = 1.15
 # What a route's calls run (``mode`` of the op): MODE_MAIN the kernels as they were before the attention-sink path
 # (no learning, no race: every family not measured with it, and the probes); MODE_RACE the sink path with its race
 # against torch's attention (an automatic route of a SINK_DITS family).
-MODE_MAIN, MODE_RACE = 0, 1
+# MODE_KERNELS: a forced request (by name or the env switch) of a SINK_DITS family: the same race between the INT8 paths
+# (PLAIN_ERROR_SLACK, RACE_MARGIN), never torch's attention.
+MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
 # The families the attention-sink path was measured on (accuracy and speed per card): only their routes run it.
 SINK_DITS = frozenset(
     {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
@@ -882,11 +884,20 @@ def _outside_capture() -> Any:
     return hold_off_capture()
 
 
-def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int) -> Any:
+def _sink_race(
+    plan: dict,
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float],
+    index: int,
+    forced: bool = False,
+) -> Any:
     """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
     the faster of the sink path and the kernels without it (only where their error against torch's attention here is
-    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native". The
-    verdict is logged."""
+    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native".
+    ``forced`` (a forced request): the INT8 paths only, torch's attention neither timed nor taken. The verdict is
+    logged."""
     import torch
 
     stream = _raw_stream(index)
@@ -904,7 +915,9 @@ def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index
     def torch_attention() -> Any:
         return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
 
-    fns = {"incumbent": torch_attention, "sinks": kernels(True), "plain": kernels(False)}
+    fns = {"sinks": kernels(True), "plain": kernels(False)}
+    if not forced:
+        fns = {"incumbent": torch_attention, **fns}
     try:
         ref = torch_attention().float()
         norm = float(ref.norm())
@@ -915,8 +928,8 @@ def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index
         ref = None
         ms = _median_ms(fns)
     except torch.OutOfMemoryError:
-        return "native"
-    path = _pick_path(ms, err)
+        return False if forced else "native"
+    path = _pick_path(ms, err, forced)
     _log().info(
         "diffusion.int8_attention: attention sinks in %s keys x %s heads, sink path %.4f ms (error %.4g), without it "
         "%.4f ms (error %.4g), torch %.4f ms: %s",
@@ -926,7 +939,7 @@ def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index
         err["sinks"],
         ms["plain"],
         err["plain"],
-        ms["incumbent"],
+        ms.get("incumbent", float("nan")),
         {True: "the sink path", False: "the kernels without it"}.get(
             path, "torch's attention from here on"
         ),
@@ -936,12 +949,18 @@ def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index
     return path
 
 
-def _pick_path(ms: dict, err: dict) -> Any:
+def _pick_path(
+    ms: dict,
+    err: dict,
+    forced: bool = False,
+) -> Any:
     """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
     kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
     sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
     taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
-    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite."""
+    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite.
+    ``forced``: the first of those INT8 paths, never torch's attention (the kernels without the sink path where
+    neither error is finite: the ones a forced request ran before the path)."""
     finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
     if not finite["sinks"]:
         order = ["plain"] if finite["plain"] else []
@@ -952,6 +971,8 @@ def _pick_path(ms: dict, err: dict) -> Any:
     else:
         order = ["sinks"]
     paths = {"sinks": True, "plain": False}
+    if forced:
+        return paths[order[0]] if order else False
     for name in order:
         if ms[name] < RACE_MARGIN * ms["incumbent"]:
             return paths[name]
@@ -1049,7 +1070,12 @@ def _attention_on_device(
     """One call of ``plan`` on the current device and stream, on the path it takes (_choose_path)."""
     import torch
 
-    path, n = _choose_path(plan, race = lambda: _sink_race(plan, q, k, v, scale, index))
+    path, n = _choose_path(
+        plan,
+        race = lambda: _sink_race(
+            plan, q, k, v, scale, index, forced = plan.get("mode") == MODE_KERNELS
+        ),
+    )
     if path == "native":
         return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
     dev = q.device
@@ -1669,7 +1695,9 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
 def sink_mode(dit_name: str, forced: bool) -> int:
     """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
     the families it was measured on."""
-    return MODE_RACE if dit_name in SINK_DITS else MODE_MAIN
+    if dit_name not in SINK_DITS:
+        return MODE_MAIN
+    return MODE_KERNELS if forced else MODE_RACE
 
 
 def install_int8_attention(

@@ -584,3 +584,61 @@ def test_the_sink_op_is_registered_with_a_fake():
         q = torch.empty(1, 16, 2, 64, dtype = torch.bfloat16)
         assert op(q, q, q, 1).shape == q.shape
     assert "int mode" not in str(torch.ops.unsloth_studio.int8_attention_nhd.default._schema)
+
+
+class _Seen:
+    """A finished learning read of a plan whose heads clipped (an attention sink)."""
+
+    def synchronize(self):
+        pass
+
+
+def _deciding_plan(mode):
+    return _fake_plan(
+        mode = mode, calls = I.SINK_DECIDE_AT, checks = [(_Seen(), torch.ones(2, dtype = torch.int32))]
+    )
+
+
+@pytest.mark.parametrize("mode, native", [(I.MODE_RACE, True), (I.MODE_KERNELS, False)])
+def test_a_forced_sink_route_never_ends_on_torch_attention(monkeypatch, mode, native):
+    """The deciding call of a plan with sinks: an automatic route may hand the plan to torch's attention; a forced one
+    (by name or the env switch) races only the INT8 paths, so its calls stay on the kernel."""
+    import contextlib
+
+    plan = _deciding_plan(mode)
+    launched = _recording_kernels(monkeypatch, plan)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    monkeypatch.setattr(I, "_sink_race", lambda *a, forced = False: False if forced else "native")
+    sentinel = torch.full((1, 4, 2, 8), 7.0)
+    monkeypatch.setattr(I, "native_attention", lambda *a: sentinel)
+    q = torch.zeros(1, 4, 2, 8)
+    out = I._cuda_attention(q, q, q, {}, None, 0, mode)
+    assert (out is sentinel) is native
+    assert plan["sinks"] == ("native" if native else False)
+    assert launched == ([] if native else [("quant", False), ("attn", False)])
+
+
+def test_the_forced_pick_follows_the_same_rules_without_torch():
+    """Forced: the faster of the INT8 paths by RACE_MARGIN within PLAIN_ERROR_SLACK, whatever torch's time; the
+    kernels without the sink path where neither error is finite."""
+    pick = I._pick_path
+    near, far = {"sinks": 0.020, "plain": 0.0207}, {"sinks": 0.021, "plain": 0.034}
+    slow = {"sinks": 1.40, "plain": 1.30}
+    assert pick(slow, near, True) is False and pick(slow, far, True) is True
+    assert pick({"sinks": 1.20, "plain": 1.30}, near, True) is True
+    nan = float("nan")
+    assert pick(slow, {"sinks": nan, "plain": nan}, True) is False
+    assert pick(slow, {"sinks": nan, "plain": 0.02}, True) is False
+    assert pick(dict(slow, incumbent = 0.1), near) == "native"
+
+
+def test_forced_requests_of_the_sink_families_take_the_kernels_only_mode(monkeypatch):
+    """By name: Z-Image's route races the INT8 paths only; Wan's stays on main's kernels."""
+    assert I.sink_mode("ZImageTransformer2DModel", True) == I.MODE_KERNELS
+    assert I.sink_mode("Flux3Transformer2DModel", False) == I.MODE_RACE
+    assert I.sink_mode("WanTransformer3DModel", True) == I.MODE_MAIN
+    dit = _dispatch_card(monkeypatch)
+    pipe = dit("ZImageTransformer2DModel")
+    assert D.install(pipe, _TARGET, requested = "unsloth_int8") == 1
+    assert pipe.transformer.attn.processor._attention_backend.sinks == I.MODE_KERNELS

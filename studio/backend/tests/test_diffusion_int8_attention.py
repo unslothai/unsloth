@@ -1565,7 +1565,7 @@ def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch)
     attention."""
     races = []
     monkeypatch.setattr(
-        I, "_sink_race", lambda plan, q, k, v, scale, index: races.append(q.shape) or "native"
+        I, "_sink_race", lambda plan, q, k, v, scale, index, **_: races.append(q.shape) or "native"
     )
     shape = (1, 700, 4, 128)
     config = _cuda_config(128)
