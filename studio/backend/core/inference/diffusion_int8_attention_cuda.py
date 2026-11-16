@@ -1107,14 +1107,15 @@ extern "C" __global__ void unsloth_i8stats_q(
 // The V range a head quantises with, computed alike by every V-tile block and the residual job. A few keys far from
 // the rest in most channels (attention sinks: the first text tokens of a joint sequence, 60-85x the median key norm)
 // set every channel's range and cost every other key its resolution, while they draw well under 1% of the
-// attention. So when the full range of some channel is more than SINK_RATIO times its range without the chunk that
-// holds the head's largest |v|, the head uses that robust range (widened by SINK_MARGIN, never past the full range):
+// attention. So when the full range of at least half the channels is more than SINK_RATIO times their range without
+// the chunk that holds the head's largest |v| (a sink is far out in most channels: 63-95% of them on FLUX.3 and
+// Z-Image, against at most 9% for heavy-tailed V with no sink), the head uses that robust range (widened by SINK_MARGIN, never past the full range):
 // that chunk's keys are clipped to it in place and the parts clipped off by more than SINK_MIN (in units of the
 // gain) are added back exactly by the attention kernel (unsloth_i8quant_kv's residual job, the epilogue of
 // unsloth_i8attn); each costs the epilogue about a fifth of a key tile, so only the sinks and the few keys near them
 // go there (FLUX.3 / Z-Image: 1-13 keys a head). Any other head keeps the full range, bit for bit. smc / smr get the
 // centre and 1 / gain of channels c < HD; returns whether the head clips.
-#define SINK_RATIO 8.0f
+#define SINK_RATIO 2.0f
 #define SINK_MARGIN 2.0f
 #define SINK_MIN 0.25f
 __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict__ vsink, i64 bh, int nvc,
@@ -1129,7 +1130,7 @@ __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict
       sc = j;
     }
   }
-  float ratio = 0.f;
+  int far = 0;  // channels whose full range is more than SINK_RATIO times the robust one
   for (u32 c = tid; c < HD; c += nt) {
     float lo = 3.0e38f, hi = -3.0e38f, lor = 3.0e38f, hir = -3.0e38f;
     const float* part = vpart + bh * nvc * 2 * HD + c;
@@ -1146,15 +1147,15 @@ __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict
     smr[c] = hi;
     smx[0][c] = lor;
     smx[1][c] = hir;
-    ratio = fmaxf(ratio, (hi - lo) / fmaxf(hir - lor, 1e-30f));
+    far += (hi - lo) > SINK_RATIO * (hir - lor);
   }
 #pragma unroll
-  for (int s = 1; s < 32; s <<= 1) ratio = fmaxf(ratio, __shfl_xor_sync(0xffffffffu, ratio, s));
-  if ((tid & 31u) == 0) smw[tid >> 5] = ratio;
+  for (int s = 1; s < 32; s <<= 1) far += __shfl_xor_sync(0xffffffffu, far, s);
+  if ((tid & 31u) == 0) smw[tid >> 5] = (float)far;
   __syncthreads();
   float r = 0.f;
-  for (u32 w = 0; w < nt / 32; ++w) r = fmaxf(r, smw[w]);
-  const bool clip = nvc > 1 && vstep == 1 && r > SINK_RATIO;
+  for (u32 w = 0; w < nt / 32; ++w) r += smw[w];
+  const bool clip = nvc > 1 && vstep == 1 && 2.f * r >= (float)HD;
   for (u32 c = tid; c < HD; c += nt) {
     const float lo = smc[c], hi = smr[c];
     float centre = 0.5f * (hi + lo), gain = fmaxf(0.5f * (hi - lo), 1e-12f);

@@ -151,9 +151,9 @@ def reference_quantise(
 
 def reference_v_range(vh, vstep, nvc, vrows):
     """(centre, gain, clip) per head in fp64, as the quantisers' v_range: the full range of every channel, or, where
-    some channel's full range is more than SINK_RATIO (8) times its range without the stats chunk that holds the
-    head's largest |v| (an attention sink), that robust range widened by SINK_MARGIN (2) (at most the full range),
-    clipped."""
+    at least half the channels have a full range more than SINK_RATIO (2) times their range without the stats chunk
+    that holds the head's largest |v| (an attention sink), that robust range widened by SINK_MARGIN (2) (at most the
+    full range), clipped."""
     BH, Sk, D = vh.shape
     lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
     vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
@@ -169,8 +169,8 @@ def reference_v_range(vh, vstep, nvc, vrows):
     keep[torch.arange(BH), sink] = False
     hir = torch.where(keep[:, :, None], cmax, torch.full_like(cmax, -1e300)).amax(1)
     lor = torch.where(keep[:, :, None], cmin, torch.full_like(cmin, 1e300)).amin(1)
-    ratio = ((hi - lo) / (hir - lor).clamp_min(1e-30)).amax(-1)
-    clip = (ratio > 8.0) & (nvc > 1) & (vstep == 1)
+    far = ((hi - lo) > 2.0 * (hir - lor)).sum(-1)
+    clip = (2 * far >= D) & (nvc > 1) & (vstep == 1)
     rc = 0.5 * (hir + lor)
     rg = torch.minimum(2.0 * 0.5 * (hir - lor), 0.5 * (hi - lo)).clamp_min(1e-12)
     return torch.where(clip[:, None], rc, vc), torch.where(clip[:, None], rg, vg), clip
@@ -742,7 +742,7 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
 
 @pytest.mark.parametrize("sinks", [(1,), (1030, 1031)])
 def test_the_method_keeps_v_resolved_past_attention_sinks(sinks):
-    """A V key 60x out in most channels (an attention sink: the first text tokens of a joint sequence) draws almost no
+    """A V key 60 std out in most channels (an attention sink: the first text tokens of a joint sequence) draws almost no
     attention but set every channel's range, so every other key lost its resolution: the method's error against
     fp32 was several times that of the same call without it. Now the head clips the sink's stats chunk to the range
     of the others and adds the clipped-off part back exactly: the error stays at the sink-free level."""
@@ -754,7 +754,9 @@ def test_the_method_keeps_v_resolved_past_attention_sinks(sinks):
     ).norm()
     v = v.clone()
     for key in sinks:
-        v[:, key, :, 16::2] += 60 * v[:, :, :, 16::2].std()
+        sign = torch.ones(shape[-1] - 16)
+        sign[1::2] = -1
+        v[:, key, :, 16:] += 60 * v[:, :, :, 16:].std() * sign
     p = reference_quantise(q, k, v, {"bn": 128, "wpc": 1, "nq": 1, "stages": 1})
     for bh in range(2):
         n = int(p["rcnt"][bh])
