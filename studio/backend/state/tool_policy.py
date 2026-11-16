@@ -232,6 +232,11 @@ def conversation_recall_allowed() -> bool:
     return not _force_disabled.get()
 
 
+def force_disable_tools_for_request() -> None:
+    """Hard-disable server-side tools for the rest of this request's context, as the account binding lasts."""
+    _force_disabled.set(True)
+
+
 @contextmanager
 def tools_force_disabled() -> Iterator[None]:
     """Hard-disable server-side tools for the current async context."""

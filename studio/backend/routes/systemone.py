@@ -160,6 +160,14 @@ async def system_one(
                 "permission_error",
                 "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
             )
+        from core.inference.load_policy import LoadPolicy, current_load_policy
+
+        if current_load_policy() is LoadPolicy.NEVER:
+            raise _error(
+                403,
+                "permission_error",
+                "Inference only API keys can only use the configured Decision API model.",
+            )
         # Another checkpoint downloads into the shared cache and evicts the owner's resident model,
         # which the owner-only settings, unload and resolve routes already keep from other accounts.
         if not is_owner_context():
