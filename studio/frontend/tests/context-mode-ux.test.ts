@@ -28,11 +28,9 @@ test("the far-right slider position is Auto, a full bar", () => {
     /<GgufContextLengthSetting value=\{contextIsAuto \? 0 : contextValue\}/,
   );
   assert.match(panelCode, /<Slider min=\{min\} max=\{max\}/);
-  // Auto (0) sits at max on the slider; within one step of max is the max position.
   assert.match(panelCode, /const toSlider = \(v: number\) => \(v === 0 \? max : v\);/);
   assert.match(panelCode, /const isMaxPosition = \(v: number\) => v > max - CONTEXT_SLIDER_STEP;/);
   assert.match(panelCode, /customContextLength: v === 0 \? null : v/);
-  // The value box names Auto; the slider shares its row.
   assert.match(panelCode, /displayValue=\{isAuto \? "Auto" : undefined\}/);
 });
 
@@ -81,7 +79,6 @@ test("once a number is set, the far right is the real maximum and only reset ret
     panelCode,
     /const fromSlider = \(v: number\) => isMaxPosition\(v\) && !\(keyed\.current && v < max\) \? value === 0 \? 0 : max : v;/,
   );
-  // An off-grid max: a key press down lands within a step of max and must still count as a decrement.
   assert.match(
     panelCode,
     /onKeyDownCapture=\{\(\) => \{ keyed\.current = true; \}\} onPointerDownCapture=\{\(\) => \{ keyed\.current = false; \}\}/,
@@ -93,7 +90,6 @@ test("once a number is set, the far right is the real maximum and only reset ret
 });
 
 test("the context slider's left gap counts from the label text, with a tighter right gap", () => {
-  // The hint and reset float in the gap, so only the label text and the value set the slider's spacing.
   assert.match(
     panelCode,
     /<div className="config-row flex min-h-8 items-center"> <div className="relative flex shrink-0 items-center"> <span className=\{LABEL_CLASS\}>Context<\/span> <span className="absolute left-full ml-1\.5 flex items-center gap-1">/,

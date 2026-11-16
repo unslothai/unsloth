@@ -2061,7 +2061,6 @@ export function ChatProvidersSettings({
                       <Fragment key={group.id}>
                         {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
                         <SelectGroup aria-label={group.label}>
-                          {/* As in the gallery, the leading group needs no heading. */}
                           {group.id === "popular" ? null : (
                             <SelectLabel>{group.label}</SelectLabel>
                           )}

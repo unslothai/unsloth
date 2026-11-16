@@ -597,12 +597,10 @@ function GgufContextLengthSetting({
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
 }) {
-  // Auto shows as a full bar (value 0 stays Auto for the caller). Once the user picks a number, the
-  // far right is the real maximum, and only the reset button returns to Auto. Within a step of max
-  // counts, as Radix rounds steps from min and may never land on max itself.
+  // Auto (0) shows as a full bar; once a number is set, the far right is the real max.
+  // Within a step of max counts: Radix rounds from min and may never land on max.
   const isMaxPosition = (v: number) => v > max - CONTEXT_SLIDER_STEP;
-  // A key press below an off-grid max lands within that step too, so the keyboard would snap back
-  // to max (or Auto) forever; a keyed move down is a real decrement.
+  // A keyed move down stays a decrement, or an off-grid max would snap the keyboard back.
   const keyed = useRef(false);
   const toSlider = (v: number) => (v === 0 ? max : v);
   const fromSlider = (v: number) =>
@@ -618,8 +616,7 @@ function GgufContextLengthSetting({
   const isAuto = shown === 0;
   return (
     <div className="space-y-1">
-      {/* One row, as the Settings sliders: label, slider, value. Reset and the hint float in the gap
-          after the label (hint, then reset), so the slider's left gap counts from the label text. */}
+      {/* The hint and reset float after the label, so the slider's left gap counts from its text. */}
       <div className="config-row flex min-h-8 items-center">
         <div className="relative flex shrink-0 items-center">
           <span className={LABEL_CLASS}>Context</span>
@@ -4291,8 +4288,7 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        // The eyebrow scrolls away and the Back + title row sticks (index.css), as the Library header.
-        // Siblings, not wrapped: a sticky row only sticks within its parent, here the whole page.
+        // Siblings, not wrapped: a sticky row only sticks within its parent.
         <>
           <div
             data-config-eyebrow=""
