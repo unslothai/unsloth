@@ -388,9 +388,10 @@ def test_probe_pins_varlen_to_flash(monkeypatch):
         return q * (k.float().mean() + v.float().mean()).to(q.dtype)
 
     monkeypatch.setattr(varlen, "varlen_attn", fake)
+    before = torch.backends.cuda.cudnn_sdp_enabled()
     fi._run_case(("varlen", 64, 4, None, torch.float32), "cpu")
     assert seen == [(True, False, False, False)]
-    assert torch.backends.cuda.cudnn_sdp_enabled()
+    assert torch.backends.cuda.cudnn_sdp_enabled() == before  # restored
 
 
 def test_scope_skipped_when_off(fake, monkeypatch):
