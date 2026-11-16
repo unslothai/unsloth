@@ -238,3 +238,64 @@ def test_the_race_is_logged_and_counted(card):
         == 3
     )
     assert any("long_ok=True" in r and "(forced)" in r for r in records), records
+
+
+def test_a_triton_stand_in_keeps_the_incumbent_for_cuda_only_families(card, monkeypatch):
+    """FLUX.3 and Z-Image were measured on the CUDA kernel (its V range past attention sinks): where only the Triton
+    stand-in serves the card, the unset switch keeps their incumbent; a request by name still routes."""
+    monkeypatch.setattr(
+        I, "implementation", lambda index, head_dim: "triton" if head_dim in (64, 128) else None
+    )
+    card.found = {"ok": True, "min_tokens": 0, "impl": "triton"}
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET) == 0
+    assert _flags(pipe) == [(False, 0)] * 4 and not card.seen
+    assert (
+        I.install_int8_attention(pipe.transformer, device = "cuda", dtype = torch.bfloat16, force = True)
+        > 0
+    )
+    assert D.AUTO_CUDA_ONLY <= D.AUTO_DITS | {"ZImageTransformer2DModel"}
+
+
+def test_dispatch_route_skips_a_triton_stand_in_for_cuda_only_families(monkeypatch):
+    """The dispatch route applies the same rule per module of a CUDA-only DiT."""
+    from core.inference import rocm_bf16
+
+    monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
+    monkeypatch.setattr(I, "int8_attention_op", lambda: None)
+    monkeypatch.setattr(I, "implementation", lambda index, head_dim: "triton")
+    monkeypatch.setattr(D, "_secondary_cards", lambda *a, **k: ())
+    monkeypatch.setattr(D, "install_dispatch_route", lambda: 1)
+    monkeypatch.setattr(D, "original_dispatch", lambda: (lambda *a, **k: None))
+    floors = []
+    monkeypatch.setattr(
+        D, "_card_floor", lambda *a, **k: floors.append(a) or ({"ok": True, "impl": "triton"}, 1024)
+    )
+
+    class Proc:
+        _attention_backend = None
+        _parallel_config = None
+
+        def __call__(self, *a, **k):
+            return dispatch_attention_fn  # noqa: F821 - only its name is read
+
+    def dit(name):
+        d = type(name, (torch.nn.Module,), {})()
+        m = torch.nn.Module()
+        m.heads = 2
+        m.head_dim = 64
+        m.processor = Proc()
+        d.attn = m
+        return d
+
+    for name, routed in (("ZImageTransformer2DModel", 0), ("WanTransformer3DModel", 1)):
+        pipe = types.SimpleNamespace(transformer = dit(name))
+        monkeypatch.setattr(D, "_dits", lambda p: [p.transformer])
+        monkeypatch.setattr(D, "AUTO_DITS", D.AUTO_DITS | {"ZImageTransformer2DModel"})
+        floors.clear()
+        assert D.install(pipe, _TARGET) == routed, name
+        assert bool(floors) == bool(routed)

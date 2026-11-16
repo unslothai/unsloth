@@ -48,6 +48,9 @@ AUTO_DITS = frozenset(
         "WanTransformer3DModel",
     }
 )
+# DiTs whose accuracy was measured on the CUDA kernel only (its V range past attention sinks): with the switch unset a
+# Triton stand-in keeps the incumbent for them; a request by name or the env switch still routes it.
+AUTO_CUDA_ONLY = frozenset({"Flux3Transformer2DModel", "ZImageTransformer2DModel"})
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
 
@@ -620,10 +623,14 @@ def _install(
             torch.bfloat16 if torch.cuda.get_device_capability(index) >= (8, 0) else torch.float16
         )
     candidates = []
+    cuda_only = set()
     for dit in _dits(pipe):
         if not forced and type(dit).__name__ not in AUTO_DITS:
             continue
-        candidates.extend(routable_modules(dit))
+        mods = routable_modules(dit)
+        candidates.extend(mods)
+        if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
+            cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
         return 0
     I8.int8_attention_op()
@@ -651,7 +658,8 @@ def _install(
         floors: dict = {}
         impl = None
         for card in cards:
-            if I8.implementation(card, head_dim) is None:
+            impl_here = I8.implementation(card, head_dim)
+            if impl_here is None or (id(m) in cuda_only and impl_here != "cuda"):
                 continue
             found, minimum = _card_floor(
                 torch.device("cuda", card),

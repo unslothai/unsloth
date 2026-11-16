@@ -1508,7 +1508,15 @@ def install_auto(
     except Exception:  # noqa: BLE001 -- other families bring their own strided processors
         pass
 
+    cuda_only = type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
+
     def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
+        if cuda_only and implementation(_device_index(dev), head_dim) != "cuda":
+            return {
+                "ok": False,
+                "impl": implementation(_device_index(dev), head_dim),
+                "error": "CUDA kernel only",
+            }, None
         return dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
 
     return install_int8_attention(
