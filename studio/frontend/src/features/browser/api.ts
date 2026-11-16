@@ -18,6 +18,7 @@ export type BrowserPage =
       html: string;
       refresh: { delay: number; url: string } | null;
       cookies?: SiteCookies;
+      cookiesVersion?: CookiesVersion;
     }
   | {
       kind: "raw";
@@ -38,6 +39,8 @@ export type BrowserRequest = {
   errorPage?: boolean;
   /** the page a tab navigation came from, for SameSite; none when typed. */
   initiator?: string;
+  /** "omit" for a page's subresources (favicons): no cookies sent or kept. */
+  credentials?: "include" | "omit";
 };
 
 let annotateCode: Promise<string> | null = null;
@@ -58,6 +61,8 @@ export function annotateScript(): Promise<string> {
 
 /** The site's script-readable cookies, in the frame's own form (routes/browser_cookies.py). */
 export type SiteCookies = Array<[string, string]>;
+/** [process epoch, cookie store version] when the snapshot was taken. */
+export type CookiesVersion = [string, number];
 
 // Cookie writes and clears run one at a time, so writes land in order and none queued before a
 // clear lands after it.
@@ -99,10 +104,19 @@ async function cookieWritesSent(): Promise<void> {
   if (lastCookieWrite) await lastCookieWrite;
 }
 
+// The newest snapshot applied per origin, so an older answer arriving later can't roll it back.
+const mirroredVersion = new Map<string, CookiesVersion>();
+
 /** `asked`: the page's write count when the answer was requested; cookies it wrote since are left alone. */
-export function mirrorSiteCookies(url: string, cookies: SiteCookies | undefined, asked = cookieWriteCount): void {
+export function mirrorSiteCookies(url: string, cookies: SiteCookies | undefined, asked = cookieWriteCount, version?: CookiesVersion): void {
   const origin = pageOrigin(url);
   if (!origin || !Array.isArray(cookies)) return;
+  if (Array.isArray(version)) {
+    const applied = mirroredVersion.get(origin);
+    if (applied && applied[0] === version[0] && applied[1] > version[1]) return;
+    if (mirroredVersion.size >= 4096) mirroredVersion.clear();
+    mirroredVersion.set(origin, version);
+  }
   const newer = (key: string) => (cookieWrittenAt.get(`${origin} ${key}`) ?? 0) > asked;
   const next = new Map(cookies);
   const held = new Map(readPageStorage(origin, "").cookie);
@@ -123,6 +137,7 @@ export class BrowserFetchError extends Error {
 export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSignal): Promise<BrowserPage> {
   await cookieWritesSent();
   const asked = cookieWriteCount;
+  const clears = cookieClears;
   const response = await authFetch("/api/browser/fetch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,6 +148,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
       max_bytes: request.maxBytes ?? null,
       error_page: request.errorPage ?? false,
       initiator: request.initiator ?? null,
+      credentials: request.credentials ?? "include",
     }),
     signal,
   });
@@ -146,7 +162,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
   }
   if (response.headers.get("X-Unsloth-Browser-Kind") === "html") {
     const page = (await response.json()) as Omit<Extract<BrowserPage, { kind: "html" }>, "kind">;
-    mirrorSiteCookies(page.url, page.cookies, asked);
+    if (clears === cookieClears) mirrorSiteCookies(page.url, page.cookies, asked, page.cookiesVersion);
     return { kind: "html", ...page };
   }
   const finalUrl = response.headers.get("X-Unsloth-Browser-Url");
@@ -204,6 +220,7 @@ export async function clearSiteCookies(): Promise<void> {
 export async function requestForPage(page: string, request: PageRequest, signal: AbortSignal): Promise<PageResponse> {
   await cookieWritesSent();
   const asked = cookieWriteCount;
+  const clears = cookieClears;
   const response = await authFetch("/api/browser/request", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -220,8 +237,12 @@ export async function requestForPage(page: string, request: PageRequest, signal:
     signal,
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const answer = (await response.json()) as Omit<PageResponse, "body"> & { body: string; cookies?: SiteCookies };
-  mirrorSiteCookies(page, answer.cookies, asked);
+  const answer = (await response.json()) as Omit<PageResponse, "body"> & {
+    body: string;
+    cookies?: SiteCookies;
+    cookiesVersion?: CookiesVersion;
+  };
+  if (clears === cookieClears) mirrorSiteCookies(page, answer.cookies, asked, answer.cookiesVersion);
   return { ...answer, body: fromBase64(answer.body) };
 }
 

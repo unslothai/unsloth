@@ -38,9 +38,9 @@ from loggers import get_logger
 from routes.browser_cookies import (
     clear_cookies,
     cookie_header,
-    page_cookies,
     set_page_cookie,
     store_cookies,
+    versioned_page_cookies,
 )
 from routes.browser_network import BROWSER_NETWORK_JS
 
@@ -1623,6 +1623,8 @@ class BrowserFetchRequest(BaseModel):
     error_page: bool = False
     # The page a tab navigation came from; None for a typed address.
     initiator: Optional[str] = Field(default = None, max_length = 8192)
+    # "omit" for a page's subresources (favicons): no cookies sent or kept.
+    credentials: Literal["include", "omit"] = "include"
 
 
 _BOMS = (
@@ -2039,6 +2041,7 @@ def _fetch(
     subject: Optional[str] = None,
 ) -> tuple[Optional[str], bytes, str, dict]:
     meta: dict = {}
+    jar = None if request.credentials == "omit" else subject
     site = None if request.initiator is None else (_site(request.initiator) or "")
     at = {"url": request.url, "method": request.method, "cross": False}
 
@@ -2048,15 +2051,15 @@ def _fetch(
 
     def host_headers(host: str) -> dict:
         headers = dict(_studio_headers(host))
-        if subject is not None:
-            cookies = cookie_header(subject, at["url"], cross_site = at["cross"], method = at["method"])
+        if jar is not None:
+            cookies = cookie_header(jar, at["url"], cross_site = at["cross"], method = at["method"])
             if cookies:
                 headers["Cookie"] = cookies
         return headers
 
     def on_redirect(url: str, method: str, _has_body: bool, headers) -> None:
-        if subject is not None:
-            store_cookies(subject, at["url"], headers)
+        if jar is not None:
+            store_cookies(jar, at["url"], headers)
         at["url"], at["method"] = url, method
         mark_cross()
 
@@ -2080,9 +2083,10 @@ def _fetch(
         on_redirect = on_redirect,
         proxy_hostname = True,
     )
-    if subject is not None:
-        store_cookies(subject, meta.get("url") or at["url"], meta.get("headers"))
-        meta["cookies"] = page_cookies(subject, meta.get("url") or at["url"])
+    if jar is not None:
+        final_url = meta.get("url") or at["url"]
+        store_cookies(jar, final_url, meta.get("headers"))
+        meta["cookies_version"], meta["cookies"] = versioned_page_cookies(jar, final_url)
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
@@ -2144,6 +2148,7 @@ def _build_response(
             # Its site answers any origin, the sandbox's too: the page's requests to it stay native.
             "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
             "cookies": meta.get("cookies") or [],
+            "cookiesVersion": meta.get("cookies_version"),
             "refresh": refresh,
             "html": page,
         }
@@ -2430,7 +2435,7 @@ def _page_request(
                 for name, value in headers
                 if name.lower() in _CORS_SAFELISTED_RESPONSE_HEADERS or name.lower() in exposed
             ]
-    return {
+    answer = {
         "status": status,
         "statusText": meta.get("reason") or "",
         "url": final_url,
@@ -2439,8 +2444,11 @@ def _page_request(
         # Fetch's response.redirected and type: a chain back to the page's origin stays "cors".
         "redirected": hops["redirected"],
         "cors": not hops["same_origin"],
-        "cookies": [] if subject is None else page_cookies(subject, request.page),
+        "cookies": [],
     }
+    if subject is not None:
+        answer["cookiesVersion"], answer["cookies"] = versioned_page_cookies(subject, request.page)
+    return answer
 
 
 def _fetch_and_build(

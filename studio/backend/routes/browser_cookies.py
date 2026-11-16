@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.cookiejar
+import secrets
 import threading
 import time
 import urllib.request
@@ -21,6 +22,15 @@ _MAX_PAGE_COOKIE_CHARS = 64 * 1024
 
 _lock = threading.Lock()
 _jars: "OrderedDict[str, _Jar]" = OrderedDict()
+# Orders page_cookies snapshots; the epoch tells a restarted process's count from the old one.
+_EPOCH = secrets.token_hex(8)
+_version = 0
+
+
+def _changed() -> None:
+    global _version
+    with _lock:
+        _version += 1
 
 
 class _Policy(http.cookiejar.DefaultCookiePolicy):
@@ -210,10 +220,18 @@ def store_cookies(subject: str, url: str, headers) -> None:
             jar.insecure, jar.request = False, None
         # Under the lock: two responses trimming at once would pick the same cookie to drop.
         _trim(jar)
+        _changed()
 
 
 def _http_only(cookie: http.cookiejar.Cookie) -> bool:
     return any(name.lower() == "httponly" for name in cookie._rest)  # type: ignore[attr-defined]
+
+
+def versioned_page_cookies(subject: str, url: str) -> tuple[list, list[tuple[str, str]]]:
+    """``([epoch, version], page_cookies(...))``, read together so the version dates the snapshot."""
+    jar = _jar(subject)
+    with jar._cookies_lock:  # type: ignore[attr-defined]
+        return [_EPOCH, _version], page_cookies(subject, url)
 
 
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
@@ -272,3 +290,4 @@ def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> 
 def clear_cookies(subject: str) -> None:
     with _lock:
         _jars.pop(subject, None)
+    _changed()

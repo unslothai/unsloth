@@ -410,3 +410,23 @@ def test_responses_arriving_together_at_the_limit_all_store():
     assert failed == []
     held = cookies.cookie_header("user", "https://busy.example.com/").split("; ")
     assert len(held) == cookies._MAX_PER_SITE
+
+
+def test_a_favicon_fetch_sends_and_keeps_no_cookies(monkeypatch):
+    cookies.store_cookies(
+        "user", "https://bank.example/", [("Set-Cookie", "strict=1; SameSite=Strict")]
+    )
+    sent = _site(monkeypatch, [], [("Set-Cookie", "icon=1")])
+    _load("https://bank.example/favicon.ico", credentials = "omit")
+    assert sent == [("https://bank.example/favicon.ico", None)]
+    assert cookies.cookie_header("user", "https://bank.example/") == "strict=1"
+
+
+def test_cookie_snapshots_are_ordered_by_store_changes(monkeypatch):
+    _site(monkeypatch, [], [("Set-Cookie", "csrf=old")])
+    older = _load("https://app.example.com/")["cookiesVersion"]
+    _site(monkeypatch, [], [("Set-Cookie", "csrf=new")])
+    newer = _load("https://app.example.com/")["cookiesVersion"]
+    assert older[0] == newer[0] and older[1] < newer[1]
+    cookies.clear_cookies("user")
+    assert cookies.versioned_page_cookies("user", "https://app.example.com/")[0][1] > newer[1]

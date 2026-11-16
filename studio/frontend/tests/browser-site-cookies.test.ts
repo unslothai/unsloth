@@ -115,3 +115,26 @@ test("a cookie the page wrote while a request was out is not undone by that requ
   mirrorSiteCookies(`${SITE}/`, [["server=/", "|1"]]);
   assert.deepEqual(held(), [["server=/", "|1"]]);
 });
+
+test("an older cookie snapshot arriving after a newer one is ignored, unless the backend restarted", () => {
+  const site = "https://versions.example.com";
+  const cookies = () => readPageStorage(site, "tab").cookie;
+  mirrorSiteCookies(`${site}/`, [["csrf=/", "|new"]], undefined, ["a", 5]);
+  mirrorSiteCookies(`${site}/`, [["csrf=/", "|old"]], undefined, ["a", 4]);
+  assert.deepEqual(cookies(), [["csrf=/", "|new"]]);
+  mirrorSiteCookies(`${site}/`, [["csrf=/", "|restarted"]], undefined, ["b", 1]);
+  assert.deepEqual(cookies(), [["csrf=/", "|restarted"]]);
+});
+
+test("a favicon is fetched without the site's cookies", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  (globalThis as { __authFetch?: unknown }).__authFetch = (_url: string, init: { body: string }) => {
+    bodies.push(JSON.parse(init.body));
+    return Promise.resolve(new Response("x", { headers: { "Content-Type": "image/png" } }));
+  };
+  const { proxiedFavicon } = await import("../src/features/browser/favicon.ts");
+  await proxiedFavicon("https://other.example.com/favicon.ico").catch(() => undefined);
+  assert.equal(bodies[0]?.credentials, "omit");
+  await fetchBrowserPage({ url: `${SITE}/` }, new AbortController().signal).catch(() => undefined);
+  assert.equal(bodies[1]?.credentials, "include");
+});
