@@ -37,6 +37,16 @@ BROWSER_NETWORK_JS = r"""
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
         let lastRequest = 0;
+        // The store version of the newest answer seen, so one asked for earlier can't roll the routing back.
+        let routedVersion = null;
+        const route = (reply, writes) => {
+          if (typeof reply.siteCookies !== "boolean") return;
+          const version = Array.isArray(reply.cookiesVersion) ? reply.cookiesVersion : null;
+          const stale = version !== null && routedVersion !== null && version[0] === routedVersion[0] && version[1] < routedVersion[1];
+          if (version !== null && !stale) routedVersion = version;
+          // Wrongly on only costs the browser's streaming; wrongly off sends requests without the session.
+          if (reply.siteCookies || (!stale && writes === cfg.cookieWrites)) cfg.siteCookies = reply.siteCookies;
+        };
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (event.source !== parent || !data || data.type !== "unsloth:browser-command" || data.command !== "response") return;
@@ -47,12 +57,13 @@ BROWSER_NETWORK_JS = r"""
         const relay = (request, signal) => new Promise((resolve, reject) => {
           if (signal.aborted) { reject(signal.reason); return; }
           const id = "q" + ++lastRequest;
+          const writes = cfg.cookieWrites;
           const settle = () => { replies.delete(id); signal.removeEventListener("abort", onAbort); };
           const onAbort = () => { settle(); post({ type: "requestAbort", id }); reject(signal.reason); };
           signal.addEventListener("abort", onAbort);
           replies.set(id, (reply) => {
             settle();
-            if (typeof reply.siteCookies === "boolean") cfg.siteCookies = reply.siteCookies;
+            route(reply, writes);
             if (reply.ok === true) resolve(reply);
             else reject(new TypeError("Failed to fetch"));
           });

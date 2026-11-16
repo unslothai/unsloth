@@ -111,9 +111,10 @@ function setup(
       return null;
     }
   };
+  const cfg = { url: pageUrl, anyOrigin, siteCookies, cookieWrites: 0 };
   runInNewContext(source, {
     window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
-    cfg: { url: pageUrl, anyOrigin, siteCookies }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
+    cfg, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
     setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer, URLSearchParams,
     FormData, ArrayBuffer,
@@ -134,6 +135,7 @@ function setup(
     refused,
     posted,
     reply,
+    cfg,
   };
 }
 
@@ -314,6 +316,42 @@ test("an answer saying the site has cookies moves its later requests to the pane
   await tick();
   assert.equal(t.native.length, 1);
   assert.equal(t.posted.length, 2);
+});
+
+test("an older answer saying the site has no cookies can't undo a newer sign-in's", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => !url.endsWith("/login"));
+  const slow = t.window.fetch("/slow", { method: "POST", body: "x" });
+  const login = t.window.fetch("/login", { method: "POST", body: "user=a" });
+  await tick();
+  t.reply(t.posted[1].id, ok("{}", { siteCookies: true, cookiesVersion: ["e", 5] }));
+  await login;
+  t.reply(t.posted[0].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 3] }));
+  await slow;
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 3);
+});
+
+test("an answer asked for before the page set a cookie can't route its requests back to the browser", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => !url.endsWith("/save"));
+  const save = t.window.fetch("/save", { method: "POST", body: "x" });
+  await tick();
+  // The page's document.cookie write, as the shell makes it.
+  t.cfg.siteCookies = true;
+  t.cfg.cookieWrites++;
+  t.reply(t.posted[0].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 4] }));
+  await save;
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 2);
+  // Asked for after the write, a newer answer still turns it off.
+  t.reply(t.posted[1].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 6] }));
+  await tick();
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 1);
 });
 
 test("an own-site GET the browser can read stays the browser's, streamed as it was", async () => {

@@ -227,11 +227,11 @@ def _http_only(cookie: http.cookiejar.Cookie) -> bool:
     return any(name.lower() == "httponly" for name in cookie._rest)  # type: ignore[attr-defined]
 
 
-def versioned_page_cookies(subject: str, url: str) -> tuple[list, list[tuple[str, str]]]:
-    """``([epoch, version], page_cookies(...))``, read together so the version dates the snapshot."""
+def site_cookie_state(subject: str, url: str) -> tuple[list, list[tuple[str, str]], bool]:
+    """``([epoch, version], page_cookies(...), has_site_cookies(...))``, read together so the version dates both."""
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        return [_EPOCH, _version], page_cookies(subject, url)
+        return [_EPOCH, _version], page_cookies(subject, url), has_site_cookies(subject, url)
 
 
 def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:

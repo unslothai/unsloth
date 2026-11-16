@@ -429,7 +429,7 @@ def test_cookie_snapshots_are_ordered_by_store_changes(monkeypatch):
     newer = _load("https://app.example.com/")["cookiesVersion"]
     assert older[0] == newer[0] and older[1] < newer[1]
     cookies.clear_cookies("user")
-    assert cookies.versioned_page_cookies("user", "https://app.example.com/")[0][1] > newer[1]
+    assert cookies.site_cookie_state("user", "https://app.example.com/")[0][1] > newer[1]
 
 
 def _write_page_cookie(
