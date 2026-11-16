@@ -46,6 +46,7 @@ export type FrameMessage =
       value: string | null;
       url: string | null;
       seq: number | null;
+      sameSite?: SameSite;
     };
 
 export type RedirectMode = "follow" | "error" | "manual";
@@ -65,6 +66,9 @@ export type PageRequest = {
 
 const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
 const CREDENTIALS_MODES = new Set<unknown>(["omit", "same-origin", "include"]);
+
+export type SameSite = "strict" | "lax" | "none";
+const SAME_SITES = new Set<unknown>(["strict", "lax", "none"]);
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -288,9 +292,9 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url, seq };
       const name = text(key, MAX_STORAGE_CHARS);
       const stored = value === null ? null : text(value, MAX_STORAGE_CHARS);
-      return name === null || (value !== null && stored === null)
-        ? null
-        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq };
+      if (name === null || (value !== null && stored === null)) return null;
+      const sameSite = area === "cookie" && stored !== null && SAME_SITES.has(message.sameSite) ? (message.sameSite as SameSite) : undefined;
+      return { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq, ...(sameSite && { sameSite }) };
     }
     default:
       return null;
