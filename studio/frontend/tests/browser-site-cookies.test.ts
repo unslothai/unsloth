@@ -41,7 +41,7 @@ test("a page's own cookie write reaches the backend before the page's next load 
       }),
     );
   };
-  // The mirror's own writes are not sent back; a frame's are, under the site the panel loaded, not one the page names.
+  // The mirror's own writes are not sent back; a frame's go under the panel's site, not one the page names.
   mirrorSiteCookies(`${SITE}/`, []);
   writePageStorage(SITE, "tab", "cookie", "token=/", "|abc", {}, "https://evil.example/");
   assert.deepEqual(calls, [`/api/browser/cookie ${JSON.stringify({ page: `${SITE}/`, key: "token=/", value: "|abc" })}`]);
@@ -65,7 +65,6 @@ test("successive cookie writes reach the backend in the order the page made them
   };
   writePageStorage(SITE, "tab", "cookie", "step=/", "|1", {}, `${SITE}/`);
   writePageStorage(SITE, "tab", "cookie", "step=/", null, {}, `${SITE}/`);
-  // The delete waits for the set, and a failed set doesn't hold it back.
   assert.deepEqual(sent, ["|1"]);
   pending.shift()?.();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -112,9 +111,7 @@ test("a cookie the page wrote while a request was out is not undone by that requ
   writePageStorage(SITE, "tab", "cookie", "old=/", null, {}, `${SITE}/`);
   release();
   await asked;
-  // The answer predates both writes: it adds what the site set and leaves the page's newer ones.
   assert.deepEqual(held(), [["token=/", "|new"], ["server=/", "|1"]]);
-  // A later answer is the backend's word again.
   mirrorSiteCookies(`${SITE}/`, [["server=/", "|1"]]);
   assert.deepEqual(held(), [["server=/", "|1"]]);
 });

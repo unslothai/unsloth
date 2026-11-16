@@ -36,7 +36,7 @@ export type BrowserRequest = {
   maxBytes?: number;
   /** show the site's HTTP error page; tab loads only. */
   errorPage?: boolean;
-  /** the page a tab navigation came from, so the site's SameSite cookies stay home; none when typed. */
+  /** the page a tab navigation came from, for SameSite; none when typed. */
   initiator?: string;
 };
 
@@ -56,13 +56,11 @@ export function annotateScript(): Promise<string> {
   return annotateCode;
 }
 
-/** The site's script-readable cookies as the backend holds them, in the frame's own form (routes/browser.py). */
+/** The site's script-readable cookies, in the frame's own form (routes/browser_cookies.py). */
 export type SiteCookies = Array<[string, string]>;
 
-// The backend holds each site's cookies and sends them with the page's requests. A page's own
-// document.cookie writes are sent there, and what the site set comes back to the frame's store.
-// One after another, so a later write to the same cookie can't land before an earlier one, and a
-// clear goes in the same line: a write queued before it is dropped, so none lands after it.
+// Cookie writes and clears run one at a time, so writes land in order and none queued before a
+// clear lands after it.
 let lastCookieWrite: Promise<unknown> | null = null;
 let cookieClears = 0;
 
@@ -83,7 +81,6 @@ const cookieWrittenAt = new Map<string, number>();
 onPageStorageWrite(({ origin, area, key, value, from }) => {
   // Only a page's own write: the mirror below writes with no `from`.
   if (area !== "cookie" || key === null || !from) return;
-  // Bounded: a page can make up names without end.
   if (cookieWrittenAt.size >= 4096) cookieWrittenAt.clear();
   cookieWrittenAt.set(`${origin} ${key}`, ++cookieWriteCount);
   const clears = cookieClears;
@@ -196,7 +193,6 @@ function fromBase64(text: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-/** Forgets the cookies sites set on pages the backend fetched for this account. */
 export async function clearSiteCookies(): Promise<void> {
   cookieClears++;
   cookieWrittenAt.clear();

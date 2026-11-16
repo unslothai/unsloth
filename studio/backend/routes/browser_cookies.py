@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cookies sites set on pages the panel fetches, kept per Studio account so a sign-in lasts.
-
-The panel's pages run in an opaque-origin frame with no cookie store, and every page load goes
-through this server, so the site's session lives here. In memory only: a restart signs every
-site out, as closing a private window would.
-"""
+"""Per-account, in-memory cookies for the panel's pages (their opaque-origin frames have none)."""
 
 from __future__ import annotations
 
@@ -40,16 +35,14 @@ class _Policy(http.cookiejar.DefaultCookiePolicy):
             cookie.domain_specified or cookie.path != "/" or not cookie.path_specified
         ):
             return False
-        # With no public suffix list here, a parent Domain (co.uk, github.io) can't be told from the
-        # site's own, so it stays host-only; one that isn't a parent is refused below (RFC 6265 5.3).
+        # No public suffix list, so a parent Domain stays host-only; others are refused (RFC 6265 5.3).
         req_host, erhn = http.cookiejar.eff_request_host(request)
         if cookie.domain_specified and req_host.endswith("." + cookie.domain.lstrip(".")):
             cookie.domain, cookie.domain_specified, cookie.domain_initial_dot = erhn, False, False
         return super().set_ok(cookie, request)
 
     def return_ok(self, cookie, request):
-        # Cross-site, Strict never goes and Lax (the default when absent) only with a safe method
-        # (draft-ietf-httpbis-rfc6265bis 5.8.3); None goes as before.
+        # Cross-site: Strict never, Lax (the default) only with a safe method (rfc6265bis 5.8.3).
         cross = getattr(request, "cross_site", None)
         mode = _same_site(cookie) if cross else ""
         if cross and (mode == "strict" or (mode != "none" and not cross["safe"])):
@@ -70,10 +63,9 @@ def _path_match(path: str, cookie_path: str) -> bool:
 
 
 class _Jar(http.cookiejar.CookieJar):
-    """While ``insecure``, a cookie set or deleted over http leaves a Secure one of the same name
-    alone when the domains match either way and its path is under the Secure one's (rfc6265bis 5.7
-    step 16). Deletions run inside ``make_cookies`` before any policy check, hence ``clear``: one
-    reaches only a cookie of ``request``'s own host, where ``_Policy.set_ok`` would have put it."""
+    """While ``insecure``, http sets and deletes leave a shadowed Secure cookie alone (rfc6265bis 5.7
+    step 16). Deletions run in ``make_cookies`` before any policy check: ``clear`` limits them to
+    ``request``'s own host, where ``_Policy.set_ok`` would have put the cookie."""
 
     insecure = False
     request: Optional[urllib.request.Request] = None
@@ -249,9 +241,8 @@ def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
 
 
 def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> None:
-    """A page's own ``document.cookie`` write, in the frame's form; ``stored`` None removes it.
-    Host-only, Secure when written over https (the frame's store is per scheme), and never over an
-    HttpOnly cookie; ``store_cookies`` keeps a Secure one from an http write (rfc6265bis 5.7)."""
+    """A page's ``document.cookie`` write in the frame's form (``stored`` None removes): host-only,
+    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7)."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return

@@ -60,7 +60,6 @@ export type PageRequest = {
   redirect: RedirectMode;
   /** Fetch's integrity metadata, checked against the body. */
   integrity: string;
-  /** Fetch's credentials mode; "omit" sends and keeps no cookies. */
   credentials: CredentialsMode;
 };
 

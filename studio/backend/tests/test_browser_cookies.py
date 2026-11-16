@@ -84,7 +84,6 @@ def test_a_sign_in_that_redirects_stays_signed_in_on_the_next_page(monkeypatch):
         [("https://app.example.com/home", _headers("sid=abc; Path=/; HttpOnly; Secure"))],
     )
     page = _load("https://app.example.com/login", method = "POST", body = "user=a")
-    # The redirect's cookie goes with the very next hop, and a script never sees an HttpOnly one.
     assert sent == [
         ("https://app.example.com/login", None),
         ("https://app.example.com/home", "sid=abc"),
@@ -137,18 +136,17 @@ def test_a_navigation_from_another_site_follows_samesite(monkeypatch):
     assert sent == [("https://bank.example/pay", "none=1")]
     _load("https://bank.example/", initiator = "https://evil.test/")
     assert sent[-1] == ("https://bank.example/", "lax=1; plain=1; none=1")
-    # A typed address, and the site's own pages, are same-site; so is the host with a trailing dot.
     _load("https://bank.example/pay", method = "POST", body = "to=me")
     _load(
         "https://bank.example/pay", method = "POST", body = "to=me", initiator = "https://BANK.example./a"
     )
     assert sent[-2:] == [("https://bank.example/pay", every)] * 2
-    # A subdomain counts as another site here.
+    # Stricter than a browser: a subdomain is another site.
     _load(
         "https://bank.example/pay", method = "POST", body = "x", initiator = "https://www.bank.example/"
     )
     assert sent[-1] == ("https://bank.example/pay", "none=1")
-    # So does the same host over http, which anyone on the network can serve.
+    # So is the same host over http.
     _load("https://bank.example/pay", method = "POST", body = "x", initiator = "http://bank.example/")
     assert sent[-1] == ("https://bank.example/pay", "none=1")
 
@@ -167,7 +165,6 @@ def test_a_redirect_chain_that_left_the_site_stays_cross_site(monkeypatch):
         ("https://evil.test/bounce", None),
         ("https://bank.example/pay", None),
     ]
-    # A typed address is same-site at every hop, as a browser's own navigation is.
     sent = _site(
         monkeypatch, [("https://www.bank.example/", None), ("https://bank.example/", None)]
     )
@@ -269,7 +266,6 @@ def test_the_page_sees_script_readable_cookies_and_its_own_writes_reach_the_site
 
     write("theme=/", "|dark")
     write("soon=/", f"{int(time.time() * 1000) + 60_000}|1")
-    # No script can replace an HttpOnly cookie, or smuggle a second one in.
     write("sid=/", "|stolen")
     write("x=/", "|1; Domain=example.com")
     assert (
@@ -287,11 +283,10 @@ def test_a_script_cookie_set_over_https_stays_off_http():
     assert cookies.cookie_header("user", "https://app.example.com/") == "token=secret; theme=dark"
     assert cookies.cookie_header("user", "http://app.example.com/") == "theme=dark"
     assert cookies.page_cookies("user", "http://app.example.com/") == [("theme=/", "|dark")]
-    # An http page can neither replace nor delete it.
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/", "|forged")
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/", None)
     assert ("token=/", "|secret") in cookies.page_cookies("user", "https://app.example.com/")
-    # Nor one at a deeper path, which would be sent ahead of it.
+    # A deeper path is refused too: it would be sent ahead of the Secure one.
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/app", "|forged")
     assert (
         cookies.cookie_header("user", "https://app.example.com/app/x") == "token=secret; theme=dark"
@@ -304,13 +299,11 @@ def test_an_http_response_leaves_a_secure_cookie_alone():
     for forged in ("sid=attacker; Path=/", "sid=attacker; Path=/app", "sid=; Path=/; Max-Age=0"):
         cookies.store_cookies("user", "http://app.example.com/", _headers(forged))
         assert cookies.cookie_header("user", site + "app/x") == "sid=secret"
-    # Another name, or a path the Secure one doesn't cover, still sets over http.
     cookies.store_cookies("user", "http://app.example.com/a", _headers("theme=dark; Path=/"))
     assert cookies.cookie_header("user", "http://app.example.com/") == "theme=dark"
     cookies.store_cookies("user", "https://app.example.com/", _headers("k=s; Secure; Path=/app"))
     cookies.store_cookies("user", "http://app.example.com/", _headers("k=h; Path=/"))
     assert cookies.cookie_header("user", "http://app.example.com/app") == "theme=dark; k=h"
-    # https still replaces and deletes it.
     cookies.store_cookies("user", site, _headers("sid=; Path=/; Max-Age=0"))
     assert "sid=" not in cookies.cookie_header("user", site)
 
@@ -352,7 +345,6 @@ def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):
         )
 
     answer = request("https://app.example.com/api/me")
-    # Fetch's default credentials mode: nothing goes to, or is kept from, the other site.
     assert sent == [
         ("https://app.example.com/api/me", "sid=abc"),
         ("https://cdn.example.net/file", None),
@@ -370,7 +362,6 @@ def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):
     ]
     assert cookies.cookie_header("user", "https://app.example.com/") == "sid=abc; hop=1; csrf=t"
 
-    # credentials: "omit" sends none and keeps none.
     sent = _site(monkeypatch, [], [("Set-Cookie", "anon=1; Path=/")], body = b"{}")
     browser_mod._page_request(
         browser_mod.BrowserPageRequest(
