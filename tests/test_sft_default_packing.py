@@ -228,3 +228,16 @@ def test_default_packing_needs_a_per_document_response_masker(monkeypatch, maske
     monkeypatch.setattr(dataset_utils, "train_on_responses_only", train_on_responses_only)
     monkeypatch.setattr(trainer_module, "_RESPONSES_ONLY_PACKED_ROWS", [])
     assert trainer_module._responses_only_masks_packed_rows() is expected
+
+
+def test_reuse_keeps_an_explicit_padding_free_off_and_a_formatter_does_not_repack(monkeypatch):
+    SFT, calls = _patched(monkeypatch)
+    config = _config()
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    config.padding_free = False  # explicit, after the first trainer
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    assert config.padding_free is False and config.packing is False and calls["pack"] == 1
+    packed = datasets.Dataset.from_dict({"input_ids": [[1, 2, 3]], "seq_lengths": [[1, 2]]})
+    config = _config()
+    SFT(model = _Model(), args = config, train_dataset = packed, formatting_func = lambda row: "x")
+    assert config.packing is False and calls["pack"] == 1

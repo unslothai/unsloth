@@ -231,12 +231,12 @@ def _default_packing_dataset(dataset, config, formatting_func) -> bool:
         return False
     if not isinstance(dataset, Dataset) or len(dataset) == 0:
         return False
-    if formatting_func is not None:
-        return True
     columns = set(dataset.column_names or ())
     # Already packed: TRL's packer keeps input_ids only, so the stored documents would merge into one.
     if columns & {"seq_lengths", "position_ids"}:
         return False
+    if formatting_func is not None:
+        return True
     field = getattr(config, "dataset_text_field", None) or "text"
     return bool(columns & {"input_ids", field, "messages"}) or {"prompt", "completion"} <= columns
 
@@ -1915,7 +1915,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         )
         if packing_unset:
-            if getattr(config_arg, "_unsloth_padding_free_auto", False):
+            # Only while padding_free still holds the value Unsloth set; an explicit change is kept.
+            if getattr(config_arg, "_unsloth_padding_free_auto", False) and (
+                getattr(config_arg, "padding_free", None) is True
+            ):
                 setattr(config_arg, "padding_free", None)
             setattr(config_arg, "packing", False)
             setattr(config_arg, "_unsloth_packing_unset", True)
