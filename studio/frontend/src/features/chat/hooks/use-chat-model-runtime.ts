@@ -1591,6 +1591,7 @@ export function useChatModelRuntime() {
                   platform.deviceType,
                   platform.chatOnlyReason,
                   platform.mlxInference,
+                  (pendingConfig ?? live.params).engine,
                 ),
                 pinnedMaxSeqLength: normalizeMaxSeqLength(
                   pendingConfig
@@ -2301,6 +2302,7 @@ export function useChatModelRuntime() {
               platform.deviceType,
               platform.chatOnlyReason,
               platform.mlxInference,
+              loadEngineFields.engine,
             );
             // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
             // drafter is this model's own and a standing mode goes through the resolver.

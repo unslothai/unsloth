@@ -733,6 +733,7 @@ export const en = {
     lastAttempt: "Last attempt: {time}",
     cancelled: "Installation cancelled. You can retry.",
     scope: "Text and image chat on NVIDIA GPUs. First load may take longer.",
+    scopeMetal: "Text and image chat on Apple Silicon. First load may take longer.",
   },
   sandboxSetup: {
     levelTitle: "OS sandbox is not available",

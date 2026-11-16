@@ -18,7 +18,7 @@ export interface EngineStatus {
   /** Load precisions this host's build of the engine supports; absent from older backends. */
   precisions?: string[];
   /** "rocm": the engine runs on an AMD GPU. */
-  platform?: "cuda" | "rocm";
+  platform?: "cuda" | "rocm" | "metal";
   /** "wsl": on Windows the engine runs inside Studio's own WSL2 distro. */
   host?: "local" | "wsl";
   wsl?: { state: string | null; distro: string | null };

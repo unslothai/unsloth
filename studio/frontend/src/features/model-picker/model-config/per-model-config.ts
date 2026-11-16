@@ -183,14 +183,15 @@ const NO_MLX_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** `!isGguf` alone would show MLX controls to CUDA users. */
+/** `!isGguf` alone would show MLX controls to CUDA users; a picked vLLM or SGLang engine serves instead of MLX. */
 export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
   chatOnlyReason?: string | null,
   mlxInference?: boolean | null,
+  engine?: string | null,
 ): boolean {
-  if (isGguf || deviceType !== "mac") return false;
+  if (isGguf || deviceType !== "mac" || (engine ?? "auto") !== "auto") return false;
   if (typeof mlxInference === "boolean") return mlxInference;
   return !NO_MLX_REASONS.has(chatOnlyReason ?? "");
 }

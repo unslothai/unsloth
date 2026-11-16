@@ -425,7 +425,11 @@ export function InferenceEnginePicker({
         <>
           {selected.platform !== "rocm" && (
             <p className="text-ui-12 text-muted-foreground">
-              {t("managedEngines.scope")}
+              {t(
+                selected.platform === "metal"
+                  ? "managedEngines.scopeMetal"
+                  : "managedEngines.scope",
+              )}
             </p>
           )}
           {devices && devices.length > 0 && (
