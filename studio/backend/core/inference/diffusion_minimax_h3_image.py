@@ -3419,7 +3419,7 @@ def _lora_metadata(path: str) -> dict:
     sidecar = Path(str(path)).with_name("adapter_config.json")
     if sidecar.is_file():
         try:
-            return dict(json.loads(sidecar.read_text()))
+            return dict(json.loads(sidecar.read_text(encoding = "utf-8")))
         except Exception:  # noqa: BLE001
             return {}
     return {}
