@@ -53601,8 +53601,7 @@ async def openai_image_generations(
 
 
 def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tuple[str, float]]:
-    """The request's adapters; omitted means the ones the load baked in, else the ones the load named (a dense
-    Deploy to Create applies them per generation), so a deployed LoRA is never dropped silently."""
+    """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
     if body.loras is not None:
         return [(spec.id, float(spec.weight)) for spec in body.loras]
     pairs = []

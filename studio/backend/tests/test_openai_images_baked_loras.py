@@ -184,8 +184,6 @@ def test_managed_accounts_authorize_explicit_adapters(baked_client, monkeypatch)
 
 
 class _DenseLoadBackend(_BakedBackend):
-    """A dense (unbaked) load that named adapters: Deploy to Create on a bf16 / nf4 build."""
-
     def status(self):
         out = super().status()
         out["load_lora_specs"] = [{"id": "tarot-lora", "weight": 1.0}]
@@ -217,7 +215,6 @@ def test_load_lora_specs_report_the_load_request():
     assert diffusion_module._load_lora_specs(pipe) == []
     diffusion_module._record_load_lora_specs(pipe, [("tarot-lora", 1.0), ("off", 0.0)])
     assert diffusion_module._load_lora_specs(pipe) == [{"id": "tarot-lora", "weight": 1.0}]
-    # A bake reports what it baked.
     pipe._unsloth_loras_baked = True
     diffusion_module._record_baked_lora_specs(pipe, [("baked-lora", 0.5)])
     assert diffusion_module._load_lora_specs(pipe) == [{"id": "baked-lora", "weight": 0.5}]
@@ -232,8 +229,7 @@ def _diffusion_functions():
 
 
 def test_every_bake_records_the_specs_v1_reads_back():
-    """A load that marks its adapters baked must record the request behind them, or /v1/images/generations sends an
-    empty selection (MiniMax-H3-Image: refused, since its merge cannot be switched off)."""
+    """Unrecorded baked specs make /v1/images/generations send an empty selection (refused on MiniMax-H3-Image)."""
     import ast
     for node in _diffusion_functions():
         marks = [

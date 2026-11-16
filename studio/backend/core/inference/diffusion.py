@@ -992,7 +992,7 @@ def _baked_lora_specs(pipe: Any) -> list:
     return [{"id": i, "weight": w} for (i, w) in getattr(pipe, _BAKED_LORA_SPECS_ATTR, ()) or ()]
 
 
-# Every load's requested (id, weight) pairs, baked or not: a dense build applies them per generation.
+# Every load's requested (id, weight) pairs; a dense build applies them per generation.
 _LOAD_LORA_SPECS_ATTR = "_unsloth_load_lora_specs"
 
 
@@ -1013,7 +1013,6 @@ def _record_load_lora_specs(pipe: Any, loras: Any) -> None:
 
 
 def _load_lora_specs(pipe: Any) -> list:
-    """The adapters the load requested, as ``{id, weight}``; the baked set when there is one."""
     baked = _baked_lora_specs(pipe)
     if baked:
         return baked
@@ -12077,7 +12076,7 @@ class DiffusionBackend:
         if baked:
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
-            # /v1/images/generations reads these back: a merge cannot be switched off, so an empty set is refused.
+            # /v1/images/generations reads these back; an empty set is refused (merge cannot be undone).
             _record_baked_lora_specs(pipe, loras)
             logger.info(
                 "diffusion.lora_bake: %d adapter(s) merged into the MiniMax-H3-Image DiT",
