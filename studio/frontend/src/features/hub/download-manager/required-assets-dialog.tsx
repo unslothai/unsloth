@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Loader2Icon } from "lucide-react";
 import { useId, useState } from "react";
 import { Checkbox as CheckboxPrimitive } from "radix-ui";
 import {
@@ -14,6 +13,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 import {
   additionalAssetDownloads,
   assetLabel,
@@ -98,7 +98,7 @@ function DownloadChoice({
             role="status"
             className="absolute inset-0 flex items-center justify-center gap-3 text-muted-foreground"
           >
-            <Loader2Icon className="size-4 animate-spin" />
+            <Spinner />
             Checking required files…
           </div>
         )}

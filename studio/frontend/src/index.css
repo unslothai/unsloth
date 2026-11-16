@@ -1874,8 +1874,7 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 }
 
 /* WebKitGTK's compositor wobbles a rotating <svg> by a pixel or more when it sits off the device pixel grid;
-   turn its contents instead (Spinner does this with SMIL). Not on WebKitGTK before 2.40, which leaves
-   these icons still. */
+   turn its contents instead. CSS animates SVG children from WebKitGTK 2.40, which the app already needs. */
 html.tauri.render-linux svg.animate-spin {
 	animation: none;
 }
