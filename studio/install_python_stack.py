@@ -2012,7 +2012,9 @@ def _windows_amd_gpu_names_from_registry() -> list[str]:
                         continue
                     with winreg.OpenKey(class_key, subkey) as adapter_key:
                         try:
-                            matching_id = str(winreg.QueryValueEx(adapter_key, "MatchingDeviceId")[0])
+                            matching_id = str(
+                                winreg.QueryValueEx(adapter_key, "MatchingDeviceId")[0]
+                            )
                         except OSError:
                             matching_id = ""
                         try:
@@ -2259,9 +2261,7 @@ def _detect_windows_gfx_arch() -> str | None:
     # to CPU-only installation. This also covers driver-only laptops with no HIP SDK installed.
     _registry_names = _windows_amd_gpu_names_from_registry()
     _registry_tokens = [
-        _arch
-        for _name in _registry_names
-        if (_arch := _gfx_arch_from_gpu_name(_name)) is not None
+        _arch for _name in _registry_names if (_arch := _gfx_arch_from_gpu_name(_name)) is not None
     ]
     _registry_pick = _dedup_pick(_registry_tokens, warn = False)
     if _registry_pick:

@@ -16,7 +16,9 @@ STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
 def _load_stack_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("studio_install_python_stack_registry", STACK_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "studio_install_python_stack_registry", STACK_PATH
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -28,7 +30,11 @@ stack = _load_stack_module()
 
 
 class _RegistryKey:
-    def __init__(self, subkeys: tuple[str, ...] = (), values: dict[str, str] | None = None):
+    def __init__(
+        self,
+        subkeys: tuple[str, ...] = (),
+        values: dict[str, str] | None = None,
+    ):
         self.subkeys = subkeys
         self.values = values or {}
 
@@ -45,13 +51,13 @@ class _FakeWinreg:
     def __init__(self):
         self.adapters = {
             "0000": _RegistryKey(
-                values={
+                values = {
                     "MatchingDeviceId": "PCI\\VEN_1002&DEV_743F",
                     "DriverDesc": "AMD Radeon RX 6700S",
                 }
             )
         }
-        self.root = _RegistryKey(subkeys=tuple(self.adapters))
+        self.root = _RegistryKey(subkeys = tuple(self.adapters))
 
     def OpenKey(self, parent, name):
         if parent is self.HKEY_LOCAL_MACHINE:
