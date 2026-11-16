@@ -73,3 +73,39 @@ def test_a_folder_with_no_train_split_still_loads_every_file(tmp_path):
     _rows(tmp_path / "val.jsonl", ROWS)
     _rows(tmp_path / "notes.jsonl", ROWS)
     assert _names(tmp_path) == ["notes.jsonl", "val.jsonl"]
+
+
+def test_an_eval_folder_takes_its_validation_split_then_test(tmp_path):
+    from utils.paths import EVAL_SPLITS
+
+    _rows(tmp_path / "train.jsonl", ROWS)
+    _rows(tmp_path / "test.jsonl", ROWS)
+    assert [p.name for p in dataset_files_in_dir(tmp_path, EVAL_SPLITS)] == ["test.jsonl"]
+    _rows(tmp_path / "val.jsonl", ROWS)
+    assert [p.name for p in dataset_files_in_dir(tmp_path, EVAL_SPLITS)] == ["val.jsonl"]
+
+
+def test_an_eval_folder_without_eval_names_still_loads_every_file(tmp_path):
+    from utils.paths import EVAL_SPLITS
+
+    _rows(tmp_path / "train.jsonl", ROWS)
+    _rows(tmp_path / "part2.jsonl", ROWS)
+    assert [p.name for p in dataset_files_in_dir(tmp_path, EVAL_SPLITS)] == [
+        "part2.jsonl",
+        "train.jsonl",
+    ]
+
+
+def test_the_folder_preview_reads_the_train_split_not_a_sidecar(tmp_path):
+    pytest.importorskip("datasets")
+    pytest.importorskip("fastapi")
+    from hub.services.datasets.local import _load_local_preview_slice
+
+    _rows(tmp_path / "train.jsonl", ROWS)
+    (tmp_path / "filter_report.json").write_text(
+        json.dumps({"reasons": [], "kept": 2}), encoding = "utf-8"
+    )
+    preview, _ = _load_local_preview_slice(
+        dataset_path = tmp_path, train_split = "train", preview_size = 10
+    )
+    assert preview.column_names == ["instruction", "input", "output"]
