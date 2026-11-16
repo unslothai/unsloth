@@ -4,9 +4,15 @@
 """MoE aux loss keeps its gradient under "unsloth" GC: reentrant GC's no_grad pass dropped it, so non-reentrant is used."""
 
 import pytest
+from real_accelerator import has_real_accelerator
 
 torch = pytest.importorskip("torch")
-pytestmark = pytest.mark.gpu
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        not has_real_accelerator(), reason = "loads and trains a model on an accelerator"
+    ),
+]
 
 MODELS = [
     "trl-internal-testing/tiny-GptOssForCausalLM",
