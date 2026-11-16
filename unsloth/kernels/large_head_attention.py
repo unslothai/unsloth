@@ -155,8 +155,8 @@ def _lh_bwd_pre(
     sdom,
     H,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -211,9 +211,9 @@ def _lh_bwd_dq(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -301,11 +301,11 @@ def _lh_bwd_dkdv(
     G,
     S,
     NSPLIT,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    DO_DK: tl.constexpr,
-    DO_DV: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per step
+    BLOCK_N: tl.constexpr,  # key rows per program
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
 ):
     # One program owns a kv block of one kv head and loops over its query heads (all G, or G / NSPLIT
     # of them into an fp32 partial summed afterwards when B * HKV * kv blocks would leave SMs idle,
@@ -384,7 +384,15 @@ def _lh_bwd_dkdv(
 # loaded by TMA in two head_dim halves (a TMA box dimension is at most 256 elements), so each [*, 512]
 # product is two chained dots and each accumulator is two halves.
 @triton.jit
-def _tma_tile(desc, b, h, row0, col0, ROWS: tl.constexpr, HALF: tl.constexpr):
+def _tma_tile(
+    desc,
+    b,
+    h,
+    row0,
+    col0,
+    ROWS: tl.constexpr,  # rows of the tile
+    HALF: tl.constexpr,  # columns of the tile: half of head_dim
+):
     return desc.load([b, h, row0, col0]).reshape(ROWS, HALF)
 
 
@@ -404,9 +412,9 @@ def _lh_fwd_tma(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     HALF: tl.constexpr = HEAD_DIM // 2
     start_m = tl.program_id(0)
@@ -475,9 +483,9 @@ def _lh_bwd_dq_tma(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     HALF: tl.constexpr = HEAD_DIM // 2
     start_m = tl.program_id(0)
@@ -550,11 +558,11 @@ def _lh_bwd_dkdv_tma(
     G,
     S,
     NSPLIT,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    DO_DK: tl.constexpr,
-    DO_DV: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per step
+    BLOCK_N: tl.constexpr,  # key rows per program
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
 ):
     tl.static_assert(DO_DK != DO_DV)  # one of dK / dV per pass
     HALF: tl.constexpr = HEAD_DIM // 2
