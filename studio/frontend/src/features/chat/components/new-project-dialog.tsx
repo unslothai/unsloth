@@ -188,10 +188,16 @@ export function NewProjectDialog({
         setCreatedProject(project);
       }
       if (serverFolder) {
-        project = await setChatProjectWorkingFolderPath(
-          project.id,
-          serverFolder.serverPath,
-        );
+        try {
+          project = await setChatProjectWorkingFolderPath(
+            project.id,
+            serverFolder.serverPath,
+          );
+        } catch (pathError) {
+          // The project exists now, so unlock the picker: a retry would send the rejected path again.
+          setNeedsReselect(true);
+          throw pathError;
+        }
         setCreatedProject(project);
       }
       // Upload before closing so the Sources panel lists them on first fetch.
