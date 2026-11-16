@@ -252,6 +252,13 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
     assert rebuilt._base is None and torch.equal(
         rebuilt, torch.ones(6, 6, dtype = torch.bool).tril()[None, None]
     )
+    # A per-call is_causal override keeps None (the module attribute does not decide then).
+    assert (
+        M._normalise_mask(layer, one, {"attention_mask": None, "is_causal": False})[
+            "attention_mask"
+        ]
+        is None
+    )
     # A token-broadcast 2D mask rebuilds as all ones in that layout.
     layer = _MaskDecoderLayer().train()
     M._MATERIALISED[0] = None

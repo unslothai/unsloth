@@ -1588,7 +1588,8 @@ def _normalise_mask(layer, hidden_states, kwargs):
                 layer.__dict__.pop(_MASK_SPEC, None)
         return kwargs
     layout = layer.__dict__.get(_MASK_SPEC)
-    if layout is None:
+    # A per-call is_causal override decides what None means: leave it to the attention.
+    if layout is None or kwargs.get("is_causal") is not None:
         return kwargs
     causal = _layer_is_causal(layer) if layout[0] == 4 else None
     if layout[0] == 4 and causal is None:
