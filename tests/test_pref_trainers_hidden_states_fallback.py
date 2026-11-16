@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Preference, RLOO and Online DPO trainers ask the forward for hidden states through UNSLOTH_RETURN_HIDDEN_STATES. A
-forward the compiler gave the AST fused-head route ignores that flag, so these trainers must wrap it at init as GRPO
-does, or their chunked log-prob routes silently score full tokens x vocab logits."""
+"""Preference, RLOO and Online DPO trainers must wrap a flag-blind fused-head forward at init, as GRPO does."""
 
 import importlib
 

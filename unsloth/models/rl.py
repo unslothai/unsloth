@@ -4174,9 +4174,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap hidden-state fallback for {RLTrainer_name}: {e}")
 
 
-# Trainers whose chunked log-prob routes ask the forward for hidden states via UNSLOTH_RETURN_HIDDEN_STATES. A forward
-# the compiler gave the AST fused-head route ignores that flag, so without the wrapper these trainers silently score
-# full logits (ORPO / CPO / Online DPO on transformers 5.x Llama and Qwen3; also DPO / KTO on TRL < 1.x).
+# The AST fused-head forward ignores UNSLOTH_RETURN_HIDDEN_STATES; unwrapped, these trainers score full logits.
 _HIDDEN_STATES_FALLBACK_TRAINERS = frozenset(
     (
         "dpo_trainer",
