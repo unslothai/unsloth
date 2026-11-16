@@ -280,6 +280,9 @@ class SdCppServer:
                 rng = rng,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
+            if files.clip_l:
+                # FLUX.1 CLIP-L leaves a null encoder param; sd.cpp's LoRA cond-cache check segfaults on it.
+                run_env.setdefault("SD_COND_CACHE_STRICT", "1")
             if env:
                 run_env.update(env)
             if _verbose_native_logs():

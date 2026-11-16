@@ -3486,6 +3486,7 @@ def test_a_device_loss_retry_restages_the_loras_under_the_new_server(monkeypatch
         resolved,
         stage,
         real_files = False,
+        family = None,
     ):
         os.makedirs(stage, exist_ok = True)
         (Path(stage) / "adapter.gguf").write_bytes(b"x")
