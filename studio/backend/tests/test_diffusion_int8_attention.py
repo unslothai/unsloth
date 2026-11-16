@@ -1449,6 +1449,25 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
 
 
 @needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+def test_more_clipped_keys_than_one_staging_pass(head_dim):
+    """A head with more clipped keys than unsloth_i8resid stages at once (32) adds them back in several passes: the
+    kernel still matches its torch model, and the keys are the bumped ones, in key order."""
+    shape = (1, 2100, 2, head_dim)
+    sinks = tuple(range(3, 3 + 40))
+    q, k, v = _sink_case(shape, _card_dtype(), sinks, seed = 7)
+    p = I.quantise(q, k, v, _cuda_config(head_dim))
+    counts = p["rcnt"].tolist()
+    assert counts[0] >= len(sinks) > 32 and counts[1] == 0, counts
+    keys = p["ridx"][0, : counts[0]].tolist()
+    assert set(sinks) <= set(keys) and keys == sorted(keys)
+    want = emulate(p)
+    got = I.attend(p).float()
+    rel = ((got - want).abs().mean() / want.abs().mean()).item()
+    assert rel < 4e-3, rel
+
+
+@needs_kernel
 @pytest.mark.parametrize("with_sinks", [False, True])
 def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sinks):
     """A launch plan's first calls take the attention-sink path and report whether a head clipped; from its
