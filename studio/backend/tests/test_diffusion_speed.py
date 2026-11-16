@@ -3392,3 +3392,5 @@ def test_the_load_races_int8_attention_by_the_unset_speed_rule():
         if k.arg == "speed_active" and "True" != ast.unparse(k.value)
     ]
     assert loads == ["int8_attention_speed_active(speed_mode, effective_speed, speed_deferred)"]
+    unset = [ast.unparse(k.value) for c in calls for k in c.keywords if k.arg == "speed_unset_only"]
+    assert unset == ["effective_speed == SPEED_OFF"]

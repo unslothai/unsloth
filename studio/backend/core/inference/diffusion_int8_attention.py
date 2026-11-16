@@ -892,12 +892,20 @@ def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index
 
 
 def _pick_path(ms: dict, err: dict) -> Any:
-    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain)."""
+    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
+    kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
+    sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
+    taken must beat torch's attention by RACE_MARGIN, else torch's attention."""
+    order = ["sinks"]
+    if err["plain"] <= PLAIN_ERROR_SLACK * err["sinks"]:
+        order = (
+            ["sinks", "plain"] if ms["sinks"] < RACE_MARGIN * ms["plain"] else ["plain", "sinks"]
+        )
     paths = {"sinks": True, "plain": False}
-    if err["plain"] > PLAIN_ERROR_SLACK * err["sinks"]:
-        paths.pop("plain")
-    best = min(paths, key = lambda name: ms[name])
-    return paths[best] if ms[best] < RACE_MARGIN * ms["incumbent"] else "native"
+    for name in order:
+        if ms[name] < RACE_MARGIN * ms["incumbent"]:
+            return paths[name]
+    return "native"
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
@@ -1768,6 +1776,7 @@ def install_auto(
     target: Any,
     logger: Any = None,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> int:
     """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
     ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
@@ -1784,6 +1793,8 @@ def install_auto(
     except Exception:  # noqa: BLE001
         return 0
     if not dispatch.enabled() or type(transformer).__name__ not in dispatch.AUTO_DITS:
+        return 0
+    if speed_unset_only and type(transformer).__name__ not in dispatch.SPEED_UNSET_DITS:
         return 0
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
     if not device.startswith("cuda") or not torch.cuda.is_available() or _is_rocm():

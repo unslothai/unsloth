@@ -3576,6 +3576,7 @@ def apply_attention_backend(
     target: Any = None,
     requested: Optional[str] = None,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
@@ -3600,7 +3601,11 @@ def apply_attention_backend(
                 return BACKEND
             # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
             if _auto_request(requested) and install_auto(
-                pipe, target, logger = logger, speed_active = speed_active
+                pipe,
+                target,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
             ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
@@ -3610,7 +3615,12 @@ def apply_attention_backend(
             from .diffusion_int8_attention import BACKEND
             from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
             if install_int8_dispatch(
-                pipe, target, requested = requested, logger = logger, speed_active = speed_active
+                pipe,
+                target,
+                requested = requested,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
             ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays

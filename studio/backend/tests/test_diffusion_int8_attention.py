@@ -1697,6 +1697,16 @@ def test_the_sink_race_keeps_the_faster_path_as_accurate_as_the_sink_path():
     assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, near) is False
     assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.20}, far) == "native"
     assert pick({"incumbent": 1.25, "sinks": 1.29, "plain": 1.24}, near) == "native"
+    # Qwen-Image-2.1-Turbo on G4: the sink path 1.7% faster than the old kernels, as accurate: a near tie keeps the old
+    assert (
+        pick(
+            {"incumbent": 0.8704, "sinks": 0.6017, "plain": 0.6119},
+            {"sinks": 0.01263, "plain": 0.01275},
+        )
+        is False
+    )
+    # the old kernels kept only while they beat torch's attention, else the sink path where it does
+    assert pick({"incumbent": 1.0, "sinks": 0.97, "plain": 0.985}, near) is True
 
 
 def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_routes(monkeypatch):

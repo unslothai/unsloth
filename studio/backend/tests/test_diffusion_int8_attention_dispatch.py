@@ -328,6 +328,28 @@ def test_speed_off_keeps_the_automatic_route_off(card, monkeypatch):
     assert D.install(pipe, _TARGET, speed_active = False) == 4
 
 
+def test_the_unset_speed_rule_leaves_wan_as_on_base(card, monkeypatch):
+    """Speed unset with no profile to follow races only SPEED_UNSET_DITS (the image families measured that way): Wan
+    keeps base's behaviour there, no race until a speed profile engages; a request by name still routes it."""
+    assert (
+        D.SPEED_UNSET_DITS
+        == {
+            "Flux3Transformer2DModel",
+            "QwenImage21Transformer2DModel",
+            "ZImageTransformer2DModel",
+        }
+        and D.SPEED_UNSET_DITS <= D.AUTO_DITS
+        and "WanTransformer3DModel" in D.AUTO_DITS
+    )
+    dit = _wan_dit()
+    dit.set_attention_backend("native")
+    pipe = _Pipe(dit)
+    seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
+    assert D.install(pipe, _TARGET, speed_unset_only = True) == 0 and not seen
+    assert D.install(pipe, _TARGET, requested = I.BACKEND, speed_unset_only = True) == 4
+    assert D.install(pipe, _TARGET) == 4
+
+
 def test_wan_auto_race_floor_keeps_short_cross_attention(card, monkeypatch):
     seen = _fake_cuda(monkeypatch, found = {"ok": True, "min_tokens": 0})
     monkeypatch.setattr(I, "RACE_TOKENS", (64, 16))
@@ -749,8 +771,7 @@ def test_apply_attention_backend_installs_the_route(monkeypatch):
     monkeypatch.setattr(
         D,
         "install",
-        lambda pipe, target, requested = None, logger = None, speed_active = True: got.append(requested)
-        or 3,
+        lambda pipe, target, requested = None, logger = None, **_: got.append(requested) or 3,
     )
     assert (
         A.apply_attention_backend(object(), "_native_cudnn", target = _TARGET, requested = "auto")

@@ -11102,6 +11102,8 @@ class DiffusionBackend:
                         speed_active = int8_attention_speed_active(
                             speed_mode, effective_speed, speed_deferred
                         ),
+                        # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
+                        speed_unset_only = effective_speed == SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.

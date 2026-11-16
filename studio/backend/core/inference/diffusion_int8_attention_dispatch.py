@@ -51,6 +51,12 @@ AUTO_DITS = frozenset(
         "ZImageTransformer2DModel",
     }
 )
+# DiTs whose INT8 attention also races where speed was left unset and no speed profile follows (an INT8 DiT the offload
+# streams on a T4): the families measured that way (FLUX.3 Klein, Z-Image, Qwen-Image-2.1); the rest of AUTO_DITS (Wan)
+# keep base's behaviour there (no race until a speed profile engages).
+SPEED_UNSET_DITS = frozenset(
+    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+)
 # DiTs whose accuracy was measured on the CUDA kernel only (its V range past attention sinks): with the switch unset a
 # Triton stand-in keeps the incumbent for them; a request by name or the env switch still routes it.
 AUTO_CUDA_ONLY = frozenset({"Flux3Transformer2DModel", "ZImageTransformer2DModel"})
@@ -449,13 +455,14 @@ def install(
     requested: Any = None,
     logger: Any = None,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> int:
     """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
     (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
     bit-identical; a request by name or the env switch still routes. Returns the number of modules routed; never
     raises."""
     try:
-        return _install(pipe, target, requested, logger, speed_active)
+        return _install(pipe, target, requested, logger, speed_active, speed_unset_only)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
         remove(pipe)
         if logger is not None:
@@ -611,6 +618,7 @@ def _install(
     requested: Any,
     logger: Any,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> int:
     import torch
 
@@ -639,7 +647,10 @@ def _install(
     candidates = []
     cuda_only = set()
     for dit in _dits(pipe):
-        if not forced and type(dit).__name__ not in AUTO_DITS:
+        if not forced and (
+            type(dit).__name__ not in AUTO_DITS
+            or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
+        ):
             continue
         mods = routable_modules(dit)
         candidates.extend(mods)
