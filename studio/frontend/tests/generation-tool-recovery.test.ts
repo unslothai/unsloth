@@ -400,6 +400,7 @@ test("the live adapter saves identities for ordinary, approval and provider card
         serverCancel: () => {},
         liveThreadKey: () => "thread-live",
         cancelId: "cancel-1",
+        computerUseAsk: () => undefined,
         generationRunId,
         generationSeq: 7,
         cumulativeText: "",

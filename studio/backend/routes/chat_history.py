@@ -150,8 +150,9 @@ class ChatThreadSettings(BaseModel):
     deepResearchEnabled: Optional[bool] = None
     artifactsEnabled: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
-    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    # Never "full": Full access granted to this chat is the separate flag below.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    fullAccess: Optional[bool] = None
     ragEnabled: Optional[bool] = None
     ragSource: Optional[
         Annotated[

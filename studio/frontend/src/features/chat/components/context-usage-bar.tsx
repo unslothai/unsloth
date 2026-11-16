@@ -11,25 +11,8 @@ import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
   formatTokenCountFull,
+  getSeverityColor,
 } from "../lib/context-usage-bar-state";
-
-function getSeverityColor(percent: number): {
-  bar: string;
-  stroke: string;
-  text: string;
-} {
-  if (percent > 85) {
-    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
-  }
-  if (percent > 65) {
-    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
-  }
-  return {
-    bar: "bg-control-accent",
-    stroke: "stroke-control-accent",
-    text: "text-control-accent",
-  };
-}
 
 const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
@@ -342,21 +325,21 @@ export const ContextUsageBar: FC<
                   stopping here, but the model can no longer hold the whole
                   conversation: answers get slower and less accurate, and a
                   long enough chat can still run out of memory. Increase{" "}
-                  <span className="font-medium">Context Length</span> in the
+                  <span className="font-medium">Context</span> in the
                   chat Settings panel to fit it all.
                 </>
               ) : advice === "mlx-near-limit" ? (
                 <>
                   Close to the context limit. Past it the chat keeps going, but
                   answers get slower and less accurate. Increase{" "}
-                  <span className="font-medium">Context Length</span> in the
+                  <span className="font-medium">Context</span> in the
                   chat Settings panel to fit the whole conversation.
                 </>
               ) : advice === "mlx-refuses-past-limit" ? (
                 <>
                   Close to the context limit. This model quantizes its cache
                   instead of capping it, so{" "}
-                  <span className="font-medium">Context Length</span> is applied
+                  <span className="font-medium">Context</span> is applied
                   to each request rather than to the cache: past it the request
                   is refused instead of the chat slowing down. Increase it in
                   the chat Settings panel, or shorten the conversation.
@@ -364,14 +347,14 @@ export const ContextUsageBar: FC<
               ) : advice === "unenforced-limit" ? (
                 <>
                   This model builds its own cache, so{" "}
-                  <span className="font-medium">Context Length</span> is the
+                  <span className="font-medium">Context</span> is the
                   window it was sized for, not a limit on it: the cache keeps
                   growing and lowering the setting will not save memory.
                 </>
               ) : (
                 <>
                   Close to the context limit. Generation will stop at 100%.
-                  Increase <span className="font-medium">Context Length</span> in
+                  Increase <span className="font-medium">Context</span> in
                   the chat Settings panel to keep going.
                 </>
               )}
