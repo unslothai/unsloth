@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """The fallback half of unsloth/disk_utils.py, used when unsloth_zoo has no disk_utils."""
 
 import importlib.util
