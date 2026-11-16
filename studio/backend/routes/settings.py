@@ -2739,10 +2739,15 @@ async def update_model_aliases_setting(
     objects = await _openai_catalog_objects()
     model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
     model_ids += list(decision_catalog.CHECKPOINTS)
+    rows = []
+    for entry in payload.aliases:
+        row = entry.model_dump()
+        # Keep an explicit null (clears a stored configuration) distinct from an omitted field.
+        if "load_config" in entry.model_fields_set:
+            row.setdefault("load_config", None)
+        rows.append(row)
     try:
-        aliases = await asyncio.to_thread(
-            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
-        )
+        aliases = await asyncio.to_thread(set_model_aliases, rows, model_ids)
     except ValueError as exc:
         raise log_and_http_error(
             exc,

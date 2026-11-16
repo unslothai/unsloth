@@ -149,11 +149,20 @@ def get_model_aliases() -> list[dict[str, Any]]:
 
 def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, Any]]:
     """Replace the whole alias list; the same input always stores the same value. ``model_ids``
-    are real ids an alias may not reuse: the rewrite would silently serve other weights."""
+    are real ids an alias may not reuse: the rewrite would silently serve other weights.
+    An entry must carry ``load_config`` (``None`` clears it) when its stored alias has one."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
     aliases = normalize_model_aliases(raw)
+    # A client that predates load_config (a Web UI tab left open across an upgrade) would wipe it.
+    configured = {a["name"].lower() for a in get_model_aliases() if a.get("load_config")}
+    for entry, alias in zip(raw or [], aliases):
+        if "load_config" not in entry and alias["name"].lower() in configured:
+            raise ValueError(
+                f"Alias '{alias['name']}' has a saved load configuration that this save did not "
+                "include. Refresh the page and try again."
+            )
     taken = {model_id.lower() for model_id in model_ids}
     for alias in aliases:
         if alias["name"].lower() in taken:

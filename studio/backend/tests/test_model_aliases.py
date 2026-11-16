@@ -415,6 +415,42 @@ def test_configured_connection_is_rejected_before_any_endpoint_dispatch(store, m
     assert "error" in response.json()
 
 
+def test_save_without_a_stored_load_config_is_refused(store, monkeypatch):
+    # A Web UI tab from before load_config renames a plain alias and PUTs the configured one bare.
+    from fastapi import HTTPException
+
+    import routes.inference as inference
+    import routes.settings as settings_routes
+
+    async def catalog():
+        return []
+
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+
+    def save(aliases):
+        payload = settings_routes.ModelAliasesPayload(aliases = aliases)
+        return asyncio.run(
+            settings_routes.update_model_aliases_setting(payload, current_subject = "owner")
+        ).model_dump()["aliases"]
+
+    configured = {"name": "long", "model": "org/model", "load_config": _CONFIG}
+    stored = save([configured, {"name": "fast", "model": "org/model"}])
+    with pytest.raises(HTTPException) as err:
+        save([{"name": "long", "model": "org/model"}, {"name": "quick", "model": "org/model"}])
+    assert err.value.status_code == 400
+    assert "Refresh the page" in err.value.detail
+    assert aliases_mod.get_model_aliases() == stored
+
+    # A current client sends the configuration back, or null to remove it on purpose.
+    assert save([configured, {"name": "quick", "model": "org/model"}])[0] == configured
+    assert save([{"name": "long", "model": "org/model", "load_config": None}]) == [
+        {"name": "long", "model": "org/model"}
+    ]
+    assert save([{"name": "long", "model": "org/other"}]) == [
+        {"name": "long", "model": "org/other"}
+    ]
+
+
 def test_configured_alias_roundtrips_settings_schema(store):
     # Saving and returning an alias retains its independently selectable launch configuration.
     from routes.settings import ModelAliasesPayload, ModelAliasesResponse, get_model_aliases_setting
