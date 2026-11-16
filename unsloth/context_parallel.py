@@ -890,7 +890,9 @@ class ContextParallelManager:
         MoE counts expert usage (the remote shim): one process routes caller padding through the MoE
         with its own activations (Kimi delta layers zero it, attention masks the padded keys), so the
         Ulysses mixers reproduce them for the routes, and the expert counts, to match."""
-        return self.__dict__.get("_caller_pad_lengths", {}).get((bsz, total))
+        store = self.__dict__.get("_caller_pad_lengths")
+        # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
+        return store.get((bsz, total)) if store else None
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
