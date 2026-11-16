@@ -179,8 +179,25 @@ def resolve(
             name = f"{r.alias}_{n}"
         seen.add(name)
         _fetch_hub_adapter_config(r.path, hf_token, local_files_only)
+        if _is_dora(r.path):
+            raise diffusion_lora.LoraSelectionError(
+                f"'{r.id}' is a DoRA adapter; video loads bake plain LoRA deltas only, so it would merge wrong. "
+                "Use a plain LoRA adapter."
+            )
         out.append((name, r.path, r.weight))
     return tuple(out)
+
+
+def _is_dora(path: str) -> bool:
+    """DoRA rescales each weight by a learned magnitude a plain ``scale * B @ A`` bake cannot reproduce."""
+    if _file_metadata(path).get("use_dora"):
+        return True
+    try:
+        from safetensors import safe_open
+        with safe_open(str(path), framework = "pt", device = "cpu") as f:
+            return any("lora_magnitude_vector" in k or k.endswith(".dora_scale") for k in f.keys())
+    except Exception:  # noqa: BLE001 - unreadable here fails later with its own error
+        return False
 
 
 def _hub_cache_location(path: str) -> Optional[tuple[str, str, str, str]]:
@@ -366,6 +383,9 @@ def bake_into_module_(
                 w.addmm_(b.to(dev, torch.float32), a.to(dev, torch.float32), alpha = float(scale))
             param.data.copy_(w.to(param.dtype))
             del w
+    if deltas:
+        # Read by every cache writer keyed on the base's shards: a merged build must never be served as the base.
+        setattr(module, LORAS_BAKED_ATTR, True)
     return len(deltas)
 
 

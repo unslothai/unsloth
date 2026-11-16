@@ -455,3 +455,35 @@ def test_a_hub_adapter_s_companion_config_sets_its_scale(monkeypatch, tmp_path, 
     base = {k: v.clone() for k, v in module.state_dict().items()}
     video_lora.bake_into_module_(module, [(out[0][1], 1.0)])
     _assert_baked(module, base, factors, scale = 8 / RANK)
+
+
+@pytest.mark.parametrize("how", ["config", "magnitude_key"])
+def test_a_dora_adapter_is_refused_before_anything_is_baked(monkeypatch, tmp_path, how):
+    """DoRA's per-weight magnitude cannot be reproduced by a plain delta bake: refuse it at resolution (a 400 before the
+    resident model is touched) instead of reporting a wrong merge as baked."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion_lora
+
+    path = tmp_path / "dora" / "w.safetensors"
+    path.parent.mkdir()
+    state = {
+        "transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 8),
+        "transformer.blocks.0.attn1.to_q.lora_B.weight": torch.zeros(8, 4),
+    }
+    if how == "magnitude_key":
+        state["transformer.blocks.0.attn1.to_q.lora_magnitude_vector"] = torch.ones(8)
+    else:
+        (path.parent / "adapter_config.json").write_text(
+            json.dumps({"r": 4, "lora_alpha": 4, "use_dora": True})
+        )
+    save_file(state, str(path))
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **k: [
+            diffusion_lora.ResolvedLora("me/dora", "dora", str(path), "safetensors", 1.0)
+        ],
+    )
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = "DoRA"):
+        video_lora.resolve([("me/dora", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None)
