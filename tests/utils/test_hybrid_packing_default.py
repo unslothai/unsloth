@@ -454,8 +454,7 @@ def test_zoo_triton_conv_is_accepted(monkeypatch, mode):
 
 
 def _kernels_func(func, zoo = False):
-    # `kernels` installed: transformers' hub functions become Func() modules whose class forward
-    # closes over the wrapper; unsloth-zoo subclasses that class to route seq_idx calls.
+    # `kernels` installed: hub functions are Func() modules whose class forward holds the closure.
     class Func(torch.nn.Module):
         def forward(self, *args, **kwargs):
             return func(*args, **kwargs)
