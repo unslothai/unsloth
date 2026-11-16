@@ -1255,7 +1255,7 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         config = types.SimpleNamespace(output_router_logits = True), router_aux_loss_coef = 0.01
     )
     stage = types.SimpleNamespace(
-        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner)),
+        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner, config = owner.config)),
         env_layout = None,
         num_stages = 2,
     )
@@ -1263,6 +1263,16 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         pp_env._refuse_split_router_aux(stage, 2)
     pp_env._refuse_split_router_aux(stage, 1)
     owner.config.output_router_logits = False
+    pp_env._refuse_split_router_aux(stage, 2)
+
+    # A multimodal wrapper keeps both settings on its text_config, not on itself / its top-level config.
+    text = types.SimpleNamespace(output_router_logits = True, router_aux_loss_coef = 0.01)
+    wrapper = type("Qwen4ExpForConditionalGeneration", (), {})()
+    wrapper.config = types.SimpleNamespace(text_config = text)
+    stage.ctx.moe = types.SimpleNamespace(owner = wrapper, config = text)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        pp_env._refuse_split_router_aux(stage, 2)
+    text.router_aux_loss_coef = 0.0
     pp_env._refuse_split_router_aux(stage, 2)
 
 
