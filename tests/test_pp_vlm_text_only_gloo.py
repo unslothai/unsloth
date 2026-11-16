@@ -137,6 +137,14 @@ def _case_parity(
     if rank == 0:
         out["saved_ref"] = load_file(os.path.join(tmp, "ref", "adapter_model.safetensors"))
         out["saved_pp"] = load_file(os.path.join(tmp, "pp", "adapter_model.safetensors"))
+    if keep_replica:
+        # What merged / GGUF exports read: the whole model back in place, towers included, every stage's training.
+        _load("pp_env").gather_replica(model, "save_pretrained_merged")
+        full, want = model.state_dict(), ref.state_dict()
+        out["replica_keys"] = (sorted(full), sorted(want))
+        out["replica_diff"] = max(
+            float((full[k].float() - want[k].float()).abs().max()) for k in want
+        )
     return out
 
 
@@ -288,9 +296,12 @@ def test_pp2_text_only_keep_replica_keeps_towers_on_the_cpu():
     check_parity(results)
     check_saved(results)
     for res in results:
-        assert (
-            res["kept"] >= 2
-        )  # the towers (vision tower, embed_vision) besides the other stage's modules
+        assert res["kept"] >= 2  # the towers besides the other stage's modules
+        keys, want = res["replica_keys"]
+        assert keys == want and any("vision_tower" in k for k in keys)
+        assert res["replica_diff"] < 1e-4, res[
+            "replica_diff"
+        ]  # every weight as one process trained it
 
 
 @pytest.mark.parametrize("arch", ["qwen3_5", "gemma4"])
