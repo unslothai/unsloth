@@ -3976,9 +3976,8 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""
-        # Krackan Point 2 names overlap the table's gfx1152 patterns (install.sh tests them first).
-        # amd-smi names only the first device, so a covered lspci peer (the same rule as
-        # _setup_unsupported_gfx_any) keeps the table's answer, as before.
+        # amd-smi names only the first device: a covered lspci peer decides the arch, as in
+        # _setup_unsupported_gfx_any and install.sh; a lone Krackan Point 2 is gfx1153.
         _setup_k2_name_ere='820M|Krackan ?(Point ?)?2|AI 5 (PRO )?330'
         if printf '%s\n' "$_setup_mkt" | grep -Eqi "$_setup_k2_name_ere"; then
             _setup_k2_peer=""
@@ -3989,14 +3988,14 @@ elif [ "$_setup_amd_detected" = true ]; then
                     if _setup_k2_peer_gfx=$(_setup_supported_gfx_from_name "$_setup_k2_ln" 2>/dev/null); then
                         # The APU's own line can carry the Krackan die name it shares with gfx1152 (install.sh skips it too).
                         [ "$_setup_k2_peer_gfx" = gfx1152 ] && continue
-                        _setup_k2_peer=1
+                        _setup_k2_peer=$_setup_k2_peer_gfx
                         break
                     fi
                 done <<EOF
 $(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
 EOF
             fi
-            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153
+            if [ -n "$_setup_k2_peer" ]; then _setup_gfx=$_setup_k2_peer; else _setup_gfx=gfx1153; fi
         fi
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
