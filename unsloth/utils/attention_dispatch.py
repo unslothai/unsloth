@@ -1416,6 +1416,8 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
         or hidden_states.dtype not in (torch.float16, torch.bfloat16)
         # UNSLOTH_TORCH_VARLEN=0 turns torch's varlen kernels off; the graph would run one anyway.
         or os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off")
+        # sdpa_kernel([MATH]) / enable_flash_sdp(False): the graph would call flash directly.
+        or not torch.backends.cuda.flash_sdp_enabled()
         # Dropout: the graph's flash path takes none and the mask fallback is quadratic.
         or (layer.training and float(getattr(attention, "attention_dropout", 0.0) or 0.0) > 0.0)
     ):
