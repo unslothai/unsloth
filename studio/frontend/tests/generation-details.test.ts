@@ -243,11 +243,12 @@ test("a tool result drops the last pass's figures, live or followed, so the next
 
 test("the status line comes back between tool rounds, after the finished call", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));
-  assert.match(indicator, /betweenToolRounds\(message\.status\?\.type === "running", message\.content\)/);
-  assert.match(indicator, /<GeneratingStatus \/>/);
+  const indicator = thread.slice(thread.indexOf("const PartsWithRoundTail"), thread.indexOf("// Mounted only under a running reply"));
+  assert.match(indicator, /runningReplyTail\(message\.status\?\.type === "running", message\.content\)/);
+  assert.match(indicator, /tail === 2 && \(\s*<div data-slot="next-round-indicator" className="mt-2">\s*<GeneratingStatus \/>/);
   // After the parts, so it sits under the call it follows rather than above the reply.
-  assert.match(thread, /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>\s*<NextRoundIndicator \/>/);
+  assert.match(indicator, /\{children\}\s*\{tail !== 0 && \(/);
+  assert.match(thread, /<PartsWithRoundTail>\s*<MessagePrimitive\.Parts\s+components=\{ASSISTANT_PART_COMPONENTS\}/);
 });
 
 test("a finished call shows the next round's status, past the sources a recovered reply ends with", () => {

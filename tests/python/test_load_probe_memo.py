@@ -105,7 +105,19 @@ def test_delegated_load_probes_config_and_adapter_once(tmp_path, monkeypatch):
     assert resolved == [path, path]
 
 
-def test_mapper_fetched_once_per_load(monkeypatch):
+def _fresh_mapper_cache(monkeypatch, clock):
+    monkeypatch.setattr(loader_utils, "_NEW_MAPPER_CACHE", {"entry": None})
+    monkeypatch.setattr(loader_utils, "_time_monotonic", lambda: clock[0])
+    monkeypatch.setattr(loader_utils, "_env_says_offline", lambda: False)
+
+
+def _two_lookups():
+    return [loader_utils.get_model_name("org/unmapped-model", load_in_4bit = False) for _ in range(2)]
+
+
+def test_mapper_fetched_once_across_loads_until_it_ages_out(monkeypatch):
+    clock = [1000.0]
+    _fresh_mapper_cache(monkeypatch, clock)
     fetches = []
 
     def _fetch():
@@ -113,26 +125,42 @@ def test_mapper_fetched_once_per_load(monkeypatch):
         return ({"org/old": "org/old"}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_utils, "_get_new_mapper", _fetch)
-    monkeypatch.setattr(loader_utils, "_env_says_offline", lambda: False)
-
-    def _two_lookups():
-        return [
-            loader_utils.get_model_name("org/unmapped-model", load_in_4bit = False) for _ in range(2)
-        ]
 
     assert _two_lookups() == ["org/unmapped-model"] * 2
-    assert len(fetches) == 2
-
-    fetches.clear()
     assert loader_utils._load_probe_memo_scope(_two_lookups)() == ["org/unmapped-model"] * 2
     assert len(fetches) == 1
 
-    fetches.clear()
+    clock[0] += loader_utils._NEW_MAPPER_TTL_S
+    _two_lookups()
+    assert len(fetches) == 2
+
+
+def test_failed_mapper_fetch_is_retried_after_a_short_pause(monkeypatch):
+    clock = [1000.0]
+    _fresh_mapper_cache(monkeypatch, clock)
+    fetches = []
     monkeypatch.setattr(
         loader_utils, "_get_new_mapper", lambda: fetches.append(1) or ({}, {}, {}, {}, {})
     )
+
     loader_utils._load_probe_memo_scope(_two_lookups)()
+    _two_lookups()
+    assert len(fetches) == 1
+
+    clock[0] += loader_utils._NEW_MAPPER_RETRY_S
+    _two_lookups()
     assert len(fetches) == 2
+
+
+def test_cached_mapper_tables_are_copies(monkeypatch):
+    clock = [1000.0]
+    _fresh_mapper_cache(monkeypatch, clock)
+    monkeypatch.setattr(
+        loader_utils, "_get_new_mapper", lambda: ({"org/old": "org/old"}, {}, {}, {}, {})
+    )
+    first = loader_utils._new_mapper_tables()
+    first[0]["org/injected"] = "x"
+    assert "org/injected" not in loader_utils._new_mapper_tables()[0]
 
 
 def test_probe_memo_copies_reraises_and_skips_network_errors():

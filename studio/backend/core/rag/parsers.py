@@ -1718,6 +1718,7 @@ def _docx_mark_notes(document):
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -1737,6 +1738,27 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
+    # No BOM: NULs dominating one side of the byte pairs mean ASCII-heavy UTF-16.
+    if len(data) >= 8:
+        pairs = even_nulls = odd_nulls = 0
+        for i in range(0, min(len(data), 1024) - 1, 2):
+            if data[i : i + 2] == b"\0\0":
+                break
+            pairs += 1
+            if data[i] == 0:
+                even_nulls += 1
+            elif data[i + 1] == 0:
+                odd_nulls += 1
+        codec = None
+        if even_nulls >= 4 and odd_nulls * 10 <= even_nulls and 2 * even_nulls > pairs:
+            codec = "utf-16-be"
+        elif odd_nulls >= 4 and even_nulls * 10 <= odd_nulls and 2 * odd_nulls > pairs:
+            codec = "utf-16-le"
+        if codec is not None:
+            decoded = data.decode(codec, errors = "replace")
+            # Real text has no C0/C1 controls; NUL-shaped binaries fall through to the binary guard.
+            if _CONTROL_CHARS.search(decoded) is None:
+                return decoded
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:

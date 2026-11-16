@@ -607,6 +607,7 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
 
     class _CacheStub:
         _tensor_spill_layout = LlamaCppBackend._tensor_spill_layout
+        _ple_path_for = LlamaCppBackend._ple_path_for
 
     reads: list[int] = []
 

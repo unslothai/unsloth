@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { readGenerationProgress } from "./lib/generation-progress";
+import { NewChatNonceContext } from "./query-draft";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
@@ -188,6 +189,7 @@ import {
   beginSavedHistoryReconciliation,
   isSavedHistoryReconciliationSuperseded,
   reconcileOrdinarySavedMessagesInView,
+  subscribeThreadSwitchRecovery,
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
@@ -1415,6 +1417,27 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       },
     };
   }
+  if (m.role === "system") {
+    const textPart = {
+      type: "text" as const,
+      text: content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n"),
+    };
+    return {
+      id: m.id,
+      createdAt: new Date(m.createdAt),
+      role: "system" as const,
+      content: [textPart],
+      metadata: {
+        custom: (m.metadata as Record<string, unknown>) ?? {},
+      },
+    };
+  }
   const custom = (m.metadata as Record<string, unknown>) ?? {};
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
@@ -2502,6 +2525,12 @@ function useStudioRuntimeAdapters(
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
+      let idsAtRead: Set<string> | undefined;
+      try {
+        idsAtRead = new Set(aui.thread().export().messages.map((item) => item.message.id));
+      } catch {
+        idsAtRead = undefined;
+      }
       void readStoredChatMessages(remoteId)
         .then(({ messages, fromBackend }) => {
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2515,6 +2544,8 @@ function useStudioRuntimeAdapters(
             reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
               editingMessageId:
                 useChatRuntimeStore.getState().editingMessageId ?? null,
+              toThreadMessage,
+              idsAtRead,
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
@@ -2532,12 +2563,24 @@ function useStudioRuntimeAdapters(
         })
         .catch(() => {});
     };
-    return subscribeGenerationRecoveryTriggers(
+    const unsubscribeWake = subscribeGenerationRecoveryTriggers(
       globalThis,
       document,
       recoverCurrentThread,
       { wakeKey: () => aui.threadListItem().getState().remoteId },
     );
+    const unsubscribeSwitch = subscribeThreadSwitchRecovery(
+      useChatRuntimeStore,
+      (threadId) => {
+        const item = aui.threadListItem().getState();
+        return item.remoteId === threadId || item.id === threadId;
+      },
+      recoverCurrentThread,
+    );
+    return () => {
+      unsubscribeSwitch();
+      unsubscribeWake();
+    };
   }, [aui]);
 
   // Mirror Data-tab deletions, or a later sync writes the attachment back.
@@ -4519,7 +4562,9 @@ export function ChatRuntimeProvider({
         )}
         {/* The view stays mounted (only CSS-hidden) while off-route so the run stays attached and the
             stream alive; unmounting aborts generation. */}
-        {children}
+        <NewChatNonceContext.Provider value={initialThreadId ? null : newThreadNonce ?? null}>
+          {children}
+        </NewChatNonceContext.Provider>
         </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>

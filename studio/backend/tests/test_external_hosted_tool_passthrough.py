@@ -48,6 +48,9 @@ class FakeExternalClient:
     async def served_chat_template(self, model):
         return FakeExternalClient.served_template
 
+    async def served_model_reads_images(self, model):
+        return None
+
     async def close(self):
         return None
 

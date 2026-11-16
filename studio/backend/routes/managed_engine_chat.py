@@ -487,6 +487,10 @@ async def managed_tool_chat(
                 ):
                     continue
                 yield _with_model(line, public)
+            # The loop can end without opening the turn a withheld call promised; flush the owed terminal chunk.
+            owed = stripper.owed_terminal_chunk()
+            if owed is not None:
+                yield _with_model(owed, public)
         except asyncio.CancelledError:
             cancel.set()
             raise

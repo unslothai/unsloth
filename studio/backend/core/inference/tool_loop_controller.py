@@ -15,6 +15,7 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
+from core.inference.computer_use import COMPUTER_TOOL_NAME
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
@@ -189,6 +190,7 @@ class ToolCallDecision:
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
     noop_result: str = ""
+    session_id: str = ""
 
     @property
     def should_execute(self) -> bool:
@@ -222,7 +224,7 @@ class ToolCallDecision:
         fragment = self.unparsed_fragment
         # Use `raw` for unparsed arguments so the card shows the model's own text, not an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
-        return {
+        payload = {
             "tool_name": self.tool_name,
             "tool_call_id": self.card_id,
             "arguments": arguments,
@@ -230,6 +232,10 @@ class ToolCallDecision:
             "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
+        if self.tool_name == COMPUTER_TOOL_NAME and fragment is None:
+            from core.inference.computer_use import policy as computer_policy
+            payload["computer_use"] = computer_policy.call_asks(self.arguments, self.session_id)
+        return payload
 
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
@@ -827,6 +833,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Editing: {name}" if name else "Editing file..."
     if tool_name in BROWSER_TOOL_NAMES:
         return _browser_status(tool_name, arguments)
+    if tool_name == COMPUTER_TOOL_NAME:
+        from core.inference.computer_use import status_text
+        return status_text(arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
@@ -900,6 +909,8 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: command"
     if tool_name == "edit_file":
         return "Waiting for approval: file edit"
+    if tool_name == COMPUTER_TOOL_NAME:
+        return "Waiting for approval: computer use"
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Waiting for approval: {mcp[0]} · {mcp[1]}"
@@ -1171,14 +1182,24 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     return str(name or "")
 
 
-def _noop_result(reason: NoopReason, tool_name: str) -> str:
+def _noop_result(
+    reason: NoopReason,
+    tool_name: str,
+    *,
+    final: bool = False,
+) -> str:
     if reason == "duplicate":
+        follow_up = (
+            "Provide the final answer now without calling more tools."
+            if final
+            else "Answer from the results you have; call a different tool only if it would "
+            "return information you do not have yet."
+        )
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
             "successfully and nothing has changed since, so its result above still holds. "
-            "Do not repeat the same tool call. Answer from the results you have; call a "
-            "different tool only if it would return information you do not have yet."
+            f"Do not repeat the same tool call. {follow_up}"
         )
     if reason == "render_html_repeat":
         return (
@@ -1378,6 +1399,8 @@ class ToolLoopController:
             provenance = provenance,
             status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
+            # The conversation, not the project its sandbox is shared with.
+            session_id = self._thread_id or self._session_id or "",
         )
 
     def reprepare_call(
@@ -1494,6 +1517,7 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        result = decision.noop_result
         if decision.action == "duplicate":
             duplicate_count = self._duplicate_noop_counts.get(decision.key, 0) + 1
             self._duplicate_noop_counts[decision.key] = duplicate_count
@@ -1501,9 +1525,12 @@ class ToolLoopController:
                 self._force_final_answer = True
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
+        # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
+        if decision.action == "duplicate" and self._force_final_answer:
+            result = _noop_result("duplicate", decision.tool_name, final = True)
         return ToolCallCompletion(
             decision = decision,
-            result = decision.noop_result,
+            result = result,
             is_error = False,
             executed = False,
         )

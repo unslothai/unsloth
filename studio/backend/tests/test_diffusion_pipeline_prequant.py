@@ -1418,16 +1418,15 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("Alpha-VLLM/Lumina-Image-2.0", True),
         ("HiDream-ai/HiDream-I1-Full", True),
         ("black-forest-labs/FLUX.1-dev", False),
-        ("Tongyi-MAI/Z-Image-Turbo", True),
-        ("black-forest-labs/FLUX.2-klein-4B", True),
-        ("black-forest-labs/FLUX.2-klein-base-4B", True),
-        ("black-forest-labs/flux-3-image-klein", True),
-        ("black-forest-labs/flux-3-image-klein-base", True),
+        ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("black-forest-labs/FLUX.2-klein-4B", False),
+        ("black-forest-labs/FLUX.2-klein-base-4B", False),
+        ("black-forest-labs/flux-3-image-klein", False),
+        ("black-forest-labs/flux-3-image-klein-base", False),
         ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
-        # A 5B DiT: INT8-ConvRot doubles LPIPS against the eager port, so bf16 while it fits.
-        ("OpenMOSS-Team/MOSS-Image-SFT", True),
-        ("OpenMOSS-Team/MOSS-Image-Base", True),
+        ("OpenMOSS-Team/MOSS-Image-SFT", False),
+        ("OpenMOSS-Team/MOSS-Image-Base", False),
     ],
 )
 def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
@@ -1937,7 +1936,13 @@ def test_a_small_dit_kept_bf16_compiles_from_render_1(
         ("unsloth/FLUX.2-klein-base-9B", False),
     ],
 )
-def test_the_small_dit_rule_skips_the_9b_klein_variants(repo, kept):
+def test_the_small_dit_rule_skips_the_9b_klein_variants(monkeypatch, repo, kept):
+    # No family carries the rule since the INT8 measurement; arm it on klein to keep the 9B carve-out covered.
+    monkeypatch.setattr(
+        dmod,
+        "auto_bf16_when_resident_reason",
+        lambda name: dmod.SMALL_DIT_BF16_WHEN_RESIDENT if name == "flux.2-klein" else None,
+    )
     fam = detect_family_for_pick(repo, None, None)
     assert fam is not None and fam.name == "flux.2-klein"
     assert (dmod._auto_keeps_bf16_reason(fam, "pipeline", repo) is not None) is kept
@@ -1987,3 +1992,91 @@ def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub,
     assert entries[encoder_repo]["hosted_denoiser"] is shared_repo
     assert "text_encoder/model.safetensors" in entries[encoder_repo]["files"]
     assert entries[PREQUANT_REPO]["bytes"] == PREQUANT_BYTES + (1234 if shared_repo else 0)
+
+
+def _turing_host(monkeypatch, reason):
+    """A fp16-only Turing card: no torchao dense quant, the native int8 build only for an int8 request."""
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: False)
+    monkeypatch.setattr(
+        dmod,
+        "fp16_card_native_scheme",
+        lambda _t, requested, family = None: "int8" if requested == "int8" else None,
+    )
+    monkeypatch.setattr(dmod, "turing_auto_int8_reason", lambda _t, _family: reason)
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_runs_the_int8_build_for_a_measured_family(
+    fake_runtime, monkeypatch, request_
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["int8"]
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_auto_on_turing_keeps_fp16_without_a_measurement(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, None)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert status["transformer_quant"] in (None, "off")
+
+
+@pytest.mark.parametrize("memory_mode", ["balanced", "low_vram"])
+def test_auto_on_turing_keeps_fp16_under_an_offloading_memory_mode(
+    fake_runtime, monkeypatch, memory_mode
+):
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    _load(
+        backend,
+        memory_mode = memory_mode,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == []
+
+
+@pytest.mark.parametrize("request_", [None, "auto"])
+def test_auto_on_turing_falls_back_to_fp16_when_the_int8_build_declines(
+    fake_runtime, monkeypatch, request_
+):
+    """AUTO picked int8 for the user, so an int8 build that declines loads fp16 as before, never fails closed."""
+    backend, spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    status = _load(
+        backend,
+        transformer_quant = request_,
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert status["transformer_quant"] in (None, "off")
+    assert status["resolved"]["transformer_quant"]["source"] == "auto"
+
+
+def test_an_explicit_int8_on_turing_still_fails_closed_when_it_declines(fake_runtime, monkeypatch):
+    backend, _spy = _load_backend(monkeypatch)
+    _turing_host(monkeypatch, "T4: measured faster")
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *_a, **_k: None)
+    monkeypatch.setattr(dmod, "transformer_is_quantised", lambda _m: False)
+    with pytest.raises(RuntimeError, match = "transformer_quant='int8'"):
+        _load(
+            backend,
+            transformer_quant = "int8",
+            _pipeline_prequant_planned = None,
+            _pipeline_prequant_skipped = (),
+        )

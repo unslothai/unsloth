@@ -38,6 +38,7 @@ import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
@@ -220,6 +221,7 @@ import {
   providerModelSupportsVision,
 
   providerModelSupportsStudioTools,
+  isGeminiApiProviderType,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -1044,7 +1046,7 @@ export function SharedComposer({
     selectedExternalProvider?.providerType,
   );
   // Gemini rejects codeExecution alongside image modalities.
-  const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
+  const isExternalGemini = isGeminiApiProviderType(selectedExternalProvider?.providerType);
   // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
   const localImageToolHere = useChatRuntimeStore((s) =>
     localImageTool({ ...s, supportsBuiltinImageGeneration }),
@@ -2577,6 +2579,7 @@ export function SharedComposer({
     // Compare runs no research, so the item has nothing to offer here.
     deepResearch: null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -3060,6 +3063,7 @@ export function SharedComposer({
               <span>Tools</span>
             </button>
             <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+            <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
             {showImagePill && (
               <button
                 type="button"

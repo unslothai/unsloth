@@ -87,6 +87,18 @@ test("Always allow on a click covers only the button it named", async () => {
   assert.equal(await askedBy(click("c3", c), (id) => answerQuestion(id, true)), null);
 });
 
+test("an approved site and its Always allow don't carry to another port on that host", async () => {
+  info = buy;
+  const p = run("chat-p");
+  show("chat-p");
+  await navigate("p0", p);
+  assert.equal(await askedBy(click("p1", p), (id) => answerQuestion(id, true, true)), "click+always");
+  assert.equal(await askedBy(navigate("p2", p, "http://shop.example.com:8081/?d=1"), (id) => answerQuestion(id, true)), "open+always");
+  assert.equal(await askedBy(click("p3", p), (id) => answerQuestion(id, true)), "click+always", "Always allow carried to another port");
+  assert.equal(await askedBy(navigate("p4", p, "http://shop.example.com/"), (id) => answerQuestion(id, false)), null);
+  assert.equal(await askedBy(click("p5", p), (id) => answerQuestion(id, false)), null);
+});
+
 test("Always allow isn't offered or kept for a new chat's first turn before it has an id", async () => {
   info = buy;
   const first = run("__default");

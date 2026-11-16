@@ -179,3 +179,34 @@ def test_training_arguments_store_and_validate_the_ratio():
     for bad in (0, -1.0):
         with pytest.raises(ValueError, match = "loraplus_lr_ratio"):
             UnslothTrainingArguments(output_dir = "/tmp/unsloth-loraplus-test", loraplus_lr_ratio = bad)
+
+
+def _q_galore_config():
+    import unsloth.trainer
+    if not hasattr(unsloth.trainer, "QGaloreConfig"):
+        pytest.skip("the CPU / MLX trainer shims refuse q_galore_config in their own arguments")
+    return unsloth.trainer.QGaloreConfig()
+
+
+def test_a_ratio_with_q_galore_is_refused():
+    pytest.importorskip("torch")
+    config = _q_galore_config()
+    with pytest.raises(ValueError, match = "q_galore_config"):
+        UnslothTrainingArguments(
+            output_dir = "/tmp/unsloth-loraplus-test",
+            q_galore_config = config,
+            loraplus_lr_ratio = 16,
+        )
+    args = UnslothTrainingArguments(output_dir = "/tmp/unsloth-loraplus-test", q_galore_config = config)
+    assert args.loraplus_lr_ratio is None
+
+
+def test_a_ratio_set_after_construction_with_q_galore_is_refused():
+    torch = pytest.importorskip("torch")
+    model = torch.nn.Linear(4, 4)
+    trainer = _trainer(model, q_galore_config = _q_galore_config())
+    trainer._create_q_galore_optimizer = lambda *a, **k: "q-galore"
+    assert UnslothTrainer.create_optimizer(trainer, model) == "q-galore"
+    trainer.args.loraplus_lr_ratio = 16
+    with pytest.raises(ValueError, match = "q_galore_config"):
+        UnslothTrainer.create_optimizer(trainer, model)

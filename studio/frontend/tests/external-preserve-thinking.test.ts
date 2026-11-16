@@ -79,3 +79,12 @@ test("minimax replays reasoning whatever the preserve toggle says", () => {
     );
   }
 });
+
+test("deepseek replays reasoning whatever the preserve toggle says", () => {
+  for (const enabled of [true, false]) {
+    assert.deepEqual(
+      evaluate(providerSupportsPreserveThinking, {providerType: "deepseek"}, {preserveThinking: enabled}, true, "deepseek-flash"),
+      {replay: true, fields: {}},
+    );
+  }
+});

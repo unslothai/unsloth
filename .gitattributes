@@ -29,3 +29,7 @@ studio/frontend/** text=auto eol=lf
 # Engine locks are pinned by sha256 in their .compat.json and in each install's record, so a
 # Windows clone (core.autocrlf=true) rewriting them to CRLF would mark every engine stale.
 studio/backend/requirements/engines/** -text
+
+# Vendored third-party files are pinned by sha256 in studio/backend/vendor/*_manifest.json. A Windows clone
+# (core.autocrlf=true) would rewrite their LICENSE files to CRLF and fail those digests.
+studio/backend/vendor/** -text

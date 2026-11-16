@@ -11,7 +11,7 @@ import { readSrc } from "./helpers/kit.ts";
 const Z_INDEX_PATTERN = /z-\[(\d+)\]|\bz-(\d+)\b/;
 const DECORATION_PATTERN =
   /data-slot="window-titlebar-decoration"[\s\S]*?className="([^"]+)"/;
-const TITLEBAR_PATTERN = /<header\s+className=\{cn\(\s*"([^"]+)"/;
+const TITLEBAR_PATTERN = /<header\b[^>]*?\bclassName=\{cn\(\s*"([^"]+)"/;
 const DIALOG_OVERLAY_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
 const ALERT_DIALOG_OVERLAY_PATTERN =

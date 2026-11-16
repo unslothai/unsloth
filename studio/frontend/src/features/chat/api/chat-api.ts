@@ -134,7 +134,7 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "The model ran out of room to answer: thinking used what the context window " +
     "had left after the prompt, before any answer was written. Raising Max " +
     "Tokens cannot create room the window does not have -- increase the " +
-    "Context Length in Model settings, or disable thinking, then retry.",
+    "Context in Model settings, or disable thinking, then retry.",
   // No Studio setting controls a connected model's window.
   context_window:
     "The conversation filled the model's context window before an answer was " +
@@ -447,14 +447,30 @@ export async function countChatInputTokens(payload: {
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
   run_tools_locally?: boolean;
+  breakdown?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
-}, serializedPayload = JSON.stringify(payload)): Promise<{ input_tokens: number; model?: string }> {
+}, serializedPayload = JSON.stringify(payload)): Promise<ChatCountTokensResponse> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: serializedPayload,
   });
-  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+  return parseJsonOrThrow<ChatCountTokensResponse>(response);
+}
+
+export interface ChatCountTokensResponse {
+  input_tokens: number;
+  model?: string;
+  breakdown?: {
+    system: number;
+    tools: number;
+    messages: number;
+    tool_names: string[];
+  };
+  context_length?: number | null;
+  compaction_budget?: number | null;
+  // Null on MLX.
+  prompt?: string | null;
 }
 
 export async function validateModel(
@@ -607,6 +623,8 @@ export async function getGgufDownloadProgress(
   variant: string,
   expectedBytes: number,
   hfToken?: string | null,
+  /** The standalone Engram table the load fetches, so the bar counts it. */
+  engramPrecision?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -617,6 +635,9 @@ export async function getGgufDownloadProgress(
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) {
+    params.set("engram_precision", engramPrecision);
+  }
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
     { headers: hubTokenHeader(hfToken) },

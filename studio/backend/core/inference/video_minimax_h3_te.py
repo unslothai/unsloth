@@ -203,6 +203,23 @@ def _int8_convrot_linear_class() -> Any:
     return Int8ConvRotLinear
 
 
+def scale_int8_weights_first(encoder: Any, dtype: Any) -> int:
+    """The int8 module's float16 contract (``scale_weight_first``): the per-row scale goes on the weight before the
+    matmul, since the unscaled int8 sum over 5120 / 25600 inputs overflows 65504 and the whole conditioning reads
+    inf / NaN on an fp16 card (sm75). The shared int8 TE loader sets the same flag. Returns the modules set."""
+    import torch
+
+    if dtype is not torch.float16:
+        return 0
+    cls = _int8_convrot_linear_class()
+    count = 0
+    for module in encoder.modules():
+        if isinstance(module, cls):
+            module.scale_weight_first = True
+            count += 1
+    return count
+
+
 def _terminator_layer_class() -> Any:
     """The 51st decoder slot: passes its input through untouched. See the module docstring."""
     from torch import nn
@@ -402,6 +419,7 @@ def load_h3_quantized_text_encoder(
                 f"{len(stranded)} tensor(s) still on the meta device after loading, "
                 f"e.g. {', '.join(stranded[:3])}"
             )
+        scale_int8_weights_first(encoder, dtype)
         encoder.eval()
         if logger is not None:
             logger.info(

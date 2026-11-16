@@ -6,6 +6,7 @@ import {
   composerKeyEventForImeSubmit,
   composerSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
 } from "../src/features/chat/utils/composer-preferences.ts";
 
 const text = readSrc("components/assistant-ui/thread.tsx");
@@ -52,6 +53,11 @@ const reservedSendCallback = lift(
     ts.isArrowFunction(n) &&
     n.getText(source).startsWith("(...alsoGuard: string[]) =>") &&
     n.getText(source).includes("reservePreStreamRun"),
+);
+const steerParkedSendCallback = lift(
+  (n) =>
+    ts.isArrowFunction(n) &&
+    n.getText(source).startsWith("(state: Omit<ParkedSendSteerState"),
 );
 function createCallback(
   code: string,
@@ -221,15 +227,21 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
   });
 }
 
-for (const active of ["runtime", "pre-stream", "queue"]) {
-  test(`a queued attachment stays parked through ${active} state and sends once (#9210)`, () => {
+for (const [active, behavior] of ["runtime", "pre-stream", "queue"].flatMap(
+  (a) => [
+    [a, "queue"],
+    [a, "steer"],
+  ],
+)) {
+  test(`a ${behavior} attachment stays parked through ${active} state and sends once (#9210)`, () => {
     const calls: string[] = [];
     const state = { active: true };
     const pendingSendRef = { current: true };
+    const pendingFollowUpBehaviorRef = { current: behavior };
     const deps = {
       pendingSend: true,
       pendingSendRef,
-      pendingFollowUpBehaviorRef: { current: "queue" },
+      pendingFollowUpBehaviorRef,
       indexingActive: false,
       threadScopedSettingsPending: false,
       threadIsRunning: false,
@@ -246,6 +258,7 @@ for (const active of ["runtime", "pre-stream", "queue"]) {
           getState: () => ({
             isRunning: state.active && active === "runtime",
           }),
+          cancelRun: () => calls.push("cancel-run") && (state.active = false),
         }),
       },
       setPendingSend: () => undefined,
@@ -254,6 +267,7 @@ for (const active of ["runtime", "pre-stream", "queue"]) {
       preStreamThreadIds: ["own-chat"],
       isResearchActive: false,
       findPromptQueueEntry: () => state.active && active === "queue",
+      hasPendingQueueStart: () => false,
       usePromptQueueUI: { getState: () => ({}) },
       disableQueue: false,
       canQueueCurrentPrompt: false,
@@ -267,14 +281,29 @@ for (const active of ["runtime", "pre-stream", "queue"]) {
       sendReservedComposer: () => calls.push("send"),
       toast: { error: () => calls.push("error") },
     };
-    const release = createCallback(releaseCallback, deps);
+    const steerParkedSend = createCallback(steerParkedSendCallback, {
+      ...deps,
+      parkedSendSteer,
+      cancelPreStreamRunForThreadIds: () => calls.push("cancel-pre-stream"),
+    });
+    const release = createCallback(releaseCallback, {
+      ...deps,
+      steerParkedSend,
+    });
     release();
-    assert.deepEqual(calls, []);
+    // queued prompts stay ahead of the image.
+    const cancels =
+      behavior === "queue" || active === "queue"
+        ? []
+        : active === "runtime"
+          ? ["cancel-pre-stream", "cancel-run"]
+          : ["cancel-pre-stream"];
+    assert.deepEqual(calls, cancels);
     assert.equal(pendingSendRef.current, true);
     state.active = false;
     release();
     release();
-    assert.deepEqual(calls, ["dismiss", "clear", "send"]);
+    assert.deepEqual(calls, [...cancels, "dismiss", "clear", "send"]);
   });
 }
 

@@ -568,6 +568,40 @@ def test_native_fallback_keeps_participant_names():
     assert seen["messages"] == conversation
 
 
+def _templateless_backend():
+    InferenceBackend = _inference_backend()
+
+    class _Tokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            raise ValueError("tokenizer.chat_template is not set")
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {"m": {"tokenizer": _Tokenizer(), "chat_template_info": {}}}
+    return backend
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Why does std::vector<int> fail?", "Is a < b when b > c?", "Fix <div>hi</div>"],
+)
+def test_fallback_keeps_angle_bracket_text_in_user_turns(text):
+    prompt = _templateless_backend().format_chat_prompt([{"role": "user", "content": text}])
+    assert prompt == f"User: {text}\nAssistant: "
+
+
+def test_fallback_keeps_a_markup_only_final_user_turn():
+    conversation = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "4"},
+        {"role": "user", "content": "<div><span>"},
+    ]
+    prompt = _templateless_backend().format_chat_prompt(conversation)
+    assert prompt.endswith("Assistant: 4\nUser: <div><span>\nAssistant: ")
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     """Text partials merge into one assistant turn; strict templates reject a doubled turn."""
     conversation = [

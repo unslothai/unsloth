@@ -15,6 +15,8 @@ LOCALIZED_EDIT_MODES = ("annotate", "paint", "mask")
 MAX_CONDITION_SOURCE_PIXELS = 64_000_000
 
 MIN_OUTPUT_SIDE = 256
+# Largest family max_output_side; per-family bounds live in check_output_size.
+MAX_REQUEST_SIDE = 6272
 
 # Upstream QwenImage21Pipeline's own ``output_resolution`` default.
 DEFAULT_REFERENCE_RESOLUTION = 1024
@@ -81,11 +83,19 @@ def check_output_size(fam: Any, width: int, height: int) -> None:
 
 
 def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -> tuple[int, int]:
-    """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1."""
+    """Source aspect ratio at the target area, snapped to the family grid and bounds, from Image 1. MiniMax-H3-Image
+    renders at the reference edit workflow's size instead (Image 1 at 4 MP, sides cut to the 32 grid)."""
     multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
     max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
     max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
     sw, sh = source_size
+    if getattr(fam, "name", None) == "minimax-h3-image" and sw > 0 and sh > 0:
+        from .diffusion_minimax_h3_image import reference_edit_size
+
+        w, h = reference_edit_size(int(sw), int(sh))
+        if max(w, h) <= max_side and w * h <= max_pixels:
+            return w, h
+        resolution = int(math.sqrt(min(max_pixels, w * h)))
     ratio = max(1e-6, float(sw) / float(max(1, sh)))
     area = float(resolution) * float(resolution)
     for _ in range(64):
@@ -103,6 +113,15 @@ def match_source_size(fam: Any, source_size: tuple[int, int], resolution: int) -
             long_side -= multiple
         w, h = (long_side, short_min) if ratio >= 1.0 else (short_min, long_side)
     return w, h
+
+
+def omitted_txt2img_size(family_name: Optional[str]) -> Optional[tuple[int, int]]:
+    """The text-to-image size for a request that names none, when the family's differs from the schema's 1024
+    square: MiniMax-H3-Image renders at the reference workflow's 2048x2048."""
+    if family_name == "minimax-h3-image":
+        from .diffusion_minimax_h3_image import H3_IMAGE_DEFAULT_SIZE
+        return H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+    return None
 
 
 def effective_reference_resolution(fam: Any, requested: Optional[int]) -> Optional[int]:
@@ -253,6 +272,7 @@ def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, A
         "max_output_side": int(getattr(fam, "max_output_side", 2048) or 2048),
         "max_output_pixels": int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048),
         "reference_resolutions": list(getattr(fam, "reference_resolutions", ()) or ()),
+        "edit_output_resolution": getattr(fam, "edit_output_resolution", None),
         "unified_edit": unified,
         # Edit-only families whose edit takes the extra images too (the UI shows them on the Edit tab).
         "multi_image_edit": edit_takes_extra_images(fam) and "edit" in workflows,
