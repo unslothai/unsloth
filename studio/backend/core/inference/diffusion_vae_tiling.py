@@ -695,29 +695,59 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
         logger.warning(msg, type(vae).__name__, reason)
 
 
+def _log_full_map_once(vae: Any, engaged: bool, reason: str) -> None:
+    """One line per VAE and outcome: which decode a FLUX.2-class tiled request took, and why (a small card can tell
+    it decoded in tiles, colour shift possible)."""
+    logger = vae.__dict__.get("_unsloth_wide_logger")
+    seen = vae.__dict__.setdefault("_unsloth_full_map_logged", set())
+    if logger is None or engaged in seen:
+        return
+    seen.add(engaged)
+    if engaged:
+        logger.info(
+            "diffusion.vae_tiling: %s decodes the whole map (GroupNorm over the full image): %s",
+            type(vae).__name__,
+            reason,
+        )
+    else:
+        logger.warning(
+            "diffusion.vae_tiling: %s decodes in tiles (per-tile colour shift possible): %s",
+            type(vae).__name__,
+            reason,
+        )
+
+
 def full_map_decode(
     vae: Any,
     z: Any,
     return_dict: bool = True,
 ) -> Any:
-    """FLUX.2-class VAEs: the whole-map strip decode instead of tiles when it fits the free memory (tiles cut from a
-    large latent take their own GroupNorm stats and shift colour); None to tile. See diffusion_vae_strips."""
+    """FLUX.2-class VAEs: the whole-map strip decode instead of tiles when its peak fits ``FREE_FRACTION`` of the free
+    memory (tiles cut from a large latent take their own GroupNorm stats and shift colour); None to tile, logged once.
+    See diffusion_vae_strips."""
     try:
         import torch
 
         from . import diffusion_vae_strips as strips
 
-        if (
-            torch.compiler.is_compiling()
-            or z.dim() != 4
-            or (os.environ.get(MAX_TILE_ENV) or "").strip()
-            or not strips.full_map_ok(vae)
-        ):
+        if torch.compiler.is_compiling() or z.dim() != 4 or not strips.full_map_ok(vae):
+            return None
+        if (os.environ.get(MAX_TILE_ENV) or "").strip():
+            _log_full_map_once(vae, False, f"{MAX_TILE_ENV} is set")
             return None
         free = _free_mib(vae, z)
         if free is None:
             free = _host_free_mib(vae, z)
-        if free is None or strips.full_map_decode_mib(vae, z) > FREE_FRACTION * free[0]:
+        need = strips.full_map_decode_mib(vae, z)
+        if free is None:
+            _log_full_map_once(vae, False, "no free-memory reading on this device")
+            return None
+        if need > FREE_FRACTION * free[0]:
+            _log_full_map_once(
+                vae,
+                False,
+                f"its peak ~{need:.0f} MiB exceeds {FREE_FRACTION:.0%} of the {free[0]:.0f} MiB free",
+            )
             return None
     except Exception:  # noqa: BLE001 - unknown figures: the tiles
         return None
@@ -725,10 +755,11 @@ def full_map_decode(
         dec = strips.full_map_decode(vae, z)
     except Exception as exc:  # noqa: BLE001 - the tiles are the fallback
         _clear_partial(vae, z)
-        logger = vae.__dict__.get("_unsloth_wide_logger")
-        if logger is not None and not _is_oom(exc):
-            logger.warning("diffusion.vae_tiling: whole-map decode failed, tiling: %s", exc)
+        _log_full_map_once(vae, False, f"the whole-map decode failed ({type(exc).__name__}: {exc})")
         return None
+    _log_full_map_once(
+        vae, True, f"peak ~{need:.0f} MiB fits {FREE_FRACTION:.0%} of the {free[0]:.0f} MiB free"
+    )
     if not return_dict:
         return (dec,)
     from diffusers.models.autoencoders.vae import DecoderOutput
@@ -842,6 +873,7 @@ def uninstall(vae: Any) -> None:
         "_unsloth_wide_weights",
         "_unsloth_wide_logger",
         "_unsloth_wide_fallback_logged",
+        "_unsloth_full_map_logged",
         "_unsloth_wide_stock_tile",
     ):
         vae.__dict__.pop(name, None)

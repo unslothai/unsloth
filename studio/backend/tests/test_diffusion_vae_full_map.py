@@ -163,3 +163,44 @@ def test_torch_group_stats_match_group_norm(in_bias):
     g = xb.reshape(8, -1)
     assert torch.allclose(mean, g.mean(1), atol = 1e-5)
     assert torch.allclose(rstd, torch.rsqrt(g.var(1, unbiased = False) + 1e-6), rtol = 1e-4)
+
+
+class _Log:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(("info", msg % a))
+
+    def warning(self, msg, *a):
+        self.lines.append(("warning", msg % a))
+
+    debug = info
+
+
+def test_a_peak_just_over_the_budget_keeps_main_s_tiles_and_says_so_once(monkeypatch):
+    """Free memory a hair under what the whole-map decode needs: the tiled decode is bit-identical to main's (the kill
+    switch path), and one warning names the tiles and the numbers."""
+    monkeypatch.delenv(FULL_MAP_ENV, raising = False)
+    monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: 32 * 32)
+    vae = _flux2()
+    vae.enable_tiling()
+    log = _Log()
+    vt.install(vae, log)
+    z = _latent()
+    need = strips.full_map_decode_mib(vae, z)
+    monkeypatch.setattr(vt, "_host_free_mib", lambda vae, z: (need / vt.FREE_FRACTION - 1.0, 1.0))
+    first = _decode(vae, z, tiled = True)
+    _decode(vae, z, tiled = True)
+    assert "_unsloth_vae_full_map_calls" not in vae.__dict__
+    monkeypatch.setenv(FULL_MAP_ENV, "0")
+    assert torch.equal(first, _decode(vae, z, tiled = True))
+    warned = [m for lvl, m in log.lines if lvl == "warning" and "decodes in tiles" in m]
+    assert len(warned) == 1 and "exceeds" in warned[0], log.lines
+    # a hair over: the whole map, logged once as engaged
+    monkeypatch.delenv(FULL_MAP_ENV)
+    monkeypatch.setattr(vt, "_host_free_mib", lambda vae, z: (need / vt.FREE_FRACTION + 1.0, 1.0))
+    _decode(vae, z, tiled = True)
+    _decode(vae, z, tiled = True)
+    assert vae._unsloth_vae_full_map_calls == 2
+    assert len([m for lvl, m in log.lines if "decodes the whole map" in m]) == 1
