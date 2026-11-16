@@ -3482,7 +3482,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches the lm_head and calls the backbone directly, so unsloth_fused_ce_loss never runs (ours chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens), and it divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v) training_step divides by grad-accum again and loss and grads are scaled 1/GA. Explicit loss_type= still wins. Kept scoped to sft_trainer, since loss_type is an unrelated field in DPO/KTO/GRPO.
     if trainer_file == "sft_trainer":
-        replacements = {"loss_type": "nll"}
+        # None = unset: trainer.py packs text datasets by default.
+        replacements = {"loss_type": "nll", "packing": None}
         for k, v in replacements.items():
             x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"

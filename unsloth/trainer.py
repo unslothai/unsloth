@@ -212,6 +212,69 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+_DEFAULT_PACKING_NOTE = (
+    "Unsloth: Packing is on by default - documents are packed into full rows with no cross-document "
+    "attention. Set packing = False in SFTConfig (or UNSLOTH_DEFAULT_PACKING=0) to turn it off."
+)
+
+
+def _default_packing_env_on() -> bool:
+    value = os.environ.get("UNSLOTH_DEFAULT_PACKING", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def _default_packing_dataset(dataset, config, formatting_func) -> bool:
+    """A non-empty map-style text dataset in a layout TRL's packer tokenizes per document."""
+    try:
+        from datasets import Dataset
+    except Exception:
+        return False
+    if not isinstance(dataset, Dataset) or len(dataset) == 0:
+        return False
+    columns = set(dataset.column_names or ())
+    # Already packed: TRL's packer keeps input_ids only, so the stored documents would merge into one.
+    if columns & {"seq_lengths", "position_ids"}:
+        return False
+    if formatting_func is not None:
+        return True
+    field = getattr(config, "dataset_text_field", None) or "text"
+    return bool(columns & {"input_ids", field, "messages"}) or {"prompt", "completion"} <= columns
+
+
+_RESPONSES_ONLY_PACKED_ROWS = []
+
+
+def _responses_only_masks_packed_rows() -> bool:
+    """train_on_responses_only runs after the trainer packed its dataset. A masker reading a packed row as one
+    conversation trains the next document's system prompt and, with last_response_only, drops every earlier
+    answer, so default packing waits for one that masks each document (unsloth-zoo #2543)."""
+    if _RESPONSES_ONLY_PACKED_ROWS:
+        return _RESPONSES_ONLY_PACKED_ROWS[0]
+    ok = False
+    try:
+        from unsloth_zoo.dataset_utils import train_on_responses_only
+
+        class _Tokenizer:
+            def __call__(self, text, **kwargs):
+                return SimpleNamespace(input_ids = {"<u>": [1], "<a>": [2]}.get(text, [7]))
+
+        masker = train_on_responses_only(
+            None,
+            "<u>",
+            "<a>",
+            tokenizer = _Tokenizer(),
+            return_function = True,
+            last_response_only = True,
+        )
+        doc = [9, 1, 5, 2, 6]  # system, user, question, assistant, answer
+        labels = masker({"input_ids": [doc + doc], "seq_lengths": [[5, 5]]})["labels"][0]
+        ok = [int(t) for t in labels if int(t) != -100] == [6, 6]
+    except Exception:
+        ok = False
+    _RESPONSES_ONLY_PACKED_ROWS.append(ok)
+    return ok
+
+
 def _pipeline_parallel_env_requested() -> bool:
     try:
         return int(os.environ.get("UNSLOTH_PP_SIZE", "1").strip() or 1) > 1
@@ -1842,6 +1905,27 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
+        # The mark lets a config reused for another trainer decide again, unless the user changed packing since.
+        packing_unset = config_arg is not None and (
+            getattr(config_arg, "packing", False) is None
+            or (
+                getattr(config_arg, "_unsloth_packing_unset", False)
+                and getattr(config_arg, "packing", None)
+                == getattr(config_arg, "_unsloth_packing_auto", None)
+            )
+        )
+        if packing_unset:
+            # Only while padding_free still holds the value Unsloth set; an explicit change is kept.
+            if getattr(config_arg, "_unsloth_padding_free_auto", False) and (
+                getattr(config_arg, "padding_free", None) is True
+            ):
+                setattr(config_arg, "padding_free", None)
+            setattr(config_arg, "packing", False)
+            setattr(config_arg, "_unsloth_packing_unset", True)
+        elif config_arg is not None and getattr(config_arg, "_unsloth_packing_unset", False):
+            setattr(config_arg, "_unsloth_packing_unset", False)
+        if config_arg is not None and hasattr(config_arg, "_unsloth_padding_free_auto"):
+            setattr(config_arg, "_unsloth_padding_free_auto", False)
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
@@ -2042,6 +2126,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
             flag = "packing" if requested_pack else "padding_free"
             logger.warning(f"Unsloth: {flag}=True ignored ({reason}).")
 
+        default_packing = False
+        if (
+            packing_unset
+            and not blocked
+            and not is_processor
+            and getattr(config_arg, "padding_free", None) is None
+            and _default_packing_env_on()
+            # Epoch runs only: packing would lengthen a fixed max_steps run.
+            and (getattr(config_arg, "max_steps", -1) or -1) <= 0
+        ):
+            try:
+                bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
+                formatting_func = bound.arguments.get("formatting_func")
+            except Exception:
+                formatting_func = kwargs.get("formatting_func")
+            if (
+                _default_packing_dataset(train_dataset, config_arg, formatting_func)
+                and _responses_only_masks_packed_rows()
+            ):
+                setattr(config_arg, "packing", True)
+                if hasattr(config_arg, "eval_packing") and config_arg.eval_packing is None:
+                    setattr(config_arg, "eval_packing", False)
+                default_packing = True
+
         packing_active = False
         if _should_pack(config_arg) and not blocked:
             configure_sample_packing(config_arg)
@@ -2071,6 +2179,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         f"({choice_reason}). Set UNSLOTH_PADDING_CHOICE=padding_free to override."
                     )
 
+        if packing_unset:
+            setattr(config_arg, "_unsloth_packing_auto", getattr(config_arg, "packing", None))
+            if default_packing or auto_padding_free_active:
+                setattr(config_arg, "_unsloth_padding_free_auto", True)
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
@@ -2089,6 +2201,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 blocked = True
                 # Release the failed attempt's frames (may hold a loaded model) before retrying.
                 exc.__traceback__ = None
+                original_init(self, *args, **kwargs)
+            elif default_packing:
+                # Default packing must never break a run that trained before.
+                logger.info("Unsloth: default packing turned off (%s).", exc)
+                setattr(config_arg, "packing", False)
+                if getattr(config_arg, "eval_packing", None) is False:
+                    setattr(config_arg, "eval_packing", None)
+                exc.__traceback__ = None
+                packing_active = default_packing = False
+                auto_padding_free_active = True
                 original_init(self, *args, **kwargs)
             elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
@@ -2151,7 +2273,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
+            if default_packing:
+                print(_DEFAULT_PACKING_NOTE)
+            else:
+                print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
         elif not blocked and trainer_padding_free:
             enable_padding_free_metadata(self.model, self)
             message = (
