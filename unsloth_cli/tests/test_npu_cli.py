@@ -186,7 +186,9 @@ def test_a_near_miss_suggests_the_closest_names(name, suggested):
 
 def test_a_name_two_models_share_asks_for_an_id():
     # FastFlowLM's flash builds reuse the base build's Hugging Face repo.
-    with pytest.raises(NpuCliError, match = "more than one NPU model: qwen3.5-2b-FLM, qwen3.5-flash-2b-FLM"):
+    with pytest.raises(
+        NpuCliError, match = "more than one NPU model: qwen3.5-2b-FLM, qwen3.5-flash-2b-FLM"
+    ):
         prepare_npu_model(_Studio(ready = True), "lemonade:Qwen3.5-2B-NPU2", print)
 
 
@@ -204,7 +206,13 @@ def test_a_running_studio_loads_a_display_name_by_its_lemonade_id(monkeypatch):
         def __init__(self, *_args):
             pass
 
-        def _request(self, method, path, payload = None, timeout = None):
+        def _request(
+            self,
+            method,
+            path,
+            payload = None,
+            timeout = None,
+        ):
             return _Studio(ready = True, downloaded = True)(method, path, payload, timeout)
 
         def ensure_loaded(self, model, **_kwargs):
