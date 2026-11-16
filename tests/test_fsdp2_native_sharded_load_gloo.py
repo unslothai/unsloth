@@ -302,6 +302,18 @@ def _case_dora(rank, world, tmp, ckpt):
     # The full load still takes DoRA (the refusal is scoped to sharded-loaded weights).
     full = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
     out["full"] = _raised(lambda: get_peft_model(full, dora))
+    # Trainable tokens copy embedding rows, which a chunked embedding holds only partly: refused at shard time.
+    with loading.fsdp2_sharded_loading():
+        model = AutoModelForCausalLM.from_pretrained(ckpt, **kw)
+    tokens = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = "all-linear", trainable_token_indices = [0, 1]
+    )
+    out["tokens"] = _raised(
+        lambda: native.shard_model(
+            get_peft_model(model, tokens),
+            native.FSDP2Config(param_dtype = torch.float32, device = "cpu"),
+        )
+    )
     return out
 
 
@@ -506,7 +518,7 @@ def test_sharded_loading_refusals():
         _save("llama", ckpt, None)
         results = _spawn("refusals", ckpt = ckpt)
     for res in results:
-        assert "16-bit safetensors checkpoints only" in (res["4bit"] or ""), res["4bit"]
+        assert "safetensors checkpoints only" in (res["4bit"] or ""), res["4bit"]
         assert "QLoRA" in res["4bit"]
         assert "1-D shard mesh" in (res["2d"] or ""), res["2d"]
         assert "cpu_offload" in (res["offload"] or ""), res["offload"]
@@ -519,6 +531,7 @@ def test_sharded_loading_refuses_dora():
     for res in results:
         assert res["full"] is None, res["full"]
         assert "use_dora" in (res["dora"] or "") and "full" in res["dora"], res["dora"]
+        assert "trainable_token_indices" in (res["tokens"] or ""), res["tokens"]
 
 
 @pytest.mark.parametrize("init", ["orthogonal", "gaussian", True])

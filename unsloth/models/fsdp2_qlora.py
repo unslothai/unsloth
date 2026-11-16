@@ -193,6 +193,11 @@ def set_fsdp2_quant_storage(quantization_config, dtype):
     return True
 
 
+def _unread_meta(param):
+    # fsdp2_sharded_loading's full-shape stand-in of a 4-bit chunk is repacked like the weight it stands for.
+    return param.device.type == "meta" and not param.__dict__.get("_unsloth_fsdp2_pending")
+
+
 def params4bit_to_float_storage(model, dtype):
     """Reinterpret every uint8 Params4bit (a pre-quantized checkpoint) as `dtype` storage in place.
     The bytes, the QuantState and the Parameter object are unchanged; only the element type of the
@@ -208,7 +213,7 @@ def params4bit_to_float_storage(model, dtype):
             if param is None or not is_params4bit(param) or param.dtype != torch.uint8:
                 continue
             nbytes = param.numel()
-            if not param.is_contiguous() or nbytes % itemsize != 0 or param.device.type == "meta":
+            if not param.is_contiguous() or nbytes % itemsize != 0 or _unread_meta(param):
                 continue
             param.data = param.data.reshape(-1).view(storage).reshape(-1, 1)
             param.quant_storage = storage
@@ -233,7 +238,7 @@ def params4bit_to_uint8_storage(model):
             ):
                 # Still dense values bitsandbytes quantizes on the next device move, not packed bytes.
                 continue
-            if not param.is_contiguous() or param.device.type == "meta":
+            if not param.is_contiguous() or _unread_meta(param):
                 left += 1
                 continue
             param.data = param.data.reshape(-1).view(torch.uint8).reshape(-1, 1)
