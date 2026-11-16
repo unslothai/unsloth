@@ -3,7 +3,6 @@
 
 "use client";
 
-import { isImageToolName } from "@/features/chat/api/mcp-images";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -542,8 +541,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 
   const picture =
     !isCancelled &&
-    toolName !== COMPUTER_USE_TOOL &&
-    isImageToolName(toolName) &&
+    !widget &&
+    (toolName === "view_image" || toolName.startsWith("mcp__")) &&
     isMcpImageResult(shown)
       ? shown
       : null;

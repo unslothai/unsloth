@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 
-import { isImageToolName } from "../src/features/chat/api/mcp-images.ts";
 import { readSrc } from "./helpers/kit.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
@@ -56,11 +55,8 @@ test("the tool picture renders outside the collapsible pane", () => {
 test("only a view_image or MCP image result moves out of the pane", () => {
   const picture = findDeclaration("picture").initializer?.getText(source) ?? "";
   assert.match(picture, /!isCancelled/);
-  assert.match(picture, /isImageToolName\(toolName\)/);
-  assert.match(picture, /toolName !== COMPUTER_USE_TOOL/);
-  assert.ok(isImageToolName("mcp__unity__manage_camera"));
-  assert.ok(isImageToolName("view_image"));
-  assert.equal(isImageToolName("terminal"), false);
+  assert.match(picture, /!widget/);
+  assert.match(picture, /toolName === "view_image" \|\| toolName\.startsWith\("mcp__"\)/);
   assert.match(picture, /isMcpImageResult\(shown\)/);
 });
 
