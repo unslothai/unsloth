@@ -404,6 +404,7 @@ export function DiffusionTrainPanel({
   loadedBaseRepo,
   onTrainingComplete,
   onDeploy,
+  onDeployVideo,
   familyName,
   onFamilyNameChange,
   baseChoice,
@@ -423,6 +424,14 @@ export function DiffusionTrainPanel({
   savedPresets?: boolean;
   onTrainingComplete?: () => void;
   onDeploy?: (args: {
+    baseRepo: string;
+    family: string;
+    families?: string[];
+    catalogPath: string;
+    trigger: string;
+  }) => void;
+  // Video-family adapters bake into the video loader instead; absent = no Deploy for them.
+  onDeployVideo?: (args: {
     baseRepo: string;
     family: string;
     families?: string[];
@@ -1474,11 +1483,17 @@ export function DiffusionTrainPanel({
       info?.families?.find((f) => f.name === famName)?.lora_families ?? [famName],
     [info?.families],
   );
-  // The images loader refuses video bases, so their adapters get no Deploy to Create.
+  // The images loader refuses video bases, so their adapters deploy to the Video page instead.
   const isVideoFamily = useCallback(
     (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
     [info?.families],
   );
+  const canDeployFamily = useCallback(
+    (famName: string) => !isVideoFamily(famName) || Boolean(onDeployVideo),
+    [isVideoFamily, onDeployVideo],
+  );
+  const deployLabel = (famName: string) =>
+    isVideoFamily(famName) ? "Deploy to Video" : "Deploy to Create";
 
   const navigate = useNavigate();
   const exportAdapter = useCallback(
@@ -1496,7 +1511,7 @@ export function DiffusionTrainPanel({
       return;
     }
     const famName = status.family || family?.name || "";
-    onDeploy?.({
+    (isVideoFamily(famName) ? onDeployVideo : onDeploy)?.({
       baseRepo: deployBaseFor(trainedBase, famName),
       family: famName,
       families: loraFamiliesFor(famName),
@@ -1510,6 +1525,8 @@ export function DiffusionTrainPanel({
     family,
     instancePrompt,
     onDeploy,
+    onDeployVideo,
+    isVideoFamily,
     deployBaseFor,
     loraFamiliesFor,
   ]);
@@ -2325,12 +2342,12 @@ export function DiffusionTrainPanel({
                   : ""}
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                {viewRun.saved && viewRun.catalog_path && !isVideoFamily(viewRun.family || "") && (
+                {viewRun.saved && viewRun.catalog_path && canDeployFamily(viewRun.family || "") && (
                   <Button
                     type="button"
                     size="sm"
                     onClick={() =>
-                      onDeploy?.({
+                      (isVideoFamily(viewRun.family || "") ? onDeployVideo : onDeploy)?.({
                         baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
                         families: loraFamiliesFor(viewRun.family || ""),
@@ -2339,7 +2356,7 @@ export function DiffusionTrainPanel({
                       })
                     }
                   >
-                    Deploy to Create
+                    {deployLabel(viewRun.family || "")}
                   </Button>
                 )}
                 {viewRun.saved && viewRun.catalog_path && (
@@ -2539,9 +2556,9 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  {status?.catalog_path && !isVideoFamily(status.family || family?.name || "") && (
+                  {status?.catalog_path && canDeployFamily(status.family || family?.name || "") && (
                     <Button type="button" size="sm" onClick={onDeployClick}>
-                      Deploy to Create
+                      {deployLabel(status.family || family?.name || "")}
                     </Button>
                   )}
                   {status?.catalog_path && (

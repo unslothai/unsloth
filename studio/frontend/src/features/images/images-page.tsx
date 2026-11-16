@@ -167,6 +167,7 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -6494,6 +6495,11 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
