@@ -132,11 +132,15 @@ def test_placement_measured_activation_reads_the_load_reserve():
 
 
 def test_generate_passes_the_placement_row_to_the_guard():
+    """The load's measured reserve first; a calibrated placement without one (FLUX.3 Klein Base on a T4: no
+    phase seed) falls back to the row the plan itself read."""
     import inspect
 
     import core.inference.diffusion as diffusion
 
-    src = inspect.getsource(diffusion.DiffusionBackend.generate)
-    assert "measured_activation = placement_measured_activation(state.pipe)" in src
+    src = " ".join(inspect.getsource(diffusion.DiffusionBackend.generate).split())
+    assert "guard_measured = placement_measured_activation(state.pipe)" in src
+    assert "_calibrated_activation( fam, guard_target, fp32_scaled = True )" in src
+    assert "measured_activation = guard_measured," in src
     for fn in (dm.raise_on_image_activation_shortfall, dm.image_activation_shortfall_message):
         assert "measured_activation" in inspect.signature(fn).parameters
