@@ -24,6 +24,7 @@ import uuid
 from collections import deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from urllib.parse import unquote
 
 PRECISIONS = ("auto", "bf16", "fp16", "int4", "int8", "fp8")
 ENGINE_NAMES = {"vllm": "vLLM", "sglang": "SGLang"}
@@ -66,6 +67,20 @@ PROFILES = {
             "bitsandbytes": False,
             "precisions": tuple(p for p in PRECISIONS if p != "int4"),
             "releases": ({"version": "0.30.0", "torch": "2.12.0", "lock": "vllm-linux-rocm723"},),
+        },
+        # Apple Silicon: vLLM's macOS CPU build with the vllm-metal platform plugin, which runs the model
+        # on MLX. Its wheel ships for CPython 3.12 only and needs macOS 15.
+        "metal": {
+            "cuda": None,
+            "driver": None,
+            "python": (3, 12),
+            "macos": (15, 0),
+            "omit": (),
+            "platform": "metal",
+            "bitsandbytes": False,
+            # MLX-quantized checkpoints load as stored; load-time conversion is CUDA/ROCm-only.
+            "precisions": ("auto", "bf16", "fp16"),
+            "releases": ({"version": "0.33.0", "torch": "2.14.0", "lock": "vllm-macos-metal"},),
         },
     },
     "sglang": {
@@ -149,10 +164,13 @@ _kfd_has_amd_gpu: bool | None = None
 
 
 def gpu_platform() -> str:
-    """The GPU family the engine runs on: "rocm" for AMD, else "cuda". A host with both, and
-    every Windows host, follows Studio's own PyTorch."""
+    """The GPU family the engine runs on: "metal" on Apple Silicon, "rocm" for AMD, else "cuda". A
+    host with both NVIDIA and AMD, and every Windows host, follows Studio's own PyTorch."""
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
+
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return "metal"
 
     # Idle Chat reads this: the wheel's build family is enough; do not init the ML runtime.
     if hardware.DETECTION_COMPLETE.is_set():
@@ -180,6 +198,10 @@ def gpu_platform() -> str:
     return "rocm" if _kfd_has_amd_gpu else "cuda"
 
 
+# Profile overlays for non-CUDA GPU families, keyed by gpu_platform().
+_FLAVORS = ("rocm", "metal")
+
+
 def _flavor(engine: str) -> dict:
     """The engine's profile for this host's GPU platform, before a release is picked."""
     base = {
@@ -187,10 +209,11 @@ def _flavor(engine: str) -> dict:
         "python": PYTHON,
         "precisions": PRECISIONS,
         "bitsandbytes": True,
-        **{key: value for key, value in PROFILES[engine].items() if key != "rocm"},
+        **{key: value for key, value in PROFILES[engine].items() if key not in _FLAVORS},
     }
-    if gpu_platform() == "rocm" and "rocm" in PROFILES[engine]:
-        return {**base, **PROFILES[engine]["rocm"]}
+    family = gpu_platform()
+    if family in _FLAVORS and family in PROFILES[engine]:
+        return {**base, **PROFILES[engine][family]}
     return base
 
 
@@ -201,7 +224,7 @@ def _release(engine: str) -> dict:
 
     flavor = _flavor(engine)
     releases = flavor["releases"]
-    if wsl_host.active() or flavor["platform"] == "rocm":
+    if wsl_host.active() or flavor["platform"] != "cuda":
         # The WSL guest has no Studio torch to share, so it always gets the newest.
         return releases[0]
     torch = _studio_packages().get("torch")
@@ -227,7 +250,7 @@ def _venv_python_args(engine: str, guest: bool = False) -> list[str]:
     environment always gets a uv-managed CPython, which ships its headers. Studio's own
     interpreter serves only a local environment, never the WSL guest's."""
     version = "{}.{}".format(*_python(engine))
-    if profile(engine)["platform"] == "rocm":
+    if profile(engine)["platform"] != "cuda":
         return ["--python", version, "--python-preference", "only-managed"]
     if not guest and sys.version_info[:2] == _python(engine):
         return ["--python", sys.executable]
@@ -250,7 +273,8 @@ _pins_seen: dict[Path, tuple[tuple | None, dict[str, tuple[str, str]]]] = {}
 
 
 def _pins(engine: str) -> dict[str, tuple[str, str]]:
-    """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    """{name: (version, requirement line with its hashes)} from a uv-compiled lock; a
+    ``name @ url`` wheel pin takes its version from the wheel's filename."""
     path = requirements(engine)
     identity = _file_identity(path)
     seen = _pins_seen.get(path)
@@ -259,10 +283,12 @@ def _pins(engine: str) -> dict[str, tuple[str, str]]:
     entries: dict[str, tuple[str, str]] = {}
     name = None
     for line in path.read_text(encoding = "utf-8").splitlines(keepends = True):
-        match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
+        match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line) or re.match(
+            r"([A-Za-z0-9][A-Za-z0-9_.\-]*) @ \S+/[^/\s]+?-([^-/\s]+)-[^/\s]+\.whl\b", line
+        )
         if match:
             name = _normalize(match.group(1))
-            entries[name] = (match.group(2), line)
+            entries[name] = (unquote(match.group(2)), line)
         elif name and line.startswith("    --hash="):
             entries[name] = (entries[name][0], entries[name][1] + line)
         else:
@@ -731,6 +757,8 @@ def support_reason(
         reason = wsl_host.support_reason()
         if reason:
             return reason
+    elif platform.system() == "Darwin":
+        return _metal_reason(engine)
     elif platform.system() != "Linux" or platform.machine() != "x86_64":
         return "Managed engines currently require Linux x86_64 or Windows x64."
     else:
@@ -752,6 +780,21 @@ def support_reason(
     except ValueError:
         pass
     return f"Requires an NVIDIA GPU with compute capability 8.0 or newer and driver {profile(engine)['driver']} or newer."
+
+
+def _metal_reason(engine: str) -> str | None:
+    if "metal" not in PROFILES[engine]:
+        return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on Apple Silicon."
+    if platform.machine() != "arm64":
+        return "vLLM on macOS requires an Apple Silicon Mac."
+    wanted = PROFILES[engine]["metal"]["macos"]
+    try:
+        found = tuple(int(part) for part in platform.mac_ver()[0].split(".")[:2])
+    except ValueError:
+        found = (0, 0)
+    if found < wanted:
+        return f"vLLM on Apple Silicon requires macOS {wanted[0]} or newer."
+    return None
 
 
 ROCM_HOME = Path("/opt/rocm")
@@ -1502,11 +1545,12 @@ def _smoke_source(engine: str) -> str:
         "torch",
         *(name for name in ("bitsandbytes", "torchao") if name in pins),
     ]
-    runtime = (
-        "assert torch.version.hip"
-        if wanted["platform"] == "rocm"
-        else "assert torch.version.cuda == '13.0'"
-    )
+    runtime = {
+        "rocm": "assert torch.version.hip",
+        # vLLM falls back to its CPU platform when the plugin does not load.
+        "metal": "from vllm.platforms import current_platform\n"
+        "assert type(current_platform).__module__.startswith('vllm_metal.')",
+    }.get(wanted["platform"], "assert torch.version.cuda == '13.0'")
     return (
         "".join(f"import {module}\n" for module in modules)
         + f"assert torch.__version__.split('+')[0] == {pins['torch'][0].split('+')[0]!r}\n"

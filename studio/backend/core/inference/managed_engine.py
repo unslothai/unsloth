@@ -41,6 +41,7 @@ from .engine_install import (
 from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
+    metal_memory_rows,
     memory_reserve_mib,
     RESERVE_SHARE,
     launch_arguments,
@@ -803,7 +804,11 @@ class ManagedEngine:
                     child_env.pop("CUDA_PATH", None)
                     child_env.update(cuda_environment(info))
                     measure = (
-                        (lambda ids: _engine_memory_rows(info, child_env, ids)) if rocm else None
+                        (lambda ids: _engine_memory_rows(info, child_env, ids))
+                        if rocm
+                        else metal_memory_rows
+                        if info.get("platform") == "metal"
+                        else None
                     )
                     memory_fraction = gpu_memory_fraction(
                         gpu_ids or [0],

@@ -443,6 +443,14 @@ def gpu_memory_fraction(
         ) from exc
 
 
+def metal_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    """Apple Silicon's one GPU shares system memory; vllm-metal reads its budget as a share of all of it."""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    return [(memory.total / 2**20, memory.available / 2**20)]
+
+
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
     # R570+ MIG ids are CUDA devices: budget each slice; nvidia-smi --id takes physical ids.
     try:
