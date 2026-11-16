@@ -2337,17 +2337,44 @@ class _GenerateBlockStream:
             unit.reshard()
 
 
+_DECODER_PATH_ATTRS = ("model", "base_model", "transformer", "language_model", "text_model")
+
+
+def _language_decoder_layers(model):
+    """The language model's decoder-block ModuleList, found the way Unsloth's block swap finds it
+    (unsloth_zoo.block_swap.find_decoder_layers): follow model / base_model / transformer /
+    language_model to the first module with `.layers`. Registered children only (PeftModel forwards
+    unknown attributes). None when there is none: vision / audio tower block lists are never picked,
+    since ranks may run different towers in one generate (image prompt on one rank, text on another)."""
+    current = model
+    for _ in range(8):
+        children = getattr(current, "_modules", None) or {}
+        layers = children.get("layers")
+        if isinstance(layers, nn.ModuleList):
+            return layers
+        nxt = next(
+            (
+                children[attr]
+                for attr in _DECODER_PATH_ATTRS
+                if isinstance(children.get(attr), nn.Module) and children[attr] is not current
+            ),
+            None,
+        )
+        if nxt is None:
+            return None
+        current = nxt
+    return None
+
+
 def _stream_block_lists(model, units):
-    """[(ModuleList, {index: unit})] for decoder-block lists whose entries are FSDP units."""
+    """[(ModuleList, {index: unit})] for the language model's decoder blocks that are FSDP units.
+    Only those are streamed; every other unit (towers, projectors, embeddings) is gathered up front."""
+    layers = _language_decoder_layers(model)
+    if layers is None:
+        return []
     unit_ids = {id(unit) for unit in units}
-    found = []
-    for module in model.modules():
-        if not isinstance(module, nn.ModuleList):
-            continue
-        blocks = {i: m for i, m in enumerate(module) if id(m) in unit_ids}
-        if blocks:
-            found.append((module, blocks))
-    return found
+    blocks = {i: m for i, m in enumerate(layers) if id(m) in unit_ids}
+    return [(layers, blocks)] if blocks else []
 
 
 def _reshard_after_forward_on(unit):

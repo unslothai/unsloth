@@ -152,6 +152,116 @@ def _loop_greedy(model):
     return model.generate(torch.tensor(PROMPT) % 32, NEW_TOKENS)[0].tolist()
 
 
+# VLM-shaped: a vision tower whose blocks are FSDP units next to the language decoder. Ranks may
+# generate from different modalities (image on rank 0, text only on rank 1), so the tower must be
+# gathered up front and never streamed: a streamed tower block would all-gather on rank 0 only.
+class _Tower(torch.nn.Module):
+    def __init__(self, d):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_Block(d) for _ in range(2)])
+
+    def forward(self, x):
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+class _Language(torch.nn.Module):
+    def __init__(self, vocab, d):
+        super().__init__()
+        self.embed = torch.nn.Embedding(vocab, d)
+        self.layers = torch.nn.ModuleList([_Block(d) for _ in range(LAYERS)])
+
+
+class _VlmInner(torch.nn.Module):
+    def __init__(self, vocab, d):
+        super().__init__()
+        self.visual = _Tower(d)
+        self.language_model = _Language(vocab, d)
+
+
+class _VlmNet(torch.nn.Module):
+    def __init__(
+        self,
+        vocab = 32,
+        d = 16,
+    ):
+        super().__init__()
+        torch.manual_seed(0)
+        self.model = _VlmInner(vocab, d)
+        self.head = torch.nn.Linear(d, vocab, bias = False)
+
+    def _step(self, x):
+        lm = self.model.language_model
+        swap = getattr(lm.layers, "_unsloth_block_swap", None)
+        for idx, layer in enumerate(lm.layers):
+            if swap is not None:
+                swap.enter(idx)
+            h = torch.tanh(x @ layer.up.weight.t() + layer.up.bias)
+            x = x + h @ layer.down.weight.t() + layer.down.bias
+            if swap is not None:
+                swap.leave(idx)
+        return self.head(x)
+
+    def generate(
+        self,
+        ids,
+        new_tokens,
+        image = None,
+    ):
+        from torch.distributed.tensor import DTensor
+
+        self._tower_gathered = all(
+            not isinstance(p, DTensor) for p in self.model.visual.parameters()
+        )
+        self._tower_streamed = (
+            self.model.visual.blocks.__dict__.get("_unsloth_block_swap", None) is not None
+        )
+        x = self.model.language_model.embed(ids)
+        if image is not None:
+            x = x + 4 * self.model.visual(image).mean(dim = 1, keepdim = True)
+        out = ids
+        logits = self._step(x)[:, -1]
+        for _ in range(new_tokens):
+            nxt = logits.argmax(-1, keepdim = True)
+            out = torch.cat([out, nxt], dim = 1)
+            logits = self._step(self.model.language_model.embed(nxt))[:, -1]
+        return out[:, ids.shape[1] :]
+
+
+def _vlm_inputs(rank):
+    ids = torch.tensor(PROMPT) % 32
+    image = torch.linspace(-3, 3, 3 * 16).reshape(1, 3, 16) if rank == 0 else None
+    return ids, image
+
+
+def _vlm_reference(rank):
+    with torch.no_grad():
+        ids, image = _vlm_inputs(rank)
+        return _VlmNet().generate(ids, NEW_TOKENS, image = image)[0].tolist()
+
+
+def _vlm_case(native, rank):
+    model = _VlmNet()
+    tower = list(model.model.visual.blocks)
+    layers = list(model.model.language_model.layers)
+    native.shard_model(
+        model,
+        native.FSDP2Config(
+            device = "cpu", units = tower + layers, fit_layout = False, param_dtype = torch.float32
+        ),
+    )
+    ids, image = _vlm_inputs(rank)
+    res = {}
+    try:
+        res["tokens"] = model.generate(ids, NEW_TOKENS, image = image)[0].tolist()
+    except Exception as exc:
+        res["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    res["tower_gathered"] = getattr(model, "_tower_gathered", None)
+    res["tower_streamed"] = getattr(model, "_tower_streamed", None)
+    return res
+
+
 def _reference():
     with torch.no_grad():
         return {"hf": _hf_greedy(_hf_model()), "loop": _loop_greedy(_LoopNet())}
@@ -195,7 +305,14 @@ def _case(native, name):
     return res
 
 
-def _worker(rank, world, port, out, mode):
+def _worker(
+    rank,
+    world,
+    port,
+    out,
+    mode,
+    vlm = False,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -218,7 +335,10 @@ def _worker(rank, world, port, out, mode):
     )
     try:
         native = _load_native()
-        out.put((rank, {name: _case(native, name) for name in ("hf", "loop")}))
+        if vlm:
+            out.put((rank, {"vlm": _vlm_case(native, rank)}))
+        else:
+            out.put((rank, {name: _case(native, name) for name in ("hf", "loop")}))
     except Exception as exc:
         import traceback
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
@@ -229,13 +349,17 @@ def _worker(rank, world, port, out, mode):
             pass
 
 
-def _run(mode, timeout = 240):
+def _run(
+    mode,
+    timeout = 240,
+    vlm = False,
+):
     import torch.multiprocessing as mp
 
     out = mp.get_context("spawn").Queue()
     procs = mp.start_processes(
         _worker,
-        args = (2, _free_port(), out, mode),
+        args = (2, _free_port(), out, mode, vlm),
         nprocs = 2,
         join = False,
         start_method = "spawn",
@@ -283,3 +407,13 @@ def test_generate_default_on_host_keeps_tokens():
             assert "error" not in got, (rank, name, got)
             assert got["tokens"] == want[name], (rank, name, got, want[name])
             assert got["sharded_after"] and got["swap_cleared"], (rank, name, got)
+
+
+def test_generate_keeps_vision_tower_gathered_when_ranks_differ_in_modality():
+    want = {rank: _vlm_reference(rank) for rank in (0, 1)}
+    assert want[0] != want[1]  # the image changes rank 0's tokens
+    for rank, r in _run("block", timeout = 150, vlm = True).items():
+        got = r["vlm"]
+        assert "error" not in got, (rank, got)
+        assert got["tower_gathered"] and not got["tower_streamed"], (rank, got)
+        assert got["tokens"] == want[rank], (rank, got, want[rank])
