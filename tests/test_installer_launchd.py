@@ -275,6 +275,12 @@ def test_agent_goes_to_the_login_accounts_home_when_home_is_redirected(tmp_path)
     assert r.stdout.strip() == str(real)
     assert real.read_text().splitlines()[1] == MARKER
     assert not _plist_path(tmp_path).exists()
+    agent = plistlib.loads(real.read_bytes())
+    assert agent["EnvironmentVariables"]["HOME"] == str(tmp_path / "home")
+
+
+def test_agent_keeps_the_login_home_unset_when_home_is_not_redirected(tmp_path):
+    assert "HOME" not in _write_agent(tmp_path)["EnvironmentVariables"]
 
 
 def test_helper_never_replaces_an_agent_the_user_wrote(tmp_path):
@@ -533,6 +539,32 @@ def test_uninstall_finds_the_agent_in_the_login_accounts_home(tmp_path):
     _fake_bin(tmp_path, "dscl", f"echo 'NFSHomeDirectory: {account}'")
     out = _run_uninstall_removal(tmp_path, None, "exit 0")
     assert f"bootout gui/501/{LABEL}" in out
+    assert not real.exists()
+
+
+def test_uninstall_under_sudo_looks_up_the_home_owners_account(tmp_path):
+    account = tmp_path / "account"
+    real = account / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+    real.parent.mkdir(parents = True)
+    real.write_text(_OURS)
+    dscl_log = tmp_path / "dscl.log"
+    _fake_bin(
+        tmp_path,
+        "dscl",
+        f'echo "$*" >> "{dscl_log}"\n'
+        f'[ "$3" = /Users/alice ] && echo "NFSHomeDirectory: {account}"; exit 0',
+    )
+    id_body = 'case "$*" in "-un 501") echo alice ;; -un) echo root ;; *) echo 0 ;; esac'
+    source = _uninstall_removal_script("0").replace(
+        "_remove_launchd_user_agent\n", f"id() {{ {id_body}; }}\n_remove_launchd_user_agent\n", 1
+    )
+    _fake_mac(tmp_path)
+    _fake_bin(tmp_path, "stat", "echo 501")
+    r = subprocess.run(
+        ["sh", "-c", source], capture_output = True, text = True, env = _env(tmp_path), check = True
+    )
+    assert "/Users/alice" in dscl_log.read_text()
+    assert "Removed launchd user agent" in r.stdout
     assert not real.exists()
 
 

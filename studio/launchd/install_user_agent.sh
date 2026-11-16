@@ -139,6 +139,10 @@ while IFS= read -r _line || [ -n "$_line" ]; do
             if [ -n "$_env_home" ]; then
                 printf '    <key>UNSLOTH_STUDIO_HOME</key>\n    <string>%s</string>\n' "$(_xml_escape "$_env_home")"
             fi
+            # launchd hands the job the account's HOME; Studio resolves its llama.cpp dir from the one it was installed under.
+            if [ "$HOME" != "$_account_home" ]; then
+                printf '    <key>HOME</key>\n    <string>%s</string>\n' "$(_xml_escape "$HOME")"
+            fi
             ;;
         *"<string>@@STUDIO_HOME@@</string>") printf '  <string>%s</string>\n' "$(_xml_escape "$_run_home")" ;;
         *) printf '%s\n' "$_line" ;;
