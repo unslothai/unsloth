@@ -1033,6 +1033,7 @@ export const fr = {
       videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
+      customizeProfileMenu: "Personnaliser le menu du profil",
       newBadge: "Nouveau",
       export: "Exporter",
       recents: "Discussions récentes",

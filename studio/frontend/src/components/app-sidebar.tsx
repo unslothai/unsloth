@@ -115,7 +115,6 @@ import {
   CloudIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
-  DashboardSquareEditIcon,
   Download01Icon,
   Edit03Icon,
   FlimSlateIcon,
@@ -147,7 +146,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
-import { AiSpeechIcon, ChipIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, ChipIcon, FilterHorizontalCircleIcon, MessageCircleIcon, Settings01Icon, TestTubeOutlineIcon, TrashIcon, withNoticeDot } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -6421,7 +6420,7 @@ export function AppSidebar() {
                             })
                         }
                       >
-                        <HugeiconsIcon icon={Settings01Icon} strokeWidth={1.75} />
+                        <HugeiconsIcon icon={FilterHorizontalCircleIcon} strokeWidth={1.75} />
                         <span className="min-w-0 flex-1 truncate">
                           {t("shell.navigation.customizeSidebar")}
                         </span>
@@ -6863,12 +6862,12 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() =>
                       useSettingsDialogStore.getState().openDialog("appearance", {
-                        scrollTarget: "appearance-sidebar-nav",
+                        scrollTarget: "appearance-profile-menu",
                       })
                     }
                   >
-                    <HugeiconsIcon icon={DashboardSquareEditIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.customizeSidebar")}</span>
+                    <HugeiconsIcon icon={FilterHorizontalCircleIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.customizeProfileMenu")}</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   {HELP_GROUPS.map((group, index) => (

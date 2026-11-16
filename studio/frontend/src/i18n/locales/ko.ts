@@ -1029,6 +1029,7 @@ export const ko = {
       videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
+      customizeProfileMenu: "프로필 메뉴 사용자 지정",
       newBadge: "신규",
       export: "내보내기",
       recents: "최근 항목",
