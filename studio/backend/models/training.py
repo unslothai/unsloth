@@ -1382,6 +1382,9 @@ class DiffusionTrainableFamily(BaseModel):
     deploy_base: Optional[str] = None
     # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Every family the trained adapter loads on (FLUX.3 Klein Base deploys on FLUX.3 Klein); undeclared, Pydantic
+    # dropped it from the response and Deploy to Create matched the trained family alone.
+    lora_families: Optional[List[str]] = None
     # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 

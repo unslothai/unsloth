@@ -242,6 +242,13 @@ def test_train_ui_pairs_the_base_with_klein():
     }
     assert info["supports_samples"] and info["max_train_batch_size"] is None
     assert info["lora_families"] == [FAMILY, DISTILLED_FAMILY]
+    from models.training import DiffusionTrainableFamily
+
+    # The info route serves each row through this model, which drops a field it does not declare.
+    assert DiffusionTrainableFamily(**info).lora_families == [FAMILY, DISTILLED_FAMILY]
+    for other in family_train_infos():
+        if other["name"] != FAMILY:
+            assert DiffusionTrainableFamily(**other).lora_families == [other["name"]]
 
 
 def test_defaults_sit_on_the_16_grid_and_off_grid_resolutions_are_refused(tmp_path):
