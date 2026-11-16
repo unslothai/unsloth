@@ -39,6 +39,7 @@ def _case_split(
     native,
     frozen = False,
     shard_frozen = None,
+    cpu_offload = False,
 ):
     torch.manual_seed(0)
     model = _tiny_llama()  # float32 root: embed_tokens, norm, lm_head
@@ -50,7 +51,10 @@ def _case_split(
     table.requires_grad_(not frozen)
     root = [model.model.embed_tokens.weight, model.model.norm.weight, model.lm_head.weight]
     cfg = native.FSDP2Config(
-        param_dtype = torch.float32, split_large_root_embeddings = 0.01, shard_frozen = shard_frozen
+        param_dtype = torch.float32,
+        split_large_root_embeddings = 0.01,
+        shard_frozen = shard_frozen,
+        cpu_offload = cpu_offload,
     )
     model = native.shard_model(model, cfg)
     return {
@@ -120,6 +124,8 @@ def _worker(rank, world, port, out, case):
             res = _case_split(native, frozen = True)
         elif case == "split_frozen_shard":
             res = _case_split(native, frozen = True, shard_frozen = True)
+        elif case == "split_frozen_offload":
+            res = _case_split(native, frozen = True, cpu_offload = True)
         elif case == "split_frozen_env0":
             os.environ["UNSLOTH_FSDP2_REPLICATE_FROZEN"] = "0"
             res = _case_split(native, frozen = True)
@@ -181,7 +187,7 @@ def test_frozen_split_table_stays_whole_on_every_rank():
         assert r["extra_units"] == 0 and r["replicated"] == 1, (rank, r)
         assert r["table_dtensor"] == "Parameter" and r["table_shape"][0] == 4096, (rank, r)
         assert r["table_dtype"] == "torch.bfloat16", (rank, r)  # its own dtype group: never upcast
-    for case in ("split_frozen_shard", "split_frozen_env0"):
+    for case in ("split_frozen_shard", "split_frozen_env0", "split_frozen_offload"):
         for rank, r in _run(case).items():
             assert r["extra_units"] == 1 and r["table_dtensor"] == "DTensor", (case, rank, r)
 

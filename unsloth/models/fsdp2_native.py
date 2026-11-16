@@ -1802,6 +1802,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if (
         extra_units
         and config.shard_frozen is not True
+        and not config.cpu_offload
         and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
         and _supports_ignored_params(fully_shard)
     ):
