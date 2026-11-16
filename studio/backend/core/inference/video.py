@@ -12004,7 +12004,11 @@ class VideoBackend:
         denoiser = getattr(pipe, component, None)
         label = f"{getattr(fam, 'label', None) or getattr(fam, 'name', 'video')} denoiser"
         if denoiser is None:
-            raise ValueError(f"The {label} is not loaded, so the LoRA has nothing to bake into.")
+            # A modular load_components logs a failed component and carries on, so the cause is in the log above.
+            raise ValueError(
+                f"The {label} did not load (a failed download or read, often a full disk; see the server log), "
+                "so the LoRA has nothing to bake into."
+            )
         device = (
             getattr(target, "torch_device", None)
             if getattr(target, "device", None) == "cuda"
