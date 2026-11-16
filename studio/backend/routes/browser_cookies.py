@@ -216,7 +216,8 @@ def store_cookies(subject: str, url: str, headers) -> None:
             jar.extract_cookies(_Response(values), request)
         finally:
             jar.insecure, jar.request = False, None
-    _trim(jar)
+        # Under the lock: two responses trimming at once would pick the same cookie to drop.
+        _trim(jar)
 
 
 def _http_only(cookie: http.cookiejar.Cookie) -> bool:

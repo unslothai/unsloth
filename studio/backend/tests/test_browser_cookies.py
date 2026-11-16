@@ -395,3 +395,27 @@ def test_the_store_is_bounded():
     for index in range(cookies._MAX_ACCOUNTS + 5):
         cookies.store_cookies(f"account{index}", "https://a.example.com/", [("Set-Cookie", "s=1")])
     assert len(cookies._jars) == cookies._MAX_ACCOUNTS
+
+
+def test_responses_arriving_together_at_the_limit_all_store():
+    for index in range(cookies._MAX_PER_SITE):
+        cookies.store_cookies("user", "https://busy.example.com/", [("Set-Cookie", f"k{index}=1")])
+    failed = []
+
+    def respond(worker):
+        try:
+            for index in range(60):
+                cookies.store_cookies(
+                    "user", "https://busy.example.com/", [("Set-Cookie", f"w{worker}n{index}=1")]
+                )
+        except Exception as error:
+            failed.append(error)
+
+    workers = [threading.Thread(target = respond, args = (worker,)) for worker in range(8)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert failed == []
+    held = cookies.cookie_header("user", "https://busy.example.com/").split("; ")
+    assert len(held) == cookies._MAX_PER_SITE
