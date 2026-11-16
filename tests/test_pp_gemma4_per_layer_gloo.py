@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel over Gemma 4 E2B / E4B style decoders: per-layer inputs (embed_tokens_per_layer +
-per_layer_model_projection) and KV-shared layers (num_kv_shared_layers). The first stage sends the context
-projection columns of the later layers with the hidden states, each stage keeps only its layers' table columns,
-and stage cuts never separate a KV-shared layer from its source. gloo CPU world vs one process, fp32."""
+"""Gemma 4 E2B / E4B per-layer inputs and KV-shared layers under pipeline parallel: gloo vs one process, fp32."""
 
 import multiprocessing
 import os
@@ -123,7 +120,6 @@ def _case_parity(
         out["saved_ref"] = load_file(os.path.join(tmp, "ref", "adapter_model.safetensors"))
         out["saved_pp"] = load_file(os.path.join(tmp, "pp", "adapter_model.safetensors"))
     if keep_replica:
-        # The whole model back (full per-layer table, one-process per-layer input path): same loss as one process.
         vlm._load("pp_env").gather_replica(model, "generate")
         with torch.no_grad():
             out["replica_loss"] = float(model(input_ids = ids, labels = labels, use_cache = False).loss)
@@ -136,7 +132,7 @@ vlm.CASES["ple_parity"] = _case_parity
 
 
 def _worker(*args):
-    vlm._worker(*args)  # spawned ranks import this module first, which registers the case
+    vlm._worker(*args)
 
 
 def spawn(
@@ -164,12 +160,11 @@ def _check(
         name, shape, owned = res["table"]
         start, end = bounds[rank]
         assert name == "_PPLayerTableSlice" and owned == tuple(range(start, end)), res["table"]
-        assert shape == (tiny.VOCAB, (end - start) * 8), shape  # this stage's layers' columns only
+        assert shape == (tiny.VOCAB, (end - start) * 8), shape
         assert bool(res["projection_trains"]) == (projection and rank == 0), (
             rank,
             res["projection_trains"],
         )
-    # No stage boundary between a KV-shared layer (4, 5) and its source (2, 3).
     assert all(start <= 2 for start, _ in bounds[1:]), bounds
     return worst
 
@@ -211,7 +206,7 @@ def test_parity_detects_a_wrong_per_layer_feed(fault):
     got = {n: g for res in results for n, g in res["pp"][1][0].items()}
     worst = vlm.grad_error(got, ref_grads)
     print(fault, "fault gradient error", worst)
-    assert worst[0] > 0.05, worst  # far outside the fp32 tolerance
+    assert worst[0] > 0.05, worst
 
 
 def test_kv_shared_cuts_keep_source_and_shared_layers_together():

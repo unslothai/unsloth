@@ -60,7 +60,6 @@ _ALLOWED_TRAINERS = {
 _BATCH_KEYS = ("input_ids", "labels", "attention_mask", "position_ids")
 _DROPPED_KEYS = ("completion_mask", "assistant_masks", "return_loss", "num_items_in_batch")
 _TEXT_ONLY = "_unsloth_pp_text_only"
-# Dataset columns / message parts that bring images, video or audio to a multimodal checkpoint.
 _MEDIA_COLUMNS = ("image", "images", "video", "videos", "audio", "audios") + (
     "pixel_values",
     "pixel_values_videos",
@@ -590,7 +589,6 @@ def _model_levels(model):
 
 
 def _media_in_rows(dataset, rows = 16):
-    """A media part in the first rows' chat messages ({"type": "image"} content), else None."""
     try:
         n = min(len(dataset), rows)
     except TypeError:
@@ -620,8 +618,7 @@ def media_evidence(
     eval_dataset = None,
     data_collator = None,
 ):
-    """Why this Trainer would feed images / video / audio (dataset columns, chat message parts, a vision
-    collator), else None (a text-only run)."""
+    """Why this Trainer would feed media (columns, chat parts, collator), else None."""
     if data_collator is not None:
         name = type(data_collator).__name__
         if any(word in name for word in ("Vision", "Audio", "MultiModal", "Multimodal")):
@@ -644,9 +641,7 @@ def media_evidence(
 
 
 def _resolve_text_only(layout, model, train_dataset, eval_dataset, data_collator):
-    """A vision / audio language checkpoint under UNSLOTH_PP_SIZE: text-only training keeps its towers out of
-    the pipeline. UNSLOTH_PP_TEXT_ONLY=1 / 0 decides; unset, the dataset and collator do (a batch that still
-    carries media later stops the step)."""
+    """UNSLOTH_PP_TEXT_ONLY=1 / 0 decides; unset, the dataset and collator do."""
     if not isinstance(model, nn.Module):
         return
     from .pp_native import _media_keys, _unwrap

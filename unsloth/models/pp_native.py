@@ -90,10 +90,8 @@ _PP_HYBRID_FAMILIES = {
     "Qwen3_5ForCausalLM": {"linear_attention"},
     "Qwen3_5ForConditionalGeneration": {"linear_attention"},
 }
-# Config keys of the towers a multimodal checkpoint adds next to its language model. Under pipeline parallelism
-# they stay out of the pipeline (PPConfig.text_only): frozen, unused, off the GPU.
 _MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
-# Batch keys that carry media into a multimodal forward: a text-only pipeline refuses them, never drops them.
+# A text-only pipeline refuses these batch keys, never drops them.
 _MEDIA_INPUT_KEYS = (
     "pixel_values",
     "pixel_values_videos",
@@ -137,8 +135,7 @@ class PPConfig:
     keep_replica: bool = False
     # Frozen table rows kept for checkpoint recomputes; None = this stage's in-flight micro-batches (at least 2).
     frozen_table_memo_slots: Optional[int] = None
-    # A vision / audio language checkpoint trained on text only: its towers stay out of the pipeline (frozen,
-    # moved to the CPU, saved unchanged) and a batch carrying media is refused. None refuses such a checkpoint.
+    # Multimodal checkpoint trained on text: towers kept out of the pipeline. None refuses such a checkpoint.
     text_only: Optional[bool] = None
 
 
@@ -340,19 +337,18 @@ class _Parts:
     norms: list  # [(name, module)]: other parameter-holding decoder children (final norm)
     source: str  # "transformers" (base_model_pp_plan) / "structural"
     tied: bool
-    # [(container, name, module)]: vision / audio towers of a multimodal checkpoint (kept out of the pipeline)
+    # [(container, name, module)]
     towers: list = dataclasses.field(default_factory = list)
-    ple: Optional["_PerLayerInputs"] = None  # Gemma 4 per-layer inputs, else None
+    ple: Optional["_PerLayerInputs"] = None
 
 
 @dataclasses.dataclass
 class _PerLayerInputs:
-    """Gemma 4 E2B / E4B per-layer inputs: a token table with hidden_size_per_layer_input columns per decoder
-    layer, plus a projection of the input embeddings (and its norm). The first stage computes the projection and
-    sends the later layers' columns with the hidden states; every stage looks up its own layers' table columns."""
+    """Gemma 4 E2B / E4B per-layer inputs: the first stage sends later layers' projection columns with the hidden
+    states; each stage looks up its own layers' table columns."""
 
     layers: int
-    width: int  # hidden_size_per_layer_input
+    width: int
     table: str = "embed_tokens_per_layer"
     projection: str = "per_layer_model_projection"
     norm: str = "per_layer_projection_norm"
@@ -440,7 +436,6 @@ def _cut_points(parts):
     n = len(parts.layers)
     reads = _kv_shared_reads(parts)
     if reads:
-        # A stage boundary must not separate a KV-shared layer from the layer whose keys / values it reads.
         return [cut for cut in range(1, n) if not any(s < cut <= j for s, j in reads)]
     config = getattr(parts.inner, "config", None)
     for obj in (parts.inner, parts.decoder):
@@ -588,7 +583,6 @@ def _find_parts(model) -> _Parts:
 
 
 def _per_layer_inputs(decoder, text, n):
-    """_PerLayerInputs when `decoder` computes Gemma 4 style per-layer inputs, else None."""
     width = getattr(text, "hidden_size_per_layer_input", None)
     spec = _PerLayerInputs(n, width) if isinstance(width, int) and width > 0 else None
     if spec is None or getattr(text, "altup_num_inputs", None):
@@ -607,9 +601,7 @@ def _per_layer_inputs(decoder, text, n):
 
 
 def _kv_shared_reads(parts):
-    """[(source layer, shared layer)] for KV-shared layers (Gemma 4 num_kv_shared_layers: a layer without key /
-    value projections reads those of the last earlier layer of its type that stores them); None when a shared
-    layer's source is unknown."""
+    """[(source layer, KV-shared layer)]; None when a shared layer's source is unknown."""
     sources, reads = {}, []
     for i, layer in enumerate(parts.layers):
         attn = getattr(layer, "self_attn", None)
@@ -936,9 +928,8 @@ def _refuse_unsupported(
     allow_moe = True,
     text_only = None,
 ):
-    """Refusals before anything is cut (at_load: the structural ones only, before LoRA freezes the base; the
-    text-only decision for a multimodal checkpoint is made at the split). Returns the _MoEAux of a
-    mixture-of-experts family whose router auxiliary loss PipelineParallel carries (allow_moe), else None."""
+    """Refusals before anything is cut (at_load: structural only, text-only decided at the split). Returns the
+    _MoEAux whose router aux loss PipelineParallel carries (allow_moe), else None."""
     text = _text_config(model)
     inner = parts.inner
     media = _media_keys(inner)
@@ -1053,8 +1044,7 @@ def _forward_function(module):
 
 
 def _layer_loop_source(decoder, layers_name):
-    """Source of the decoder forward that loops over its layers, found through __wrapped__ and the closures of
-    wrappers that drop it (Unsloth Zoo's Gemma 4 KV-sharing forward)."""
+    """Layer-loop forward source; also searches closures (Unsloth Zoo's Gemma 4 wrapper drops __wrapped__)."""
     first = _forward_function(decoder)
     for fn in [first, *_forward_candidates(decoder)]:
         try:
@@ -1293,9 +1283,6 @@ class _PPPassThrough(_CheckpointLayer):
 
 
 class _PPTowerStub(nn.Module):
-    """A vision / audio tower of a multimodal checkpoint trained on text only (PPConfig.text_only): not part of
-    the pipeline, so no stage runs it."""
-
     def __init__(self, name, source):
         super().__init__()
         for key, value in _simple_attrs(source).items():
@@ -1324,8 +1311,7 @@ def _refuse_media_inputs(kwargs, what):
 
 
 def _tower_adapter_state(model, parts):
-    """{adapter: {key: tensor}} of the PEFT adapter entries inside the towers, as one process saves them: the
-    towers never train under a text-only pipeline, so pp rank 0 writes these values next to every stage's."""
+    """Tower PEFT entries (never trained under text-only), saved by pp rank 0."""
     adapters = list(getattr(model, "peft_config", {}) or {})
     if not adapters or not parts.towers:
         return None
@@ -1346,9 +1332,7 @@ def _tower_adapter_state(model, parts):
 
 
 class _PPLayerTableSlice(nn.Module):
-    """The per-layer embedding table (Gemma 4 embed_tokens_per_layer) on one rank: only the columns of the layers
-    this rank owns. A lookup returns [*ids, layers, width] with those layers filled (the others, never read
-    here, are zeros)."""
+    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers."""
 
     def __init__(self, source, owned, layers, width):
         super().__init__()
@@ -1405,8 +1389,6 @@ def _ple_project(
     inputs_embeds,
     per_layer_inputs = None,
 ):
-    """The context projection of the per-layer inputs: computed on the first stage, received by the others
-    (columns of their layers and the later ones); the later layers' columns go on with the hidden states."""
     if not ctx.active:
         return original(inputs_embeds, per_layer_inputs)
     layers, width = ctx.ple.layers, ctx.ple.width
@@ -1425,8 +1407,7 @@ def _ple_project(
 
 
 def _install_per_layer_inputs(pp_stage, parts, owned, kept):
-    """Each rank keeps its layers' table columns; the first stage's projection feeds the rest (the projection
-    and its norm train there only)."""
+    """The projection and its norm train on the first stage only."""
     ple, decoder, ctx = parts.ple, parts.decoder, pp_stage.ctx
     ctx.ple = ple
     table = decoder._modules[ple.table]
@@ -1531,7 +1512,6 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
-        # Per-layer inputs (_PerLayerInputs): the received / sent context projection columns of the running stage.
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -1674,7 +1654,6 @@ class _PPStageModule(nn.Module):
         return tuple(out)
 
     def _ple_wire(self, hidden):
-        """The context projection columns of the layers after this stage, as sent: [micro-batch, seq, columns]."""
         ctx = self._pp_ctx
         out = ctx.ple_output
         if out is None:
@@ -1683,9 +1662,9 @@ class _PPStageModule(nn.Module):
             )
         out = out.reshape(*out.shape[:2], -1).to(self._pp_dtype)
         if not out.requires_grad and torch.is_grad_enabled():
-            # A frozen projection: a leaf, so the gradient the next stage sends back has somewhere to go.
+            # Frozen projection: a leaf so the next stage's gradient has somewhere to go.
             return out.detach().clone().requires_grad_()
-        # Not a view (split-backward schedules detach stage outputs in place) and contiguous (sent as is).
+        # Split-backward schedules detach stage outputs in place: no views.
         if out._is_view() or not out.is_contiguous():
             out = out.clone(memory_format = torch.contiguous_format)
         return out
@@ -2044,7 +2023,7 @@ class PipelineParallel:
         self.replica = (
             None  # pp_env: the whole model is in place (for_inference / generate / exports)
         )
-        self._tower_adapter = None  # pp rank 0: the towers' adapter entries (PPConfig.text_only)
+        self._tower_adapter = None
 
     # composition with FSDP2 (dp) / tensor parallelism (tp): every other mesh dimension must be applied
     @property
@@ -2199,7 +2178,6 @@ class PipelineParallel:
             )
 
         def per_layer(layer):
-            # Per-layer input columns of the layers from `layer` on, sent beside the hidden states.
             ple = self.ctx.ple
             width = (ple.layers - layer) * ple.width
             return torch.empty(
@@ -2985,8 +2963,6 @@ def apply_pipeline_parallel(
     layers = parts.layers
     kept = [] if config.keep_replica else None
     if parts.towers:
-        # The towers leave the pipeline: frozen, never run, on the CPU (kept) or dropped. Pipeline rank 0 holds
-        # their adapter entries for the save.
         if rank == 0:
             pp_stage._tower_adapter = _tower_adapter_state(model, parts)
         stubs = []
