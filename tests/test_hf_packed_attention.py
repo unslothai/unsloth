@@ -1383,6 +1383,14 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
             start += n
 
 
+def _varlen_meta(result):
+    """(cu_seqlens, longest document) from block_varlen_kwargs: the longest document travels as the
+    length of a dynamic carrier tensor, so a new longest document does not recompile the block."""
+    cu_seqlens, carrier = result
+    assert isinstance(carrier, torch.Tensor) and carrier.dim() == 1
+    return cu_seqlens, carrier.shape[0]
+
+
 def _block_layer(
     window = None,
     impl = "sdpa",
@@ -1447,7 +1455,7 @@ def test_block_varlen_kwargs_prepares_metadata_and_checks_the_mask(monkeypatch):
     hidden = torch.randn(1, 8, 8)
     kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
     before = hpa.HF_PACKED_ATTENTION_STATS["compiled"]
-    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)) == (cu, 5)
     assert hpa.HF_PACKED_ATTENTION_STATS["compiled"] == before + 1
     # A mask that is not this block-causal one (one causal span over both documents) is refused.
     kwargs["attention_mask"] = _block_causal([8])
@@ -1471,7 +1479,7 @@ def test_block_varlen_kwargs_rechecks_a_mask_edited_in_place(monkeypatch):
     hidden = torch.randn(1, 8, 8)
     mask = _block_causal(lengths)
     kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": mask}
-    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)) == (cu, 5)
     mask[..., 4, 0] = True  # the second document now sees the first
     assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
 
@@ -1517,7 +1525,7 @@ def test_block_varlen_kwargs_survives_a_collected_mask_then_none(monkeypatch):
     )
     hidden = torch.randn(1, 8, 8)
     kwargs = {"packed_seq_lengths": lengths, "attention_mask": _block_causal([3, 5])}
-    assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)) == (cu, 5)
     del kwargs["attention_mask"]  # the only reference: the cached weakref is now dead
     assert hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs) is None
 
@@ -1547,7 +1555,7 @@ def test_block_varlen_kwargs_honours_the_sdpa_policy_each_step(monkeypatch):
             "attention_mask": _block_causal(lengths),
         }
         got = hpa.block_varlen_kwargs(_block_layer(), hidden, kwargs)
-        assert got is None if wants_sdpa else got == (cu, 5)
+        assert got is None if wants_sdpa else _varlen_meta(got) == (cu, 5)
 
 
 def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypatch):
@@ -1568,13 +1576,63 @@ def test_block_varlen_kwargs_rechecks_the_sdpa_policy_on_reused_tensors(monkeypa
     hidden = torch.randn(1, 8, 8)
     kwargs = {"packed_seq_lengths": torch.tensor(lengths), "attention_mask": _block_causal(lengths)}
     layer = _block_layer()
-    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
-    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(layer, hidden, kwargs)) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(layer, hidden, kwargs)) == (cu, 5)
     policy[0] = True
     assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
     assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is None
     policy[0] = False
-    assert hpa.block_varlen_kwargs(layer, hidden, kwargs) == (cu, 5)
+    assert _varlen_meta(hpa.block_varlen_kwargs(layer, hidden, kwargs)) == (cu, 5)
+
+
+def test_traced_block_varlen_compiles_once_for_every_longest_document(monkeypatch):
+    """The longest document reaches the traced varlen call as a dynamic carrier length: as a Python int
+    it was guarded on, so each new longest document recompiled every block (FastModel Qwen3 packing,
+    B200: "kwargs['_unsloth_block_varlen'][1] == 23")."""
+    from torch._dynamo.testing import CompileCounter
+
+    hpa._ORIG_SDPA[0] = _plain_sdpa
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: object())
+    monkeypatch.setattr(hpa, "_sdpa_policy_requested", lambda *args: False)
+    monkeypatch.setattr(hpa, "_BLOCK_PREP", {})
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_varlen_in_graph", lambda *args: True)
+    monkeypatch.setattr(
+        hpa,
+        "_flash_varlen",
+        lambda q, k, v, cu, m, scale, window: q.transpose(1, 2) * (scale * m),
+    )
+    module = types.SimpleNamespace(is_causal = True, num_key_value_groups = 1, training = True)
+    counter = CompileCounter()
+    torch._dynamo.reset()
+    fn = torch.compile(
+        lambda q, mask, psl, varlen: hpa._sdpa_packed_varlen(
+            module, q, q, q, mask, packed_seq_lengths = psl, **{hpa.BLOCK_VARLEN_KWARG: varlen}
+        )[0],
+        backend = counter,
+        fullgraph = True,
+    )
+    for lengths in ([3, 5], [2, 7, 3], [4, 4, 4]):
+        total = sum(lengths)
+        mask, psl = _block_causal(lengths), torch.tensor(lengths, dtype = torch.int32)
+        varlen = hpa.block_varlen_kwargs(
+            _block_layer(),
+            torch.randn(1, total, 8),
+            {"packed_seq_lengths": psl, "attention_mask": mask},
+        )
+        assert varlen is not None
+        q = torch.randn(1, 4, total, 16)
+        # As the block compiler marks them (_mark_seq_dynamic / _mark_packed_dynamic).
+        torch._dynamo.maybe_mark_dynamic(q, 2)
+        torch._dynamo.maybe_mark_dynamic(mask, 2)
+        torch._dynamo.maybe_mark_dynamic(mask, 3)
+        torch._dynamo.maybe_mark_dynamic(psl, 0)
+        out = fn(q, mask, psl, varlen)
+        torch.testing.assert_close(out, q.transpose(1, 2) * (16**-0.5 * max(lengths)))
+    torch._dynamo.reset()
+    assert counter.frame_count == 1
 
 
 @pytest.mark.parametrize("in_graph", [True, False])
