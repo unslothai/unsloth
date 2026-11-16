@@ -38,14 +38,17 @@ from . import diffusion_int8_attention as _I8
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
-# DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights. Left out
-# (name or env switch only): Z-Image-Turbo (rel L2 0.035 vs 0.024) and LTX-2 (audio 0.010 vs 0.008).
-# FLUX.3 runs the kernel in its strided processors (diffusion_int8_attention.install_auto), raced the same way.
+# DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights (median /
+# max rel L2 vs bf16, teacher-forced). Z-Image-Turbo: 0.022 / 0.048 against 0.024 / 0.073 since the kernel keeps V
+# resolved past attention sinks (0.034 / 0.100 before). Left out (name or env switch only): LTX-2, whose audio
+# stream (0.010 vs 0.008) has no attention sink to fix. FLUX.3 runs the kernel in its strided processors
+# (diffusion_int8_attention.install_auto), raced the same way.
 AUTO_DITS = frozenset(
     {
         "Flux3Transformer2DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
+        "ZImageTransformer2DModel",
     }
 )
 # DiTs whose accuracy was measured on the CUDA kernel only (its V range past attention sinks): with the switch unset a

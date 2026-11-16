@@ -148,7 +148,7 @@ def test_auto_route_stays_off(card, monkeypatch, case):
     install runs instead), ROCm, a CPU load, a pipeline with no transformer."""
     from core.inference import rocm_bf16
 
-    pipe = _pipe("ZImageTransformer2DModel" if case == "unlisted" else "Flux3Transformer2DModel")
+    pipe = _pipe("LTX2VideoTransformer3DModel" if case == "unlisted" else "Flux3Transformer2DModel")
     target = _TARGET
     speed = True
     if case == "speed_off":
@@ -254,7 +254,7 @@ def test_a_triton_stand_in_keeps_the_incumbent_for_cuda_only_families(card, monk
         I.install_int8_attention(pipe.transformer, device = "cuda", dtype = torch.bfloat16, force = True)
         > 0
     )
-    assert D.AUTO_CUDA_ONLY <= D.AUTO_DITS | {"ZImageTransformer2DModel"}
+    assert D.AUTO_CUDA_ONLY <= D.AUTO_DITS
 
 
 def test_dispatch_route_skips_a_triton_stand_in_for_cuda_only_families(monkeypatch):
@@ -295,7 +295,6 @@ def test_dispatch_route_skips_a_triton_stand_in_for_cuda_only_families(monkeypat
     for name, routed in (("ZImageTransformer2DModel", 0), ("WanTransformer3DModel", 1)):
         pipe = types.SimpleNamespace(transformer = dit(name))
         monkeypatch.setattr(D, "_dits", lambda p: [p.transformer])
-        monkeypatch.setattr(D, "AUTO_DITS", D.AUTO_DITS | {"ZImageTransformer2DModel"})
         floors.clear()
         assert D.install(pipe, _TARGET) == routed, name
         assert bool(floors) == bool(routed)
