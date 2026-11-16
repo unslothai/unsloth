@@ -6501,7 +6501,13 @@ def measured_request_extra_mib(
         return extra
     from .diffusion_lora_memory import request_extra_mib as lora_request_extra_mib
 
-    return extra + lora_request_extra_mib(pipe, width = width, height = height, batch_size = batch_size)
+    return extra + lora_request_extra_mib(
+        pipe,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        extra_pixels = max(int(condition_pixels or 0), int(reference_pixels or 0)),
+    )
 
 
 def _measured_request_extra_mib(

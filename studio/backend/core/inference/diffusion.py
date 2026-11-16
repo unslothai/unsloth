@@ -11475,6 +11475,9 @@ class DiffusionBackend:
                                     fam, getattr(target, "dtype", None)
                                 )
                             ),
+                            compute_dtype = _resolve_diffusion_compute_dtype(
+                                fam, getattr(target, "dtype", None)
+                            ),
                         )
                         is None
                     ):

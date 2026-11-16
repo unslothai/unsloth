@@ -66,7 +66,11 @@ def _element_bytes(*tensors: Any) -> int:
     return best
 
 
-def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[int]:
+def _widest_layer_bytes_per_token(
+    module: Any,
+    compute_bytes: int,
+    compute_dtype: Any = None,
+) -> Optional[int]:
     """0 without LoRA layers; None when any adapted layer is unpriceable."""
     try:
         from peft.tuners.tuners_utils import BaseTunerLayer
@@ -93,6 +97,8 @@ def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[i
             return None
         rank = 0
         elem = compute_bytes
+        adapter_elem = 0
+        mismatch = False
         for a in active:
             down = lora_a[a]
             up = getattr(layer, "lora_B", {})[a]
@@ -102,7 +108,25 @@ def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[i
             elem = max(
                 elem, _element_bytes(getattr(down, "weight", None), getattr(up, "weight", None))
             )
-        widest = max(widest, (2 * int(out) + rank) * elem)
+            adapter_elem = max(
+                adapter_elem,
+                _element_bytes(getattr(down, "weight", None), getattr(up, "weight", None)),
+            )
+            for w in (getattr(down, "weight", None), getattr(up, "weight", None)):
+                dt = getattr(w, "dtype", None)
+                if dt is None:
+                    continue
+                if compute_dtype is not None:
+                    mismatch = mismatch or dt != compute_dtype
+                else:
+                    mismatch = mismatch or _element_bytes(w) != compute_bytes
+        per = (2 * int(out) + rank) * elem
+        if mismatch:
+            # x.to(adapter dtype) lives through the adapter loop beside the delta, and result + delta promotes
+            # (fp16 + bf16 -> fp32): the cast copy, the delta and the promoted sum, never below the same-dtype price
+            inf = getattr(base, "in_features", None) or getattr(base, "in_channels", None) or 0
+            per = max(per, (int(inf) + int(out) + rank) * adapter_elem + int(out) * 4)
+        widest = max(widest, per)
     return widest
 
 
@@ -126,12 +150,15 @@ def _tokens(
     width: Optional[int],
     height: Optional[int],
     text_tokens: int = _DIT_TEXT_TOKENS,
+    extra_pixels: int = 0,
 ) -> int:
+    """``extra_pixels``: condition / reference images that join the denoiser's sequence (edit references, layers)."""
     w = max(64, int(width or _DEFAULT_SIDE))
     h = max(64, int(height or _DEFAULT_SIDE))
+    pixels = w * h + max(0, int(extra_pixels or 0))
     if unet:
-        return math.ceil(w * h / _UNET_PIXELS_PER_TOKEN)
-    return math.ceil(w * h / _DIT_PIXELS_PER_TOKEN) + max(_DIT_TEXT_TOKENS, int(text_tokens))
+        return math.ceil(pixels / _UNET_PIXELS_PER_TOKEN)
+    return math.ceil(pixels / _DIT_PIXELS_PER_TOKEN) + max(_DIT_TEXT_TOKENS, int(text_tokens))
 
 
 def _mib(
@@ -142,10 +169,11 @@ def _mib(
     height: Optional[int],
     batch_size: int,
     text_tokens: int = _DIT_TEXT_TOKENS,
+    extra_pixels: int = 0,
 ) -> int:
     nbytes = (
         pricing_bytes
-        * _tokens(unet, width, height, text_tokens)
+        * _tokens(unet, width, height, text_tokens, extra_pixels)
         * max(1, int(branches))
         * max(1, int(batch_size or 1))
     )
@@ -158,6 +186,7 @@ def price_attached_loras(
     *,
     cfg: bool,
     compute_bytes: Optional[int] = None,
+    compute_dtype: Any = None,
 ) -> Optional[LoraPricing]:
     """Price and record the attached LoRA set; None (nothing recorded) when it cannot be priced."""
     if not enabled() or not getattr(pipe, "_unsloth_loras", None):
@@ -177,7 +206,9 @@ def price_attached_loras(
             if module is None or not callable(getattr(module, "modules", None)):
                 continue
             found = True
-            per = _widest_layer_bytes_per_token(module, max(2, int(compute_bytes or 2)))
+            per = _widest_layer_bytes_per_token(
+                module, max(2, int(compute_bytes or 2)), compute_dtype
+            )
             if per is None:
                 return None
             if per > widest:
@@ -220,6 +251,7 @@ def request_extra_mib(
     width: Optional[int],
     height: Optional[int],
     batch_size: int = 1,
+    extra_pixels: int = 0,
 ) -> int:
     pricing = priced(pipe)
     if pricing is None:
@@ -232,5 +264,6 @@ def request_extra_mib(
         height,
         batch_size,
         pricing.text_tokens,
+        extra_pixels,
     )
     return max(0, int(need) - int(pricing.mib))
