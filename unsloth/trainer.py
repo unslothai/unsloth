@@ -549,13 +549,11 @@ def _packed_rows_verdict(model, model_config):
     config = getattr(target, "config", None)
     text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
     vocab = getattr(text_config, "vocab_size", None)
-    # Nothing to run a packed row through: left to the other gates.
     if next(target.parameters(), None) is None or not isinstance(vocab, int) or vocab < 20:
         return None
     from .models.rl import _packing_honored, _text_prepended_position_ids
 
-    # Remote code is probed whole (its head may drop position_ids); transformers models at the
-    # backbone, since a compiled head may return no logits.
+    # Remote code probed whole (its head may drop position_ids); others at the backbone (compiled heads may return no logits).
     probe = target
     if not unknown:
         probe = getattr(target, "model", None)
