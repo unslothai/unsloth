@@ -4252,30 +4252,43 @@ export function ModelConfigPage({
     >
       {variant === "page" && showHeader && (
         // -ml-2.75: the button's 6px inset plus the glyph's ~5px, so the stroke aligns with the rows.
-        <div data-config-header="" className="flex items-center gap-2.5 pb-5">
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="nav-icon-btn -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-              aria-label="Back to model list"
-            >
-              <HugeiconsIcon
-                icon={ChevronLeftStandardIcon}
-                className="size-4"
-                strokeWidth={1.75}
-              />
-            </button>
-          )}
-          <div className="min-w-0 flex-1">
-            <div data-config-eyebrow="" className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
-              Run settings
-            </div>
-            <div data-config-title="" className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
+        // The eyebrow scrolls away and the Back + title row sticks (index.css), as the Library header.
+        // Siblings, not wrapped: a sticky row only sticks within its parent, here the whole page.
+        <>
+          <div
+            data-config-eyebrow=""
+            className={cn(
+              "text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground",
+              // Over the title: the 28px button, less its -ml-2.75, plus the gap.
+              onBack && "pl-6.75",
+            )}
+          >
+            Run settings
+          </div>
+          <div
+            data-config-header=""
+            data-config-header-row=""
+            className="mt-1.5 flex items-center gap-2.5 pb-5"
+          >
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="nav-icon-btn -my-1.5 -ml-2.75 shrink-0 text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                aria-label="Back to model list"
+              >
+                <HugeiconsIcon
+                  icon={ChevronLeftStandardIcon}
+                  className="size-4"
+                  strokeWidth={1.75}
+                />
+              </button>
+            )}
+            <div data-config-title="" className="min-w-0 flex-1 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {npuName ?? target.displayName}
             </div>
           </div>
-        </div>
+        </>
       )}
 
       <SharedRunConfigReview

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -85,4 +86,17 @@ test("skips measuring when the count or mobile rule already forces compact", () 
 test("leaves the row on the stage it returns, so the render agrees", () => {
   assert.equal(measure(WIDTHS, 500).attribute, "first");
   assert.equal(measure(WIDTHS, 640).attribute, null);
+});
+
+test("the row re-fits when the model chip after it changes width", () => {
+  // The chip's logo used to land on the first picker open and wrap the row for a frame,
+  // jumping the whole centred composer and greeting.
+  const hook = readFileSync(
+    new URL("../src/hooks/use-composer-pill-fit.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /sibling = row\.nextElementSibling;[\s\S]*resize\.observe\(sibling\);/,
+  );
 });
