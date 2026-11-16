@@ -76,11 +76,18 @@ def test_colab_detected_from_any_colab_variable(disk_utils, monkeypatch):
     assert disk_utils.is_colab_environment() is True
 
 
-def test_free_bytes_walks_up_to_an_existing_parent(disk_utils, tmp_path):
+def test_free_bytes_walks_up_to_an_existing_parent(disk_utils, monkeypatch, tmp_path):
+    import shutil
+
+    # Assert the probed path, not two free-space readings: other writers move them on a shared disk.
+    probed = []
+    real_disk_usage = shutil.disk_usage
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda path: probed.append(path) or real_disk_usage(path)
+    )
     missing = tmp_path / "not" / "created" / "yet"
-    assert not missing.exists()
-    assert disk_utils.free_bytes(missing) == disk_utils.free_bytes(tmp_path)
-    assert disk_utils.free_bytes(tmp_path) > 0
+    assert disk_utils.free_bytes(missing) > 0
+    assert probed == [str(tmp_path)]
 
 
 def test_free_bytes_returns_none_when_disk_usage_fails(disk_utils, monkeypatch, tmp_path):
