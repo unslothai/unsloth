@@ -74,6 +74,7 @@ from .diffusion_families import (
     require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
+    load_lora_signature,
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
@@ -14965,6 +14966,8 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # load_lora_signature() of the status an omitted loras was resolved from; a reload with other adapters refuses
+        expected_load_loras: Optional[tuple] = None,
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
@@ -15008,6 +15011,10 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    if expected_load_loras is not None and tuple(
+                        expected_load_loras
+                    ) != load_lora_signature(_load_lora_specs(state.pipe)):
+                        raise DiffusionModelReplacedError(expected_load or loaded_id, loaded_id)
                     require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)

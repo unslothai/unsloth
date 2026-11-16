@@ -3448,6 +3448,7 @@ from models.inference import (
     validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
+    LoraSpec,
     MediaUnloadOutcome,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
@@ -50637,6 +50638,22 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _expected_load_loras_kwarg(generate: Any, signature: Optional[tuple]) -> dict:
+    """``expected_load_loras`` for an engine whose generate() takes it (the diffusers backend), else nothing."""
+    if signature is None:
+        return {}
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+        if "expected_load_loras" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            return {"expected_load_loras": signature}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
     try:
@@ -51318,6 +51335,7 @@ async def _generate_diffusion_image_run(
         DIFFUSION_NOT_LOADED_MSG,
         DiffusionModelReplacedError,
         load_identity,
+        load_lora_signature,
     )
 
     from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
@@ -51369,6 +51387,7 @@ async def _generate_diffusion_image_run(
         request = submitted
         status = None
         expected_load = None
+        expected_load_loras = None
         if account_access.managed_account():
             status = backend.status()
             await asyncio.to_thread(
@@ -51395,6 +51414,29 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if request.loras is None:
+            # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
+            if status is None:
+                status = await asyncio.to_thread(backend.status)
+            loaded = bool(status.get("loaded"))
+            pairs = _load_lora_defaults(status) if loaded else []
+            # The pin above is repo / base / family only: a same-model reload with other adapters must retry too.
+            expected_load_loras = (
+                load_lora_signature(status.get("load_lora_specs")) if loaded else ()
+            )
+            if pairs:
+                request = request.model_copy(
+                    update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
+                )
+            if expected_load is None:
+                # Pinned even when it resolved to none: a load swapped in before the slot retries with its own set.
+                expected_load = (
+                    load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+                    if loaded
+                    else load_identity(None, None, None)
+                )
         if txt2img_size_omitted:
             if status is None:
                 status = probe.pop("status", None) if attempt == 0 else None
@@ -51429,6 +51471,7 @@ async def _generate_diffusion_image_run(
                 result = await _image_generate_in_thread(
                     backend.generate,
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
@@ -53604,8 +53647,17 @@ def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tupl
     """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
     if body.loras is not None:
         return [(spec.id, float(spec.weight)) for spec in body.loras]
+    return _load_lora_defaults(status)
+
+
+def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
+    """Adapters an omitted ``loras`` stands for: baked set, else the load's named set (none once compiled
+    adapter-free). The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
     pairs = []
-    for spec in status.get("baked_lora_specs") or status.get("load_lora_specs") or ():
+    specs = status.get("baked_lora_specs") or (
+        status.get("load_lora_specs") if status.get("supports_lora", True) else None
+    )
+    for spec in specs or ():
         try:
             lora_id, weight = str(spec["id"]), float(spec["weight"])
         except Exception:  # noqa: BLE001 - a malformed status row names no adapter
