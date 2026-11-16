@@ -701,6 +701,9 @@ def _install(
                 forced,
                 env_force,
             )
+            if id(m) in cuda_only and found.get("impl") != "cuda":
+                # the verdict ran on Triton (the untried CUDA kernel failed in the check): not the measured path
+                found, minimum = {**found, "ok": False, "error": "CUDA kernel only"}, None
             report[(card, int(m.heads), head_dim, name)] = found
             if minimum is not None:
                 floors[card] = minimum

@@ -1825,7 +1825,11 @@ def install_auto(
                 "impl": implementation(_device_index(dev), head_dim),
                 "error": "CUDA kernel only",
             }, None
-        return dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
+        found, minimum = dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
+        # an untried CUDA kernel reads "cuda" above; one that failed in the check falls back to Triton in the verdict
+        if cuda_only and found.get("impl") != "cuda":
+            return {**found, "ok": False, "error": "CUDA kernel only"}, None
+        return found, minimum
 
     engaged = install_int8_attention(
         transformer, device = device, dtype = dtype, logger = logger, floor = floor

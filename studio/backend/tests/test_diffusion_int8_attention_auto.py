@@ -377,3 +377,69 @@ def test_a_won_race_keeps_only_the_engaged_strided_processors(card, monkeypatch)
     blocks = list(pipe.transformer.blocks)
     assert all(m.processor._unsloth_int8 for m in blocks[:3])
     assert blocks[3].processor is stocks[3]
+
+
+def test_an_untried_cuda_kernel_that_falls_back_to_triton_keeps_the_incumbent(card, monkeypatch):
+    """The card reads "cuda" before its kernel was tried; the check then fails on CUDA (no NVRTC, a failed compile)
+    and the verdict that wins ran on Triton. FLUX.3 (CUDA only) does not engage and every module keeps its own
+    processor; a forced install still routes."""
+    monkeypatch.setattr(
+        I, "implementation", lambda index, head_dim: "cuda" if head_dim in (64, 128) else None
+    )
+    card.found = {"ok": True, "min_tokens": 0, "impl": "triton"}
+    pipe, stocks = _swapping_pipe(card, monkeypatch)
+    assert I.install_auto(pipe, _TARGET) == 0
+    assert card.seen
+    assert all(m.processor is s for m, s in zip(pipe.transformer.blocks, stocks))
+    forced = _pipe()
+    assert (
+        I.install_int8_attention(
+            forced.transformer, device = "cuda", dtype = torch.bfloat16, force = True
+        )
+        == 3
+    )
+
+
+def test_dispatch_route_refuses_a_triton_verdict_for_cuda_only_families(monkeypatch):
+    """Dispatch route, same case: the card reads "cuda" but the winning verdict ran on Triton. Z-Image is not routed,
+    Wan is, and a request by name still routes Z-Image."""
+    from core.inference import rocm_bf16
+
+    monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
+    monkeypatch.setattr(I, "int8_attention_op", lambda: None)
+    monkeypatch.setattr(I, "implementation", lambda index, head_dim: "cuda")
+    monkeypatch.setattr(I, "register_route", lambda *a, **k: None)
+    monkeypatch.setattr(D, "_secondary_cards", lambda *a, **k: ())
+    monkeypatch.setattr(D, "install_dispatch_route", lambda: 1)
+    monkeypatch.setattr(D, "original_dispatch", lambda: (lambda *a, **k: None))
+    monkeypatch.setattr(D, "_card_floor", lambda *a, **k: ({"ok": True, "impl": "triton"}, 1024))
+
+    class Proc:
+        _attention_backend = None
+        _parallel_config = None
+
+        def __call__(self, *a, **k):
+            return dispatch_attention_fn  # noqa: F821 - only its name is read
+
+    def dit(name):
+        d = type(name, (torch.nn.Module,), {})()
+        m = torch.nn.Module()
+        m.heads = 2
+        m.head_dim = 64
+        m.processor = Proc()
+        d.attn = m
+        return d
+
+    monkeypatch.setattr(D, "_dits", lambda p: [p.transformer])
+    for name, request, routed in (
+        ("ZImageTransformer2DModel", None, 0),
+        ("WanTransformer3DModel", None, 1),
+        ("ZImageTransformer2DModel", I.BACKEND, 1),
+    ):
+        pipe = types.SimpleNamespace(transformer = dit(name))
+        assert D.install(pipe, _TARGET, requested = request) == routed, (name, request)
+        assert (pipe.transformer.attn.processor._attention_backend is None) == (not routed)
