@@ -5022,9 +5022,17 @@ export function ImagesPage({
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
@@ -5032,7 +5040,18 @@ export function ImagesPage({
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      loras,
+      pickGuard,
+      pickToast,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
   const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
   useEffect(() => {

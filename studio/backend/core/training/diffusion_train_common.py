@@ -65,6 +65,7 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
         "flux.2-klein",
@@ -80,11 +81,15 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
 TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGISTRY if f.trainable)
 
 # flow_shift defaults to auto to reproduce inference sigmas; dynamic-shift schedulers and MiniMax-H3 otherwise train unshifted.
-AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2", "minimax-h3"})
+AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
+    {"qwen-image", "qwen-image-2.1", "ltx-2", "minimax-h3"}
+)
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
+# Image families whose latent grid is coarser than the generic multiple-of-8 check.
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -412,6 +417,13 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    "qwen-image-2.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
@@ -477,6 +489,13 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "The heaviest option.",
     },
+    # The Qwen3-VL-8B encoder (17.5 GB bf16) runs once to cache the captions and is freed before the DiT loads.
+    "qwen-image-2.1": {
+        "params": "7B",
+        "qlora_vram_gb": 20,
+        "gated": False,
+        "note": "Trains on Qwen-Image-2.1, runs on 2.1 or Turbo.",
+    },
     "z-image": {"params": "6B", "qlora_vram_gb": 12, "gated": False, "note": ""},
     "krea-2": {
         "params": "12B",
@@ -537,6 +556,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
     {
         "flux.1",
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
         "flux.2-klein",
@@ -976,7 +996,11 @@ def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[s
 
 def family_train_infos() -> list[dict[str, Any]]:
     """Lists both registries; drops a family whose pipeline class is missing, since start refuses it."""
-    from core.inference.diffusion_families import family_pipeline_available, mirror_repo
+    from core.inference.diffusion_families import (
+        family_pipeline_available,
+        mirror_hosts_artifacts,
+        mirror_repo,
+    )
     from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
@@ -1023,7 +1047,11 @@ def family_train_infos() -> list[dict[str, Any]]:
             # Mirror-id bases pair like vendor ids; return the inference mirror so Deploy stays ungated.
             training_mirror = mirror_repo(training_repo)
             if training_mirror:
-                deploy_bases[training_mirror] = mirror_repo(inference_repo) or inference_repo
+                inference_mirror = mirror_repo(inference_repo)
+                # An artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8) is a prequant repo, not a pipeline pick.
+                if inference_mirror and mirror_hosts_artifacts(inference_mirror):
+                    inference_mirror = None
+                deploy_bases[training_mirror] = inference_mirror or inference_repo
         infos.append(
             {
                 "name": name,
@@ -1164,6 +1192,13 @@ class DiffusionLoraConfig:
             raise ValueError(
                 f"'{resolved_family}' trains at a resolution that is a multiple of "
                 f"{_VIDEO_RESOLUTION_MULTIPLE} (its VAE compresses space by that factor); "
+                f"got {self.resolution}."
+            )
+        # Qwen-Image-2.1 latents are 16x and its image slots cover 2x2 latent tokens, so a canvas edge must be 32-aligned.
+        multiple = _IMAGE_RESOLUTION_MULTIPLE.get(resolved_family)
+        if multiple and self.resolution % multiple != 0:
+            raise ValueError(
+                f"'{resolved_family}' trains at a resolution that is a multiple of {multiple}; "
                 f"got {self.resolution}."
             )
         if self.mixed_precision not in ("bf16", "fp16", "no"):
