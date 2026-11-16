@@ -135,6 +135,7 @@ import {
   NPU_TAG_TEXT,
   type NpuModel,
   NpuSetupNotice,
+  npuDisplayName,
   npuDownloadLabel,
   npuSizeLabel,
   useNpuCatalog,
@@ -237,7 +238,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
-import { npuPickerRows } from "./npu-rows";
+import { npuOfferRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -2012,8 +2013,21 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    const npuRows = npuPickerRows(npuModels);
-    device.push(...npuRows.device);
+    for (const model of npuModels ?? []) {
+      if (!model.downloaded) {
+        continue;
+      }
+      device.push({
+        key: `npu:${model.id}`,
+        id: model.model_path,
+        label: npuDisplayName(model),
+        tab: DEVICE_TAB,
+        kind: "npu",
+        section: "npu",
+        npu: model,
+        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
+      });
+    }
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2100,7 +2114,7 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    return [...marked, ...npuRows.offers, ...hub, ...external];
+    return [...marked, ...npuOfferRows(npuModels), ...hub, ...external];
   }, [
     inventory.cachedGguf,
     inventory.cachedModels,

@@ -28,7 +28,7 @@ const loadRows = () =>
       "@/features/npu": { npuDisplayName: displayName.npuDisplayName, npuRowsFor: api.npuRowsFor },
       "./picker-model": pickerModel,
     },
-  ).npuPickerRows;
+  ).npuOfferRows;
 
 const model = (id: string, checkpoint: string, hf_repo: string, downloaded = false) =>
   ({
@@ -55,9 +55,9 @@ const catalog = [
   model("qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b", "FastFlowLM/Qwen3.8-27B-NPU2"),
 ];
 
-test("the composer picker's NPU rows carry the Hub's names and popular order", () => {
-  const npuPickerRows = loadRows();
-  const { device, offers } = npuPickerRows(catalog);
+test("Discover's NPU rows carry the Hub's names in the popular order", () => {
+  const npuOfferRows = loadRows();
+  const offers = npuOfferRows(catalog);
   assert.deepEqual(
     offers.map((row) => row.label),
     ["Qwen3.6-35B-A3B-NPU2", "Qwen3.8-27B-NPU2", "LFM3-1.7B-NPU2", "D3-Edge-NPU2"],
@@ -72,15 +72,12 @@ test("the composer picker's NPU rows carry the Hub's names and popular order", (
       "npu",
     ]),
   );
-  assert.deepEqual(
-    device.map((row) => [row.key, row.label, row.tab, row.sizeBytes]),
-    [["npu:qwen3-0.6b-FLM", "Qwen3-0.6B-NPU2", pickerModel.DEVICE_TAB, 1.5e9]],
-  );
-  assert.deepEqual(npuPickerRows(null), { device: [], offers: [] });
+  assert.deepEqual(npuOfferRows(null), []);
 });
 
-test("the composer picker builds its NPU rows through the shared helper, not by model id", () => {
+test("the composer picker names NPU rows like the Hub, on device and in Discover", () => {
   const src = readSrc("components/assistant-ui/composer-model-picker/composer-model-picker.tsx");
-  assert.match(src, /npuPickerRows\(npuModels\)/);
+  assert.match(src, /npuOfferRows\(npuModels\)/);
+  assert.match(src, /key: `npu:\$\{model\.id\}`,\s+id: model\.model_path,\s+label: npuDisplayName\(model\),/);
   assert.doesNotMatch(src, /label: model\.id/);
 });
