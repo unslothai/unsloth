@@ -17,7 +17,7 @@ useBrowserStore.subscribe(({ tabs }) => {
   for (const tab of tabs) if (tab.loading) queueMicrotask(() => useBrowserStore.getState().updateTab(tab.id, { loading: false }));
 });
 
-async function evaluate(url: string, id: string) {
+async function evaluate(url: string, id: string, always = false) {
   const posted: { result: { ok: boolean; text?: string; error?: string } }[] = [];
   globals.__authFetch = async (_url: string, init: { body: string }) => {
     posted.push(JSON.parse(init.body));
@@ -39,9 +39,9 @@ async function evaluate(url: string, id: string) {
     if (done) break;
     question = agentChat(CHAT).question;
   }
-  if (question) answerQuestion(question.id, false);
+  if (question) answerQuestion(question.id, always, always);
   await pending;
-  return { asked: question?.ask ?? null, ran: sent.includes("evaluate"), result: posted.at(-1)?.result };
+  return { asked: question?.ask ?? null, offered: question?.always ?? null, ran: sent.includes("evaluate"), result: posted.at(-1)?.result };
 }
 
 test("Run scripts Always allow runs the script without asking", async () => {
@@ -67,6 +67,34 @@ test("a site's Scripts rule skips the prompt only on that site", async () => {
     assert.ok(!other.ran);
   } finally {
     useBrowserAgentStore.getState().setSiteRule("dash.example", null);
+    useBrowserAgentStore.getState().setSiteRule("other.example", null);
+  }
+});
+
+test("Always allow on a script prompt saves that site's Scripts rule, so its next script runs without asking", async () => {
+  const { DEFAULT_RULE } = await import("../src/features/browser/agent/permissions.ts");
+  useBrowserAgentStore.setState({ scriptAccess: "ask" });
+  useBrowserAgentStore.getState().setSiteRule("shop.example", { ...DEFAULT_RULE, browsing: "allow", downloads: "block" });
+  useBrowserAgentStore.getState().setSiteRule("other.example", { ...DEFAULT_RULE, browsing: "allow" });
+  try {
+    const first = await evaluate("https://www.shop.example/a", "b1", true);
+    assert.equal(first.asked, "script");
+    assert.equal(first.offered, true);
+    assert.ok(first.ran);
+    assert.deepEqual(useBrowserAgentStore.getState().permissions.sites["shop.example"], {
+      ...DEFAULT_RULE,
+      browsing: "allow",
+      downloads: "block",
+      scripts: "allow",
+    });
+    const again = await evaluate("https://shop.example/b", "b2");
+    assert.equal(again.asked, null);
+    assert.ok(again.ran);
+    const other = await evaluate("https://other.example/", "b3");
+    assert.equal(other.asked, "script");
+    assert.ok(!other.ran);
+  } finally {
+    useBrowserAgentStore.getState().setSiteRule("shop.example", null);
     useBrowserAgentStore.getState().setSiteRule("other.example", null);
   }
 });

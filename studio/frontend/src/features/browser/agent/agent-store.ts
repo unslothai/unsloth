@@ -17,7 +17,7 @@ import {
   ruleFor,
 } from "./permissions";
 
-/** `always`: the bar offers Always allow, as the answer can be kept for this chat. */
+/** `always`: the bar offers Always allow: kept for this chat, or for a script as its site's Scripts rule. */
 export type AgentPrompt = Question & { id: number; always: boolean };
 /** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
 export type Answer = false | "once" | "always";

@@ -81,6 +81,18 @@ export function scriptRunsWithoutAsking(access: ScriptAccess, url: string, permi
   return Boolean(hostOf(url)) && ruleFor(url, permissions).rule.scripts === "allow";
 }
 
+/** What Always allow on a script prompt saves: a rule for the page's own host, keeping what applies there
+ *  now and opening it like a site added in Settings. Null when the page has no host or the list is full. */
+export function scriptSiteRule(url: string, permissions: AgentPermissions): { site: string; rule: SiteRule } | null {
+  const site = normalizeSitePattern(url);
+  if (!site || !hostOf(url)) return null;
+  const saved = permissions.sites[site];
+  if (saved) return { site, rule: { ...saved, scripts: "allow" } };
+  if (Object.keys(permissions.sites).length >= MAX_SITE_RULES) return null;
+  const { rule } = ruleFor(url, permissions);
+  return { site, rule: { ...rule, browsing: rule.browsing === "block" ? "block" : "allow", scripts: "allow" } };
+}
+
 const BROWSING = new Set(["allow", "ask", "block"]);
 const ACTIONS = new Set(["ask", "allow"]);
 const DOWNLOADS = new Set(["ask", "allow", "block"]);
