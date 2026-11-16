@@ -73,6 +73,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "ltx-2",
         "wan2.2-ti2v-5b",
         "minimax-h3",
+        "minimax-h3-image",
     }
 )
 
@@ -396,6 +397,10 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "minimax-h3":
         from core.training.diffusion_h3_trainer import run_h3_lora_training
         return run_h3_lora_training
+    # MiniMax-H3-Image: native layout, per-step distilled heads, AdaLN table (diffusion_h3_image_trainer).
+    if key == "minimax-h3-image":
+        from core.training.diffusion_h3_image_trainer import run_h3_image_lora_training
+        return run_h3_image_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
 
 
@@ -468,6 +473,17 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },
+    # resolution is the canvas AREA as a side; rotary grid is canvas-normalised, so a 1 MP adapter carries to 4 MP.
+    # lr 5e-5 x 150 steps won a G4 sweep (lowest drift on unrelated prompts).
+    "minimax-h3-image": {
+        "lora_rank": 32,
+        "learning_rate": 5e-5,
+        "resolution": 1024,
+        "train_steps": 150,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+        "train_batch_size": 1,
+    },
 }
 
 
@@ -527,6 +543,13 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
     },
+    # Peaks (rank 32, ~1 MP): bf16 45.5 GB, int8 24.3 GB.
+    "minimax-h3-image": {
+        "params": "33B",
+        "qlora_vram_gb": 32,
+        "gated": False,
+        "note": "bf16 base on 80 GB cards, int8 below; the LoRA is merged in when the model loads.",
+    },
 }
 # Keys are canonical upstream ids; family_train_infos adds mirror aliases the client overlays.
 _BASE_TRAIN_SPECS: dict[str, dict[str, Any]] = {
@@ -566,7 +589,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
     }
 )
 # Kept separate so the DiT-specific levers (compile, the shared sigma table) do not follow.
-_FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3"}
+_FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3", "minimax-h3-image"}
 
 
 def effective_mixed_precision(cfg: Any) -> str:
@@ -1572,11 +1595,12 @@ def discover_image_caption_pairs(
 
 
 # Shared config has save_steps/resume_from_checkpoint; loops without them must raise, not ignore.
-CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
-UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
+# MiniMax-H3-Image trains each picture on its own canvas (batch 1), so there is nothing to bucket.
+UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
 
 # Batch is pure replication: layout, rotary grid and timesteps come from one clip and its caption.
-SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
 
 # Families loaded via ModularPipeline (modular_model_index.json, no model_index.json); the trainer and start route must share this set.
 MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
@@ -1586,8 +1610,12 @@ _H3_CANVAS_MULTIPLE = 32
 
 
 def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
-    """Returns the reason this config cannot train MiniMax-H3, else None; never raises. Config-only, so the route can check before freeing residents."""
-    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
+    """Returns the reason this config cannot train MiniMax-H3 (video or image), else None; never raises. Config-only,
+    so the route can check before freeing residents."""
+    family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family == "minimax-h3-image":
+        return h3_image_train_unsupported_reason(cfg)
+    if family != "minimax-h3":
         return None
     if cfg.mixed_precision != "bf16":
         return (
@@ -1630,6 +1658,48 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
+def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
+    """The MiniMax-H3-Image refusals: the loop's fixed bf16 compute, the 32 px canvas grid, no unconditional branch,
+    one packed sequence per step, no conditioning cache, and only the bf16 / int8 bases."""
+    if cfg.mixed_precision != "bf16":
+        return (
+            "MiniMax-H3-Image LoRA training requires bf16: the checkpoint keeps its patch projection and output heads "
+            "in fp32 and the block stack in bf16. Set mixed precision to bf16."
+        )
+    if cfg.resolution % _H3_CANVAS_MULTIPLE:
+        return (
+            f"MiniMax-H3-Image trains on canvases whose edges are multiples of {_H3_CANVAS_MULTIPLE} (a 16x VAE and "
+            f"a 2x patch); got resolution {cfg.resolution}."
+        )
+    if float(getattr(cfg, "cfg_dropout", 0.0) or 0.0) > 0:
+        return (
+            "MiniMax-H3-Image is guidance-distilled: it has no unconditional branch and no negative prompt, so a "
+            "classifier-free-guidance dropout trains a path the sampler never takes. Set cfg_dropout to 0."
+        )
+    if str(getattr(cfg, "weighting_scheme", "none") or "none") != "none":
+        return (
+            "MiniMax-H3-Image trains on its 6 distilled sampler steps with equal weight; a timestep weighting "
+            "scheme does not apply. Use weighting_scheme='none'."
+        )
+    if cfg.train_batch_size != 1:
+        return (
+            "MiniMax-H3-Image trains at batch size 1: one forward covers one packed [text | image] sequence whose "
+            "length is set by the picture's canvas and its caption. Use gradient_accumulation_steps to raise the "
+            "effective batch."
+        )
+    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
+        return (
+            "MiniMax-H3-Image has no persistent conditioning cache yet: each run encodes its captions and latents "
+            "once in memory, so cond_cache_dir would be recorded and never read. Leave it unset."
+        )
+    if str(getattr(cfg, "base_precision", "") or "").strip().lower() in ("fp8", "mxfp8"):
+        return (
+            f"base_precision={cfg.base_precision!r} is not supported for MiniMax-H3-Image training: the frozen base "
+            "trains as bf16 or int8. Use 'bf16', 'int8' or 'auto'."
+        )
+    return None
+
+
 # Normalised, not refused: several are request defaults, refusing would 422 every untouched request.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
@@ -1651,6 +1721,19 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
     if family == "minimax-h3":
         return dict(_H3_FIXED_RECIPE)
+    if family == "minimax-h3-image":
+        # nf4 (the config default) has no H3-Image path, so it runs as auto.
+        out = {
+            "center_crop": True,
+            "random_flip": False,
+            "snr_gamma": None,
+            "cache_latents": True,
+            "cache_variants": 1,
+            "bucketing": False,
+        }
+        if str(getattr(cfg, "base_precision", "") or "nf4").strip().lower() == "nf4":
+            out["base_precision"] = "auto"
+        return out
     # Min-SNR is an SDXL (epsilon-prediction) weighting; the flow-matching loops never read it.
     if family and family != "sdxl":
         return {"snr_gamma": None}
@@ -1895,7 +1978,19 @@ def _refuse_ltx23_training_base(base_model: str) -> None:
     )
 
 
-def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) -> None:
+# Components a family's local base may omit because the trainer loads them from elsewhere (MiniMax-H3-Image conditions
+# on MiniMax-H3's Qwen3-VL, fetched as Studio's hosted int8 copy).
+_LOCAL_BASE_EXCLUDED_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "minimax-h3-image": ("text_encoder",)
+}
+
+
+def _assert_trusted_base_model(
+    base_model: str,
+    *,
+    allow_modular: bool = False,
+    family: Optional[str] = None,
+) -> None:
     """Checked before from_pretrained so untrusted repos (possible pickle weights) are never fetched; allow_modular takes a MiniMax-H3 modular dir."""
     from core.inference.diffusion import _assert_local_base_is_pipeline, _is_trusted_diffusion_repo
 
@@ -1911,7 +2006,13 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
     # An existing LOCAL base is loaded as a full pipeline, which needs an index; reject a non-pipeline local dir
     # before /diffusion/start frees the GPU models.
     try:
-        _assert_local_base_is_pipeline(base_model, allow_modular = allow_modular)
+        _assert_local_base_is_pipeline(
+            base_model,
+            allow_modular = allow_modular,
+            excluded_components = _LOCAL_BASE_EXCLUDED_COMPONENTS.get(
+                str(family or "").strip().lower(), ()
+            ),
+        )
     except ValueError as e:
         shape = _single_file_shape(base_model)
         if shape is None:

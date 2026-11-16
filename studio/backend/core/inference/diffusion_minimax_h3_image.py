@@ -3395,6 +3395,167 @@ def apply_checkpoint_inv_freq(model: Any, checkpoint: Any) -> str:
     return "checkpoint"
 
 
+# Key prefixes a LoRA file may carry before the diffusers module path (diffusers single file, PEFT, kohya-style).
+_LORA_PREFIXES = ("transformer.", "base_model.model.", "diffusion_model.", "model.diffusion_model.")
+_LORA_A_SUFFIXES = (".lora_A.weight", ".lora_A.default.weight", ".lora_down.weight")
+_LORA_B_SUFFIXES = (".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight")
+
+
+def _lora_metadata(path: str) -> dict:
+    """The adapter config a LoRA file carries: diffusers' ``lora_adapter_metadata`` (``transformer.`` keys stripped),
+    else a PEFT ``adapter_config.json`` beside it, else ``{}``."""
+    try:
+        from safetensors import safe_open
+        with safe_open(str(path), framework = "pt", device = "cpu") as f:
+            raw = (f.metadata() or {}).get("lora_adapter_metadata")
+        if raw:
+            meta = json.loads(raw)
+            return {
+                k.split(".", 1)[1] if k.startswith("transformer.") else k: v
+                for k, v in meta.items()
+            }
+    except Exception:  # noqa: BLE001 - unreadable metadata: alpha = r
+        pass
+    sidecar = Path(str(path)).with_name("adapter_config.json")
+    if sidecar.is_file():
+        try:
+            return dict(json.loads(sidecar.read_text()))
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _pattern_value(patterns: Any, module: str, default: Any) -> Any:
+    import re
+    for key, value in (patterns or {}).items():
+        if module == key or module.endswith("." + key) or re.fullmatch(key, module):
+            return value
+    return default
+
+
+def read_lora_deltas(loras: Sequence[tuple], into: Optional[dict] = None) -> dict:
+    """``{diffusers module path: [(A, B, scale * weight), ...]}`` for ``[(path, weight), ...]`` LoRA files in the
+    diffusers / PEFT layout (``<module>.lora_A.weight`` + ``lora_B``, or ``lora_down`` / ``lora_up`` + ``.alpha``).
+    The scale is ``lora_alpha / r`` from the file's adapter config (``/ sqrt(r)`` under rsLoRA), else ``alpha / r``
+    from an ``.alpha`` key, else 1 (alpha = r, as diffusers reads a file without either)."""
+    from safetensors.torch import load_file
+
+    out = into if into is not None else {}
+    for path, weight in loras:
+        if not float(weight):
+            continue
+        state = load_file(str(path))
+        meta = _lora_metadata(str(path))
+        parts: dict = {}
+        for key, tensor in state.items():
+            name = key
+            for prefix in _LORA_PREFIXES:
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            for slot, suffixes in (
+                ("a", _LORA_A_SUFFIXES),
+                ("b", _LORA_B_SUFFIXES),
+                ("alpha", (".alpha",)),
+            ):
+                hit = next((sfx for sfx in suffixes if name.endswith(sfx)), None)
+                if hit is not None:
+                    parts.setdefault(name[: -len(hit)], {})[slot] = tensor
+                    break
+        if not parts:
+            raise ValueError(f"{Path(str(path)).name} holds no LoRA weights this loader recognises")
+        for module, slots in parts.items():
+            if "a" not in slots or "b" not in slots:
+                raise ValueError(
+                    f"{Path(str(path)).name}: {module} has only one of its LoRA factors"
+                )
+            a, b = slots["a"].float(), slots["b"].float()
+            r = int(a.shape[0])
+            rank = int(_pattern_value(meta.get("rank_pattern"), module, meta.get("r", r)) or r)
+            if "alpha" in slots:
+                alpha = float(slots["alpha"].float().reshape(-1)[0])
+            else:
+                alpha = float(
+                    _pattern_value(meta.get("alpha_pattern"), module, meta.get("lora_alpha", rank))
+                    or rank
+                )
+            scale = alpha / (math.sqrt(rank) if meta.get("use_rslora") else rank)
+            out.setdefault(module, []).append((a, b, scale * float(weight)))
+    return out
+
+
+_NATIVE_LORA_PREFIXES = (
+    "blocks.",
+    "token_refiner.blocks.",
+    "final_layer.",
+    "video_patch_proj",
+    "condition_proj",
+)
+
+
+def native_lora_deltas(deltas: dict, heads: int, head_dim: int) -> dict:
+    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit LoRAs, ostris' training
+    adapter: ``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) moved onto the diffusers modules, as the checkpoint
+    converter moves the weights: a fused per-head-interleaved qkv B is reordered and split into ``to_q`` / ``to_k`` /
+    ``to_v`` sharing A, and fc1's ``[gate; value]`` B rows become ``ff.net.0.proj``'s ``[value; gate]``. Diffusers
+    names pass through unchanged."""
+    import torch
+
+    out: dict = {}
+    for module, terms in deltas.items():
+        if not module.startswith(_NATIVE_LORA_PREFIXES):
+            out.setdefault(module, []).extend(terms)
+            continue
+        if module.endswith(".attn.qkv_proj"):
+            prefix = native_transformer_key(module + ".weight")[: -len("qkv_proj.weight")]
+            for a, b, scale in terms:
+                q, k, v = reorder_interleaved_qkv(b, heads, head_dim).split(heads * head_dim, dim = 0)
+                for leaf, part in (("to_q", q), ("to_k", k), ("to_v", v)):
+                    out.setdefault(prefix + leaf, []).append((a, part.contiguous(), scale))
+            continue
+        name = native_transformer_key(module + ".weight")
+        if name is None:
+            raise ValueError(f"LoRA layer {module} names a weight the image DiT does not have")
+        target = name[: -len(".weight")]
+        if module.endswith(".mlp.fc1"):
+            target = target.replace(".mlp.fc1", ".ff.net.0.proj")
+            terms = [(a, torch.cat(b.chunk(2, dim = 0)[::-1]).contiguous(), sc) for a, b, sc in terms]
+        out.setdefault(target, []).extend(terms)
+    return out
+
+
+def merge_lora_deltas_(
+    state: dict,
+    deltas: dict,
+    *,
+    device: Any = None,
+) -> set:
+    """Add ``scale * B @ A`` (float32, on ``device``) to every ``<module>.weight`` of ``state`` a delta names, cast back
+    to the weight's dtype; returns the merged module paths. Runs on the dense weights before any quantization."""
+    import torch
+
+    merged = set()
+    for key in list(state):
+        if not key.endswith(".weight"):
+            continue
+        module = key[: -len(".weight")]
+        terms = deltas.get(module)
+        if not terms:
+            continue
+        weight = state[key]
+        dev = torch.device(device) if device is not None else weight.device
+        w = weight.to(dev, torch.float32)
+        for a, b, scale in terms:
+            if tuple(b.shape[:1]) + tuple(a.shape[1:]) != tuple(w.shape):
+                raise ValueError(
+                    f"LoRA for {module} is {tuple(b.shape[:1]) + tuple(a.shape[1:])}, the layer is {tuple(w.shape)}"
+                )
+            w.addmm_(b.to(dev, torch.float32), a.to(dev, torch.float32), alpha = float(scale))
+        state[key] = w.to(weight.dtype).to(weight.device)
+        merged.add(module)
+    return merged
+
+
 def load_h3_image_transformer(
     root: Path,
     *,
@@ -3404,14 +3565,22 @@ def load_h3_image_transformer(
     keep_on_device: bool,
     table: bool = True,
     check_cancelled: Optional[Callable[[], None]] = None,
+    lora_deltas: Optional[dict] = None,
 ) -> tuple[Any, dict]:
     """The DiT from the native ``transformer/`` + ``pdd_fused_heads.safetensors`` (or a converted
-    ``transformer_diffusers/``), one block at a time: convert, table the AdaLN, quantize on ``device``, then park on
-    the host unless ``keep_on_device``. Host peak = the finished blocks + one dense block."""
+    ``transformer_diffusers/``), one block at a time: convert, merge any LoRA (``lora_deltas``, from
+    ``read_lora_deltas``) into the dense weights, table the AdaLN, quantize on ``device``, then park on the host unless
+    ``keep_on_device``. Host peak = the finished blocks + one dense block."""
     import torch
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
+    merged_loras: set = set()
+
+    def merge(state: dict) -> None:
+        if lora_deltas:
+            merged_loras.update(merge_lora_deltas_(state, lora_deltas, device = device))
+
     native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
@@ -3423,6 +3592,8 @@ def load_h3_image_transformer(
     else:
         config = {k: v for k, v in raw_config.items() if not k.startswith("_")}
     heads, head_dim = int(config["num_attention_heads"]), int(config["attention_head_dim"])
+    if lora_deltas:
+        lora_deltas = native_lora_deltas(lora_deltas, heads, head_dim)
     grid = table_timesteps() if table else None
     curve = adaln_curve_plan(grid) if grid is not None else None
     model = build_transformer_skeleton(config, table_grid = None)
@@ -3443,6 +3614,7 @@ def load_h3_image_transformer(
             )
             for name, t in pairs:
                 out[name] = _cast(t, name, dtype)
+        merge(out)
         return out
 
     try:
@@ -3471,6 +3643,7 @@ def load_h3_image_transformer(
                 pdd = {k: f.get_tensor(k) for k in f.keys()}
             for name, t in split_pdd_heads(pdd, int(config["num_pdd_heads"])).items():
                 top[name] = t.to(torch.float32)
+        merge(top)
         blocks = model.transformer_blocks
         model.transformer_blocks = torch.nn.ModuleList()
         _assign(model, top, where = "transformer (top level)")
@@ -3515,6 +3688,13 @@ def load_h3_image_transformer(
                 if name != "transformer_blocks":
                     child.to(target if keep_on_device else "cpu")
         stats["bytes_read"] = reader.bytes_read
+        if lora_deltas:
+            missing = sorted(set(lora_deltas) - merged_loras)
+            if missing:
+                raise ValueError(
+                    f"LoRA layers name no Linear of this MiniMax-H3-Image transformer: {missing[:5]}"
+                )
+            stats["lora_merged_layers"] = len(merged_loras)
     finally:
         reader.close()
     return model, stats
@@ -4182,8 +4362,13 @@ def load_minimax_h3_image_pipeline(
     transformer: Any = None,
     plan_width: int = 2048,
     plan_height: int = 2048,
+    loras: Sequence[tuple] = (),
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
+
+    ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
+    placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
+    pre-quantized files are already quantized) and a different selection is a reload.
 
     ``transformer_quant``: None/"auto" (int8, then fp8, then bf16), "int8", "fp8", "bf16". ``text_encoder_quant``:
     "int8" (Studio's hosted ConvRot conditioner) or None (bf16). ``text_encoder`` / ``transformer`` hand in prebuilt
@@ -4251,7 +4436,18 @@ def load_minimax_h3_image_pipeline(
         "; ".join(plan.reasons),
     )
     stats: dict = {"layout": "supplied", "quantized_linears": 0, "bytes_read": 0}
-    if transformer is None and scheme in QUANT_SCHEMES and not os.path.isdir(str(repo_id)):
+    # Any selection (a weight-0 one included) loads the release DiT, so weights 0 and 1 run the same base weights.
+    lora_deltas = read_lora_deltas(list(loras)) if loras else None
+    if loras and transformer is not None:
+        raise ValueError(
+            "MiniMax-H3-Image merges LoRAs while it loads the DiT; a supplied transformer cannot take them"
+        )
+    if (
+        transformer is None
+        and scheme in QUANT_SCHEMES
+        and not os.path.isdir(str(repo_id))
+        and not loras
+    ):
         transformer = load_hosted_prequant_transformer(
             scheme,
             base = repo_id,
@@ -4287,6 +4483,7 @@ def load_minimax_h3_image_pipeline(
             keep_on_device = plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT),
             table = table,
             check_cancelled = check,
+            lora_deltas = lora_deltas,
         )
     check()
     if dtype is torch.float16:
@@ -4456,6 +4653,7 @@ def load_minimax_h3_image_pipeline(
         speed_levers = speed_levers,
     )
     pipe._unsloth_h3_report = report
+    pipe._unsloth_h3_lora_layers = int(stats.get("lora_merged_layers", 0))
     try:
         transformer._unsloth_runtime_quant = scheme
     except Exception:  # noqa: BLE001 - marker only
