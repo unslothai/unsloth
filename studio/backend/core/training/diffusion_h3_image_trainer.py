@@ -3,26 +3,10 @@
 
 """LoRA training for MiniMax-H3-Image (33B DiT, Qwen3-VL-32B conditioner).
 
-Its own loop, like the MiniMax-H3 video trainer, sharing ``diffusion_train_common`` (config, events, stop, trust gate,
-publishing, EMA, the 8-bit optimizer), because the model fits none of ``diffusion_dit_trainer``'s ``_FamilySpec``
-seams:
-1. **Native layout, modular-only.** The release ships MiniMax's own key layout and no diffusers pipeline, so the DiT,
-   VAE and conditioner come from Studio's inference loaders (``diffusion_minimax_h3_image``), which convert the shards
-   while streaming them. Training and inference therefore run the same converted module.
-2. **Distilled per-step heads.** The checkpoint is distilled to 6 sampler steps with one output head per step
-   (``pdd_proj_out.{0..5}``), and every AdaLN projection is collapsed at load into a lookup table over the timesteps
-   the sampler visits. The objective draws one of the 6 sampler sigmas per step and runs that step's own frozen head:
-   the AdaLN table stays exact (its rows ARE those timesteps), and the adapter is never asked to fit timesteps a
-   distilled model never runs.
-3. **Velocity form.** The head predicts a DATA-ward velocity (``x0 = x_t + sigma * v``), so the target is
-   ``latents - noise`` on ``x_t = (1 - sigma) * latents + sigma * noise``, the reference's rectified flow.
-
-The adapter covers the trunk's attention and MLP Linears only (``transformer_blocks.N.attn.to_{q,k,v,out.0}``,
-``ff.net.{0.proj,2}``): the AdaLN tables, the text refiner and the per-step heads stay frozen.
-
-Memory: the Qwen3-VL-32B conditioner (Studio's hosted int8 copy, 27 GB) encodes every caption once and is freed
-before the VAE caches the latents and long before the DiT loads. The DiT trains in bf16 (40 GB with the AdaLN
-table) on a card with room for it, else as a torchao int8 weight-only base (about 21 GB).
+Own loop (shares ``diffusion_train_common``): the release ships a native key layout with no diffusers pipeline, so it
+reuses Studio's inference loaders. The checkpoint is distilled to 6 steps with one head per step and an AdaLN lookup
+table over exactly those timesteps, so training draws one of the 6 sampler sigmas and runs that step's frozen head.
+The head predicts a DATA-ward velocity (``x0 = x_t + sigma * v``): target ``latents - noise``.
 """
 
 from __future__ import annotations
@@ -69,8 +53,7 @@ from core.training.diffusion_train_extras import (
 
 H3_IMAGE_TRAIN_FAMILY = "minimax-h3-image"
 
-# The trunk only: the AdaLN tables carry no input rows to adapt, the per-step heads are the distillation, and the
-# text refiner runs once per caption. A REGEX: PEFT suffix-matches a list and would also adapt the token refiner.
+# A REGEX: PEFT suffix-matches a list and would also adapt the token refiner.
 H3_IMAGE_TARGET_LEAVES = (
     "attn.to_q",
     "attn.to_k",
@@ -85,24 +68,18 @@ H3_IMAGE_TARGETS = (
     + ")"
 )
 
-# Free device memory (GB) above which ``auto`` trains on the bf16 base: 40.3 GB of table-form DiT, the adapter and
-# its optimizer state, and the activations of a 2048 x 2048 step under gradient checkpointing.
+# Free GB above which ``auto`` trains on the bf16 base.
 H3_IMAGE_BF16_MIN_FREE_GB = 56.0
 
-# "grid" (default): one of the 6 distilled sampler sigmas per step, each with its own head. "continuous": sigma
-# uniform in (0, 1], read through the dt-weighted head bank; needs the dense AdaLN projections (UNSLOTH_H3_IMAGE_
-# ADALN_TABLE is ignored), so it costs the 13B AdaLN parameters on top. Diagnostic, not a UI option.
+# "grid" (default): the 6 distilled sigmas. "continuous" (diagnostic): needs the dense AdaLN projections (+13B params).
 SIGMA_MODE_ENV = "UNSLOTH_H3_IMAGE_TRAIN_SIGMAS"
 
 # The conditioner the run encodes with: "int8" (Studio's hosted ConvRot copy, default) or "bf16" (66.7 GB).
 TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
 
 
-# A de-distillation "training adapter" merged into the FROZEN base while training only (never saved, never loaded at
-# inference), as ai-toolkit trains this model. "auto" (default) = ostris' minimax_h3_image_training_adapter_v1, and no
-# adapter when it cannot be fetched; "ostris" = that file or fail; "off"; or a local .safetensors path. On an A100-80 /
-# G4 A/B (300 steps, 18 tarot images) the adapter arm kept clean line art and legible card titles where the plain arm
-# came out blotchy; both leak the style into untriggered prompts alike.
+# De-distillation adapter merged into the FROZEN base for training only (never saved or used at inference), as
+# ai-toolkit does. "auto" | "ostris" | "off" | path. A/B: without it, outputs came out blotchy.
 TRAINING_ADAPTER_ENV = "UNSLOTH_H3_IMAGE_TRAINING_ADAPTER"
 EVAL_ENV = "UNSLOTH_H3_IMAGE_TRAIN_EVAL"
 OSTRIS_ADAPTER = (
@@ -157,9 +134,7 @@ def resolve_h3_image_base_precision(
     free_gb: Optional[float],
     int8_ok: bool = True,
 ) -> str:
-    """bf16 or int8. ``auto`` (and the config default nf4, which this family normalises to auto) takes bf16 when the
-    card has room for it, else int8; ``int8_ok`` False (no functional torchao, ROCm) refuses rather than load a dense
-    base that does not fit."""
+    """bf16 or int8; ``auto`` (and nf4) picks by free memory."""
     mode = (requested or "auto").strip().lower()
     int8_missing = "MiniMax-H3-Image int8 training needs a CUDA GPU with a working torchao, which this machine does not have"
     if mode == "bf16":
@@ -339,8 +314,7 @@ def load_transformer(
     table: bool,
     lora_deltas: Optional[dict] = None,
 ):
-    """The converted DiT with the AdaLN table; bf16 straight onto the card, int8 parked on the host (quantized onto
-    the card after the adapter attaches)."""
+    """int8 stays on the host until quantized after the adapter attaches."""
     import torch
 
     from core.inference.diffusion_minimax_h3_image import (
@@ -464,7 +438,6 @@ def run_h3_image_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a MiniMax-H3-Image LoRA from a captioned image folder and export it."""
     cfg = config.normalized()
     if cfg.resolved_family != H3_IMAGE_TRAIN_FAMILY:
         raise ValueError(
@@ -580,7 +553,6 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
         )
         return str(out_dir)
 
-    # Phase 1: captions (and sample prompts) through the conditioner, which is then freed.
     root = _hub_root(cfg, h3i.H3_IMAGE_BASE_PATTERNS)
     encoder, tokenizer, processor = load_text_encoder(cfg, root)
     encoder.to(device)
@@ -750,8 +722,7 @@ def _train(cfg, pairs, rng, device, on_event, _check_stop, _save_on_stop):
             _emit(on_event, "warning", message = f"Sample images skipped: {exc}")
 
     def _target_error(tag: str) -> None:
-        """Diagnostic (UNSLOTH_H3_IMAGE_TRAIN_EVAL=1): per head, the mean over the dataset of the sampler's x0-estimate
-        error ||x_t + sigma * v - x0||^2 on fixed noise (the posterior mean as x0), before and after training."""
+        """Diagnostic (UNSLOTH_H3_IMAGE_TRAIN_EVAL=1): per-head x0-estimate error before and after training."""
         if (os.environ.get(EVAL_ENV) or "").strip() != "1":
             return
         gen = torch.Generator().manual_seed(1234)

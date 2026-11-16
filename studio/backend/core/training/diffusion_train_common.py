@@ -461,11 +461,8 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },
-    # resolution is the canvas AREA as a side (1024 -> about 1 MP at the picture's aspect); the distilled model renders
-    # 2048 x 2048 by default, and its rotary grid is normalised to the canvas, so a 1 MP adapter carries to 4 MP.
-    # lr 5e-5 x 150 steps: picked on G4 from lr {1e-4, 5e-5} x steps {150, 300} x LoRA weight {0.6, 0.8, 1.0} on 18 tarot
-    # images (training adapter on): keeps the subject, clean line work and the card title at weight 1.0, with the
-    # lowest drift on unrelated prompts at weight 1.0 (mean LPIPS 0.38 vs 0.44-0.48 for lr 1e-4).
+    # resolution is the canvas AREA as a side; rotary grid is canvas-normalised, so a 1 MP adapter carries to 4 MP.
+    # lr 5e-5 x 150 steps won a G4 sweep (lowest drift on unrelated prompts).
     "minimax-h3-image": {
         "lora_rank": 32,
         "learning_rate": 5e-5,
@@ -527,8 +524,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
     },
-    # Measured (rank 32, ~1 MP canvases): bf16 base peaks at 45.5 GB (0.94 step/s A100-80, 1.51 step/s G4), int8 base at 24.3 GB
-    # (0.81 step/s); the int8 Qwen3-VL-32B conditioner is freed before the DiT loads. auto takes bf16 from 56 GB free.
+    # Peaks (rank 32, ~1 MP): bf16 45.5 GB, int8 24.3 GB.
     "minimax-h3-image": {
         "params": "33B",
         "qlora_vram_gb": 32,
@@ -1691,8 +1687,7 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     if family == "minimax-h3":
         return dict(_H3_FIXED_RECIPE)
     if family == "minimax-h3-image":
-        # Pictures are cover-cropped onto their own canvas, unflipped; nf4 (the config default) has no H3-Image path,
-        # so it runs as auto (bf16 where it fits, else int8).
+        # nf4 (the config default) has no H3-Image path, so it runs as auto.
         out = {
             "center_crop": True,
             "random_flip": False,
