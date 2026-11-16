@@ -53,3 +53,22 @@ test("a page's own cookie write reaches the backend before the page's next load 
   assert.equal(calls.length, 2);
   assert.deepEqual(held(), [["token=/", "|abc"]]);
 });
+
+test("successive cookie writes reach the backend in the order the page made them", async () => {
+  const sent: string[] = [];
+  const pending: Array<() => void> = [];
+  (globalThis as { __authFetch?: unknown }).__authFetch = (_url: string, init: { body: string }) => {
+    sent.push(JSON.parse(init.body).value);
+    return new Promise((resolve, reject) => {
+      pending.push(() => (sent.length === 1 ? reject(new Error("offline")) : resolve(new Response(null, { status: 204 }))));
+    });
+  };
+  writePageStorage(SITE, "tab", "cookie", "step=/", "|1", {}, `${SITE}/`);
+  writePageStorage(SITE, "tab", "cookie", "step=/", null, {}, `${SITE}/`);
+  // The delete waits for the set, and a failed set doesn't hold it back.
+  assert.deepEqual(sent, ["|1"]);
+  pending.shift()?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(sent, ["|1", null]);
+  pending.shift()?.();
+});

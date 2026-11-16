@@ -172,7 +172,8 @@ def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
 
 def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> None:
     """A page's own ``document.cookie`` write, in the frame's form; ``stored`` None removes it.
-    Host-only, and never over an HttpOnly cookie, which no script can touch."""
+    Host-only, Secure when written over https (the frame's store is per scheme), and never over an
+    HttpOnly cookie, nor a Secure one from http (draft-ietf-httpbis-rfc6265bis 5.7)."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return
@@ -180,8 +181,13 @@ def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> 
     if request is None:
         return
     jar = _jar(subject)
+    host = http.cookiejar.eff_request_host(request)[1]
     for cookie in list(jar):
-        if cookie.name == name and cookie.path == path and _http_only(cookie):
+        if cookie.name != name or cookie.path != path:
+            continue
+        if cookie.secure and request.type != "https" and cookie.domain == host:
+            return
+        if _http_only(cookie):
             probe = _request(f"{request.type}://{request.host}{path}")
             if probe is not None and jar._policy.return_ok(cookie, probe):  # type: ignore[attr-defined]
                 return
@@ -192,6 +198,8 @@ def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> 
         if any(char in value for char in ";\r\n"):
             return
         header = f"{name}={value}; Path={path}"
+        if request.type == "https":
+            header += "; Secure"
         if deadline.isdigit():
             header += f"; Max-Age={max(0, int(deadline) // 1000 - int(time.time()))}"
     store_cookies(subject, url, [("Set-Cookie", header)])

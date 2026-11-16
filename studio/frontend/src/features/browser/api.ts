@@ -61,24 +61,28 @@ export type SiteCookies = Array<[string, string]>;
 
 // The backend holds each site's cookies and sends them with the page's requests. A page's own
 // document.cookie writes are sent there, and what the site set comes back to the frame's store.
-const cookieWrites = new Set<Promise<unknown>>();
+// One after another, so a later write to the same cookie can't land before an earlier one.
+let lastCookieWrite: Promise<unknown> | null = null;
 
 onPageStorageWrite(({ origin, area, key, value, from }) => {
   // Only a page's own write: the mirror below writes with no `from`.
   if (area !== "cookie" || key === null || !from) return;
-  const sent = authFetch("/api/browser/cookie", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ page: `${origin}/`, key, value }),
-  })
-    .catch(() => undefined)
-    .finally(() => cookieWrites.delete(sent));
-  cookieWrites.add(sent);
+  const send = () =>
+    authFetch("/api/browser/cookie", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page: `${origin}/`, key, value }),
+    }).catch(() => undefined);
+  const sent: Promise<unknown> = lastCookieWrite ? lastCookieWrite.then(send) : send();
+  lastCookieWrite = sent;
+  void sent.finally(() => {
+    if (lastCookieWrite === sent) lastCookieWrite = null;
+  });
 });
 
 /** A request sent before these land would miss a cookie the page just set. */
 async function cookieWritesSent(): Promise<void> {
-  if (cookieWrites.size > 0) await Promise.all(cookieWrites);
+  if (lastCookieWrite) await lastCookieWrite;
 }
 
 export function mirrorSiteCookies(url: string, cookies: SiteCookies | undefined): void {

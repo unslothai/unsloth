@@ -228,6 +228,18 @@ def test_the_page_sees_script_readable_cookies_and_its_own_writes_reach_the_site
     assert cookies.cookie_header("user", "https://www.example.com/") is None
 
 
+def test_a_script_cookie_set_over_https_stays_off_http():
+    cookies.set_page_cookie("user", "https://app.example.com/", "token=/", "|secret")
+    cookies.set_page_cookie("user", "http://app.example.com/", "theme=/", "|dark")
+    assert cookies.cookie_header("user", "https://app.example.com/") == "token=secret; theme=dark"
+    assert cookies.cookie_header("user", "http://app.example.com/") == "theme=dark"
+    assert cookies.page_cookies("user", "http://app.example.com/") == [("theme=/", "|dark")]
+    # An http page can neither replace nor delete it.
+    cookies.set_page_cookie("user", "http://app.example.com/", "token=/", "|forged")
+    cookies.set_page_cookie("user", "http://app.example.com/", "token=/", None)
+    assert ("token=/", "|secret") in cookies.page_cookies("user", "https://app.example.com/")
+
+
 def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):
     cookies.store_cookies("user", "https://app.example.com/", [("Set-Cookie", "sid=abc")])
     cookies.store_cookies("user", "https://cdn.example.net/", [("Set-Cookie", "other=1")])
