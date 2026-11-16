@@ -1050,6 +1050,8 @@ def refine_plan_for_multigpu(
         or plan.estimates.get("runtime_headroom_mib")
     )
     headroom = int(measured_headroom or flat_headroom or 0)
+    if measured_headroom:
+        headroom += int(plan.estimates.get("lora_activation_mib") or 0)
     if plan.estimates.get("measured_omits_references"):
         # A split has no resident groups to stream back, so a reference request needs the flat headroom.
         headroom = max(headroom, int(flat_headroom or 0))

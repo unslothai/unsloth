@@ -6,7 +6,8 @@
     UNSLOTH_PP_SIZE=2 torchrun --nproc-per-node 2 train.py
 
 - Trainer.__init__ splits the model (apply_pipeline_parallel over mesh["pp"]); the other stages' layers,
-  embedding and lm_head go to this rank's CPU memory instead of being dropped (PPConfig.keep_replica).
+  embedding and lm_head go to this rank's CPU memory instead of being dropped (PPConfig.keep_replica). A
+  checkpoint larger than the GPU loads only each rank's stages (pipeline_sharded_loading): no replica then.
 - Trainer / SFTTrainer: every training step runs through the pipeline schedule (PipelineParallel.step runs the
   backward, the Trainer does not). The Trainer batch is split into UNSLOTH_PP_MICROBATCHES micro-batches
   (default 2 x pp, lowered to a divisor of the batch); every micro-batch loss is its summed token loss over the
@@ -122,6 +123,10 @@ def pipeline_parallel_env_apply(model, layout):
         "no",
         "off",
     )
+    from .pp_load import _preload_info
+
+    if _preload_info(model)[1] is not None:
+        keep = False  # loaded per stage (larger than the GPU): there is no whole model to keep
     default = layout.microbatches or 2 * layout.pp
     text_only = None
     for level in _model_levels(model):
