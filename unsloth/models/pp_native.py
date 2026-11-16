@@ -62,7 +62,11 @@ _PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM")
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
 # Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
 # updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
-_PP_MOE_NO_AUX_FAMILIES = ("DeepseekV41ForCausalLM",)
+_PP_MOE_NO_AUX_FAMILIES = (
+    "DeepseekV41ForCausalLM",
+    "Gemma4ForCausalLM",
+    "Gemma4ForConditionalGeneration",
+)
 _PP_MOE_COMPOSED = (
     "Unsloth: pipeline parallelism carries the mixture-of-experts router auxiliary loss on a pp-only mesh; "
     "pp x dp / pp x tp over a mixture-of-experts model is not supported yet."
@@ -83,7 +87,23 @@ _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attent
 # "qwen_sparse_attention" up to 5.2x and "indexed_attention" after.
 _PP_HYBRID_FAMILIES = {
     "Qwen4ExpForCausalLM": {"linear_attention", "qwen_sparse_attention", "indexed_attention"},
+    "Qwen3_5ForCausalLM": {"linear_attention"},
+    "Qwen3_5ForConditionalGeneration": {"linear_attention"},
 }
+_MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
+# A text-only pipeline refuses these batch keys, never drops them.
+_MEDIA_INPUT_KEYS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "video_grid_thw",
+    "image_position_ids",
+    "video_position_ids",
+    "input_features",
+    "input_features_mask",
+    "audio_values",
+    "mm_encoder_outputs",
+)
 _STEP_KWARGS = ("attention_mask", "position_ids")
 _STAGE_IDS = "_unsloth_pp_input_ids"  # the batch's token ids, for stages after the first
 _MULTI_STAGE_DP = (
@@ -115,6 +135,8 @@ class PPConfig:
     keep_replica: bool = False
     # Frozen table rows kept for checkpoint recomputes; None = this stage's in-flight micro-batches (at least 2).
     frozen_table_memo_slots: Optional[int] = None
+    # Multimodal checkpoint trained on text: towers kept out of the pipeline. None refuses such a checkpoint.
+    text_only: Optional[bool] = None
 
 
 class _StageOutput(BaseException):
@@ -315,6 +337,8 @@ class _Parts:
     norms: list  # [(name, module)]: other parameter-holding decoder children (final norm)
     source: str  # "transformers" (base_model_pp_plan) / "structural"
     tied: bool
+    # [(container, name, module)]
+    towers: list = dataclasses.field(default_factory = list)
 
 
 def _has_params(module):
@@ -499,6 +523,9 @@ def _find_parts(model) -> _Parts:
             "Unsloth: pipeline parallelism v1 only splits embed / layers / final norm / lm_head, but "
             f"{type(decoder).__name__} also holds {others} (side inputs or per-layer embeddings)."
         )
+    media = _media_keys(inner)
+    towers = []
+    inside = {id(p) for p in decoder.parameters()}
     for name, child in inner.named_children():
         if child is decoder or child is lm_head or not _has_params(child):
             continue
@@ -507,9 +534,23 @@ def _find_parts(model) -> _Parts:
         if _owner(child, decoder)[0] is not None:
             # A wrapper around the decoder (OPTModel.decoder, BartDecoderWrapper.decoder): fine when it holds
             # nothing else.
-            inside = {id(p) for p in decoder.parameters()}
             if all(id(p) in inside for p in child.parameters()):
                 continue
+            # A multimodal wrapper (Qwen3_5Model, Gemma4Model): the decoder plus towers beside it.
+            extra = [
+                (child, n, c)
+                for n, c in child.named_children()
+                if c is not decoder
+                and _owner(c, decoder)[0] is None
+                and any(id(p) not in inside for p in c.parameters())
+            ]
+            covered = inside | {id(p) for _, _, c in extra for p in c.parameters()}
+            if media and extra and all(id(p) in covered for p in child.parameters()):
+                towers.extend(extra)
+                continue
+        elif media:
+            towers.append((inner, name, child))
+            continue
         raise ValueError(
             f"Unsloth: pipeline parallelism v1 found an extra module {name} ({type(child).__name__}) "
             f"next to the decoder of {type(inner).__name__} (multimodal towers / extra heads are v2)."
@@ -517,7 +558,12 @@ def _find_parts(model) -> _Parts:
     e_w = getattr(embed, "weight", None)
     h_w = getattr(lm_head, "weight", None)
     tied = e_w is not None and e_w is h_w
-    return _Parts(inner, decoder, layers, layers_name, embed, lm_head, norms, source, tied)
+    return _Parts(inner, decoder, layers, layers_name, embed, lm_head, norms, source, tied, towers)
+
+
+def _media_keys(inner):
+    config = getattr(inner, "config", None)
+    return [key for key in _MEDIA_CONFIG_KEYS if getattr(config, key, None) is not None]
 
 
 def _refuse_shared_across_stages(parts, bounds):
@@ -815,7 +861,8 @@ def _forward_has_router_aux(inner):
             source = inspect.getsource(fn)
         except (OSError, TypeError):
             continue
-        if re.search(r"router_logits|aux_loss|load_balancing", source):
+        # Reading router logits adds nothing to the loss; an auxiliary term does.
+        if re.search(r"aux_loss|load_balancing", source):
             return True
     return False
 
@@ -825,26 +872,28 @@ def _refuse_unsupported(
     parts,
     at_load = False,
     allow_moe = True,
+    text_only = None,
 ):
-    """Refusals before anything is cut (at_load: the structural ones only, before LoRA freezes the base).
-    Returns the _MoEAux of a mixture-of-experts family whose router auxiliary loss PipelineParallel carries
-    (allow_moe), else None."""
+    """Refusals before anything is cut (at_load: structural only, text-only decided at the split). Returns the
+    _MoEAux whose router aux loss PipelineParallel carries (allow_moe), else None."""
     text = _text_config(model)
     inner = parts.inner
-    config = getattr(inner, "config", None)
-    for key in ("vision_config", "audio_config", "speech_config"):
-        if getattr(config, key, None) is not None:
-            raise ValueError(
-                f"Unsloth: pipeline parallelism v1 supports text decoders only ({type(inner).__name__} has "
-                f"{key}). Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
-            )
+    media = _media_keys(inner)
+    if media and not at_load and (text_only is not True or not parts.towers):
+        towers = ", ".join(name for _, name, _ in parts.towers) or "none found"
+        raise ValueError(
+            f"Unsloth: pipeline parallelism v1 trains the language model of {type(inner).__name__} ({', '.join(media)}) "
+            f"on text only, with its towers ({towers}) kept out of the pipeline: pass PPConfig(text_only = True) "
+            "(under UNSLOTH_PP_SIZE the Trainer sets it when no image / audio reaches the dataset or collator, or "
+            "set UNSLOTH_PP_TEXT_ONLY=1). Multimodal training: use native FSDP2 (UNSLOTH_FSDP2=1) instead."
+        )
     moe = None
     marker = _moe_marker(text, parts.layers)
     if marker is not None and type(inner).__name__ in _PP_MOE_NO_AUX_FAMILIES:
         if _forward_has_router_aux(inner):
             raise ValueError(
                 f"Unsloth: {type(inner).__name__} is listed as having no router auxiliary loss, but its forward "
-                "reads router logits; pipeline parallelism would drop that term."
+                "adds one; pipeline parallelism would drop that term."
             )
         marker = None
     if marker is not None:
@@ -929,11 +978,24 @@ def _forward_function(module):
     return forward
 
 
+def _layer_loop_source(decoder, layers_name):
+    """Layer-loop forward source; also searches closures (Unsloth Zoo's Gemma 4 wrapper drops __wrapped__)."""
+    first = _forward_function(decoder)
+    for fn in [first, *_forward_candidates(decoder)]:
+        try:
+            source = textwrap.dedent(inspect.getsource(fn))
+        except (OSError, TypeError):
+            continue
+        if f"self.{layers_name}" in source:
+            return source
+    return textwrap.dedent(inspect.getsource(first))
+
+
 def _layer_call_format(decoder, layers_name):
     """'tuple' when the decoder forward reads `out = layer(...); hidden = out[0]` (Unsloth fast forwards,
     transformers 4.x), 'tensor' when it reads `hidden = layer(...)` (transformers 5.x)."""
     try:
-        source = textwrap.dedent(inspect.getsource(_forward_function(decoder)))
+        source = _layer_loop_source(decoder, layers_name)
         tree = ast.parse(source)
     except (OSError, TypeError, SyntaxError) as exc:
         raise ValueError(
@@ -1153,6 +1215,55 @@ class _PPPassThrough(_CheckpointLayer):
 
     def extra_repr(self):
         return f"index={self._pp_index}, owned by another pipeline stage"
+
+
+class _PPTowerStub(nn.Module):
+    def __init__(self, name, source):
+        super().__init__()
+        for key, value in _simple_attrs(source).items():
+            self.__dict__[key] = value
+        self.__dict__["_pp_tower"] = name
+
+    def forward(self, *args, **kwargs):
+        raise RuntimeError(
+            f"Unsloth: {self._pp_tower} is kept out of this pipeline parallel model (text-only training, "
+            "PPConfig(text_only = True)); a batch with images / audio cannot be trained under pipeline "
+            "parallelism. Use native FSDP2 (UNSLOTH_FSDP2=1) for multimodal training."
+        )
+
+    def extra_repr(self):
+        return f"{self._pp_tower}, kept out of the pipeline (text-only training)"
+
+
+def _refuse_media_inputs(kwargs, what):
+    media = sorted(k for k in kwargs if k in _MEDIA_INPUT_KEYS and kwargs[k] is not None)
+    if media:
+        raise ValueError(
+            f"Unsloth: PipelineParallel.{what} got {media}: pipeline parallelism trains multimodal checkpoints on "
+            "text only (their vision / audio towers are not in the pipeline), so this batch cannot be trained "
+            "here and is not dropped. Use native FSDP2 (UNSLOTH_FSDP2=1) for multimodal training."
+        )
+
+
+def _tower_adapter_state(model, parts):
+    """Tower PEFT entries (never trained under text-only), saved by pp rank 0."""
+    adapters = list(getattr(model, "peft_config", {}) or {})
+    if not adapters or not parts.towers:
+        return None
+    from peft import get_peft_model_state_dict
+
+    towers = [m for _, _, m in parts.towers]
+    prefixes = tuple(
+        name + "." for name, module in model.named_modules() if any(module is t for t in towers)
+    )
+    out = {}
+    with torch.no_grad():
+        for adapter in adapters:
+            state = get_peft_model_state_dict(model, adapter_name = adapter)
+            out[adapter] = {
+                k: v.detach().cpu().clone() for k, v in state.items() if k.startswith(prefixes)
+            }
+    return out if any(out.values()) else None
 
 
 def _placeholder(weight):
@@ -1725,6 +1836,7 @@ class PipelineParallel:
         self.replica = (
             None  # pp_env: the whole model is in place (for_inference / generate / exports)
         )
+        self._tower_adapter = None
 
     # composition with FSDP2 (dp) / tensor parallelism (tp): every other mesh dimension must be applied
     @property
@@ -1965,6 +2077,7 @@ class PipelineParallel:
         # A later requires_grad_(False) before generate / export must still sync what native loops trained.
         _note_trained(self)
         self._check_composed()
+        _refuse_media_inputs(kwargs, "step")
         if self.ctx.moe is not None and (
             self.composed or self.dp_mesh is not None or self.tp_mesh is not None
         ):
@@ -2115,6 +2228,7 @@ class PipelineParallel:
             from .pp_env import release_replica
             release_replica(self)
         self._check_composed()
+        _refuse_media_inputs(kwargs, "eval_loss")
         unknown = sorted(set(kwargs) - set(_STEP_KWARGS))
         if unknown:
             raise ValueError(f"Unsloth: PipelineParallel.eval_loss takes no {unknown}.")
@@ -2364,7 +2478,10 @@ class PipelineParallel:
                     if not k.startswith(self._foreign_prefixes)
                 }
         if self.num_stages == 1:
-            return local if not self.composed or dist.get_rank() == 0 else None
+            if self.composed and dist.get_rank() != 0:
+                return None
+            self._merge_tower_adapter(local)
+            return local
         first = self.stage_index == 0
         gathered = [None] * self.num_stages if first else None
         dist.gather_object(local, gathered, dst = self._global_ranks[0], group = self.group)
@@ -2374,7 +2491,13 @@ class PipelineParallel:
         for part in gathered:
             for adapter, state in part.items():
                 merged[adapter].update(state)
+        self._merge_tower_adapter(merged)
         return merged
+
+    def _merge_tower_adapter(self, merged):
+        for adapter, state in (self._tower_adapter or {}).items():
+            if adapter in merged:
+                merged[adapter].update(state)
 
     def save_adapter(self, save_directory, **kwargs):
         """Write the standard 1-GPU PEFT adapter from pp rank 0 (collective over the pp ranks)."""
@@ -2559,7 +2682,7 @@ def apply_pipeline_parallel(
             f"Unsloth: the 1F1B schedule needs n_microbatches >= stages ({n_microbatches} < {pp})."
         )
     parts = _find_parts(model)
-    moe = _refuse_unsupported(model, parts)
+    moe = _refuse_unsupported(model, parts, text_only = config.text_only)
     if moe is not None and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1):
         raise ValueError(
             f"Unsloth: pipeline parallelism over a mixture-of-experts model ({type(parts.inner).__name__}) "
@@ -2641,6 +2764,19 @@ def apply_pipeline_parallel(
     is_first, is_last = pp_stage.is_first, pp_stage.is_last
     layers = parts.layers
     kept = [] if config.keep_replica else None
+    if parts.towers:
+        if rank == 0:
+            pp_stage._tower_adapter = _tower_adapter_state(model, parts)
+        stubs = []
+        for container, name, module in parts.towers:
+            stub = _PPTowerStub(name, module)
+            if kept is not None:
+                kept.append((container, name, module, stub))
+            setattr(container, name, stub)
+            stubs.append((container, name, stub))
+        if kept is None:
+            # Dropped: hold only the stubs, so the towers' GPU memory is freed.
+            parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe
@@ -2731,6 +2867,11 @@ def apply_pipeline_parallel(
             f"{n_microbatches} micro-batches, {parts.source} parts): decoder layers per stage "
             f"{[e - s for s, e in bounds]}"
             + (", tied embeddings kept on the first and last stage" if parts.tied else "")
+            + (
+                f"; text only, towers kept out of the pipeline ({', '.join(n for _, n, _ in parts.towers)})"
+                if parts.towers
+                else ""
+            )
             + (
                 "; compiled backward graphs built without donated buffers (zero bubble runs autograd.grad "
                 "with retain_graph)"
