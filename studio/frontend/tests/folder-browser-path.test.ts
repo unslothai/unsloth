@@ -172,3 +172,13 @@ test("a typed path outside the browsable places can still be added where the cal
   );
   assert.match(composer, /<FolderBrowser[^>]*acceptUnbrowsable=\{true\}/);
 });
+
+test("the browser's Enter shortcuts never reach a parent dialog's save", () => {
+  const source = readSrc(
+    "features/model-picker/components/model-selector/folder-browser.tsx",
+  );
+  const keys = source.slice(source.indexOf("function onInputKeyDown("));
+  const enter = keys.slice(keys.indexOf('if (event.key === "Enter") {'));
+  assert.ok(enter.indexOf("event.stopPropagation();") < enter.indexOf("handleConfirm();"));
+  assert.match(source, /onKeyDown=\{\(event\) => \{\n\s*if \(event\.key === "Enter"\) event\.stopPropagation\(\);/);
+});

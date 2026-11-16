@@ -243,9 +243,12 @@ export function FolderBrowser({
     if (current) navigate(joinChild(current, name), showHidden);
   }
 
+  // Handled keys stop here: React bubbles portal events, and a parent dialog (Edit project) saves on
+  // Cmd/Ctrl+Enter.
   function onInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      event.stopPropagation();
       const step = event.key === "ArrowDown" ? 1 : -1;
       setActive(
         Math.min(
@@ -257,6 +260,7 @@ export function FolderBrowser({
     }
     if (event.key === "Enter") {
       event.preventDefault();
+      event.stopPropagation();
       if (loading || !current) return;
       if (event.metaKey || event.ctrlKey) {
         handleConfirm();
@@ -269,6 +273,7 @@ export function FolderBrowser({
     }
     if (event.key === "Backspace" && query === "" && data?.parent && !loading) {
       event.preventDefault();
+      event.stopPropagation();
       navigate(data.parent, showHidden);
     }
   }
@@ -573,6 +578,9 @@ export function FolderBrowser({
                     onSubmit={(event) => {
                       event.preventDefault();
                       void createFolder();
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.stopPropagation();
                     }}
                   >
                     <HugeiconsIcon
