@@ -15,7 +15,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -71,15 +70,22 @@ export function WallpaperAdjustDialog({
   // State, not a ref: the preview mounts in the dialog's portal after `open` flips, so effects keyed
   // on `open` would find no node and never measure it or attach the wheel and pinch listeners.
   const [preview, setPreview] = useState<HTMLDivElement | null>(null);
-  const drag = useRef<{ id: number; x: number; y: number; from: Draft } | null>(
-    null,
-  );
+  // The pointer's last position: moves apply as increments to the current draft, so a zoom made
+  // mid-drag (wheel or pinch) is kept rather than replayed from the press.
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
   const pinch = useRef<number | null>(null);
   // Touch pinch for browsers without WebKit gesture events: every pointer down, and the spread and
   // zoom when the second finger landed.
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const touchPinch = useRef<{ dist: number; zoom: number } | null>(null);
-  const url = useMemo(() => URL.createObjectURL(value.blob), [value.blob]);
+  // State from an effect, not a memo: StrictMode's setup, cleanup, setup would otherwise revoke the
+  // one memoized URL and leave the preview blank.
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const next = URL.createObjectURL(value.blob);
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [value.blob]);
   const [area, setArea] = useState(() => pageArea(fade));
   // Follows the window while open (a resize or a phone rotation), as the wallpaper itself does.
   useEffect(() => {
@@ -97,7 +103,6 @@ export function WallpaperAdjustDialog({
   }, [open, fade]);
   const aspect = area.w / area.h;
 
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-seed only on open; the stored value changes under an open draft only by Apply.
   useEffect(() => {
     if (open) {
@@ -105,6 +110,9 @@ export function WallpaperAdjustDialog({
     }
   }, [open]);
   useEffect(() => {
+    if (!url) {
+      return;
+    }
     const image = new Image();
     image.onload = () =>
       setNatural({ w: image.naturalWidth, h: image.naturalHeight });
@@ -161,12 +169,7 @@ export function WallpaperAdjustDialog({
     }
     const rest = [...pointers.current.entries()][0];
     if (rest && drag.current?.id !== rest[0]) {
-      drag.current = {
-        id: rest[0],
-        x: rest[1].x,
-        y: rest[1].y,
-        from: draftRef.current,
-      };
+      drag.current = { id: rest[0], x: rest[1].x, y: rest[1].y };
       return;
     }
     if (!rest) {
@@ -234,7 +237,7 @@ export function WallpaperAdjustDialog({
     onOpenChange(false);
   };
   const position = `${draft.x * 100}% ${draft.y * 100}%`;
-  const ready = Boolean(natural && box);
+  const ready = Boolean(url && natural && box);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -296,7 +299,6 @@ export function WallpaperAdjustDialog({
               id: event.pointerId,
               x: event.clientX,
               y: event.clientY,
-              from: draft,
             };
             setDragging(true);
           }}
@@ -326,13 +328,11 @@ export function WallpaperAdjustDialog({
             if (!start || start.id !== event.pointerId) {
               return;
             }
-            setDraft(
-              moveBy(
-                start.from,
-                event.clientX - start.x,
-                event.clientY - start.y,
-              ),
-            );
+            const dx = event.clientX - start.x;
+            const dy = event.clientY - start.y;
+            start.x = event.clientX;
+            start.y = event.clientY;
+            setDraft((d) => moveBy(d, dx, dy));
           }}
           onPointerUp={release}
           onPointerCancel={release}
@@ -361,14 +361,16 @@ export function WallpaperAdjustDialog({
               transform: `scale(${scale})`,
             }}
           >
-            <WallpaperArtwork
-              url={url}
-              sizing={value.sizing}
-              position={position}
-              zoom={draft.zoom}
-              blur={0}
-              bakeable={false}
-            />
+            {url && (
+              <WallpaperArtwork
+                url={url}
+                sizing={value.sizing}
+                position={position}
+                zoom={draft.zoom}
+                blur={0}
+                bakeable={false}
+              />
+            )}
           </div>
           {dragging && (
             <div

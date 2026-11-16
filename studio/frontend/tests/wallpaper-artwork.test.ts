@@ -212,3 +212,22 @@ test("adjust: a two-finger touch pinch zooms where WebKit gesture events do not 
   // Lifting one finger hands the drag to the other instead of jumping.
   assert.match(dialog, /onPointerUp=\{release\}\s*onPointerCancel=\{release\}/);
 });
+
+test("adjust: the preview URL survives StrictMode's double setup", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  // Each effect setup creates its own URL and revokes only that one.
+  assert.match(
+    dialog,
+    /const next = URL\.createObjectURL\(value\.blob\);\s*setUrl\(next\);\s*return \(\) => URL\.revokeObjectURL\(next\);/,
+  );
+  assert.doesNotMatch(dialog, /useMemo\(\(\) => URL\.createObjectURL/);
+});
+
+test("adjust: a zoom made mid-drag is kept, as moves apply to the current draft", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  assert.match(
+    dialog,
+    /start\.x = event\.clientX;\s*start\.y = event\.clientY;\s*setDraft\(\(d\) => moveBy\(d, dx, dy\)\);/,
+  );
+  assert.doesNotMatch(dialog, /start\.from/);
+});
