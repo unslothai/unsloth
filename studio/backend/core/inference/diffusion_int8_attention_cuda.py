@@ -59,7 +59,8 @@ KERNEL_SOURCE = r"""
 // WPC (warps per block), STAGES (1 or 2 shared-memory tile buffers; 2 = the next tile is copied while this one is
 // computed), QREG (1 = the Q operand fragments are read once into registers, 2 = straight from global memory, with
 // no Q rows in shared memory), FLUSH, FLUSH_TAIL, SM75 (set by the target architecture), and the orderings below
-// (QKW, PVW, SPREAD), none of which changes an output bit.
+// (QKW, PVW, SPREAD), none of which changes an output bit. SINKS (defined or not) adds the attention-sink outputs
+// (rcnt, rml); without it the kernel is the one without the sink path, instruction for instruction.
 // Launch: blockDim.x = 32 * WPC, grid.x = n_qpad / (16 * NQ * WPC), grid.y = batch * heads,
 // dynamic shared memory = STAGES * STAGE_BYTES + (QREG == 2 ? 0 : WPC * 16 * NQ * KROW) bytes.
 
@@ -402,8 +403,12 @@ extern "C" __global__ void unsloth_i8attn(
     const s8* __restrict__ q, const s8* __restrict__ k, const s8* __restrict__ vt, const float* __restrict__ qs,
     const float* __restrict__ ks, const float* __restrict__ vs, const float* __restrict__ vg,
     const float* __restrict__ vc, void* __restrict__ out, int n_q, int n_qpad, int n_k, int n_kpad, int n_heads,
+#ifndef SINKS
+    i64 o_stride_b, i64 o_stride_s, i64 o_stride_h, int out_kind) {
+#else
     i64 o_stride_b, i64 o_stride_s, i64 o_stride_h, int out_kind, const int* __restrict__ rcnt,
     float* __restrict__ rml) {
+#endif
   extern __shared__ __align__(16) s8 smem[];
   const u32 lane = threadIdx.x & 31u;
   const u32 g = lane >> 2, t = lane & 3u;
@@ -765,9 +770,10 @@ extern "C" __global__ void unsloth_i8attn(
       }
     }
   }
+#ifdef SINKS
 
   // A head that clipped V (attention sinks, v_range): its row maxima and normalisers for unsloth_i8resid, which adds
-  // the clipped-off parts back. Uniform per block; the loop above is the base kernel's, register for register.
+  // the clipped-off parts back. Uniform per block.
   if (rcnt[bh] > 0 && t == 0) {
 #pragma unroll
     for (int qt = 0; qt < NQ; ++qt) {
@@ -778,10 +784,11 @@ extern "C" __global__ void unsloth_i8attn(
       m[17] = l[qt][1];
     }
   }
+#endif
 }
 """
 
-QUANT_KERNELS = ("unsloth_i8stats_q", "unsloth_i8quant_kv", "unsloth_i8resid")
+QUANT_KERNELS = ("unsloth_i8stats_q", "unsloth_i8quant_kv")
 
 QUANT_SOURCE = r"""
 // The INT8 attention kernel's operands from [B, S, H, D] q / k / v of any float dtype and any strides on the first
@@ -803,7 +810,9 @@ QUANT_SOURCE = r"""
 //
 // The rotation is the same fixed orthogonal map for Q and K (so Q.K^T is unchanged): a sign per channel, then an
 // unnormalised Walsh-Hadamard transform over every RG channels (16 inside one thread, the rest by warp shuffles).
-// Compile-time: HD (head dim), BN (keys per tile), RGX (log2(RG) - 4: the shuffle stages of the rotation).
+// Compile-time: HD (head dim), BN (keys per tile), RGX (log2(RG) - 4: the shuffle stages of the rotation), SINKS
+// (defined or not: the attention-sink path, v_range, the residual job and unsloth_i8resid; without it the
+// quantisers are the ones without that path, instruction for instruction).
 
 typedef unsigned int u32;
 typedef int i32;
@@ -947,12 +956,18 @@ __device__ __forceinline__ void store16(s8* dst, const float* x, float s) {
 // channels), job qblocks is the K mean, the others are the V chunks; NTS threads.
 extern "C" __global__ void unsloth_i8stats_q(
     const void* __restrict__ q, const void* __restrict__ k, const void* __restrict__ v, float* __restrict__ kc,
+#ifndef SINKS
+    float* __restrict__ vpart, s8* __restrict__ qi, float* __restrict__ qs, int n_q, int n_qpad, int n_k,
+#else
     float* __restrict__ vpart, float* __restrict__ vsink, s8* __restrict__ qi, float* __restrict__ qs, int n_q,
     int n_qpad, int n_k,
+#endif
     int n_heads, int nvc, int vrows, int vstep, int kstep, i64 q_sb, i64 q_ss, i64 q_sh, i64 k_sb, i64 k_ss,
     i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, float mul, int q_kind, int k_kind, int v_kind, int job0) {
   __shared__ float sm[NWS][2][HD];
+#ifdef SINKS
   __shared__ float smk[NWS][2];
+#endif
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   const u32 slot = tid / TPR, g16 = tid % TPR;
   const i64 bh = blockIdx.x;
@@ -979,7 +994,9 @@ extern "C" __global__ void unsloth_i8stats_q(
   const int chunk = job - qblocks - 1;  // of V; -1: the K mean
   const bool mean = chunk < 0;
   float lo[16], hi[16];  // the K mean block: lo holds the sums
+#ifdef SINKS
   float amx = -1.f, akey = 0.f;  // a V chunk: the largest |v| this thread read, and its key
+#endif
   if (mean) {
 #pragma unroll
     for (int i = 0; i < 16; ++i) lo[i] = hi[i] = 0.f;
@@ -1007,17 +1024,20 @@ extern "C" __global__ void unsloth_i8stats_q(
     for (i64 r = r0 + (i64)slot * vstep; r < r1; r += (i64)SLOTS * vstep) {
       float x[16];
       load16(v, base + r * v_ss, v_kind, x);
-      float a = 0.f;
 #pragma unroll
       for (int i = 0; i < 16; ++i) {
         lo[i] = fminf(lo[i], x[i]);
         hi[i] = fmaxf(hi[i], x[i]);
-        a = fmaxf(a, fabsf(x[i]));
       }
+#ifdef SINKS
+      float a = 0.f;
+#pragma unroll
+      for (int i = 0; i < 16; ++i) a = fmaxf(a, fabsf(x[i]));
       if (a > amx) {  // keys rise with r: the first key of the largest value is kept
         amx = a;
         akey = (float)r;
       }
+#endif
     }
 #pragma unroll
     for (int s = TPR; s < 32; s <<= 1) {
@@ -1027,6 +1047,7 @@ extern "C" __global__ void unsloth_i8stats_q(
         hi[i] = fmaxf(hi[i], __shfl_xor_sync(0xffffffffu, hi[i], s));
       }
     }
+#ifdef SINKS
 #pragma unroll
     for (int s = 1; s < 32; s <<= 1) {
       const float oa = __shfl_xor_sync(0xffffffffu, amx, s), ok = __shfl_xor_sync(0xffffffffu, akey, s);
@@ -1039,6 +1060,7 @@ extern "C" __global__ void unsloth_i8stats_q(
       smk[warp][0] = amx;
       smk[warp][1] = akey;
     }
+#endif
   }
   if (lane < TPR) {
 #pragma unroll
@@ -1067,6 +1089,7 @@ extern "C" __global__ void unsloth_i8stats_q(
       o[HD] = c;
     }
   }
+#ifdef SINKS
   if (!mean && tid == 0) {
     float a = smk[0][0], key = smk[0][1];
     for (int w = 1; w < NWS; ++w) {
@@ -1078,8 +1101,10 @@ extern "C" __global__ void unsloth_i8stats_q(
     vsink[(bh * nvc + chunk) * 2] = a;
     vsink[(bh * nvc + chunk) * 2 + 1] = key;
   }
+#endif
 }
 
+#ifdef SINKS
 // The V range a head quantises with, computed alike by every V-tile block and the residual job. A few keys far from
 // the rest in most channels (attention sinks: the first text tokens of a joint sequence, 60-85x the median key norm)
 // set every channel's range and cost every other key its resolution, while they draw well under 1% of the
@@ -1147,6 +1172,7 @@ __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict
   *sc_out = sc;
   return clip;
 }
+#endif
 
 // vt [BH, n_kpad / BN, HD, BN] int8 ((v - centre) / gain over the tile scale, zeros past n_k) in the key order of
 // the kernel's operand registers; vs [BH, n_kpad / BN] the tile scales; vc / vg [BH, HD] centre and gain, merged from
@@ -1161,20 +1187,29 @@ __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict
 // of K: thread (key, 16 channels).
 extern "C" __global__ void unsloth_i8quant_kv(
     const void* __restrict__ k, const void* __restrict__ v, const float* __restrict__ kc,
+#ifndef SINKS
+    const float* __restrict__ vpart, s8* __restrict__ ki, float* __restrict__ ks, s8* __restrict__ vt,
+    float* __restrict__ vs, float* __restrict__ vc, float* __restrict__ vg, int n_k, int n_kpad, int n_heads,
+    int nvc, i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, int k_kind, int v_kind, int job0) {
+#else
     const float* __restrict__ vpart, const float* __restrict__ vsink, s8* __restrict__ ki, float* __restrict__ ks,
     s8* __restrict__ vt, float* __restrict__ vs, float* __restrict__ vc, float* __restrict__ vg, int* __restrict__ rcnt,
     int* __restrict__ ridx, float* __restrict__ rres, int n_k, int n_kpad, int n_heads, int nvc, int vrows, int vstep,
     i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, int k_kind, int v_kind, int job0) {
+#endif
   __shared__ __align__(16) float smc[HD], smr[HD];
+#ifdef SINKS
   __shared__ float smx[2][HD];
   __shared__ float smw[NTKV / 32];
   __shared__ int smf[KROWS + 1];
+#endif
   __shared__ float sm[KROWS + KROWS / 8 > NTV / 32 + 1 ? KROWS + KROWS / 8 : NTV / 32 + 1];
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   const i64 tiles = n_kpad / BN;
   const i64 bh = blockIdx.x;
   const i64 b = bh / n_heads, h = bh % n_heads;
   const i64 job = (i64)job0 + blockIdx.y;
+#ifdef SINKS
   if (job == tiles + n_kpad / KROWS) {
     // the residual job: the keys of the clipped chunk that left the range, compacted in key order
     int sc = 0;
@@ -1225,6 +1260,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
     if (tid == 0) rcnt[bh] = found;
     return;
   }
+#endif
   if (job >= tiles) {
     const u32 rin = tid / TPR, g16 = tid % TPR;
     const i64 run = job - tiles;
@@ -1265,6 +1301,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
   if (tid >= NTV) return;
   const u32 g16 = tid / (BN / 4), kq = tid % (BN / 4);
   const i64 tile = tiles - 1 - job;  // the keys the statistics read last come first
+#ifdef SINKS
   int sc = 0;
   const bool clip = v_range(vpart, vsink, bh, nvc, vstep, smc, smr, smx, smw, &sc, tid, NTV);
   if (tile == 0) {
@@ -1273,6 +1310,24 @@ extern "C" __global__ void unsloth_i8quant_kv(
       vg[bh * HD + c] = smx[0][c];
     }
   }
+#else
+  for (u32 c = tid; c < HD; c += NTV) {
+    float lo = 3.0e38f, hi = -3.0e38f;
+    const float* part = vpart + bh * nvc * 2 * HD + c;
+    for (int j = 0; j < nvc; ++j) {
+      lo = fminf(lo, part[(2 * j) * HD]);
+      hi = fmaxf(hi, part[(2 * j + 1) * HD]);
+    }
+    const float centre = 0.5f * (hi + lo), gain = fmaxf(0.5f * (hi - lo), 1e-12f);
+    smc[c] = centre;
+    smr[c] = 1.f / gain;
+    if (tile == 0) {
+      vc[bh * HD + c] = centre;
+      vg[bh * HD + c] = gain;
+    }
+  }
+  __syncthreads();
+#endif
   float cen[16], rg[16];
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
@@ -1298,7 +1353,9 @@ extern "C" __global__ void unsloth_i8quant_kv(
 #pragma unroll
       for (int i = 0; i < 16; ++i) {
         x[r][i] = (x[r][i] - cen[i]) * rg[i];
+#ifdef SINKS
         if (clip) x[r][i] = fminf(fmaxf(x[r][i], -1.f), 1.f);
+#endif
         amax = fmaxf(amax, fabsf(x[r][i]));
       }
     } else {
@@ -1327,6 +1384,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
   for (int i = 0; i < 16; ++i)
     dst[i * (BN / 4)] = q8(x[0][i], s) | (q8(x[1][i], s) << 8) | (q8(x[2][i], s) << 16) | (q8(x[3][i], s) << 24);
 }
+#ifdef SINKS
 
 #define NTR 256  // threads per block of unsloth_i8resid: a warp per query row
 #define RMAGIC_I 0x4b400000
@@ -1397,6 +1455,7 @@ extern "C" __global__ void unsloth_i8resid(
     }
   }
 }
+#endif
 """
 
 _LOCK = threading.Lock()
@@ -2098,8 +2157,10 @@ def load(
 
 
 def load_quantisers(device_index: int, capability: tuple, defines: dict) -> dict:
-    """The two quantiser kernels compiled with ``defines`` (HD, BN, RGX) for this device; cached per process."""
-    return load_module(device_index, capability, QUANT_SOURCE, QUANT_KERNELS, defines)
+    """The quantiser kernels compiled with ``defines`` (HD, BN, RGX; SINKS adds the attention-sink path and
+    unsloth_i8resid) for this device; cached per process."""
+    names = QUANT_KERNELS + (("unsloth_i8resid",) if "SINKS" in defines else ())
+    return load_module(device_index, capability, QUANT_SOURCE, names, defines)
 
 
 def source_digest() -> str:

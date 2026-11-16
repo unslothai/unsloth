@@ -20,9 +20,9 @@ How the values are quantised (ideas from the cited papers, written from scratch 
 * V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
   key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
   tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
-  adds the far-out parts back exactly in a launch after the kernel (the kernel's main loop is unchanged), so the
-  sink no longer costs every other key its resolution (CUDA kernel; the Triton kernel keeps the range over every
-  key).
+  adds the far-out parts back exactly in a launch after the kernel, so the sink no longer costs every other key its
+  resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
+  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did.
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -409,13 +409,18 @@ def _device_index(device: Any) -> int:
     return device.index if device.index is not None else torch.cuda.current_device()
 
 
-def _functions(index: int, head_dim: int, config: dict) -> tuple:
-    """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config; compiled on first
-    use."""
+def _functions(
+    index: int,
+    head_dim: int,
+    config: dict,
+    sinks: bool = False,
+) -> tuple:
+    """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config, with the
+    attention-sink path (``sinks``) or without it (the kernels as they were before it); compiled on first use."""
     config = select_config(
         config, 0
     )  # a config with long overrides names its kernel for short sequences
-    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP)
+    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP, bool(sinks))
     found = _LOADED.get(key)
     if found is None:
         import torch
@@ -425,18 +430,19 @@ def _functions(index: int, head_dim: int, config: dict) -> tuple:
         capability = tuple(torch.cuda.get_device_capability(index))
         shared = shared_bytes(head_dim, config)
         group = min(int(ROT_GROUP), head_dim)
+        extra = {"SINKS": 1} if sinks else {}
         found = (
             cuda_kernel.load(
                 index,
                 capability,
-                kernel_defines(head_dim, config),
+                {**kernel_defines(head_dim, config), **extra},
                 config.get("max_registers"),
                 shared,
             ),
             cuda_kernel.load_quantisers(
                 index,
                 capability,
-                {"HD": head_dim, "BN": int(config["bn"]), "RGX": group.bit_length() - 5},
+                {"HD": head_dim, "BN": int(config["bn"]), "RGX": group.bit_length() - 5, **extra},
             ),
             shared,
         )
@@ -459,6 +465,10 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
+# The first SINK_LEARN_CALLS calls of a launch plan report whether a head clipped V (an attention sink); from its
+# SINK_DECIDE_AT-th call on a plan none of them did runs the kernels without the sink path (_choose_path).
+SINK_LEARN_CALLS = 64
+SINK_DECIDE_AT = 128
 GRID_LIMIT = 65535  # blocks along y in one launch
 
 
@@ -508,7 +518,8 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     Sk = k.shape[1]
     config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
-    fn, kernels, shared = _functions(index, D, config)
+    fn, kernels, shared = _functions(index, D, config, sinks = True)
+    fn0, kernels0, _ = _functions(index, D, config, sinks = False)
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
     mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
     n_qpad = _pad(Sq, 16 * nq * wpc)
@@ -566,8 +577,8 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     stats_threads = 256  # NTS of the quantiser source
     stats_jobs = -(-n_qpad // (stats_threads // (D // 16))) + 1 + nvc
     kv_threads = max(bn * D // 64, 2 * D)  # NTKV: a V tile, or runs of 32 keys
-    # V tiles, K runs, then the residual job (the keys a head with an attention sink clipped)
-    kv_jobs = tiles + n_kpad // (kv_threads // (D // 16)) + 1
+    # V tiles, K runs, then (the sink path) the residual job: the keys a head with an attention sink clipped
+    kv_jobs = tiles + n_kpad // (kv_threads // (D // 16))
     out_stride = (Sq * H * D, H * D, D)
 
     def grids(jobs: int) -> tuple:
@@ -589,6 +600,11 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
             fn,
             kernels["unsloth_i8resid"],
         ),
+        "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
+        # the sink path, decided by the plan's first calls (_choose_path)
+        "calls": 0,
+        "sinks": None,
+        "checks": [],
         "shared": shared,
         "stats_grids": grids(stats_jobs),
         "stats_threads": stats_threads,
@@ -609,9 +625,11 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
             k_kind,
             v_kind,
         ),
-        "kv_grids": grids(kv_jobs),
+        "kv_grids": grids(kv_jobs + 1),
+        "kv_grids0": grids(kv_jobs),
         "kv_threads": kv_threads,
         "kv_tail": (Sk, n_kpad, H, nvc, vrows, vstep, *kst[:3], *vst[:3], k_kind, v_kind),
+        "kv_tail0": (Sk, n_kpad, H, nvc, *kst[:3], *vst[:3], k_kind, v_kind),
         "attn_grid": (n_qpad // (16 * nq * wpc), BH),
         "attn_threads": 32 * wpc,
         "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
@@ -639,51 +657,53 @@ def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], ind
     return plan, q, k, v
 
 
-def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: int) -> None:
+def _launch_quantisers(
+    plan: dict, q: Any, k: Any, v: Any, base: int, stream: int, sinks: bool
+) -> None:
     qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
     off = plan["off"]
-    stats_q, quant_kv = plan["kernels"][:2]
+    stats_q, quant_kv = plan["kernels" if sinks else "kernels0"][:2]
     kc, vpart, vsink = base + off["kc"], base + off["vpart"], base + off["vsink"]
-    args = (qp, kp, vp, kc, vpart, vsink, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
+    sink = (vsink,) if sinks else ()
+    args = (qp, kp, vp, kc, vpart, *sink, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
     for grid, job in plan["stats_grids"]:
         stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
-    args = (
-        kp,
-        vp,
-        kc,
-        vpart,
-        vsink,
+    tile_args = (
         base + off["ki"],
         base + off["ks"],
         base + off["vt"],
         base + off["vs"],
         base + off["vc"],
         base + off["vg"],
-        base + off["rcnt"],
-        base + off["ridx"],
-        base + off["rres"],
-    ) + plan["kv_tail"]
-    for grid, job in plan["kv_grids"]:
+    )
+    if sinks:
+        args = (kp, vp, kc, vpart, vsink) + tile_args
+        args += (base + off["rcnt"], base + off["ridx"], base + off["rres"]) + plan["kv_tail"]
+    else:
+        args = (kp, vp, kc, vpart) + tile_args + plan["kv_tail0"]
+    for grid, job in plan["kv_grids" if sinks else "kv_grids0"]:
         quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
 
 
-def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
+def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: bool) -> None:
     off = plan["off"]
     args = (
-        (
-            base + off["qi"],
-            base + off["ki"],
-            base + off["vt"],
-            base + off["qs"],
-            base + off["ks"],
-            base + off["vs"],
-            base + off["vg"],
-            base + off["vc"],
-            out_ptr,
+        base + off["qi"],
+        base + off["ki"],
+        base + off["vt"],
+        base + off["qs"],
+        base + off["ks"],
+        base + off["vs"],
+        base + off["vg"],
+        base + off["vc"],
+        out_ptr,
+    ) + plan["attn_tail"]
+    if not sinks:
+        plan["kernels0"][2].launch(
+            plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream
         )
-        + plan["attn_tail"]
-        + (base + off["rcnt"], base + off["rml"])
-    )
+        return
+    args += (base + off["rcnt"], base + off["rml"])
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
     # the keys a head clipped (attention sinks), added back to its rows
     args = (
@@ -701,6 +721,53 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
     plan["kernels"][3].launch(plan["resid_grid"], RESID_THREADS, args, 0, stream)
 
 
+def _choose_path(plan: dict) -> tuple:
+    """(sinks, call index): whether this call of ``plan`` takes the attention-sink path. Every call does until the
+    plan's SINK_DECIDE_AT-th; from then on only the calls of a plan one of whose first SINK_LEARN_CALLS calls had a
+    head that clipped V (an attention sink). The others run the kernels without the sink path, instruction for
+    instruction the ones from before it, with no residual launch: a head without sinks gets the same bits either
+    way, and one that would still clip takes the full range, as before. The same calls in the same order take the
+    same paths. Called on the device of the plan; a CUDA graph capture keeps what the plan has decided."""
+    import torch
+
+    if torch.cuda.is_current_stream_capturing():
+        return plan["sinks"] is not False, None
+    n = plan["calls"]
+    plan["calls"] = n + 1
+    if plan["sinks"] is None and n >= SINK_DECIDE_AT:
+        seen = False
+        for event, host in plan["checks"]:
+            event.synchronize()  # long done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
+            seen = seen or bool(host.any())
+        plan["checks"] = []
+        plan["sinks"] = seen
+    return plan["sinks"] is not False, n
+
+
+def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
+    """For one of the plan's first SINK_LEARN_CALLS calls: its clipped-key counts (rcnt) copied to pinned host memory
+    behind the quantisers, read when the plan decides (_choose_path); no wait here."""
+    import torch
+
+    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
+        return
+    at, (BH,) = plan["off"]["rcnt"], plan["layout"]["rcnt"][1]
+    host = torch.empty(BH, dtype = torch.int32, pin_memory = True)
+    host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
+    event = torch.cuda.Event()
+    event.record()
+    plan["checks"].append((event, host))
+
+
+def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
+    """The quantiser launches of one call on the current device and stream; whether it took the sink path."""
+    sinks, n = _choose_path(plan)
+    _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(plan["index"]), sinks)
+    if sinks:
+        _check_sinks(plan, i8, n)
+    return sinks
+
+
 def quantise(
     q: Any,
     k: Any,
@@ -716,10 +783,10 @@ def quantise(
     plan, q, k, v = _find_plan(q, k, v, config, scale, index)
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
     if torch.cuda.current_device() == index:
-        _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
+        sinks = _quantise_on_device(plan, q, k, v, i8)
     else:
         with torch.cuda.device(index):
-            _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
+            sinks = _quantise_on_device(plan, q, k, v, i8)
     return Operands(
         i8 = i8,
         plan = plan,
@@ -727,6 +794,7 @@ def quantise(
         pads = plan["pads"],
         dtype = v.dtype,
         config = plan["config"],
+        sinks = sinks,
         inputs = (q, k, v),  # kept alive until the launches that read them are done
     )
 
@@ -745,21 +813,25 @@ def _cuda_attention(
     out = torch.empty(plan["out_shape"], dtype = v.dtype, device = dev)
     base = i8.data_ptr()
     if torch.cuda.current_device() == index:
-        stream = _raw_stream(index)
-        _launch_quantisers(plan, q, k, v, base, stream)
-        _launch_attention(plan, base, out.data_ptr(), stream)
+        sinks = _quantise_on_device(plan, q, k, v, i8)
+        _launch_attention(plan, base, out.data_ptr(), _raw_stream(index), sinks)
     else:
         with torch.cuda.device(index):
-            stream = _raw_stream(index)
-            _launch_quantisers(plan, q, k, v, base, stream)
-            _launch_attention(plan, base, out.data_ptr(), stream)
+            sinks = _quantise_on_device(plan, q, k, v, i8)
+            _launch_attention(plan, base, out.data_ptr(), _raw_stream(index), sinks)
     return out
 
 
-def kernel_function(device: Any, head_dim: int, config: dict) -> Any:
-    """The loaded CUDA kernel for this device and config (compiled on first use)."""
+def kernel_function(
+    device: Any,
+    head_dim: int,
+    config: dict,
+    sinks: bool = False,
+) -> Any:
+    """The loaded CUDA kernel for this device and config, with or without the attention-sink path (compiled on first
+    use)."""
     import torch
-    return _functions(_device_index(torch.device(device)), head_dim, config)[0]
+    return _functions(_device_index(torch.device(device)), head_dim, config, sinks)[0]
 
 
 def attend(p: dict) -> Any:
@@ -769,11 +841,12 @@ def attend(p: dict) -> Any:
     plan, i8 = p["plan"], p["i8"]
     index = plan["index"]
     out = torch.empty(plan["out_shape"], dtype = p["dtype"], device = i8.device)
+    sinks = p.get("sinks", True)
     if torch.cuda.current_device() == index:
-        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
+        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index), sinks)
     else:
         with torch.cuda.device(index):
-            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
+            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index), sinks)
     return out
 
 

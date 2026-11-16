@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import math
+import re
 import types
 
 import pytest
@@ -1448,6 +1449,103 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
 
 
 @needs_kernel
+@pytest.mark.parametrize("with_sinks", [False, True])
+def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sinks):
+    """A launch plan's first calls take the attention-sink path and report whether a head clipped; from its
+    SINK_DECIDE_AT-th call a plan without sinks runs the kernels without that path, with the same bits (no head of it
+    clips), and one with sinks keeps it."""
+    shape = (1, 700, 4, 128)
+    config = _cuda_config(128)
+    if with_sinks:
+        q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
+    else:
+        q, k, v = _case(shape, _card_dtype(), seed = 3)
+    I._plans().clear()
+    first = I.int8_attention(q, k, v, config = config)
+    (plan,) = I._plans().values()
+    launched = []
+    kernels = {
+        id(f): name for name, f in (("sink", plan["kernels"][2]), ("base", plan["kernels0"][2]))
+    }
+    launch = K.Function.launch
+
+    def spy(self, *args):
+        launched.append(kernels.get(id(self)))
+        return launch(self, *args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(K.Function, "launch", spy)
+        for _ in range(I.SINK_DECIDE_AT):
+            out = I.int8_attention(q, k, v, config = config)
+    assert (
+        plan["sinks"] is with_sinks
+        and plan["calls"] == I.SINK_DECIDE_AT + 1
+        and plan["checks"] == []
+    )
+    # the attention launches: the last call only is past the decision
+    assert launched.count("sink") == I.SINK_DECIDE_AT - (0 if with_sinks else 1)
+    assert launched.count("base") == (0 if with_sinks else 1)
+    assert torch.equal(out, first)
+
+
+def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
+    """_choose_path: every call takes the sink path until the plan's SINK_DECIDE_AT-th; from there only a plan one of
+    whose first SINK_LEARN_CALLS calls clipped keeps it (a clip after them does not count), and a CUDA graph capture
+    keeps what the plan has decided without counting a call."""
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    for clipped_at in (None, 0, I.SINK_LEARN_CALLS - 1, I.SINK_LEARN_CALLS):
+        plan = {"calls": 0, "sinks": None, "checks": []}
+        paths = []
+        for _ in range(I.SINK_DECIDE_AT + 3):
+            sinks, n = I._choose_path(plan)
+            paths.append(sinks)
+            if n < I.SINK_LEARN_CALLS and plan["sinks"] is None:
+                plan["checks"].append(
+                    (Event(), torch.tensor([0, int(n == clipped_at)], dtype = torch.int32))
+                )
+        keeps = clipped_at is not None and clipped_at < I.SINK_LEARN_CALLS
+        assert all(paths[: I.SINK_DECIDE_AT + 1 if keeps else I.SINK_DECIDE_AT])
+        assert all(path is keeps for path in paths[I.SINK_DECIDE_AT :])
+        assert plan["sinks"] is keeps and plan["checks"] == []
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    for decided, path in ((False, False), (True, True), (None, True)):
+        plan = {"calls": 7, "sinks": decided, "checks": []}
+        assert I._choose_path(plan) == (path, None) and plan["calls"] == 7
+
+
+@pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
+def test_without_sinks_the_kernels_have_no_sink_path():
+    """SINKS compiles the attention-sink path in (two more attention-kernel parameters, the robust V range, the
+    residual job and unsloth_i8resid); without it the kernels have none of it."""
+    arch = max(_nvrtc_archs())
+    for head_dim in I.HEAD_DIMS:
+        config = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+        defines = I.kernel_defines(head_dim, config)
+        plain = K.compile_ptx(K.KERNEL_SOURCE, f"sm_{arch}", defines).decode(errors = "replace")
+        sink = K.compile_ptx(K.KERNEL_SOURCE, f"sm_{arch}", dict(defines, SINKS = 1)).decode(
+            errors = "replace"
+        )
+        params = [len(set(re.findall(r"unsloth_i8attn_param_\d+", x))) for x in (plain, sink)]
+        assert params[1] == params[0] + 2, params
+        quant = {
+            "HD": head_dim,
+            "BN": int(config["bn"]),
+            "RGX": min(I.ROT_GROUP, head_dim).bit_length() - 5,
+        }
+        plain = K.compile_ptx(K.QUANT_SOURCE, f"sm_{arch}", quant).decode(errors = "replace")
+        sink = K.compile_ptx(K.QUANT_SOURCE, f"sm_{arch}", dict(quant, SINKS = 1)).decode(
+            errors = "replace"
+        )
+        assert ".entry unsloth_i8resid(" in sink and "unsloth_i8resid" not in plain
+        assert all(f".entry {name}(" in plain for name in K.QUANT_KERNELS)
+
+
+@needs_kernel
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_a_call_signature_is_planned_once(head_dim):
     """Two quantiser launches, the kernel and the residual launch, with their grids and arguments worked out on the first call of a
@@ -1532,8 +1630,8 @@ def test_a_long_call_splits_its_quantiser_grids(monkeypatch, head_dim):
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_shipped_config_fits(head_dim):
     capability = torch.cuda.get_device_capability()
-    for config in _variants(_cuda_config(head_dim)):
-        fn = I.kernel_function("cuda", head_dim, config)
+    for config, sinks in ((c, s) for c in _variants(_cuda_config(head_dim)) for s in (False, True)):
+        fn = I.kernel_function("cuda", head_dim, config, sinks)
         assert fn.local_bytes <= 64, "the kernel spilled more than a few registers to the stack"
         cap = config.get("max_registers")
         assert cap is None or fn.registers <= cap
@@ -1898,7 +1996,11 @@ def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
         return launch(self, grid, block, values, shared, stream)
 
     monkeypatch.setattr(K.Function, "launch", spy)
-    names = {K.KERNEL_NAME, *K.QUANT_KERNELS}
+    names = {
+        K.KERNEL_NAME,
+        *K.QUANT_KERNELS,
+        "unsloth_i8resid",
+    }  # a plan's first calls take the sink path
     assert torch.cuda.current_device() == 0
     out = I.int8_attention(q, k, v)
     usual = torch.cuda.current_stream(OTHER).cuda_stream
