@@ -24,7 +24,10 @@ def _names(directory: Path) -> list[str]:
     return [p.name for p in dataset_files_in_dir(directory)]
 
 
-ROWS = [{"instruction": "hi", "input": "", "output": "yo"}, {"instruction": "a", "input": "", "output": "b"}]
+ROWS = [
+    {"instruction": "hi", "input": "", "output": "yo"},
+    {"instruction": "a", "input": "", "output": "b"},
+]
 
 
 def test_a_validation_file_is_not_merged_into_training(tmp_path):
@@ -36,7 +39,9 @@ def test_a_validation_file_is_not_merged_into_training(tmp_path):
 def test_a_sidecar_json_beside_the_train_split_does_not_break_the_load(tmp_path):
     datasets = pytest.importorskip("datasets")
     _rows(tmp_path / "train.jsonl", ROWS)
-    (tmp_path / "filter_report.json").write_text(json.dumps({"reasons": [], "kept": 2}), encoding = "utf-8")
+    (tmp_path / "filter_report.json").write_text(
+        json.dumps({"reasons": [], "kept": 2}), encoding = "utf-8"
+    )
     (tmp_path / "dataset_manifest.json").write_text(json.dumps({"run_id": "1"}), encoding = "utf-8")
 
     files = [str(p) for p in dataset_files_in_dir(tmp_path)]
@@ -48,7 +53,11 @@ def test_a_sidecar_json_beside_the_train_split_does_not_break_the_load(tmp_path)
 def test_split_named_parquet_files_keep_only_train(tmp_path):
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
-    for name in ("train-00000-of-00001.parquet", "validation-00000-of-00001.parquet", "test.parquet"):
+    for name in (
+        "train-00000-of-00001.parquet",
+        "validation-00000-of-00001.parquet",
+        "test.parquet",
+    ):
         pq.write_table(pa.table({"text": ["x"]}), tmp_path / name)
     assert _names(tmp_path) == ["train-00000-of-00001.parquet"]
 
