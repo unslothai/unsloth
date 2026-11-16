@@ -478,6 +478,14 @@ DECIDE_BUCKET = 256
 # The sink race keeps the kernels without the sink path only where their error against torch's attention on the
 # deciding call is at most this many times the sink path's (Qwen-Image-2.1: ~1.03, Z-Image-Turbo: ~1.6).
 PLAIN_ERROR_SLACK = 1.15
+# What a route's calls run (``mode`` of the op): MODE_MAIN the kernels as they were before the attention-sink path
+# (no learning, no race: every family not measured with it, and the probes); MODE_RACE the sink path with its race
+# against torch's attention (an automatic route of a SINK_DITS family).
+MODE_MAIN, MODE_RACE = 0, 1
+# The families the attention-sink path was measured on (accuracy and speed per card): only their routes run it.
+SINK_DITS = frozenset(
+    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+)
 _RACE = (
     threading.local()
 )  # .path: the path _median_ms's timed calls take on this thread (None outside it)
@@ -541,7 +549,15 @@ def _config_key(config: dict) -> tuple:
     return tuple(sorted(config.items()))
 
 
-def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+def _plan_key(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> tuple:
     return (
         index,
         _config_key(config),
@@ -555,14 +571,24 @@ def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], inde
         v.stride(),
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
+        int(mode),
     )
 
 
-def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> dict:
-    """The launch plan for ``[B, S, H, D]`` q / k / v with aligned strides (``_aligned``) on device ``index``."""
+def _plan(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> dict:
+    """The launch plan for ``[B, S, H, D]`` q / k / v with aligned strides (``_aligned``) on device ``index``; a
+    MODE_MAIN plan loads and runs only the kernels without the attention-sink path."""
     from .diffusion_int8_attention_cuda import float_bits
 
-    key = _plan_key(q, k, v, config, scale, index)
+    key = _plan_key(q, k, v, config, scale, index, mode)
     plans = _plans()
     plan = plans.get(key)
     if plan is not None:
@@ -577,13 +603,17 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         scale,
         q.shape[1] // DECIDE_BUCKET,
         k.shape[1] // DECIDE_BUCKET,
+        int(mode),
     )
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
-    fn, kernels, shared = _functions(index, D, config, sinks = True)
-    fn0, kernels0, _ = _functions(index, D, config, sinks = False)
+    fn0, kernels0, shared = _functions(index, D, config, sinks = False)
+    # MODE_MAIN never runs the sink path: its kernels are not even compiled for it
+    fn, kernels = (
+        _functions(index, D, config, sinks = True)[:2] if mode != MODE_MAIN else (None, None)
+    )
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
     mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
     n_qpad = _pad(Sq, 16 * nq * wpc)
@@ -659,11 +689,16 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         "shape": (B, Sq, Sk, H, D),
         "pads": (n_qpad, n_kpad),
         "kernels": (
-            kernels["unsloth_i8stats_q"],
-            kernels["unsloth_i8quant_kv"],
-            fn,
-            kernels["unsloth_i8resid"],
+            (
+                kernels["unsloth_i8stats_q"],
+                kernels["unsloth_i8quant_kv"],
+                fn,
+                kernels["unsloth_i8resid"],
+            )
+            if kernels is not None
+            else None
         ),
+        "mode": int(mode),
         "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
         # the sink path, decided by the plan's first calls (_choose_path)
         "calls": 0,
@@ -719,15 +754,23 @@ def forget_plans() -> None:
     _ROUTES.clear()
 
 
-def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+def _find_plan(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> tuple:
     """(plan, q, k, v): the call's launch plan and its operands with aligned strides (copies only where needed)."""
     # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check
     plan = None
     if not (q.data_ptr() | k.data_ptr() | v.data_ptr()) & 15:
-        plan = _plans().get(_plan_key(q, k, v, config, scale, index))
+        plan = _plans().get(_plan_key(q, k, v, config, scale, index, mode))
     if plan is None:
         q, k, v = _aligned(q), _aligned(k), _aligned(v)
-        plan = _plan(q, k, v, config, scale, index)
+        plan = _plan(q, k, v, config, scale, index, mode)
     return plan, q, k, v
 
 
@@ -810,6 +853,8 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
     forced = getattr(_RACE, "path", None)
     if forced is not None:
         return forced, None
+    if plan.get("mode", MODE_RACE) == MODE_MAIN:
+        return False, None
     if torch.cuda.is_current_stream_capturing():
         return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
@@ -949,13 +994,15 @@ def quantise(
     v: Any,
     config: dict,
     scale: Optional[float] = None,
+    mode: int = MODE_MAIN,
 ) -> dict:
-    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims)."""
+    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims); ``mode`` as for
+    ``int8_attention_call``."""
     import torch
 
     dev = q.device
     index = _device_index(dev)
-    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index, mode)
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
     if torch.cuda.current_device() == index:
         sinks = _quantise_on_device(plan, q, k, v, i8)
@@ -975,7 +1022,13 @@ def quantise(
 
 
 def _cuda_attention(
-    q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
 ) -> Any:
     """``attend(quantise(q, k, v, config, scale))`` in one pass, on the path the plan takes (_choose_path, with the
     sink race): one plan lookup, one stream lookup, no operand views. The scratch buffer and any aligned copies are
@@ -983,7 +1036,7 @@ def _cuda_attention(
     read it."""
     import torch
 
-    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index, mode)
     if torch.cuda.current_device() == index:
         return _attention_on_device(plan, q, k, v, scale, index)
     with torch.cuda.device(index):
@@ -1029,7 +1082,7 @@ def attend(p: dict) -> Any:
     plan, i8 = p["plan"], p["i8"]
     index = plan["index"]
     out = torch.empty(plan["out_shape"], dtype = p["dtype"], device = i8.device)
-    sinks = p.get("sinks", True)
+    sinks = p.get("sinks", False)
     if torch.cuda.current_device() == index:
         _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index), sinks)
     else:
@@ -1114,8 +1167,10 @@ def _run(
     impl: Optional[str],
     config: Optional[dict] = None,
     scale: Optional[float] = None,
+    mode: int = MODE_MAIN,
 ) -> Any:
-    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted. Without an explicit ``config``, a call long
+    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted (``mode``: the CUDA kernel's, as for
+    ``int8_attention_call``). Without an explicit ``config``, a call long
     enough for the card's long variant runs it only where that variant passed its own check; elsewhere it runs the
     short config (a valid kernel at any length, only slower there)."""
     import torch
@@ -1133,7 +1188,7 @@ def _run(
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel._int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():
-        return attend(quantise(q, k, v, config, scale))
+        return attend(quantise(q, k, v, config, scale, mode))
 
 
 def int8_attention(
@@ -1142,6 +1197,7 @@ def int8_attention(
     v: Any,
     scale: Optional[float] = None,
     config: Optional[dict] = None,
+    mode: int = MODE_MAIN,
 ) -> Any:
     """``softmax(q k^T * scale) v`` with int8 products. ``[B, Sq, H, D]``, ``[B, Sk, H, D]`` x 2 -> ``[B, Sq, H, D]``
     in the dtype of V. Raises where ``unsupported_reason`` says so; ``int8_attention_impl`` is the guarded form."""
@@ -1151,7 +1207,7 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale)
+    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale, mode)
 
 
 def native_attention(
@@ -1172,8 +1228,14 @@ def native_attention(
     return out.permute(0, 2, 1, 3)
 
 
-def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
-    """The kernel where it can run, native attention elsewhere and after any failure."""
+def int8_attention_impl(
+    q: Any,
+    k: Any,
+    v: Any,
+    mode: int = MODE_MAIN,
+) -> Any:
+    """The kernel where it can run, native attention elsewhere and after any failure (``mode``: as for
+    ``int8_attention_call``)."""
     import torch
 
     reason, index, impl, config = _call_route(q, k, v)
@@ -1189,9 +1251,9 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
                 out = _run(q, k, v, impl, config)
             elif torch.is_grad_enabled():
                 with torch.no_grad():
-                    out = _cuda_attention(q, k, v, config, None, index)
+                    out = _cuda_attention(q, k, v, config, None, index, mode)
             else:
-                out = _cuda_attention(q, k, v, config, None, index)
+                out = _cuda_attention(q, k, v, config, None, index, mode)
             STATS["int8"] += 1
             if impl == "triton":
                 STATS["triton"] += 1
@@ -1230,10 +1292,17 @@ def _tracing() -> bool:
     return bool((stack is not None and stack()) or (functorch is not None and functorch()))
 
 
-def int8_attention_call(q: Any, k: Any, v: Any) -> Any:
+def int8_attention_call(
+    q: Any,
+    k: Any,
+    v: Any,
+    mode: int = MODE_MAIN,
+) -> Any:
     """What a processor calls: the custom op while torch.compile traces (opaque, with a fake), and in eager the op's
     body directly, which skips the dispatcher's per-call cost (about a fifth of a short call's CPU time). Tensor
-    subclasses, dispatch modes and functorch transforms always go through the op."""
+    subclasses, dispatch modes and functorch transforms always go through the op. ``mode`` (the route's): MODE_MAIN
+    the kernels as before the attention-sink path, else the sink path with its race (a constant of the graph: another
+    op)."""
     import torch
 
     if (
@@ -1243,7 +1312,10 @@ def int8_attention_call(q: Any, k: Any, v: Any) -> Any:
         and not torch.compiler.is_compiling()
         and not _tracing()
     ):
-        return int8_attention_impl(q, k, v)
+        # MODE_MAIN: the very call main makes
+        return int8_attention_impl(q, k, v, mode) if mode else int8_attention_impl(q, k, v)
+    if mode != MODE_MAIN:
+        return torch.ops.unsloth_studio.int8_attention_nhd_sinks(q, k, v, int(mode))
     return torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
 
 
@@ -1270,6 +1342,17 @@ def int8_attention_op() -> Any:
     @int8_attention_nhd.register_fake
     def _(q, k, v):
         # contiguous [B, S, H, D] in V's dtype: the layout every real output above has
+        return v.new_empty(q.shape)
+
+    # the attention-sink routes (``mode``): another op, so the main one keeps its schema and its graphs
+    @torch.library.custom_op(
+        _OP + "_sinks", mutates_args = (), schema = "(Tensor q, Tensor k, Tensor v, int mode) -> Tensor"
+    )
+    def int8_attention_nhd_sinks(q, k, v, mode):
+        return int8_attention_impl(q, k, v, int(mode)).contiguous()
+
+    @int8_attention_nhd_sinks.register_fake
+    def _(q, k, v, mode):
         return v.new_empty(q.shape)
 
     return int8_attention_nhd
@@ -1583,6 +1666,12 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
         return ()
 
 
+def sink_mode(dit_name: str, forced: bool) -> int:
+    """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
+    the families it was measured on."""
+    return MODE_RACE if dit_name in SINK_DITS else MODE_MAIN
+
+
 def install_int8_attention(
     transformer: Any,
     *,
@@ -1662,6 +1751,7 @@ def _install(
                 continue
             proc._unsloth_int8 = True
             proc._unsloth_int8_min_tokens = int(minimum)
+            proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, False)
             register_route(index, head_dim, _raise_processor_floor(proc, m))
             engaged += 1
             for card in _secondary_cards(index, transformer):
@@ -1693,6 +1783,7 @@ def _install(
             minimum = int(found["min_tokens"])
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
+        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, force)
         if not force:
             register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1

@@ -225,7 +225,7 @@ def emulate(p):
     # the keys a head clipped: their clipped-off part times their exact P, in the frame of the first tile's maximum
     flat = s.reshape(BH, Sq, n_kpad).double()
     for bh in range(BH):
-        n = int(p["rcnt"][bh])
+        n = int(p["rcnt"][bh]) if p.get("sinks", True) else 0
         if n:
             keys_ = p["ridx"][bh, :n].long()
             pr = torch.exp2(flat[bh][:, keys_] - tile_max[bh, :, 0].double() + 7.99435343685886)
@@ -1456,10 +1456,10 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
     dtype = _card_dtype()
     config = _cuda_config(head_dim)
     q, k, v = _sink_case(shape, dtype, sinks, seed = 11)
-    out = I.int8_attention(q, k, v, config = config)
+    out = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     ref = I.reference_attention(q, k, v)
     plain = I.reference_attention(*_case(shape, dtype, seed = 11))
-    plain_out = I.int8_attention(*_case(shape, dtype, seed = 11), config = config)
+    plain_out = I.int8_attention(*_case(shape, dtype, seed = 11), config = config, mode = I.MODE_RACE)
 
     def err(x, r, heads):
         return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
@@ -1470,7 +1470,7 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
         err(plain_out, plain, sink_heads),
     )
     assert err(out, ref, other) < 1.5 * err(plain_out, plain, other)
-    p = I.quantise(q, k, v, config)
+    p = I.quantise(q, k, v, config, mode = I.MODE_RACE)
     counts = p["rcnt"].tolist()
     assert all(c > 0 for c in counts[::2]) and all(c == 0 for c in counts[1::2]), counts
     keys = {int(x) for x in p["ridx"][0, : counts[0]].tolist()}
@@ -1490,7 +1490,7 @@ def test_more_clipped_keys_than_one_staging_pass(head_dim):
     shape = (1, 2100, 2, head_dim)
     sinks = tuple(range(3, 3 + 40))
     q, k, v = _sink_case(shape, _card_dtype(), sinks, seed = 7)
-    p = I.quantise(q, k, v, _cuda_config(head_dim))
+    p = I.quantise(q, k, v, _cuda_config(head_dim), mode = I.MODE_RACE)
     counts = p["rcnt"].tolist()
     assert counts[0] >= len(sinks) > 32 and counts[1] == 0, counts
     keys = p["ridx"][0, : counts[0]].tolist()
@@ -1515,7 +1515,7 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
     else:
         q, k, v = _case(shape, _card_dtype(), seed = 3)
     I.forget_plans()
-    first = I.int8_attention(q, k, v, config = config)
+    first = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     (plan,) = I._plans().values()
     launched = []
     kernels = {
@@ -1530,7 +1530,7 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(K.Function, "launch", spy)
         for _ in range(I.SINK_DECIDE_AT):
-            out = I.int8_attention(q, k, v, config = config)
+            out = I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     assert (
         plan["sinks"] is with_sinks
         and plan["calls"] == I.SINK_DECIDE_AT + 1
@@ -1551,9 +1551,9 @@ def test_a_new_prompt_length_takes_its_buckets_decision(monkeypatch):
     I.forget_plans()
     q, k, v = _case((1, 700, 4, 128), _card_dtype(), seed = 3)
     for _ in range(I.SINK_DECIDE_AT + 1):
-        I.int8_attention(q, k, v, config = config)
+        I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     q, k, v = _case((1, 710, 4, 128), _card_dtype(), seed = 4)
-    I.int8_attention(q, k, v, config = config)
+    I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     first, second = I._plans().values()
     assert first["sinks"] is False and second["sinks"] is False and second["checks"] == []
 
@@ -1573,13 +1573,15 @@ def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch)
     index = torch.cuda.current_device()
     I.forget_plans()
     for _ in range(I.SINK_DECIDE_AT):
-        I._cuda_attention(q, k, v, config, None, index)
+        I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE)
     (plan,) = I._plans().values()
     assert plan["sinks"] is None and races == []
-    out = I._cuda_attention(q, k, v, config, None, index)
+    out = I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE)
     assert plan["sinks"] == "native" and races == [shape]
     assert torch.equal(out, I.native_attention(q, k, v))
-    assert torch.equal(I._cuda_attention(q, k, v, config, None, index), I.native_attention(q, k, v))
+    assert torch.equal(
+        I._cuda_attention(q, k, v, config, None, index, I.MODE_RACE), I.native_attention(q, k, v)
+    )
     assert len(races) == 1
 
 
@@ -1590,7 +1592,7 @@ def test_the_sink_race_times_the_sink_path_on_the_call(monkeypatch):
     shape = (1, 2100, 4, 128)
     q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 5)
     I.forget_plans()
-    I.int8_attention(q, k, v, config = _cuda_config(128))
+    I.int8_attention(q, k, v, config = _cuda_config(128), mode = I.MODE_RACE)
     (plan,) = I._plans().values()
     calls = plan["calls"]
     path = I._sink_race(plan, q, k, v, None, torch.cuda.current_device())

@@ -443,3 +443,144 @@ def test_dispatch_route_refuses_a_triton_verdict_for_cuda_only_families(monkeypa
         pipe = types.SimpleNamespace(transformer = dit(name))
         assert D.install(pipe, _TARGET, requested = request) == routed, (name, request)
         assert (pipe.transformer.attn.processor._attention_backend is None) == (not routed)
+
+
+def _fake_plan(mode = None, **extra):
+    plan = {
+        "bytes": 64,
+        "out_shape": (1, 4, 2, 8),
+        "index": 0,
+        "calls": 0,
+        "sinks": None,
+        "checks": [],
+        "decision": ("bucket",),
+    }
+    if mode is not None:
+        plan["mode"] = mode
+    plan.update(extra)
+    return plan
+
+
+def _recording_kernels(monkeypatch, plan):
+    """_cuda_attention on CPU tensors with the launches recorded (their ``sinks`` flag) and no CUDA call."""
+    launched = []
+
+    def find(
+        q,
+        k,
+        v,
+        config,
+        scale,
+        index,
+        mode = 0,
+    ):
+        # a real plan is keyed and built by its mode
+        plan["mode"] = mode
+        return plan, q, k, v
+
+    monkeypatch.setattr(I, "_find_plan", find)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_raw_stream", lambda index: 0)
+    monkeypatch.setattr(I, "_launch_quantisers", lambda *a: launched.append(("quant", a[-1])))
+    monkeypatch.setattr(I, "_launch_attention", lambda *a: launched.append(("attn", a[-1])))
+    monkeypatch.setattr(I, "_check_sinks", lambda *a: launched.append(("check", None)))
+    return launched
+
+
+def test_a_route_outside_the_sink_families_runs_mains_kernels(monkeypatch):
+    """Every call of a MODE_MAIN route (Wan, LTX, MiniMax, a probe) runs the kernels without the attention-sink path:
+    no sink launches, no learning reads, no decision, no race, past SINK_DECIDE_AT as on its first call."""
+    plan = _fake_plan()
+    launched = _recording_kernels(monkeypatch, plan)
+    monkeypatch.setattr(I, "_sink_race", lambda *a: pytest.fail("a main route never races"))
+    q = torch.zeros(1, 4, 2, 8)
+    for _ in range(I.SINK_DECIDE_AT + 2):
+        I._cuda_attention(q, q, q, {}, None, 0)
+    assert set(launched) == {("quant", False), ("attn", False)}
+    assert plan["calls"] == 0 and plan["sinks"] is None and I._decisions() == {}
+
+
+def test_a_sink_family_route_learns_and_takes_the_sink_path(monkeypatch):
+    """A MODE_RACE route (FLUX.3 Klein, Z-Image, Qwen-Image-2.1) runs the sink path while its plan learns."""
+    plan = _fake_plan(mode = I.MODE_RACE)
+    launched = _recording_kernels(monkeypatch, plan)
+    q = torch.zeros(1, 4, 2, 8)
+    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
+    assert launched == [("quant", True), ("check", None), ("attn", True)] and plan["calls"] == 1
+
+
+def _dispatch_card(monkeypatch, card_floor = None):
+    from core.inference import rocm_bf16
+
+    monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda *a, **k: False)
+    monkeypatch.setattr(I, "int8_attention_op", lambda: None)
+    monkeypatch.setattr(I, "implementation", lambda index, head_dim: "cuda")
+    monkeypatch.setattr(I, "register_route", lambda *a, **k: None)
+    monkeypatch.setattr(D, "_secondary_cards", lambda *a, **k: ())
+    monkeypatch.setattr(D, "install_dispatch_route", lambda: 1)
+    monkeypatch.setattr(D, "original_dispatch", lambda: (lambda *a, **k: None))
+    monkeypatch.setattr(
+        D, "_card_floor", card_floor or (lambda *a, **k: ({"ok": True, "impl": "cuda"}, 1024))
+    )
+    monkeypatch.setattr(D, "_dits", lambda p: [p.transformer])
+
+    class Proc:
+        _attention_backend = None
+        _parallel_config = None
+
+        def __call__(self, *a, **k):
+            return dispatch_attention_fn  # noqa: F821 - only its name is read
+
+    def dit(name):
+        d = type(name, (torch.nn.Module,), {})()
+        m = torch.nn.Module()
+        m.heads = 2
+        m.head_dim = 64
+        m.processor = Proc()
+        d.attn = m
+        return types.SimpleNamespace(transformer = d)
+
+    return dit
+
+
+@pytest.mark.parametrize(
+    "name, request_, mode",
+    [
+        ("WanTransformer3DModel", None, 0),
+        ("WanTransformer3DModel", "unsloth_int8", 0),
+        ("LTX2VideoTransformer3DModel", "unsloth_int8", 0),
+        ("ZImageTransformer2DModel", None, 1),
+        ("QwenImage21Transformer2DModel", None, 1),
+    ],
+)
+def test_dispatch_routes_carry_the_sink_mode_of_their_family(monkeypatch, name, request_, mode):
+    """Only the routes of SINK_DITS run the attention-sink path; every other family's route makes main's call (three
+    tensors, no mode) into the kernels as they were."""
+    dit = _dispatch_card(monkeypatch)
+    pipe = dit(name)
+    assert D.install(pipe, _TARGET, requested = request_) == 1
+    route = pipe.transformer.attn.processor._attention_backend
+    assert route.sinks == mode
+    calls = []
+    monkeypatch.setattr(I, "int8_attention_call", lambda *a: calls.append(len(a)) or a[0])
+    monkeypatch.setattr(D, "_cached_reason", lambda *a: None)
+    q = torch.zeros(1, 4, 2, 8)
+    D.routed_dispatch_attention_fn(q, q, q, backend = route)
+    assert calls == [4 if mode else 3]
+
+
+def test_the_sink_op_is_registered_with_a_fake():
+    """The sink routes trace into a second op (its mode a graph constant); the main op keeps its schema."""
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    I.int8_attention_op()
+    op = torch.ops.unsloth_studio.int8_attention_nhd_sinks
+    with FakeTensorMode():
+        q = torch.empty(1, 16, 2, 64, dtype = torch.bfloat16)
+        assert op(q, q, q, 1).shape == q.shape
+    assert "int mode" not in str(torch.ops.unsloth_studio.int8_attention_nhd.default._schema)

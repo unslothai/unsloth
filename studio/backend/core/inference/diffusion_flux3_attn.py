@@ -51,6 +51,8 @@ def strided_processor_class() -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
+        _unsloth_int8_sinks = 0
 
         def __call__(
             self,
@@ -87,7 +89,12 @@ def strided_processor_class() -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                out = _i8.int8_attention_call(query, key, value)
+                mode = self._unsloth_int8_sinks
+                out = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
                 hidden_states = out.flatten(2, 3)
             else:
                 if cudnn:

@@ -119,6 +119,7 @@ class Int8Route(str):
         route.index = int(index)
         route.head_dim = int(head_dim)
         route.impl = impl
+        route.sinks = 0  # the kernel's mode (diffusion_int8_attention.sink_mode), set by _install
         return route
 
     @property
@@ -309,11 +310,14 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
             reason = _cached_reason(backend, args, kwargs)
             _note(reason or "int8")
         if reason is None:
-            return _I8.int8_attention_call(
+            qkv = (
                 _arg(args, kwargs, 0, "query"),
                 _arg(args, kwargs, 1, "key"),
                 _arg(args, kwargs, 2, "value"),
             )
+            # MODE_MAIN (every family but SINK_DITS): the very call main makes
+            mode = backend.sinks
+            return _I8.int8_attention_call(*qkv, mode) if mode else _I8.int8_attention_call(*qkv)
     return _STATE["original"](*args, **kwargs)
 
 
@@ -646,6 +650,7 @@ def _install(
         )
     candidates = []
     cuda_only = set()
+    family: dict = {}
     for dit in _dits(pipe):
         if not forced and (
             type(dit).__name__ not in AUTO_DITS
@@ -659,6 +664,7 @@ def _install(
             if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
         ]
         candidates.extend(mods)
+        family.update((id(m), type(dit).__name__) for m in mods)
         if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
             cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
@@ -719,6 +725,7 @@ def _install(
             impl,
             cards = floors,
         )
+        route.sinks = I8.sink_mode(family.get(id(m), ""), forced)
         if not forced:
             for card in floors:
                 I8.register_route(card, head_dim, _raise_route_floor(route, card))
