@@ -17,7 +17,10 @@ const CATCH = BODY.slice(BODY.indexOf("} catch (err) {"));
 
 test("a retried create reuses the draft's project id", () => {
   assert.match(DIALOG, /const projectId = useRef\(crypto\.randomUUID\(\)\);/);
-  assert.match(TRY, /createChatProject\(trimmed, token \?\? undefined, projectId\.current\)/);
+  assert.match(
+    TRY,
+    /createChatProject\(\s*trimmed,\s*token \?\? undefined,\s*projectId\.current,\s*parentId,\s*\)/,
+  );
   assert.match(DIALOG, /projectId\.current = crypto\.randomUUID\(\);/);
 });
 
