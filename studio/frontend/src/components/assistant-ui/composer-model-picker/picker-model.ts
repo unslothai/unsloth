@@ -107,7 +107,7 @@ export interface PickerRow {
   groups?: string[];
   section?: ListSection;
   sizeBytes?: number;
-  /** Curated position (the Hub's NPU order); breaks date ties between ranked rows before the name does. */
+  /** Curated position (the Hub's NPU order); breaks date ties before the name does. */
   rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
@@ -166,9 +166,11 @@ export function sortDeviceRows<T extends PickerRow>(
   lastLoaded: (row: T) => number,
   desc: boolean = DEVICE_SORT_DESC[key],
 ): T[] {
+  // One key order (date, rank, name) keeps the comparator transitive; unranked rows rank last.
+  const rankOf = (row: T) => row.rank ?? Number.MAX_SAFE_INTEGER;
   const byDate = (a: T, b: T) =>
     (b.updatedAt ?? -1) - (a.updatedAt ?? -1) ||
-    (a.rank !== undefined && b.rank !== undefined ? a.rank - b.rank : 0) ||
+    rankOf(a) - rankOf(b) ||
     a.label.localeCompare(b.label);
   const sorted = [...rows].sort((a, b) => {
     if (key === "name") {

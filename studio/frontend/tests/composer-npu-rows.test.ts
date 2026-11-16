@@ -105,6 +105,22 @@ test("On Device's Recent sort keeps never-loaded NPU rows in the Hub's order", (
     recent,
     rows.map((row) => row.label),
   );
+  // Mixed with undated rows that sort between them by name, the NPU rows still keep their order.
+  const others = ["A", "H", "Qwen3.6", "Z"].map((label) => ({
+    key: label,
+    id: label,
+    label,
+    tab: "device",
+    kind: "local" as const,
+  }));
+  const mixed = pickerModel
+    .sortDeviceRows([...others, ...rows], "recent", () => 0)
+    .filter((row) => row.kind === "npu")
+    .map((row) => row.label);
+  assert.deepEqual(
+    mixed,
+    rows.map((row) => row.label),
+  );
   assert.deepEqual(
     pickerModel.sortDeviceRows(rows, "name", () => 0).map((row) => row.label),
     ["Gemma3-4B-IT-NPU2", "Qwen3.5-9B-NPU2", "Qwen3.8-27B-NPU2"],
