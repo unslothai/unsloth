@@ -4193,8 +4193,7 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-# TRL >= 1.0 DPOTrainer (ref_model None + PeftModel) copies ".default." into a new "ref" adapter; TRL 1.0 - 1.6
-# pass model.peft_config["default"], 1.7+ a default_config local.
+# TRL >= 1.0 DPOTrainer copies ".default." into a "ref" adapter (1.0-1.6 peft_config["default"], 1.7+ default_config).
 _DPO_REF_ADAPTER_BLOCK = re.compile(
     r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
     r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
@@ -4204,8 +4203,6 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 
 
 def _guard_dpo_ref_adapter_for_tp(init):
-    """Run DPOTrainer's "ref" adapter copy only off tensor parallel."""
-
     def _guard(match):
         indent = match.group("indent")
         lines = match.group(0).split("\n")

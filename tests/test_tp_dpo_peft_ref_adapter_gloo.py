@@ -156,7 +156,6 @@ def _spawn(trained, world = 2):
     for res in results:
         if "skip" in res:
             pytest.skip(res["skip"])
-        # Each arm must run the unsloth of this checkout.
         assert os.path.realpath(res["unsloth_file"]).startswith(os.path.realpath(REPO) + os.sep)
         assert res["dtensor_lora"]
     return results

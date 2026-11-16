@@ -6907,8 +6907,7 @@ def _tensor_parallel_trainer_pre(model):
 
 
 def _unsloth_tp_skip_dpo_ref_adapter(model):
-    """Under tp TRL's "ref" adapter copy mixes DTensor shards and full tensors. A fresh adapter (lora_B /
-    lora_embedding_A all zero) equals the disabled-adapter reference: True skips the copy, False off tp; raises if trained."""
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
     tp = _is_unsloth_tensor_parallel(model)
     if not tp:
         try:
@@ -6931,7 +6930,7 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
                 and not is_lora
                 and (".modules_to_save." not in name)
             ):
-                # Other adapter weights (DoRA magnitudes, trainable token rows, ...): equivalence unchecked, refuse.
+                # DoRA magnitudes, trainable token rows, ...: equivalence unchecked.
                 nonzero += 1
                 continue
             if ".modules_to_save.default." in name:
