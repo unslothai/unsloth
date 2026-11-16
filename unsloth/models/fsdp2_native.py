@@ -2063,10 +2063,6 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             m.to(
                 "cpu"
             )  # fully_shard(root) moves the buffers of every module it manages (Gemma's embed_scale)
-        if io_tables and device.type == "cuda":
-            # The freed table chunks (GiBs) stay cached in the default stream's pool, which FSDP2's
-            # all-gather stream cannot reuse: a 27B model on a T4 then OOMs on a 264 MiB block gather.
-            torch.cuda.empty_cache()
         model._unsloth_reshard_after_forward = False
     setattr(model, _NATIVE_FLAG, True)
     for param in model.parameters():
