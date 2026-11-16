@@ -12298,6 +12298,7 @@ async def _maybe_auto_switch_model(
                             )
                         # Call the impl directly: we hold the lifecycle gate the /load route takes (deadlock).
                         # Deferred claim: base preview ownership on what is actually resident, in a finally.
+                        _switch_prior_resident = _loaded_slot_ident()
                         _switch_prior_marker = _get_preview_resident()
                         _switch_loaded_ok = False
                         try:
@@ -12389,8 +12390,15 @@ async def _maybe_auto_switch_model(
                             _raise_if_generation_cancelled()
                         finally:
                             if not claim_resident:
-                                if _switch_loaded_ok or _loaded_slot_ident() == target_id:
-                                    _set_preview_resident(_loaded_slot_ident())
+                                resident = _loaded_slot_ident()
+                                # A failed same-model attempt cannot change existing ownership.
+                                if _switch_loaded_ok or (
+                                    resident == target_id
+                                    and not _same_loaded_identifier(
+                                        _switch_prior_resident, resident
+                                    )
+                                ):
+                                    _set_preview_resident(resident)
                                 else:
                                     _set_preview_resident(_switch_prior_marker)
                 finally:

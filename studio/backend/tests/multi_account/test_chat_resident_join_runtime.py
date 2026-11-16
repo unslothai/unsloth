@@ -222,7 +222,18 @@ def test_a_retired_loader_is_not_seeded_back(strict, accounts):
     assert access._resident_sharers["chat"] == {accounts["alice"].account_id}
 
 
-def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, accounts):
+@pytest.mark.parametrize("prior_preview", [False, True])
+@pytest.mark.parametrize(
+    "path, claim_resident",
+    [
+        ("/v1/chat/completions", True),
+        ("/v1/messages/count_tokens", False),
+        ("/v1/completions", False),
+    ],
+)
+def test_configured_alias_refuses_capacity_relaxed_join(
+    monkeypatch, strict, accounts, prior_preview, path, claim_resident
+):
     # The real loader's ordinary shared-runtime join cannot count as applying an explicit alias config.
     from dataclasses import replace
     from fastapi import HTTPException
@@ -235,7 +246,8 @@ def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, acc
     )
     strict._requested_spec_mode = "off"
     strict._loaded_by_user_action = True
-    monkeypatch.setattr(inference, "_preview_resident_ident", RESIDENT)
+    prior_marker = RESIDENT if prior_preview else None
+    monkeypatch.setattr(inference, "_preview_resident_ident", prior_marker)
     prior_sharers = set(access._resident_sharers.get("chat", ()))
     target = f"{RESIDENT}:{VARIANT}"
     config = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "off"}
@@ -247,13 +259,15 @@ def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, acc
         app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
         scope = {MODEL_ALIAS_CONFIG_SCOPE_KEY: {"model": target, "load_config": config}},
         state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/chat/completions"),
+        url = SimpleNamespace(path = path),
     )
     with pytest.raises(HTTPException) as exc:
         run_as(
             accounts["alice"],
             lambda: asyncio.run(
-                inference._maybe_auto_switch_model(target, request, accounts["alice"].username)
+                inference._maybe_auto_switch_model(
+                    target, request, accounts["alice"].username, claim_resident = claim_resident
+                )
             ),
         )
     assert exc.value.status_code == 409
@@ -261,5 +275,20 @@ def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, acc
     assert strict.last_load_intent.cache_type_kv == "q4_0"
     assert not strict.unloaded
     assert strict._loaded_by_user_action is True
-    assert inference._get_preview_resident() == RESIDENT
+    assert inference._get_preview_resident() == prior_marker
     assert access._resident_sharers.get("chat", set()) == prior_sharers
+    if not prior_preview:
+        with pytest.raises(HTTPException) as preview:
+            run_as(
+                accounts["alice"],
+                lambda: asyncio.run(
+                    inference.load_model_for_preview(
+                        LoadRequest(model_path = "/outputs/another-checkpoint"),
+                        request,
+                        accounts["alice"].username,
+                    )
+                ),
+            )
+        assert preview.value.status_code == 503
+        assert "Unload it before using this preview" in preview.value.detail
+        assert not strict.unloaded

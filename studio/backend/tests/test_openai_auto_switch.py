@@ -416,6 +416,34 @@ def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
         inference_route._set_preview_resident(None)
 
 
+@pytest.mark.parametrize("replaced", [False, True])
+@pytest.mark.parametrize("prior_preview", [False, True])
+def test_failed_non_claiming_switch_tracks_the_actual_resident(
+    monkeypatch, replaced, prior_preview
+):
+    # Failures preserve existing ownership; an actual replacement remains unclaimed for preview.
+    backend = _FakeBackend("org/A-GGUF", "Q4_K_M")
+    prior_marker = backend.model_identifier if prior_preview else None
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", prior_marker)
+
+    async def load(request, *_args, **_kwargs):
+        if replaced:
+            backend.model_identifier = request.model_path
+            inference_route._set_preview_resident(None)
+        raise HTTPException(status_code = 503, detail = "load failed")
+
+    _wire_on(
+        monkeypatch,
+        backend = backend,
+        recorder = load,
+        resolves_to = ("org/B-GGUF", "Q4_K_M", "org/B-GGUF"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        _run_hook("org/B-GGUF:Q4_K_M", claim_resident = False)
+    assert exc.value.status_code == 503
+    assert inference_route._get_preview_resident() == ("org/B-GGUF" if replaced else prior_marker)
+
+
 def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
     backend, rec = _wired(
         monkeypatch, _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL"), None
@@ -13365,17 +13393,27 @@ def test_alias_config_conflict_uses_endpoint_error_envelope(monkeypatch, policy,
     assert not rec.calls
 
 
-def test_alias_config_failed_load_does_not_adopt_configuration(monkeypatch):
+@pytest.mark.parametrize("claim_resident", [False, True])
+@pytest.mark.parametrize("prior_preview", [False, True])
+def test_alias_config_failed_load_does_not_adopt_configuration(
+    monkeypatch, claim_resident, prior_preview
+):
     # A failed switch cannot make a later identical request skip the required load.
     backend, rec = _wire_alias_config(monkeypatch, fail = True)
+    prior_marker = backend.model_identifier if prior_preview else None
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", prior_marker)
     for _ in range(2):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._maybe_auto_switch_model(
-                    _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
+                    _ALIAS_TARGET,
+                    _alias_config_request(_ALIAS_LONG),
+                    "tester",
+                    claim_resident = claim_resident,
                 )
             )
         assert exc.value.status_code == 503
+        assert inference_route._get_preview_resident() == prior_marker
     assert len(rec.calls) == 2
     assert getattr(backend, "last_load_intent", None) is None
 
