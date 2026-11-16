@@ -2513,6 +2513,11 @@ def run_inference_process(
 
     install_torchao_windows_rocm_stub()
 
+    # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
+    from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
+
+    install_windows_rocm_wide_head_sdpa_guard(logger)
+
     # Resolve the base once before activation, gates and install; _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
 

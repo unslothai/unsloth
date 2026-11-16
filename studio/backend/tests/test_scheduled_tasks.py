@@ -392,6 +392,32 @@ def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
     assert create(client).json()["archiveSuccessful"] is False
 
 
+def test_web_search_is_off_unless_the_task_turns_it_on(client):
+    assert create(client).json()["webSearch"] is False
+    task = create(client, webSearch = True).json()
+    assert task["webSearch"] is True
+    renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"})
+    assert renamed.json()["webSearch"] is True
+    off = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"webSearch": False})
+    assert off.json()["webSearch"] is False
+
+
+def test_an_older_database_gains_the_web_search_column_once(tmp_path):
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.execute(
+        "CREATE TABLE scheduled_tasks (id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL,"
+        " title TEXT NOT NULL, prompt TEXT NOT NULL, schedule_json TEXT NOT NULL,"
+        " timezone TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, next_run_at INTEGER,"
+        " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO scheduled_tasks VALUES ('t', 'unsloth', 'T', 'P', '{}', 'UTC', 1, NULL, 1, 1)"
+    )
+    studio_db._ensure_schema(conn)
+    studio_db._ensure_schema(conn)
+    assert conn.execute("SELECT web_search FROM scheduled_tasks").fetchall() == [(0,)]
+
+
 def test_create_list_and_read(client, monkeypatch):
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T12:00:00+00:00"))
     response = create(client, title = "  Morning brief  ")
@@ -1036,6 +1062,34 @@ def generate(
     run = {"id": "run-1"}
     app = SimpleNamespace(state = SimpleNamespace())
     return asyncio.run(generate_answer(app, task, run, cancel_event or threading.Event()))
+
+
+def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
+    producer = FakeProducer(completion("Today's headlines."))
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+
+    answer = generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert answer.content == "Today's headlines."
+    payload = producer.payload
+    assert payload.enable_tools is True and payload.enabled_tools == ["web_search"]
+    assert payload.tool_choice != "none"
+    # Nobody can answer an approval prompt, and a non-streaming request with a confirm gate is refused.
+    assert payload.permission_mode == "off" and payload.confirm_tool_calls is False
+    assert not inference_routes._confirm_gate_needs_stream(payload)
+    assert payload.bypass_permissions is False
+    assert payload.run_tools_locally is True
+
+
+def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+
+    generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert producer.payload.tool_choice == "none" and producer.payload.enabled_tools == []
 
 
 def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):

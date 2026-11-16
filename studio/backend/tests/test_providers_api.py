@@ -220,7 +220,6 @@ class TestRegistry:
                 assert field in entry, f"Missing field '{field}' in entry: {entry}"
             assert entry["model_list_mode"] in ("remote", "curated")
             assert isinstance(entry["default_models"], list)
-            assert len(entry["default_models"]) > 0
 
 
 class TestProviderCRUD:

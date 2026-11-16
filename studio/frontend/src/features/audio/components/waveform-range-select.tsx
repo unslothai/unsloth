@@ -318,6 +318,7 @@ export function WaveformRangeSelect({
                 <button
                   type="button"
                   disabled={disabled}
+                  title="Remove range"
                   aria-label={`Remove range ${index + 1}`}
                   className="flex items-center rounded-r-full py-1 pl-0.5 pr-2 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => remove(index)}
@@ -333,7 +334,7 @@ export function WaveformRangeSelect({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto px-2 py-1 text-ui-11p5"
+            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!canAdd}
             onClick={() => {
               const next = nextFreeRange(ranges, limits);

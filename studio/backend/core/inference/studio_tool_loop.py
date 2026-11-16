@@ -2027,6 +2027,7 @@ async def _stream_with_studio_tools(
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2254,6 +2255,7 @@ async def _stream_with_studio_tools(
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     ) or requires_os_isolation(
                         confirm_tool_calls = confirm_tool_calls,
                         bypass_permissions = follower_bypass,

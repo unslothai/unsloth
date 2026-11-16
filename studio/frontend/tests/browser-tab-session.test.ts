@@ -27,8 +27,15 @@ const { TAB_SESSION_KEY, loadTabSession, parseTabSession, serializeTabSession } 
 const { accountDatabaseName } = await import("../src/lib/account-transition.ts");
 
 let reloads = 0;
+// A reload whose shown chat is a single: chat asks storage whether that chat was saved (tab-session.ts
+// chatIsUnsaved); the stub answers through __storedThreads.has, so the two counts say when every answer is in.
+let lookupsStarted = 0;
+let lookupsAnswered = 0;
 // The store as a reload of the page builds it: a new module instance reading the same sessionStorage.
-const reloaded = async (): Promise<StoreModule> => import(`../src/features/browser/store.ts?reload=${++reloads}`);
+const reloaded = async (): Promise<StoreModule> => {
+  if (loadTabSession().shown?.startsWith("single:")) lookupsStarted++;
+  return import(`../src/features/browser/store.ts?reload=${++reloads}`);
+};
 const shownUrls = (module: StoreModule) =>
   chatTabs(module.useBrowserStore.getState()).map((tab) => {
     const entry = currentEntry(tab);
@@ -37,8 +44,22 @@ const shownUrls = (module: StoreModule) =>
 
 const A = chatKeyOfThread("a");
 const B = chatKeyOfThread("b");
-Object.assign(globalThis, { __storedThreads: new Set(["a", "b"]) });
-const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+class StoredThreads extends Set<string> {
+  has(id: string): boolean {
+    lookupsAnswered++;
+    return super.has(id);
+  }
+}
+Object.assign(globalThis, { __storedThreads: new StoredThreads(["a", "b"]) });
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// The lookup starts with a dynamic import through the test's module hooks, which can take longer than one
+// timer tick on a loaded runner, so wait for the answers themselves rather than a fixed delay.
+const settled = async () => {
+  const deadline = Date.now() + 10_000;
+  while (lookupsAnswered < lookupsStarted && Date.now() < deadline) await tick();
+  assert.equal(lookupsAnswered, lookupsStarted, "a stored-chat lookup never answered");
+  await tick();
+};
 
 test("a reload restores the chat's web and new tabs with its panel open, and keeps them for it while another chat shows", async () => {
   const store = useBrowserStore.getState();

@@ -7,6 +7,8 @@ import type { WorkflowId } from "../workflows";
 export interface AdapterDeployRequest {
   baseRepo: string;
   family: string;
+  /** Every family the adapter loads on (FLUX.3 Klein Base deploys on FLUX.3 Klein); absent = `family` only. */
+  families?: string[];
   catalogPath: string;
   trigger: string;
 }

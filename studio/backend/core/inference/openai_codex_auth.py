@@ -258,6 +258,18 @@ async def remember_catalog_account(provider_id: str, account_id: str) -> None:
         save_oauth_bundle(provider_id, bundle)
 
 
+async def remember_plan_catalog(
+    provider_id: str, account_id: str, models: list[dict[str, Any]]
+) -> None:
+    """Kept in the bundle so it leaves with the account: a new sign-in writes a bundle without it."""
+    async with provider_oauth_write_guard(provider_id):
+        bundle = load_oauth_bundle(provider_id)
+        if not bundle or bundle.get("account_id") != account_id:
+            return
+        bundle["plan_catalog"] = {"account_id": account_id, "models": models}
+        save_oauth_bundle(provider_id, bundle)
+
+
 def load_oauth_bundle(provider_id: str) -> dict[str, Any] | None:
     raw = credential_secrets.get_secret(credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id)
     if not raw:
@@ -902,5 +914,7 @@ async def resolve_access(
             proof = current.get("catalog_account_id")
             if proof is not None and refreshed.get("account_id") == current.get("account_id"):
                 refreshed["catalog_account_id"] = proof
+            if current.get("plan_catalog"):
+                refreshed["plan_catalog"] = current["plan_catalog"]
             save_oauth_bundle(provider_id, refreshed)
             return refreshed["access_token"], refreshed["account_id"]
