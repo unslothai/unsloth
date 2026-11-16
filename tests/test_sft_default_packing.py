@@ -144,3 +144,14 @@ def test_a_reused_config_decides_again(monkeypatch):
     assert config.packing is True
     SFT(model = _Model(), args = config, train_dataset = _text(), data_collator = lambda rows: rows)
     assert config.packing is False and calls["pack"] == 1
+
+
+def test_a_reused_config_packs_again_and_keeps_an_explicit_override(monkeypatch):
+    SFT, calls = _patched(monkeypatch)
+    config = _config()
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    assert config.packing is True and calls["pack"] == 2
+    config.packing = False  # explicit, after the first trainers
+    SFT(model = _Model(), args = config, train_dataset = _text())
+    assert config.packing is False and calls["pack"] == 2

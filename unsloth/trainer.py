@@ -1868,14 +1868,24 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
-        # The mark lets a config reused for another trainer decide again.
+        # The mark lets a config reused for another trainer decide again, unless the user changed packing since.
         packing_unset = config_arg is not None and (
             getattr(config_arg, "packing", False) is None
-            or getattr(config_arg, "_unsloth_packing_unset", False)
+            or (
+                getattr(config_arg, "_unsloth_packing_unset", False)
+                and getattr(config_arg, "packing", None)
+                == getattr(config_arg, "_unsloth_packing_auto", None)
+            )
         )
         if packing_unset:
+            if getattr(config_arg, "_unsloth_padding_free_auto", False):
+                setattr(config_arg, "padding_free", None)
             setattr(config_arg, "packing", False)
             setattr(config_arg, "_unsloth_packing_unset", True)
+        elif config_arg is not None and getattr(config_arg, "_unsloth_packing_unset", False):
+            setattr(config_arg, "_unsloth_packing_unset", False)
+        if config_arg is not None and hasattr(config_arg, "_unsloth_padding_free_auto"):
+            setattr(config_arg, "_unsloth_padding_free_auto", False)
 
         model = args[0] if len(args) >= 1 else kwargs.get("model")
         model_config = None
@@ -2126,6 +2136,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         f"({choice_reason}). Set UNSLOTH_PADDING_CHOICE=padding_free to override."
                     )
 
+        if packing_unset:
+            setattr(config_arg, "_unsloth_packing_auto", getattr(config_arg, "packing", None))
+            if default_packing or auto_padding_free_active:
+                setattr(config_arg, "_unsloth_padding_free_auto", True)
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
