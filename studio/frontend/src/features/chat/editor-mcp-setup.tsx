@@ -157,6 +157,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
         Unsloth connects to the MCP server that the {copy.name} add-on runs on this computer. Nothing is downloaded.
       </p>}
+      {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer. Open Setup help below to install it.</p>}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {copy.needsProject && (
         <div className="space-y-1">

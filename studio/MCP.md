@@ -48,6 +48,8 @@ and launches nothing; it connects to `http://127.0.0.1:<port>/mcp` on the backen
 | Unreal Engine | [Unreal MCP](https://github.com/ChiR24/Unreal_mcp) (EngineWire) | 3000 | Turn on **Enable Native MCP Server** if the status bar reads `MCP off` (Fab builds ship with it off). Enter the project folder: Unsloth reads `Saved/MCP/capability-token` on every connection and sends it as `X-MCP-Capability-Token`. |
 | Godot 4 | [Godot MCP Native](https://github.com/yurineko73/Godot-MCP-Native) | 9080 | Install from AssetLib and enable the plugin; it starts its HTTP server with the editor. It listens on every network interface, so turn on its auth token on a shared network and add it as a custom server with an `Authorization: Bearer <token>` header instead. |
 
+All four rows are always listed. When Unsloth Studio cannot find an editor on the backend machine (PATH, the standard app folders, Unity Hub editors, Epic launcher installs), its row reads **Not installed**; it still opens and works once the editor is installed elsewhere.
+
 Like Blender, these tools run code in the editor on this computer, so they follow the same
 gate as local commands: owner only, and off while Remote access or LAN access is on.
 Advanced settings change the port. Tools are named `mcp__unity__*`, `mcp__unreal__*` and

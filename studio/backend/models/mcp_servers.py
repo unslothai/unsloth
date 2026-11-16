@@ -118,6 +118,8 @@ class McpBuiltinResponse(BaseModel):
     blender_path: str = ""
     min_blender_version: Optional[str] = None
     project_path: str = ""
+    # None when the install check could not run, so the UI shows no hint.
+    installed: Optional[bool] = None
 
 
 class McpStdioDecodeRequest(BaseModel):

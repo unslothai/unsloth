@@ -11,6 +11,7 @@ from typing import Optional
 
 import httpx
 
+from integrations.installed import is_installed
 from core.inference.mcp_client import list_tools_async, stdio_mcp_disabled_reason, stdio_mcp_enabled
 from models.mcp_servers import EditorSettings, McpBuiltinResponse, McpServerProbeResult
 
@@ -113,6 +114,7 @@ def catalog_item(builtin_id: str, row = None) -> McpBuiltinResponse:
         display_name = EDITORS[builtin_id].display_name,
         port = settings.port,
         project_path = settings.project_path,
+        installed = is_installed(builtin_id),
         server_id = row["id"] if row else None,
         is_enabled = bool(row and row["is_enabled"]),
         available = reason is None,

@@ -52,6 +52,7 @@ export interface McpBuiltinConfig {
   blender_path: string;
   min_blender_version: string | null;
   project_path?: string;
+  installed?: boolean | null;
 }
 
 export interface BlenderMcpSettings {

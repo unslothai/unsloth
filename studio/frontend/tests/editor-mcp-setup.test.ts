@@ -31,3 +31,10 @@ test("editor setup posts to its own managed routes and only Unreal asks for a pr
   assert.match(SETUP, /const settings = \{ port: Number\(port\), project_path: projectPath\.trim\(\) \};/);
   assert.match(SETUP, /disabled=\{locked \|\| !config\.available \|\| !ready \|\| !consent\}/);
 });
+
+test("rows stay visible and only hint when the backend cannot find the editor", () => {
+  assert.match(COMPOSER, /item\.installed === false/);
+  assert.equal(COMPOSER.match(/>Not installed</g)?.length, 2);
+  assert.match(SETUP, /config\?\.installed === false && !config\.is_enabled/);
+  assert.match(API, /installed\?: boolean \| null;/);
+});

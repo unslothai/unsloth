@@ -274,3 +274,38 @@ def test_unreadable_unreal_token_does_not_break_the_server_list(tmp_path):
     config = json.dumps({"project_path": str(tmp_path)})
     db.create_server("c" * 16, "Unreal Engine", "", builtin_id = "unreal", builtin_config_json = config)
     assert db.list_servers()[0]["headers_json"] is None
+
+
+@pytest.fixture
+def fresh_install_cache(monkeypatch, tmp_path):
+    from integrations import installed
+
+    installed._cache.clear()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(installed.shutil, "which", lambda name: None)
+    monkeypatch.setattr(installed.sys, "platform", "linux")
+    yield installed
+    installed._cache.clear()
+
+
+def test_install_hint_finds_editors_and_fails_open(fresh_install_cache, tmp_path, monkeypatch):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed, "_any", lambda patterns: False)
+    assert installed.is_installed("unity") is False
+    (tmp_path / "Unity" / "Hub" / "Editor" / "6000.2.1f1").mkdir(parents = True)
+    installed._cache.clear()
+    assert installed.is_installed("unity") is True
+    blender = tmp_path / "blender"
+    blender.write_text("", encoding = "utf-8")
+    assert installed.is_installed("blender") is False
+    assert installed.is_installed("blender", str(blender)) is True
+    monkeypatch.setattr(installed, "_detect", lambda *a: (_ for _ in ()).throw(OSError("denied")))
+    installed._cache.clear()
+    assert installed.is_installed("godot") is None
+
+
+def test_catalog_reports_install_state(fresh_install_cache, monkeypatch):
+    installed = fresh_install_cache
+    monkeypatch.setattr(installed, "_detect", lambda builtin_id, path: builtin_id == "godot")
+    items = {item.builtin_id: item.installed for item in routes.list_builtins()}
+    assert items == {"blender": False, "unity": False, "unreal": False, "godot": True}
