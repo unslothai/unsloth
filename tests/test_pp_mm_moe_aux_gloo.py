@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallelism over the mixture-of-experts ConditionalGeneration wrappers (Qwen3.5-MoE, Qwen4Exp),
-text only with the towers out: the router auxiliary loss is carried between stages with num_experts / top-k /
-coef from text_config, as the wrapper's forward reads them. gloo CPU world of 2 vs gradient accumulation over
-the same micro-batches in one process, fp32."""
+"""pp2 over the Qwen3.5-MoE / Qwen4Exp ConditionalGeneration wrappers (text only): router aux loss with
+num_experts / top-k / coef from text_config, vs gradient accumulation in one process (gloo, fp32)."""
 
 import multiprocessing
 import os
@@ -145,7 +143,7 @@ def build(
 def batch(family, bsz = 4):
     seq = SEQ[family]
     g = torch.Generator().manual_seed(1)
-    ids = torch.randint(3, 500, (bsz, seq), generator = g)  # text tokens only
+    ids = torch.randint(3, 500, (bsz, seq), generator = g)
     labels = ids.clone()
     labels[0, :3] = -100
     mask = torch.ones(bsz, seq, dtype = torch.long)
@@ -346,7 +344,6 @@ CELLS = {
 
 @pytest.mark.parametrize("cell", sorted(CELLS))
 def test_pp2_wrapper_moe_aux_matches_gradient_accumulation(cell):
-    # Failing before: "Qwen3_5MoeForConditionalGeneration is not proven" / Qwen4Exp likewise.
     kwargs = CELLS[cell]
     results = _spawn("parity", **kwargs)
     ref = results[0]["ref"]
@@ -368,7 +365,7 @@ def test_pp2_wrapper_moe_aux_matches_gradient_accumulation(cell):
     want = {"linear": ("lora_",), "experts": ("mlp.gate", "mlp.experts")}.get(
         kwargs.get("lora"), ("mlp.gate",)
     )
-    for res in results:  # both stages own what the cell trains
+    for res in results:
         assert all(any(w in n for n in res["owned"]) for w in want), (want, res["owned"][:6])
     if "aux_effect" in results[0] and kwargs.get("coef", 0.01) >= 1.0:
         assert results[0]["aux_effect"] > 1e-3, results[0]["aux_effect"]

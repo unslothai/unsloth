@@ -58,7 +58,7 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # adds its layers' load-balancing statistics to the ones it received and the last stage forms the loss
 # (tests/test_pp_moe_aux_gloo.py proves each against one process). Every other MoE family stays refused.
 # Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
-# The ConditionalGeneration wrappers (text only, towers out) read num_experts / top-k / coef from text_config.
+# ConditionalGeneration wrappers read num_experts / top-k / coef from text_config.
 _PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
 _PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
@@ -723,8 +723,8 @@ def check_pipeline_model(model):
 class _MoEAux:
     """How a stage collects its routers' logits and forms the load-balancing loss (_moe_aux_plan)."""
 
-    owner: nn.Module  # the model whose forward adds the auxiliary loss
-    config: object  # holds output_router_logits (the CausalLM's config, a wrapper's text_config)
+    owner: nn.Module
+    config: object  # a wrapper's text_config, else the CausalLM's config
     router_class: type  # the module whose output[index] is a layer's router logits
     index: int
     num_experts: int
@@ -864,7 +864,7 @@ def _moe_aux_plan(parts):
 
 
 def _router_aux_coef(moe):
-    """Read per step, as the forward does: trainers rewrite a CausalLM's cached coef / a wrapper's text_config."""
+    """Read per step: trainers rewrite the coef after the split."""
     if type(moe.owner).__name__ in _PP_MOE_AUX_WRAPPERS:
         return moe.config.router_aux_loss_coef
     return moe.owner.router_aux_loss_coef

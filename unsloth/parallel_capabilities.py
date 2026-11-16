@@ -976,7 +976,6 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
-    # Qwen3.5-MoE / Qwen4Exp ConditionalGeneration, text only: pp2 vs gradient accumulation in one process.
     **{
         (family, precision, aux, "pp"): (f"{_MOE_PP_MM}[{family}_{case}]",) * 2
         + ("eager: no compiled region",)
