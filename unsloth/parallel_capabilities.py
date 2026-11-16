@@ -815,6 +815,7 @@ MOE_FAMILIES = (
     "deepseek_v3",
     "deepseek_v32",
     "deepseek_v4",
+    "deepseek_v41",
     "kimi_linear",
     "minimax",
     "minimax_m2",
@@ -875,6 +876,13 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Native DeepSeek-V4.1 (no router aux loss): stages through its pipeline_stage_forward, cut where no group state
+# crosses, engram tables on the owning stage only, mHC streams carried; fp32 vs one process.
+_DSV41_PP = (
+    "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
+)
+# Its checkpoint is zoo's non-reentrant layer replay whichever function runs it (Unsloth's offloading one included).
+_MOE_PP_MEMORY = {"deepseek_v41": ("none", "gc", "unsloth_offload")}
 # Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
@@ -929,7 +937,7 @@ _GPT_OSS_CASES = {
     "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
 }
 # Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
-_MOE_ATTENTION = {"deepseek_v4": ("eager",), "gpt_oss": ("eager",)}
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "deepseek_v41": ("eager",), "gpt_oss": ("eager",)}
 _MOE_TEXT_ONLY = {
     "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
     "text-only Gemma4ForCausalLM ran",
@@ -965,6 +973,16 @@ _MOE_EVIDENCE = {
     * 2
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
+    + ("eager: no compiled region",),
+    ("deepseek_v41", "lora", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe|pp2_1f1b|pp4_gpipe_mb4|pp2_gpipe_mb4_gc|pp2_1f1b_gc]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("deepseek_v41", "lora+experts", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe_experts|pp2_1f1b_experts_gc]",
+    )
+    * 2
     + ("eager: no compiled region",),
     # Gemma 4 26B-style MoE has no router auxiliary loss: pp2 text-only vs one process (losses, every gradient).
     ("gemma4", "lora", False, "pp"): (
@@ -1046,7 +1064,7 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family not in ("qwen3_moe", "gemma4"):
+        if family not in ("qwen3_moe", "gemma4", "deepseek_v41"):
             return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
@@ -1100,6 +1118,8 @@ def _moe_cells():
                         if mode in ("pp", "tp"):
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
+                        if mode == "pp" and family in _MOE_PP_MEMORY:
+                            match = {**match, "memory": _MOE_PP_MEMORY[family]}
                         cells.append(Cell(name, match, *evidence, note = note))
                         if text_only:
                             cells.append(
@@ -1549,9 +1569,13 @@ def _kernels(model):
     try:
         for m in model.modules():
             forward = getattr(type(m), "forward", None)
-            if getattr(forward, "__module__", "").startswith("unsloth.models.") and type(
-                m
-            ).__name__.endswith("Attention"):
+            module = getattr(forward, "__module__", "")
+            # A native port (models/<name>/modeling.py) runs its own attention, not the fast kernels.
+            if (
+                module.startswith("unsloth.models.")
+                and not module.endswith(".modeling")
+                and type(m).__name__.endswith("Attention")
+            ):
                 return True
     except Exception:
         pass

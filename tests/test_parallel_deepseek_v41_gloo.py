@@ -116,13 +116,16 @@ def _config(**over):
         text["engram_vocab_size"],
     )
     text["engram_num_embeddings"] = [o[-1] + p[-1][-1] for o, p in zip(offsets, primes)]
-    return DeepseekV41Config(text_config = text)
+    # the release keeps a vision_config for a model class with no vision tower or image input
+    return DeepseekV41Config(text_config = text, vision_config = {"model_type": "deepseek_v41_vision"})
 
 
 def build(
     seed = 0,
     lora = True,
     dropout = 0.0,
+    experts = False,
+    gc = False,
     **over,
 ):
     from peft import LoraConfig, get_peft_model
@@ -155,11 +158,23 @@ def build(
     # The indexer selects (no gradient) and the router stays frozen.
     regex = r"^(?!.*\.indexer\.)(?!.*\.gate\.).*\.(" + "|".join(sorted(names)) + r")$"
     config = LoraConfig(
-        r = 4, lora_alpha = 8, target_modules = regex, init_lora_weights = False, lora_dropout = dropout
+        r = 4,
+        lora_alpha = 8,
+        target_modules = regex,
+        init_lora_weights = False,
+        lora_dropout = dropout,
+        # routed experts (packed 3D parameters) through PEFT's ParamWrapper
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+        if experts
+        else None,
     )
     assert register_grouped_linear_lora(config, model)
     torch.manual_seed(seed + 1)
-    return get_peft_model(model, config)
+    model = get_peft_model(model, config)
+    if gc:
+        # zoo's decoder layer replay, non-reentrant (as use_gradient_checkpointing = "unsloth" runs it)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    return model
 
 
 def batch(bsz = 2):
@@ -183,10 +198,11 @@ def _reference(
     parts,
     steps,
     dropout = 0.0,
+    **variant,
 ):
     from peft import get_peft_model_state_dict
 
-    model = build(dropout = dropout)
+    model = build(dropout = dropout, **variant)
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr = 1e-2)
     per = ids.shape[0] // parts
     chunks = [(ids[i * per : (i + 1) * per], labels[i * per : (i + 1) * per]) for i in range(parts)]
@@ -214,6 +230,14 @@ def _reference(
     return {"losses": losses, "grads": grads, "trainable": trainable, "state": state}
 
 
+def _replay_runs():
+    try:
+        from unsloth_zoo.temporary_patches.deepseek_v41 import REPLAY_STATS
+    except Exception:
+        return 0
+    return REPLAY_STATS["runs"]
+
+
 def _local_shape(t):
     return tuple(t.to_local().shape) if hasattr(t, "to_local") else tuple(t.shape)
 
@@ -229,6 +253,8 @@ def _case_parity(
     fault = None,
     layers_per_stage = None,
     dropout = 0.0,
+    experts = False,
+    gc = False,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -236,10 +262,25 @@ def _case_parity(
     bsz = max(2, world) if mode == "fsdp2" else (max(2, n_mb) if mode == "pp" else 2)
     ids, labels = batch(bsz)
     parts = world if mode == "fsdp2" else n_mb
-    ref = _reference(mode, ids, labels, parts, steps, dropout)
+    variant = dict(experts = experts, gc = gc)
+    if gc:
+        # unsloth_zoo on its CPU backend, patched before either model is built (as a run imports it first)
+        os.environ["UNSLOTH_FORCE_CPU"] = "1"
+        assert dsv41.ensure_checkpoint_replay()
+    ref = _reference(mode, ids, labels, parts, steps, dropout, **variant)
+    if fault == "reentrant_no_replay":
+        # a plain reentrant checkpoint: the shared KV a source layer writes is made under no_grad
+        def plain(self, *args, **kwargs):
+            return dsv41.GradientCheckpointingLayer.__call__(self, *args, **kwargs)
+
+        plain._unsloth_patched = True  # ensure_checkpoint_replay keeps it
+        dsv41.DeepseekV41DecoderLayer.__call__ = plain
+    replays = _replay_runs()
     model = build(
-        dropout = dropout
+        dropout = dropout, **variant
     )  # LoRA dropout: the same RNG draws as the reference, in the same order
+    if fault == "reentrant_no_replay":
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = (mode,))[mode]
     save_dir = os.path.join(tmp, "adapter")
     info = {}
@@ -293,6 +334,22 @@ def _case_parity(
         layers = model.get_base_model().model.layers
         info["owned"] = [i for i, layer in enumerate(layers) if "_pp_index" not in layer.__dict__]
         info["stage_forward"] = pp.ctx.stage_forward is not None
+        decoder = model.get_base_model().model
+        stage_fn, info["stage_calls"] = decoder.pipeline_stage_forward, []
+
+        def counted(*args, **kwargs):
+            info["stage_calls"].append(1)
+            return stage_fn(*args, **kwargs)
+
+        decoder.pipeline_stage_forward = counted
+        names = {id(p): n for n, p in model.named_parameters()}
+        info["param_layers"] = sorted(
+            {
+                int(names[id(p)].split(".layers.")[1].split(".")[0])
+                for p in params
+                if ".layers." in names[id(p)]
+            }
+        )
     opt = torch.optim.SGD(params, lr = 1e-2)
     losses, grads = [], None
     for s in range(steps):
@@ -310,6 +367,8 @@ def _case_parity(
         else:
             losses.append(None if loss is None else float(loss))
     if mode == "pp":
+        info["stage_calls"] = len(info["stage_calls"])
+        info["replays"] = _replay_runs() - replays
         pp.save_adapter(save_dir)
     elif mode == "tp":
         tpn.save_tp_adapter(model, save_dir)
@@ -553,6 +612,10 @@ CELLS = {
     "pp4_gpipe_mb4": dict(world = 4, mode = "pp", n_mb = 4),
     "pp2x2_interleaved1f1b": dict(world = 2, mode = "pp", schedule = "interleaved1f1b", n_mb = 4),
     "pp2x2_zbv": dict(world = 2, mode = "pp", schedule = "zbvzerobubble", n_mb = 4),
+    "pp2_gpipe_mb4_gc": dict(world = 2, mode = "pp", n_mb = 4, gc = True),
+    "pp2_1f1b_gc": dict(world = 2, mode = "pp", schedule = "1f1b", gc = True),
+    "pp2_gpipe_experts": dict(world = 2, mode = "pp", experts = True),
+    "pp2_1f1b_experts_gc": dict(world = 2, mode = "pp", schedule = "1f1b", experts = True, gc = True),
 }
 
 
@@ -603,6 +666,20 @@ def test_deepseek_v41_parallel_matches_one_process(cell):
                 assert (kind != "_PPTableStub") == owner, (key, kind, info["owned"])
             # the stages ran through the model's own pipeline_stage_forward, not the pass-through fallback
             assert info["stage_forward"]
+            # one stage call per micro-batch and step; each rank holds and steps its own layers' adapters only
+            n_stages = len(info["bounds"]) // world  # stages on this rank
+            assert info["stage_calls"] == kwargs.get("n_mb", 2) * 2 * n_stages, info["stage_calls"]
+            assert set(info["param_layers"]) == set(info["owned"]), (
+                info["param_layers"],
+                info["owned"],
+            )
+            if kwargs.get("gc"):
+                assert info["replays"] > 0  # zoo's checkpoint replay ran the recompute
+        assert sorted(sum((i["owned"] for i in infos), [])) == list(
+            range(_config().text_config.num_hidden_layers)
+        )
+    if kwargs.get("experts"):
+        assert any(".mlp.experts." in n for n in ref["trainable"])
 
 
 def test_pp_cut_at_an_unsafe_layer_breaks_parity():
@@ -621,6 +698,13 @@ def test_pp_cut_at_an_unsafe_layer_breaks_parity():
         "KeyError" in e and any(k in e for k in ("index_k", "topk_idxs", "compress_kv"))
         for e in errors
     ), errors
+
+
+def test_pp_reentrant_checkpoint_without_the_replay_breaks_parity():
+    """Flip: without zoo's non-reentrant replay the layers reading a source layer's shared KV send it no gradient."""
+    results = _spawn("parity", 2, mode = "pp", gc = True, fault = "reentrant_no_replay")
+    problems = _parity_problems(results, "pp_reentrant")
+    assert any("kv_proj" in p for p in problems), problems
 
 
 def test_tp_without_the_replicated_gradient_sum_breaks_parity():
