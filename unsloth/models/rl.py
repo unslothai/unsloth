@@ -3249,6 +3249,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
+            # A config reused from a vision run: hand the request back to TRL.
+            "    if getattr(args, '_unsloth_assistant_only_loss', False): args.assistant_only_loss = True\n"
             "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
@@ -3264,7 +3266,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "else:\n"
             # The vision collator builds its own labels and never reads assistant_only_loss: mask with the chat template's
             # markers (as train_on_responses_only auto-detects them), or refuse rather than train on every token.
-            "    if getattr(args, 'assistant_only_loss', False):\n"
+            "    if getattr(args, 'assistant_only_loss', False) or getattr(args, '_unsloth_assistant_only_loss', False):\n"
             "        if not getattr(data_collator, 'train_on_responses_only', None):\n"
             "            from unsloth_zoo.dataset_utils import train_on_responses_only as _unsloth_tro\n"
             "            try:\n"
@@ -3278,6 +3280,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # The collator masks now; TRL never applies the flag to a custom collator, and below transformers 5.18 it
             # refuses it for vision datasets.
             "        args.assistant_only_loss = False\n"
+            # Remember the request so a trainer reusing this config still masks.
+            "        args._unsloth_assistant_only_loss = True\n"
             "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"
             "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"
             "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"

@@ -171,3 +171,18 @@ def test_a_response_masking_collator_still_honours_assistant_only_loss(tmp_path)
         response_part = "<|im_start|>assistant\n",
     )
     _assert_assistant_only(_kept_text(trainer, processor))
+
+
+def test_a_reused_config_still_masks_on_the_next_trainer(tmp_path):
+    from trl import SFTTrainer
+    from unsloth.trainer import UnslothVisionDataCollator
+
+    trainer, processor = _trainer(tmp_path, assistant_only_loss = True)
+    again = SFTTrainer(
+        model = trainer.model,
+        processing_class = processor,
+        data_collator = UnslothVisionDataCollator(trainer.model, processor),
+        args = trainer.args,
+        train_dataset = _rows(False),
+    )
+    _assert_assistant_only(_kept_text(again, processor))
