@@ -1983,6 +1983,54 @@ def _pick_visible_index(
     return 0
 
 
+_WINDOWS_DISPLAY_CLASS_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+def _windows_amd_gpu_names_from_registry() -> list[str]:
+    """Return healthy AMD display-adapter names without starting PowerShell.
+
+    WMI can time out or be unavailable on Windows installs with a damaged repository. The
+    display-adapter class key is maintained by the driver and is the same fast fallback used
+    by the native llama prebuilt selector. It is advisory: registry failures simply return no
+    names so the caller can keep its existing probes.
+    """
+    if not IS_WINDOWS:
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    names: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
+            for index in range(winreg.QueryInfoKey(class_key)[0]):
+                try:
+                    subkey = winreg.EnumKey(class_key, index)
+                    if not subkey.isdigit():
+                        continue
+                    with winreg.OpenKey(class_key, subkey) as adapter_key:
+                        try:
+                            matching_id = str(winreg.QueryValueEx(adapter_key, "MatchingDeviceId")[0])
+                        except OSError:
+                            matching_id = ""
+                        try:
+                            description = str(winreg.QueryValueEx(adapter_key, "DriverDesc")[0])
+                        except OSError:
+                            description = ""
+                        if (
+                            "ven_1002" in matching_id.lower()
+                            or re.search(r"amd|radeon", description, re.IGNORECASE)
+                        ) and description:
+                            names.append(description)
+                except OSError:
+                    continue
+    except Exception:
+        return []
+    return names
+
+
 def _detect_windows_gfx_arch() -> str | None:
     """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
@@ -2205,6 +2253,20 @@ def _detect_windows_gfx_arch() -> str | None:
                     )
     except Exception:
         pass
+
+    # A slow or broken WMI repository can make the installer miss an otherwise healthy AMD
+    # adapter. The display-driver registry key is local and fast, so use it before falling back
+    # to CPU-only installation. This also covers driver-only laptops with no HIP SDK installed.
+    _registry_names = _windows_amd_gpu_names_from_registry()
+    _registry_tokens = [
+        _arch
+        for _name in _registry_names
+        if (_arch := _gfx_arch_from_gpu_name(_name)) is not None
+    ]
+    _registry_pick = _dedup_pick(_registry_tokens, warn = False)
+    if _registry_pick:
+        _safe_print(f"   gfx arch inferred from GPU registry: {_registry_pick}")
+        return _registry_pick
     return None
 
 
