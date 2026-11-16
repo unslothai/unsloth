@@ -562,9 +562,9 @@ def test_a_disabled_decision_never_carries_worker_settings():
 # The autouse fixture pins host_memory_snapshot; these two exercise the real one.
 from utils.datasets.online_tokenization import host_memory_snapshot as _REAL_SNAPSHOT  # noqa: E402
 
+
 def _fake_psutil(monkeypatch, rss, available):
     import sys, types
-
     fake = types.SimpleNamespace(
         Process = lambda: types.SimpleNamespace(memory_info = lambda: types.SimpleNamespace(rss = rss)),
         virtual_memory = lambda: types.SimpleNamespace(available = available),
