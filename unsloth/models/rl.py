@@ -4915,9 +4915,10 @@ def patch_trl_fused_lm_head_kernel():
     if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
         return
     # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    # No readable forward (unsloth_zoo's CPU dispatch): the adapter could not tell how many outputs TRL unpacks.
     forward = getattr(kernel, "forward", None)
     try:
-        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+        if forward is None or "bias" not in inspect.signature(forward).parameters:
             return
     except (TypeError, ValueError):
         return
