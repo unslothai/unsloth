@@ -5025,14 +5025,17 @@ export function ImagesPage({
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      // MiniMax-H3-Image takes adapters only at load (merged into its weights), so the load names the new one.
-      const pinned =
-        args.family === H3_IMAGE_FAMILY
-          ? { ...currentLoadAdvanced(args.baseRepo), loras: [{ id: stem, weight: 1 }] }
-          : undefined;
-      void handleLoad(args.baseRepo, { kind: "pipeline" }, pinned).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
@@ -5045,6 +5048,7 @@ export function ImagesPage({
       busy,
       currentLoadAdvanced,
       handleLoad,
+      loras,
       pickGuard,
       pickToast,
       quant,

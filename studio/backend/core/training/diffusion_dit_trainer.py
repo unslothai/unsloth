@@ -3,7 +3,7 @@
 
 """Flow-matching LoRA training for the rectified-flow DiT families.
 
-Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 and Wan2.2-TI2V-5B (from a
+Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Qwen-Image-2.1, Z-Image, Krea 2. Video: LTX-2 and Wan2.2-TI2V-5B (from a
 still-image dataset; see the ``_LTX2_TARGETS`` and ``_WAN_TARGETS`` blocks for what a video family adds).
 
 These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing in
@@ -181,6 +181,8 @@ class _FamilySpec:
     training_scheduler: Optional[Callable[..., Any]] = None
     # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
     save_takes_metadata: bool = False
+    # (scheduler config, cfg) -> the dynamic-shift mu the "auto" sigma table uses; None pins max_shift.
+    training_mu: Optional[Callable[..., Optional[float]]] = None
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -204,10 +206,15 @@ def _unshifted_sigmas(scheduler):
     return u.to(scheduler.sigmas.dtype)
 
 
-def _training_sigma_table(scheduler, flow_shift):
+def _training_sigma_table(
+    scheduler,
+    flow_shift,
+    mu = None,
+):
     """None: the scheduler's own sigmas. "auto": the inference distribution, which dynamic-shifting
-    schedulers never bake into ``sigmas`` (Qwen pins mu = max_shift = log 3). A number: the effective
-    shift s*u/(1+(s-1)*u) on unshifted u (musubi/kohya); applying it on top of a baked-in shift is WRONG."""
+    schedulers never bake into ``sigmas`` (Qwen pins mu = max_shift = log 3; ``mu`` overrides that pin with
+    the family's resolution-dependent value). A number: the effective shift s*u/(1+(s-1)*u) on unshifted u
+    (musubi/kohya); applying it on top of a baked-in shift is WRONG."""
     sigmas = scheduler.sigmas
     if flow_shift is None:
         return sigmas
@@ -215,7 +222,8 @@ def _training_sigma_table(scheduler, flow_shift):
         sc = scheduler.config
         if not getattr(sc, "use_dynamic_shifting", False):
             return sigmas  # static-shift family: its init already baked the shift in
-        mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
+        if mu is None:
+            mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
         shifted = scheduler.time_shift(mu, 1.0, sigmas)
         if getattr(sc, "shift_terminal", None):
             # Stretch must see the full descending table, never a batch.
@@ -1223,6 +1231,204 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# Qwen-Image-2.1 (7B block-causal DiT, Qwen3-VL-8B encoder, RGBA VAE at 16x): every helper below mirrors
+# QwenImage21Pipeline's text-to-image path (diffusers 0.41), so training sees exactly what inference feeds the DiT.
+# Attention q/k/v/out and the SwiGLU of the 32 blocks; the shared modulation, txt_in, img_in and proj_out stay frozen.
+_QWEN21_TARGETS = (
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "img_mlp.proj",
+    "img_mlp.gate_layer",
+    "img_mlp.out",
+)
+# Each img_mask slot stands for a 2x2 group of latent tokens (transformer_qwenimage21._IMG_TOKENS_PER_SLOT).
+_QWEN21_TOKENS_PER_SLOT = 4
+
+
+def _qwen21_pipeline_cls():
+    from diffusers import QwenImage21Pipeline
+    return QwenImage21Pipeline
+
+
+def _qwen21_load_conditioners(cfg, device, weight_dtype):
+    return _load_pipe_without_transformer(_qwen21_pipeline_cls(), cfg, device)
+
+
+def _qwen21_load_transformer(cfg, device, weight_dtype, base_precision):
+    # No bnb prequant repo: nf4 quantizes the bf16 transformer on load; fp8 seeds from unsloth/Qwen-Image-2.1-FP8.
+    from diffusers import QwenImage21Transformer2DModel
+    return _load_dit_transformer(QwenImage21Transformer2DModel, cfg, device, base_precision)
+
+
+def _qwen21_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            # One prompt per call: no padding, so the stored embeds are exactly the valid tokens inference sees.
+            pe, mask, _image_pad = pipe.encode_prompt(
+                prompt = cap, device = device, num_images_per_prompt = 1
+            )
+            if mask is not None:
+                pe = pe[:, : int(mask[0].sum())]
+            out.append((pe.cpu(),))
+    return out
+
+
+def _qwen21_pixels(pixel_values):
+    """[B,3,H,W] in [-1,1] -> the VAE's [B,4,1,H,W] RGBA input; an opaque image's alpha is 1.0, as the
+    pipeline's preprocess of an RGB-converted-to-RGBA condition image gives."""
+    import torch
+
+    px = pixel_values.to(torch.float32)
+    alpha = torch.ones_like(px[:, :1])
+    return torch.cat([px, alpha], dim = 1).unsqueeze(2)
+
+
+def _qwen21_encode_latents(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        lat = vae.encode(_qwen21_pixels(pixel_values)).latent_dist.sample()
+    mean, std = _qwen_latent_affine(vae, lat)
+    return (lat - mean) / std
+
+
+def _qwen21_encode_latent_stats(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        dist = vae.encode(_qwen21_pixels(pixel_values)).latent_dist
+    mean, std = _qwen_latent_affine(vae, dist.mean)
+    return (dist.mean - mean) / std, dist.std / std
+
+
+def _qwen21_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    # Kept per sample: the image's rotary index starts at the text length, so padding would move its positions.
+    return ([e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries],)
+
+
+def _qwen21_call(transformer, packed, timestep, pe, h, w):
+    import torch
+
+    bsz, text_len = pe.shape[0], pe.shape[1]
+    target_tokens = h * w
+    # False at text positions, True at the target's slots, exactly the pipeline's append_target_slots.
+    img_mask = torch.cat(
+        [
+            torch.zeros((bsz, text_len), dtype = torch.bool, device = pe.device),
+            torch.ones(
+                (bsz, target_tokens // _QWEN21_TOKENS_PER_SLOT),
+                dtype = torch.bool,
+                device = pe.device,
+            ),
+        ],
+        dim = 1,
+    )
+    out = transformer(
+        hidden_states = packed,
+        timestep = timestep,
+        encoder_hidden_states = pe,
+        encoder_hidden_states_mask = None,
+        img_shapes = [[(1, h, w)]] * bsz,
+        img_mask = img_mask,
+        return_dict = False,
+    )[0]
+    return out[:, -target_tokens:]
+
+
+def _qwen21_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    import torch
+
+    (pes,) = embeds_batch
+    bsz, c, _f, h, w = noisy.shape
+    QwenImage21Pipeline = _qwen21_pipeline_cls()
+    packed = QwenImage21Pipeline._pack_latents(noisy, bsz, c, h, w)
+    timestep = timesteps / 1000
+    lengths = [int(pe.shape[1]) for pe in pes]
+    if len(set(lengths)) == 1:
+        pe = pes[0] if bsz == 1 else torch.cat(pes)
+        pred = _qwen21_call(transformer, packed, timestep, pe, h, w)
+    else:
+        # The transformer reads one shared sequence layout per call, so mixed caption lengths run one group each.
+        order, parts = [], []
+        for length in sorted(set(lengths)):
+            idx = [i for i, n in enumerate(lengths) if n == length]
+            sel = torch.tensor(idx, device = packed.device)
+            pe = torch.cat([pes[i] for i in idx])
+            parts.append(_qwen21_call(transformer, packed[sel], timestep[sel], pe, h, w))
+            order.extend(idx)
+        inverse = torch.argsort(torch.tensor(order, device = packed.device))
+        pred = torch.cat(parts)[inverse]
+    # The inverse of _pack_latents ([B, C, h*w] -> [B, h*w, C]), back to the [B, C, 1, h, w] target layout.
+    return pred.transpose(1, 2).reshape(bsz, pred.shape[-1], 1, h, w)
+
+
+def _qwen21_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    import inspect
+
+    save = _qwen21_pipeline_cls().save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _qwen21_vae_factor(vae) -> int:
+    # 16 on the released VAE; read from config so a smaller test VAE keeps a consistent grid.
+    return int(getattr(vae.config, "scale_factor_spatial", None) or 16)
+
+
+def _qwen21_latent_shape(vae, height, width):
+    f = _qwen21_vae_factor(vae)
+    h, w = height // f, width // f
+    # The pipeline's calculate_shift reads latents.shape[1], the unpatched h * w token count.
+    return (1, vae.config.z_dim, 1, h, w), h * w
+
+
+def _qwen21_decode_latents(vae, latents):
+    mean, std = _qwen_latent_affine(vae, latents)
+    return vae.decode((latents * std + mean).to(vae.dtype)).sample[:, :3, 0]
+
+
+def _qwen21_training_mu(scheduler_config, cfg) -> Optional[float]:
+    """The mu QwenImage21Pipeline passes set_timesteps for an image at the training resolution (calculate_shift on
+    its h * w token count), so the training sigmas follow the inference schedule at that size."""
+    sc = scheduler_config
+    if not getattr(sc, "use_dynamic_shifting", False):
+        return None
+    res = int(getattr(cfg, "resolution", 1024) or 1024)
+    seq = (res // 16) * (res // 16)
+    base_len = float(sc.get("base_image_seq_len", 256))
+    max_len = float(sc.get("max_image_seq_len", 4096))
+    base_shift = float(sc.get("base_shift", 0.5))
+    max_shift = float(sc.get("max_shift", 1.15))
+    m = (max_shift - base_shift) / (max_len - base_len)
+    return seq * m + (base_shift - m * base_len)
+
+
 # FLUX.2 latents train patchified and batch-norm-normalised, from the posterior MODE.
 _FLUX2_COMMON_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
@@ -1852,6 +2058,25 @@ _SPECS: dict[str, _FamilySpec] = {
         latent_shape = _qwen_latent_shape,
         decode_latents = _qwen_decode_latents,
     ),
+    "qwen-image-2.1": _FamilySpec(
+        family = "qwen-image-2.1",
+        lora_targets = _QWEN21_TARGETS,
+        force_bf16 = True,
+        # 7B DiT at 14.2 GB bf16; the Qwen3-VL-8B encoder (17.5 GB) is freed before it loads.
+        dense_bf16_gb = 14.3,
+        load_conditioners = _qwen21_load_conditioners,
+        load_transformer = _qwen21_load_transformer,
+        encode_prompts = _qwen21_encode_prompts,
+        encode_latents = _qwen21_encode_latents,
+        encode_latent_stats = _qwen21_encode_latent_stats,
+        collate = _qwen21_collate,
+        forward = _qwen21_forward,
+        save = _qwen21_save,
+        latent_shape = _qwen21_latent_shape,
+        decode_latents = _qwen21_decode_latents,
+        save_takes_metadata = True,
+        training_mu = _qwen21_training_mu,
+    ),
     "flux.2-klein": _FamilySpec(
         family = "flux.2-klein",
         lora_targets = _FLUX2_KLEIN_TARGETS,
@@ -2379,7 +2604,8 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2 / Wan2.2-TI2V-5B) and
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Qwen-Image-2.1 / Z-Image / Krea 2 / LTX-2 /
+    Wan2.2-TI2V-5B) and
     export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
@@ -2727,7 +2953,12 @@ def _train_dit(
     flow_shift = getattr(cfg, "flow_shift", None)
     if flow_shift is None and spec.family in AUTO_FLOW_SHIFT_FAMILIES:
         flow_shift = "auto"
-    sigma_table = _training_sigma_table(scheduler, flow_shift)
+    training_mu = (
+        spec.training_mu(scheduler.config, cfg)
+        if flow_shift == "auto" and spec.training_mu is not None
+        else None
+    )
+    sigma_table = _training_sigma_table(scheduler, flow_shift, training_mu)
     shift_active = sigma_table is not scheduler.sigmas
     num_train_ts = scheduler.config.num_train_timesteps
     bell_weights = (

@@ -23,6 +23,7 @@ SAMPLE_FAMILIES: frozenset[str] = frozenset(
         "flux.2-klein",
         "flux.2-dev",
         "qwen-image",
+        "qwen-image-2.1",
         "krea-2",
         "minimax-h3-image",
     }
@@ -96,6 +97,9 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         return SampleSettings(20, 0.0)
     if family == "qwen-image":
         return SampleSettings(20, 4.0, mode)
+    if family == "qwen-image-2.1":
+        # Sampled without guidance (pipeline default true_cfg_scale 1.0); Studio's 25-step default, 8 for Turbo.
+        return SampleSettings(8, 1.0) if "turbo" in name else SampleSettings(25, 1.0)
     if family == "minimax-h3-image":
         # Distilled to 6 steps with one head each, guidance-distilled (no CFG); the trainer runs its own sampler.
         return SampleSettings(6, 0.0)
