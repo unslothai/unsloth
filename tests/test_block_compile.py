@@ -242,6 +242,16 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
         M._normalise_mask(layer, hidden, {"attention_mask": padding.expand(2, 1, 6, 6)})
         rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
         assert rebuilt is None if want is None else torch.equal(rebuilt, want)
+    # Batch size 1: the rebuilt causal mask owns its storage (no 2D base dynamo would guard as a view).
+    layer = _MaskDecoderLayer().train()
+    layer.self_attn = types.SimpleNamespace(is_causal = True)
+    M._MATERIALISED[0] = None
+    one = torch.zeros(1, 6, 8)
+    M._normalise_mask(layer, one, {"attention_mask": _padded_mask([6], 6).contiguous()})
+    rebuilt = M._normalise_mask(layer, one, {"attention_mask": None})["attention_mask"]
+    assert rebuilt._base is None and torch.equal(
+        rebuilt, torch.ones(6, 6, dtype = torch.bool).tril()[None, None]
+    )
     # A token-broadcast 2D mask rebuilds as all ones in that layout.
     layer = _MaskDecoderLayer().train()
     M._MATERIALISED[0] = None

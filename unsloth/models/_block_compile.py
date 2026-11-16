@@ -1560,12 +1560,9 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
         # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
         if 2 in broadcast or 3 in broadcast:
             return None
-        mask = (
-            torch.ones((seq_len, seq_len), dtype = torch.bool, device = device)
-            .tril_()
-            .expand(stored)
-            .contiguous()
-        )
+        # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
+        mask = torch.empty(stored, dtype = torch.bool, device = device)
+        mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
     else:
         # All ones (2D padding, or a bidirectional 4D mask) in the stored shape, broadcast dims kept at 1.
         mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
