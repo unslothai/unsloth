@@ -648,6 +648,12 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     return plan
 
 
+def forget_plans() -> None:
+    """Drops the launch plans, and with them what their first calls decided about attention sinks (_choose_path):
+    a new pipeline's calls decide again, even where they share a plan's shapes with the last one's."""
+    _plans().clear()
+
+
 def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
     """(plan, q, k, v): the call's launch plan and its operands with aligned strides (copies only where needed)."""
     # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check

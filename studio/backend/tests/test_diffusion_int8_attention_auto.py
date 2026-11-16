@@ -202,6 +202,21 @@ def test_apply_attention_backend_races_only_an_automatic_pick(card, monkeypatch)
     assert len(calls) == 5
 
 
+def test_a_pipeline_load_forgets_the_plans_sink_decisions(card, monkeypatch):
+    """apply_attention_backend (a pipeline's load) drops the INT8 launch plans, so its calls decide about attention
+    sinks again even where they share a plan's shapes with the last pipeline's; without a target nothing is dropped."""
+    from core.inference import diffusion_attention as A
+
+    monkeypatch.setattr(A, "_apply_attention_backend", lambda *a, **k: "_native_cudnn")
+    monkeypatch.setattr(D, "install", lambda *a, **k: 0)
+    monkeypatch.setattr(I, "install_auto", lambda *a, **k: 0)
+    I._plans()["decided"] = {"sinks": False}
+    A.apply_attention_backend(object(), "_native_cudnn")
+    assert "decided" in I._plans()
+    A.apply_attention_backend(object(), "_native_cudnn", target = _TARGET)
+    assert "decided" not in I._plans()
+
+
 def test_dispatch_route_skips_the_strided_processors_of_a_listed_family(card, monkeypatch):
     """FLUX.3 is listed for the unset switch, but its strided processors are the strided install's: the dispatch
     route takes none of them (it would only take stock processors the strided install could not convert)."""

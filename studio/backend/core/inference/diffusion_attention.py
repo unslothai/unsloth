@@ -3586,6 +3586,13 @@ def apply_attention_backend(
     wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
     ``speed_active`` is False (speed off stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if target is not None:
+        try:
+            # a new pipeline: the INT8 kernel's launch plans decide about attention sinks again
+            from .diffusion_int8_attention import forget_plans
+            forget_plans()
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 plans", exc)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
             from .diffusion_int8_attention import BACKEND, install_auto, install_requested
