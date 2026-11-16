@@ -78,9 +78,12 @@ _CROSS_LAYER_CONFIG_KEYS = (
 # last stage, like the final norm). Qwen4Exp's hyper_connection_mixer folds its hc_count residual streams.
 _POST_LAYER_MODULES = ("hyper_connection_mixer",)
 _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attention", "attention"}
-# Hybrid stacks proven by a parity test: gated delta net "linear_attention" and QSA "indexed_attention" layers keep
-# state only across tokens inside one layer, never across layers, so a stage boundary cuts nothing.
-_PP_HYBRID_FAMILIES = {"Qwen4ExpForCausalLM": {"linear_attention", "indexed_attention"}}
+# Hybrid stacks proven by a parity test: gated delta net "linear_attention" and QSA layers keep state only across
+# tokens inside one layer, never across layers, so a stage boundary cuts nothing. transformers names the QSA layer
+# "qwen_sparse_attention" up to 5.2x and "indexed_attention" after.
+_PP_HYBRID_FAMILIES = {
+    "Qwen4ExpForCausalLM": {"linear_attention", "qwen_sparse_attention", "indexed_attention"},
+}
 _STEP_KWARGS = ("attention_mask", "position_ids")
 _STAGE_IDS = "_unsloth_pp_input_ids"  # the batch's token ids, for stages after the first
 _MULTI_STAGE_DP = (

@@ -65,6 +65,46 @@ export function seedReferenceResolution(
   return allowed[0];
 }
 
+/** "Match Image 1" size: the family's edit resolution (capped at maxSide), else the build's tier. */
+export function seedMatchResolution(
+  tier: number,
+  editOutputResolution: number | null | undefined,
+  maxSide: number,
+): number {
+  if (editOutputResolution == null || editOutputResolution <= 0) return tier;
+  return Math.max(tier, Math.min(editOutputResolution, maxSide));
+}
+
+/** Raise a size below the edit resolution's area to it, same aspect; null when no raise applies. */
+export function raiseToEditResolution(
+  width: number,
+  height: number,
+  editOutputResolution: number | null | undefined,
+  limits: SizeLimits,
+): { width: number; height: number } | null {
+  if (editOutputResolution == null || editOutputResolution <= 0) return null;
+  if (width * height >= editOutputResolution * editOutputResolution) return null;
+  const raised = matchSourceSize(width, height, editOutputResolution, limits);
+  return raised.width * raised.height > width * height ? raised : null;
+}
+
+export interface ReferenceRaise {
+  key: string;
+  raised?: { width: number; height: number };
+  from?: { width: number; height: number; aspect: string; portrait: boolean };
+}
+
+/** Leaving Reference: the replaced Create size, unless the user changed the raised size. */
+export function sizeAfterReference(
+  width: number,
+  height: number,
+  raise: ReferenceRaise | null | undefined,
+): { width: number; height: number; aspect: string; portrait: boolean } | null {
+  if (!raise?.from || !raise.raised) return null;
+  if (width !== raise.raised.width || height !== raise.raised.height) return null;
+  return raise.from;
+}
+
 export const OFFICIAL_2K_PRESETS: ReadonlyArray<{
   label: string;
   width: number;

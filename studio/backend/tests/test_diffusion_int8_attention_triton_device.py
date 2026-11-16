@@ -125,3 +125,10 @@ def test_dispatcher_runs_the_triton_path_on_the_operands_card(card, monkeypatch)
     assert [n for n, _ in log] == ["prep", "kv", "attn"]
     assert {d for _, d in log} == {1}
     assert checks == [] and state["device"] == 0
+
+
+def test_fast_launch_is_off_without_triton(monkeypatch):
+    # The direct launch reads triton.runtime; a host without Triton (the CPU CI legs) must take the regular launch.
+    monkeypatch.setattr(T, "triton", None)
+    monkeypatch.setitem(T._FAST_LAUNCH, "ok", True)
+    assert T._fast_launch_ok() is False

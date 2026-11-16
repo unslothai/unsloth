@@ -10,6 +10,7 @@ import itertools
 import re
 from pathlib import Path
 from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
+from tests.studio._playwright_robust import RUN_SETTINGS_CONTEXT_LABEL
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -1203,10 +1204,10 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
 
 
 def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
-    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    """MLX sizes its own window, so the control is GGUF's Context (window) and states what a
     load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    assert 'const label = isMlx ? "Context" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert "displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}" in page
     assert 'unknownLabel = "—",' in page
@@ -3235,8 +3236,9 @@ def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu(
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'aria-label="Back to model list"' in page
-    assert 'ariaLabel="Context Length"' in page
-    assert 'aria-label="Context Length"' in page
+    # The Playwright drivers find the context field by this name (_playwright_robust.py).
+    assert f'ariaLabel="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
+    assert f'aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
     # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
     # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(

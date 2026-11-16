@@ -20,6 +20,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     evaluate_fetch,
+    expand_collapsed_model_picker,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_console_error,
@@ -1418,8 +1419,12 @@ with sync_playwright() as p:
         soft_fail("model picker button not found")
     else:
         picker_btn.click()
+        # The model loaded above opens the picker collapsed to its own row.
+        if expand_collapsed_model_picker(page):
+            info("model picker opened collapsed; expanded it")
+        # Visible only: an attached but hidden search field takes the fill below to its 60 s timeout.
         search = wait_for_first(
-            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)).locator("visible=true"),
             timeout_ms = 10_000,
         )
         shoot("03c-model-picker-open")

@@ -113,7 +113,11 @@ def prefetch_enabled(trainer) -> bool:
 def patch_train_dataloader(trainer_class) -> None:
     if getattr(trainer_class, "_unsloth_prefetch_patched", False):
         return
-    original = trainer_class.get_train_dataloader
+    original = getattr(trainer_class, "get_train_dataloader", None)
+    if (
+        original is None
+    ):  # not a transformers Trainer: nothing to prefetch, and the other patches still apply
+        return
 
     def get_train_dataloader(self, *args, **kwargs):
         loader = original(self, *args, **kwargs)

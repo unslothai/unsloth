@@ -44,7 +44,7 @@ def test_rank_binds_its_own_card(bind, env, expected):
 
 
 def test_init_binds_before_transformers_is_imported():
-    source = (HELPER.parent / "__init__.py").read_text()
+    source = (HELPER.parent / "__init__.py").read_text(encoding = "utf-8")
     assert "_bind_local_cuda_device()" in source
     assert source.index("_bind_local_cuda_device()") < source.index(
         'if "transformers" not in sys.modules'

@@ -1097,6 +1097,8 @@ _FAST_LAUNCH: dict = {"ok": None}
 
 
 def _fast_launch_ok() -> bool:
+    if triton is None:  # no Triton (or a test's stand-in kernels): only the regular launch exists
+        return False
     if _FAST_LAUNCH["ok"] is None:
         import os
         _FAST_LAUNCH["ok"] = os.environ.get(FAST_LAUNCH_ENV, "1").strip() != "0"
@@ -1149,8 +1151,12 @@ def _launch(kernel: Any, plan: dict, name: str, tensors: tuple) -> None:
     pay the per-argument specialisation again. Taken only while every tensor is 16-byte aligned, as at the first
     call (the alignment is part of what was compiled); any failure falls back to the regular launch for good."""
     grid, scalars, meta = plan[name + "_grid"], plan[name + "_args"], plan[name + "_meta"]
-    # the interpreter (TRITON_INTERPRET) runs kernels in Python: nothing compiled to hand arguments to
-    if _fast_launch_ok() and isinstance(kernel, triton.runtime.jit.JITFunction):
+    # TRITON_INTERPRET or no Triton: no compiled JITFunction to hand arguments to
+    if (
+        triton is not None
+        and _fast_launch_ok()
+        and isinstance(kernel, triton.runtime.jit.JITFunction)
+    ):
         from triton.runtime.driver import driver
 
         # keyed by the operands' card; operands on another card take the regular launch
