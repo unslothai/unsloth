@@ -6907,11 +6907,8 @@ def _tensor_parallel_trainer_pre(model):
 
 
 def _unsloth_tp_skip_dpo_ref_adapter(model):
-    """TRL's DPOTrainer copies the "default" LoRA into a new "ref" adapter when ref_model is None. Under tensor
-    parallel the default factors are DTensor shards and the new "ref" ones are plain full tensors, so the copy
-    fails (and the "ref" adapter would not run in the tp forward). With every default lora_B still zero (a fresh
-    adapter), disabling adapters yields the same reference logits, and TRL then falls back to exactly that.
-    Returns True to skip the "ref" adapter, False off tensor parallel; raises for a trained adapter."""
+    """Under tp TRL's "ref" adapter copy mixes DTensor shards and full tensors. A fresh adapter (lora_B all
+    zero) equals the disabled-adapter reference: True skips the copy, False off tp; raises if trained."""
     tp = _is_unsloth_tensor_parallel(model)
     if not tp:
         try:

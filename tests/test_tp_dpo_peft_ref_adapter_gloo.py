@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL DPOTrainer(ref_model = None) on a tensor parallel PeftModel, 2 gloo CPU ranks.
-
-TRL >= 1.0 copies the "default" LoRA into a new "ref" adapter; under tp the default factors are DTensors and the
-copy died with "aten.copy_.default got mixed torch.Tensor and DTensor". A fresh adapter now falls back to the
-disabled-adapter reference (identical logits); an already trained adapter is refused with a ValueError."""
+"""TRL DPOTrainer(ref_model = None) on a tp PeftModel, 2 gloo CPU ranks: the "ref" adapter copy died with
+"mixed torch.Tensor and DTensor"; a fresh adapter now uses the disabled-adapter reference, a trained one raises."""
 
 import multiprocessing
 import os
@@ -56,7 +53,6 @@ def _case(rank, world, tmp, trained):
     res = {"unsloth_file": unsloth.__file__}
     from unsloth.models import _utils
 
-    # Off tensor parallel the helper keeps TRL's "ref" adapter copy.
     skip = getattr(_utils, "_unsloth_tp_skip_dpo_ref_adapter", None)
     res["skip_off_tp"] = None if skip is None else skip(build(LLAMA, init_lora_weights = not trained))
     model = build(LLAMA, init_lora_weights = not trained)
@@ -99,7 +95,6 @@ def _case(rank, world, tmp, trained):
     res["init_error"] = None
     res["trainer_class"] = type(trainer).__name__
     res["adapters"] = sorted(model.peft_config)
-    # One step: the reference comes from the disabled adapter through the tp forward.
     try:
         out = trainer.train()
         res["train_loss"] = float(out.training_loss)

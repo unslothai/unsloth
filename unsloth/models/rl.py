@@ -4193,8 +4193,7 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-# TRL >= 1.0 DPOTrainer, ref_model None + PeftModel: `model.add_adapter("ref", default_config)` then a loop copying
-# every ".default." parameter into ".ref.". Under tensor parallel that copy mixes DTensor and Tensor.
+# TRL >= 1.0 DPOTrainer (ref_model None + PeftModel) copies ".default." into a new "ref" adapter.
 _DPO_REF_ADAPTER_BLOCK = re.compile(
     r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*default_config\s*\)[ \t]*\n"
     r"(?P<body>.*?ref_param\.data\.copy_\(param\.data\)[ \t]*)$",
@@ -4203,8 +4202,7 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 
 
 def _guard_dpo_ref_adapter_for_tp(init):
-    """Run DPOTrainer's "ref" adapter copy only off tensor parallel; under tp a fresh adapter falls back to
-    TRL's disabled-adapter reference (identical logits), a trained one is refused before training."""
+    """Run DPOTrainer's "ref" adapter copy only off tensor parallel."""
 
     def _guard(match):
         indent = match.group("indent")
