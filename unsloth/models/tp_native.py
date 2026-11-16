@@ -1008,6 +1008,17 @@ def _set_local_linear_heads(module, region, tp):
             module.__dict__[name] = value
     module._unsloth_tp_heads = hv
     module._unsloth_tp_kv_heads = hk
+    # Without causal_conv1d, transformers 4.57 - 5.16 call self.conv1d(mixed_qkv): the depthwise conv's channel
+    # / group counts must be the local ones too (tp_replica puts them back with the whole weight).
+    channels = local["conv_dim"]
+    for owner, _, _ in region.child_params:
+        if isinstance(owner, nn.Conv1d) and "_unsloth_tp_saved_attrs" not in owner.__dict__:
+            names = ("in_channels", "out_channels", "groups")
+            owner.__dict__["_unsloth_tp_saved_attrs"] = {
+                n: owner.__dict__.get(n, _MISSING) for n in names
+            }
+            for n in names:
+                owner.__dict__[n] = channels
 
 
 def _logical_shape(weight, base):

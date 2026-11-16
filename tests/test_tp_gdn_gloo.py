@@ -274,15 +274,69 @@ def _sharded_projections(model):
     return out
 
 
+_MODELING = {
+    "qwen3_5": "qwen3_5",
+    "qwen3_5_moe": "qwen3_5_moe",
+    "qwen3_8": "qwen4_exp",
+    "qwen3_next": "qwen3_next",
+}
+
+
+def _force_conv_module(arch):
+    """Run the Gated DeltaNet convolution as self.conv1d(mixed_qkv), as transformers 4.57 - 5.16 do without
+    causal_conv1d (later versions always call causal_conv1d_fn, whose torch fallback reads only conv1d.weight):
+    the module's in / out channels and groups must then be the local ones. Returns the conv1d call counter."""
+    import importlib
+
+    from transformers.activations import ACT2FN
+
+    pkg = _MODELING[arch]
+    modeling = importlib.import_module(f"transformers.models.{pkg}.modeling_{pkg}")
+    gdn = next(c for n, c in vars(modeling).items() if n.endswith("GatedDeltaNet"))
+    current, calls = [None], [0]
+
+    def conv_fn(
+        x,
+        weight = None,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
+        calls[0] += 1
+        out = current[0].conv1d(x.to(current[0].conv1d.weight.dtype))[..., : x.shape[-1]]
+        return (ACT2FN[activation](out) if activation else out).to(x.dtype)
+
+    forward = gdn.forward
+
+    def gdn_forward(self, *args, **kwargs):
+        current[0] = self
+        if "causal_conv1d_fn" in self.__dict__:  # transformers 4.57: None without causal_conv1d
+            self.causal_conv1d_fn = None
+        return forward(self, *args, **kwargs)
+
+    gdn.forward = gdn_forward
+    modeling.causal_conv1d_fn = conv_fn
+    original = torch.nn.Conv1d.forward
+
+    def conv_forward(self, x):
+        calls[0] += 1
+        return original(self, x)
+
+    torch.nn.Conv1d.forward = conv_forward
+    return calls
+
+
 def _case_parity(
     rank,
     world,
     tmp,
     arch,
     four_bit = False,
+    conv_module = False,
 ):
     from torch.distributed.device_mesh import init_device_mesh
 
+    calls = _force_conv_module(arch) if conv_module else [0]
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
     ids, labels = batch()
     ref_model = build(arch, four_bit = four_bit)
@@ -334,6 +388,7 @@ def _case_parity(
         "bytes": (local, whole),
         "conv_equal": conv_equal,
         "generated": generated,
+        "conv_calls": calls[0],
     }
 
 
@@ -449,6 +504,16 @@ def test_gdn_heads_sharded_4bit_matches_one_process(arch):
     _check(_spawn("parity", 2, arch = arch, four_bit = True), arch, True)
 
 
+@pytest.mark.parametrize("arch", ["qwen3_5", "qwen3_next"])
+def test_gdn_heads_sharded_through_the_conv1d_module(arch):
+    # causal_conv1d unavailable on transformers 4.57 - 5.16: the forward calls self.conv1d(mixed_qkv).
+    if not _available(arch):
+        pytest.skip(f"transformers has no {CONFIGS[arch][0]}")
+    results = _spawn("parity", 2, arch = arch, conv_module = True)
+    assert all(res["conv_calls"] > 0 for res in results)
+    _check(results, arch, False)
+
+
 @pytest.mark.parametrize("arch", sorted(CONFIGS))
 def test_gdn_plan_shards_by_heads(arch):
     if not _available(arch):
@@ -487,6 +552,8 @@ def test_gdn_plan_shards_by_heads(arch):
     ],
 )
 def test_gdn_heads_not_dividing_tp_are_refused(overrides, tp, match):
+    if not _available("qwen3_5"):
+        pytest.skip("transformers has no qwen3_5_text")
     model = build("qwen3_5", lora = False, overrides = overrides)
     with pytest.raises(ValueError, match = match):
         tpn.derive_tp_plan(model, tp)
