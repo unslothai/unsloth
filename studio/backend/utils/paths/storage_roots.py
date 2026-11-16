@@ -1338,21 +1338,50 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
     )
 
 
+def _train_split_files(directory: Path, files: list[Path]) -> list[Path]:
+    """The subset of *files* that ``datasets.load_dataset(directory)`` would put in its train split.
+
+    A folder holding ``train.jsonl`` beside ``val.jsonl`` or a ``filter_report.json`` sidecar loads
+    as separate splits there; concatenating every file instead leaks validation rows into training
+    or fails the load on the sidecar's columns. Falls back to *files* when no file is named as a
+    train split, so folders that do not use split names keep loading every file.
+    """
+    try:
+        from datasets.data_files import DEFAULT_PATTERNS_ALL, DataFilesDict, get_data_patterns
+
+        patterns = get_data_patterns(str(directory))
+        if patterns == DEFAULT_PATTERNS_ALL or "train" not in patterns:
+            # No file is named as a train split: every file is data, exactly as before.
+            return files
+        train = DataFilesDict.from_patterns(
+            {"train": patterns["train"]}, base_path = str(directory)
+        ).get("train")
+    except Exception:
+        return files
+    if not train:
+        return files
+    wanted = {os.path.normcase(os.path.realpath(f)) for f in train}
+    picked = [f for f in files if os.path.normcase(os.path.realpath(f)) in wanted]
+    return picked or files
+
+
 def dataset_files_in_dir(directory: Path) -> list[Path]:
     """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
-    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    directory's own files. When files are named by split (``train``/``val``/``test``), only the
+    train split is returned, matching ``datasets.load_dataset``. Raises ``ValueError`` when it
+    holds no supported format."""
     parquet_dir = directory / "parquet-files"
     if not parquet_dir.exists():
         parquet_dir = directory
     parquet = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if parquet:
-        return parquet
+        return _train_split_files(parquet_dir, parquet)
     files: list[Path] = []
     for ext in (".json", ".jsonl", ".csv", ".parquet"):
         files.extend(drop_appledouble_metadata(sorted(directory.glob(f"*{ext}"))))
     if not files:
         raise ValueError(f"No supported data files in directory: {directory}")
-    return files
+    return _train_split_files(directory, files)
 
 
 def resolve_dataset_path(path_value: str) -> Path:
