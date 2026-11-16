@@ -238,6 +238,18 @@ test("glass over an open conversation dims the image and thickens the composer a
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
 });
 
+test("glass drops the thread mask on the welcome view in Chromium, so the composer inside it blurs the image", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const ready = String.raw`:is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
+	// The header fade masks the viewport, and a masked ancestor is Chromium's backdrop root.
+	assert.match(css, new RegExp(`${ready} \\.aui-thread-viewport:not\\(\\.chat-full-view-dock \\*\\),[^{]*\\{\\n  mask-image:`));
+	assert.match(css, new RegExp(`html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n  mask-image: none;\\n\\}`));
+	// The welcome composer is portaled into that viewport; an open chat's composer docks beside it.
+	const thread = readFileSync(new URL("../src/components/assistant-ui/thread.tsx", import.meta.url), "utf8");
+	assert.match(thread, /createPortal\(\n\s*<>\n\s*\{!hideWelcome && \([\s\S]*?<ThreadWelcome [\s\S]*?<\/>,\n\s*viewportEl,/);
+	assert.match(thread, /"aui-thread-composer-dock pointer-events-none absolute bottom-0/);
+});
+
 test("glass frosts the chat model controls and gives the account row the row hover", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
