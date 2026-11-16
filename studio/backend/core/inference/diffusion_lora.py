@@ -446,6 +446,7 @@ def resolve_one(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
     catalog: Optional[dict[str, LoraCatalogEntry]] = None,
+    local_files_only: bool = False,
 ) -> ResolvedLora:
     """Enforces family tags here, not only in the picker, so direct API calls cannot skip them."""
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
@@ -469,7 +470,11 @@ def resolve_one(
         if not entry.repo_id or not entry.weight_name:
             raise LoraSelectionError(f"LoRA '{spec_id}' has no downloadable weight")
         path = hf_hub_download_with_xet_fallback(
-            entry.repo_id, entry.weight_name, hf_token, cancel_event = cancel_event
+            entry.repo_id,
+            entry.weight_name,
+            hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
         )
         return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
 
@@ -487,12 +492,18 @@ def resolve_one(
             ):
                 raise ValueError(f"invalid LoRA weight file path '{weight_name}'")
         if weight_name is None:
-            weight_name = _pick_repo_weight_file(repo_id, hf_token)
+            weight_name = _pick_repo_weight_file(
+                repo_id, hf_token, local_files_only = local_files_only
+            )
         ext = os.path.splitext(weight_name)[1].lower()
         if ext not in _ALL_EXTS:
             raise ValueError(f"unsupported LoRA file '{weight_name}' (need .safetensors/.gguf)")
         path = hf_hub_download_with_xet_fallback(
-            repo_id, weight_name, hf_token, cancel_event = cancel_event
+            repo_id,
+            weight_name,
+            hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
         )
         fmt = "gguf" if ext == ".gguf" else "safetensors"
         return ResolvedLora(spec_id, sanitize_alias(repo_id), path, fmt, weight)
@@ -502,13 +513,32 @@ def resolve_one(
     )
 
 
-def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
-    """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
+def _pick_repo_weight_file(
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> str:
+    """Pick the single LoRA weight file in an HF repo (prefer safetensors); cache-only lists the cached snapshot."""
     from huggingface_hub import HfApi
 
     from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
-    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
+    if local_files_only:
+        from huggingface_hub import snapshot_download
+
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        # Raises LocalEntryNotFoundError (a FileNotFoundError, so a 400) when the repo is not cached.
+        root = snapshot_download(
+            repo_id,
+            token = hf_token,
+            local_files_only = True,
+            cache_dir = str(get_hf_cache_paths().hub_cache),
+        )
+        listed = sorted(os.listdir(root))
+    else:
+        listed = list(HfApi(token = hf_token).list_repo_files(repo_id))
+    files = drop_shadowed_appledouble_names(listed)
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
@@ -541,6 +571,7 @@ def resolve_specs(
     family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    local_files_only: bool = False,
 ) -> list[ResolvedLora]:
     """Maps not-found and gated Hub errors to 400 (URL scrubbed), not base HfHubHTTPError so a Hub 5xx stays 500; mid-download cancel is 409."""
     from huggingface_hub.errors import (
@@ -565,6 +596,7 @@ def resolve_specs(
                     hf_token = hf_token,
                     cancel_event = cancel_event,
                     catalog = catalog,
+                    local_files_only = local_files_only,
                 )
             )
     except (
@@ -804,8 +836,8 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
-# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
+# Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:

@@ -167,6 +167,7 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -5638,7 +5639,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:
@@ -6494,6 +6496,11 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
