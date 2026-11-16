@@ -136,6 +136,19 @@ def test_cache_text_entries_and_variable_tuples(tmp_path):
     assert cache.text_key("another caption") != key
 
 
+def test_windows_rocm_latents_never_reuse_a_key_encoded_before_its_vae_fix(tmp_path, monkeypatch):
+    # Windows ROCm encoded latents through a VAE attention kernel that miscomputes head 512: those keys must not match.
+    from core.inference import diffusion_vae_attn_chunked as C
+
+    img = _make_image(tmp_path, "w.png")
+    cache = PersistentConditioningCache(tmp_path / "cc", "flux.3-klein-base", 512)
+    v = (0.5, 0.5, False)
+    monkeypatch.setattr(C, "windows_rocm", lambda torch = None: False)
+    shared = cache.latent_key(img, v)
+    monkeypatch.setattr(C, "windows_rocm", lambda torch = None: True)
+    assert cache.latent_key(img, v) != shared
+
+
 def test_cache_key_tracks_content_family_and_resolution(tmp_path):
     img = _make_image(tmp_path, "x.png")
     c1 = PersistentConditioningCache(tmp_path / "cc", "flux.1", 512)
