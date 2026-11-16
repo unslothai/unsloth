@@ -1033,6 +1033,7 @@ export const de = {
       videoChecking: "Dieser Rechner wird auf Video-Unterstützung geprüft...",
       more: "Mehr",
       customizeSidebar: "Seitenleiste anpassen",
+      customizeProfileMenu: "Profilmenü anpassen",
       newBadge: "Neu",
       export: "Exportieren",
       recents: "Zuletzt verwendet",

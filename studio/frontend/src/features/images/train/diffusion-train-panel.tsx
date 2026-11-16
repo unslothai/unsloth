@@ -425,6 +425,7 @@ export function DiffusionTrainPanel({
   onDeploy?: (args: {
     baseRepo: string;
     family: string;
+    families?: string[];
     catalogPath: string;
     trigger: string;
   }) => void;
@@ -1468,6 +1469,11 @@ export function DiffusionTrainPanel({
     },
     [info?.families],
   );
+  const loraFamiliesFor = useCallback(
+    (famName: string): string[] =>
+      info?.families?.find((f) => f.name === famName)?.lora_families ?? [famName],
+    [info?.families],
+  );
   // The images loader refuses video bases, so their adapters get no Deploy to Create.
   const isVideoFamily = useCallback(
     (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
@@ -1493,10 +1499,20 @@ export function DiffusionTrainPanel({
     onDeploy?.({
       baseRepo: deployBaseFor(trainedBase, famName),
       family: famName,
+      families: loraFamiliesFor(famName),
       catalogPath: status.catalog_path,
       trigger: instancePrompt.trim(),
     });
-  }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
+  }, [
+    status,
+    effectiveBase,
+    customBase,
+    family,
+    instancePrompt,
+    onDeploy,
+    deployBaseFor,
+    loraFamiliesFor,
+  ]);
 
   // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
   const keepFamilyDefaults = () => {};
@@ -2317,6 +2333,7 @@ export function DiffusionTrainPanel({
                       onDeploy?.({
                         baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
+                        families: loraFamiliesFor(viewRun.family || ""),
                         catalogPath: viewRun.catalog_path || "",
                         trigger: viewRun.instance_prompt || "",
                       })

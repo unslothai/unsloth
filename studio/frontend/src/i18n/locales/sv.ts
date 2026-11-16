@@ -1083,6 +1083,7 @@ export const sv = {
       videoChecking: "Kontrollerar om denna dator stöder video …",
       more: "Mer",
       customizeSidebar: "Anpassa sidofältet",
+      customizeProfileMenu: "Anpassa profilmenyn",
       newBadge: "Ny",
       export: "Exportera",
       recents: "Senaste",

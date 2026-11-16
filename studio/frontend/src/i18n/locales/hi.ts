@@ -1033,6 +1033,7 @@ export const hi = {
       videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
+      customizeProfileMenu: "प्रोफ़ाइल मेनू कस्टमाइज़ करें",
       newBadge: "नया",
       export: "एक्सपोर्ट",
       recents: "हाल के",

@@ -1032,6 +1032,7 @@ export const ru = {
       videoChecking: "Проверка поддержки видео на этой машине...",
       more: "Ещё",
       customizeSidebar: "Настроить боковую панель",
+      customizeProfileMenu: "Настроить меню профиля",
       newBadge: "Новое",
       export: "Экспорт",
       recents: "Недавние",
