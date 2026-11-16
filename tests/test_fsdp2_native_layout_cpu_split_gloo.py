@@ -34,6 +34,9 @@ from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 from test_fsdp2_native_trainer_args_gloo import _lora  # noqa: E402
 from test_fsdp2_native_guards_gloo import _tiny_llama  # noqa: E402
 
+# Spawned gloo ranks die with an access violation on Windows runners (also on main).
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
+
 
 def _case_split(
     native,
