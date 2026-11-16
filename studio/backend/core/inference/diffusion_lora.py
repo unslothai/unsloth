@@ -668,17 +668,18 @@ def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
     """
     try:
         header_len, header = _read_safetensors_header(src)
-    except (OSError, ValueError):
+        extra = flux1_missing_split_pieces(header)
+        if not extra:
+            return False
+        data_end = 0
+        for name, info in header.items():
+            if name == "__metadata__" or not isinstance(info, dict):
+                continue
+            offsets = info.get("data_offsets") or [0, 0]
+            data_end = max(data_end, int(offsets[1]))
+    except (OSError, ValueError, TypeError, IndexError, KeyError):
+        # A header this cannot read is linked as is: sd.cpp then reports or skips it, as for every other file.
         return False
-    extra = flux1_missing_split_pieces(header)
-    if not extra:
-        return False
-    data_end = 0
-    for name, info in header.items():
-        if name == "__metadata__" or not isinstance(info, dict):
-            continue
-        offsets = info.get("data_offsets") or [0, 0]
-        data_end = max(data_end, int(offsets[1]))
     new_header = dict(header)
     cursor = data_end
     for name, (dtype, shape) in extra.items():

@@ -391,3 +391,27 @@ def test_sd_server_with_clip_l_runs_strict_conditioning_cache(monkeypatch):
 def test_sd_server_without_clip_l_keeps_default_conditioning_cache(monkeypatch):
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf", vae = "/m/vae.sft", llm = "/m/llm.sft")
     assert "SD_COND_CACHE_STRICT" not in _start_env(monkeypatch, files)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"data_offsets": 5},
+        {"data_offsets": ["a", "b"]},
+        {"data_offsets": [0]},
+    ],
+)
+def test_flux1_malformed_header_links_as_is(tmp_path, extra):
+    """A header the stager cannot read falls back to the plain link instead of failing the generation."""
+    rng = np.random.default_rng(3)
+    src = tmp_path / "bad.safetensors"
+    _write_safetensors(src, _studio_flux1_lora(rng))
+    raw = src.read_bytes()
+    n = int.from_bytes(raw[:8], "little")
+    header = json.loads(raw[8 : 8 + n])
+    header["x.weight"] = {"dtype": "F32", "shape": [1], **extra}
+    blob = json.dumps(header).encode()
+    src.write_bytes(len(blob).to_bytes(8, "little") + blob + raw[8 + n :])
+    out = _stage(tmp_path, src, "flux.1")
+    assert os.stat(out[0].path).st_ino == os.stat(src).st_ino
+    assert not list((tmp_path / "stage").glob("*.partial"))
