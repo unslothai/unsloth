@@ -541,7 +541,12 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const computerSteps = toolName === COMPUTER_USE_TOOL ? describeComputerCall(argsText) : [];
 
   const picture =
-    !isCancelled && isImageToolName(toolName) && isMcpImageResult(shown) ? shown : null;
+    !isCancelled &&
+    toolName !== COMPUTER_USE_TOOL &&
+    isImageToolName(toolName) &&
+    isMcpImageResult(shown)
+      ? shown
+      : null;
 
   // Open while it waits on Allow / Deny, so what is being approved is readable.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
