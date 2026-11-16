@@ -243,3 +243,60 @@ def test_import_time_install_is_wired():
     assert call in src
     # Before anything later in _gpu_init can bind SDPA by value (model modules load after it).
     assert src.index(call) < src.index("\nfix_triton_compiled_kernel_missing_attrs()\n")
+
+
+def test_torch_function_modes_still_match_f_sdpa(stock_sdpa, windows_rocm, cpu_counts_as_gpu):
+    """Matchers written `func is F.scaled_dot_product_attention` (diffusers layer_skip, Studio's VAE
+    chunking, tp_native) see the wrapper itself, and their fallthrough still runs on math."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    from torch.overrides import TorchFunctionMode
+
+    class Seen(TorchFunctionMode):
+        hits = 0
+
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            if func is F.scaled_dot_product_attention:
+                Seen.hits += 1
+            return func(*args, **(kwargs or {}))
+
+    assert fixes.fix_rocm_windows_wide_head_sdpa() is True
+    q = torch.randn(1, 2, 16, 512)
+    with Seen():
+        out = F.scaled_dot_product_attention(q, q, q, is_causal = True)
+        F.scaled_dot_product_attention(query = q, key = q, value = q)
+    assert Seen.hits == 2
+    with sdpa_kernel([SDPBackend.MATH]):
+        ref = stock_sdpa(q, q, q, is_causal = True)
+    assert torch.equal(out, ref)
+
+
+def test_compiled_call_restores_the_callers_backends(stock_sdpa, windows_rocm, cpu_counts_as_gpu):
+    """The math switch is one graph node: its exit restores the backends live at run time, not the
+    ones Dynamo saw while tracing (an inlined sdpa_kernel bakes those in as constants)."""
+    from torch._dynamo.testing import EagerAndRecordGraphs
+
+    assert fixes.fix_rocm_windows_wide_head_sdpa() is True
+    torch._dynamo.reset()
+    recorder = EagerAndRecordGraphs()
+    fn = torch.compile(_attend, backend = recorder, fullgraph = True)
+    q = torch.randn(1, 2, 16, 512)
+    fn(q, q, q)  # traced with every backend enabled
+    cuda = torch.backends.cuda
+    saved = cuda.flash_sdp_enabled()
+    try:
+        cuda.enable_flash_sdp(False)
+        fn(q, q, q)
+        assert cuda.flash_sdp_enabled() is False
+    finally:
+        cuda.enable_flash_sdp(saved)
+        torch._dynamo.reset()
+    targets = [
+        str(n.target) for g in recorder.graphs for n in g.graph.nodes if n.op == "call_function"
+    ]
+    assert not any("sdpa_kernel" in t or "_backend_from_string" in t for t in targets), targets

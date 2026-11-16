@@ -212,6 +212,8 @@ def _mode_class() -> Any:
     import torch.nn.functional as F
     from torch.overrides import TorchFunctionMode
 
+    _BUILTIN_SDPA = torch._C._nn.scaled_dot_product_attention
+
     class ChunkedVaeAttentionMode(TorchFunctionMode):
         def __init__(self, budget: int):
             super().__init__()
@@ -227,7 +229,9 @@ def _mode_class() -> Any:
             kwargs: Any = None,
         ) -> Any:
             kwargs = kwargs or {}
-            if func is F.scaled_dot_product_attention:
+            # A wrapper that does not re-dispatch (one patched over F after this mode was built, or by any
+            # library) leaves the mode seeing torch's builtin rather than F's attribute: match both.
+            if func is F.scaled_dot_product_attention or func is _BUILTIN_SDPA:
                 call = _plain_call(args, kwargs)
                 if call is not None:
                     q, k, v, scale = call

@@ -8483,23 +8483,51 @@ def _sdpa_head_too_wide(query, value):
     )  # fmt: skip
 
 
+_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+
+
+def _sdpa_math_only(token, query, key, value, *args, **kwargs):
+    """allow_in_graph: one graph node, so a compiled call switches to math and restores the caller's
+    backends at run time; inlined, the exit would restore the backends seen at trace time. AOTAutograd
+    traces through it, so the compiled SDPA decomposes to math."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    with sdpa_kernel([SDPBackend.MATH]):
+        return _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token](query, key, value, *args, **kwargs)
+
+
 def rocm_windows_wide_head_sdpa(sdpa):
     """``sdpa`` with every call whose head is wider than 256 pinned to the math backend.
 
     Already guarded (here or by Studio) -> ``sdpa`` itself, so installing twice never nests."""
     if _sdpa_has_flag(sdpa, _ROCM_WINDOWS_WIDE_HEAD_FLAG):
         return sdpa
-    from torch.nn.attention import SDPBackend, sdpa_kernel
+    import torch
+    import torch._dynamo
+    from torch.overrides import handle_torch_function, has_torch_function
 
-    math_only = [SDPBackend.MATH]
+    torch._dynamo.allow_in_graph(_sdpa_math_only)
+    token = (
+        f"sdpa_{len(_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    )
+    _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token] = sdpa
 
     @functools.wraps(sdpa)
     def scaled_dot_product_attention(query, key, value, *args, **kwargs):
+        # Like torch's Python functionals: a TorchFunctionMode / subclass sees func = this wrapper, which
+        # `is F.scaled_dot_product_attention`, so matchers written against F (diffusers layer_skip,
+        # Studio's VAE chunking, tp_native) still match; calling func again lands back here.
+        if not torch.compiler.is_compiling() and has_torch_function((query, key, value)):
+            return handle_torch_function(
+                scaled_dot_product_attention,
+                (query, key, value),
+                query,
+                key,
+                value,
+                *args,
+                **kwargs,
+            )
         if _sdpa_head_too_wide(query, value):
-            # Dynamo traces the context as backend switches around the call, so a compiled graph
-            # also decomposes to math (fullgraph, no extra recompile; tests/test_rocm_windows_wide_head_sdpa.py).
-            with sdpa_kernel(math_only):
-                return sdpa(query, key, value, *args, **kwargs)
+            return _sdpa_math_only(token, query, key, value, *args, **kwargs)
         return sdpa(query, key, value, *args, **kwargs)
 
     scaled_dot_product_attention.__wrapped__ = sdpa
