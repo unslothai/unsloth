@@ -32033,6 +32033,14 @@ def _chat_image_preflight(payload: ChatCompletionRequest, parsed_image_b64) -> d
 _CONNECTION_MODEL_PREFIX = "external::"
 
 
+def _refuse_configured_external_alias(model: Any, request: Request) -> None:
+    from utils.model_aliases import request_alias_load_config
+    if request_alias_load_config(getattr(request, "scope", None), model):
+        raise HTTPException(
+            status_code = 400, detail = "Configured aliases require a local GGUF text model."
+        )
+
+
 # The id the chat picker gives a Connection model: external::<connection id>::<url-encoded model>.
 def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
     if not isinstance(model, str) or not model.startswith(_CONNECTION_MODEL_PREFIX):
@@ -32379,6 +32387,7 @@ async def produce_openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional: local providers may run without auth.
     if payload.provider_id or payload.provider_type:
+        _refuse_configured_external_alias(payload.model, request)
         from auth.authentication import request_admitted_without_credential
 
         # caller-chosen egress from this host, which is not the loaded model on offer
@@ -42682,6 +42691,8 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    if connection is not None:
+        _refuse_configured_external_alias(payload.model, request)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -45484,6 +45495,7 @@ async def anthropic_messages(
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
+        _refuse_configured_external_alias(payload.model, request)
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection
         )

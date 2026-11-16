@@ -164,6 +164,54 @@ def _sse(text):
     ]
 
 
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "path, direct_provider",
+    [
+        ("/v1/chat/completions", False),
+        ("/v1/messages", False),
+        ("/v1/responses", False),
+        ("/v1/chat/completions", True),
+    ],
+)
+def test_connection_alias_rejects_load_configuration_before_dispatch(
+    v1, monkeypatch, configured, stream, path, direct_provider
+):
+    # Configured aliases must fail before upstream work; plain aliases still dispatch normally.
+    from utils import model_aliases
+
+    config = {"max_seq_length": 4096, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    alias = {"name": "connection", "model": CONNECTION_MODEL}
+    if configured:
+        alias["load_config"] = config
+    monkeypatch.setattr(model_aliases, "get_model_aliases", lambda: [alias])
+    v1.app.add_middleware(model_aliases.ModelAliasMiddleware)
+    body = {"model": "connection", "stream": stream, "load_config": config}
+    if path == "/v1/responses":
+        body["input"] = "hello"
+    else:
+        body["messages"] = [{"role": "user", "content": "hello"}]
+        if path == "/v1/messages":
+            body["max_tokens"] = 64
+    if direct_provider:
+        body["provider_id"] = "c1"
+        body["external_model"] = "models/gemini-2.5-flash"
+    response = v1.post(path, json = body)
+    assert response.status_code == (400 if configured else 200), response.text
+    if configured:
+        error = response.json()
+        assert "Configured aliases" in error["error"]["message"]
+        assert error["error"]["type"] == "invalid_request_error"
+        if path == "/v1/messages":
+            assert error["type"] == "error" and "request_id" in error
+        assert FakeExternalClient.calls == []
+        assert v1.allowed == []
+    else:
+        assert len(FakeExternalClient.calls) == 1
+        assert v1.allowed == [True]
+
+
 def test_messages_streams_a_connection_model_with_tool_use(v1):
     resp = v1.post("/v1/messages", json = _messages_body(stream = True))
 
