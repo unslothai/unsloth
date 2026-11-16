@@ -48,6 +48,11 @@ from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
 _apply_fsdp2_env()
 del _apply_fsdp2_env
 
+from .parallel_env import bind_local_cuda_device as _bind_local_cuda_device
+
+_bind_local_cuda_device()
+del _bind_local_cuda_device
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -2176,6 +2181,14 @@ else:
         _sys_mod.pop(f"{__name__}._gpu_init", None)
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
+
+    # Both backends: the CPU path never runs _gpu_init.
+    try:
+        from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
+        _fix_dsv41()
+        del _fix_dsv41
+    except Exception:
+        pass
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.

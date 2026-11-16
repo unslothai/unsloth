@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { getFullAccessAllowed } from "@/features/auth/login-client";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "@/features/auth/session-events";
 import {
+  hasChatFullAccess,
   revokeChatFullAccess,
   withChatFullAccess,
   type ChatFullAccessGrant,
@@ -11,6 +13,7 @@ import {
 } from "../utils/chat-full-access.ts";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
+import type { ComputerUseAsk } from "../../computer-use/summary";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -1327,6 +1330,72 @@ function restoreChatOwnedValues(
   }
 }
 
+/** Full access saved with each chat, as last read from or written to its row. */
+const savedChatFullAccess = new Map<string, boolean>();
+const SAVED_GRANT_PREFIX = "saved:";
+/** Chats whose Full access was granted or left here since they were opened: that beats a row read meanwhile. */
+const chatFullAccessDecidedSinceOpen = new Set<string>();
+
+/** Every write carries the chat's latest flag, so a write that supersedes another cannot drop it. */
+function withSavedChatFullAccess(threadId: string, settings: ThreadScopedSettings): ThreadScopedSettings {
+  const fullAccess = savedChatFullAccess.get(threadId);
+  return fullAccess === undefined ? settings : { ...settings, fullAccess };
+}
+
+/** `explicit`: the user left Full access here, so record and write it even if the cached flag matches. */
+function saveChatFullAccess(threadId: string, on: boolean, explicit = false): void {
+  if (!explicit && savedChatFullAccess.get(threadId) === on) return;
+  chatFullAccessDecidedSinceOpen.add(threadId);
+  savedChatFullAccess.set(threadId, on);
+  // The open chat's snapshot write carries the flag; a separate patch would supersede its queued edits.
+  if (threadId === threadScopedSettingsThreadId) scheduleThreadScopedSettingsWrite(threadId);
+  else void mergeThreadScopedSettingsIntoRow(threadId, { fullAccess: on }, false).catch(() => undefined);
+}
+
+function saveGrantedChats(grants: ChatFullAccessGrants): void {
+  if (!getFullAccessAllowed()) return;
+  for (const [runId, grant] of Object.entries(grants)) {
+    if (grant.threadId && !runId.startsWith(SAVED_GRANT_PREFIX)) saveChatFullAccess(grant.threadId, true);
+  }
+}
+
+function revokeChatFullAccessAndForget(state: ChatRuntimeStore): ChatFullAccessGrants {
+  if (state.activeThreadId) saveChatFullAccess(state.activeThreadId, false, true);
+  return revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId);
+}
+
+/** Every grant for the chat, restored or made here: one left behind would write the flag back. */
+function dropChatGrants(threadId: string): void {
+  useChatRuntimeStore.setState((state) => {
+    if (!hasChatFullAccess(state.chatFullAccessGrants, threadId)) return state;
+    const grants = revokeChatFullAccess(state.chatFullAccessGrants, threadId);
+    return {
+      chatFullAccessGrants: grants,
+      ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    };
+  });
+}
+
+function restoreSavedChatFullAccess(threadId: string, saved: unknown): void {
+  if (typeof saved !== "boolean" || chatFullAccessDecidedSinceOpen.has(threadId)) return;
+  savedChatFullAccess.set(threadId, saved);
+  if (!saved) {
+    dropChatGrants(threadId);
+    return;
+  }
+  // Other accounts or a restricted install: Full access is not available, so the saved copy goes.
+  if (!getFullAccessAllowed()) {
+    saveChatFullAccess(threadId, false);
+    return;
+  }
+  useChatRuntimeStore.getState().grantChatFullAccess({
+    runId: `${SAVED_GRANT_PREFIX}${threadId}`,
+    threadId,
+    sessionId: SAVED_GRANT_PREFIX,
+  });
+}
+
 function buildThreadScopedSnapshot(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
@@ -1342,6 +1411,8 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   restoreChatOwnedValues(threadId, settings);
+  // Not a store field, so a snapshot read from the store lacks it and a replacement would erase it.
+  Object.assign(settings, withSavedChatFullAccess(threadId, {}));
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
   }
@@ -1748,7 +1819,7 @@ export function commitHeldThreadScopedEditsToTheirThread(
   // pairingWindowDefaultsThreadId stays set: a retry would resample the edit as a default.
   closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
-  const changes = heldThreadScopedChanges(held);
+  const changes = withSavedChatFullAccess(threadId, heldThreadScopedChanges(held));
   restoreDefaultsOverCommittedEdits(threadId, held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
@@ -1818,19 +1889,21 @@ function heldThreadScopedChanges(
   return sanitizeThreadScopedSettings(edited);
 }
 
+/** `supersede: false` queues behind this chat's pending writes instead of cancelling them. */
 async function mergeThreadScopedSettingsIntoRow(
   threadId: string,
   changes: ThreadScopedSettings,
+  supersede = true,
 ): Promise<void> {
   const settingsSeq = nextThreadSettingsSeq();
-  const ticket = takeThreadSettingsWriteTicket(threadId);
+  const ticket = supersede ? takeThreadSettingsWriteTicket(threadId) : null;
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(() => threadSettingsReplaySettled)
     .catch(() => undefined)
     .then(async () => {
-      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+      if (ticket !== null && (threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
         return;
       }
       try {
@@ -2559,6 +2632,8 @@ type ChatRuntimeStore = {
       threadId: string;
       imageDisclosure?: ImageDisclosure;
       runId?: string;
+      /** A computer call's reasons for asking; absent on a card restored after a reload. */
+      computerUse?: ComputerUseAsk;
     }
   >;
   webFetchToolsEnabled: boolean;
@@ -2801,6 +2876,7 @@ type ChatRuntimeStore = {
     threadId: string,
     imageDisclosure?: ImageDisclosure,
     runId?: string,
+    computerUse?: ComputerUseAsk,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -5067,6 +5143,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // Re-apply the incoming thread's usage: background runs never wrote the visible value.
   setActiveThreadId: (activeThreadId) =>
     set((state) => {
+      if (activeThreadId) chatFullAccessDecidedSinceOpen.delete(activeThreadId);
       const own = activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null;
@@ -5079,7 +5156,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           own && own.modelId && own.modelId !== state.params.checkpoint ? null : own,
       };
     }),
-  applyThreadScopedSettings: (threadId, settings) =>
+  applyThreadScopedSettings: (threadId, settings) => {
+    const savedFullAccess = (settings as { fullAccess?: unknown } | null | undefined)?.fullAccess;
     set((state) => {
       settings = normalizeSavedThreadScopedSettings(settings);
       flushThreadScopedSettingsWrite();
@@ -5257,7 +5335,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         threadScopedSettingsPending: pending,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+    if (threadId !== null) restoreSavedChatFullAccess(threadId, savedFullAccess);
+  },
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -5583,7 +5663,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             chatFullAccessPreviousMode: null,
             chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
             chatFullAccessPendingRunId: null,
-            chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
+            chatFullAccessGrants: revokeChatFullAccessAndForget(state),
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5703,7 +5783,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         chatFullAccessPreviousMode: null,
         chatFullAccessPendingRunId: null,
-        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
+        chatFullAccessGrants: revokeChatFullAccessAndForget(state),
         bypassPermissions: false,
         confirmToolCalls,
         codeToolsDeclinedUnderFullAccess: false,
@@ -5734,14 +5814,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         chatFullAccessPreviousMode: null,
         chatFullAccessPendingRunId: null,
-        chatFullAccessGrants: revokeChatFullAccess(state.chatFullAccessGrants, state.activeThreadId, state.chatFullAccessPendingRunId),
+        chatFullAccessGrants: revokeChatFullAccessAndForget(state),
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         codeToolsDeclinedUnderFullAccess: false,
         chatPermissionChoiceVersion: state.chatPermissionChoiceVersion + 1,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
-  grantChatFullAccess: (grant) =>
+  grantChatFullAccess: (grant) => {
     set((state) => {
       if (!grant.runId || !grant.sessionId) return state;
       grant = {
@@ -5757,8 +5837,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
-  adoptChatFullAccessRun: (runId, threadId) =>
+    });
+    saveGrantedChats(get().chatFullAccessGrants);
+  },
+  adoptChatFullAccessRun: (runId, threadId) => {
     set((state) => {
       if (!runId || !threadId || threadId === "__default") return state;
       const grant = state.chatFullAccessGrants[runId];
@@ -5778,7 +5860,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ...chatFullAccessPermissionPatch(state, grants, state.activeThreadId),
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+    saveGrantedChats(get().chatFullAccessGrants);
+  },
   clearUnadoptedChatFullAccessRun: (runId) =>
     set((state) => {
       // The run's thread mapping stays: a first-turn upgrade acknowledged after the run ended binds through it.
@@ -5824,6 +5908,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     threadId,
     imageDisclosure,
     runId,
+    computerUse,
   ) =>
     set((state) => ({
       toolConfirmations: {
@@ -5835,6 +5920,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           threadId,
           imageDisclosure,
           runId,
+          computerUse,
         },
       },
     })),

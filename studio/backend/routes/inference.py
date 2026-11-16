@@ -6180,6 +6180,35 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         return False
 
 
+_computer_use_withheld: "str | None" = None
+
+
+def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+    from core.inference.computer_use import computer_tool, policy
+    from state import computer_use as computer_state
+
+    if not (can_show_and_see and policy.offered()):
+        # Logged once per reason, since token counts ask as often as the user types.
+        global _computer_use_withheld
+        reason = (
+            policy.unavailable_reason()
+            or ("it is switched off in Settings" if not policy.settings()["enabled"] else None)
+            or "the model can't see images or the request is not a UI stream"
+        )
+        if reason != _computer_use_withheld:
+            _computer_use_withheld = reason
+            logger.info("computer use not offered: %s", reason)
+        return None
+    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    computer_state.set_coordinates(
+        computer_state.session_key(
+            getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
+        ),
+        mode,
+    )
+    return computer_tool(mode)
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest,
     *,
@@ -6215,6 +6244,16 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        from core.inference.computer_use import COMPUTER_TOOL_NAME
+        if COMPUTER_TOOL_NAME in payload.enabled_tools:
+            # Only where the approval card can be shown.
+            computer = await asyncio.to_thread(
+                _computer_use_tool, payload, ui_events and supports_vision
+            )
+            if computer is not None:
+                # First, or a small model with code tools scripts the mouse in Python instead.
+                tools.insert(0, computer)
     if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
         from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
@@ -51060,7 +51099,11 @@ async def _external_image_generation(
         _stopped_external_image_runs.discard(task)
 
 
-async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
+async def _enhance_generate_prompts(
+    backend,
+    request: DiffusionGenerateRequest,
+    probe: Optional[dict] = None,
+):
     """FLUX.3 prompt upsampling for one generate call (``EnhanceOutcome``). Every other family, and FLUX.3 with
     ``enhance_prompt=false``, passes its prompts through untouched. Never fails the generation: only a Stop during
     the upsampling surfaces, as the cancelled 409."""
@@ -51073,6 +51116,8 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
         logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
         status, family = {}, None
+    if probe is not None and status:
+        probe["status"] = status
     if not pup.supports_family(family):
         return pup.EnhanceOutcome(status = None)
     # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
@@ -51275,7 +51320,7 @@ async def _generate_diffusion_image_run(
         load_identity,
     )
 
-    from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
@@ -51297,6 +51342,11 @@ async def _generate_diffusion_image_run(
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
     )
+    txt2img_size_omitted = (
+        request.workflow is None
+        and request.init_image is None
+        and not ({"width", "height"} & request.model_fields_set)
+    )
     localized_edit = (
         LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
         if request.localized_edit is not None
@@ -51305,7 +51355,9 @@ async def _generate_diffusion_image_run(
     submitted = request
     generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
-    enhancement = await _enhance_generate_prompts(backend, request)
+    # reuse the enhance step's status read (no second read)
+    probe: dict = {}
+    enhancement = await _enhance_generate_prompts(backend, request, probe)
     if enhancement.status != "applied":
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
@@ -51343,6 +51395,28 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if txt2img_size_omitted:
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no family size: the schema's stands
+                    logger.debug(
+                        "images.generate: status read for the omitted size failed: %s", exc
+                    )
+            size = (
+                omitted_txt2img_size(status.get("family"))
+                if status is not None and status.get("loaded")
+                else None
+            )
+            if size is not None:
+                request = request.model_copy(update = {"width": size[0], "height": size[1]})
+                if expected_load is None:
+                    # a replaced model retries with its own default size
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
