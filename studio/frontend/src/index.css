@@ -8251,3 +8251,8 @@ html[data-audio-attached-rail] [data-sidebar="sidebar"] {
 	border-right: 1px solid transparent;
 	border-image: linear-gradient(to bottom, transparent, var(--audio-seam) 18%, var(--audio-seam) 82%, transparent) 1;
 }
+
+/* Masked passwords draw the font's bullet at text size, which reads tiny; enlarge only the dots (not placeholders). */
+input[type="password"]:not(:placeholder-shown) {
+	font-size: calc(1.125rem * var(--ui-font-scale, 1));
+}
