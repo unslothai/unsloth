@@ -4,8 +4,10 @@
 import { TRANSLATION_ONLY_REPOS } from "../../lib/translation-models.ts";
 import {
   type TranslateMessage,
-  type TranslateTone,
+  type TranslatePromptOptions,
+  generalInstruction,
   generalMessages,
+  hyMtInstruction,
   hyMtMessages,
 } from "./translate-text.ts";
 
@@ -61,8 +63,6 @@ export type TranslateModelId =
 
 export const DEFAULT_TRANSLATE_MODEL: TranslateModelId = "hy-mt2-1.8b";
 
-export const GENERAL_SAMPLING: TranslateSampling = { temperature: 0.2 };
-
 /** Both passages of a chunk fit beside the instruction: 1600 characters in, the same out. */
 export const TRANSLATE_CONTEXT_TOKENS = 8192;
 export const TRANSLATE_MAX_TOKENS = 4096;
@@ -83,12 +83,21 @@ export function dedicatedTranslateModel(
 export function translateMessages(
   id: TranslateModelId,
   text: string,
-  targetName: string,
-  tone: TranslateTone,
+  options: TranslatePromptOptions,
 ): TranslateMessage[] {
   return id === CHAT_TRANSLATE_MODEL
-    ? generalMessages(text, targetName, tone)
-    : hyMtMessages(text, targetName, tone);
+    ? generalMessages(text, options)
+    : hyMtMessages(text, options);
+}
+
+/** The instructions as sent, without the text, for the Show prompt option. */
+export function translateInstruction(
+  id: TranslateModelId,
+  options: TranslatePromptOptions,
+): string {
+  return id === CHAT_TRANSLATE_MODEL
+    ? generalInstruction(options)
+    : hyMtInstruction(options);
 }
 
 export function formatModelBytes(bytes: number): string {

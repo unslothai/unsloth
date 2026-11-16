@@ -4831,7 +4831,11 @@ export const en = {
   translate: {
     title: "Translate",
     detectLanguage: "Detect language",
+    sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
+    swap: "Swap languages",
+    // Disabled swap button: there is no source language to swap into.
+    swapNeedsSource: "Pick a source language to swap",
     searchLanguages: "Search languages",
     noLanguages: "No languages found",
     translate: "Translate",
@@ -4853,6 +4857,10 @@ export const en = {
     // Moves the translation into the text box, to translate it onward into another language.
     useAsSource: "Translate this text",
     stale: "The text or settings changed. Translate again to update.",
+    // Opens a new chat with the translation in the message box, to ask about it.
+    chat: "Chat with translated text",
+    // Heading over the instructions sent to the model, shown by the Show prompt option.
+    promptLabel: "Prompt",
     status: {
       preparing: "Getting ready...",
       downloading: "Downloading {model}",
@@ -4866,12 +4874,17 @@ export const en = {
       fast: "Fast, runs on any computer",
       quality: "Best quality, needs more memory",
       chat: "Chat model",
-      chatDescription: "Uses the model loaded in Chat. Nothing is downloaded.",
+      chatDescription: "Uses the model picked in Chat, local or from a connected provider. Nothing is downloaded.",
       downloadSize: "{size} download",
       downloaded: "Downloaded",
     },
     options: {
       label: "Options",
+      // How closely the translation follows the original wording.
+      mode: "Style",
+      modeAutomatic: "Automatic",
+      modeLiteral: "Literal",
+      modeSemantic: "Natural",
       tone: "Tone",
       toneDefault: "Default",
       toneFormal: "Formal",
@@ -4880,6 +4893,8 @@ export const en = {
       autoDescription: "Starts once the model is loaded. Typing never starts a download.",
       saveHistory: "Save history",
       saveHistoryDescription: "Kept in this browser only.",
+      showPrompt: "Show prompt",
+      showPromptDescription: "See the exact instructions sent to the model.",
     },
     history: {
       title: "History",
@@ -4890,11 +4905,18 @@ export const en = {
       clearTitle: "Clear translation history?",
       clearDescription: "This removes every saved translation from this browser.",
       delete: "Delete translation",
+      export: "Export",
+      // Opens a new chat with the five most recent translations.
+      chatRecent: "Chat with recent translations",
     },
     errors: {
       title: "Could not translate",
       noChatModel: "No chat model is loaded. Load one in Chat, or pick a translation model.",
       downloadFailed: "The model could not be downloaded. Check Downloads in the Model hub, then try again.",
+      unavailable: "This model's connection is unavailable. Check it in Settings, or pick another model.",
+      cutOff: "The translation was cut off before it finished.",
+      filtered: "The provider's content filter stopped the translation.",
+      exportFailed: "Could not export the history.",
       retry: "Try again",
     },
   },

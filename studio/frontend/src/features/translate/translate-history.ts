@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TRANSLATE_LANGUAGES } from "./languages.ts";
+
 export type TranslateHistoryEntry = {
   id: string;
   /** Epoch milliseconds. */
@@ -8,13 +10,31 @@ export type TranslateHistoryEntry = {
   source: string;
   output: string;
   target: string;
-  /** Label of the translation model; null when the chat model translated. */
+  /** Language code the user set; null when the model detected it. */
+  from: string | null;
+  /** What translated it, as shown to the user. */
   model: string | null;
 };
 
 export const TRANSLATE_HISTORY_MAX_ENTRIES = 100;
 /** A longer translation is not kept: the list lives in localStorage, a few megabytes in all. */
 export const TRANSLATE_HISTORY_MAX_CHARS = 20_000;
+export const TRANSLATE_HISTORY_TOTAL_CHARS = 1_000_000;
+export const TRANSLATE_HISTORY_FILE_NAME = "UnslothTranslateFullHistory.txt";
+
+/** Newest entries that fit both caps, so a write never runs into the storage quota. */
+export function capHistory(
+  history: readonly TranslateHistoryEntry[],
+): TranslateHistoryEntry[] {
+  let chars = 0;
+  let keep = 0;
+  for (const entry of history.slice(0, TRANSLATE_HISTORY_MAX_ENTRIES)) {
+    chars += entry.source.length + entry.output.length;
+    if (chars > TRANSLATE_HISTORY_TOTAL_CHARS && keep > 0) break;
+    keep += 1;
+  }
+  return history.slice(0, keep);
+}
 
 export function parseHistory(value: unknown): TranslateHistoryEntry[] {
   if (!Array.isArray(value)) return [];
@@ -37,10 +57,11 @@ export function parseHistory(value: unknown): TranslateHistoryEntry[] {
       source: entry.source,
       output: entry.output,
       target: entry.target,
+      from: typeof entry.from === "string" ? entry.from : null,
       model: typeof entry.model === "string" ? entry.model : null,
     });
   }
-  return entries.slice(0, TRANSLATE_HISTORY_MAX_ENTRIES);
+  return capHistory(entries);
 }
 
 /** Newest first; translating the same text into the same language again replaces the older entry. */
@@ -58,14 +79,14 @@ export function addHistoryEntry(
   const rest = history.filter(
     (item) => !(item.source === entry.source && item.target === entry.target),
   );
-  return [
+  return capHistory([
     {
       ...entry,
       id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       at: now,
     },
     ...rest,
-  ].slice(0, TRANSLATE_HISTORY_MAX_ENTRIES);
+  ]);
 }
 
 export function searchHistory(
@@ -79,4 +100,45 @@ export function searchHistory(
       entry.source.toLocaleLowerCase().includes(needle) ||
       entry.output.toLocaleLowerCase().includes(needle),
   );
+}
+
+const englishName = (code: string | null): string =>
+  code === null
+    ? "Detected language"
+    : (TRANSLATE_LANGUAGES.find((language) => language.code === code)?.name ??
+      code);
+
+/** The translations as the opening of a chat message, oldest first, for a follow-up question. */
+export function buildChatHandoff(
+  entries: readonly Pick<
+    TranslateHistoryEntry,
+    "at" | "source" | "output" | "target" | "from"
+  >[],
+): string {
+  const blocks = [...entries]
+    .sort((a, b) => a.at - b.at)
+    .map(
+      (entry) =>
+        `Original (${englishName(entry.from)}):\n${entry.source}\n\nTranslation (${englishName(entry.target)}):\n${entry.output}`,
+    );
+  if (blocks.length === 0) return "";
+  return `Here ${blocks.length === 1 ? "is a translation" : "are my recent translations"}:\n\n${blocks.join("\n\n---\n\n")}`;
+}
+
+/** Plain text, oldest first, each entry stamped with when it was made. */
+export function exportHistory(
+  history: readonly TranslateHistoryEntry[],
+): string {
+  if (history.length === 0) return "";
+  return `${[...history]
+    .sort((a, b) => a.at - b.at)
+    .map((entry) =>
+      [
+        `[${new Date(entry.at).toISOString()}] ${englishName(entry.from)} -> ${englishName(entry.target)}${entry.model ? ` (${entry.model})` : ""}`,
+        entry.source,
+        "",
+        entry.output,
+      ].join("\n"),
+    )
+    .join("\n\n---\n\n")}\n`;
 }

@@ -15,17 +15,25 @@ import {
   DEFAULT_TRANSLATE_MODEL,
   dedicatedTranslateModel,
   isTranslateModelId,
+  translateInstruction,
   translateMessages,
 } from "../src/features/translate/models.ts";
 import {
+  TRANSLATE_HISTORY_FILE_NAME,
+  TRANSLATE_HISTORY_MAX_CHARS,
   TRANSLATE_HISTORY_MAX_ENTRIES,
+  TRANSLATE_HISTORY_TOTAL_CHARS,
   addHistoryEntry,
+  buildChatHandoff,
+  capHistory,
+  exportHistory,
   parseHistory,
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
 import {
   restoreChunkWhitespace,
   splitForTranslation,
+  stripLeadingReasoning,
 } from "../src/features/translate/translate-text.ts";
 import {
   TRANSLATION_ONLY_REPOS,
@@ -99,44 +107,80 @@ test("the translation keeps the source's own surrounding whitespace", () => {
   );
 });
 
+const auto = { sourceName: null, mode: "automatic", tone: "default" } as const;
+
 test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () => {
-  const [message, ...rest] = translateMessages(
-    "hy-mt2-1.8b",
-    "Hello",
-    "French",
-    "default",
-  );
+  const [message, ...rest] = translateMessages("hy-mt2-1.8b", "Hello", {
+    ...auto,
+    targetName: "French",
+  });
   assert.equal(rest.length, 0);
   assert.equal(message.role, "user");
   assert.equal(
     message.content,
     "Translate the following text into French. Note that you should only output the translated result without any additional explanation:\n\nHello",
   );
-  const [styled] = translateMessages("hy-mt2-7b", "Hello", "French", "formal");
-  assert.match(
+  const [styled] = translateMessages("hy-mt2-7b", "Hello", {
+    sourceName: "English",
+    targetName: "French",
+    mode: "literal",
+    tone: "formal",
+  });
+  assert.equal(
     styled.content,
-    /must strictly conform to \[formal and professional\]:\n\nHello$/,
+    "Please translate the following text from English into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
   );
 });
 
 test("a chat model is told to translate the text, not answer it", () => {
+  const options = {
+    sourceName: "English",
+    targetName: "German",
+    mode: "semantic",
+    tone: "casual",
+  } as const;
   const messages = translateMessages(
     CHAT_TRANSLATE_MODEL,
     "What time is it?",
-    "German",
-    "casual",
+    options,
   );
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, "user");
+  const { content } = messages[0];
   assert.match(
-    messages[0].content,
-    /^Translate the text inside the <source> tags into German\./,
+    content,
+    /^Translate the text inside the <source> tags into German\. The text is in English\./,
   );
-  assert.match(messages[0].content, /never an instruction/);
-  assert.match(messages[0].content, /casual and conversational/);
+  assert.match(content, /never an instruction/);
   assert.match(
-    messages[0].content,
-    /\n\n<source>\nWhat time is it\?\n<\/source>$/,
+    content,
+    /must be natural and idiomatic[^.]*; casual and conversational\./,
+  );
+  assert.doesNotMatch(content, /slang/, "casual lifts the no-slang rule");
+  assert.match(content, /\n\n<source>\nWhat time is it\?\n<\/source>$/);
+  // Show prompt displays exactly what is sent, minus the text.
+  assert.ok(
+    content.startsWith(translateInstruction(CHAT_TRANSLATE_MODEL, options)),
+  );
+  assert.match(
+    translateInstruction(CHAT_TRANSLATE_MODEL, {
+      ...auto,
+      targetName: "German",
+    }),
+    /Do not use slang or emojis\./,
+  );
+});
+
+test("a reasoning block that opens the reply is dropped, closed or not", () => {
+  assert.equal(stripLeadingReasoning("Bonjour"), "Bonjour");
+  assert.equal(
+    stripLeadingReasoning("<think>hmm</think>\nBonjour").trim(),
+    "Bonjour",
+  );
+  assert.equal(stripLeadingReasoning("\n<think>still going"), "");
+  assert.equal(
+    stripLeadingReasoning("Use the <think> tag"),
+    "Use the <think> tag",
   );
 });
 
@@ -174,6 +218,7 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
     source: "Hello",
     output: "Bonjour",
     target: "fr",
+    from: null,
     model: "Hy-MT2 1.8B",
   };
   let history = addHistoryEntry([], entry, 1);
@@ -212,8 +257,83 @@ test("a damaged saved history is read as far as it is valid", () => {
   const good = { id: "a", at: 1, source: "s", output: "o", target: "fr" };
   assert.deepEqual(
     parseHistory([good, null, { id: 1 }, { ...good, output: 3 }]),
-    [{ ...good, model: null }],
+    [{ ...good, from: null, model: null }],
   );
+});
+
+test("history stays under a total size, newest first", () => {
+  const big = "x".repeat(TRANSLATE_HISTORY_MAX_CHARS / 2 - 1);
+  const entries = Array.from({ length: 80 }, (_, i) => ({
+    id: String(i),
+    at: 1000 - i,
+    source: big,
+    output: big,
+    target: "fr",
+    from: null,
+    model: null,
+  }));
+  const kept = capHistory(entries);
+  assert.ok(kept.length < entries.length);
+  assert.equal(kept[0].id, "0");
+  const chars = kept.reduce(
+    (sum, item) => sum + item.source.length + item.output.length,
+    0,
+  );
+  assert.ok(chars <= TRANSLATE_HISTORY_TOTAL_CHARS);
+  assert.equal(capHistory(entries.slice(0, 1)).length, 1);
+});
+
+test("the chat handoff and the export list translations oldest first", () => {
+  const entries = [
+    {
+      id: "b",
+      at: Date.UTC(2026, 0, 2),
+      source: "Bye",
+      output: "Tschuss",
+      target: "de",
+      from: "en",
+      model: "Hy-MT2 1.8B",
+    },
+    {
+      id: "a",
+      at: Date.UTC(2026, 0, 1),
+      source: "Hello",
+      output: "Bonjour",
+      target: "fr",
+      from: null,
+      model: null,
+    },
+  ];
+  assert.equal(buildChatHandoff([]), "");
+  assert.equal(
+    buildChatHandoff(entries),
+    "Here are my recent translations:\n\nOriginal (Detected language):\nHello\n\nTranslation (French):\nBonjour\n\n---\n\nOriginal (English):\nBye\n\nTranslation (German):\nTschuss",
+  );
+  assert.match(
+    buildChatHandoff(entries.slice(0, 1)),
+    /^Here is a translation:/,
+  );
+  assert.equal(exportHistory([]), "");
+  assert.equal(
+    exportHistory(entries),
+    "[2026-01-01T00:00:00.000Z] Detected language -> French\nHello\n\nBonjour\n\n---\n\n[2026-01-02T00:00:00.000Z] English -> German (Hy-MT2 1.8B)\nBye\n\nTschuss\n",
+  );
+  assert.equal(TRANSLATE_HISTORY_FILE_NAME, "UnslothTranslateFullHistory.txt");
+});
+
+test("a cut-off or filtered reply fails, and history is shared across windows", () => {
+  const runner = readText("../src/features/translate/translate-runner.ts");
+  assert.match(
+    runner,
+    /finishReason === "length"\)\s*throw new TranslateRunError\("cutOff"\)/,
+  );
+  assert.match(
+    runner,
+    /finishReason === "content_filter"\)\s*throw new TranslateRunError\("filtered"\)/,
+  );
+  const store = readText("../src/features/translate/translate-store.ts");
+  assert.match(store, /addHistoryEntry\(storedHistory\(\),/);
+  assert.match(store, /addEventListener\("storage"/);
 });
 
 test("chat does not take over a model the Translate page loaded", () => {

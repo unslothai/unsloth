@@ -20,14 +20,51 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useLocale, useT } from "@/i18n";
-import { withTimeFormat } from "@/lib/time-format";
-import { Search01Icon } from "@hugeicons/core-free-icons";
 import { TrashIcon } from "@/lib/hugeicons-derived";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { withTimeFormat } from "@/lib/time-format";
+import {
+  Download01Icon,
+  Message01Icon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import { toast } from "@/lib/toast";
+import { CHAT_HANDOFF_ENTRIES, chatAboutTranslations } from "./chat-handoff";
 import { findTranslateLanguage, translateLanguageLabel } from "./languages";
-import { searchHistory } from "./translate-history";
+import {
+  TRANSLATE_HISTORY_FILE_NAME,
+  type TranslateHistoryEntry,
+  exportHistory,
+  searchHistory,
+} from "./translate-history";
 import { useTranslateStore } from "./translate-store";
+
+function HeaderButton({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: IconSvgElement;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      className="text-muted-foreground"
+    >
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
+    </Button>
+  );
+}
 
 export function TranslateHistorySheet({
   open,
@@ -45,6 +82,24 @@ export function TranslateHistorySheet({
   const [query, setQuery] = useState("");
   const [confirmingClear, setConfirmingClear] = useState(false);
   const shown = useMemo(() => searchHistory(history, query), [history, query]);
+  const navigate = useNavigate();
+  const chat = (entries: readonly TranslateHistoryEntry[]) => {
+    if (chatAboutTranslations(entries, navigate)) onOpenChange(false);
+  };
+  const exportAll = async () => {
+    try {
+      await downloadFile(
+        exportHistory(history),
+        TRANSLATE_HISTORY_FILE_NAME,
+        "text/plain",
+      );
+    } catch (error) {
+      if (isDownloadCancelled(error)) return;
+      toast.error(t("translate.errors.exportFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const formatWhen = useMemo(() => {
     const format = new Intl.DateTimeFormat(
       locale,
@@ -83,6 +138,16 @@ export function TranslateHistorySheet({
                 className="h-control w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               />
             </div>
+            <HeaderButton
+              icon={Message01Icon}
+              label={t("translate.history.chatRecent")}
+              onClick={() => chat(history.slice(0, CHAT_HANDOFF_ENTRIES))}
+            />
+            <HeaderButton
+              icon={Download01Icon}
+              label={t("translate.history.export")}
+              onClick={() => void exportAll()}
+            />
             <Button
               type="button"
               variant="ghost"
@@ -114,7 +179,7 @@ export function TranslateHistorySheet({
                       }}
                       className="flex w-full cursor-pointer flex-col gap-1 rounded-xl px-3 py-2.5 text-left outline-none hover:bg-muted focus-visible:bg-muted"
                     >
-                      <span className="flex items-center gap-2 pr-8 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-2 pr-16 text-xs text-muted-foreground">
                         <span className="truncate">
                           {language
                             ? translateLanguageLabel(language, locale)
@@ -134,6 +199,19 @@ export function TranslateHistorySheet({
                       <span dir="auto" className="line-clamp-2 text-sm">
                         {entry.output}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      title={t("translate.chat")}
+                      aria-label={t("translate.chat")}
+                      onClick={() => chat([entry])}
+                      className="absolute right-10 top-1.5 flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground opacity-0 outline-none hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/entry:opacity-100"
+                    >
+                      <HugeiconsIcon
+                        icon={Message01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
                     </button>
                     <button
                       type="button"

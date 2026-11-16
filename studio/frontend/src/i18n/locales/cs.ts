@@ -5177,7 +5177,10 @@ export const cs = {
   translate: {
     title: "Překlad",
     detectLanguage: "Rozpoznat jazyk",
+    sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
+    swap: "Prohodit jazyky",
+    swapNeedsSource: "Pro prohození vyberte zdrojový jazyk",
     searchLanguages: "Hledat jazyky",
     noLanguages: "Žádné jazyky nenalezeny",
     translate: "Přeložit",
@@ -5199,6 +5202,8 @@ export const cs = {
     copied: "Zkopírováno",
     useAsSource: "Přeložit tento text",
     stale: "Text nebo nastavení se změnily. Pro aktualizaci přeložte znovu.",
+    chat: "Chatovat s přeloženým textem",
+    promptLabel: "Prompt",
     status: {
       preparing: "Příprava…",
       downloading: "Stahování modelu {model}",
@@ -5212,12 +5217,17 @@ export const cs = {
       fast: "Rychlý, běží na každém počítači",
       quality: "Nejlepší kvalita, vyžaduje více paměti",
       chat: "Model z chatu",
-      chatDescription: "Použije model načtený v Chatu. Nic se nestahuje.",
+      chatDescription:
+        "Použije model vybraný v Chatu, místní nebo od připojeného poskytovatele. Nic se nestahuje.",
       downloadSize: "Stažení {size}",
       downloaded: "Staženo",
     },
     options: {
       label: "Možnosti",
+      mode: "Styl",
+      modeAutomatic: "Automaticky",
+      modeLiteral: "Doslovný",
+      modeSemantic: "Přirozený",
       tone: "Tón",
       toneDefault: "Výchozí",
       toneFormal: "Formální",
@@ -5227,6 +5237,8 @@ export const cs = {
         "Spustí se po načtení modelu. Psaní nikdy nespustí stahování.",
       saveHistory: "Ukládat historii",
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
+      showPrompt: "Zobrazit prompt",
+      showPromptDescription: "Zobrazí přesné pokyny odeslané modelu.",
     },
     history: {
       title: "Historie",
@@ -5238,6 +5250,8 @@ export const cs = {
       clearDescription:
         "Tím se z tohoto prohlížeče odstraní všechny uložené překlady.",
       delete: "Smazat překlad",
+      export: "Exportovat",
+      chatRecent: "Chatovat s posledními překlady",
     },
     errors: {
       title: "Překlad se nezdařil",
@@ -5245,6 +5259,11 @@ export const cs = {
         "Není načten žádný model pro chat. Načtěte ho v Chatu nebo vyberte překladový model.",
       downloadFailed:
         "Model se nepodařilo stáhnout. Zkontrolujte Stahování v Centru modelů a zkuste to znovu.",
+      unavailable:
+        "Připojení tohoto modelu není dostupné. Zkontrolujte ho v Nastavení nebo vyberte jiný model.",
+      cutOff: "Překlad byl přerušen před dokončením.",
+      filtered: "Překlad zastavil filtr obsahu poskytovatele.",
+      exportFailed: "Historii se nepodařilo exportovat.",
       retry: "Zkusit znovu",
     },
   },

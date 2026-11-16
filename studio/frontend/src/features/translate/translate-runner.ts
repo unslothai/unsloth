@@ -7,6 +7,12 @@ import {
   loadModel,
   streamChatCompletions,
 } from "@/features/chat/api/chat-api";
+import {
+  isExternalModelId,
+  parseExternalModelId,
+} from "@/features/chat/external-providers";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { buildTitleRequest } from "@/features/chat/utils/chat-title";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
@@ -21,7 +27,6 @@ import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   CHAT_TRANSLATE_MODEL,
   type DedicatedTranslateModel,
-  GENERAL_SAMPLING,
   TRANSLATE_CONTEXT_TOKENS,
   TRANSLATE_MAX_TOKENS,
   type TranslateModelId,
@@ -29,12 +34,18 @@ import {
   translateMessages,
 } from "./models";
 import {
-  type TranslateTone,
+  type TranslatePromptOptions,
   restoreChunkWhitespace,
   splitForTranslation,
+  stripLeadingReasoning,
 } from "./translate-text";
 
-export type TranslateRunErrorCode = "noChatModel" | "downloadFailed";
+export type TranslateRunErrorCode =
+  | "noChatModel"
+  | "downloadFailed"
+  | "unavailable"
+  | "cutOff"
+  | "filtered";
 
 /** A failure the page words itself; anything else shows the server's message. */
 export class TranslateRunError extends Error {
@@ -53,8 +64,7 @@ export type TranslatePhase =
 
 export type TranslateRunOptions = {
   text: string;
-  targetName: string;
-  tone: TranslateTone;
+  prompt: TranslatePromptOptions;
   modelId: TranslateModelId;
   signal: AbortSignal;
   onPhase: (phase: TranslatePhase) => void;
@@ -232,7 +242,10 @@ async function ensureDedicatedModel(
   return model.repo;
 }
 
-async function loadedChatModel(signal: AbortSignal): Promise<string> {
+/** The model picked in Chat when it is a connected provider's, else the one loaded on the server. */
+async function chatModel(signal: AbortSignal): Promise<string> {
+  const picked = useChatRuntimeStore.getState().params.checkpoint;
+  if (isExternalModelId(picked)) return picked;
   const status = await getInferenceStatus(signal);
   if (!status.active_model || status.is_audio || status.is_diffusion) {
     throw new TranslateRunError("noChatModel");
@@ -240,17 +253,48 @@ async function loadedChatModel(signal: AbortSignal): Promise<string> {
   return status.active_model;
 }
 
+/** A provider's model by its own id, never the internal `external::...` one. */
+export function translateModelName(requestModel: string): string {
+  return parseExternalModelId(requestModel)?.modelId ?? requestModel;
+}
+
+type Request = Parameters<typeof streamChatCompletions>[0];
+
+/** The request without its messages. A chat model reuses the title request's provider routing and sampling gates. */
+async function baseRequest(
+  dedicated: DedicatedTranslateModel | null,
+  requestModel: string,
+): Promise<Omit<Request, "messages">> {
+  if (dedicated) {
+    return {
+      model: requestModel,
+      stream: true,
+      max_tokens: TRANSLATE_MAX_TOKENS,
+      ...dedicated.sampling,
+      enable_tools: false,
+      enable_thinking: false,
+    };
+  }
+  const base = await buildTitleRequest(requestModel, "", "");
+  if (!base) throw new TranslateRunError("unavailable");
+  const { messages: _messages, ...rest } = base;
+  // A provider's own minimum can sit above this cap.
+  return {
+    ...rest,
+    max_tokens: Math.max(base.max_tokens, TRANSLATE_MAX_TOKENS),
+  };
+}
+
 export async function runTranslation(
   options: TranslateRunOptions,
-): Promise<string> {
-  const { text, targetName, tone, modelId, signal, onPhase, onOutput } =
-    options;
+): Promise<{ output: string; model: string }> {
+  const { text, prompt, modelId, signal, onPhase, onOutput } = options;
   onPhase({ kind: "preparing" });
   const dedicated = dedicatedTranslateModel(modelId);
   const requestModel = dedicated
     ? await ensureDedicatedModel(dedicated, signal, onPhase)
-    : await loadedChatModel(signal);
-  const sampling = dedicated?.sampling ?? GENERAL_SAMPLING;
+    : await chatModel(signal);
+  const base = await baseRequest(dedicated, requestModel);
 
   const chunks = splitForTranslation(text);
   const parts = chunks.filter((chunk) => chunk.text).length;
@@ -265,32 +309,37 @@ export async function runTranslation(
     }
     part += 1;
     onPhase({ kind: "translating", part, parts });
-    let translated = "";
+    let raw = "";
+    let finishReason: string | null = null;
     const stream = streamChatCompletions(
       {
-        model: requestModel,
+        ...base,
         messages: translateMessages(
           dedicated ? modelId : CHAT_TRANSLATE_MODEL,
           chunk.text,
-          targetName,
-          tone,
+          prompt,
         ),
-        stream: true,
-        max_tokens: TRANSLATE_MAX_TOKENS,
-        ...sampling,
-        enable_tools: false,
-        enable_thinking: false,
       },
       signal,
     );
     for await (const event of stream) {
-      const delta = deltaText(event.choices?.[0]?.delta?.content);
+      const choice = event.choices?.[0];
+      // A later usage chunk has no finish reason; it must not erase this one.
+      finishReason = choice?.finish_reason ?? finishReason;
+      const delta = deltaText(choice?.delta?.content);
       if (!delta) continue;
-      translated += delta;
-      onOutput(output + translated.trimStart());
+      raw += delta;
+      onOutput(output + stripLeadingReasoning(raw).trimStart());
     }
-    output += restoreChunkWhitespace(chunk, translated);
+    // Either stop leaves a partial passage: never one to save as a finished translation.
+    if (finishReason === "length") throw new TranslateRunError("cutOff");
+    if (finishReason === "content_filter")
+      throw new TranslateRunError("filtered");
+    output += restoreChunkWhitespace(chunk, stripLeadingReasoning(raw));
     onOutput(output);
   }
-  return output;
+  return {
+    output,
+    model: dedicated?.label ?? translateModelName(requestModel),
+  };
 }

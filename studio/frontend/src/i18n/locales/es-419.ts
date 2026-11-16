@@ -5241,7 +5241,10 @@ export const es419 = {
   translate: {
     title: "Traducir",
     detectLanguage: "Detectar idioma",
+    sourceLanguage: "Traducir de",
     targetLanguage: "Traducir a",
+    swap: "Intercambiar idiomas",
+    swapNeedsSource: "Elige un idioma de origen para intercambiar",
     searchLanguages: "Buscar idiomas",
     noLanguages: "No se encontraron idiomas",
     translate: "Traducir",
@@ -5263,6 +5266,8 @@ export const es419 = {
     useAsSource: "Traducir este texto",
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
+    chat: "Chatear con el texto traducido",
+    promptLabel: "Prompt",
     status: {
       preparing: "Preparando…",
       downloading: "Descargando {model}",
@@ -5276,12 +5281,17 @@ export const es419 = {
       fast: "Rápido, funciona en cualquier computadora",
       quality: "La mejor calidad, necesita más memoria",
       chat: "Modelo de chat",
-      chatDescription: "Usa el modelo cargado en Chat. No se descarga nada.",
+      chatDescription:
+        "Usa el modelo elegido en Chat, local o de un proveedor conectado. No se descarga nada.",
       downloadSize: "Descarga de {size}",
       downloaded: "Descargado",
     },
     options: {
       label: "Opciones",
+      mode: "Estilo",
+      modeAutomatic: "Automático",
+      modeLiteral: "Literal",
+      modeSemantic: "Natural",
       tone: "Tono",
       toneDefault: "Predeterminado",
       toneFormal: "Formal",
@@ -5291,6 +5301,9 @@ export const es419 = {
         "Comienza cuando el modelo está cargado. Escribir nunca inicia una descarga.",
       saveHistory: "Guardar historial",
       saveHistoryDescription: "Se guarda solo en este navegador.",
+      showPrompt: "Mostrar prompt",
+      showPromptDescription:
+        "Consulta las instrucciones exactas enviadas al modelo.",
     },
     history: {
       title: "Historial",
@@ -5302,6 +5315,8 @@ export const es419 = {
       clearDescription:
         "Esto elimina todas las traducciones guardadas de este navegador.",
       delete: "Eliminar traducción",
+      export: "Exportar",
+      chatRecent: "Chatear con las traducciones recientes",
     },
     errors: {
       title: "No se pudo traducir",
@@ -5309,6 +5324,11 @@ export const es419 = {
         "No hay ningún modelo de chat cargado. Carga uno en Chat o elige un modelo de traducción.",
       downloadFailed:
         "No se pudo descargar el modelo. Revisa Descargas en el Centro de modelos y vuelve a intentarlo.",
+      unavailable:
+        "La conexión de este modelo no está disponible. Revísala en Configuración o elige otro modelo.",
+      cutOff: "La traducción se cortó antes de terminar.",
+      filtered: "El filtro de contenido del proveedor detuvo la traducción.",
+      exportFailed: "No se pudo exportar el historial.",
       retry: "Reintentar",
     },
   },

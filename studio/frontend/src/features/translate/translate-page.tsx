@@ -40,11 +40,12 @@ import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowDataTransferHorizontalIcon,
-  ArrowRight02Icon,
+  ArrowLeft02Icon,
   Cancel01Icon,
   ClipboardPasteIcon,
   Clock01Icon,
   Copy01Icon,
+  Message01Icon,
   SlidersHorizontalIcon,
   StopIcon,
   Tick02Icon,
@@ -60,8 +61,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { useNavigate } from "@tanstack/react-router";
+import { toast } from "@/lib/toast";
 import { useShallow } from "zustand/react/shallow";
+import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistorySheet } from "./history-sheet";
 import {
   TRANSLATE_LANGUAGES,
@@ -75,17 +78,25 @@ import {
   dedicatedTranslateModel,
   formatModelBytes,
   isTranslateModelId,
+  translateInstruction,
 } from "./models";
 import {
   type TranslatePhase,
   translateModelDownloaded,
 } from "./translate-runner";
 import {
+  AUTO_SOURCE,
   TRANSLATE_SOURCE_MAX_CHARS,
+  translatePromptOptions,
   translationIsStale,
   useTranslateStore,
 } from "./translate-store";
-import { TRANSLATE_TONES, type TranslateTone } from "./translate-text";
+import {
+  TRANSLATE_MODES,
+  TRANSLATE_TONES,
+  type TranslateMode,
+  type TranslateTone,
+} from "./translate-text";
 
 const AUTO_TRANSLATE_DELAY_MS = 800;
 const TEXT_FILE_EXTENSIONS =
@@ -99,6 +110,12 @@ const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
   formal: "translate.options.toneFormal",
   casual: "translate.options.toneCasual",
+};
+
+const MODE_LABEL: Record<TranslateMode, TranslationKey> = {
+  automatic: "translate.options.modeAutomatic",
+  literal: "translate.options.modeLiteral",
+  semantic: "translate.options.modeSemantic",
 };
 
 const MODEL_NOTE: Record<
@@ -142,9 +159,14 @@ function IconButton({
 function LanguagePicker({
   value,
   onChange,
+  label,
+  allowAuto,
 }: {
   value: string;
   onChange: (code: string) => void;
+  label: string;
+  /** Lists "Detect language" first, as the value AUTO_SOURCE. */
+  allowAuto?: boolean;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -166,7 +188,18 @@ function LanguagePicker({
         ),
       )
     : languages;
-  const current = languages.find((language) => language.code === value);
+  const autoLabel = t("translate.detectLanguage");
+  const showAuto =
+    allowAuto === true && (!needle || autoLabel.toLowerCase().includes(needle));
+  const currentLabel =
+    allowAuto && value === AUTO_SOURCE
+      ? autoLabel
+      : (languages.find((language) => language.code === value)?.label ?? value);
+  const pick = (code: string) => {
+    onChange(code);
+    setOpen(false);
+    setQuery("");
+  };
 
   return (
     <Popover
@@ -180,10 +213,14 @@ function LanguagePicker({
         <Button
           type="button"
           variant="picker"
-          aria-label={t("translate.targetLanguage")}
-          className="min-w-40 justify-between rounded-full border"
+          aria-label={label}
+          title={label}
+          className={cn(
+            "min-w-40 justify-between rounded-full border",
+            allowAuto && value === AUTO_SOURCE && "text-muted-foreground",
+          )}
         >
-          <span className="min-w-0 truncate">{current?.label ?? value}</span>
+          <span className="min-w-0 truncate">{currentLabel}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={2}
@@ -208,16 +245,29 @@ function LanguagePicker({
             placeholder={t("translate.searchLanguages")}
           />
           <CommandList>
-            <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
+            {!showAuto && shown.length === 0 && (
+              <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
+            )}
+            {showAuto && (
+              <CommandItem
+                value={AUTO_SOURCE}
+                onSelect={() => pick(AUTO_SOURCE)}
+              >
+                <span className="min-w-0 flex-1 truncate">{autoLabel}</span>
+                {value === AUTO_SOURCE && (
+                  <HugeiconsIcon
+                    icon={MenuTickIcon}
+                    strokeWidth={2}
+                    className="size-4"
+                  />
+                )}
+              </CommandItem>
+            )}
             {shown.map((language) => (
               <CommandItem
                 key={language.code}
                 value={language.code}
-                onSelect={() => {
-                  onChange(language.code);
-                  setOpen(false);
-                  setQuery("");
-                }}
+                onSelect={() => pick(language.code)}
               >
                 <span className="min-w-0 flex-1 truncate">
                   {language.label}
@@ -333,13 +383,16 @@ function OptionRow({
 
 function OptionsPopover() {
   const t = useT();
-  const { tone, autoTranslate, saveHistory } = useTranslateStore(
-    useShallow((state) => ({
-      tone: state.prefs.tone,
-      autoTranslate: state.prefs.autoTranslate,
-      saveHistory: state.prefs.saveHistory,
-    })),
-  );
+  const { mode, tone, autoTranslate, saveHistory, showPrompt } =
+    useTranslateStore(
+      useShallow((state) => ({
+        mode: state.prefs.mode,
+        showPrompt: state.prefs.showPrompt,
+        tone: state.prefs.tone,
+        autoTranslate: state.prefs.autoTranslate,
+        saveHistory: state.prefs.saveHistory,
+      })),
+    );
   const setPrefs = useTranslateStore((state) => state.setPrefs);
   return (
     <Popover>
@@ -360,6 +413,27 @@ function OptionsPopover() {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80">
+        <OptionRow label={t("translate.options.mode")}>
+          {(id) => (
+            <Select
+              value={mode}
+              onValueChange={(next) =>
+                setPrefs({ mode: next as TranslateMode })
+              }
+            >
+              <SelectTrigger id={id} size="sm" className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TRANSLATE_MODES.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {t(MODE_LABEL[option])}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </OptionRow>
         <OptionRow label={t("translate.options.tone")}>
           {(id) => (
             <Select
@@ -404,6 +478,18 @@ function OptionsPopover() {
               id={id}
               checked={saveHistory}
               onCheckedChange={(checked) => setPrefs({ saveHistory: checked })}
+            />
+          )}
+        </OptionRow>
+        <OptionRow
+          label={t("translate.options.showPrompt")}
+          description={t("translate.options.showPromptDescription")}
+        >
+          {(id) => (
+            <Switch
+              id={id}
+              checked={showPrompt}
+              onCheckedChange={(checked) => setPrefs({ showPrompt: checked })}
             />
           )}
         </OptionRow>
@@ -476,17 +562,19 @@ export function TranslatePage() {
       })),
     );
   const attempt = useTranslateStore((state) => state.attempt);
-  const { setSource, setPrefs, setTarget, translate, stop, clear } =
+  const { setSource, setPrefs, setTarget, swap, translate, stop, clear } =
     useTranslateStore(
       useShallow((state) => ({
         setSource: state.setSource,
         setPrefs: state.setPrefs,
         setTarget: state.setTarget,
+        swap: state.swap,
         translate: state.translate,
         stop: state.stop,
         clear: state.clear,
       })),
     );
+  const navigate = useNavigate();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
@@ -519,7 +607,9 @@ export function TranslatePage() {
     if (
       attempt &&
       attempt.source === source &&
+      attempt.from === prefs.from &&
       attempt.target === prefs.target &&
+      attempt.mode === prefs.mode &&
       attempt.tone === prefs.tone &&
       attempt.modelId === prefs.modelId
     ) {
@@ -589,6 +679,30 @@ export function TranslatePage() {
     }
   };
 
+  const errorMessage = error
+    ? error.code === "other"
+      ? error.message
+      : t(`translate.errors.${error.code}`)
+    : "";
+  const promptOptions = translatePromptOptions(prefs);
+
+  // Only a finished translation: a stopped or failed one is not worth a follow-up.
+  const chatAboutResult = () => {
+    if (!result || stale) return;
+    chatAboutTranslations(
+      [
+        {
+          at: Date.now(),
+          source: result.source,
+          output,
+          target: result.target,
+          from: result.from === AUTO_SOURCE ? null : result.from,
+        },
+      ],
+      navigate,
+    );
+  };
+
   const shortcut = `${IS_MAC ? "⌘" : "Ctrl"}+Enter`;
 
   return (
@@ -613,16 +727,27 @@ export function TranslatePage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-muted px-3.5 py-1.5 text-sm text-muted-foreground">
-          {t("translate.detectLanguage")}
-        </span>
-        <HugeiconsIcon
-          icon={ArrowRight02Icon}
-          strokeWidth={1.75}
-          className="size-4 text-muted-foreground rtl:rotate-180"
-          aria-hidden="true"
+        <LanguagePicker
+          value={prefs.from}
+          onChange={(from) => setPrefs({ from })}
+          label={t("translate.sourceLanguage")}
+          allowAuto={true}
         />
-        <LanguagePicker value={prefs.target} onChange={setTarget} />
+        <IconButton
+          icon={ArrowDataTransferHorizontalIcon}
+          label={
+            prefs.from === AUTO_SOURCE
+              ? t("translate.swapNeedsSource")
+              : t("translate.swap")
+          }
+          disabled={prefs.from === AUTO_SOURCE || busy}
+          onClick={swap}
+        />
+        <LanguagePicker
+          value={prefs.target}
+          onChange={setTarget}
+          label={t("translate.targetLanguage")}
+        />
         {prefs.recentTargets.map((code) => {
           const language = findTranslateLanguage(code);
           if (!language) return null;
@@ -769,9 +894,7 @@ export function TranslatePage() {
                     {t("translate.errors.title")}
                   </span>
                   <span className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                    {error.code === "other"
-                      ? error.message
-                      : t(`translate.errors.${error.code}`)}
+                    {errorMessage}
                   </span>
                 </div>
                 <Button
@@ -807,15 +930,27 @@ export function TranslatePage() {
                 <PhaseStatus phase={phase} model={modelLabel} />
               </div>
             )}
-            {output !== "" && !phase && stale && (
+            {output !== "" && !phase && error && (
+              <span className="pl-2 text-xs text-destructive [overflow-wrap:anywhere]">
+                {errorMessage}
+              </span>
+            )}
+            {output !== "" && !phase && !error && stale && (
               <span className="pl-2 text-xs text-muted-foreground">
                 {t("translate.stale")}
               </span>
             )}
             <div className="ml-auto flex items-center gap-1">
+              {result && !stale && !busy && (
+                <IconButton
+                  icon={Message01Icon}
+                  label={t("translate.chat")}
+                  onClick={chatAboutResult}
+                />
+              )}
               {output !== "" && !busy && (
                 <IconButton
-                  icon={ArrowDataTransferHorizontalIcon}
+                  icon={ArrowLeft02Icon}
                   label={t("translate.useAsSource")}
                   onClick={() => setSource(output)}
                 />
@@ -831,6 +966,17 @@ export function TranslatePage() {
           </div>
         </section>
       </div>
+
+      {prefs.showPrompt && promptOptions && (
+        <section className="rounded-2xl bg-muted/50 px-5 py-3 dark:bg-card">
+          <h2 className="text-xs text-muted-foreground">
+            {t("translate.promptLabel")}
+          </h2>
+          <p className="mt-1 whitespace-pre-wrap font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
+            {translateInstruction(prefs.modelId, promptOptions)}
+          </p>
+        </section>
+      )}
 
       <TranslateHistorySheet open={historyOpen} onOpenChange={setHistoryOpen} />
     </main>

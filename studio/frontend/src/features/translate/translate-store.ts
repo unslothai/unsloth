@@ -10,7 +10,6 @@ import {
 import {
   DEFAULT_TRANSLATE_MODEL,
   type TranslateModelId,
-  dedicatedTranslateModel,
   isTranslateModelId,
 } from "./models";
 import {
@@ -24,18 +23,29 @@ import {
   type TranslateRunErrorCode,
   runTranslation,
 } from "./translate-runner";
-import { TRANSLATE_TONES, type TranslateTone } from "./translate-text";
+import {
+  TRANSLATE_MODES,
+  TRANSLATE_TONES,
+  type TranslateMode,
+  type TranslatePromptOptions,
+  type TranslateTone,
+} from "./translate-text";
 
 const PREFS_KEY = "unsloth_translate_prefs";
 const HISTORY_KEY = "unsloth_translate_history";
 const RECENT_TARGETS = 3;
+export const AUTO_SOURCE = "auto";
 export const TRANSLATE_SOURCE_MAX_CHARS = 50_000;
 
 export type TranslatePrefs = {
+  /** A language code, or "auto" to let the model detect it. */
+  from: string;
   target: string;
   recentTargets: string[];
   modelId: TranslateModelId;
+  mode: TranslateMode;
   tone: TranslateTone;
+  showPrompt: boolean;
   autoTranslate: boolean;
   saveHistory: boolean;
 };
@@ -47,7 +57,9 @@ export type TranslateError =
 /** What the output pane holds was made from; a different draft marks it stale. */
 type Result = {
   source: string;
+  from: string;
   target: string;
+  mode: TranslateMode;
   tone: TranslateTone;
   modelId: TranslateModelId;
 };
@@ -67,6 +79,8 @@ type TranslateState = {
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
   setTarget: (target: string) => void;
+  /** Flips the pair and moves the translation into the text box; needs a set source language. */
+  swap: () => void;
   translate: () => Promise<void>;
   stop: () => void;
   clear: () => void;
@@ -98,6 +112,7 @@ function loadPrefs(): TranslatePrefs {
   const known = (code: unknown): code is string =>
     typeof code === "string" && findTranslateLanguage(code) !== undefined;
   return {
+    from: known(saved.from) ? saved.from : AUTO_SOURCE,
     target: known(saved.target)
       ? saved.target
       : typeof navigator === "undefined"
@@ -109,9 +124,13 @@ function loadPrefs(): TranslatePrefs {
     modelId: isTranslateModelId(saved.modelId)
       ? saved.modelId
       : DEFAULT_TRANSLATE_MODEL,
+    mode: TRANSLATE_MODES.includes(saved.mode as TranslateMode)
+      ? (saved.mode as TranslateMode)
+      : "automatic",
     tone: TRANSLATE_TONES.includes(saved.tone as TranslateTone)
       ? (saved.tone as TranslateTone)
       : "default",
+    showPrompt: saved.showPrompt === true,
     autoTranslate: saved.autoTranslate === true,
     saveHistory: saved.saveHistory !== false,
   };
@@ -128,11 +147,38 @@ function saveHistory(
   return kept;
 }
 
+const storedHistory = () => parseHistory(readJson(HISTORY_KEY));
+
+function resultOf(source: string, prefs: TranslatePrefs): Result {
+  return {
+    source,
+    from: prefs.from,
+    target: prefs.target,
+    mode: prefs.mode,
+    tone: prefs.tone,
+    modelId: prefs.modelId,
+  };
+}
+
+/** What the prompt needs from the settings; null when the target is not a known language. */
+export function translatePromptOptions(
+  prefs: Pick<TranslatePrefs, "from" | "target" | "mode" | "tone">,
+): TranslatePromptOptions | null {
+  const target = findTranslateLanguage(prefs.target);
+  if (!target) return null;
+  return {
+    sourceName: findTranslateLanguage(prefs.from)?.name ?? null,
+    targetName: target.name,
+    mode: prefs.mode,
+    tone: prefs.tone,
+  };
+}
+
 let controller: AbortController | null = null;
 
 export const useTranslateStore = create<TranslateState>((set, get) => ({
   prefs: loadPrefs(),
-  history: parseHistory(readJson(HISTORY_KEY)),
+  history: storedHistory(),
   source: "",
   output: "",
   phase: null,
@@ -178,20 +224,31 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     });
   },
 
+  swap: () => {
+    const { prefs, output, phase } = get();
+    if (prefs.from === AUTO_SOURCE || phase) return;
+    get().setPrefs({ from: prefs.target });
+    get().setTarget(prefs.from);
+    if (output) {
+      set({
+        source: output.slice(0, TRANSLATE_SOURCE_MAX_CHARS),
+        output: "",
+        error: null,
+        result: null,
+        attempt: null,
+      });
+    }
+  },
+
   translate: async () => {
     const { source, prefs } = get();
-    const language = findTranslateLanguage(prefs.target);
-    if (!language || source.trim() === "") return;
+    const prompt = translatePromptOptions(prefs);
+    if (!prompt || source.trim() === "") return;
     controller?.abort();
     const run = new AbortController();
     controller = run;
     const current = () => controller === run;
-    const request: Result = {
-      source,
-      target: prefs.target,
-      tone: prefs.tone,
-      modelId: prefs.modelId,
-    };
+    const request = resultOf(source, prefs);
     set({
       phase: { kind: "preparing" },
       error: null,
@@ -200,10 +257,9 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       attempt: request,
     });
     try {
-      const output = await runTranslation({
+      const { output, model } = await runTranslation({
         text: source,
-        targetName: language.name,
-        tone: prefs.tone,
+        prompt,
         modelId: prefs.modelId,
         signal: run.signal,
         onPhase: (phase) => current() && set({ phase }),
@@ -212,13 +268,15 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       if (!current()) return;
       controller = null;
       const state = get();
+      // Onto the stored list, not this window's: another window may have added entries since.
       const history = state.prefs.saveHistory
         ? saveHistory(
-            addHistoryEntry(state.history, {
+            addHistoryEntry(storedHistory(), {
               source,
               output,
               target: prefs.target,
-              model: dedicatedTranslateModel(prefs.modelId)?.label ?? null,
+              from: prefs.from === AUTO_SOURCE ? null : prefs.from,
+              model,
             }),
           )
         : state.history;
@@ -271,12 +329,13 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     get().stop();
     const { prefs } = get();
     if (findTranslateLanguage(entry.target)) get().setTarget(entry.target);
-    const shown: Result = {
-      source: entry.source,
-      target: entry.target,
-      tone: prefs.tone,
-      modelId: prefs.modelId,
-    };
+    get().setPrefs({
+      from:
+        entry.from && findTranslateLanguage(entry.from)
+          ? entry.from
+          : AUTO_SOURCE,
+    });
+    const shown = resultOf(entry.source, get().prefs);
     set({
       source: entry.source,
       output: entry.output,
@@ -288,7 +347,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
 
   removeHistory: (id) => {
     set({
-      history: saveHistory(get().history.filter((entry) => entry.id !== id)),
+      history: saveHistory(storedHistory().filter((entry) => entry.id !== id)),
     });
   },
 
@@ -310,8 +369,19 @@ export function translationIsStale(
   return (
     result !== null &&
     (result.source !== source ||
+      result.from !== prefs.from ||
       result.target !== prefs.target ||
+      result.mode !== prefs.mode ||
       result.tone !== prefs.tone ||
       result.modelId !== prefs.modelId)
   );
+}
+
+// Another window's translations and deletions show here without a reload.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === HISTORY_KEY || event.key === null) {
+      useTranslateStore.setState({ history: storedHistory() });
+    }
+  });
 }
