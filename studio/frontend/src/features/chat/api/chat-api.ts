@@ -1284,14 +1284,102 @@ export async function getChatAgentsMd(
   return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
+export type ProjectFileEntry = {
+  name: string;
+  kind: "dir" | "file";
+  size?: number | null;
+  hidden: boolean;
+};
+
+export type ProjectFileListing = {
+  /** The folder's path with the home directory written as `~`. */
+  root: string;
+  path: string;
+  entries: ProjectFileEntry[];
+  truncated: boolean;
+  /** False when the tools run in the managed folder. */
+  chosen: boolean;
+};
+
+export type ProjectFileSearch = {
+  results: { path: string; name: string }[];
+  truncated: boolean;
+};
+
+export type ProjectChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export type ProjectChanges = {
+  repo: boolean;
+  branch: string | null;
+  changes: { path: string; status: ProjectChangeStatus }[];
+  truncated: boolean;
+};
+
+function projectFilesUrl(projectId: string, suffix: string): string {
+  return `/api/chat/projects/${encodeURIComponent(projectId)}/${suffix}`;
+}
+
+export async function listProjectFiles(
+  projectId: string,
+  path: string,
+  showHidden: boolean,
+  signal?: AbortSignal,
+): Promise<ProjectFileListing> {
+  const query = new URLSearchParams({ path, show_hidden: String(showHidden) });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileListing>(response);
+}
+
+export async function searchProjectFiles(
+  projectId: string,
+  q: string,
+  signal?: AbortSignal,
+): Promise<ProjectFileSearch> {
+  const query = new URLSearchParams({ q });
+  const response = await authFetch(
+    `${projectFilesUrl(projectId, "files/search")}?${query}`,
+    { signal },
+  );
+  return parseJsonOrThrow<ProjectFileSearch>(response);
+}
+
+export async function getProjectChanges(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ProjectChanges> {
+  const response = await authFetch(projectFilesUrl(projectId, "changes"), {
+    signal,
+  });
+  return parseJsonOrThrow<ProjectChanges>(response);
+}
+
+export type SaveChatProjectOptions = {
+  /** With a lease: return the project already working in that folder instead of creating one. */
+  reuseExisting?: boolean;
+};
+
 export async function saveChatProject(
   project: ProjectRecord,
   nativePathLease?: string,
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...project, ...(nativePathLease ? { nativePathLease } : {}) }),
+    body: JSON.stringify({
+      ...project,
+      ...(nativePathLease ? { nativePathLease } : {}),
+      ...(nativePathLease && options.reuseExisting ? { reuseExisting: true } : {}),
+    }),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
   notifyChatProjectsUpdated();

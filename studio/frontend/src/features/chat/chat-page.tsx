@@ -525,6 +525,12 @@ const ProjectSourcesPanel = lazy(() =>
   })),
 );
 
+const ProjectFilesPanel = lazy(() =>
+  import("@/features/chat/components/project-files-panel").then((module) => ({
+    default: module.ProjectFilesPanel,
+  })),
+);
+
 const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
   openai: 0,
   anthropic: 1,
@@ -2099,7 +2105,7 @@ function ProjectLanding({
   const [initialActiveThreadId] = useState(
     () => useChatRuntimeStore.getState().activeThreadId,
   );
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+  const [projectTab, setProjectTab] = useState<"chats" | "sources" | "files">(() =>
     hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
   // Drop the marker once committed: React may replay the initializer above.
@@ -2504,6 +2510,14 @@ function ProjectLanding({
               >
                 Sources
               </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("files")}
+                data-active={projectTab === "files"}
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Files
+              </button>
             </div>
 
             {projectTab === "sources" ? (
@@ -2515,6 +2529,16 @@ function ProjectLanding({
                 }
               >
                 <ProjectSourcesPanel projectId={projectId} />
+              </Suspense>
+            ) : projectTab === "files" ? (
+              <Suspense
+                fallback={
+                  <div className="mt-8 rounded-2xl bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                    Loading files…
+                  </div>
+                }
+              >
+                <ProjectFilesPanel projectId={projectId} />
               </Suspense>
             ) : (
               <div className="mt-8 flex flex-col gap-1">

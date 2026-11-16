@@ -5,6 +5,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   CHAT_PROJECTS_UPDATED_EVENT,
+  type SaveChatProjectOptions,
 } from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
@@ -178,8 +179,9 @@ export async function createChatProject(
   name: string,
   nativePathLease?: string,
   id?: string,
+  options?: SaveChatProjectOptions,
 ): Promise<ProjectRecord> {
-  return createStoredChatProject(name, nativePathLease, id);
+  return createStoredChatProject(name, nativePathLease, id, options);
 }
 
 export async function renameChatProject(

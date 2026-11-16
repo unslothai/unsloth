@@ -61,6 +61,7 @@ from storage.studio_db import (
     delete_chat_project,
     delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
+    find_chat_project_by_working_folder,
     fork_chat_thread,
     fork_counts_for_thread,
     get_chat_attachment,
@@ -355,6 +356,45 @@ class ChatProjectFolderAccess(BaseModel):
 
 class ChatProjectCreate(ChatProject):
     nativePathLease: Optional[str] = Field(default = None, min_length = 1)
+    # Open Folder: return the project already working in the picked folder instead of a second one.
+    reuseExisting: bool = False
+
+
+class ProjectFileEntry(BaseModel):
+    name: str
+    kind: Literal["dir", "file"]
+    size: Optional[int] = None
+    hidden: bool = False
+
+
+class ProjectFileListing(BaseModel):
+    root: str
+    path: str
+    entries: list[ProjectFileEntry]
+    truncated: bool
+    chosen: bool
+
+
+class ProjectFileMatch(BaseModel):
+    path: str
+    name: str
+
+
+class ProjectFileSearch(BaseModel):
+    results: list[ProjectFileMatch]
+    truncated: bool
+
+
+class ProjectChange(BaseModel):
+    path: str
+    status: Literal["modified", "added", "deleted", "renamed", "untracked", "conflicted"]
+
+
+class ProjectChanges(BaseModel):
+    repo: bool
+    branch: Optional[str] = None
+    changes: list[ProjectChange]
+    truncated: bool
 
 
 class ChatAgentsMd(BaseModel):
@@ -1387,10 +1427,21 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     if lease is not None and not is_owner_context():
         raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        project = payload.model_dump(exclude = {"nativePathLease"})
+        project = payload.model_dump(exclude = {"nativePathLease", "reuseExisting"})
         if lease is None:
             return _project_out(upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
+        if payload.reuseExisting:
+            existing = find_chat_project_by_working_folder(working_folder[0])
+            if existing is not None:
+                # The fresh grant re-pins the identity, so a folder recreated at the same path is usable again.
+                path, (device, inode) = working_folder
+                if existing.get("workingFolderIdentity") != f"{device}:{inode}":
+                    existing = (
+                        set_chat_project_working_folder(existing["id"], path, (device, inode))
+                        or existing
+                    )
+                return _project_out(existing)
         return _project_out(upsert_chat_project(project, working_folder = working_folder))
     except HTTPException:
         raise
@@ -1583,6 +1634,70 @@ def clear_project_working_folder(
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     return _project_out(project)
+
+
+def _project_files_root(project_id: str) -> tuple[str, bool]:
+    """The folder this caller's tools run in for the project, and whether it is the owner's chosen one."""
+    from core.inference.tools import project_session_id, resolve_sandbox_workdir
+    from storage.studio_db import available_project_working_folder
+
+    project = get_chat_project(project_id)
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    root = os.path.realpath(resolve_sandbox_workdir(project_session_id(project_id)))
+    chosen = available_project_working_folder(project)
+    return root, bool(chosen) and os.path.normcase(os.path.realpath(chosen)) == os.path.normcase(
+        root
+    )
+
+
+@router.get("/projects/{project_id}/files", response_model = ProjectFileListing)
+def list_project_files(
+    project_id: str,
+    path: str = Query("", max_length = 4096),
+    show_hidden: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    """One directory level of the folder the project's tools run in. Paths outside it are 404."""
+    from core import project_files
+    from core.inference.tools import _INTERNAL_SANDBOX_FILES
+    from utils.paths.folder_info import tilde_path
+
+    root, chosen = _project_files_root(project_id)
+    try:
+        listing = project_files.list_directory(
+            root,
+            path,
+            show_hidden = show_hidden,
+            skip_names = frozenset() if chosen else _INTERNAL_SANDBOX_FILES,
+        )
+    except project_files.ProjectPathError as exc:
+        # 404, not 403: the answer must not confirm what exists outside the folder.
+        raise HTTPException(status_code = 404, detail = "Folder not found") from exc
+    return ProjectFileListing(root = tilde_path(root), chosen = chosen, **listing)
+
+
+@router.get("/projects/{project_id}/files/search", response_model = ProjectFileSearch)
+def search_project_files(
+    project_id: str,
+    q: str = Query("", max_length = 512),
+    limit: int = Query(50),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Files in the project's folder whose relative path matches q, best match first."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectFileSearch(**project_files.search_files(root, q, limit))
+
+
+@router.get("/projects/{project_id}/changes", response_model = ProjectChanges)
+def get_project_changes(project_id: str, current_subject: str = Depends(get_current_subject)):
+    """Changed files when the project's folder is the root of a git repository."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectChanges(**project_files.git_changes(root))
 
 
 def _delete_project_rag_sources(project_id: str) -> None:
