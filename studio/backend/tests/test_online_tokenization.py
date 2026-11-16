@@ -557,3 +557,37 @@ def test_a_disabled_decision_never_carries_worker_settings():
     assert decision.workers == 0
     assert decision.prewarm_batches == 0
     assert "off" in decision.as_log_line()
+
+
+# The autouse fixture pins host_memory_snapshot; these two exercise the real one.
+from utils.datasets.online_tokenization import host_memory_snapshot as _REAL_SNAPSHOT  # noqa: E402
+
+def _fake_psutil(monkeypatch, rss, available):
+    import sys, types
+
+    fake = types.SimpleNamespace(
+        Process = lambda: types.SimpleNamespace(memory_info = lambda: types.SimpleNamespace(rss = rss)),
+        virtual_memory = lambda: types.SimpleNamespace(available = available),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+
+def test_a_cgroup_limit_below_host_ram_vetoes_the_fork(monkeypatch):
+    """A container with 4 GiB of headroom on a 64 GiB host: the fork that psutil allows still OOMs."""
+    from utils import host_memory
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    _fake_psutil(monkeypatch, 8 * GIB, 64 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_headroom_mib", lambda: 4 * 1024)
+    assert _REAL_SNAPSHOT() == (8 * GIB, 4 * GIB)
+    assert "4.0 GiB available" in host_memory_fork_veto(0, _REAL_SNAPSHOT())
+
+
+def test_without_a_cgroup_limit_host_ram_decides(monkeypatch):
+    from utils import host_memory
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    _fake_psutil(monkeypatch, 8 * GIB, 64 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_headroom_mib", lambda: None)
+    assert _REAL_SNAPSHOT() == (8 * GIB, 64 * GIB)
+    assert host_memory_fork_veto(0, _REAL_SNAPSHOT()) is None

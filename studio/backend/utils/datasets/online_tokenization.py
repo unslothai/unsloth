@@ -214,10 +214,17 @@ def resolve_worker_count(desired: Optional[int] = None) -> int:
 
 
 def host_memory_snapshot() -> Optional[tuple]:
-    """(this process's RSS, host RAM still available) in bytes, or None when unreadable."""
+    """(this process's RSS, host RAM it can still allocate) in bytes, or None when unreadable. Available is capped
+    by cgroup headroom: in a container psutil sees the whole machine, not the limit that OOM-kills the fork."""
     try:
         import psutil
-        return int(psutil.Process().memory_info().rss), int(psutil.virtual_memory().available)
+        from utils import host_memory
+
+        rss = int(psutil.Process().memory_info().rss)
+        available = host_memory.usable_mib(
+            int(psutil.virtual_memory().available) // (1 << 20), host_memory.cgroup_headroom_mib()
+        )
+        return None if available is None else (rss, int(available) << 20)
     except Exception:  # noqa: BLE001 - unreadable reads as "no pressure"
         return None
 
