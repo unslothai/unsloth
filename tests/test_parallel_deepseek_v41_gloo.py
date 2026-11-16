@@ -409,9 +409,7 @@ def _case_trainer(
 
     class Grab(TrainerCallback):
         def on_pre_optimizer_step(self, args, state, control, **kw):
-            if (
-                state.global_step == 0
-            ):  # after clipping: the gradients and the norm they were scaled by
+            if state.global_step == 0:
                 grads.update(_lora(model, full))
 
     trainer = Trainer(model = model, args = args, train_dataset = rows, callbacks = [Grab()])

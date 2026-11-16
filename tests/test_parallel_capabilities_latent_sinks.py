@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""DeepSeek-V4.1's attention owns its sinks, which tp_native shards with the query heads (latent-query MQA). The
-capability registry used to read any directly owned parameter as gpt-oss style and refused tp before the Trainer
-started, so tensor parallel on DeepSeek-V4.1 never ran outside apply_tensor_parallel. CPU, meta device."""
+"""Latent-query MQA sinks (DeepSeek-V4.1) are sharded by tp_native, so the registry must not refuse tp. CPU, meta."""
 
 import types
 
@@ -68,7 +66,7 @@ def _model():
 def test_latent_query_sinks_do_not_trip_the_direct_parameter_rule():
     model = _model()
     assert any(n.endswith("self_attn.sinks") for n, _ in model.named_parameters())
-    tp_native.derive_tp_plan(model, 2)  # tp_native shards it
+    tp_native.derive_tp_plan(model, 2)
     assert not caps.query_from(None, None, model).direct_params
     caps.check_layout(
         ParallelLayout(fsdp2 = False, tp = 2, dp = 1, world = 2),
