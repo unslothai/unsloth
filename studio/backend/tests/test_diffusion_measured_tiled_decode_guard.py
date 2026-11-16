@@ -161,3 +161,29 @@ def test_generate_passes_the_placement_row_to_the_guard():
     assert "measured_activation = guard_measured," in src
     for fn in (dm.raise_on_image_activation_shortfall, dm.image_activation_shortfall_message):
         assert "measured_activation" in inspect.signature(fn).parameters
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        "qwen-image-2.1",
+        # The guard's family is the load's variant hint: family name, single file, repo id and base, space-joined.
+        "qwen-image-2.1 Qwen/Qwen-Image-2.1",
+        "qwen-image-2.1 qwen-image-2.1-Q4_K_M.gguf unsloth/Qwen-Image-2.1-GGUF Qwen/Qwen-Image-2.1",
+    ],
+)
+def test_qwen_tiles_are_priced_from_their_own_512_px_measurement(hint):
+    act = calibrated_image_activation("qwen-image-2.1", max_speed = False)
+    priced = dm.estimate_tiled_image_runtime_mib(
+        width = 1024,
+        height = 1536,
+        family = hint,
+        tile_side = 512,
+        vae_sliced = True,
+        measured = act,
+    )
+    flat = dm.estimate_tiled_image_runtime_mib(
+        width = 1024, height = 1536, family = hint, tile_side = 512, vae_sliced = True
+    )
+    # One 512 px tile is the very tile the row measured: never priced under it (nor over the flat estimate).
+    assert priced >= min(flat, act.tiled_decode_mib)

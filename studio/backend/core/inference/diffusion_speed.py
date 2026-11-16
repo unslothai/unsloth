@@ -718,7 +718,13 @@ def apply_speed_optims(
                 logger = logger,
                 offloaded = after_placement,
             )
-            if ok and not applied["compiled"] and step_graph_bakes_eager_w8a8(pipe):
+            # fp16 cards only: measured there (T4, and the sm120 fp16 path); bf16 loads keep the graph unchanged.
+            if (
+                ok
+                and not applied["compiled"]
+                and _is_float16(getattr(target, "dtype", None))
+                and step_graph_bakes_eager_w8a8(pipe)
+            ):
                 ok, reason = False, STEP_GRAPH_EAGER_W8A8_REASON
             if ok and after_placement:
                 # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.

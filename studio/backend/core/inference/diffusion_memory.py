@@ -9343,7 +9343,9 @@ _MEASURED_TILED_DECODE_SIDE: dict[str, int] = {"qwen-image-2.1": 512}
 
 
 def _measured_tiled_decode_side(family: Optional[str]) -> int:
-    fam = (family or "").lower()
+    # The generate guard passes the load's variant hint (family name, then file / repo / base, space-joined).
+    parts = str(family or "").lower().split()
+    fam = parts[0] if parts else ""
     for name, side in _MEASURED_TILED_DECODE_SIDE.items():
         if fam == name or fam.startswith(name + "-"):
             return side

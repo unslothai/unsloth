@@ -79,10 +79,11 @@ def test_step_graph_check_and_its_kill_switch(runtime, monkeypatch):
     assert not ds.step_graph_bakes_eager_w8a8(object())
 
 
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("native", [True, False])
 def test_apply_speed_optims_declines_the_graph_only_over_an_eager_native_w8a8_denoiser(
-    runtime, monkeypatch, compiled, native
+    runtime, monkeypatch, compiled, native, dtype
 ):
     from core.inference import diffusion_cuda_graph as cg
 
@@ -100,7 +101,7 @@ def test_apply_speed_optims_declines_the_graph_only_over_an_eager_native_w8a8_de
     )
     pipe = types.SimpleNamespace()
     target = types.SimpleNamespace(
-        device = "cuda", backend = "cuda", torch_device = "cuda:0", dtype = torch.float16
+        device = "cuda", backend = "cuda", torch_device = "cuda:0", dtype = getattr(torch, dtype)
     )
     try:
         applied = ds.apply_speed_optims(
@@ -112,7 +113,8 @@ def test_apply_speed_optims_declines_the_graph_only_over_an_eager_native_w8a8_de
         )
     except Exception as exc:  # noqa: BLE001 - CPU host: only the graph decision is under test
         pytest.skip(f"apply_speed_optims needs more of a CUDA host here: {exc!r}")
-    declined = native and not applied.get("compiled")
+    # fp16 cards only: a bf16 load keeps its graph whatever its linears are.
+    declined = native and not applied.get("compiled") and dtype == "float16"
     assert bool(installed) is not declined
     if declined:
         assert pipe._unsloth_cuda_graph_reason == ds.STEP_GRAPH_EAGER_W8A8_REASON
