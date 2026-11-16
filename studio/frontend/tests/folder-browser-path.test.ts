@@ -157,3 +157,18 @@ test("a navigation during New folder wins over the create response", () => {
   assert.ok(claim > 0 && claim < request && request < guard);
   assert.ok(guard < create.indexOf("setData(created)"));
 });
+
+test("a typed path outside the browsable places can still be added where the caller registers it", () => {
+  const source = readSrc(
+    "features/model-picker/components/model-selector/folder-browser.tsx",
+  );
+  assert.match(
+    source,
+    /acceptUnbrowsable &&\s*opts\?\.typed &&\s*target &&\s*errorStatus\(err\) === 403/,
+  );
+  assert.match(source, /onSelect\(unbrowsable\);\n\s*onOpenChange\(false\);/);
+  const composer = readSrc(
+    "components/assistant-ui/composer-model-picker/custom-folders.tsx",
+  );
+  assert.match(composer, /<FolderBrowser[^>]*acceptUnbrowsable=\{true\}/);
+});

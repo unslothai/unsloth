@@ -64,6 +64,9 @@ export interface FolderBrowserProps {
   description?: string;
   confirmLabel?: string;
   showModelHints?: boolean;
+  /** Offer to pick a typed path the browser may not open (outside its places), for callers that
+   * register the folder themselves; the server still validates it on that call. */
+  acceptUnbrowsable?: boolean;
 }
 
 const PLACE_ICONS: Record<string, IconSvgElement> = {
@@ -99,6 +102,7 @@ export function FolderBrowser({
   description,
   confirmLabel = "Use this folder",
   showModelHints = true,
+  acceptUnbrowsable = false,
 }: FolderBrowserProps) {
   const t = useT();
   const listId = useId();
@@ -106,6 +110,7 @@ export function FolderBrowser({
   const [showHidden, setShowHidden] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unbrowsable, setUnbrowsable] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [newName, setNewName] = useState<string | null>(null);
@@ -132,6 +137,7 @@ export function FolderBrowser({
     abortRef.current = ctrl;
     setLoading(true);
     setError(null);
+    setUnbrowsable(null);
     browseFolders(target, hidden, ctrl.signal, showModelHints)
       .then((res) => {
         if (ctrl.signal.aborted) return;
@@ -156,6 +162,14 @@ export function FolderBrowser({
         // If the first request fails, fall back to HOME so the modal stays navigable.
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
+        if (
+          acceptUnbrowsable &&
+          opts?.typed &&
+          target &&
+          errorStatus(err) === 403
+        ) {
+          setUnbrowsable(target);
+        }
         if (opts?.fallbackOnError && target !== undefined) {
           // No target means HOME; do not recurse if HOME itself fails.
           queueMicrotask(() => navigate(undefined, hidden));
@@ -536,6 +550,21 @@ export function FolderBrowser({
                     data-testid="folder-browser-error"
                   >
                     {error}
+                    {unbrowsable && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1.5 flex h-7 rounded-full px-2.5 text-ui-13 text-foreground"
+                        onClick={() => {
+                          onSelect(unbrowsable);
+                          onOpenChange(false);
+                        }}
+                        data-testid="folder-browser-add-unbrowsable"
+                      >
+                        Add {unbrowsable} anyway
+                      </Button>
+                    )}
                   </div>
                 )}
                 {newName !== null && (

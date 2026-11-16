@@ -247,6 +247,7 @@ export function useCustomFolders({
       <FolderBrowser
         open={browsing}
         onOpenChange={setBrowsing}
+        acceptUnbrowsable={true}
         onSelect={(picked) => {
           void add(picked);
         }}
