@@ -2421,6 +2421,24 @@ def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
         masking_utils.create_block_mask = builder
 
 
+def _keyword_arguments(signature, args, kwargs):
+    """`args` + `kwargs` as keywords alone, or None when they do not bind (or need *args)."""
+    try:
+        bound = signature.bind(*args, **kwargs)
+    except TypeError:
+        return None
+    keywords = {}
+    for name, value in bound.arguments.items():
+        kind = signature.parameters[name].kind
+        if kind is inspect.Parameter.VAR_KEYWORD:
+            keywords.update(value)
+        elif kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_ONLY):
+            return None
+        else:
+            keywords[name] = value
+    return keywords
+
+
 def fix_transformers_flex_mask_graph_breaks():
     """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
     of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
@@ -2458,9 +2476,16 @@ def fix_transformers_flex_mask_graph_breaks():
         if not _flex_mask_reads_padding_values(masking_utils, current):
             return
         original = current
+        signature = inspect.signature(original)
 
         @functools.wraps(original)
         def flex_attention_mask(*args, **kwargs):
+            if args:
+                # A wrapper above may forward by position (unsloth_zoo's binds and passes bound.args).
+                keywords = _keyword_arguments(signature, args, kwargs)
+                if keywords is None:
+                    return original(*args, **kwargs)
+                args, kwargs = (), keywords
             attention_mask = kwargs.get("attention_mask")
             if (
                 args
