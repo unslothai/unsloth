@@ -5,6 +5,7 @@
 Params4bit: each rank's packed bytes and QuantState equal the slice a full load + split / shard cuts, bitwise,
 the sharded-loaded model trains like the full load, and each rank holds ~1/N of the 4-bit bytes."""
 
+import json
 import multiprocessing
 import os
 
@@ -95,6 +96,13 @@ def _load(ckpt, dtype = torch.float32):
         attn_implementation = "eager",
         device_map = {"": device.index if device.type == "cuda" else "cpu"},
     )
+
+
+def _saved_storage(ckpt):
+    with open(os.path.join(ckpt, "config.json")) as f:
+        storage = json.load(f).get("quantization_config", {}).get("bnb_4bit_quant_storage")
+    dtype = getattr(torch, storage or "uint8")
+    return dtype if dtype.is_floating_point else None
 
 
 def _peft(model):
@@ -295,7 +303,9 @@ def _case_fsdp2(
     config = native.FSDP2Config(param_dtype = torch.float32, fit_layout = fit, device = device.type)
 
     def load():
-        model = _load(ckpt)
+        # transformers value-casts a float quant storage to `dtype`, so load in the saved storage dtype.
+        saved = _saved_storage(ckpt)
+        model = _load(ckpt, dtype = saved or torch.float32)
         if storage is not None:
             from unsloth.models.fsdp2_qlora import params4bit_to_float_storage
             assert params4bit_to_float_storage(model, getattr(torch, storage)) > 0
