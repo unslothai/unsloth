@@ -190,8 +190,9 @@ def resolve(
 
 
 def _unbakeable_feature(path: str) -> Optional[str]:
-    """What a plain ``scale * B @ A`` weight bake cannot reproduce: DoRA's learned per-weight magnitude, or a trained
-    lora_B bias (PEFT lora_bias). None for a plain adapter."""
+    """What a plain ``scale * B @ A`` weight bake cannot reproduce: DoRA's learned per-weight magnitude, a trained
+    lora_B bias (PEFT lora_bias), transposed fan_in_fan_out factors, or full-weight tensors beside the factors. None
+    for a plain adapter."""
     meta = _file_metadata(path)
     if meta.get("use_dora"):
         return "DoRA"
@@ -207,6 +208,12 @@ def _unbakeable_feature(path: str) -> Optional[str]:
         return "DoRA"
     if any(k.endswith((".lora_B.bias", ".lora_B.default.bias", ".lora_up.bias")) for k in keys):
         return "LoRA-bias"
+    if meta.get("fan_in_fan_out"):
+        return "fan_in_fan_out"
+    # Anything but A / B / alpha (modules_to_save copies, .diff / .diff_b full deltas) would be skipped by the bake.
+    known = _A_SUFFIXES + _B_SUFFIXES + (".alpha",)
+    if any(not k.endswith(known) for k in keys):
+        return "full-weight (modules_to_save or diff)"
     return None
 
 

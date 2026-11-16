@@ -518,3 +518,40 @@ def test_a_lora_bias_adapter_is_refused_before_anything_is_baked(monkeypatch, tm
     )
     with pytest.raises(diffusion_lora.LoraSelectionError, match = "LoRA-bias"):
         video_lora.resolve([("me/biased", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None)
+
+
+@pytest.mark.parametrize(
+    "extra, config, label",
+    [
+        ({"transformer.norm_out.linear.weight": torch.zeros(8, 8)}, None, "full-weight"),
+        ({"transformer.blocks.0.norm1.diff_b": torch.zeros(8)}, None, "full-weight"),
+        ({}, {"r": 4, "lora_alpha": 4, "fan_in_fan_out": True}, "fan_in_fan_out"),
+    ],
+)
+def test_adapters_with_parts_a_weight_bake_would_skip_are_refused(
+    monkeypatch, tmp_path, extra, config, label
+):
+    """modules_to_save copies, diff tensors and transposed factors would be dropped or merged wrong by the bake."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion_lora
+
+    path = tmp_path / "odd" / "w.safetensors"
+    path.parent.mkdir()
+    state = {
+        "transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 8),
+        "transformer.blocks.0.attn1.to_q.lora_B.weight": torch.zeros(8, 4),
+        **extra,
+    }
+    if config is not None:
+        (path.parent / "adapter_config.json").write_text(json.dumps(config))
+    save_file(state, str(path))
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **k: [
+            diffusion_lora.ResolvedLora("me/odd", "odd", str(path), "safetensors", 1.0)
+        ],
+    )
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = label):
+        video_lora.resolve([("me/odd", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None)
