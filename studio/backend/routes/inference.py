@@ -124,6 +124,7 @@ from hub.services.models.ollama import (
     is_ollama_manifest_ref,
     materialize_ollama_model_ref,
     ollama_model_ref_public_id,
+    ollama_model_ref_system_prompt,
 )
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
@@ -17556,6 +17557,16 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
 
 
+def _resident_ollama_system_prompt(llama_backend) -> str:
+    ref = getattr(llama_backend, "model_identifier", None) or ""
+    if not is_ollama_manifest_ref(ref):
+        return ""
+    try:
+        return ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        return ""
+
+
 def _ollama_ref_for_link(model_path: str) -> Optional[str]:
     from hub.services.models.ollama import ollama_manifest_ref_for_path
     try:
@@ -33319,6 +33330,9 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
             payload.messages, keep_tool_images = True
         )
+    if using_gguf and not system_prompt:
+        # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
+        system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
