@@ -18,6 +18,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { ListScrollbar } from "@/components/assistant-ui/composer-model-picker/list-scrollbar";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
@@ -795,14 +796,15 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1060px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1060px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            // 1920px screens get a 960px height.
+            "3xl:w-[min(1220px,calc(100vw-2rem))] 3xl:!max-w-[min(1220px,calc(100vw-2rem))] 3xl:h-[min(960px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -973,7 +975,8 @@ export function SettingsDialog() {
                 <div
                   ref={mainScrollRef}
                   data-settings-main-scroll=""
-                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
+                  // Native bar hidden (index.css); the drawn thumb overlays the edge, so both sides pad alike.
+                  className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-12 py-6"
                 >
                   <SettingsPanelPane
                     activeTab={activeTab}
@@ -983,6 +986,14 @@ export function SettingsDialog() {
                     scrollRef={mainScrollRef}
                   />
                 </div>
+                {/* Drawn, not native: a macOS overlay bar insets its thumb and ignores ::-webkit-scrollbar, so only
+                    this sits on the dialog's very edge; it keeps the native bar's look (index.css). */}
+                <ListScrollbar
+                  target={mainScrollRef}
+                  flush={true}
+                  inset={2}
+                  thumbClassName="settings-scroll-thumb"
+                />
               </DropdownGlowContext.Provider>
             </main>
           </div>

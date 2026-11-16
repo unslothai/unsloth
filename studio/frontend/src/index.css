@@ -5727,6 +5727,26 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
+/* Settings pane: the native bar is hidden and ListScrollbar draws the thumb on the dialog's edge.
+   !important beats the Windows rule that restores scrollbar-width on every element. */
+[data-settings-main-scroll] {
+	scrollbar-width: none !important;
+}
+
+[data-settings-main-scroll]::-webkit-scrollbar {
+	display: none;
+}
+
+/* The drawn thumb wears the hover-scrollbar thumb colours at the native thin bar's width, which does not scale. */
+.settings-scroll-thumb {
+	width: 6px;
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .settings-scroll-thumb {
+	background: oklch(0.72 0 0 / 0.4);
+}
+
 /* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set, and its standard
    Windows scrollbar draws arrows. The width stays overridable so !important and inline
    hides still win. */
