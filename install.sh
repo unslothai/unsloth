@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > UNSLOTH_HOME/studio > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_INSTALL_LAUNCHD, UNSLOTH_LAUNCHD_HOST, UNSLOTH_LAUNCHD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > UNSLOTH_HOME/studio > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -45,6 +45,8 @@ _VENV_DISCARDED=false
 _VENV_DISCARD_LEFTOVER=""
 _INSTALL_SYSTEMD=false
 _SYSTEMD_STARTED=false
+_INSTALL_LAUNCHD=false
+_LAUNCHD_STARTED=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -86,6 +88,7 @@ case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 case "${UNSLOTH_INSTALL_NO_ROLLBACK:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_ROLLBACK=true ;; esac
 case "${UNSLOTH_INSTALL_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_SYSTEMD=true ;; esac
+case "${UNSLOTH_INSTALL_LAUNCHD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_LAUNCHD=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1448,6 +1451,55 @@ _install_systemd_user_service() {
         substep "for boot without a login session, run once: loginctl enable-linger \"\$USER\""
     else
         step "systemd" "user service install failed; see the error above" "$C_WARN"
+    fi
+}
+
+_resolve_launchd_install_script() {
+    if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/launchd/install_user_agent.sh" ]; then
+        printf '%s\n' "$_REPO_ROOT/studio/launchd/install_user_agent.sh"
+        return 0
+    fi
+    [ -x "$VENV_DIR/bin/python" ] || return 0
+    "$VENV_DIR/bin/python" -I -c \
+        "import importlib.resources as r; print(r.files('studio') / 'launchd' / 'install_user_agent.sh')" \
+        2>/dev/null || true
+}
+
+_install_launchd_user_agent() {
+    if [ "$OS" != "macos" ]; then
+        step "launchd" "UNSLOTH_INSTALL_LAUNCHD is macOS only; skipped" "$C_WARN"
+        return 0
+    fi
+    # The desktop app's "Run Unsloth at login" agent already keeps a Studio backend up; a second
+    # server on the same home would fight it for the port.
+    _ld_account_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+    for _ld_h in "$HOME" "$_ld_account_home"; do
+        if [ -n "$_ld_h" ] && [ -f "$_ld_h/Library/LaunchAgents/Unsloth.plist" ]; then
+            step "launchd" "desktop app's Run at login is on; skipped" "$C_WARN"
+            return 0
+        fi
+    done
+    _ld_script=$(_resolve_launchd_install_script)
+    if [ -z "$_ld_script" ] || [ ! -f "$_ld_script" ]; then
+        step "launchd" "agent helper not found in this install; skipped" "$C_WARN"
+        return 0
+    fi
+
+    set -- --unsloth-exe "$VENV_DIR/bin/unsloth" \
+        --host "${UNSLOTH_LAUNCHD_HOST:-127.0.0.1}" --port "${UNSLOTH_LAUNCHD_PORT:-8888}" --enable --start
+    [ "$_STUDIO_HOME_REDIRECT" != "default" ] && set -- "$@" --studio-home "$STUDIO_HOME"
+
+    if bash "$_ld_script" "$@" >/dev/null; then
+        _LAUNCHD_STARTED=true
+        step "launchd" "user agent loaded (ai.unsloth.studio.server)"
+        substep "status:  launchctl print gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "restart: launchctl kickstart -k gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "stop:    launchctl bootout gui/\$(id -u)/ai.unsloth.studio.server"
+        substep "logs:    $STUDIO_HOME/logs/server/"
+        substep "not running? $VENV_DIR/bin/unsloth studio -p ${UNSLOTH_LAUNCHD_PORT:-8888} shows why"
+        substep "binds 127.0.0.1 by default; set UNSLOTH_LAUNCHD_HOST=0.0.0.0 before install for LAN"
+    else
+        step "launchd" "user agent install failed; see the error above" "$C_WARN"
     fi
 }
 
@@ -8660,6 +8712,12 @@ echo ""
 if [ "$_INSTALL_SYSTEMD" = true ]; then
     _install_systemd_user_service
     if [ "$_SYSTEMD_STARTED" = true ]; then
+        _SKIP_AUTOSTART=true
+    fi
+fi
+if [ "$_INSTALL_LAUNCHD" = true ]; then
+    _install_launchd_user_agent
+    if [ "$_LAUNCHD_STARTED" = true ]; then
         _SKIP_AUTOSTART=true
     fi
 fi
