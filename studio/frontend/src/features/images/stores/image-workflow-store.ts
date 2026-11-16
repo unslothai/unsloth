@@ -23,7 +23,7 @@ interface ImageWorkflowState {
   setWorkflow: (id: WorkflowId) => void;
   setPageMode: (mode: "create" | "train") => void;
   setSupported: (ids: WorkflowId[] | null) => void;
-  /** Video's Train tab hands Images its adapters: Video loads none. */
+  /** Video's Train tab hands Images its image-family adapters (video ones deploy on Video). */
   pendingDeploy: AdapterDeployRequest | null;
   requestDeploy: (request: AdapterDeployRequest) => void;
   takeDeploy: () => AdapterDeployRequest | null;

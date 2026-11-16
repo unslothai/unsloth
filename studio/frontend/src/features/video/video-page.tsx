@@ -42,7 +42,11 @@ import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+import {
+  type AdapterDeployRequest,
+  useImageWorkflowStore,
+} from "@/features/images/stores/image-workflow-store";
+import { type DiffusionLoraInfo, type LoraSpecInput, listDiffusionLoras } from "@/features/images/api";
 // Images' trainer already covers the video families.
 import { DiffusionTrainPanel } from "@/features/images/train/diffusion-train-panel";
 import {
@@ -273,6 +277,15 @@ import {
   referenceVideoTrimError,
   referenceVideoTrimFeedback,
 } from "./reference-trim";
+import { useVideoDeployStore } from "./video-deploy-store";
+import {
+  bakedVideoLoraSpecs,
+  trainedLoraId,
+  videoLoraCapable,
+  videoLoraReloadNeeded,
+  videoLoraSpecs,
+} from "./video-lora";
+import { VideoLoraField } from "./video-lora-field";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
@@ -1032,6 +1045,9 @@ function RecipePopover({
           {video.text_encoder_quant ? (
             <RecipeRow label="TE quant" value={video.text_encoder_quant} />
           ) : null}
+          {video.baked_loras?.length ? (
+            <RecipeRow label="Baked" value={video.baked_loras.join(", ")} wrap />
+          ) : null}
           {video.memory_mode ? (
             <RecipeRow
               label="Memory"
@@ -1097,12 +1113,15 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+const EMPTY_LORA_CATALOG: DiffusionLoraInfo[] = [];
 type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
 type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
   displayRepoId?: string;
+  // Baked into the denoiser at load; only a pipeline load sends them.
+  loras?: LoraSpecInput[];
 };
 /** Carries the deferred loadOrStage arguments so the H3 partition choice only adds `h3Task`. */
 type PendingH3Load = {
@@ -1344,6 +1363,9 @@ function VideoGenerator({
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
+  // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
+  const [loraSelection, setLoraSelection] = useState<LoraSpecInput[]>([]);
+  const [loraCatalog, setLoraCatalog] = useState<DiffusionLoraInfo[]>([]);
 
   const [busy, setBusy] = useState<Busy>(null);
   const [stopping, setStopping] = useState(false);
@@ -3002,6 +3024,8 @@ function VideoGenerator({
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
+          // Absent unless a pipeline load names an adapter, so a plain load sends what it did before.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
           gpu_ids: advanced.gpu_ids,
           allow_oversized_load: advanced.allow_oversized_load,
         });
@@ -3167,6 +3191,8 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
           // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
           allow_oversized_load: advanced.allow_oversized_load,
+          // A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
         });
         // Superseded; report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -3447,9 +3473,11 @@ function VideoGenerator({
         filename: l.filename,
         h3Task: l.h3Task,
         displayRepoId: l.displayRepoId,
+        // The picker's current selection: adapters merge at load, so Reapply is how a new set takes.
+        loras: l.kind === "pipeline" ? videoLoraSpecs(loraSelection) : undefined,
       });
     }
-  }, [handleLoad]);
+  }, [handleLoad, loraSelection]);
 
   // Every pick supersedes the last: a staged download outlives its pick and plans may be in flight.
   const beginPick = useCallback(() => {
@@ -3625,6 +3653,91 @@ function VideoGenerator({
       revertPick,
     ],
   );
+
+  // Load-time LoRAs: the picker reseeds from what each new resident build baked, so a plain pick clears it.
+  const loraCapable = videoLoraCapable(status);
+  const loraFamily = loraCapable ? (status?.family ?? null) : null;
+  const bakedLoraSpecs = useMemo(() => bakedVideoLoraSpecs(status), [status]);
+  const bakedLoraKey = `${status?.loaded ? (status.repo_id ?? "") : ""}|${JSON.stringify(bakedLoraSpecs)}`;
+  const [seededLoraKey, setSeededLoraKey] = useState(bakedLoraKey);
+  if (seededLoraKey !== bakedLoraKey) {
+    setSeededLoraKey(bakedLoraKey);
+    setLoraSelection(bakedLoraSpecs);
+  }
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (!loraCapable) return;
+    let cancelled = false;
+    listDiffusionLoras(loraFamily ?? undefined)
+      .then((list) => {
+        if (!cancelled) setLoraCatalog(list);
+      })
+      .catch(() => {
+        // Only the suggestions go: a typed id still loads.
+        if (!cancelled) setLoraCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loraCapable, loraFamily, trainingCompletions]);
+  const loraReloadNeeded = loraCapable && videoLoraReloadNeeded(loraSelection, status);
+
+  // Deploy from a Train panel: load the family's base with the adapter baked in, as a fresh pick.
+  const handleDeployVideoAdapter = useCallback(
+    (args: AdapterDeployRequest) => {
+      if (busy !== null) {
+        toast.error("Finish the current model load before deploying the adapter.");
+        return;
+      }
+      const loraId = trainedLoraId(args.catalogPath);
+      if (!loraId || !args.baseRepo) {
+        toast.error("Could not resolve the trained adapter or its base model.");
+        return;
+      }
+      setPageMode("create");
+      if (args.trigger.trim()) setPrompt(args.trigger.trim());
+      beginPick();
+      const token = pickGuard.claim();
+      setFamilyOverride("auto");
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
+      setQuant(null);
+      applyVideoModelDefaults(args.baseRepo, "auto");
+      const deployLoras: LoraSpecInput[] = [{ id: loraId, weight: 1 }];
+      setLoraSelection(deployLoras);
+      const opts: VideoLoadOptions = { kind: "pipeline", loras: deployLoras };
+      if (isH3PipelinePick(args.baseRepo, "pipeline")) {
+        setPendingH3Load({ repoId: args.baseRepo, opts, source: "hub", token, familyOverrideRequired: false });
+        return;
+      }
+      void loadOrStage(args.baseRepo, opts, "hub", token).then((started) => {
+        if (!started && pickGuard.holds(token)) {
+          setLoraSelection(bakedLoraSpecs);
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
+    },
+    [
+      applyVideoModelDefaults,
+      bakedLoraSpecs,
+      beginPick,
+      busy,
+      guidance,
+      loadOrStage,
+      pickGuard,
+      quant,
+      revertPick,
+      setFamilyOverride,
+      steps,
+    ],
+  );
+  const deployRequest = useVideoDeployStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployRequest) return;
+    const request = useVideoDeployStore.getState().takeDeploy();
+    if (request) handleDeployVideoAdapter(request);
+  }, [active, deployRequest, handleDeployVideoAdapter]);
 
   // True only when the backend accepted the unload.
   const handleUnload = useCallback((): Promise<boolean> => {
@@ -4219,6 +4332,7 @@ function VideoGenerator({
               useImageWorkflowStore.getState().requestDeploy(args);
               void navigateToImages({ to: "/images" });
             }}
+            onDeployVideo={handleDeployVideoAdapter}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -4903,6 +5017,18 @@ function VideoGenerator({
               onChange={(e) => setSeed(e.target.value)}
             />
           </Field>
+
+          {loraCapable && (
+            <VideoLoraField
+              catalog={loraCapable ? loraCatalog : EMPTY_LORA_CATALOG}
+              selection={loraSelection}
+              onSelectionChange={setLoraSelection}
+              baked={status?.baked_loras ?? []}
+              reloadNeeded={loraReloadNeeded}
+              reloadDisabled={busy !== null || !canReapply}
+              onReload={handleReapply}
+            />
+          )}
 
           <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
             {advancedControls}

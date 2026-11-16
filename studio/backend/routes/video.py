@@ -256,6 +256,8 @@ async def video_download_plan(
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             allow_device_probe = not training,
+            # A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+            loras = request.loras,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -403,6 +405,18 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
+        if request.loras:
+            from core.inference import video_lora
+
+            # Before the GPU is touched: a LoRA this load cannot bake, or one for another family, is a 400.
+            lora_refusal = video_lora.load_refusal(fam, kind, request.transformer_quant)
+            if lora_refusal and video_lora.has_active(request.loras):
+                raise ValueError(lora_refusal)
+            await asyncio.to_thread(
+                video_lora.check_families,
+                video_lora.normalize_specs(request.loras),
+                getattr(fam, "name", None),
+            )
         # Refuse while training runs, BEFORE the precision check, whose GPU probe opens a CUDA context.
         _guard_video_load_against_training()
         # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
@@ -461,6 +475,8 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                # Only when sent, so a plain load passes exactly what it did before.
+                **({"loras": request.loras} if request.loras else {}),
                 **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)

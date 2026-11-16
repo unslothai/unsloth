@@ -2337,9 +2337,8 @@ def _publish_to_lora_catalog(
     cfg: DiffusionLoraConfig,
     steps: Optional[int] = None,
 ) -> Optional[str]:
-    """Video families are skipped: loras/diffusion is read only by the Images LoRA picker."""
-    if detect_video_family("", override = cfg.resolved_family) is not None:
-        return None
+    """Mirror into loras/diffusion, which the Images LoRA picker and the Video load's ``loras`` both read; the
+    sidecar's family keeps a video adapter out of every image family's list."""
     try:
         import shutil
 
