@@ -20,6 +20,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     evaluate_fetch,
+    expand_collapsed_model_picker,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_console_error,
@@ -259,6 +260,48 @@ def wait_for_settled_shell(
                 f"route_fallback={in_fallback}; page.url={page.url}"
             )
         page.wait_for_timeout(100)
+
+
+def check_skills_command_draft(page, draft_key):
+    composer = page.get_by_label("Message input", exact = True)
+    dialog = page.get_by_role("dialog", name = "Skills", exact = True)
+    user_messages = page.locator('[data-role="user"]')
+    expect(composer).to_be_visible()
+    expect(user_messages).to_have_count(0)
+    composer.fill("/skills")
+    wait_until(
+        lambda: page.evaluate("(key) => localStorage.getItem(key)", draft_key) == "/skills",
+        timeout_s = 10,
+        what = "the command to autosave before submission",
+        page = page,
+    )
+
+    # Read at dialog mount so a slow browser can't let the next autosave hide a stale draft.
+    page.evaluate(
+        """(key) => {
+            window.draftAtSkillsOpen = new Promise(resolve => {
+                const observer = new MutationObserver(() => {
+                    if (!document.querySelector('[role="dialog"]')) return;
+                    observer.disconnect();
+                    resolve(localStorage.getItem(key));
+                });
+                observer.observe(document.body, {childList: true, subtree: true});
+            });
+        }""",
+        draft_key,
+    )
+    composer.press("Enter")
+    expect(dialog).to_be_visible()
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
+    saved_at_open = page.evaluate("window.draftAtSkillsOpen")
+    page.reload(wait_until = "domcontentloaded")
+    expect(composer).to_be_visible()
+    assert (
+        saved_at_open is None
+    ), f"{draft_key} still contained {saved_at_open!r} when Skills opened"
+    expect(composer).to_have_value("")
+    expect(user_messages).to_have_count(0)
 
 
 def exercise_permission_mode_controls(page, shoot):
@@ -1241,6 +1284,22 @@ with sync_playwright() as p:
         browser.close()
         sys.exit(0)
 
+    step("consumed /skills draft stays empty after reload")
+    for shared in (False, True):
+        with browser.new_context(storage_state = ctx.storage_state()) as draft_ctx:
+            draft_ctx.add_init_script(
+                """const key = "unsloth_chat_preferences";
+                const prefs = JSON.parse(localStorage.getItem(key)) ?? {state: {}, version: 1};
+                prefs.state.shareComposerDraft = %s;
+                localStorage.setItem(key, JSON.stringify(prefs));"""
+                % json.dumps(shared)
+            )
+            draft_page = new_throttled_page(draft_ctx)
+            draft_page.goto(f"{BASE}/chat", wait_until = "domcontentloaded")
+            check_skills_command_draft(
+                draft_page, "chat-draft:latest" if shared else "chat-draft:__new__"
+            )
+
     # The frontend stores the bearer under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
         page,
@@ -1359,9 +1418,25 @@ with sync_playwright() as p:
     if picker_btn.count() == 0:
         soft_fail("model picker button not found")
     else:
+        # Open only once the selector names the loaded model: opened before the reload's residency check
+        # lands, the picker shows its search, then collapses under the typing and fill() times out.
+        try:
+            wait_until(
+                lambda: "select model" not in (picker_btn.inner_text() or "select model").lower(),
+                timeout_s = 30,
+                what = "the model selector to name the loaded model",
+                interval_s = 0.25,
+                page = page,
+            )
+        except TimeoutError as exc:
+            info(f"WARN {exc}")
         picker_btn.click()
+        # The model loaded above opens the picker collapsed to its own row.
+        if expand_collapsed_model_picker(page):
+            info("model picker opened collapsed; expanded it")
+        # Visible only: an attached but hidden search field takes the fill below to its 60 s timeout.
         search = wait_for_first(
-            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
+            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)).locator("visible=true"),
             timeout_ms = 10_000,
         )
         shoot("03c-model-picker-open")

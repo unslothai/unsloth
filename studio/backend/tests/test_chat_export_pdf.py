@@ -45,9 +45,10 @@ def test_renders_text_in_several_scripts_with_title_metadata():
         assert document.metadata["title"] == "My chat"
 
 
-def test_user_messages_keep_line_breaks_and_indentation():
+@pytest.mark.parametrize("role", ["user", "system"])
+def test_typed_messages_keep_line_breaks_and_indentation(role):
     body = (
-        '<section class="message user"><h3 class="role">User</h3>'
+        f'<section class="message {role}"><h3 class="role">{role}</h3>'
         '<div class="content">def f():\n    return 1\na,b\n1,2</div></section>'
     )
     response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
@@ -144,6 +145,32 @@ def test_a_wide_table_shrinks_only_its_own_page():
     assert text.count("para 89") == 2
     assert sizes[0] == {10.5} and sizes[-1] == {10.5}
     assert any(max(page) < 10.5 for page in sizes if page)
+
+
+def test_links_keep_their_addresses():
+    columns = "".join(f"<th>column{index}</th>" for index in range(13))
+    paragraphs = "".join(f"<p>para {index}</p>" for index in range(90))
+    body = (
+        '<p><a href="https://example.com/x">Example</a> <a href="#fn1">note</a></p>'
+        '<p><a href="https://example.com/r">one</a> gap <a href="https://example.com/r">two</a></p>'
+        f'{paragraphs}<table><tr>{columns}<th><a href="https://example.com/t">cell</a></th></tr></table>'
+        f'{paragraphs}<p><a href="mailto:a@example.com">mail</a></p>'
+    )
+    response = _client().post("/api/chat-export/pdf", json = {"title": "x", "html": body})
+    assert response.status_code == 200
+    with pymupdf.open("pdf", response.content) as document:
+        links = [
+            (link["uri"], page.get_textbox(link["from"] + (-1, -1, 1, 1)).strip())
+            for page in document
+            for link in page.get_links()
+        ]
+    assert links == [
+        ("https://example.com/x", "Example"),
+        ("https://example.com/r", "one"),
+        ("https://example.com/r", "two"),
+        ("https://example.com/t", "cell"),
+        ("mailto:a@example.com", "mail"),
+    ]
 
 
 def test_only_data_images_embed(tmp_path):

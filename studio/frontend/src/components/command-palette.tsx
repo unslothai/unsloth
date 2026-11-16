@@ -158,6 +158,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   agents: "settings.tabs.agents",
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
   browser: "browser.settingsTitle",
+  "computer-use": "computerUse.settings.title",
   debugging: "settings.tabs.debugging",
   about: "settings.tabs.about",
 };

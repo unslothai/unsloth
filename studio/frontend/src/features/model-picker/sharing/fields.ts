@@ -53,6 +53,9 @@ export type SharedConfigKey = Exclude<
   | "mlxFastVerify"
   | "mlxPleOffload"
   | "mlxExpertOffload"
+  | "npuPowerMode"
+  | "npuPrefillChunkLen"
+  | "npuImgPreResize"
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
@@ -67,7 +70,7 @@ type Field = { label: string; valid: Validator; error?: string };
 
 export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   customContextLength: {
-    label: "Context length",
+    label: "Context",
     valid: nullable((value) =>
       integer(value, CONTEXT_LENGTH_MIN, 2_147_483_647),
     ),

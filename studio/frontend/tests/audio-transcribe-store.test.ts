@@ -26,8 +26,19 @@ const { AUDIO_TRANSCRIBE_STORAGE_KEY, useAudioTranscribeStore } = await import(
 );
 
 test("Transcribe's settings come back after a reload and are written back under the versioned key", () => {
-  assert.deepEqual(useAudioTranscribeStore.getState(), { ...saved, connectionModel: null });
-  const next = { ...saved, connectionModel: null, source: null, view: "text" as const };
+  // A save from before the accent field existed comes back with no accent.
+  assert.deepEqual(useAudioTranscribeStore.getState(), {
+    ...saved,
+    speakerAccent: "",
+    connectionModel: null,
+  });
+  const next = {
+    ...saved,
+    speakerAccent: "Chinese-accented English",
+    connectionModel: null,
+    source: null,
+    view: "text" as const,
+  };
   useAudioTranscribeStore.setState(next);
   assert.deepEqual(
     JSON.parse(store.get(AUDIO_TRANSCRIBE_STORAGE_KEY) ?? "{}"),

@@ -32,6 +32,7 @@ import {
 } from "../api/caches";
 import { SettingsCardRow } from "./storage-overview";
 import { HfCacheModelClear } from "./hf-cache-model-clear";
+import { NpuModelClear, refreshNpuCatalogIfListed } from "./npu-model-clear";
 
 /** Decimal units, matching the Storage section's disk readings. */
 export function formatCacheSize(bytes: number): string {
@@ -69,6 +70,8 @@ const CACHE_NAME_KEYS: Record<CacheKey, TranslationKey> = {
   hf_datasets: "settings.resources.storage.caches.names.hfDatasets",
   // biome-ignore lint/style/useNamingConvention: API schema
   hf_hub: "settings.resources.storage.caches.names.hfHub",
+  // biome-ignore lint/style/useNamingConvention: API schema
+  npu_models: "settings.resources.storage.caches.names.npuModels",
 };
 
 const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
@@ -76,6 +79,8 @@ const OPT_IN_COST_KEYS: Partial<Record<CacheKey, TranslationKey>> = {
   hf_hub: "settings.resources.storage.caches.hubCost",
   // biome-ignore lint/style/useNamingConvention: API schema
   hf_datasets: "settings.resources.storage.caches.datasetsCost",
+  // biome-ignore lint/style/useNamingConvention: API schema
+  npu_models: "settings.resources.storage.caches.npuCost",
 };
 
 const HUB_INVENTORY_KEYS: ReadonlySet<CacheKey> = new Set<CacheKey>([
@@ -85,11 +90,13 @@ const HUB_INVENTORY_KEYS: ReadonlySet<CacheKey> = new Set<CacheKey>([
 
 type PurgeTarget = { kind: "bulk" } | { kind: "single"; key: CacheKey };
 
-/** The generic text says downloaded models are untouched, which is false for the hub cache. */
+/** The generic text says downloaded models are untouched, which is false for the model caches. */
 export function singleClearDescriptionKeys(key: CacheKey): TranslationKey[] {
   const cost = OPT_IN_COST_KEYS[key];
   const spared: TranslationKey[] =
-    key === "hf_hub" ? [] : ["settings.resources.storage.caches.safety"];
+    key === "hf_hub" || key === "npu_models"
+      ? []
+      : ["settings.resources.storage.caches.safety"];
   return cost ? [cost, ...spared] : spared;
 }
 
@@ -210,6 +217,7 @@ export function useCacheStorage() {
         bumpInventoryVersion();
         measuredVersion.current = getInventoryVersion();
       }
+      if (keys.includes("npu_models")) refreshNpuCatalogIfListed();
       const failures = outcome.results.flatMap((result) => result.errors);
       if (failures.length > 0) {
         toast.warning(t("settings.resources.storage.caches.partial"), {
@@ -318,8 +326,12 @@ export function HuggingFaceCacheFolders({
                 className="flex min-w-0 justify-between gap-4"
               >
                 <span className="truncate font-mono">
-                  {row.repoId ??
-                    row.name.replace(HF_REPO_PREFIX, "").replaceAll("--", "/")}
+                  {entry.key === "npu_models"
+                    ? row.name
+                    : (row.repoId ??
+                      row.name
+                        .replace(HF_REPO_PREFIX, "")
+                        .replaceAll("--", "/"))}
                 </span>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="tabular-nums">
@@ -333,6 +345,15 @@ export function HuggingFaceCacheFolders({
                       <HfCacheModelClear
                         repoId={row.repoId}
                         cachePath={row.cachePath}
+                        disabled={disabled}
+                      />
+                    ) : entry.key === "npu_models" &&
+                      row.deleteAllowed &&
+                      row.checkpoint ? (
+                      <NpuModelClear
+                        name={row.name}
+                        checkpoint={row.checkpoint}
+                        path={row.path}
                         disabled={disabled}
                       />
                     ) : null}
@@ -484,7 +505,9 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
                   </Button>
                 </div>
                 {/* Own line: inside the title column it widens it and wraps the controls below. */}
-                {entry.key === "hf_hub" || entry.key === "hf_datasets" ? (
+                {entry.key === "hf_hub" ||
+                entry.key === "hf_datasets" ||
+                entry.key === "npu_models" ? (
                   <div className="min-w-0 basis-full">
                     <HuggingFaceCacheFolders
                       entry={entry}

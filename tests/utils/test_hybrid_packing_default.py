@@ -453,6 +453,48 @@ def test_zoo_triton_conv_is_accepted(monkeypatch, mode):
         sys.modules.pop(name, None)
 
 
+def _kernels_func(func, zoo = False):
+    # `kernels` installed: hub functions are Func() modules whose class forward holds the closure.
+    class Func(torch.nn.Module):
+        def forward(self, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    layer = Func()
+    if zoo:
+
+        class Func(type(layer)):
+            def forward(self, *args, **kwargs):
+                return super().forward(*args, **kwargs)
+
+        layer.__class__ = Func
+        layer._unsloth_triton_causal_conv1d = True
+    return layer
+
+
+def test_kernels_hub_func_modules_are_accepted(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    name = "fake_modeling_kernels_func_gdn"
+    try:
+        model = _kwargs_model(name, _zoo_style_dispatch)
+        modeling = sys.modules[name]
+        modeling.causal_conv1d_fn = _kernels_func(modeling.causal_conv1d_fn, zoo = True)
+        modeling.torch_chunk_gated_delta_rule = _kernels_func(modeling.torch_chunk_gated_delta_rule)
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
+        packed = model(
+            input_ids = ids,
+            packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32),
+            use_cache = False,
+        )
+        alone = torch.cat(
+            [model(input_ids = ids[:, s:e]) for s, e in ((0, 4), (4, 5), (5, 9))], dim = 1
+        )
+        torch.testing.assert_close(packed, alone)
+        assert model.linear_attn._unsloth_varlen_kwargs_hit
+    finally:
+        sys.modules.pop(name, None)
+
+
 def test_zoo_triton_conv_without_seq_idx_is_rejected(monkeypatch, caplog):
     # An older unsloth-zoo dispatch (marked, no seq_idx) would be filtered by the hub wrapper.
     monkeypatch.delenv(ENV, raising = False)

@@ -326,3 +326,32 @@ def test_streaming_does_not_retry_an_mtp_crash(monkeypatch):
     assert backend.respawn_calls == 0
     assert calls == [f"{_DEAD}/v1/chat/completions"]
     assert "event: error" in blob
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85"])
+def test_streaming_keeps_a_delta_holding_a_unicode_line_separator(monkeypatch, separator):
+    content = f"first{separator}second"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        delta = json.dumps({"choices": [{"delta": {"content": content}}]}, ensure_ascii = False)
+        return httpx.Response(
+            200,
+            content = f"data: {delta}\n\ndata: [DONE]\n\n".encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx, "AsyncClient", lambda *_a, **_k: real_client(transport = transport)
+    )
+    backend = _Backend()
+    backend.base_url = _FRESH
+
+    blob = asyncio.run(_run_stream(backend))
+
+    events = [json.loads(line[5:]) for line in blob.split("\n") if line.startswith("data:")]
+    text = "".join(
+        e["delta"].get("text", "") for e in events if e.get("type") == "content_block_delta"
+    )
+    assert text == content

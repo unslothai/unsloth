@@ -65,9 +65,12 @@ def test_the_family_row_carries_the_native_assets():
     assert detect_family("unsloth/MOSS-Image-Base-GGUF") is fam
 
 
-def test_only_moss_declares_a_tokenizer_or_native_only_transformer_files():
+def test_only_moss_declares_a_tokenizer_and_the_native_only_families_are_pinned():
     assert [f.name for f in _FAMILIES if f.sd_cpp_tokenizer] == ["moss-image"]
-    assert [f.name for f in _FAMILIES if f.native_transformer_files_only] == ["moss-image"]
+    assert [f.name for f in _FAMILIES if f.native_transformer_files_only] == [
+        "moss-image",
+        "minimax-h3-image",
+    ]
 
 
 def test_the_asset_specs_fetch_the_tokenizer():
