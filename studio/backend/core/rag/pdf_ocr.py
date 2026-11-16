@@ -34,6 +34,13 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
     """OCRs only the requested pages via PyMuPDF's Tesseract, which must already have its language data."""
     if not page_numbers:
         return {}
+    from .parsers import PYMUPDF_LOCK
+
+    with PYMUPDF_LOCK:
+        return _ocr_pages_unlocked(path, page_numbers)
+
+
+def _ocr_pages_unlocked(path: str, page_numbers) -> dict[int, str]:
     import pymupdf
 
     out: dict[int, str] = {}

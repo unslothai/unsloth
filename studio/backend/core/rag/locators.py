@@ -190,6 +190,14 @@ def pdf_regions_for_chunks(pdf_path: Path, pages: list, chunks: list) -> list[li
     """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and
     failures yield [], never an exception."""
+    from .parsers import PYMUPDF_LOCK
+    with PYMUPDF_LOCK:
+        return _pdf_regions_for_chunks_unlocked(pdf_path, pages, chunks)
+
+
+def _pdf_regions_for_chunks_unlocked(
+    pdf_path: Path, pages: list, chunks: list
+) -> list[list[dict[str, Any]]]:
     pdf_path = Path(pdf_path)
     if pdf_path.suffix.lower() != ".pdf":
         return [[] for _ in chunks]

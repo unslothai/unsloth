@@ -16774,19 +16774,26 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
+            # PyMuPDF is not thread-safe; share the RAG parsers lock so web
+            # fetch and linked-folder ingest cannot run MuPDF concurrently (#17981).
+            from ..rag.parsers import PYMUPDF_LOCK
+
+            queued_at = time.monotonic()
+            # An ingest can hold the lock for a whole document, so keep cancellation responsive.
+            while not PYMUPDF_LOCK.acquire(timeout = 0.25):
+                cancelled = _fetch_budget_exceeded(None, cancel_event)
+                if cancelled is not None:
+                    return cancelled, "", content_type
             try:
-                # PyMuPDF is not thread-safe; share the RAG parsers lock so web
-                # fetch and linked-folder ingest cannot run MuPDF concurrently (#17981).
-                from ..rag.parsers import PYMUPDF_LOCK
-                queued_at = time.monotonic()
-                with PYMUPDF_LOCK:
-                    # Time queued behind another read's PDF is not spent on this read.
-                    if deadline is not None:
-                        deadline += time.monotonic() - queued_at
-                    pdf_text = _extract_pdf_text(raw_bytes)
+                # Time queued behind another read's PDF is not spent on this read.
+                if deadline is not None:
+                    deadline += time.monotonic() - queued_at
+                pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
+            finally:
+                PYMUPDF_LOCK.release()
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
