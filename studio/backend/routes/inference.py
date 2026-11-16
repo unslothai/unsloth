@@ -16110,6 +16110,15 @@ def _mlx_load_estimate(
         return "not_gguf", None
     if getattr(config, "is_lora", False):
         return "unsizable", None
+    from core.inference.mlx_memory import mlx_dropping_vision
+
+    with mlx_dropping_vision(config, request.disable_vision):
+        return _priced_mlx_load_estimate(request, config, model_identifier)
+
+
+def _priced_mlx_load_estimate(
+    request, config, model_identifier
+) -> tuple[Optional[str], Optional[_MlxLoadEstimate]]:
     model_dir = _local_mlx_model_dir(config)
     if not model_dir:
         return "not_downloaded", None

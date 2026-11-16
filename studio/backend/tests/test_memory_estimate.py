@@ -1018,6 +1018,17 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsizable"
         assert resp.total_bytes == 0
 
+    def test_vision_off_prices_a_vision_load_without_its_vision_weights(self, monkeypatch):
+        import core.inference.mlx_memory as mlx_memory
+
+        drops = []
+        stub = lambda *a, **kw: drops.append(mlx_memory._DROPS_VISION.get())
+        monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", stub)
+        for vision, audio, off in ((1, None, 1), (1, None, 0), (1, "audio_vlm", 1), (0, None, 1)):
+            self._mlx_target(monkeypatch, "/models/thing", is_vision = vision, audio_type = audio)
+            _estimate(model_path = "org/model", max_seq_length = 4096, disable_vision = off)
+            assert drops.pop() is bool(vision and off and not audio)
+
     def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
         self._mlx_target(monkeypatch, "/models/thing")
         seen = self._record_breakdown(
@@ -5425,6 +5436,31 @@ class TestPricingALoad:
             os.path.getsize(path) - 64 * 128 * 4,
             os.path.getsize(path),
         )
+
+    def test_a_vision_dropping_load_prices_no_vision_weights(self, tmp_path, monkeypatch):
+        import mlx.core as mx
+        import mlx.nn as nn
+        from mlx.utils import tree_flatten
+
+        if not hasattr(pytest.importorskip("unsloth_zoo.mlx.loader"), "_detach_vision_modules"):
+            pytest.skip("this unsloth_zoo reads the vision weights")
+
+        def vlm(*_):
+            model = nn.Module()
+            model.language_model, model.vision_tower = nn.Linear(64, 64), nn.Linear(64, 32)
+            return model
+
+        monkeypatch.setattr(mm, "_whole_model", vlm)
+        monkeypatch.setattr(mm, "_builds_on_mlx_vlm", lambda config: True)
+        path = tmp_path / "model.safetensors"
+        mx.save_safetensors(str(path), dict(tree_flatten(vlm().parameters())))
+
+        def price(off, **config):
+            with mm.mlx_dropping_vision(SimpleNamespace(is_vision = True), off):
+                return mm.mlx_weight_bytes(str(tmp_path), dict(config, model_type = "toy"))
+
+        assert [price(off) // mm._runtime_dtype().size for off in (False, True)] == [6240, 4160]
+        assert price(True, quantization = {"bits": 4}) == os.path.getsize(path) - 2080 * 4
 
     def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
         config = self._checkpoint(tmp_path, prefix = "draft.")

@@ -1215,9 +1215,9 @@ const GGUF_VISION_HINT =
   "either way.";
 
 const MLX_VISION_HINT =
-  "Lets the model read images. Turning it off stops image input, and frees the " +
-  "vision weights' memory where the text model loads on its own. Text " +
-  "generation works either way. Adapters and models that take audio keep it on.";
+  "Lets the model read images. Turning it off stops image input and frees the " +
+  "memory the vision weights hold. Text generation works either way. Adapters " +
+  "and models that take audio keep it on.";
 
 function VisionRow({
   config,

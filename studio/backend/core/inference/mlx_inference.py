@@ -2177,6 +2177,35 @@ def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
         return False
 
 
+def _release_vision_weights(model) -> int:
+    """Vision-weight bytes a no-image load left unread or freed; an older unsloth_zoo frees none."""
+    if getattr(model, "_unsloth_vision_freed", 0):
+        return model._unsloth_vision_freed
+    try:
+        from unsloth_zoo.mlx.loader import release_vision_weights
+    except ImportError:
+        return 0
+    return release_vision_weights(model)
+
+
+def _priced_with_vision_dropped(load_model):
+    """A load's offload plan and context fit price it as Vision off leaves it."""
+
+    @functools.wraps(load_model)
+    def priced(
+        self,
+        config,
+        *args,
+        disable_vision = False,
+        **kwargs,
+    ):
+        from core.inference.mlx_memory import mlx_dropping_vision
+        with mlx_dropping_vision(config, disable_vision):
+            return load_model(self, config, *args, disable_vision = disable_vision, **kwargs)
+
+    return priced
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -6128,6 +6157,7 @@ class MLXInferenceBackend:
             logger.info("MLX context limited to %d tokens per request, not by the cache", budget)
         return quant, None, (None if confirmed is None else False), budget
 
+    @_priced_with_vision_dropped
     def load_model(
         self,
         config,
@@ -6289,6 +6319,8 @@ class MLXInferenceBackend:
             "text_only": not use_vlm,
             "quantize_embeddings": not is_lora,
         }
+        if vision_off:
+            load_kwargs["drop_vision_weights"] = True
         if is_distributed:
             if parallel_mode == "pipeline":
                 load_kwargs["pipeline_group"] = distributed_group
@@ -6405,6 +6437,9 @@ class MLXInferenceBackend:
             is_vision = getattr(model, "_unsloth_supports_images", None) is True
         if vision_off:
             is_vision = False
+        vision_freed = _release_vision_weights(model) if vision_off else 0
+        if vision_freed:
+            logger.info("Vision off: %.2f GiB of vision weights not held", vision_freed / 2**30)
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
@@ -6661,6 +6696,7 @@ class MLXInferenceBackend:
             "is_vision": is_vision,
             "disable_vision": bool(disable_vision),
             "vision_disabled_by_user": vision_off,
+            "vision_weights_freed": vision_freed,
             "is_lora": getattr(config, "is_lora", False),
             # For a LoRA adapter the native chat template lives on the base model.
             "base_model": getattr(config, "base_model", None)

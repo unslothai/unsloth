@@ -5700,7 +5700,7 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
 ):
     """unsloth-zoo builds an image checkpoint mlx-vlm lacks (Muse Spark) through mlx-lm."""
     pytest.importorskip("mlx.core")
-    from core.inference import mlx_inference
+    from core.inference import mlx_inference, mlx_memory
 
     attempts, built_by_mlx_vlm, reads_images = [], [], []
 
@@ -5709,6 +5709,8 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         def from_pretrained(name, **kwargs):
             attempts.append(kwargs["text_only"])
             model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            if kwargs.get("drop_vision_weights") and mlx_memory._DROPS_VISION.get():
+                model._unsloth_vision_freed = 5 * (kwargs["text_only"] is False)
             if reads_images:
                 model._unsloth_supports_images = True
             return model, SimpleNamespace(tokenizer = "inner")
@@ -5758,6 +5760,7 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
 
     # Vision off builds the text model alone where that drops the tower; otherwise it only stops images.
     plain = SimpleNamespace(identifier = "org/vision", is_vision = True, is_lora = False)
+    loader.release_vision_weights = lambda _model: 7
     for config, drops, text_only, off in (
         (plain, True, True, True),
         (plain, False, False, True),
@@ -5769,6 +5772,9 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         backend.load_model(config, disable_vision = True)
         assert attempts == [text_only] and backend._reads_vision_input() is not off
         assert backend.models["org/vision"]["vision_disabled_by_user"] is off
+        # Where the load read the tower anyway (mlx-lm builds it), it is freed after.
+        freed = backend.models["org/vision"]["vision_weights_freed"]
+        assert freed == ((7 if text_only else 5) if off else 0)
     backend.load_model(plain, prefill_step = 512)
     assert (backend._prefill_step, backend._grid_step()) == (512, 512)
     assert backend.models["org/vision"]["n_ubatch"] == 512
