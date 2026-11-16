@@ -131,7 +131,7 @@ export interface DiffusionConditioning {
   max_output_side: number;
   max_output_pixels: number;
   reference_resolutions: number[];
-  // Output size (square side, by area) an edit should default to; absent or null = the build's tier.
+  // null = the build's tier
   edit_output_resolution?: number | null;
   unified_edit: boolean;
   // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to

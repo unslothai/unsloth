@@ -65,8 +65,7 @@ export function seedReferenceResolution(
   return allowed[0];
 }
 
-/** "Match Image 1" output size: the family's edit resolution when it names one (Qwen-Image-2.1 edits at the 1024
- *  area come out over-sharpened and miss the instruction), else the build's tier. Kept within the side limit. */
+/** "Match Image 1" size: the family's edit resolution (capped at maxSide), else the build's tier. */
 export function seedMatchResolution(
   tier: number,
   editOutputResolution: number | null | undefined,
@@ -76,8 +75,7 @@ export function seedMatchResolution(
   return Math.max(tier, Math.min(editOutputResolution, maxSide));
 }
 
-/** The Reference workflow renders at the shared Width / Height: on a family with an edit resolution, a size below its
- *  area is raised to it at the same aspect (within the limits). Null when the size is already there or none is named. */
+/** Raise a size below the edit resolution's area to it, same aspect; null when no raise applies. */
 export function raiseToEditResolution(
   width: number,
   height: number,
@@ -90,15 +88,13 @@ export function raiseToEditResolution(
   return raised.width * raised.height > width * height ? raised : null;
 }
 
-/** A Reference raise: the build key it ran for, the size it set and the Create size it replaced. */
 export interface ReferenceRaise {
   key: string;
   raised?: { width: number; height: number };
   from?: { width: number; height: number; aspect: string; portrait: boolean };
 }
 
-/** Leaving Reference: the Create size the raise replaced, when Width / Height still read the raised size; null when
- *  nothing was raised or the size was changed since (the user's own choice stays). */
+/** Leaving Reference: the replaced Create size, unless the user changed the raised size. */
 export function sizeAfterReference(
   width: number,
   height: number,

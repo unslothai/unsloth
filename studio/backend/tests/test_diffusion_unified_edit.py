@@ -143,8 +143,6 @@ def test_edit_only_and_reference_families_keep_their_contracts():
 
 
 def test_qwen_image_21_edits_default_to_the_2k_output_level():
-    """Qwen-Image-2.1 / Turbo edits at the 1024 area are over-sharpened and miss the instruction on upstream's bf16
-    pipeline too (1536 and 2048 are clean), so the UI's Match Image 1 seeds from this, not the 1024 / 512 tier."""
     from core.inference.diffusion import _family_workflows
 
     for repo in ("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"):

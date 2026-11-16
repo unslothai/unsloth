@@ -1939,7 +1939,6 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
-  // build key the Reference size was last raised for (raiseToEditResolution), and the Create size it replaced
   const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
@@ -3861,7 +3860,6 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
-    // re-arm the Reference raise below for the reseeded size
     setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
@@ -5146,7 +5144,7 @@ export function ImagesPage({
     }
   }
 
-  // Fit Width / Height to new size limits first, so the Reference raise below starts from (and records) the fitted size.
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
   let fittedWidth = width;
@@ -5160,9 +5158,7 @@ export function ImagesPage({
     fittedHeight = fitted.height;
   }
 
-  // Reference renders at Width / Height; once per load, raise a size below the family's edit resolution
-  // (Qwen-Image-2.1 references at the 1024 area come out over-sharpened and miss the prompt).
-  // Width / Height are shared with Create, so leaving Reference puts back the size the raise replaced unless it was changed.
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
   const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
   if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
     const raised = raiseToEditResolution(
@@ -5185,7 +5181,6 @@ export function ImagesPage({
     }
   } else if (referenceKey === null && referenceRaise?.from) {
     const restore = sizeAfterReference(width, height, referenceRaise);
-    // restored: the next Reference visit raises again; kept (changed by hand): the raise stays spent for this load
     setReferenceRaise(restore ? null : { key: referenceRaise.key });
     if (restore) {
       setWidth(restore.width);

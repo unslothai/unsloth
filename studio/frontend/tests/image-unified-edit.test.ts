@@ -148,7 +148,6 @@ test("reference detail seeds from the build tier and never picks 2048 on its own
 });
 
 test("an edit's Match Image 1 size seeds from the family's edit resolution, not the build tier", () => {
-  // Qwen-Image-2.1 edits at the 1024 area come out over-sharpened even on upstream's bf16 pipeline.
   assert.equal(seedMatchResolution(1024, 2048, 2752), 2048);
   assert.equal(seedMatchResolution(512, 2048, 2752), 2048);
   assert.equal(seedMatchResolution(1024, 2048, 1536), 1536);
@@ -169,11 +168,8 @@ test("Reference raises a size below the family's edit resolution once, keeping t
 test("leaving Reference puts back the Create size the raise replaced, unless it was changed", () => {
   const from = { width: 1024, height: 1024, aspect: "1:1", portrait: false };
   const raise = { key: "k", raised: { width: 2048, height: 2048 }, from };
-  // Back on Create with the raised size untouched: the Create size returns.
   assert.deepEqual(sizeAfterReference(2048, 2048, raise), from);
-  // Changed by hand while on Reference: the user's size stays.
   assert.equal(sizeAfterReference(1536, 1536, raise), null);
-  // Nothing was raised (the size was already at the edit area, or the family names none).
   assert.equal(sizeAfterReference(2048, 2048, { key: "k" }), null);
   assert.equal(sizeAfterReference(1024, 1024, null), null);
 });
@@ -274,7 +270,6 @@ test("restoreSettings reopens Edit and Reference instead of Create", () => {
 });
 
 test("the Reference raise starts from the size fitted to the loaded model's limits", () => {
-  // A load that tightens the size multiple: fitting after the raise would overwrite one raised side.
   const limits = { multiple: 32, maxSide: 4096, maxPixels: 4096 * 4096 };
   const fitted = fitSize(1040, 768, limits);
   const raised = raiseToEditResolution(fitted.width, fitted.height, 2048, limits);
