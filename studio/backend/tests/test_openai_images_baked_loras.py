@@ -136,3 +136,48 @@ def test_reporting_the_baked_specs_back_keeps_the_bake_on(monkeypatch):
     pairs = [(s["id"], s["weight"]) for s in diffusion_module._baked_lora_specs(state.pipe)]
     backend._apply_loras(state, pairs, threading.Event())
     assert state.pipe._unsloth_loras == (("tarot", "/loras/tarot.safetensors", 0.8),)
+
+
+def test_a_selection_refusal_is_a_400_and_other_value_errors_stay_500(baked_client, monkeypatch):
+    from core.inference.diffusion_lora import LoraSelectionError
+
+    def refuse(**_kwargs):
+        raise LoraSelectionError(
+            "The LoRA selection changed. Reload the model with the new adapter selection."
+        )
+
+    monkeypatch.setattr(baked_client.backend, "generate", refuse)
+    resp = _post(baked_client, {"prompt": "a sloth", "loras": [{"id": "other", "weight": 1}]})
+    assert resp.status_code == 400, resp.text
+    assert "Reload the model" in resp.text and "loras" in resp.text
+
+    def broken(**_kwargs):
+        raise ValueError("internal detail")
+
+    monkeypatch.setattr(baked_client.backend, "generate", broken)
+    resp = _post(baked_client, {"prompt": "a sloth", "loras": [{"id": "other", "weight": 1}]})
+    assert resp.status_code == 500 and "internal detail" not in resp.text
+
+
+def test_managed_accounts_authorize_explicit_adapters(baked_client, monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    calls = []
+
+    def deny(request):
+        calls.append([spec.id for spec in request.loras])
+        raise HTTPException(status_code = 403, detail = "adapter not allowed")
+
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "require_media_generation_access", lambda *_a, **_k: None)
+    monkeypatch.setattr(account_access, "require_media_adapters", deny)
+    resp = _post(
+        baked_client, {"prompt": "a sloth", "loras": [{"id": "private-hub-lora", "weight": 1}]}
+    )
+    assert resp.status_code == 403 and calls == [["private-hub-lora"]]
+    assert baked_client.backend.loras_seen == []
+    # The baked set was authorized by its load; omitting loras does not re-check it.
+    resp = _post(baked_client, {"prompt": "a sloth", "response_format": "b64_json"})
+    assert resp.status_code == 200 and calls == [["private-hub-lora"]]

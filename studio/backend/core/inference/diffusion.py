@@ -421,6 +421,7 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
+from .diffusion_lora import LoraSelectionError
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
@@ -656,7 +657,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise ValueError(
+        raise LoraSelectionError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
@@ -14468,7 +14469,7 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
-            raise ValueError(
+            raise LoraSelectionError(
                 "This quantized (int8/fp8) load was built without LoRA adapters. Reload the "
                 "model with the adapter selection to bake it into the quantized transformer."
             )
@@ -14506,7 +14507,7 @@ class DiffusionBackend:
             for (name, path, _w) in current
         )
         if any(wanted.values()):
-            raise ValueError(
+            raise LoraSelectionError(
                 "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
                 "adapters at load time. Reload the model with the new adapter selection."
             )

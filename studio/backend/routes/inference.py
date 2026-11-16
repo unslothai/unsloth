@@ -53762,6 +53762,7 @@ async def _generate_openai_images(
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_lora import LoraSelectionError
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
     # A replacement can commit between status() and generate(): pin the read to the generation and
@@ -53781,6 +53782,9 @@ async def _generate_openai_images(
             await asyncio.to_thread(
                 account_access.require_media_generation_access, status, "diffusion"
             )
+            # Explicit adapters authorize like /images/generate; the baked set was authorized by its load.
+            if body.loras:
+                await asyncio.to_thread(account_access.require_media_adapters, body)
 
         # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
         workflows = status.get("workflows") or []
@@ -53843,7 +53847,12 @@ async def _generate_openai_images(
                     detail = _NO_IMAGE_MODEL_MSG,
                     headers = problem_headers("not_loaded", kind = "image"),
                 )
-            # Typed: the activation refusal is written for the caller; no other ValueError text escapes.
+            # Typed: these refusals are written for the caller; no other ValueError text escapes.
+            if isinstance(exc, LoraSelectionError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "loras"),
+                )
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(
                     status_code = 400,
