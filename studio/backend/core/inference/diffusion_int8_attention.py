@@ -895,12 +895,17 @@ def _pick_path(ms: dict, err: dict) -> Any:
     """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
     kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
     sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
-    taken must beat torch's attention by RACE_MARGIN, else torch's attention."""
-    order = ["sinks"]
-    if err["plain"] <= PLAIN_ERROR_SLACK * err["sinks"]:
+    taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
+    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite."""
+    finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
+    if not finite["sinks"]:
+        order = ["plain"] if finite["plain"] else []
+    elif finite["plain"] and err["plain"] <= PLAIN_ERROR_SLACK * err["sinks"]:
         order = (
             ["sinks", "plain"] if ms["sinks"] < RACE_MARGIN * ms["plain"] else ["plain", "sinks"]
         )
+    else:
+        order = ["sinks"]
     paths = {"sinks": True, "plain": False}
     for name in order:
         if ms[name] < RACE_MARGIN * ms["incumbent"]:

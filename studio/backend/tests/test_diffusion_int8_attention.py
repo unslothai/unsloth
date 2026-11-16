@@ -1709,6 +1709,21 @@ def test_the_sink_race_keeps_the_faster_path_as_accurate_as_the_sink_path():
     assert pick({"incumbent": 1.0, "sinks": 0.97, "plain": 0.985}, near) is True
 
 
+def test_the_sink_race_never_takes_a_path_with_a_non_finite_error():
+    """A NaN / inf error (a broken output on the deciding call) disqualifies that path: the kernels without the sink
+    path stand alone where theirs is finite, torch's attention where neither is; NaN timings never win."""
+    pick, nan, inf = I._pick_path, float("nan"), float("inf")
+    fast = {"incumbent": 10.0, "sinks": 4.0, "plain": 5.0}
+    assert pick(fast, {"sinks": nan, "plain": 0.02}) is False
+    assert pick(fast, {"sinks": inf, "plain": 0.02}) is False
+    assert pick(fast, {"sinks": 0.02, "plain": nan}) is True
+    assert pick(fast, {"sinks": nan, "plain": nan}) == "native"
+    assert (
+        pick({"incumbent": nan, "sinks": 4.0, "plain": 5.0}, {"sinks": 0.02, "plain": 0.02})
+        == "native"
+    )
+
+
 def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_routes(monkeypatch):
     """A plan that decides torch's attention raises the token floor of every raced route on its card and head dim
     past its DECIDE_BUCKET, so those calls leave the op (and its compiled graph) for good; the decision holds for the
