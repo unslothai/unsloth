@@ -74,9 +74,11 @@ def _style_hides_element(style: str) -> bool:
 
 
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """Any present hidden attribute counts, even hidden=false, since presence means not rendered; aria-hidden=true and inline hiding styles count too"""
+    """Any present hidden attribute counts, even hidden=false, since presence means not rendered, except until-found and inactive tab panels; aria-hidden=true and inline hiding styles count too"""
     if "hidden" in attr_dict:
-        return True
+        hidden = (attr_dict["hidden"] or "").strip().lower()
+        if hidden != "until-found" and attr_dict.get("role") != "tabpanel":
+            return True
     aria_hidden = attr_dict.get("aria-hidden")
     if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
