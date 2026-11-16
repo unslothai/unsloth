@@ -60,10 +60,13 @@ def strided_processor_class() -> Any:
             image_rotary_emb: Any = None,
         ) -> Any:
             cudnn = _backend_value(self._attention_backend) == _CUDNN
+            # the projections keep the token count: a call below the INT8 floor (raised where a plan decided torch's
+            # attention) runs the stock call, as the processor did before the kernel was installed
+            int8 = self._unsloth_int8 and hidden_states.shape[1] >= self._unsloth_int8_min_tokens
             if (
                 attention_mask is not None
                 or self._parallel_config is not None
-                or not (cudnn or self._unsloth_int8)
+                or not (cudnn or int8)
             ):
                 return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
             query, key, value = tf3._get_qkv_projections(attn, hidden_states)
@@ -77,8 +80,7 @@ def strided_processor_class() -> Any:
                 attn, query, key, value.dtype, image_rotary_emb, tf3.apply_rotary_emb
             )
             if (
-                self._unsloth_int8
-                and query.shape[1] >= self._unsloth_int8_min_tokens
+                int8
                 # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
