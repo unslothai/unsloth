@@ -209,3 +209,32 @@ def test_dispatch_route_skips_the_strided_processors_of_a_listed_family(card, mo
     monkeypatch.setattr(D, "_dits", lambda p: [p.transformer])
     assert D.routable_modules(pipe.transformer) == []
     assert D.install(pipe, _TARGET) == 0
+
+
+def test_the_race_is_logged_and_counted(card):
+    """With Studio's logger (it always passes one) the install reports each verdict and the routed count."""
+    import logging
+
+    records = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    log = logging.getLogger("test_int8_auto")
+    log.setLevel(logging.INFO)
+    log.addHandler(Grab())
+    card.found = {"ok": True, "min_tokens": 2560, "impl": "cuda"}
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET, logger = log) == 3
+    assert any("2048 race min_tokens=" in r for r in records), records
+    assert any("on 3 attention modules" in r for r in records), records
+    card.found = {"ok": True, "min_tokens": 0, "impl": "cuda", "long": {"ok": True}}
+    forced = _pipe()
+    assert (
+        I.install_int8_attention(
+            forced.transformer, device = "cuda", dtype = torch.bfloat16, force = True, logger = log
+        )
+        == 3
+    )
+    assert any("long_ok=True" in r and "(forced)" in r for r in records), records

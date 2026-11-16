@@ -1404,7 +1404,7 @@ def _install(
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)
             logger.info(
                 "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
-                "min_tokens=%s%s%s",
+                "min_tokens=%s%s%s%s",
                 card,
                 heads,
                 head_dim,
