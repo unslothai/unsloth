@@ -8497,7 +8497,8 @@ def _rocm_windows_math_on():
     with _ROCM_WINDOWS_WIDE_HEAD_LOCK:
         if _ROCM_WINDOWS_WIDE_HEAD_HELD[0] == 0:
             _ROCM_WINDOWS_WIDE_HEAD_HELD[1] = _cur_sdpa_kernel_backends()
-            _sdpa_kernel([SDPBackend.MATH])
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
         _ROCM_WINDOWS_WIDE_HEAD_HELD[0] += 1
 
 

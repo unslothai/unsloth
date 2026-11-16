@@ -387,3 +387,41 @@ def test_nested_jagged_tensors_under_a_mode(stock_sdpa, windows_rocm, cpu_counts
     with Seen():
         out = F.scaled_dot_product_attention(nt, nt, nt)
     assert Seen.hits == 1 and out.is_nested
+
+
+def test_a_wide_call_entering_after_another_thread_moved_the_flags_still_runs_math(
+    windows_rocm, cpu_counts_as_gpu
+):
+    """Flags are process-wide: if another thread's sdpa_kernel changes them while a wide call holds the pin, a wide call
+    starting after that is pinned to math again rather than running under the other thread's choice."""
+    from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
+
+    seen = {}
+    inside, release = threading.Event(), threading.Event()
+
+    def sdpa(
+        q,
+        k,
+        v,
+        *args,
+        name = None,
+        **kwargs,
+    ):
+        if name == "held":
+            inside.set()
+            release.wait(5)
+        seen[name] = set(_cur_sdpa_kernel_backends())
+        return q
+
+    guarded = fixes.rocm_windows_wide_head_sdpa(sdpa)
+    before = _cur_sdpa_kernel_backends()
+    q = torch.zeros(1, 1, 4, 512)
+    held = threading.Thread(target = guarded, args = (q, q, q), kwargs = {"name": "held"})
+    held.start()
+    assert inside.wait(5)
+    _sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH])  # another thread's choice
+    guarded(q, q, q, name = "late")
+    release.set()
+    held.join(5)
+    assert seen["late"] == {SDPBackend.MATH}
+    assert set(_cur_sdpa_kernel_backends()) == set(before)

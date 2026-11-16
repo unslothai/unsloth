@@ -32,7 +32,8 @@ def _math_on() -> None:
     with _LOCK:
         if _HELD[0] == 0:
             _HELD[1] = _cur_sdpa_kernel_backends()
-            _sdpa_kernel([SDPBackend.MATH])
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
         _HELD[0] += 1
 
 
