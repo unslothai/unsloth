@@ -15,9 +15,7 @@ type EditorCopy = {
   portHint: string;
   // Unreal: optional EngineWire project folder, read for its capability token.
   projectField?: boolean;
-  // Launched over stdio by Unsloth, so there is no port to set.
   noPort?: boolean;
-  // Listed under the menu's More submenu instead of at the top level.
   more?: boolean;
 };
 

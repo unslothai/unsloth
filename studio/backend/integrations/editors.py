@@ -45,20 +45,17 @@ EDITORS = {
         8000,
         "Unreal Editor is not answering. Open your project with the Unreal MCP plugin enabled.",
     ),
-    # Godot MCP Native (yurineko73): served by the editor add-on.
     "godot": Editor(
         "Godot",
         9080,
         "Godot is not answering. Open the project with the Godot MCP Native plugin enabled and its server started.",
     ),
-    # Figma desktop app, Dev Mode > MCP server (read-only, needs a Dev or Full seat).
     "figma": Editor(
         "Figma",
         3845,
         "Figma is not answering. In the Figma desktop app, open a design file, switch to Dev Mode and enable the desktop MCP server.",
         platforms = ("win32", "darwin"),
     ),
-    # Roblox Studio ships a stdio launcher; port is unused.
     "roblox": Editor(
         "Roblox Studio",
         0,
