@@ -114,7 +114,7 @@ export function translatePromptModel(
 
 export const DEFAULT_TRANSLATE_MODEL = "hy-mt2-1.8b" satisfies TranslateModelId;
 
-/** Both passages of a chunk fit beside the instruction: 1600 characters in, the same out. */
+/** Both passages of a chunk fit beside the instruction, with room to spare. */
 export const TRANSLATE_CONTEXT_TOKENS = 8192;
 export const TRANSLATE_MAX_TOKENS = 4096;
 

@@ -5267,6 +5267,7 @@ export const es419 = {
     useAsSource: "Traducir este texto",
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
+    stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",
     chat: "Chatear con el texto traducido",
     promptLabel: "Prompt",
     promptHint: "{target} y {source} se reemplazan por los idiomas que elegiste. El texto a traducir se agrega después de estas instrucciones.",

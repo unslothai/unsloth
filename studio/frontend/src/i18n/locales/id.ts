@@ -5185,6 +5185,7 @@ export const id = {
     copied: "Disalin",
     useAsSource: "Terjemahkan teks ini",
     stale: "Teks atau pengaturan berubah. Terjemahkan lagi untuk memperbarui.",
+    stopped: "Dihentikan sebelum selesai. Terjemahkan lagi untuk sisanya.",
     chat: "Chat dengan teks terjemahan",
     promptLabel: "Prompt",
     promptHint: "{target} dan {source} diganti dengan bahasa yang Anda pilih. Teks yang akan diterjemahkan ditambahkan setelah instruksi ini.",

@@ -4915,6 +4915,7 @@ export const es = {
     copied: "Copiado",
     useAsSource: "Traducir este texto",
     stale: "El texto o los ajustes han cambiado. Vuelve a traducir para actualizar.",
+    stopped: "Se detuvo antes del final. Vuelve a traducir para obtener el resto.",
     chat: "Chatear con el texto traducido",
     promptLabel: "Prompt",
     promptHint: "{target} y {source} se sustituyen por los idiomas que has elegido. El texto que se va a traducir se añade después de estas instrucciones.",

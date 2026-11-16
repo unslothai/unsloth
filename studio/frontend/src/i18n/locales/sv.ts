@@ -5057,6 +5057,7 @@ export const sv = {
     copied: "Kopierat",
     useAsSource: "Översätt den här texten",
     stale: "Texten eller inställningarna har ändrats. Översätt igen för att uppdatera.",
+    stopped: "Stoppades före slutet. Översätt igen för resten.",
     chat: "Chatta med översatt text",
     promptLabel: "Prompt",
     promptHint: "{target} och {source} ersätts med språken du har valt. Texten som ska översättas läggs till efter instruktionerna.",

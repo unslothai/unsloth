@@ -5180,6 +5180,7 @@ export const vi = {
     copied: "Đã sao chép",
     useAsSource: "Dịch văn bản này",
     stale: "Văn bản hoặc cài đặt đã thay đổi. Hãy dịch lại để cập nhật.",
+    stopped: "Đã dừng trước khi xong. Hãy dịch lại để có phần còn lại.",
     chat: "Trò chuyện với văn bản đã dịch",
     promptLabel: "Lời nhắc",
     promptHint: "{target} và {source} được thay bằng các ngôn ngữ bạn đã chọn. Văn bản cần dịch được thêm vào sau các chỉ dẫn này.",

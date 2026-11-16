@@ -4916,6 +4916,7 @@ export const de = {
     copied: "Kopiert",
     useAsSource: "Diesen Text übersetzen",
     stale: "Text oder Einstellungen wurden geändert. Übersetze erneut, um zu aktualisieren.",
+    stopped: "Vor dem Ende angehalten. Übersetze erneut für den Rest.",
     chat: "Mit übersetztem Text chatten",
     promptLabel: "Prompt",
     promptHint: "{target} und {source} werden durch die gewählten Sprachen ersetzt. Der zu übersetzende Text wird nach diesen Anweisungen angefügt.",

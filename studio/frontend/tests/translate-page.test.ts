@@ -376,7 +376,8 @@ test("a cut-off or filtered reply fails, and history is shared across windows", 
     /finishReason === "content_filter"\)\s*throw new TranslateRunError\("filtered"\)/,
   );
   const store = readText("../src/features/translate/translate-store.ts");
-  assert.match(store, /addHistoryEntry\(storedHistory\(\),/);
+  assert.match(store, /let stored = storedHistory\(\);/);
+  assert.match(store, /addHistoryEntry\(stored,/);
   assert.match(store, /addEventListener\("storage"/);
 });
 
@@ -419,7 +420,7 @@ test("the translation model is fetched by a translation, never by opening the pa
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.doesNotMatch(page, /downloadManager|\bloadModel\(/);
   // Translating as you type waits for a model that already served a translation.
-  assert.match(page, /if \(!readyModels\.includes\(modelKey\)\) return;/);
+  assert.match(page, /if \(!readyModels\.includes\(modelKey\) \|\|/);
   const runner = readText("../src/features/translate/translate-runner.ts");
   assert.match(runner, /runtime: "translate"/);
   const loaded = readText("../src/features/loaded-models/use-loaded-models.ts");

@@ -5203,6 +5203,7 @@ export const cs = {
     copied: "Zkopírováno",
     useAsSource: "Přeložit tento text",
     stale: "Text nebo nastavení se změnily. Pro aktualizaci přeložte znovu.",
+    stopped: "Zastaveno před koncem. Pro zbytek přeložte znovu.",
     chat: "Chatovat s přeloženým textem",
     promptLabel: "Prompt",
     promptHint: "{target} a {source} se nahradí vybranými jazyky. Text k překladu se přidá za tyto pokyny.",

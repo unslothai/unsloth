@@ -136,7 +136,8 @@ export type TranslateChunk = {
 };
 
 /** Small enough that a 1.8B model keeps every sentence, large enough to give it context. */
-export const TRANSLATE_CHUNK_CHARS = 1600;
+// Hy-MT2 1.8B drops whole paragraphs from passages near 1,600 characters; 1,000 keeps them.
+export const TRANSLATE_CHUNK_CHARS = 1000;
 
 const SENTENCE_END = /[.!?;。！？；…]["'”’)\]]*\s+|[。！？；]/g;
 

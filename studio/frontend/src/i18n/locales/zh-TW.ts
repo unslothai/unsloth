@@ -4916,6 +4916,7 @@ export const zhTW = {
     copied: "已複製",
     useAsSource: "翻譯這段文字",
     stale: "文字或設定已變更。請重新翻譯以更新。",
+    stopped: "在結束前已停止。再次翻譯以取得剩餘部分。",
     chat: "用譯文開始聊天",
     promptLabel: "提示詞",
     promptHint: "{target} 和 {source} 會替換為你選擇的語言。要翻譯的文字會加在這些指示之後。",

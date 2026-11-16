@@ -5232,6 +5232,7 @@ export const nl = {
     copied: "Gekopieerd",
     useAsSource: "Deze tekst vertalen",
     stale: "De tekst of instellingen zijn gewijzigd. Vertaal opnieuw om bij te werken.",
+    stopped: "Gestopt voor het einde. Vertaal opnieuw voor de rest.",
     chat: "Chatten met vertaalde tekst",
     promptLabel: "Prompt",
     promptHint: "{target} en {source} worden vervangen door de talen die je hebt gekozen. De te vertalen tekst wordt na deze instructies toegevoegd.",

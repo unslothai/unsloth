@@ -4833,6 +4833,7 @@ export const ko = {
     copied: "복사됨",
     useAsSource: "이 텍스트 번역",
     stale: "텍스트 또는 설정이 변경되었습니다. 다시 번역하여 업데이트하세요.",
+    stopped: "끝나기 전에 중지되었습니다. 나머지를 보려면 다시 번역하세요.",
     chat: "번역된 텍스트로 채팅",
     promptLabel: "프롬프트",
     promptHint: "{target}과(와) {source}은(는) 선택한 언어로 바뀝니다. 번역할 텍스트는 이 지시문 뒤에 추가됩니다.",

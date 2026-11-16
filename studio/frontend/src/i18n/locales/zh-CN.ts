@@ -4744,6 +4744,7 @@ export const zhCN = {
     copied: "已复制",
     useAsSource: "翻译此文本",
     stale: "文本或设置已更改。请重新翻译以更新。",
+    stopped: "在结束前已停止。再次翻译以获取剩余部分。",
     chat: "用译文开始聊天",
     promptLabel: "提示词",
     promptHint: "{target} 和 {source} 会替换为你选择的语言。要翻译的文本会添加在这些指令之后。",

@@ -156,7 +156,7 @@ const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
 // Fills the window under the title and language row, leaving the run button in view.
-const PANE_HEIGHT = "h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
+const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
@@ -477,13 +477,19 @@ function ModelMenu({
   const isLoaded = (repo: string) =>
     loaded.some((id) => modelIdsMatch(id, repo));
   const ejectable = localModel !== null && isLoaded(localModel);
+  const selectedKey = translateModelKey(value, custom);
+  const setModelReady = useTranslateStore((state) => state.setModelReady);
+  // A model already in memory, say after a reload, may translate as you type.
+  useEffect(() => {
+    if (ejectable) setModelReady(selectedKey, true);
+  }, [ejectable, selectedKey, setModelReady]);
   const eject = async () => {
     if (!localModel) return;
     try {
       await unloadModel({ model_path: localModel });
       setLoaded([]);
       // Typing must not load it straight back.
-      useTranslateStore.setState({ readyModels: [] });
+      setModelReady(selectedKey, false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     }
@@ -868,18 +874,27 @@ export function TranslatePage() {
       })),
     );
   const attempt = useTranslateStore((state) => state.attempt);
-  const { setSource, setPrefs, setTarget, swap, translate, stop, clear } =
-    useTranslateStore(
-      useShallow((state) => ({
-        setSource: state.setSource,
-        setPrefs: state.setPrefs,
-        setTarget: state.setTarget,
-        swap: state.swap,
-        translate: state.translate,
-        stop: state.stop,
-        clear: state.clear,
-      })),
-    );
+  const {
+    setSource,
+    setPrefs,
+    setTarget,
+    swap,
+    outputToSource,
+    translate,
+    stop,
+    clear,
+  } = useTranslateStore(
+    useShallow((state) => ({
+      setSource: state.setSource,
+      outputToSource: state.outputToSource,
+      setPrefs: state.setPrefs,
+      setTarget: state.setTarget,
+      swap: state.swap,
+      translate: state.translate,
+      stop: state.stop,
+      clear: state.clear,
+    })),
+  );
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
@@ -895,6 +910,16 @@ export function TranslatePage() {
     prefs.modelId === CUSTOM_TRANSLATE_MODEL
       ? (prefs.customModel?.name ?? "")
       : (dedicated?.label ?? t("translate.model.chat"));
+  // The run's own model: the selection may change while it downloads.
+  const runModelKey = attempt?.modelKey ?? modelKey;
+  const runModelLabel =
+    runModelKey === modelKey
+      ? modelLabel
+      : (DEDICATED_TRANSLATE_MODELS.find((model) => model.id === runModelKey)
+          ?.label ??
+        (runModelKey === CHAT_TRANSLATE_MODEL
+          ? t("translate.model.chat")
+          : (prefs.customModel?.name ?? "")));
 
   // Read again when a run ends: that is when a download has landed.
   useEffect(() => {
@@ -911,7 +936,7 @@ export function TranslatePage() {
 
   useEffect(() => {
     if (!prefs.autoTranslate || busy || !canTranslate) return;
-    if (!readyModels.includes(modelKey)) return;
+    if (!readyModels.includes(modelKey) || prefs.from === prefs.target) return;
     // Only a draft that differs from the last one sent: a stopped or failed run is not retried.
     if (
       attempt &&
@@ -926,7 +951,7 @@ export function TranslatePage() {
       return;
     }
     const timer = window.setTimeout(
-      () => void translate(),
+      () => void translate({ auto: true }),
       AUTO_TRANSLATE_DELAY_MS,
     );
     return () => window.clearTimeout(timer);
@@ -1011,6 +1036,10 @@ export function TranslatePage() {
   const defaultPrompt = promptOptions
     ? translateInstruction(promptModel, templateOptions(promptOptions))
     : "";
+  // What the box shows while typing: emptying it must not refill it with the built prompt.
+  const [promptDraft, setPromptDraft] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new kind of model starts from its own prompt.
+  useEffect(() => setPromptDraft(null), [promptKind]);
   // Emptied or typed back to the built prompt: no longer an edit.
   const setCustomPrompt = (value: string | null) => {
     const { [promptKind]: _dropped, ...others } = prefs.customPrompts;
@@ -1265,7 +1294,7 @@ export function TranslatePage() {
                   <IconAction
                     icon={ArrowLeft02Icon}
                     label={t("translate.useAsSource")}
-                    onClick={() => setSource(output)}
+                    onClick={outputToSource}
                     className="rtl:rotate-180"
                   />
                 )}
@@ -1302,7 +1331,7 @@ export function TranslatePage() {
         </div>
 
         <div className="mx-auto flex w-full max-w-sm flex-col gap-2.5 pt-1">
-          {phase && <RunStatus phase={phase} model={modelLabel} />}
+          {phase && <RunStatus phase={phase} model={runModelLabel} />}
           <div className="flex items-center justify-center">
             <Button
               type="button"
@@ -1338,6 +1367,8 @@ export function TranslatePage() {
                   {errorMessage}
                 </p>
               </div>
+            ) : output !== "" && result === null ? (
+              <p className="text-muted-foreground">{t("translate.stopped")}</p>
             ) : output !== "" && stale ? (
               <p className="text-muted-foreground">{t("translate.stale")}</p>
             ) : firstRun && dedicated ? (
@@ -1367,7 +1398,10 @@ export function TranslatePage() {
                 variant="ghost"
                 size="sm"
                 className="text-ui-12 text-muted-foreground"
-                onClick={() => setCustomPrompt(null)}
+                onClick={() => {
+                  setPromptDraft(null);
+                  setCustomPrompt(null);
+                }}
               >
                 {t("translate.promptReset")}
               </Button>
@@ -1375,8 +1409,12 @@ export function TranslatePage() {
           </div>
           <Textarea
             id={promptId}
-            value={customPrompt ?? defaultPrompt}
-            onChange={(event) => setCustomPrompt(event.target.value)}
+            value={promptDraft ?? customPrompt ?? defaultPrompt}
+            onChange={(event) => {
+              setPromptDraft(event.target.value);
+              setCustomPrompt(event.target.value);
+            }}
+            onBlur={() => setPromptDraft(null)}
             spellCheck={false}
             className="min-h-28 font-mono text-ui-13 md:text-ui-13"
           />

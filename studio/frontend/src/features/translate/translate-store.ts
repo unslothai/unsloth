@@ -92,9 +92,14 @@ type TranslateState = {
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
   setTarget: (target: string) => void;
-  /** Flips the pair and moves the translation into the text box; needs a set source language. */
+  /** Flips the pair and moves a finished, current translation into the text box; needs a set source language. */
   swap: () => void;
-  translate: () => Promise<void>;
+  /** Moves the translation into the text box, in its own language, to translate it onward. */
+  outputToSource: () => void;
+  /** `auto` runs come from typing: each replaces the draft's previous auto entry in the history. */
+  translate: (options?: { auto?: boolean }) => Promise<void>;
+  /** Marks a model as serving, so translating as you type may use it; false forgets it. */
+  setModelReady: (modelKey: string, ready: boolean) => void;
   stop: () => void;
   clear: () => void;
   restore: (entry: TranslateHistoryEntry) => void;
@@ -165,8 +170,9 @@ function saveHistory(
   history: TranslateHistoryEntry[],
 ): TranslateHistoryEntry[] {
   let kept = history;
-  // A full storage drops the oldest half until the rest fits.
-  while (!writeJson(HISTORY_KEY, kept) && kept.length > 0) {
+  // A full storage drops the oldest half until the rest fits, but never writes over it with nothing.
+  while (!writeJson(HISTORY_KEY, kept)) {
+    if (kept.length <= 1) return history;
     kept = kept.slice(0, Math.floor(kept.length / 2));
   }
   return kept;
@@ -218,6 +224,25 @@ export function translatePromptOptions(
 }
 
 let controller: AbortController | null = null;
+// The history entry the last auto run saved, replaced while the same draft keeps changing.
+let autoEntryId: string | null = null;
+
+// One render per frame: a render per streamed token overruns React's nested update limit.
+const nextFrame = (callback: () => void): (() => void) => {
+  if (typeof requestAnimationFrame === "function") {
+    const id = requestAnimationFrame(callback);
+    return () => cancelAnimationFrame(id);
+  }
+  const id = setTimeout(callback, 16);
+  return () => clearTimeout(id);
+};
+
+function sameDraft(a: string, b: string): boolean {
+  let common = 0;
+  while (common < a.length && common < b.length && a[common] === b[common])
+    common++;
+  return common > 0 && common >= Math.min(a.length, b.length) / 2;
+}
 
 export const useTranslateStore = create<TranslateState>((set, get) => ({
   prefs: loadPrefs(),
@@ -268,11 +293,14 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   },
 
   swap: () => {
-    const { prefs, output, phase } = get();
+    const state = get();
+    const { prefs, output, phase, result } = state;
     if (prefs.from === AUTO_SOURCE || phase) return;
+    // Only a finished translation of the current draft replaces it; an edit is never lost.
+    const current = output && result !== null && !translationIsStale(state);
     get().setPrefs({ from: prefs.target });
     get().setTarget(prefs.from);
-    if (output) {
+    if (current) {
       set({
         source: clipText(output, TRANSLATE_SOURCE_MAX_CHARS),
         output: "",
@@ -283,7 +311,31 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     }
   },
 
-  translate: async () => {
+  outputToSource: () => {
+    const { output, result, attempt, prefs, phase } = get();
+    if (!output || phase) return;
+    get().setPrefs({ from: (result ?? attempt)?.target ?? prefs.target });
+    set({
+      source: clipText(output, TRANSLATE_SOURCE_MAX_CHARS),
+      output: "",
+      error: null,
+      result: null,
+      attempt: null,
+    });
+  },
+
+  setModelReady: (modelKey, ready) => {
+    const { readyModels } = get();
+    if (readyModels.includes(modelKey) === ready) return;
+    set({
+      readyModels: ready
+        ? [...readyModels, modelKey]
+        : readyModels.filter((key) => key !== modelKey),
+    });
+  },
+
+  translate: async (options) => {
+    const auto = options?.auto === true;
     const { source, prefs } = get();
     const prompt = translatePromptOptions(prefs);
     if (!prompt || source.trim() === "") return;
@@ -299,6 +351,21 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       result: null,
       attempt: request,
     });
+    let streamed: string | null = null;
+    let cancelFrame: (() => void) | null = null;
+    const dropFrame = () => {
+      cancelFrame?.();
+      cancelFrame = null;
+      streamed = null;
+    };
+    const flushOutput = () => {
+      cancelFrame?.();
+      cancelFrame = null;
+      // A stopped run still shows its last text; a newer run owns the pane.
+      if (streamed !== null && (current() || controller === null))
+        set({ output: streamed });
+      streamed = null;
+    };
     try {
       const { output, model } = await runTranslation({
         text: source,
@@ -307,23 +374,41 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         custom: prefs.customModel,
         signal: run.signal,
         onPhase: (phase) => current() && set({ phase }),
-        onOutput: (text) => current() && set({ output: text }),
+        onOutput: (text) => {
+          if (!current()) return;
+          streamed = text;
+          cancelFrame ??= nextFrame(flushOutput);
+        },
       });
+      dropFrame();
       if (!current()) return;
       controller = null;
       const state = get();
       // Onto the stored list, not this window's: another window may have added entries since.
-      const history = state.prefs.saveHistory
-        ? saveHistory(
-            addHistoryEntry(storedHistory(), {
-              source,
-              output,
-              target: prefs.target,
-              from: prefs.from === AUTO_SOURCE ? null : prefs.from,
-              model,
-            }),
-          )
-        : state.history;
+      let history = state.history;
+      if (state.prefs.saveHistory) {
+        let stored = storedHistory();
+        const previous = stored[0];
+        if (
+          auto &&
+          output.trim() !== "" &&
+          previous &&
+          previous.id === autoEntryId &&
+          previous.target === prefs.target &&
+          sameDraft(previous.source, source)
+        ) {
+          stored = stored.slice(1);
+        }
+        const added = addHistoryEntry(stored, {
+          source,
+          output,
+          target: prefs.target,
+          from: prefs.from === AUTO_SOURCE ? null : prefs.from,
+          model,
+        });
+        autoEntryId = auto && added[0] !== stored[0] ? added[0].id : null;
+        history = saveHistory(added);
+      }
       set({
         phase: null,
         output,
@@ -334,6 +419,8 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           : [...state.readyModels, request.modelKey],
       });
     } catch (error) {
+      // Whatever streamed in before a Stop or a failure stays on screen.
+      flushOutput();
       if (!current()) return;
       controller = null;
       if (
@@ -426,6 +513,10 @@ if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === HISTORY_KEY || event.key === null) {
       useTranslateStore.setState({ history: storedHistory() });
+    }
+    // Another window's settings, so its next write does not undo this one's.
+    if (event.key === PREFS_KEY || event.key === null) {
+      useTranslateStore.setState({ prefs: loadPrefs() });
     }
   });
 }

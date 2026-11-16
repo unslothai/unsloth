@@ -160,6 +160,27 @@ async function downloadModel(
     totalBytes: model.sizeBytes,
   });
 
+  // A job still cancelling from an earlier Stop would be joined, and its cancellation end this run.
+  await new Promise<void>((resolve, reject) => {
+    const cancelling = () =>
+      useDownloadManagerStore.getState().jobs[jobKey]?.state === "cancelling";
+    if (!cancelling()) {
+      resolve();
+      return;
+    }
+    const unsubscribe = useDownloadManagerStore.subscribe(() => {
+      if (cancelling()) return;
+      unsubscribe();
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+    const onAbort = () => {
+      unsubscribe();
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
   await new Promise<void>((resolve, reject) => {
     const cleanups: Array<() => void> = [];
     let settled = false;

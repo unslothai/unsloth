@@ -5233,6 +5233,7 @@ export const pl = {
     copied: "Skopiowano",
     useAsSource: "Przetłumacz ten tekst",
     stale: "Tekst lub ustawienia uległy zmianie. Przetłumacz ponownie, aby zaktualizować.",
+    stopped: "Zatrzymano przed końcem. Przetłumacz ponownie, aby uzyskać resztę.",
     chat: "Czat z przetłumaczonym tekstem",
     promptLabel: "Prompt",
     promptHint: "{target} i {source} są zastępowane wybranymi językami. Tekst do przetłumaczenia jest dodawany po tych instrukcjach.",

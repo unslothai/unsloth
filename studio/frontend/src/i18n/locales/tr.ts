@@ -5182,6 +5182,7 @@ export const tr = {
     copied: "Kopyalandı",
     useAsSource: "Bu metni çevir",
     stale: "Metin veya ayarlar değişti. Güncellemek için yeniden çevirin.",
+    stopped: "Bitmeden durduruldu. Geri kalanı için yeniden çevirin.",
     chat: "Çevrilen metinle sohbet et",
     promptLabel: "İstem",
     promptHint: "{target} ve {source}, seçtiğiniz dillerle değiştirilir. Çevrilecek metin bu talimatların ardından eklenir.",
