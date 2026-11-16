@@ -20,6 +20,8 @@ const SUPPORTED: bool = cfg!(any(
     target_os = "linux"
 ));
 
+static INITIALIZATION: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
 static HELD: Mutex<Option<platform::SleepBlock>> = Mutex::new(None);
 
 fn preference_path(config_dir: &Path) -> PathBuf {
@@ -104,16 +106,39 @@ pub fn initialize(app: &tauri::AppHandle) {
     if !enabled {
         return;
     }
-    std::thread::spawn(|| match apply(true) {
+    let mut initialization = INITIALIZATION
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    *initialization = Some(std::thread::spawn(|| match apply(true) {
         Ok(_) => info!("Keeping the computer awake (setting is on)"),
         Err(error) => warn!("Could not keep the computer awake: {error}"),
-    });
+    }));
+}
+
+fn wait_for_initialization() {
+    // Keep the guard through join so concurrent commands also wait for restoration.
+    let mut initialization = INITIALIZATION
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(task) = initialization.take() {
+        if task.join().is_err() {
+            warn!("Keep-awake initialization task panicked");
+        }
+    }
 }
 
 /// Reports the block actually held, so a setting that failed to apply reads as off.
 #[tauri::command]
 pub async fn get_keep_awake() -> Option<bool> {
-    SUPPORTED.then(is_held)
+    if !SUPPORTED {
+        return None;
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        wait_for_initialization();
+        Some(is_held())
+    })
+    .await
+    .unwrap_or(None)
 }
 
 #[tauri::command]
@@ -123,6 +148,7 @@ pub async fn set_keep_awake(app: tauri::AppHandle, enabled: bool) -> Result<bool
     }
     let dir = config_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
+        wait_for_initialization();
         let was_held = apply(enabled)?;
         if let Err(error) = write_preference(&dir, enabled) {
             if let Err(revert) = apply(was_held) {
