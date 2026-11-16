@@ -62,6 +62,11 @@ export type BrowserAction = {
   newText?: string;
   replaceAll?: boolean;
   content?: string;
+  /** open_file: a file from the chat's tool workspace, base64 (browser_agent._workspace_file_request). */
+  name?: string;
+  path?: string;
+  contentType?: string;
+  data?: string;
   /** How long the server waits for this answer. */
   timeoutS?: number;
   policy: SitePolicy;
@@ -105,6 +110,8 @@ const whole = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 // browser_agent._MAX_FILE_EDIT_CHARS
 const MAX_EDIT_CHARS = 500_000;
+// browser_agent._MAX_WORKSPACE_FILE_BYTES, as base64
+const MAX_WORKSPACE_DATA_CHARS = Math.ceil((2 * 1024 * 1024) / 3) * 4;
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 100) : [];
 
@@ -141,6 +148,10 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     newText: str(raw.new_text, MAX_EDIT_CHARS),
     replaceAll: raw.replace_all === true,
     content: str(raw.content, MAX_EDIT_CHARS),
+    name: str(raw.name, 512),
+    path: str(raw.path, 4096),
+    contentType: str(raw.content_type, 256),
+    data: str(raw.data, MAX_WORKSPACE_DATA_CHARS),
     timeoutS: typeof raw.timeout_s === "number" && raw.timeout_s > 0 ? Math.min(raw.timeout_s, 3600) : undefined,
     policy: { allowedDomains: strings(raw.allowed_domains), blockedDomains: strings(raw.blocked_domains) },
   };
@@ -672,6 +683,8 @@ function stepOf(action: BrowserAction): AgentStep {
   switch (action.op) {
     case "navigate":
       return { kind: "open", detail: hostOfUrl(action.url ?? "") };
+    case "open_file":
+      return { kind: "open", detail: action.name ?? "" };
     case "back":
     case "forward":
     case "reload":
@@ -791,6 +804,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
   if (action.op === "navigate") return navigateTo(action.url ?? "", action, context);
+  if (action.op === "open_file") return openWorkspaceFile(action, context);
 
   if (action.op === "history") return readHistory(action, context);
   if (action.op === "evaluate" && useBrowserAgentStore.getState().scriptAccess === "never") {
@@ -1268,6 +1282,36 @@ async function observeFile(tab: BrowserTab, entry: FileEntry, context: Run, note
   if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set();
   const source = op.op === "snapshot" ? "This is a file's preview; browser_read_file and browser_edit_file work on its source." : "";
   return { ok: true, file: entry.name, text: answer.text, note: [note, answer.note, source].filter(Boolean).join(" ") || undefined };
+}
+
+/** A file the model wrote in its tool workspace, sent by the server, shown as a file tab: an HTML
+ *  page runs in the same sandboxed preview as one made in chat. */
+async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<Result> {
+  const { name, data } = action;
+  if (!name || data === undefined) return { ok: false, error: "the file did not arrive; open it again." };
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  } catch {
+    return { ok: false, error: "the file did not arrive whole; open it again." };
+  }
+  const contentType = action.contentType || "text/plain";
+  const key = `workspace:${action.sessionId}:${action.path ?? name}`;
+  useBrowserStore.getState().openFile({ blob: new Blob([bytes], { type: contentType }), name, contentType, key });
+  const opened = () => useBrowserStore.getState().tabs.find((tab) => tab.chat === context.session.chat && tab.openKey === `file:${key}`);
+  // Reopening a changed file swaps its bytes in a beat later.
+  const started = Date.now();
+  let tab = opened();
+  while (tab && Date.now() - started < 2_000) {
+    const entry = currentEntry(tab);
+    if (entry.kind === "file" && browserFile(entry.fileId)?.size === bytes.length) break;
+    await sleep(100);
+    tab = opened();
+  }
+  if (!tab) return { ok: false, error: "the browser panel could not open the file." };
+  moveRun(context, tab.id);
+  showTab(tab, context);
+  return observe(findTab(tab.id) ?? tab, context, `Opened ${action.path ?? name} from the workspace.`);
 }
 
 function openFromFile(url: string, action: BrowserAction, context: Run): Promise<Result> {

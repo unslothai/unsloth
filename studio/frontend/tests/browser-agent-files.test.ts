@@ -236,3 +236,28 @@ test("browser_tabs lists files by name and web pages by site, and switches by nu
   assert.equal(switched.ok, true);
   assert.equal(switched.file, "links.html");
 });
+
+test("a workspace file the server sends opens as a file tab, its preview is read, and a reopen shows the new bytes", async () => {
+  endBrowserAgentRun(RUN);
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
+    return { installed: true, result: { ok: true, text: "canvas 320x200", links: [] } };
+  };
+  const b64 = (text: string) => Buffer.from(text).toString("base64");
+  const fields = { name: "draw.html", path: "out/draw.html", contentType: "text/html" };
+  const opened = await act("open_file", { ...fields, data: b64("<canvas></canvas>") });
+  assert.equal(opened.ok, true, opened.error);
+  assert.equal(opened.file, "draw.html");
+  assert.equal(opened.text, "canvas 320x200");
+  assert.match(opened.note ?? "", /Opened out\/draw\.html from the workspace/);
+  assert.equal(await shownText(), "<canvas></canvas>");
+
+  const tabs = useBrowserStore.getState().tabs.length;
+  const again = await act("open_file", { ...fields, data: b64("<canvas id=x></canvas>") });
+  assert.equal(again.ok, true, again.error);
+  assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  assert.equal(await shownText(), "<canvas id=x></canvas>");
+
+  const broken = await act("open_file", { ...fields, data: "%%%" });
+  assert.equal(broken.ok, false);
+});

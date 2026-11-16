@@ -8,13 +8,16 @@ untrusted page text."""
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
+import mimetypes
+import os
 import re
 import sys
 import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from loggers import get_logger
 
@@ -30,16 +33,20 @@ BROWSER_NAVIGATE_TOOL = {
     "function": {
         "name": "browser_navigate",
         "description": (
-            "Open a web page in the browser panel beside the chat, where the user watches. "
-            "Returns the page's text and its interactive elements, each with a ref such as r12 "
-            "that the other browser tools take. " + _UNTRUSTED_NOTE
+            "Open a web page in the browser panel beside the chat, where the user watches, or a "
+            "file from the workspace python and terminal write to, such as an HTML page made "
+            "there. Returns the page's text and its interactive elements, each with a ref such "
+            "as r12 that the other browser tools take. " + _UNTRUSTED_NOTE
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": 'A full http(s) address, or "back", "forward" or "reload".',
+                    "description": (
+                        'A full http(s) address; a workspace file by its path, such as "page.html" '
+                        '(a file:// URL of it works too); or "back", "forward" or "reload".'
+                    ),
                 }
             },
             "required": ["url"],
@@ -549,6 +556,91 @@ def _redirect_target(url: str) -> Optional[str]:
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
 
+# Workspace files the panel opens as a file tab; inline in the action, so kept small.
+_MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024
+# A bare first segment ending in one of these is a file name, not a host: none is a top-level domain.
+_FILE_SUFFIXES = (
+    ".html",
+    ".htm",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".pdf",
+    ".txt",
+    ".json",
+    ".csv",
+    ".js",
+    ".jsx",
+    ".tsx",
+    ".css",
+    ".xml",
+)
+
+
+def workspace_path_of(raw: Any) -> Optional[str]:
+    """The file path in a navigate target that names a file rather than a site, or None.
+    Syntax only: `page.html`, `./a/b.html`, `/abs/x.svg`, `file:///abs/x.html`."""
+    target = str(raw or "").strip()
+    if re.match(r"^file:", target, re.IGNORECASE):
+        parsed = urlsplit(target)
+        if (parsed.hostname or "localhost").lower() != "localhost":
+            return None
+        return unquote(parsed.path) or None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target) or target.startswith("//"):
+        return None
+    path = re.split(r"[?#]", target, maxsplit = 1)[0]
+    if re.match(r"^(?:\.{1,2}[/\\]|[/\\~]|[a-zA-Z]:[/\\])", path):
+        return path
+    parts = re.split(r"[/\\]", path, maxsplit = 1)
+    first = parts[0].lower()
+    # A dotless first segment is never a site the browser opens, so `out/page.html` is a folder.
+    folder = len(parts) == 2 and parts[1] and not re.search(r"[.:]", first) and first != "localhost"
+    return path if folder or first.endswith(_FILE_SUFFIXES) else None
+
+
+def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
+    """The panel's open_file action for a file in this chat's tool workspace, or ValueError
+    telling the model what to do instead."""
+    from .tools import _get_workdir
+
+    workdir = os.path.realpath(_get_workdir(session_id))
+    expanded = os.path.expanduser(path)
+    full = os.path.realpath(
+        expanded if os.path.isabs(expanded) else os.path.join(workdir, expanded)
+    )
+    if os.path.commonpath([workdir, full]) != workdir:
+        raise ValueError(
+            f"{path} is outside the workspace, and the browser opens only files in it "
+            f"({workdir}, where python and terminal run). Write or copy the file there first, "
+            "then open it by its name, or give a full http(s) address."
+        )
+    shown = os.path.relpath(full, workdir)
+    if not os.path.isfile(full):
+        raise ValueError(
+            f"there is no file {shown} in the workspace ({workdir}). Write it there with python "
+            "or terminal first, then open it by that name."
+        )
+    size = os.path.getsize(full)
+    if size > _MAX_WORKSPACE_FILE_BYTES:
+        raise ValueError(
+            f"{shown} is {size // 1024} KB, and the browser opens workspace files up to "
+            f"{_MAX_WORKSPACE_FILE_BYTES // (1024 * 1024)} MB."
+        )
+    with open(full, "rb") as handle:
+        data = handle.read(_MAX_WORKSPACE_FILE_BYTES + 1)
+    content_type = mimetypes.guess_type(full)[0] or "text/plain"
+    return {
+        "op": "open_file",
+        "name": os.path.basename(full),
+        "path": shown,
+        "content_type": content_type,
+        "data": base64.b64encode(data).decode("ascii"),
+    }
+
+
 def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     """The http(s) URL to open, or ValueError saying why it may not be opened."""
     from .tools import _validate_and_resolve_host
@@ -588,12 +680,21 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     return url
 
 
-def _validated_request(name: str, arguments: dict, website_policy: Optional[dict]) -> dict:
+def _validated_request(
+    name: str,
+    arguments: dict,
+    website_policy: Optional[dict],
+    session_id: Optional[str] = None,
+) -> dict:
     op = name.removeprefix("browser_")
     if name == "browser_navigate":
         target = str(arguments.get("url") or "").strip()
         if target.lower() in ("back", "forward", "reload"):
             return {"op": target.lower()}
+        if len(target) <= _MAX_URL_CHARS:
+            path = workspace_path_of(target)
+            if path is not None:
+                return _workspace_file_request(path, session_id)
         return {"op": "navigate", "url": normalize_navigation_url(target, website_policy)}
     if name == "browser_snapshot":
         request: dict = {"op": op, "full_page": arguments.get("full_page") is True}
@@ -864,7 +965,7 @@ def execute_browser_tool(
     if not isinstance(arguments, dict):
         arguments = {}
     try:
-        request = _validated_request(name, arguments, website_policy)
+        request = _validated_request(name, arguments, website_policy, session_id)
     except ValueError as exc:
         return f"Error: {exc}"
     from .web_access_policy import normalize_website_policy
