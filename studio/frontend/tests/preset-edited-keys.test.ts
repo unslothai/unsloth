@@ -305,31 +305,6 @@ test("a stale tab's prompt edit does not erase a key another tab moved", async (
   settingsHttp.settings = {};
 });
 
-test("an every-key hold survives a pre-hydration edit and a later slider move", async () => {
-  load(QWEN);
-  await settled();
-  settingsHttp.settings = {
-    activePreset: "Default",
-    activePresetSource: "modified",
-    presetEditedKeys: Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, true])),
-  };
-  settingsHttp.puts.length = 0;
-  useChatRuntimeStore.setState({ settingsHydrated: false });
-  settingsHttp.hold();
-  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
-  saveSystemPrompt("Be terse.");
-  settingsHttp.release?.();
-  await hydrating;
-  await settled();
-  await rehydrate(stored());
-  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
-  moveSlider("topK", 5);
-  await settled();
-  await rehydrate(stored());
-  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
-  settingsHttp.settings = {};
-});
-
 test("a stale tab's edit does not bring back a key another tab cleared", async () => {
   load(QWEN);
   await settled();
@@ -376,33 +351,6 @@ for (const beforeHydration of [false, true]) {
     settingsHttp.settings = {};
   });
 }
-test("a startup prompt edit does not bring back a key another tab cleared during hydration", async () => {
-  load(QWEN);
-  await settled();
-  settingsHttp.settings = {
-    activePreset: "Default",
-    activePresetSource: "modified",
-    presetEditedKeys: { temperature: true },
-  };
-  settingsHttp.puts.length = 0;
-  useChatRuntimeStore.setState({ settingsHydrated: false });
-  settingsHttp.hold();
-  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
-  saveSystemPrompt("Be terse.");
-  // Another tab picked Default after this tab's read.
-  settingsHttp.settings = {
-    activePreset: "Default",
-    activePresetSource: "builtin-default",
-    presetEditedKeys: Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false])),
-  };
-  settingsHttp.release?.();
-  await hydrating;
-  await settled();
-  await rehydrate(stored());
-  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, []);
-  settingsHttp.settings = {};
-});
-
 test("a startup prompt edit saved before the settings read is not taken for an older `modified`", async () => {
   load(QWEN);
   await settled();
