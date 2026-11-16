@@ -29,6 +29,9 @@ _SESSION = "__LOCALID_contained_commands"
         "chmod +x 'my script.sh'",
         "if [ -f a ]; then chmod +x a; fi",
         "echo 'chmod -R 777 .'; chmod +x a",
+        "printf 'echo ran\\n' > run.sh; chmod +x run.sh && ./run.sh",
+        "X=1 chmod +x a",
+        "chmod +x a#b",
     ],
 )
 def test_a_plain_chmod_is_contained(command):
@@ -61,6 +64,17 @@ def test_a_plain_chmod_is_contained(command):
         "chmod +x a; ! chmod -R 777 .",
         "chmod +x a; c=chmod; $c -R 777 .",
         "chmod +x a; ch\\mod -R 777 .",
+        "chmod +x a#b; chmod -R 777 .",
+        "chmod +x a # note\nchmod -R 777 .",
+        "chmod 755 d >/dev/null -R",
+        "chmod 755 d 2>&1 -R",
+        "chmod 755 d \\\n-R",
+        "chmod 755 d ';' -R",
+        "chmod +x a; X='a b' chmod -R 777 .",
+        "chmod +x a; >log chmod -R 777 .",
+        "chmod +x a; echo $'\\'' ; chmod -R 777 . ; echo $'\\''",
+        "cat <<EOF\n'\nEOF\nchmod -R 777 .\necho \"'\"; chmod +x a",
+        "chmod() { find . -exec touch {} +; }; chmod 755 a",
     ],
 )
 def test_any_other_chmod_keeps_the_block(command):
@@ -151,19 +165,30 @@ def test_what_the_sandbox_does_not_contain_stays_blocked(command, name):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")
-@pytest.mark.parametrize(
-    "kwargs",
-    [{"tool_execution_mode": "software"}, {"host_access_approved": True}],
-)
-def test_without_the_os_sandbox_every_block_stays(kwargs):
-    for command, name in (
-        ("curl --version", "curl"),
-        ("sleep 5 & kill $!", "kill"),
-        ("chmod +x a", "chmod"),
-    ):
-        assert tools._bash_exec(command, None, 60, _SESSION, **kwargs) == (
-            f"Blocked command(s) for safety: {name}"
-        )
+def test_without_the_os_sandbox_every_block_stays(monkeypatch):
+    for kwargs in ({"tool_execution_mode": "software"}, {"host_access_approved": True}):
+        # An approved call that names a host path leaves the OS sandbox.
+        monkeypatch.setattr(tools, "_reaches_host_paths", lambda kind, text: True)
+        for command, name in (
+            ("curl --version", "curl"),
+            ("sleep 5 & kill $!", "kill"),
+            ("chmod +x a", "chmod"),
+        ):
+            assert tools._bash_exec(command, None, 60, _SESSION, **kwargs) == (
+                f"Blocked command(s) for safety: {name}"
+            )
+
+
+@needs_os_sandbox
+def test_an_approved_call_that_stays_in_the_os_sandbox_is_contained():
+    out = tools._bash_exec(
+        "printf 'echo ran\\n' > run.sh; chmod +x run.sh && ./run.sh",
+        None,
+        60,
+        _SESSION,
+        host_access_approved = True,
+    )
+    assert "ran" in out and "Blocked" not in out, out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")

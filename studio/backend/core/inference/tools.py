@@ -295,41 +295,96 @@ _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
 _CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
 _CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
-_CHMOD_OPERAND_UNSAFE = frozenset("*?[]{}$`\\~'\"")
-_SHELL_SEPARATOR_CHARS = frozenset(";&|()")
+_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
+_CHMOD_OPERAND_UNSAFE = frozenset("*?[]{}$`~")
+_SHELL_OPERATOR_CHARS = frozenset(";&|()<>")
 _SHELL_COMMAND_PREFIXES = frozenset(
     {"{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "time"}
 )
+# Where this reading and bash could part ways: substitutions, heredocs, ANSI-C quotes, line continuations.
+_CHMOD_UNREADABLE_SYNTAX = ("$(", "`", "<(", ">(", "<<", "$'", "\\\n")
+
+
+def _shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
+    """(text, is_operator, start, end) per token as bash splits them; None for a comment or an open quote."""
+    tokens: list[tuple[str, bool, int, int]] = []
+    text: list[str] = []
+    start = -1
+    i, n = 0, len(command)
+    while i <= n:
+        ch = command[i] if i < n else "\n"
+        if ch in " \t\n" or ch in _SHELL_OPERATOR_CHARS:
+            if start >= 0:
+                tokens.append(("".join(text), False, start, i))
+                text, start = [], -1
+            if ch == "\n":
+                tokens.append((";", True, i, i))
+            elif ch in _SHELL_OPERATOR_CHARS:
+                end = i
+                while end < n and command[end] in _SHELL_OPERATOR_CHARS:
+                    end += 1
+                tokens.append((command[i:end], True, i, end))
+                i = end
+                continue
+            i += 1
+            continue
+        if start < 0:
+            if ch == "#":
+                return None
+            start = i
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            text.append(command[i + 1])
+            i += 2
+        elif ch in "'\"":
+            end = i + 1
+            while end < n and command[end] != ch:
+                end += 2 if ch == '"' and command[end] == "\\" else 1
+            if end >= n:
+                return None
+            text.append(command[i + 1 : end])
+            i = end + 1
+        else:
+            text.append(ch)
+            i += 1
+    return tokens
 
 
 def _is_plain_chmod(command: str) -> bool:
     """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
-    if any(marker in command for marker in ("$(", "`", "<(", ">(")):
+    if any(marker in command for marker in _CHMOD_UNREADABLE_SYNTAX):
         return False
-    try:
-        lexer = shlex.shlex(command.replace("\n", " ; "), posix = True, punctuation_chars = True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    tokens = _shell_words(command)
+    if tokens is None:
         return False
-    is_separator = lambda token: set(token) <= _SHELL_SEPARATOR_CHARS
     rest: list[str] = []
+    copied = 0
     seen = 0
+    at_start = True
     i = 0
     while i < len(tokens):
-        token = tokens[i]
-        at_start = i == 0 or is_separator(tokens[i - 1]) or tokens[i - 1] in _SHELL_COMMAND_PREFIXES
+        token, is_operator, start, _ = tokens[i]
+        if is_operator:
+            at_start = not set(token) & {"<", ">"}
+            i += 1
+            continue
         if at_start and "$" in token:
             return False
         if not (at_start and (token == "chmod" or token.endswith("/chmod"))):
-            raw = is_separator(token) or token in _SHELL_COMMAND_PREFIXES
-            rest.append(token if raw else shlex.quote(token))
+            at_start = at_start and (
+                command[start : tokens[i][3]] in _SHELL_COMMAND_PREFIXES
+                or _SHELL_ASSIGNMENT_RE.match(token) is not None
+            )
             i += 1
             continue
         end = i + 1
-        while end < len(tokens) and not set(tokens[end]) <= _SHELL_SEPARATOR_CHARS | {"<", ">"}:
+        while end < len(tokens) and not tokens[end][1]:
             end += 1
-        args = tokens[i + 1 : end]
+        # A redirection does not end the command: words after it are still chmod's arguments.
+        if end < len(tokens) and set(tokens[end][0]) & {"<", ">"}:
+            return False
+        args = [word for word, _, _, _ in tokens[i + 1 : end]]
         while args and _CHMOD_OPTION_RE.fullmatch(args[0]):
             args.pop(0)
         if len(args) < 2 or not _CHMOD_MODE_RE.fullmatch(args[0]):
@@ -337,10 +392,12 @@ def _is_plain_chmod(command: str) -> bool:
         if any(arg.startswith("-") or set(arg) & _CHMOD_OPERAND_UNSAFE for arg in args[1:]):
             return False
         seen += 1
-        rest.append("true")
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
         i = end
+    rest.append(command[copied:])
     # Any chmod the plain form did not account for (xargs, find -exec, $(...)) keeps the block.
-    return seen > 0 and "chmod" not in _find_blocked_commands(" ".join(rest))
+    return seen > 0 and "chmod" not in _find_blocked_commands("".join(rest))
 
 
 def _runs_in_os_sandbox(prepared) -> bool:
@@ -23645,7 +23702,7 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
-        if sys.platform != "win32" and profile not in _CMD_PROFILES and not host_access_approved:
+        if sys.platform != "win32" and profile not in _CMD_PROFILES:
             # Decided at launch: allowed only if this call really runs inside the OS sandbox.
             contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
             if "chmod" in contained and not _is_plain_chmod(command):
