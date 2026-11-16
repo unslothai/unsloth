@@ -2989,11 +2989,16 @@ def apply_pipeline_parallel(
         # their adapter entries for the save.
         if rank == 0:
             pp_stage._tower_adapter = _tower_adapter_state(model, parts)
+        stubs = []
         for container, name, module in parts.towers:
             stub = _PPTowerStub(name, module)
             if kept is not None:
                 kept.append((container, name, module, stub))
             setattr(container, name, stub)
+            stubs.append((container, name, stub))
+        if kept is None:
+            # Dropped: hold only the stubs, so the towers' GPU memory is freed.
+            parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe
