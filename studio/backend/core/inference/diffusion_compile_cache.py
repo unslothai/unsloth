@@ -379,8 +379,8 @@ def _adapter_path(name: str) -> bool:
 
 def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
-    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises. ``skip_adapters``: the
-    base build's descriptor."""
+    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    # skip_adapters: describe the base build (PEFT adapter modules ignored), for the learned-peak key.
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415
