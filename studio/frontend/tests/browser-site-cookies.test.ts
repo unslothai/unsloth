@@ -9,7 +9,7 @@ const localStorage = { getItem: () => null, setItem: () => undefined, removeItem
 Object.assign(globalThis, { localStorage, window: { localStorage, location: { protocol: "http:" }, addEventListener: () => {} } });
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 
-const { clearSiteCookies, fetchBrowserPage, mirrorSiteCookies } = await import("../src/features/browser/api.ts");
+const { clearSiteCookies, fetchBrowserPage, mirrorSiteCookies, requestForPage } = await import("../src/features/browser/api.ts");
 const { readPageStorage, writePageStorage } = await import("../src/features/browser/page-storage.ts");
 
 const SITE = "https://app.example.com";
@@ -94,4 +94,27 @@ test("clearing site cookies waits for a write in flight and drops the ones queue
   // A write made after the clear started still goes, after it.
   assert.deepEqual(sent, ["|1", "clear", "|3"]);
   pending.shift()?.();
+});
+
+test("a cookie the page wrote while a request was out is not undone by that request's older answer", async () => {
+  let release = () => {};
+  (globalThis as { __authFetch?: unknown }).__authFetch = (url: string) => {
+    if (url.endsWith("/cookie")) return Promise.resolve(new Response(null, { status: 204 }));
+    return new Promise((resolve) => {
+      release = () =>
+        resolve(new Response(JSON.stringify({ status: 200, statusText: "", url: `${SITE}/api`, headers: [], body: "", cookies: [["server=/", "|1"]] })));
+    });
+  };
+  mirrorSiteCookies(`${SITE}/`, [["old=/", "|1"]]);
+  const asked = requestForPage(`${SITE}/`, { url: `${SITE}/api`, method: "GET", headers: [], body: null, redirect: "follow", integrity: "", credentials: "same-origin" }, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  writePageStorage(SITE, "tab", "cookie", "token=/", "|new", {}, `${SITE}/`);
+  writePageStorage(SITE, "tab", "cookie", "old=/", null, {}, `${SITE}/`);
+  release();
+  await asked;
+  // The answer predates both writes: it adds what the site set and leaves the page's newer ones.
+  assert.deepEqual(held(), [["token=/", "|new"], ["server=/", "|1"]]);
+  // A later answer is the backend's word again.
+  mirrorSiteCookies(`${SITE}/`, [["server=/", "|1"]]);
+  assert.deepEqual(held(), [["server=/", "|1"]]);
 });

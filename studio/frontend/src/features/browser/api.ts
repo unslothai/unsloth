@@ -76,9 +76,16 @@ function afterCookieWrites<T>(work: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// When each of a page's own cookie writes was made, so an answer asked for before it can't undo it.
+let cookieWriteCount = 0;
+const cookieWrittenAt = new Map<string, number>();
+
 onPageStorageWrite(({ origin, area, key, value, from }) => {
   // Only a page's own write: the mirror below writes with no `from`.
   if (area !== "cookie" || key === null || !from) return;
+  // Bounded: a page can make up names without end.
+  if (cookieWrittenAt.size >= 4096) cookieWrittenAt.clear();
+  cookieWrittenAt.set(`${origin} ${key}`, ++cookieWriteCount);
   const clears = cookieClears;
   void afterCookieWrites(async () => {
     if (clears !== cookieClears) return;
@@ -95,13 +102,15 @@ async function cookieWritesSent(): Promise<void> {
   if (lastCookieWrite) await lastCookieWrite;
 }
 
-export function mirrorSiteCookies(url: string, cookies: SiteCookies | undefined): void {
+/** `asked`: the page's write count when the answer was requested; cookies it wrote since are left alone. */
+export function mirrorSiteCookies(url: string, cookies: SiteCookies | undefined, asked = cookieWriteCount): void {
   const origin = pageOrigin(url);
   if (!origin || !Array.isArray(cookies)) return;
+  const newer = (key: string) => (cookieWrittenAt.get(`${origin} ${key}`) ?? 0) > asked;
   const next = new Map(cookies);
   const held = new Map(readPageStorage(origin, "").cookie);
-  for (const key of held.keys()) if (!next.has(key)) writePageStorage(origin, "", "cookie", key, null);
-  for (const [key, value] of next) if (held.get(key) !== value) writePageStorage(origin, "", "cookie", key, value);
+  for (const key of held.keys()) if (!next.has(key) && !newer(key)) writePageStorage(origin, "", "cookie", key, null);
+  for (const [key, value] of next) if (held.get(key) !== value && !newer(key)) writePageStorage(origin, "", "cookie", key, value);
 }
 
 export class BrowserFetchError extends Error {
@@ -116,6 +125,7 @@ export class BrowserFetchError extends Error {
 /** fetch through the backend for sites that refuse framing. */
 export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSignal): Promise<BrowserPage> {
   await cookieWritesSent();
+  const asked = cookieWriteCount;
   const response = await authFetch("/api/browser/fetch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -139,7 +149,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
   }
   if (response.headers.get("X-Unsloth-Browser-Kind") === "html") {
     const page = (await response.json()) as Omit<Extract<BrowserPage, { kind: "html" }>, "kind">;
-    mirrorSiteCookies(page.url, page.cookies);
+    mirrorSiteCookies(page.url, page.cookies, asked);
     return { kind: "html", ...page };
   }
   const finalUrl = response.headers.get("X-Unsloth-Browser-Url");
@@ -189,6 +199,7 @@ function fromBase64(text: string): ArrayBuffer {
 /** Forgets the cookies sites set on pages the backend fetched for this account. */
 export async function clearSiteCookies(): Promise<void> {
   cookieClears++;
+  cookieWrittenAt.clear();
   const response = await afterCookieWrites(() => authFetch("/api/browser/clear-cookies", { method: "POST" }));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
@@ -196,6 +207,7 @@ export async function clearSiteCookies(): Promise<void> {
 /** A page's request to its own site, made by the backend for the page at `page`; throws when it fails. */
 export async function requestForPage(page: string, request: PageRequest, signal: AbortSignal): Promise<PageResponse> {
   await cookieWritesSent();
+  const asked = cookieWriteCount;
   const response = await authFetch("/api/browser/request", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -213,7 +225,7 @@ export async function requestForPage(page: string, request: PageRequest, signal:
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const answer = (await response.json()) as Omit<PageResponse, "body"> & { body: string; cookies?: SiteCookies };
-  mirrorSiteCookies(page, answer.cookies);
+  mirrorSiteCookies(page, answer.cookies, asked);
   return { ...answer, body: fromBase64(answer.body) };
 }
 
