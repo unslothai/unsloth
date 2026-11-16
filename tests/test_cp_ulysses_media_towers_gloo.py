@@ -106,7 +106,10 @@ def _worker(rank, world, out_dir):
         want = reference.get(name, torch.zeros_like(param))
         # Scale-relative atol: tied / per-layer embedding rows sum many tokens' float32 contributions.
         atol = 1e-5 * max(1.0, float(want.abs().max()))
-        torch.testing.assert_close(grad, want, rtol = 1e-4, atol = atol, msg = name)
+        # Keep torch's mismatch report (count, greatest abs / rel difference): a bare name hides how far off it is.
+        torch.testing.assert_close(
+            grad, want, rtol = 1e-4, atol = atol, msg = lambda report, name = name: f"{name}: {report}"
+        )
         checked += 1
     assert checked > 10
     if rank == 0:
