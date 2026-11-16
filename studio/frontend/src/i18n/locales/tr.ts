@@ -5183,6 +5183,13 @@ export const tr = {
     stale: "Metin veya ayarlar değişti. Güncellemek için yeniden çevirin.",
     chat: "Çevrilen metinle sohbet et",
     promptLabel: "İstem",
+    promptHint: "{target} ve {source}, seçtiğiniz dillerle değiştirilir. Çevrilecek metin bu talimatların ardından eklenir.",
+    promptEdited: "Düzenlendi: Stil ve Üslup artık bunu değiştirmez.",
+    promptReset: "Sıfırla",
+    dictate: "Dikte et",
+    stopDictating: "Dikteyi durdur",
+    readAloud: "Sesli oku",
+    stopReading: "Okumayı durdur",
     status: {
       preparing: "Hazırlanıyor...",
       downloading: "{model} indiriliyor",

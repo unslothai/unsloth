@@ -4843,6 +4843,13 @@ export const ar = {
     stale: "تغيّر النص أو الإعدادات. ترجم مجددًا للتحديث.",
     chat: "الدردشة بالنص المترجم",
     promptLabel: "الموجّه",
+    promptHint: "يُستبدل {target} و{source} باللغتين اللتين اخترتهما. يُضاف النص المراد ترجمته بعد هذه التعليمات.",
+    promptEdited: "تم التعديل: لم تعد «طريقة الترجمة» و«الأسلوب» تغيّرانه.",
+    promptReset: "إعادة تعيين",
+    dictate: "إملاء",
+    stopDictating: "إيقاف الإملاء",
+    readAloud: "قراءة بصوت عالٍ",
+    stopReading: "إيقاف القراءة",
     status: {
       preparing: "جارٍ التحضير…",
       downloading: "جارٍ تنزيل {model}",

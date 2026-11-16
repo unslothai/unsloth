@@ -31,9 +31,12 @@ import {
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
 import {
+  SOURCE_PLACEHOLDER,
+  TARGET_PLACEHOLDER,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
+  templateOptions,
 } from "../src/features/translate/translate-text.ts";
 import {
   TRANSLATION_ONLY_REPOS,
@@ -168,6 +171,41 @@ test("a chat model is told to translate the text, not answer it", () => {
       targetName: "German",
     }),
     /Do not use slang or emojis\./,
+  );
+});
+
+test("an edited prompt replaces the built one and keeps its language placeholders", () => {
+  const options = {
+    sourceName: "English",
+    targetName: "French",
+    mode: "literal",
+    tone: "formal",
+  } as const;
+  // What the box shows before any edit: the built prompt, languages as placeholders.
+  assert.equal(
+    translateInstruction(
+      "hy-mt2-1.8b",
+      templateOptions({ ...auto, targetName: "French" }),
+    ),
+    `Translate the following text into ${TARGET_PLACEHOLDER}. Note that you should only output the translated result without any additional explanation:`,
+  );
+  assert.match(
+    translateInstruction(CHAT_TRANSLATE_MODEL, templateOptions(options)),
+    /into \{target_language\}\. The text is in \{source_language\}\./,
+  );
+  const custom = `Render this ${SOURCE_PLACEHOLDER} text in ${TARGET_PLACEHOLDER}, as a pirate:`;
+  assert.equal(
+    translateMessages("hy-mt2-1.8b", "Hello", { ...options, custom })[0]
+      .content,
+    "Render this English text in French, as a pirate:\n\nHello",
+  );
+  assert.match(
+    translateMessages(CHAT_TRANSLATE_MODEL, "Hello", {
+      ...auto,
+      targetName: "French",
+      custom,
+    })[0].content,
+    /^Render this the source language text in French, as a pirate:\n\n<source>\nHello\n<\/source>$/,
   );
 });
 

@@ -5233,6 +5233,13 @@ export const nl = {
     stale: "De tekst of instellingen zijn gewijzigd. Vertaal opnieuw om bij te werken.",
     chat: "Chatten met vertaalde tekst",
     promptLabel: "Prompt",
+    promptHint: "{target} en {source} worden vervangen door de talen die je hebt gekozen. De te vertalen tekst wordt na deze instructies toegevoegd.",
+    promptEdited: "Bewerkt: Stijl en Toon passen de prompt niet meer aan.",
+    promptReset: "Herstellen",
+    dictate: "Dicteren",
+    stopDictating: "Dicteren stoppen",
+    readAloud: "Voorlezen",
+    stopReading: "Voorlezen stoppen",
     status: {
       preparing: "Voorbereiden…",
       downloading: "{model} downloaden",

@@ -4794,6 +4794,13 @@ export const ja = {
     stale: "テキストまたは設定が変更されました。更新するにはもう一度翻訳してください。",
     chat: "翻訳したテキストでチャット",
     promptLabel: "プロンプト",
+    promptHint: "{target} と {source} は選択した言語に置き換えられます。翻訳するテキストはこの指示の後に追加されます。",
+    promptEdited: "編集済み: スタイルとトーンを変えても反映されません。",
+    promptReset: "リセット",
+    dictate: "音声入力",
+    stopDictating: "音声入力を停止",
+    readAloud: "読み上げ",
+    stopReading: "読み上げを停止",
     status: {
       preparing: "準備中...",
       downloading: "{model} をダウンロード中",

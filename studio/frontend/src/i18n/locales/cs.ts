@@ -5204,6 +5204,13 @@ export const cs = {
     stale: "Text nebo nastavení se změnily. Pro aktualizaci přeložte znovu.",
     chat: "Chatovat s přeloženým textem",
     promptLabel: "Prompt",
+    promptHint: "{target} a {source} se nahradí vybranými jazyky. Text k překladu se přidá za tyto pokyny.",
+    promptEdited: "Upraveno: Styl a Tón ho už nemění.",
+    promptReset: "Obnovit",
+    dictate: "Diktovat",
+    stopDictating: "Zastavit diktování",
+    readAloud: "Předčítat",
+    stopReading: "Zastavit předčítání",
     status: {
       preparing: "Příprava…",
       downloading: "Stahování modelu {model}",

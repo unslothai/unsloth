@@ -5186,6 +5186,13 @@ export const id = {
     stale: "Teks atau pengaturan berubah. Terjemahkan lagi untuk memperbarui.",
     chat: "Chat dengan teks terjemahan",
     promptLabel: "Prompt",
+    promptHint: "{target} dan {source} diganti dengan bahasa yang Anda pilih. Teks yang akan diterjemahkan ditambahkan setelah instruksi ini.",
+    promptEdited: "Diedit: Gaya terjemahan dan Gaya bahasa tidak lagi mengubahnya.",
+    promptReset: "Atur ulang",
+    dictate: "Dikte",
+    stopDictating: "Hentikan dikte",
+    readAloud: "Bacakan",
+    stopReading: "Berhenti membacakan",
     status: {
       preparing: "Menyiapkan...",
       downloading: "Mengunduh {model}",

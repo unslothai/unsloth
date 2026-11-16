@@ -90,6 +90,13 @@ export function translateMessages(
     : hyMtMessages(text, options);
 }
 
+/** The two kinds of model take different instructions, so each keeps its own edited prompt. */
+export type TranslatePromptKind = "dedicated" | "chat";
+
+export function translatePromptKind(id: TranslateModelId): TranslatePromptKind {
+  return id === CHAT_TRANSLATE_MODEL ? "chat" : "dedicated";
+}
+
 /** The instructions as sent, without the text, for the Show prompt option. */
 export function translateInstruction(
   id: TranslateModelId,

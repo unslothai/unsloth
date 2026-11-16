@@ -5234,6 +5234,13 @@ export const pl = {
     stale: "Tekst lub ustawienia uległy zmianie. Przetłumacz ponownie, aby zaktualizować.",
     chat: "Czat z przetłumaczonym tekstem",
     promptLabel: "Prompt",
+    promptHint: "{target} i {source} są zastępowane wybranymi językami. Tekst do przetłumaczenia jest dodawany po tych instrukcjach.",
+    promptEdited: "Edytowano: Styl i Ton już go nie zmieniają.",
+    promptReset: "Resetuj",
+    dictate: "Dyktuj",
+    stopDictating: "Zatrzymaj dyktowanie",
+    readAloud: "Czytaj na głos",
+    stopReading: "Zatrzymaj czytanie",
     status: {
       preparing: "Przygotowywanie…",
       downloading: "Pobieranie: {model}",

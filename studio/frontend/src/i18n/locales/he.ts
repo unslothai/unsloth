@@ -4925,6 +4925,13 @@ export const he = {
     stale: "הטקסט או ההגדרות השתנו. תרגם שוב כדי לעדכן.",
     chat: "צ'אט עם הטקסט המתורגם",
     promptLabel: "פרומפט",
+    promptHint: "{target} ו-{source} מוחלפים בשפות שבחרת. הטקסט לתרגום מתווסף אחרי ההנחיות האלה.",
+    promptEdited: "נערך: סגנון וטון כבר לא משנים אותו.",
+    promptReset: "איפוס",
+    dictate: "הכתבה",
+    stopDictating: "הפסקת ההכתבה",
+    readAloud: "הקראה קולית",
+    stopReading: "הפסקת ההקראה",
     status: {
       preparing: "מתכונן...",
       downloading: "מוריד את {model}",

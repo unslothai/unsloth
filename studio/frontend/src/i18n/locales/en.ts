@@ -4861,6 +4861,14 @@ export const en = {
     chat: "Chat with translated text",
     // Heading over the instructions sent to the model, shown by the Show prompt option.
     promptLabel: "Prompt",
+    // Under the editable prompt; {target} and {source} are shown as literal placeholders.
+    promptHint: "{target} and {source} are replaced with the languages you picked. The text to translate is added after these instructions.",
+    promptEdited: "Edited: Style and Tone no longer change it.",
+    promptReset: "Reset",
+    dictate: "Dictate",
+    stopDictating: "Stop dictating",
+    readAloud: "Read aloud",
+    stopReading: "Stop reading",
     status: {
       preparing: "Getting ready...",
       downloading: "Downloading {model}",

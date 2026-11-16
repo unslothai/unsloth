@@ -4872,6 +4872,13 @@ export const ptBR = {
     stale: "O texto ou as configurações mudaram. Traduza novamente para atualizar.",
     chat: "Conversar com o texto traduzido",
     promptLabel: "Prompt",
+    promptHint: "{target} e {source} são substituídos pelos idiomas que você escolheu. O texto a traduzir é adicionado depois destas instruções.",
+    promptEdited: "Editado: Estilo e Tom não o alteram mais.",
+    promptReset: "Redefinir",
+    dictate: "Ditar",
+    stopDictating: "Parar de ditar",
+    readAloud: "Ler em voz alta",
+    stopReading: "Parar leitura",
     status: {
       preparing: "Preparando...",
       downloading: "Baixando {model}",

@@ -5058,6 +5058,13 @@ export const sv = {
     stale: "Texten eller inställningarna har ändrats. Översätt igen för att uppdatera.",
     chat: "Chatta med översatt text",
     promptLabel: "Prompt",
+    promptHint: "{target} och {source} ersätts med språken du har valt. Texten som ska översättas läggs till efter instruktionerna.",
+    promptEdited: "Redigerad: Stil och Ton ändrar den inte längre.",
+    promptReset: "Återställ",
+    dictate: "Diktera",
+    stopDictating: "Sluta diktera",
+    readAloud: "Läs upp",
+    stopReading: "Sluta läsa upp",
     status: {
       preparing: "Förbereder…",
       downloading: "Hämtar {model}",

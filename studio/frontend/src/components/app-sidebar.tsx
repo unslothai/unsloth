@@ -144,7 +144,7 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
-  TranslateIcon,
+  AiTranslateIcon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -3526,7 +3526,7 @@ export function AppSidebar() {
       ),
     },
     translate: {
-      icon: TranslateIcon,
+      icon: AiTranslateIcon,
       label: t("shell.navigation.translate"),
       active: pathname === "/translate",
       onClick: () => {

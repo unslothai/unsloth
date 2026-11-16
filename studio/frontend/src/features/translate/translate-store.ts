@@ -10,7 +10,9 @@ import {
 import {
   DEFAULT_TRANSLATE_MODEL,
   type TranslateModelId,
+  type TranslatePromptKind,
   isTranslateModelId,
+  translatePromptKind,
 } from "./models";
 import {
   type TranslateHistoryEntry,
@@ -46,6 +48,8 @@ export type TranslatePrefs = {
   mode: TranslateMode;
   tone: TranslateTone;
   showPrompt: boolean;
+  /** The user's edited instructions per kind of model; absent means the built ones. */
+  customPrompts: Partial<Record<TranslatePromptKind, string>>;
   autoTranslate: boolean;
   saveHistory: boolean;
 };
@@ -62,6 +66,7 @@ type Result = {
   mode: TranslateMode;
   tone: TranslateTone;
   modelId: TranslateModelId;
+  custom: string | null;
 };
 
 type TranslateState = {
@@ -131,6 +136,14 @@ function loadPrefs(): TranslatePrefs {
       ? (saved.tone as TranslateTone)
       : "default",
     showPrompt: saved.showPrompt === true,
+    customPrompts: Object.fromEntries(
+      (["dedicated", "chat"] as const)
+        .map((kind) => [kind, saved.customPrompts?.[kind]] as const)
+        .filter(
+          (entry): entry is [TranslatePromptKind, string] =>
+            typeof entry[1] === "string" && entry[1].trim() !== "",
+        ),
+    ),
     autoTranslate: saved.autoTranslate === true,
     saveHistory: saved.saveHistory !== false,
   };
@@ -157,12 +170,22 @@ function resultOf(source: string, prefs: TranslatePrefs): Result {
     mode: prefs.mode,
     tone: prefs.tone,
     modelId: prefs.modelId,
+    custom: customPromptOf(prefs),
   };
+}
+
+export function customPromptOf(
+  prefs: Pick<TranslatePrefs, "modelId" | "customPrompts">,
+): string | null {
+  return prefs.customPrompts[translatePromptKind(prefs.modelId)] ?? null;
 }
 
 /** What the prompt needs from the settings; null when the target is not a known language. */
 export function translatePromptOptions(
-  prefs: Pick<TranslatePrefs, "from" | "target" | "mode" | "tone">,
+  prefs: Pick<
+    TranslatePrefs,
+    "from" | "target" | "mode" | "tone" | "modelId" | "customPrompts"
+  >,
 ): TranslatePromptOptions | null {
   const target = findTranslateLanguage(prefs.target);
   if (!target) return null;
@@ -171,6 +194,7 @@ export function translatePromptOptions(
     targetName: target.name,
     mode: prefs.mode,
     tone: prefs.tone,
+    custom: customPromptOf(prefs),
   };
 }
 
@@ -372,6 +396,7 @@ export function translationIsStale(
       result.target !== prefs.target ||
       result.mode !== prefs.mode ||
       result.tone !== prefs.tone ||
+      result.custom !== customPromptOf(prefs) ||
       result.modelId !== prefs.modelId)
   );
 }

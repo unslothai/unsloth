@@ -4745,6 +4745,13 @@ export const zhCN = {
     stale: "文本或设置已更改。请重新翻译以更新。",
     chat: "用译文开始聊天",
     promptLabel: "提示词",
+    promptHint: "{target} 和 {source} 会替换为你选择的语言。要翻译的文本会添加在这些指令之后。",
+    promptEdited: "已编辑：风格和语气不再更改它。",
+    promptReset: "重置",
+    dictate: "听写",
+    stopDictating: "停止听写",
+    readAloud: "朗读",
+    stopReading: "停止朗读",
     status: {
       preparing: "正在准备...",
       downloading: "正在下载 {model}",

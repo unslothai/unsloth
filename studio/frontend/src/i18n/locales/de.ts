@@ -4917,6 +4917,13 @@ export const de = {
     stale: "Text oder Einstellungen wurden geändert. Übersetze erneut, um zu aktualisieren.",
     chat: "Mit übersetztem Text chatten",
     promptLabel: "Prompt",
+    promptHint: "{target} und {source} werden durch die gewählten Sprachen ersetzt. Der zu übersetzende Text wird nach diesen Anweisungen angefügt.",
+    promptEdited: "Bearbeitet: Stil und Ton ändern ihn nicht mehr.",
+    promptReset: "Zurücksetzen",
+    dictate: "Diktieren",
+    stopDictating: "Diktieren beenden",
+    readAloud: "Vorlesen",
+    stopReading: "Vorlesen beenden",
     status: {
       preparing: "Wird vorbereitet…",
       downloading: "{model} wird heruntergeladen",

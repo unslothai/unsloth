@@ -4834,6 +4834,13 @@ export const ko = {
     stale: "텍스트 또는 설정이 변경되었습니다. 다시 번역하여 업데이트하세요.",
     chat: "번역된 텍스트로 채팅",
     promptLabel: "프롬프트",
+    promptHint: "{target}과(와) {source}은(는) 선택한 언어로 바뀝니다. 번역할 텍스트는 이 지시문 뒤에 추가됩니다.",
+    promptEdited: "수정됨: 스타일과 어조를 바꿔도 더 이상 반영되지 않습니다.",
+    promptReset: "초기화",
+    dictate: "받아쓰기",
+    stopDictating: "받아쓰기 중지",
+    readAloud: "소리 내어 읽기",
+    stopReading: "읽기 중지",
     status: {
       preparing: "준비 중...",
       downloading: "{model} 다운로드 중",

@@ -4917,6 +4917,13 @@ export const zhTW = {
     stale: "文字或設定已變更。請重新翻譯以更新。",
     chat: "用譯文開始聊天",
     promptLabel: "提示詞",
+    promptHint: "{target} 和 {source} 會替換為你選擇的語言。要翻譯的文字會加在這些指示之後。",
+    promptEdited: "已編輯：風格和語氣不會再變更它。",
+    promptReset: "重設",
+    dictate: "聽寫",
+    stopDictating: "停止聽寫",
+    readAloud: "朗讀",
+    stopReading: "停止朗讀",
     status: {
       preparing: "正在準備...",
       downloading: "正在下載 {model}",

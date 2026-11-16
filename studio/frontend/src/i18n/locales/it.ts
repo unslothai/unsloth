@@ -4912,6 +4912,13 @@ export const it = {
     stale: "Il testo o le impostazioni sono cambiati. Traduci di nuovo per aggiornare.",
     chat: "Chatta con il testo tradotto",
     promptLabel: "Prompt",
+    promptHint: "{target} e {source} vengono sostituiti con le lingue che hai scelto. Il testo da tradurre viene aggiunto dopo queste istruzioni.",
+    promptEdited: "Modificato: Stile e Tono non lo cambiano più.",
+    promptReset: "Ripristina",
+    dictate: "Detta",
+    stopDictating: "Interrompi dettatura",
+    readAloud: "Leggi ad alta voce",
+    stopReading: "Interrompi lettura",
     status: {
       preparing: "Preparazione...",
       downloading: "Download di {model}",

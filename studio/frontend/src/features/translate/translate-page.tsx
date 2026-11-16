@@ -30,16 +30,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
+import { ReadAloudIcon } from "@/lib/action-bar-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { StopIcon } from "@/lib/media-control-icons";
+import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -51,6 +54,7 @@ import {
   Message01Icon,
   SlidersHorizontalIcon,
   Upload01Icon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -66,6 +70,7 @@ import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
 import { ICON_ACTION, IconAction } from "./icon-action";
+import { useDictation, useReadAloud } from "./use-translate-voice";
 import {
   TRANSLATE_LANGUAGES,
   findTranslateLanguage,
@@ -79,6 +84,7 @@ import {
   formatModelBytes,
   isTranslateModelId,
   translateInstruction,
+  translatePromptKind,
 } from "./models";
 import {
   type TranslatePhase,
@@ -87,13 +93,17 @@ import {
 import {
   AUTO_SOURCE,
   TRANSLATE_SOURCE_MAX_CHARS,
+  customPromptOf,
   translatePromptOptions,
   translationIsStale,
   useTranslateStore,
 } from "./translate-store";
 import {
+  SOURCE_PLACEHOLDER,
+  TARGET_PLACEHOLDER,
   TRANSLATE_MODES,
   TRANSLATE_TONES,
+  templateOptions,
   type TranslateMode,
   type TranslateTone,
 } from "./translate-text";
@@ -114,7 +124,8 @@ const GO_BUTTON =
 const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-const PANE_HEIGHT = "h-64 md:h-[min(44dvh,28rem)]";
+// Fills the window under the title and language row, leaving the run button in view.
+const PANE_HEIGHT = "h-80 md:h-[max(26rem,calc(100dvh-21rem))]";
 
 const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
@@ -596,6 +607,7 @@ export function TranslatePage() {
       attempt.target === prefs.target &&
       attempt.mode === prefs.mode &&
       attempt.tone === prefs.tone &&
+      attempt.custom === customPromptOf(prefs) &&
       attempt.modelId === prefs.modelId
     ) {
       return;
@@ -670,6 +682,35 @@ export function TranslatePage() {
       : t(`translate.errors.${error.code}`)
     : "";
   const promptOptions = translatePromptOptions(prefs);
+  const promptId = useId();
+  const promptKind = translatePromptKind(prefs.modelId);
+  const customPrompt = customPromptOf(prefs);
+  const defaultPrompt = promptOptions
+    ? translateInstruction(prefs.modelId, templateOptions(promptOptions))
+    : "";
+  // Emptied or typed back to the built prompt: no longer an edit.
+  const setCustomPrompt = (value: string | null) => {
+    const { [promptKind]: _dropped, ...others } = prefs.customPrompts;
+    const edited =
+      value !== null && value.trim() !== "" && value !== defaultPrompt;
+    setPrefs({
+      customPrompts: edited ? { ...others, [promptKind]: value } : others,
+    });
+  };
+
+  const dictation = useDictation((transcript) => {
+    const draft = useTranslateStore.getState().source;
+    setSource(
+      draft && !/\s$/.test(draft)
+        ? `${draft} ${transcript}`
+        : draft + transcript,
+    );
+  });
+  const readAloud = useReadAloud();
+  const stopReading = readAloud.stop;
+  // A reading of text that is no longer on screen stops.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on every new output.
+  useEffect(() => stopReading(), [output, stopReading]);
 
   // Only a finished translation: a stopped or failed one is not worth a follow-up.
   const chatAboutResult = () => {
@@ -778,6 +819,24 @@ export function TranslatePage() {
               className={cn(PANE_HEIGHT, dragging && "border-ring")}
             />
             <div className="flex items-center">
+              {dictation.supported &&
+                (dictation.dictating ? (
+                  <IconAction
+                    icon={dictation.finalizing ? undefined : StopIcon}
+                    label={t("translate.stopDictating")}
+                    onClick={dictation.stop}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <Spinner className="size-4" />
+                  </IconAction>
+                ) : (
+                  <IconAction
+                    label={t("translate.dictate")}
+                    onClick={dictation.start}
+                  >
+                    <MicIcon className="size-4" />
+                  </IconAction>
+                ))}
               <IconAction
                 icon={Upload01Icon}
                 label={t("translate.openFile")}
@@ -864,6 +923,21 @@ export function TranslatePage() {
                     className="rtl:rotate-180"
                   />
                 )}
+                {readAloud.available &&
+                  (readAloud.speaking ? (
+                    <IconAction
+                      icon={VolumeMute02Icon}
+                      label={t("translate.stopReading")}
+                      onClick={readAloud.stop}
+                      className="text-destructive hover:text-destructive"
+                    />
+                  ) : (
+                    <IconAction
+                      icon={ReadAloudIcon}
+                      label={t("translate.readAloud")}
+                      onClick={() => readAloud.speak(output)}
+                    />
+                  ))}
                 <IconAction
                   icon={copied ? Tick02Icon : Copy01Icon}
                   label={copied ? t("translate.copied") : t("translate.copy")}
@@ -923,12 +997,39 @@ export function TranslatePage() {
       </div>
 
       {prefs.showPrompt && promptOptions && (
-        <section className={cn(PANEL, "grid gap-1 px-3.5 py-3")}>
-          <h2 className="text-ui-13 font-medium text-foreground">
-            {t("translate.promptLabel")}
-          </h2>
-          <p className="whitespace-pre-wrap font-mono text-ui-12 leading-normal text-muted-foreground [overflow-wrap:anywhere]">
-            {translateInstruction(prefs.modelId, promptOptions)}
+        <section className="grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <FieldLabel
+              htmlFor={promptId}
+              className="text-ui-13 font-medium text-foreground"
+            >
+              {t("translate.promptLabel")}
+            </FieldLabel>
+            {customPrompt !== null && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-ui-12 text-muted-foreground"
+                onClick={() => setCustomPrompt(null)}
+              >
+                {t("translate.promptReset")}
+              </Button>
+            )}
+          </div>
+          <Textarea
+            id={promptId}
+            value={customPrompt ?? defaultPrompt}
+            onChange={(event) => setCustomPrompt(event.target.value)}
+            spellCheck={false}
+            className="min-h-28 font-mono text-ui-13 md:text-ui-13"
+          />
+          <p className={HINT}>
+            {t("translate.promptHint", {
+              target: TARGET_PLACEHOLDER,
+              source: SOURCE_PLACEHOLDER,
+            })}
+            {customPrompt !== null && ` ${t("translate.promptEdited")}`}
           </p>
         </section>
       )}

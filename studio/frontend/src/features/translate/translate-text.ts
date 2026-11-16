@@ -13,7 +13,36 @@ export type TranslatePromptOptions = {
   targetName: string;
   mode: TranslateMode;
   tone: TranslateTone;
+  /** The user's own instructions, with the language placeholders still in; replaces the built ones. */
+  custom?: string | null;
 };
+
+export const TARGET_PLACEHOLDER = "{target_language}";
+export const SOURCE_PLACEHOLDER = "{source_language}";
+
+function fillPlaceholders(
+  template: string,
+  options: TranslatePromptOptions,
+): string {
+  return template
+    .replaceAll(TARGET_PLACEHOLDER, options.targetName)
+    .replaceAll(
+      SOURCE_PLACEHOLDER,
+      options.sourceName ?? "the source language",
+    );
+}
+
+/** The options with the languages as placeholders, for the prompt the user edits. */
+export function templateOptions(
+  options: TranslatePromptOptions,
+): TranslatePromptOptions {
+  return {
+    ...options,
+    custom: null,
+    sourceName: options.sourceName ? SOURCE_PLACEHOLDER : null,
+    targetName: TARGET_PLACEHOLDER,
+  };
+}
 
 const TONE_STYLE: Record<Exclude<TranslateTone, "default">, string> = {
   formal: "formal and professional",
@@ -42,6 +71,7 @@ export type TranslateMessage = { role: "user"; content: string };
  * language names. The card has no slot for a source language; "from X" is added only when set.
  */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
+  if (options.custom) return fillPlaceholders(options.custom, options);
   const pair = `${options.sourceName ? `from ${options.sourceName} ` : ""}into ${options.targetName}`;
   const style = styleOf(options);
   return style
@@ -51,6 +81,7 @@ export function hyMtInstruction(options: TranslatePromptOptions): string {
 
 /** For a general chat model, which answers a bare question instead of translating it. */
 export function generalInstruction(options: TranslatePromptOptions): string {
+  if (options.custom) return fillPlaceholders(options.custom, options);
   const style = styleOf(options);
   return [
     `Translate the text inside the <source> tags into ${options.targetName}.`,
