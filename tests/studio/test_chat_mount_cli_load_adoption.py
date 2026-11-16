@@ -134,6 +134,9 @@ export const toLoraSummary = (lora: any) => lora;
 export const isExternalModelId = (id: unknown) =>
   typeof id === "string" && id.startsWith("external:");
 export const isSpeechOnlyStatus = (status: any) => Boolean(status?.speechOnly);
+// No scenario serves a translation model, so both read as "not one".
+export const isTranslationOnlyRepo = (_id: any) => false;
+export const isTranslationHeldSlot = (_active: any, _selection: any) => false;
 export const isIdleUnloadedStatus = (status: any, _armed: boolean) =>
   Boolean(status?.idleUnloaded);
 export const resolveInferenceCheckpointId = (status: any) =>
