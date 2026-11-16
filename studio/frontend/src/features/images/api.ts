@@ -131,6 +131,8 @@ export interface DiffusionConditioning {
   max_output_side: number;
   max_output_pixels: number;
   reference_resolutions: number[];
+  // null = the build's tier
+  edit_output_resolution?: number | null;
   unified_edit: boolean;
   // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
   // max_condition_images in total). Absent on older backends.

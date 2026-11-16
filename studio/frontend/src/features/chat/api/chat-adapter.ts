@@ -9105,22 +9105,22 @@ export function createOpenAIStreamAdapter(
               description: oneTurnIsTheProblem
                 ? userCanShortenIt
                   ? `This message is ${tooLong}` +
-                    'Shorten this message, or raise "Context Length" ' +
+                    'Shorten this message, or raise "Context" ' +
                     "in the chat Settings panel (⚙ in the top-right)."
                   : `The last tool result is ${tooLong}` +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
                 : historyCannotHelp(irreducible)
                   ?
                     "Even with every earlier turn dropped, this prompt would still be " +
                     "too long, so shortening the conversation will not help. " +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or reduce what every request carries: the system prompt and any " +
                     "tools that are enabled."
                   // llama-server runs with --no-context-shift, so point at the control that raises the ceiling.
                   :
                     "The conversation has filled the model's context window. " +
-                    'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Increase "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or start a new chat.",
               duration: 8000,
             });
