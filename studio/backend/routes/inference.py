@@ -38453,21 +38453,21 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
     return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
 
 
-async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
-    from utils.model_aliases import alias_config_matches, alias_model_objects
+def _alias_config_is_loaded(model: str, config: dict) -> bool:
+    from utils.model_aliases import alias_config_matches
+    backend = get_llama_cpp_backend()
+    return backend.is_loaded and _loaded_satisfies(model) and alias_config_matches(backend, config)
 
-    def config_is_loaded(model: str, config: dict) -> bool:
-        backend = get_llama_cpp_backend()
-        return (
-            backend.is_loaded and _loaded_satisfies(model) and alias_config_matches(backend, config)
-        )
+
+async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
+    from utils.model_aliases import alias_model_objects
 
     if quant_pins:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
     aliases = await asyncio.to_thread(
-        alias_model_objects, objects, _pinned_quant_row, config_is_loaded
+        alias_model_objects, objects, _pinned_quant_row, _alias_config_is_loaded
     )
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
