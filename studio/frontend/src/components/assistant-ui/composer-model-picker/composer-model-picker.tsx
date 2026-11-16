@@ -232,6 +232,7 @@ import {
   readBounded,
   repoSection,
   sectionsHaveRows,
+  soleExportedQuant,
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
@@ -3974,6 +3975,7 @@ export function ComposerModelPicker({
       !row.favoriteQuant &&
       manyQuants &&
       expandQuantizations !== foldedQuants.has(row.key);
+    const soleExport = soleExportedQuant(row.lora, onDisk, row.favoriteQuant);
     // Discover GGUFs star by quant; a multi-quant device row stars the repo.
     const canStar = !(
       quiet ||
@@ -4231,7 +4233,10 @@ export function ComposerModelPicker({
                           ]
                         : []),
                     ]}
-                    del={deleteFor(row)}
+                    del={
+                      deleteFor(row) ??
+                      (soleExport ? deleteQuantFor(row, soleExport) : undefined)
+                    }
                     runSettings={savedTarget}
                     buttonClassName={cn(ACTION_DOTS, actionClass)}
                     iconClassName="composer-row-dots"

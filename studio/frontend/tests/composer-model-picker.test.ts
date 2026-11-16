@@ -29,6 +29,7 @@ import {
   sectionsHaveRows,
   sliderLevels,
   sliderValue,
+  soleExportedQuant,
   sortConnectedRows,
 } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -1601,4 +1602,23 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
     picker,
     /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
   );
+});
+
+test("a folded exported GGUF row deletes its one quant from the row menu", () => {
+  const exported = { source: "exported", exportType: "gguf" };
+  const q4 = { quant: "Q4_K_M", downloaded: true };
+  const q8 = { quant: "Q8_0", downloaded: true };
+  assert.equal(soleExportedQuant(exported, [q4], null), q4);
+  assert.equal(soleExportedQuant(exported, [q4, q8], null), undefined);
+  assert.equal(soleExportedQuant(exported, [q4, q8], "q8_0"), q8);
+  assert.equal(soleExportedQuant(exported, [q4], "Q8_0"), undefined);
+  assert.equal(
+    soleExportedQuant({ source: "exported", exportType: "lora" }, [q4], null),
+    undefined,
+  );
+  assert.equal(soleExportedQuant(undefined, [q4], null), undefined);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /deleteFor\(row\) \?\?\s*\(soleExport/);
 });
