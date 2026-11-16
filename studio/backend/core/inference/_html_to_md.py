@@ -918,6 +918,7 @@ class _MarkdownRenderer(HTMLParser):
         self._link_href: str | None = None
         self._link_text_parts: list[str] = []
         self._in_link: bool = False
+        self._link_depth: int = -1
         self._link_seq: int = 0
         # a link wrapping a heading emits after the mark pops, so the tee is told to treat it so
         self._link_had_heading: bool = False
@@ -1355,6 +1356,11 @@ class _MarkdownRenderer(HTMLParser):
 
     def _truncate_open_tags(self, index: int) -> None:
         """drop open tags above *index* while maintaining the closable count."""
+        # Finish before the enclosing cell, quote or header loses its output buffer.
+        if self._in_link and self._link_depth >= index:
+            if self._header_stack:
+                self._header_stack[-1].link_chars += self._link_header_chars
+            self._finish_link()
         for name in self._open_tags[index:]:
             if positions := self._open_at.get(name):
                 positions.pop()
@@ -1823,6 +1829,7 @@ class _MarkdownRenderer(HTMLParser):
             self._link_text_parts = []
             self._link_heading_parts = []
             self._in_link = True
+            self._link_depth = len(self._open_tags) - 1
             self._link_seq += 1
             self._link_header_chars = 0
             self._link_open_state = self._link_output_state()
