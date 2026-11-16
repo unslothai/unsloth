@@ -1334,6 +1334,10 @@ export const ar = {
       tabHidden: "مخفية",
       lastVisited: "آخر ما تمت زيارته",
     },
+    navGroups: {
+      connections: "الاتصالات",
+      dataAccess: "البيانات والوصول",
+    },
     tabs: {
       sandbox: "الأمان",
       accounts: "الحسابات",
@@ -4354,7 +4358,7 @@ export const ar = {
       useEpochs: "استخدام الحقب",
       maxStepsTooltip: "تجاوز إجمالي خطوات المُحسِّن.",
       epochsTooltip: "عدد المرات الكاملة للمرور على مجموعة البيانات.",
-      contextLength: "طول السياق",
+      contextLength: "السياق",
       contextLengthTooltip: "الحد الأقصى لعدد التوكنات لكل عينة تدريب.",
       customContextLength: "أدخل قيمة مخصّصة",
       learningRate: "معدل التعلم",
@@ -4658,7 +4662,7 @@ export const ar = {
       learningRate: "معدل التعلم",
       optimizer: "المُحسِّن",
       maxSteps: "الحد الأقصى للخطوات",
-      contextLength: "طول السياق",
+      contextLength: "السياق",
       warmupSteps: "خطوات الإحماء",
       rank: "الرتبة",
       alpha: "Alpha",

@@ -1461,6 +1461,10 @@ export const tr = {
       tabHidden: "Gizli",
       lastVisited: "Son ziyaret",
     },
+    navGroups: {
+      connections: "Bağlantılar",
+      dataAccess: "Veriler ve erişim",
+    },
     tabs: {
       sandbox: "Güvenlik",
       accounts: "Hesaplar",
@@ -4664,7 +4668,7 @@ export const tr = {
       useEpochs: "Epoch kullan",
       maxStepsTooltip: "Toplam optimize edici adımı sayısını geçersiz kılar.",
       epochsTooltip: "Veri kümesi üzerinden yapılacak tam geçiş sayısı.",
-      contextLength: "Bağlam Uzunluğu",
+      contextLength: "Bağlam",
       contextLengthTooltip: "Eğitim örneği başına en fazla token sayısı.",
       customContextLength: "Özel bir değer girin",
       learningRate: "Öğrenme Oranı",
@@ -4981,7 +4985,7 @@ export const tr = {
       learningRate: "Öğrenme oranı",
       optimizer: "Optimize edici",
       maxSteps: "Maksimum adım",
-      contextLength: "Bağlam uzunluğu",
+      contextLength: "Bağlam",
       warmupSteps: "Isınma adımları",
       rank: "Rank",
       alpha: "Alpha",

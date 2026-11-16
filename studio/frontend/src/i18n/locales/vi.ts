@@ -1465,6 +1465,10 @@ export const vi = {
       tabHidden: "Đã ẩn",
       lastVisited: "Lần truy cập gần nhất",
     },
+    navGroups: {
+      connections: "Kết nối",
+      dataAccess: "Dữ liệu & quyền truy cập",
+    },
     tabs: {
       sandbox: "Bảo mật",
       accounts: "Tài khoản",
@@ -4664,7 +4668,7 @@ export const vi = {
       useEpochs: "Dùng epoch",
       maxStepsTooltip: "Ghi đè tổng số bước của trình tối ưu hóa.",
       epochsTooltip: "Số lần duyệt toàn bộ tập dữ liệu.",
-      contextLength: "Độ dài ngữ cảnh",
+      contextLength: "Ngữ cảnh",
       contextLengthTooltip: "Số token tối đa cho mỗi mẫu huấn luyện.",
       customContextLength: "Nhập giá trị tùy chỉnh",
       learningRate: "Tốc độ học",
@@ -4978,7 +4982,7 @@ export const vi = {
       learningRate: "Tốc độ học",
       optimizer: "Trình tối ưu",
       maxSteps: "Số bước tối đa",
-      contextLength: "Độ dài ngữ cảnh",
+      contextLength: "Ngữ cảnh",
       warmupSteps: "Số bước khởi động",
       rank: "Rank",
       alpha: "Alpha",

@@ -1336,6 +1336,10 @@ export const ja = {
       tabHidden: "非表示",
       lastVisited: "前回開いたタブ",
     },
+    navGroups: {
+      connections: "接続",
+      dataAccess: "データとアクセス",
+    },
     tabs: {
       sandbox: "セキュリティ",
       accounts: "アカウント",
@@ -4319,7 +4323,7 @@ export const ja = {
       useEpochs: "エポック数を使用",
       maxStepsTooltip: "オプティマイザーの総ステップ数を上書きします。",
       epochsTooltip: "データセット全体の完全な学習回数。",
-      contextLength: "コンテキスト長",
+      contextLength: "コンテキスト",
       contextLengthTooltip: "トレーニングサンプルあたりの最大トークン数。",
       customContextLength: "カスタム値を入力",
       learningRate: "学習率",
@@ -4609,7 +4613,7 @@ export const ja = {
       learningRate: "学習率",
       optimizer: "オプティマイザー",
       maxSteps: "最大ステップ数",
-      contextLength: "コンテキスト長",
+      contextLength: "コンテキスト",
       warmupSteps: "ウォームアップステップ数",
       rank: "Rank",
       alpha: "Alpha",

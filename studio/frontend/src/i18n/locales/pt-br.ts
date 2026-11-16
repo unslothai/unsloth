@@ -1337,6 +1337,10 @@ export const ptBR = {
       tabHidden: "Oculta",
       lastVisited: "Última visitada",
     },
+    navGroups: {
+      connections: "Conexões",
+      dataAccess: "Dados e acesso",
+    },
     tabs: {
       sandbox: "Segurança",
       accounts: "Contas",
@@ -4376,7 +4380,7 @@ export const ptBR = {
       useEpochs: "Usar Épocas",
       maxStepsTooltip: "Sobrescreve o total de passos do otimizador.",
       epochsTooltip: "Número de passagens completas pelo dataset.",
-      contextLength: "Comprimento do Contexto",
+      contextLength: "Contexto",
       contextLengthTooltip: "Número máximo de tokens por amostra de treinamento.",
       customContextLength: "Insira um valor personalizado",
       learningRate: "Taxa de Aprendizado (Learning Rate)",
@@ -4687,7 +4691,7 @@ export const ptBR = {
       learningRate: "Taxa de aprendizado",
       optimizer: "Otimizador",
       maxSteps: "Passos máximos",
-      contextLength: "Comprimento do contexto",
+      contextLength: "Contexto",
       warmupSteps: "Passos de warmup",
       rank: "Rank",
       alpha: "Alpha",

@@ -1384,6 +1384,10 @@ export const he = {
       tabHidden: "מוסתרת",
       lastVisited: "ביקור אחרון",
     },
+    navGroups: {
+      connections: "חיבורים",
+      dataAccess: "נתונים וגישה",
+    },
     tabs: {
       sandbox: "אבטחה",
       accounts: "חשבונות",
@@ -4428,7 +4432,7 @@ export const he = {
       useEpochs: "השתמש ב-Epochs",
       maxStepsTooltip: "דרוס את סך כל צעדי האופטימיזציה.",
       epochsTooltip: "מספר המעברים המלאים על מערך הנתונים.",
-      contextLength: "אורך הקשר (Context Length)",
+      contextLength: "הקשר",
       contextLengthTooltip: "מספר מקסימלי של טוקנים לדגימת אימון.",
       customContextLength: "הזן ערך מותאם אישית",
       learningRate: "קצב למידה (Learning Rate)",
@@ -4729,7 +4733,7 @@ export const he = {
       learningRate: "קצב למידה",
       optimizer: "אופטימייזר",
       maxSteps: "מקסימום צעדים",
-      contextLength: "אורך הקשר",
+      contextLength: "הקשר",
       warmupSteps: "צעדי חימום",
       rank: "דרגה (Rank)",
       alpha: "אלפא",

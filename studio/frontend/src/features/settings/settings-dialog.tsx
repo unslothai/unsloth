@@ -18,6 +18,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { ListScrollbar } from "@/components/assistant-ui/composer-model-picker/list-scrollbar";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
@@ -337,6 +338,36 @@ const TABS: TabDef[] = [
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
+/** The rail's groups: everyday pages first, headed groups after, system pages last. Within a group,
+ *  tabs keep their TABS order. */
+export const SETTINGS_NAV_GROUPS: {
+  headingKey: TranslationKey | null;
+  ids: SettingsTab[];
+}[] = [
+  {
+    headingKey: null,
+    ids: [
+      "general",
+      "profile",
+      "appearance",
+      "resources",
+      "chat",
+      "voice",
+      "browser",
+      "keyboard-shortcuts",
+    ],
+  },
+  {
+    headingKey: "settings.navGroups.connections",
+    ids: ["api-keys", "remote-lan", "connections", "agents"],
+  },
+  {
+    headingKey: "settings.navGroups.dataAccess",
+    ids: ["sandbox", "accounts", "data", "library"],
+  },
+  { headingKey: null, ids: ["debugging", "about"] },
+];
+
 
 /** Stack below sm (608px: 640px less the 2rem margin) scaled by the UI. */
 function useStackedLayout(): boolean {
@@ -511,6 +542,15 @@ export function SettingsDialog() {
     [attachRail],
   );
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
+  // A group whose every tab is hidden (a managed account) drops its heading too.
+  const navGroups = useMemo(
+    () =>
+      SETTINGS_NAV_GROUPS.map((group) => ({
+        headingKey: group.headingKey,
+        tabs: visibleTabs.filter((tab) => group.ids.includes(tab.id)),
+      })).filter((group) => group.tabs.length > 0),
+    [visibleTabs],
+  );
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
   const activeTab = resolveSettingsTab(requestedTab, isOwner);
@@ -670,6 +710,66 @@ export function SettingsDialog() {
     return () => window.cancelAnimationFrame(frame);
   }, [open, activeTab, focusTabButton]);
 
+  const renderNavTab = (tab: TabDef) => {
+    const active = activeTab === tab.id;
+    return (
+      <button
+        key={tab.id}
+        // Stable handle for UI tests: the label is translated.
+        data-testid={`settings-tab-${tab.id}`}
+        ref={(node) => {
+          tabButtonRefs.current[tab.id] = node;
+        }}
+        type="button"
+        onClick={() => setActiveTab(tab.id)}
+        className={cn(
+          "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+          // Otherwise the flex item shrinks to its text when the list scrolls.
+          "shrink-0",
+          "focus-visible:outline-none",
+          active
+            ? "text-accent-foreground"
+            : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+        )}
+      >
+        {active && (
+          <motion.span
+            layoutId="settings-active-pill"
+            className="absolute inset-0 rounded-full bg-accent"
+            transition={
+              reduced
+                ? { duration: 0 }
+                : {
+                    type: "spring",
+                    stiffness: 500,
+                    damping: 35,
+                    mass: 0.5,
+                  }
+            }
+          />
+        )}
+        {tab.iconComponent ? (
+          <tab.iconComponent className="relative z-10 size-icon" />
+        ) : tab.icon ? (
+          <HugeiconsIcon
+            icon={tab.icon}
+            strokeWidth={1.75}
+            className="relative z-10 size-icon"
+          />
+        ) : null}
+        <span className="relative z-10 min-w-0 truncate">
+          {t(tab.labelKey)}
+        </span>
+        {tab.badgeKey ? (
+          // Visual only, so the tab's accessible name stays its label.
+          <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+            {t(tab.badgeKey)}
+          </span>
+        ) : null}
+      </button>
+    );
+  };
+
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
@@ -696,14 +796,15 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1060px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1060px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            // 1920px screens get a 960px height.
+            "3xl:w-[min(1220px,calc(100vw-2rem))] 3xl:!max-w-[min(1220px,calc(100vw-2rem))] 3xl:h-[min(960px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -829,63 +930,32 @@ export function SettingsDialog() {
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}
               >
-                {visibleTabs.map((tab) => {
-                  const active = activeTab === tab.id;
+                {navGroups.map((group, index) => {
+                  const headingId = group.headingKey ? `settings-nav-group-${index}` : undefined;
                   return (
-                    <button
-                      key={tab.id}
-                      // Stable handle for UI tests: the label is translated.
-                      data-testid={`settings-tab-${tab.id}`}
-                      ref={(node) => {
-                        tabButtonRefs.current[tab.id] = node;
-                      }}
-                      type="button"
-                      onClick={() => setActiveTab(tab.id)}
-                      className={cn(
-                        "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        // Otherwise the flex item shrinks to its text when the list scrolls.
-                        "shrink-0",
-                        "focus-visible:outline-none",
-                        active
-                          ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                      )}
+                    // Stacked, the rail is one row of tabs: groups and headings drop out of the layout.
+                    <div
+                      key={group.headingKey ?? `group-${index}`}
+                      className="flex flex-col gap-0.5 [&:not(:first-child)]:mt-4 group-data-stacked/settings:contents"
                     >
-                      {active && (
-                        <motion.span
-                          layoutId="settings-active-pill"
-                          className="absolute inset-0 rounded-full bg-accent"
-                          transition={
-                            reduced
-                              ? { duration: 0 }
-                              : {
-                                  type: "spring",
-                                  stiffness: 500,
-                                  damping: 35,
-                                  mass: 0.5,
-                                }
-                          }
-                        />
-                      )}
-                      {tab.iconComponent ? (
-                        <tab.iconComponent className="relative z-10 size-icon" />
-                      ) : tab.icon ? (
-                        <HugeiconsIcon
-                          icon={tab.icon}
-                          strokeWidth={1.75}
-                          className="relative z-10 size-icon"
-                        />
+                      {headingId && group.headingKey ? (
+                        <h3
+                          id={headingId}
+                          className="px-3 pb-1 text-ui-12 font-medium text-muted-foreground group-data-stacked/settings:hidden"
+                        >
+                          {t(group.headingKey)}
+                        </h3>
                       ) : null}
-                      <span className="relative z-10 min-w-0 truncate">
-                        {t(tab.labelKey)}
-                      </span>
-                      {tab.badgeKey ? (
-                        // Visual only, so the tab's accessible name stays its label.
-                        <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                          {t(tab.badgeKey)}
-                        </span>
-                      ) : null}
-                    </button>
+                      {/* The heading stays outside the group it names, so screen readers say it once. */}
+                      <div
+                        // biome-ignore lint/a11y/useSemanticElements: stacked, the group is display: contents; a fieldset's default box would break the tab row.
+                        role="group"
+                        aria-labelledby={headingId}
+                        className="flex flex-col gap-0.5 group-data-stacked/settings:contents"
+                      >
+                        {group.tabs.map(renderNavTab)}
+                      </div>
+                    </div>
                   );
                 })}
               </nav>
@@ -905,7 +975,8 @@ export function SettingsDialog() {
                 <div
                   ref={mainScrollRef}
                   data-settings-main-scroll=""
-                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
+                  // Native bar hidden (index.css); the drawn thumb overlays the edge, so both sides pad alike.
+                  className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-12 py-6"
                 >
                   <SettingsPanelPane
                     activeTab={activeTab}
@@ -915,6 +986,14 @@ export function SettingsDialog() {
                     scrollRef={mainScrollRef}
                   />
                 </div>
+                {/* Drawn, not native: a macOS overlay bar insets its thumb and ignores ::-webkit-scrollbar, so only
+                    this sits on the dialog's very edge; it keeps the native bar's look (index.css). */}
+                <ListScrollbar
+                  target={mainScrollRef}
+                  flush={true}
+                  inset={2}
+                  thumbClassName="settings-scroll-thumb"
+                />
               </DropdownGlowContext.Provider>
             </main>
           </div>

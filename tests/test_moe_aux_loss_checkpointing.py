@@ -4,13 +4,17 @@
 """MoE aux loss keeps its gradient under "unsloth" GC: reentrant GC's no_grad pass dropped it, so non-reentrant is used."""
 
 import pytest
-from real_accelerator import has_real_accelerator
+
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
+# The CPU shards run gpu-marked tests too; the recorded real-accelerator answer is the gate the CUDA spoof cannot flip.
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
-        not has_real_accelerator(), reason = "loads and trains a model on an accelerator"
+        not has_real_accelerator(), reason = "loads a model with offloaded gradient checkpointing"
     ),
 ]
 

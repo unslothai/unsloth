@@ -1480,6 +1480,10 @@ export const nl = {
       tabHidden: "Verborgen",
       lastVisited: "Laatst bezocht",
     },
+    navGroups: {
+      connections: "Verbindingen",
+      dataAccess: "Gegevens & toegang",
+    },
     tabs: {
       sandbox: "Beveiliging",
       accounts: "Accounts",
@@ -4715,7 +4719,7 @@ export const nl = {
       useEpochs: "Epochs gebruiken",
       maxStepsTooltip: "Het totale aantal optimizerstappen overschrijven.",
       epochsTooltip: "Aantal volledige doorlopen van de dataset.",
-      contextLength: "Contextlengte",
+      contextLength: "Context",
       contextLengthTooltip: "Maximaal aantal tokens per trainingsvoorbeeld.",
       customContextLength: "Voer een aangepaste waarde in",
       learningRate: "Leersnelheid",
@@ -5032,7 +5036,7 @@ export const nl = {
       learningRate: "Leersnelheid",
       optimizer: "Optimizer",
       maxSteps: "Max. stappen",
-      contextLength: "Contextlengte",
+      contextLength: "Context",
       warmupSteps: "Opwarmstappen",
       rank: "Rang",
       alpha: "Alpha",

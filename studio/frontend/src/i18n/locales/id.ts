@@ -1463,6 +1463,10 @@ export const id = {
       tabHidden: "Tersembunyi",
       lastVisited: "Terakhir dikunjungi",
     },
+    navGroups: {
+      connections: "Koneksi",
+      dataAccess: "Data & akses",
+    },
     tabs: {
       sandbox: "Keamanan",
       accounts: "Akun",
@@ -4664,7 +4668,7 @@ export const id = {
       useEpochs: "Gunakan Epoch",
       maxStepsTooltip: "Ganti total langkah optimizer.",
       epochsTooltip: "Jumlah lintasan penuh atas dataset.",
-      contextLength: "Panjang Konteks",
+      contextLength: "Konteks",
       contextLengthTooltip: "Jumlah maksimum token per sampel pelatihan.",
       customContextLength: "Masukkan nilai kustom",
       learningRate: "Laju Pembelajaran",
@@ -4984,7 +4988,7 @@ export const id = {
       learningRate: "Laju pembelajaran",
       optimizer: "Optimizer",
       maxSteps: "Langkah maks",
-      contextLength: "Panjang konteks",
+      contextLength: "Konteks",
       warmupSteps: "Langkah warmup",
       rank: "Rank",
       alpha: "Alpha",

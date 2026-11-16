@@ -1337,6 +1337,10 @@ export const ru = {
       tabHidden: "Скрыта",
       lastVisited: "Последняя открытая",
     },
+    navGroups: {
+      connections: "Подключения",
+      dataAccess: "Данные и доступ",
+    },
     tabs: {
       sandbox: "Безопасность",
       accounts: "Учётные записи",
@@ -4378,7 +4382,7 @@ export const ru = {
       useEpochs: "Использовать эпохи",
       maxStepsTooltip: "Переопределить общее число шагов оптимизатора.",
       epochsTooltip: "Количество полных проходов по датасету.",
-      contextLength: "Длина контекста",
+      contextLength: "Контекст",
       contextLengthTooltip: "Максимальное число токенов на обучающий образец.",
       customContextLength: "Введите своё значение",
       learningRate: "Скорость обучения",
@@ -4686,7 +4690,7 @@ export const ru = {
       learningRate: "Скорость обучения",
       optimizer: "Оптимизатор",
       maxSteps: "Макс. шагов",
-      contextLength: "Длина контекста",
+      contextLength: "Контекст",
       warmupSteps: "Шаги прогрева",
       rank: "Ранг",
       alpha: "Alpha",

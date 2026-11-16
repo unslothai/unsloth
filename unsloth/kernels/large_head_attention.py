@@ -304,8 +304,8 @@ def _lh_bwd_dkdv(
     HEAD_DIM: tl.constexpr,  # hd
     BLOCK_M: tl.constexpr,  # query rows per step
     BLOCK_N: tl.constexpr,  # key rows per program
-    DO_DK: tl.constexpr,  # this pass writes dK
-    DO_DV: tl.constexpr,  # this pass writes dV
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
 ):
     # One program owns a kv block of one kv head and loops over its query heads (all G, or G / NSPLIT
     # of them into an fp32 partial summed afterwards when B * HKV * kv blocks would leave SMs idle,
@@ -390,8 +390,8 @@ def _tma_tile(
     h,
     row0,
     col0,
-    ROWS: tl.constexpr,  # tile rows
-    HALF: tl.constexpr,  # tile columns: half of head_dim (one TMA box)
+    ROWS: tl.constexpr,  # rows of the tile
+    HALF: tl.constexpr,  # columns of the tile: half of head_dim
 ):
     return desc.load([b, h, row0, col0]).reshape(ROWS, HALF)
 
@@ -561,8 +561,8 @@ def _lh_bwd_dkdv_tma(
     HEAD_DIM: tl.constexpr,  # hd
     BLOCK_M: tl.constexpr,  # query rows per step
     BLOCK_N: tl.constexpr,  # key rows per program
-    DO_DK: tl.constexpr,  # this pass writes dK
-    DO_DV: tl.constexpr,  # this pass writes dV
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
 ):
     tl.static_assert(DO_DK != DO_DV)  # one of dK / dV per pass
     HALF: tl.constexpr = HEAD_DIM // 2

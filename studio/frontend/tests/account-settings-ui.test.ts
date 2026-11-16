@@ -429,7 +429,9 @@ test("Accounts is registered, searchable, and filtered from managed navigation a
   assert.match(dialog, /import\("\.\/tabs\/accounts-tab"\)/);
   assert.match(dialog, /settingsTabVisible\(tab\.id, isOwner\)/);
   assert.match(dialog, /resolveSettingsTab\(deferredTab, isOwner\)/);
-  assert.equal((dialog.match(/visibleTabs\.map/g) ?? []).length, 2);
+  // Search maps the visible tabs; the rail builds its groups from them, so both hide Accounts.
+  assert.equal((dialog.match(/visibleTabs\.map/g) ?? []).length, 1);
+  assert.match(dialog, /tabs: visibleTabs\.filter\(\(tab\) => group\.ids\.includes\(tab\.id\)\)/);
 });
 
 test("a failed reset keeps the confirmation open and shows the error inside it", async () => {

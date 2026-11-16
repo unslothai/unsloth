@@ -51,7 +51,6 @@ import {
   CapabilityGlyph,
   DELETABLE_LOCAL_SOURCES,
   HubFailureHint,
-  OwnerAvatar,
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
@@ -75,7 +74,10 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  hfCacheRepoId,
+  isStandaloneGgufPath,
+} from "@/features/hub/lib/model-identity";
 import {
   AUDIO_CATALOG,
   ConnectedModelInfoDialog,
@@ -162,7 +164,6 @@ import {
   Flag01Icon,
   FlashIcon,
   InformationCircleIcon,
-  LaptopIcon,
   Navigation05Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -293,6 +294,44 @@ function readExpanded(): boolean {
 function writeExpanded(expanded: boolean): void {
   try {
     localStorage.setItem(EXPANDED_KEY, String(expanded));
+  } catch {
+    // Storage blocked.
+  }
+}
+
+// The user's expand choice per resident model, kept until that model is ejected.
+const MODEL_EXPANDED_KEY = "unsloth_composer_picker_model_expanded";
+const MODEL_EXPANDED_MAX = 20;
+
+function readModelExpanded(): Record<string, boolean> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MODEL_EXPANDED_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, v]) => typeof v === "boolean"),
+    ) as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+
+function writeModelExpanded(model: string, expanded: boolean | null): void {
+  try {
+    const map = readModelExpanded();
+    delete map[model];
+    if (expanded !== null) {
+      map[model] = expanded;
+    }
+    const keys = Object.keys(map);
+    for (const key of keys.slice(
+      0,
+      Math.max(0, keys.length - MODEL_EXPANDED_MAX),
+    )) {
+      delete map[key];
+    }
+    localStorage.setItem(MODEL_EXPANDED_KEY, JSON.stringify(map));
   } catch {
     // Storage blocked.
   }
@@ -514,7 +553,11 @@ function rowMaker(
   if (!row || row.kind === "external") {
     return null;
   }
-  const parts = hubParts(row.id) ?? hubParts(row.lora?.baseModel);
+  // A loaded HF-cache snapshot path names its repo, so the logo shows before the inventory lands.
+  const parts =
+    hubParts(row.id) ??
+    hubParts(row.lora?.baseModel) ??
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined);
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
@@ -653,39 +696,26 @@ function MakerMark({
   );
 }
 
-function RowMark({
-  row,
-}: {
-  row?: Pick<Row, "kind" | "providerType" | "providerName"> & {
-    id?: string;
-    lora?: LoraModelOption;
-  };
-}) {
+type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
+  id?: string;
+  lora?: LoraModelOption;
+};
+
+/** Only a model's own logo (curated maker, or its connection's provider); no placeholder otherwise. */
+function hasRowMark(row?: RowMarkRow): boolean {
+  return row?.kind === "external"
+    ? Boolean(row.providerType)
+    : rowMaker(row) !== null;
+}
+
+function RowMark({ row }: { row?: RowMarkRow }) {
   const size = "size-[calc(14px*var(--ui-space-scale,1))] shrink-0";
-  const parts =
-    row && row.kind !== "external"
-      ? (hubParts(row.id) ?? hubParts(row.lora?.baseModel))
-      : null;
   const provider = rowMaker(row);
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
   }
-  if (parts) {
-    // A block box: an inline one sat on the text baseline, about 2px above centre.
+  if (row?.kind === "external" && row.providerType) {
     return (
-      <span className="flex shrink-0">
-        <OwnerAvatar
-          owner={parts.owner}
-          repoName={parts.name}
-          size="xs"
-          remote={false}
-          className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px]"
-        />
-      </span>
-    );
-  }
-  if (row?.kind === "external") {
-    return row.providerType ? (
       <span className="flex shrink-0" style={opticalStyle(row.providerType)}>
         <ApiProviderLogo
           providerType={row.providerType}
@@ -693,17 +723,9 @@ function RowMark({
           className={size}
         />
       </span>
-    ) : (
-      <HugeiconsIcon icon={CloudIcon} strokeWidth={1.75} className={size} />
     );
   }
-  return (
-    <HugeiconsIcon
-      icon={row?.kind === "hub" ? Download01Icon : LaptopIcon}
-      strokeWidth={1.75}
-      className={size}
-    />
-  );
+  return null;
 }
 
 interface SourceTab {
@@ -813,7 +835,7 @@ function TabButton({
         <span
           aria-hidden={true}
           className={cn(
-            "composer-tab-line absolute bottom-0 left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
+            "composer-tab-line absolute bottom-[calc(2px*var(--ui-space-scale,1))] left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
             shown ? "opacity-100" : "opacity-0",
           )}
         />
@@ -1517,9 +1539,14 @@ export function ComposerModelPicker({
     setConfigStandalone(false);
   };
   const [expanded, setExpandedState] = useState(readExpanded);
+  // undefined until the first residency check after mount.
+  const residentKeyRef = useRef<string | null | undefined>(undefined);
   const setExpanded = useCallback((next: boolean) => {
     setExpandedState(next);
     writeExpanded(next);
+    if (residentKeyRef.current) {
+      writeModelExpanded(residentKeyRef.current, next);
+    }
   }, []);
   const [tab, setTabState] = useState<string | null>(null);
   const [lastTab, setLastTab] = useState(readTab);
@@ -1568,6 +1595,41 @@ export function ComposerModelPicker({
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  // Marks the run settings' Back + title row once it sticks (index.css), as the Library header does.
+  useEffect(() => {
+    const el = settingsRef.current;
+    if (!(configTarget && el)) {
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      // As the Library header: stuck once the row has pulled away from the eyebrow above it.
+      const row = el.querySelector<HTMLElement>("[data-config-header-row]");
+      const above = row?.previousElementSibling;
+      const stuck =
+        row != null &&
+        above != null &&
+        row.getBoundingClientRect().top - above.getBoundingClientRect().bottom >
+          Number.parseFloat(getComputedStyle(row).marginTop) + 0.5;
+      if (stuck) {
+        el.dataset.headerStuck = "";
+      } else {
+        delete el.dataset.headerStuck;
+      }
+    };
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(update);
+      }
+    };
+    schedule();
+    el.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", schedule);
+    };
+  }, [configTarget]);
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!tabStrip) {
@@ -2686,6 +2748,38 @@ export function ComposerModelPicker({
             !isExternalModelId(checkpoint) &&
             source?.loaded !== false),
       );
+  // Each load starts collapsed, a model already resident (mount, refresh) keeps the user's choice for
+  // it, and an eject expands and forgets it; a switch to a connected model is neither.
+  const residentKey =
+    chosenLoaded && checkpoint ? `${checkpoint}\n${activeVariant ?? ""}` : null;
+  const sawLoad = useRef(false);
+  // modelLoading also covers unloads, and an eject cancelled at its confirmation (or a failed one)
+  // must keep the choice: only a cycle that carried a load pick is a fresh load. Panes only load.
+  const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
+  const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  useEffect(() => {
+    if (modelLoading) {
+      if (loadingFresh) {
+        sawLoad.current = true;
+      }
+      return;
+    }
+    const fresh = sawLoad.current;
+    sawLoad.current = false;
+    const prev = residentKeyRef.current;
+    if (residentKey === prev && !fresh) {
+      return;
+    }
+    residentKeyRef.current = residentKey;
+    if (residentKey !== null) {
+      setExpanded(
+        (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
+      );
+    } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
+      writeModelExpanded(prev, null);
+      setExpanded(true);
+    }
+  }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
@@ -3963,7 +4057,7 @@ export function ComposerModelPicker({
           >
             {resolving === row.key || npuProgress ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : (
+            ) : hasRowMark(row) ? (
               <span
                 className={cn(
                   "flex shrink-0 text-foreground",
@@ -3972,7 +4066,7 @@ export function ComposerModelPicker({
               >
                 <RowMark row={row} />
               </span>
-            )}
+            ) : null}
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <span className={cn("truncate", dimmed && DIM_CLASS)}>
                 {row.label}
@@ -4899,7 +4993,13 @@ export function ComposerModelPicker({
                           source?.eject();
                         }
                       }}
-                      className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                      className={cn(
+                        "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                        // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
+                        hasRowMark(chosenMark)
+                          ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                          : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                      )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                         <RowMark row={chosenMark} />
@@ -4967,7 +5067,13 @@ export function ComposerModelPicker({
                       source?.eject();
                     }
                   }}
-                  className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                  className={cn(
+                    "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                    // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
+                    hasRowMark(chosenMark)
+                      ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                      : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                  )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                     <RowMark row={chosenMark} />
@@ -5023,7 +5129,7 @@ export function ComposerModelPicker({
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
           (isExpanded || configTarget) &&
-            "h-[calc(460px*var(--ui-space-scale,1))]",
+            "h-[calc(420px*var(--ui-space-scale,1))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).

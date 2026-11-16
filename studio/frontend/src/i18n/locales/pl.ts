@@ -1475,6 +1475,10 @@ export const pl = {
       tabHidden: "Ukryta",
       lastVisited: "Ostatnio odwiedzona",
     },
+    navGroups: {
+      connections: "Połączenia",
+      dataAccess: "Dane i dostęp",
+    },
     tabs: {
       sandbox: "Bezpieczeństwo",
       accounts: "Konta",
@@ -4715,7 +4719,7 @@ export const pl = {
       useEpochs: "Użyj epok",
       maxStepsTooltip: "Zastąp łączną liczbę kroków optymalizatora.",
       epochsTooltip: "Liczba pełnych przejść przez zbiór danych.",
-      contextLength: "Długość kontekstu",
+      contextLength: "Kontekst",
       contextLengthTooltip: "Maksymalna liczba tokenów na próbkę treningową.",
       customContextLength: "Wpisz własną wartość",
       learningRate: "Współczynnik uczenia",
@@ -5032,7 +5036,7 @@ export const pl = {
       learningRate: "Współczynnik uczenia",
       optimizer: "Optymalizator",
       maxSteps: "Maks. liczba kroków",
-      contextLength: "Długość kontekstu",
+      contextLength: "Kontekst",
       warmupSteps: "Kroki rozgrzewki",
       rank: "Ranga",
       alpha: "Alfa",

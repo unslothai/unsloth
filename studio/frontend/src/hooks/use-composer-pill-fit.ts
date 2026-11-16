@@ -109,6 +109,15 @@ export function useComposerPillFit(forceCompact: boolean) {
     if (row.parentElement) {
       resize.observe(row.parentElement);
     }
+    // The model chip after the row can widen (its logo, a reasoning label) without resizing either:
+    // unwatched, the row wraps until something else re-measures, and stays collapsed once it shrinks.
+    for (
+      let sibling = row.nextElementSibling;
+      sibling;
+      sibling = sibling.nextElementSibling
+    ) {
+      resize.observe(sibling);
+    }
     // A capability toggle can add a pill without resizing anything observed.
     const mutations = new MutationObserver(schedule);
     mutations.observe(row, { childList: true });

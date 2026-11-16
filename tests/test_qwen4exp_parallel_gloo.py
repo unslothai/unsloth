@@ -375,3 +375,20 @@ def test_pp_still_refuses_unproven_hybrid_stacks():
             ppn._refuse_unsupported(model, parts)
     finally:
         ppn._PP_HYBRID_FAMILIES[family] = saved
+
+
+@pytest.mark.parametrize("qsa", ["qwen_sparse_attention", "indexed_attention"])
+def test_pp_accepts_the_qsa_layer_name_of_every_transformers(qsa):
+    # transformers names the QSA layer qwen_sparse_attention up to 5.2x and indexed_attention after; the
+    # proven-hybrid allow-list must take both, or PP refuses Qwen4Exp on one side of the rename.
+    model = build()
+    parts = ppn._find_parts(model)
+    text = ppn._unwrap(model).config.get_text_config()
+    saved = list(text.layer_types)
+    try:
+        text.layer_types = [qsa if t not in ("linear_attention",) else t for t in saved]
+        assert (
+            ppn._refuse_unsupported(model, parts) is not None
+        )  # still the router aux loss note, not a refusal
+    finally:
+        text.layer_types = saved

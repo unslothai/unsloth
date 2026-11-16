@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from unsloth.models.loader import _compiled_auto_model
+from unsloth.models.loader import _compiled_auto_model, _sync_registered_auto_classes
 
 
 class _Stock:
@@ -77,3 +77,23 @@ def test_real_whisper_class_follows_module_swap(monkeypatch):
     from transformers import AutoModelForSpeechSeq2Seq
 
     assert _compiled_auto_model(AutoModelForSpeechSeq2Seq) is AutoModelForSpeechSeq2Seq
+
+
+def test_registered_auto_class_follows_the_module_swap_and_the_restore(monkeypatch):
+    """Registered Auto classes must follow the compiler's swap, else the compiled fused-CE forward is skipped."""
+    stock = type("FakeForCausalLM", (_Stock,), {})
+    module = _fake_module(monkeypatch, stock)
+    compiled = _compiled(monkeypatch, type("FakeForCausalLM", (_Stock,), {}))
+    monkeypatch.setattr(compiled, "__module__", module.__name__)
+    config = type("FakeConfig", (), {})
+    mapping = types.SimpleNamespace(_extra_content = {config: stock})
+    auto = type("FakeAutoModelForCausalLM", (), {"_model_mapping": mapping})
+    _sync_registered_auto_classes(auto)
+    assert mapping._extra_content[config] is stock  # nothing swapped yet
+    setattr(module, "FakeForCausalLM", compiled)
+    _sync_registered_auto_classes(auto)
+    assert mapping._extra_content[config] is compiled
+    setattr(module, "FakeForCausalLM", stock)  # restored
+    _sync_registered_auto_classes(auto)
+    assert mapping._extra_content[config] is stock
+    _sync_registered_auto_classes(None)  # no mapping: no-op

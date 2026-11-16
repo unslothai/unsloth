@@ -1486,6 +1486,123 @@ def _precheck_band(
                 setattr(obj, _LONG_BAND_ATTR, False)
 
 
+# transformers drops the mask (None) for unpadded micro batches and dynamo guards on mask vs None, so
+# each flip recompiles. Once a layer has seen a mask, rebuild None in that layout (same SDPA result).
+_MASK_KWARG = "attention_mask"
+_MASK_SPEC = "_unsloth_block_mask_spec"
+_MASK_FLAGS = "_unsloth_block_mask_flags"
+_MATERIALISED_ATTR = "_unsloth_block_materialised"
+_MASK_FLAG_ATTRS = ("_unsloth_block_band", _PLAIN_CAUSAL_ATTR, _LONG_BAND_ATTR)
+# Shared rebuilt mask; held strongly only up to this size.
+_MATERIALISED = [None]
+_MATERIALISED_KEEP_BYTES = 1 << 28
+
+
+def _mask_layout(mask, seq_len):
+    if not isinstance(mask, torch.Tensor) or mask.requires_grad or mask.is_floating_point():
+        return None
+    if mask.is_inference() or getattr(mask, "is_nested", False) or mask.shape[-1] != seq_len:
+        return None
+    if mask.dim() == 2:
+        heads = None
+    elif mask.dim() == 4 and mask.dtype == torch.bool and mask.shape[-2] == seq_len:
+        heads = mask.shape[1]
+    else:
+        return None
+    shape, stride = mask.shape, mask.stride()
+    broadcast = tuple(i for i in range(mask.dim()) if stride[i] == 0 and shape[i] > 1)
+    expected, step = [0] * mask.dim(), 1
+    for i in reversed(range(mask.dim())):
+        if i in broadcast:
+            continue
+        expected[i] = step
+        step *= shape[i]
+    if any(shape[i] > 1 and stride[i] != expected[i] for i in range(mask.dim())):
+        return None
+    # Dynamo also guards a view's base (transformers expands/slices its masks).
+    view = mask._base is not None
+    if view:
+        base = mask._base
+        stored = [1 if i in broadcast else shape[i] for i in range(mask.dim())]
+        if list(base.shape) != stored or not base.is_contiguous():
+            return None
+    elif broadcast:
+        return None
+    return (mask.dim(), mask.dtype, heads, broadcast, view)
+
+
+def _layer_is_causal(layer):
+    attn = getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
+    causal = getattr(attn, "is_causal", None)
+    return causal if isinstance(causal, bool) else None
+
+
+def _materialise_mask(layout, causal, batch, seq_len, device):
+    dim, dtype, heads, broadcast, view = layout
+    key = (layout, causal, batch, seq_len, device)
+    cached = _MATERIALISED[0]
+    if cached is not None and cached[0] == key:
+        mask = cached[1] if cached[2] else cached[1]()
+        if mask is not None:
+            return mask
+    full = (batch, seq_len) if dim == 2 else (batch, heads, seq_len, seq_len)
+    stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
+    if dim == 4 and causal:
+        # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
+        if 2 in broadcast or 3 in broadcast:
+            return None
+        # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
+        mask = torch.empty(stored, dtype = torch.bool, device = device)
+        mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
+    else:
+        mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
+    if view:
+        mask = mask.expand(full)
+    setattr(mask, _MATERIALISED_ATTR, True)
+    keep = mask.untyped_storage().nbytes() <= _MATERIALISED_KEEP_BYTES
+    _MATERIALISED[0] = (key, mask if keep else weakref.ref(mask), keep)
+    return mask
+
+
+def _normalise_mask(layer, hidden_states, kwargs):
+    if _MASK_KWARG not in kwargs or hidden_states.dim() != 3:
+        return kwargs
+    mask = kwargs[_MASK_KWARG]
+    if mask is not None:
+        if not getattr(mask, _MATERIALISED_ATTR, False):
+            layout = _mask_layout(mask, hidden_states.shape[1])
+            if layout is not None:
+                layer.__dict__[_MASK_SPEC] = layout
+            else:
+                layer.__dict__.pop(_MASK_SPEC, None)
+        return kwargs
+    layout = layer.__dict__.get(_MASK_SPEC)
+    if layout is None or kwargs.get("is_causal") is not None:
+        return kwargs
+    causal = _layer_is_causal(layer) if layout[0] == 4 else None
+    if layout[0] == 4 and causal is None:
+        return kwargs
+    mask = _materialise_mask(
+        layout, causal, hidden_states.shape[0], hidden_states.shape[1], hidden_states.device
+    )
+    return kwargs if mask is None else {**kwargs, _MASK_KWARG: mask}
+
+
+def _settle_mask_flags(layer, kwargs):
+    # Dynamo guards on fast-path flags: keep one only where the last real mask had it.
+    mask = kwargs.get(_MASK_KWARG)
+    if not isinstance(mask, torch.Tensor):
+        return
+    if not getattr(mask, _MATERIALISED_ATTR, False):
+        layer.__dict__[_MASK_FLAGS] = tuple(getattr(mask, name, None) for name in _MASK_FLAG_ATTRS)
+        return
+    flags = layer.__dict__.get(_MASK_FLAGS)
+    for i, name in enumerate(_MASK_FLAG_ATTRS):
+        if hasattr(mask, name):
+            prior = flags[i] if flags is not None else None
+            setattr(mask, name, bool(getattr(mask, name)) and prior is True)
+
+
 # Mode of the block being traced (_SPLIT: flex_attention outside); dynamo guards on it.
 _IN_BLOCK = [0]
 # True only inside Unsloth's own compiled block (fullgraph=False, a graph break is legal), not when the
@@ -1937,11 +2054,13 @@ def _wrap(
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
+            kwargs = _normalise_mask(self, hidden_states, kwargs)
             hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
+            _settle_mask_flags(self, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
         nonreentrant = (

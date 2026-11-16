@@ -1456,6 +1456,10 @@ export const fa = {
       tabHidden: "پنهان",
       lastVisited: "آخرین بازدید",
     },
+    navGroups: {
+      connections: "اتصال‌ها",
+      dataAccess: "داده‌ها و دسترسی",
+    },
     tabs: {
       sandbox: "امنیت",
       accounts: "حساب‌ها",
@@ -4649,7 +4653,7 @@ export const fa = {
       useEpochs: "استفاده از دوره‌ها",
       maxStepsTooltip: "تعداد کل گام‌های بهینه‌ساز را جایگزین می‌کند.",
       epochsTooltip: "تعداد گذرهای کامل روی مجموعه‌داده.",
-      contextLength: "طول زمینه",
+      contextLength: "زمینه",
       contextLengthTooltip: "حداکثر تعداد توکن در هر نمونهٔ آموزشی.",
       customContextLength: "یک مقدار سفارشی وارد کنید",
       learningRate: "نرخ یادگیری",
@@ -4957,7 +4961,7 @@ export const fa = {
       learningRate: "نرخ یادگیری",
       optimizer: "بهینه‌ساز",
       maxSteps: "حداکثر گام‌ها",
-      contextLength: "طول زمینه",
+      contextLength: "زمینه",
       warmupSteps: "گام‌های گرم‌کردن",
       rank: "رتبه (Rank)",
       alpha: "آلفا",

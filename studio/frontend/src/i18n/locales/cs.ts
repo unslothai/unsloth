@@ -1468,6 +1468,10 @@ export const cs = {
       tabHidden: "Skryté",
       lastVisited: "Naposledy navštívené",
     },
+    navGroups: {
+      connections: "Připojení",
+      dataAccess: "Data a přístup",
+    },
     tabs: {
       sandbox: "Zabezpečení",
       accounts: "Účty",
@@ -4684,7 +4688,7 @@ export const cs = {
       useEpochs: "Použít epochy",
       maxStepsTooltip: "Přepíše celkový počet kroků optimalizátoru.",
       epochsTooltip: "Počet úplných průchodů datovou sadou.",
-      contextLength: "Délka kontextu",
+      contextLength: "Kontext",
       contextLengthTooltip: "Maximální počet tokenů na jeden trénovací vzorek.",
       customContextLength: "Zadejte vlastní hodnotu",
       learningRate: "Rychlost učení",
@@ -4999,7 +5003,7 @@ export const cs = {
       learningRate: "Rychlost učení",
       optimizer: "Optimalizátor",
       maxSteps: "Max. počet kroků",
-      contextLength: "Délka kontextu",
+      contextLength: "Kontext",
       warmupSteps: "Kroky zahřívání",
       rank: "Rank",
       alpha: "Alpha",

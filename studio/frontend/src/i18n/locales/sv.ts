@@ -1410,6 +1410,10 @@ export const sv = {
       tabHidden: "Dold",
       lastVisited: "Senast besökt",
     },
+    navGroups: {
+      connections: "Anslutningar",
+      dataAccess: "Data & åtkomst",
+    },
     tabs: {
       sandbox: "Säkerhet",
       accounts: "Konton",
@@ -4546,7 +4550,7 @@ export const sv = {
       useEpochs: "Använd epoker",
       maxStepsTooltip: "Åsidosätt totalt antal optimerarsteg.",
       epochsTooltip: "Antal fullständiga genomgångar av datauppsättningen.",
-      contextLength: "Kontextlängd",
+      contextLength: "Kontext",
       contextLengthTooltip: "Maximalt antal token per träningsexempel.",
       customContextLength: "Ange ett anpassat värde",
       learningRate: "Inlärningshastighet",
@@ -4857,7 +4861,7 @@ export const sv = {
       learningRate: "Inlärningshastighet",
       optimizer: "Optimerare",
       maxSteps: "Maxsteg",
-      contextLength: "Kontextlängd",
+      contextLength: "Kontext",
       warmupSteps: "Uppvärmningssteg",
       rank: "Rank",
       alpha: "Alpha",
