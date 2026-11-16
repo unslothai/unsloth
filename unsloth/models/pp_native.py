@@ -79,8 +79,11 @@ _CROSS_LAYER_CONFIG_KEYS = (
 _POST_LAYER_MODULES = ("hyper_connection_mixer",)
 _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attention", "attention"}
 # Hybrid stacks proven by a parity test: gated delta net "linear_attention" and QSA "indexed_attention" layers keep
-# state only across tokens inside one layer, never across layers, so a stage boundary cuts nothing.
-_PP_HYBRID_FAMILIES = {"Qwen4ExpForCausalLM": {"linear_attention", "indexed_attention"}}
+# state only across tokens inside one layer, never across layers, so a stage boundary cuts nothing. transformers
+# 5.17 names the QSA layer type "qwen_sparse_attention"; 5.22 renamed it "indexed_attention".
+_PP_HYBRID_FAMILIES = {
+    "Qwen4ExpForCausalLM": {"linear_attention", "indexed_attention", "qwen_sparse_attention"}
+}
 _STEP_KWARGS = ("attention_mask", "position_ids")
 _STAGE_IDS = "_unsloth_pp_input_ids"  # the batch's token ids, for stages after the first
 _MULTI_STAGE_DP = (
