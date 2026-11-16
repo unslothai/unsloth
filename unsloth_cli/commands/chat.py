@@ -212,9 +212,10 @@ def chat(
     max_seq_length: int = typer.Option(
         0,
         "--max-seq-length",
-        help = "Context length in tokens. 0 takes the checkpoint's trained window on GGUF "
-        "and MLX, and 2048 on the transformers backend. A value that differs from a "
-        "running Unsloth server's reloads the model.",
+        "--context-length",
+        help = "Runtime context length in tokens (0 = model default for GGUF and MLX; 2048 "
+        "for hub models). --context-length works too. Left unset, a running Unsloth server that "
+        "already has this model loaded keeps its context; a value that differs reloads it.",
     ),
     load_in_4bit: bool = typer.Option(
         True,

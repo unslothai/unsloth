@@ -1121,6 +1121,9 @@ class HttpChatBackend:
         trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
+        status = None if model.lower().endswith(".gguf") else self._inference_status()
+        if max_seq_length is None:
+            max_seq_length = _resident_npu_context(status, model)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -1137,7 +1140,7 @@ class HttpChatBackend:
             payload["spec_draft_n_max"] = spec_draft_n_max
         if trust_remote_code:
             payload["trust_remote_code"] = trust_remote_code
-        resident_variant = self._resident_gguf_variant(model)
+        resident_variant = self._resident_gguf_variant(model, status)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
@@ -1154,15 +1157,16 @@ class HttpChatBackend:
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
-    def _resident_gguf_variant(self, model: str) -> Optional[str]:
-        if model.lower().endswith(".gguf"):
-            return None
+    def _inference_status(self) -> Optional[dict]:
         try:
             with self._request("GET", "/api/inference/status", timeout = 30) as response:
                 status = json.loads(response.read())
         except Exception:
             return None
-        if not isinstance(status, dict) or not status.get("is_gguf"):
+        return status if isinstance(status, dict) else None
+
+    def _resident_gguf_variant(self, model: str, status: Optional[dict]) -> Optional[str]:
+        if not status or not status.get("is_gguf"):
             return None
         # A local load's active_model is only its basename.
         loaded = status.get("model_identifier") or status.get("active_model")
@@ -1276,11 +1280,23 @@ class HttpChatBackend:
         pass
 
 
+def _resident_npu_context(status: Optional[dict], model: str) -> int:
+    """The context the resident NPU model was asked for (0 = Auto) when it is `model`, else 0:
+    /load keeps an NPU model only when the requested context matches exactly."""
+    if not status or not status.get("is_npu") or status.get("model_identifier") != model:
+        return 0
+    requested = status.get("requested_context_length")
+    return requested if isinstance(requested, int) and requested > 0 else 0
+
+
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    """Drop an untyped --load-in-4bit or --max-seq-length so the server can keep a resident
+    model's precision and context."""
     opts = dict(load_opts)
-    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
-        opts["load_in_4bit"] = None
+    for name in ("load_in_4bit", "max_seq_length"):
+        source = ctx.get_parameter_source(name)
+        if source is None or source.name != "COMMANDLINE":
+            opts[name] = None
     return opts
 
 
