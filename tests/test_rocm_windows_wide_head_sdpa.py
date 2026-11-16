@@ -5,9 +5,9 @@
 since that torch's flash / efficient kernels take it and compute it wrong. Heads up to 256, other
 platforms and compiled graphs keep their stock dispatch; Studio's own guard and this one never nest."""
 
-import contextlib
 import functools
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -46,12 +46,11 @@ def cpu_counts_as_gpu(monkeypatch):
 def recorder(monkeypatch):
     entered, calls = [], []
 
-    @contextlib.contextmanager
-    def fake_kernel(backends):
+    def fake_set(backends):
         entered.append(list(backends))
-        yield
 
-    monkeypatch.setattr(attention, "sdpa_kernel", fake_kernel)
+    monkeypatch.setattr(attention, "_sdpa_kernel", fake_set)
+    monkeypatch.setattr(attention, "_cur_sdpa_kernel_backends", lambda: ["saved"])
 
     def sdpa(q, k, v, *args, **kwargs):
         calls.append((args, kwargs))
@@ -74,7 +73,7 @@ def test_wide_head_runs_on_math(recorder, monkeypatch, head_dim, v_head_dim):
     q, v = _meta(head_dim, v_head_dim)
     guarded = fixes.rocm_windows_wide_head_sdpa(sdpa)
     assert guarded(q, v, v, None, 0.0, True, scale = 0.1, enable_gqa = True) == "out"
-    assert entered == [[attention.SDPBackend.MATH]]
+    assert entered == [[attention.SDPBackend.MATH], ["saved"]]
     assert calls == [((None, 0.0, True), {"scale": 0.1, "enable_gqa": True})]
 
 
@@ -300,3 +299,45 @@ def test_compiled_call_restores_the_callers_backends(stock_sdpa, windows_rocm, c
         str(n.target) for g in recorder.graphs for n in g.graph.nodes if n.op == "call_function"
     ]
     assert not any("sdpa_kernel" in t or "_backend_from_string" in t for t in targets), targets
+
+
+def test_overlapping_wide_head_calls_restore_the_callers_backends_once(
+    windows_rocm, cpu_counts_as_gpu
+):
+    """Two wide-head calls in flight (two threads), the first returning first: the second must not see the fused
+    kernels back, and the caller's backends come back only after the last one returns."""
+    from torch.nn.attention import _cur_sdpa_kernel_backends
+
+    seen = {}
+    inside = {"a": threading.Event(), "b": threading.Event()}
+    release = {"a": threading.Event(), "b": threading.Event()}
+
+    def sdpa(
+        q,
+        k,
+        v,
+        *args,
+        name = None,
+        **kwargs,
+    ):
+        inside[name].set()
+        release[name].wait(5)
+        seen[name] = set(_cur_sdpa_kernel_backends())
+        return q
+
+    guarded = fixes.rocm_windows_wide_head_sdpa(sdpa)
+    before = set(_cur_sdpa_kernel_backends())
+    q = torch.zeros(1, 1, 4, 512)
+    threads = {
+        n: threading.Thread(target = guarded, args = (q, q, q), kwargs = {"name": n}) for n in "ab"
+    }
+    threads["a"].start()
+    assert inside["a"].wait(5)
+    threads["b"].start()
+    assert inside["b"].wait(5)
+    release["a"].set()
+    threads["a"].join(5)
+    release["b"].set()
+    threads["b"].join(5)
+    assert seen == {"a": {attention.SDPBackend.MATH}, "b": {attention.SDPBackend.MATH}}
+    assert set(_cur_sdpa_kernel_backends()) == before
