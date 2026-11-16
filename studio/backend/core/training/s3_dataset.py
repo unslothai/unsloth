@@ -330,6 +330,7 @@ def _rewrite_csv_manifest(manifest_path: str, resolve) -> None:
 def _rewrite_parquet_manifest(manifest_path: str, resolve) -> None:
     """Keep the Arrow/HF schema and bound memory to one batch; replace only a completed rewrite."""
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
     changed = False
@@ -341,6 +342,56 @@ def _rewrite_parquet_manifest(manifest_path: str, resolve) -> None:
             changed = True
         return result
 
+    def rewrite_strings(column):
+        dtype = column.type.value_type if pa.types.is_dictionary(column.type) else column.type
+        if not (
+            pa.types.is_string(dtype)
+            or pa.types.is_large_string(dtype)
+            or pa.types.is_string_view(dtype)
+        ):
+            return column
+        values = column.to_pylist()
+        updated = []
+        for value in values:
+            path = replacement(value)
+            updated.append(value if path is None else path)
+        return column if updated == values else pa.array(updated, type = column.type)
+
+    def rewrite(column):
+        # Non-path arrays stay in Arrow: Python cannot represent every timestamp or nanosecond time.
+        dtype = column.type
+        if pa.types.is_struct(dtype):
+            index = dtype.get_field_index("path")
+            if index < 0:
+                return column
+            path = column.flatten()[index]
+            updated = rewrite_strings(path)
+            if updated is path:
+                return column
+            return pa.StructArray.from_arrays(
+                [updated if i == index else column.field(i) for i in range(dtype.num_fields)],
+                type = dtype,
+                mask = column.is_null(),
+            )
+        if pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+            offsets = column.offsets
+            start = offsets[0].as_py()
+            values = column.values.slice(start, offsets[-1].as_py() - start)
+            updated = rewrite(values)
+            if updated is values:
+                return column
+            offsets = pc.subtract(offsets, pa.scalar(start, type = offsets.type))
+            return type(column).from_arrays(offsets, updated, type = dtype, mask = column.is_null())
+        if pa.types.is_fixed_size_list(dtype):
+            values = column.values.slice(
+                column.offset * dtype.list_size, len(column) * dtype.list_size
+            )
+            updated = rewrite(values)
+            if updated is values:
+                return column
+            return pa.FixedSizeListArray.from_arrays(updated, type = dtype, mask = column.is_null())
+        return rewrite_strings(column)
+
     fd, staged = tempfile.mkstemp(
         prefix = ".unsloth_s3_", suffix = ".parquet", dir = os.path.dirname(manifest_path)
     )
@@ -350,10 +401,11 @@ def _rewrite_parquet_manifest(manifest_path: str, resolve) -> None:
             schema = source.schema_arrow
             with pq.ParquetWriter(staged, schema) as writer:
                 for batch in source.iter_batches(batch_size = 1024):
-                    rows = batch.to_pylist()
-                    for row in rows:
-                        _rewrite_row(row, replacement)
-                    writer.write_table(pa.Table.from_pylist(rows, schema = schema))
+                    writer.write_table(
+                        pa.Table.from_arrays(
+                            [rewrite(column) for column in batch.columns], schema = schema
+                        )
+                    )
         if changed:
             os.replace(staged, manifest_path)
     finally:

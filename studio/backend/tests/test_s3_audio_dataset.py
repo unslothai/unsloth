@@ -75,7 +75,8 @@ def _parquet_bytes(rows, schema = None):
     import pyarrow.parquet as pq
 
     buffer = io.BytesIO()
-    pq.write_table(pa.Table.from_pylist(rows, schema = schema), buffer)
+    table = rows if isinstance(rows, pa.Table) else pa.Table.from_pylist(rows, schema = schema)
+    pq.write_table(table, buffer)
     return buffer.getvalue()
 
 
@@ -703,3 +704,181 @@ def test_parquet_write_failure_preserves_the_manifest_and_removes_staging(monkey
     assert manifest.read_bytes() == original
     assert list(tmp_path.iterdir()) == [manifest]
     assert [key for _, key, _ in client.downloaded] == ["datasets/rows.parquet"]
+
+
+@pytest.mark.parametrize("kind", ["time", "timestamp", "uuid"])
+@pytest.mark.parametrize("reference", ["a.wav", "other.wav"])
+def test_parquet_rewrite_keeps_unrelated_arrow_columns(monkeypatch, tmp_path, kind, reference):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if kind == "uuid":
+        metadata = pa.array([bytes(range(16)), None], type = pa.uuid())
+    else:
+        value, dtype = (
+            (45_296_789_123_456, pa.time64("ns"))
+            if kind == "time"
+            else (253_402_300_800_000, pa.timestamp("ms"))
+        )
+        metadata = pa.array([value, None], type = pa.int64()).cast(dtype)
+    schema = pa.schema(
+        [pa.field("audio", pa.string()), pa.field("metadata", metadata.type)],
+        metadata = {b"source": b"keep metadata"},
+    )
+    table = pa.Table.from_arrays([pa.array([reference, None]), metadata], schema = schema)
+    original = _parquet_bytes(table)
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    actual = pq.read_table(download.files[0])
+    assert actual.schema.equals(schema, check_metadata = True)
+    assert actual["metadata"].equals(table["metadata"])
+    expected = str(tmp_path / "a.wav") if reference == "a.wav" else reference
+    assert actual["audio"].to_pylist() == [expected, None]
+    if reference != "a.wav":
+        assert Path(download.files[0]).read_bytes() == original
+
+
+@pytest.mark.parametrize("layout", ["struct", "list", "large-list", "fixed-list"])
+@pytest.mark.parametrize("kind", ["time", "timestamp"])
+def test_parquet_audio_path_keeps_its_nested_metadata(monkeypatch, tmp_path, layout, kind):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    value, dtype = (
+        (45_296_789_123_456, pa.time64("ns"))
+        if kind == "time"
+        else (253_402_300_800_000, pa.timestamp("ms"))
+    )
+    metadata = pa.array([value, None, value + 1, value + 2], type = pa.int64()).cast(dtype)
+
+    def audio(paths):
+        values = pa.StructArray.from_arrays(
+            [pa.array(paths), metadata, pa.array(["a.wav"] * 4)],
+            names = ["path", "metadata", "label"],
+            mask = pa.array([False, True, False, False]),
+        )
+        if layout == "struct":
+            return values
+        if layout == "fixed-list":
+            return pa.FixedSizeListArray.from_arrays(values, 2)
+        if layout == "large-list":
+            return pa.LargeListArray.from_arrays(pa.array([0, 2, 2, 4], type = pa.int64()), values)
+        return pa.ListArray.from_arrays(pa.array([0, 2, 2, 4], type = pa.int32()), values)
+
+    original = _parquet_bytes(
+        pa.Table.from_arrays([audio(["a.wav", None, "remote.wav", "a.wav"])], names = ["audio"])
+    )
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    local = str(tmp_path / "a.wav")
+    expected = pq.read_table(
+        io.BytesIO(
+            _parquet_bytes(
+                pa.Table.from_arrays([audio([local, None, "remote.wav", local])], names = ["audio"])
+            )
+        )
+    )
+    assert pq.read_table(download.files[0]).equals(expected, check_metadata = True)
+
+
+@pytest.mark.parametrize("kind", ["large-string", "string-view", "dictionary"])
+def test_parquet_rewrite_keeps_supported_string_types(monkeypatch, tmp_path, kind):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = {
+        "large-string": pa.large_string(),
+        "string-view": pa.string_view(),
+        "dictionary": pa.dictionary(pa.int8(), pa.string()),
+    }[kind]
+    original = _parquet_bytes(pa.table({"audio": pa.array(["a.wav", None], type = dtype)}))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    actual = pq.read_table(download.files[0])
+    assert actual.schema.equals(pq.read_schema(io.BytesIO(original)), check_metadata = True)
+    assert actual["audio"].to_pylist() == [str(tmp_path / "a.wav"), None]
+
+
+def test_parquet_nested_audio_metadata_survives_batch_boundaries(monkeypatch, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    count = 1100
+    metadata = pa.array(range(45_296_789_123_456, 45_296_789_123_456 + count * 2)).cast(
+        pa.time64("ns")
+    )
+
+    def audio(path):
+        values = pa.StructArray.from_arrays(
+            [pa.array([path, None] * count), metadata], names = ["path", "metadata"]
+        )
+        return pa.ListArray.from_arrays(pa.array(range(0, count * 2 + 1, 2)), values)
+
+    original = _parquet_bytes(pa.Table.from_arrays([audio("a.wav")], names = ["audio"]))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    expected = pq.read_table(
+        io.BytesIO(
+            _parquet_bytes(pa.Table.from_arrays([audio(str(tmp_path / "a.wav"))], names = ["audio"]))
+        )
+    )
+    assert pq.read_table(download.files[0]).equals(expected, check_metadata = True)
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_parquet_rewrite_accepts_sliced_list_batches(monkeypatch, tmp_path, large):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.large_list(pa.string()) if large else pa.list_(pa.string())
+    rows = [[], ["a.wav"], None, ["other.wav"]]
+    original = _parquet_bytes(pa.table({"audio": pa.array(rows, type = dtype)}))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+    iterate = pq.ParquetFile.iter_batches
+
+    def sliced_batches(self, *args, **kwargs):
+        for batch in iterate(self, *args, **kwargs):
+            padded = pa.RecordBatch.from_arrays(
+                [pa.concat_arrays([pa.nulls(1, type = col.type), col]) for col in batch.columns],
+                schema = batch.schema,
+            )
+            yield padded.slice(1)
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", sliced_batches)
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    assert _parquet_rows(download.files[0]) == [
+        {"audio": []},
+        {"audio": [str(tmp_path / "a.wav")]},
+        {"audio": None},
+        {"audio": ["other.wav"]},
+    ]
