@@ -912,6 +912,7 @@ export const it = {
       videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
+      customizeProfileMenu: "Personalizza menu profilo",
       newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
