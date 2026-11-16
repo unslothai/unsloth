@@ -1868,8 +1868,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             config_arg = args[1]
         else:
             config_arg = kwargs.get("args")
-        # UnslothSFTConfig leaves packing None when the user did not set it (models/rl.py); the mark
-        # lets a config reused for another trainer decide again.
+        # The mark lets a config reused for another trainer decide again.
         packing_unset = config_arg is not None and (
             getattr(config_arg, "packing", False) is None
             or getattr(config_arg, "_unsloth_packing_unset", False)
@@ -2084,7 +2083,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             and not is_processor
             and getattr(config_arg, "padding_free", None) is None
             and _default_packing_env_on()
-            # Epoch runs only: a packed step holds several documents, so a fixed max_steps would run longer.
+            # Epoch runs only: packing would lengthen a fixed max_steps run.
             and (getattr(config_arg, "max_steps", -1) or -1) <= 0
         ):
             try:
@@ -2094,7 +2093,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 formatting_func = kwargs.get("formatting_func")
             if _default_packing_dataset(train_dataset, config_arg, formatting_func):
                 setattr(config_arg, "packing", True)
-                # Eval batches stay padding-free as before, so eval_loss is unchanged.
                 if hasattr(config_arg, "eval_packing") and config_arg.eval_packing is None:
                     setattr(config_arg, "eval_packing", False)
                 default_packing = True
@@ -2148,7 +2146,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 exc.__traceback__ = None
                 original_init(self, *args, **kwargs)
             elif default_packing:
-                # Default packing must never cost a run that trained before: back to padding-free.
+                # Default packing must never break a run that trained before.
                 logger.info("Unsloth: default packing turned off (%s).", exc)
                 setattr(config_arg, "packing", False)
                 if getattr(config_arg, "eval_packing", None) is False:

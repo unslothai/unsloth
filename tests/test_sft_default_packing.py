@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""SFT packs text datasets by default when the user left `packing` unset (UnslothSFTConfig's None),
-and keeps today's padding-free batches for an explicit packing / padding_free, a custom collator,
-a stream, UNSLOTH_DEFAULT_PACKING=0, or a trainer that refuses packing (CPU, stub trainer)."""
+"""SFT packs text datasets by default when `packing` is unset; explicit settings, collators, streams,
+UNSLOTH_DEFAULT_PACKING=0 and refusing trainers keep padding-free."""
 
 from types import SimpleNamespace
 
