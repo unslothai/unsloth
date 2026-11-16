@@ -7875,6 +7875,35 @@ html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-con
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
 }
+/* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block.
+   One blurred layer per row frosts what scrolls under it instead; the row itself stays clear, as a backdrop root would hide that. */
+html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html[data-glass][data-glass-menus] .composer-run-settings [data-config-header-row]::after {
+  display: none;
+}
+html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer])::before {
+  --run-settings-frost-fade: calc(20px * var(--ui-space-scale, 1));
+  z-index: -1;
+  height: auto;
+  background: none;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+html[data-glass][data-glass-menus] .composer-run-settings [data-config-header-row]::before {
+  inset-inline: calc(-1 * var(--run-settings-pad-l, 0px)) calc(-1 * var(--run-settings-pad-r, 0px));
+  top: calc(-1 * var(--run-settings-stick-at));
+  bottom: calc(-1 * var(--run-settings-frost-fade));
+  mask-image: linear-gradient(to top, transparent, #000 var(--run-settings-frost-fade));
+}
+html[data-glass][data-glass-menus] .composer-run-settings [data-pinned-footer]::before {
+  top: calc(-1 * var(--run-settings-frost-fade));
+  bottom: 0;
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--run-settings-frost-fade));
+}
 html[data-glass] :is([data-glass-float], .aui-thread-scroll-to-bottom) {
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
