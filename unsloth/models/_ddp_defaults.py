@@ -413,6 +413,27 @@ def _exclude_towers_from_ddp(model):
     return True
 
 
+def _exclude_frozen_from_ddp(model):
+    """DDP's start broadcasts every parameter from rank 0, flattening each into a bucket: a second copy of the
+    largest tensor. A LoRA model's frozen weights come from the same checkpoint on every rank and get no
+    gradient, so skip them (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB, ran a T4 out of memory)."""
+    if os.environ.get("UNSLOTH_DDP_SYNC_FROZEN", "0") == "1":
+        return 0
+    if getattr(model, "peft_config", None) is None:
+        return 0
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [
+        name for name, p in model.named_parameters() if not p.requires_grad and name not in seen
+    ]
+    if not added:
+        return 0
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    return len(added)
+
+
 def _all_reduce_tower_grads(params, group = None):
     """Average tower gradients across ranks like DDP(find_unused_parameters = True): a weight no rank used
     keeps ``grad = None``; one used on some rank is averaged with zeros from the others."""
@@ -491,6 +512,7 @@ def _prepare_ddp_handler(accelerator, model):
         return
     if not handler.find_unused_parameters:
         _exclude_towers_from_ddp(model)
+    _exclude_frozen_from_ddp(model)
     changed = False
     # Full finetuning only: gradients become bucket views, one copy instead of two.
     if (
