@@ -1149,6 +1149,86 @@ def test_codex_revert_after_an_older_import_brings_the_missed_prefix(codex_home)
     assert _turns(_PAGINATED_SID) == [*_PAGINATED_TURNS[:4], ("user", "Try again")]
 
 
+def _pasted(text, image = True):
+    request = [
+        {"type": "input_text", "text": '<image name=[Image #1] path="shot.png">'},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{PNG}", "detail": "high"},
+        {"type": "input_text", "text": "</image>"},
+        {"type": "input_text", "text": text},
+    ]
+    content = [{"type": "local_image", "path": "shot.png"}, {"type": "text", "text": text}]
+    if not image:
+        request, content = request[3:], content[1:]
+    item = {"type": "UserMessage", "id": text, "content": content}
+    return [
+        x_line("response_item", {"type": "message", "role": "user", "content": request}),
+        x_line("event_msg", {"type": "item_completed", "item": item}),
+    ]
+
+
+def _pasted_rollout(home, image = True):
+    body = [
+        *_pasted("What colour is this?", image),
+        _completed("AgentMessage", "Red"),
+        *_pasted("", image),
+        _completed("AgentMessage", "Blue"),
+    ]
+    return _rollout(home, sid = "img", history_mode = "paginated", body = body)
+
+
+def test_codex_keeps_pasted_and_attached_images(codex_home):
+    image = {"type": "image", "image": f"data:image/png;base64,{PNG}"}
+    messages = codex.read_transcript(_pasted_rollout(codex_home), "t", "s1").messages
+
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", [image, {"type": "text", "text": "What colour is this?"}]),
+        ("assistant", [{"type": "text", "text": "Red"}]),
+        ("user", [image]),
+        ("assistant", [{"type": "text", "text": "Blue"}]),
+    ]
+
+    legacy = _rollout(
+        codex_home,
+        sid = "legacy",
+        body = [
+            _pasted("What colour is this?")[0],
+            x_line(
+                "event_msg",
+                {
+                    "type": "user_message",
+                    "message": "What colour is this?",
+                    "images": [],
+                    "local_images": ["shot.png"],
+                },
+            ),
+            x_line("event_msg", {"type": "agent_message", "message": "Red"}),
+            x_line("event_msg", {"type": "user_message", "message": "And now?"}),
+        ],
+    )
+    messages = codex.read_transcript(legacy, "t", "s2").messages
+    assert [m["content"] for m in messages] == [
+        [image, {"type": "text", "text": "What colour is this?"}],
+        [{"type": "text", "text": "Red"}],
+        [{"type": "text", "text": "And now?"}],
+    ]
+
+
+def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
+    _pasted_rollout(codex_home, image = False)
+    assert run_import(codex.SOURCE).messages == 3
+    tid = thread_id_for(codex.SOURCE, "img")
+    reply = next(m for m in _messages(codex.SOURCE, "img") if m["content"][0]["text"] == "Blue")
+    edited = [{"type": "text", "text": "Blue, edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**reply, "content": edited}], prune_missing = False)
+
+    path = _pasted_rollout(codex_home)
+    assert run_import(codex.SOURCE).messages == 0
+    assert {m["id"]: m for m in _messages(codex.SOURCE, "img")}[reply["id"]]["content"] == edited
+
+    _append(path, [_completed("UserMessage", "One more")])
+    assert run_import(codex.SOURCE).messages == 1
+
+
 def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
     base = _paginated_rollout(codex_home)
     meta = {
