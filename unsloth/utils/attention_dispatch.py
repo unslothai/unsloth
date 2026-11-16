@@ -1415,6 +1415,11 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
         or _DEVICE_BACKENDS is not None
         or torch.are_deterministic_algorithms_enabled()
         or hidden_states.dtype not in (torch.float16, torch.bfloat16)
+        # UNSLOTH_TORCH_VARLEN=0 turns torch's varlen kernels off; the graph would run one anyway.
+        or os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off")
+        # Training-time attention dropout: the graph's flash path takes none, and the dense-mask
+        # fallback is quadratic over the whole row; eager keeps its segmented kernels.
+        or (layer.training and float(getattr(attention, "attention_dropout", 0.0) or 0.0) > 0.0)
     ):
         return False
     head_dim = getattr(attention, "head_dim", None)

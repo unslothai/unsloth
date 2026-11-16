@@ -214,3 +214,24 @@ def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
         torch.testing.assert_close(out.float(), ref, atol = 2e-2, rtol = 2e-2)
     assert len(graphs) == 1
     assert any("_flash_attention_forward" in c for c in calls), calls
+
+
+def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeypatch):
+    import types
+
+    from unsloth.utils import attention_dispatch as AD
+
+    monkeypatch.setattr(AD, "_packed_varlen_ok_eager", lambda *a, **k: True)
+    monkeypatch.delenv("UNSLOTH_TORCH_VARLEN", raising = False)
+    config = types.SimpleNamespace(num_attention_heads = 4, num_key_value_heads = 2)
+    layer = torch.nn.Module()
+    layer.self_attn = types.SimpleNamespace(config = config, head_dim = 16, attention_dropout = 0.0)
+    hidden = torch.zeros(1, 8, 64, dtype = torch.bfloat16)
+    assert AD._packed_block_kernel(layer.train(), hidden)
+    # Training-time attention dropout keeps the eager, segmented kernels.
+    layer.self_attn.attention_dropout = 0.1
+    assert not AD._packed_block_kernel(layer.train(), hidden)
+    assert AD._packed_block_kernel(layer.eval(), hidden)
+    layer.self_attn.attention_dropout = 0.0
+    monkeypatch.setenv("UNSLOTH_TORCH_VARLEN", "0")
+    assert not AD._packed_block_kernel(layer.train(), hidden)
