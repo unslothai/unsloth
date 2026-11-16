@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load-time LoRA bake for the video backend.
-
-A video load that names ``loras`` merges each adapter (``scale * B @ A``, float32) into the dense bfloat16 denoiser
-right after the pipeline is built and before any quantisation, compile, offload or streaming, so every later stage
-sees ordinary weights. Only a full diffusers pipeline load has those dense weights on every path: a GGUF or
-single-file pick, and a MiniMax-H3 load pinned to a hosted quantized denoiser, are refused here instead.
-
-Adapter ids resolve through ``diffusion_lora`` exactly as the Images load resolves them (catalog, local scan, public
-HF repo id), family-gated by the sidecar the trainer writes. The baked set is recorded on the pipeline under the same
-attributes the image backend uses, so status and gallery entries report it the same way.
-"""
+"""Load-time LoRA bake for the video backend: adapters merge into the dense bf16 denoiser before any
+quantisation, compile or offload, so GGUF / single-file / hosted-quantized loads are refused."""
 
 from __future__ import annotations
 
@@ -407,7 +398,6 @@ def bake_into_module_(
 
 
 def mark_baked(pipe: Any, baked: tuple, specs: Any) -> None:
-    """Record the baked set on ``pipe`` the way the image backend does (names, paths, weights + request specs)."""
     setattr(pipe, LORAS_ATTR, tuple(baked))
     setattr(pipe, LORAS_BAKED_ATTR, bool(baked))
     setattr(pipe, BAKED_SPECS_ATTR, tuple(active_specs(specs)) if baked else ())

@@ -54,8 +54,6 @@ class _Block(torch.nn.Module):
 
 
 class _WanLike(torch.nn.Module):
-    """WanTransformer3DModel paths: ``blocks.N.attn1.to_q`` ... ``blocks.N.ffn.net.2``."""
-
     def __init__(
         self,
         dim: int = 16,
@@ -67,8 +65,6 @@ class _WanLike(torch.nn.Module):
 
 
 class _LtxLike(torch.nn.Module):
-    """LTX2VideoTransformer3DModel paths: ``transformer_blocks.N.attn1.to_q`` ..."""
-
     def __init__(
         self,
         dim: int = 16,
@@ -107,7 +103,6 @@ _LTX_LEAVES = (
 def _write_adapter(
     path: Path, module: torch.nn.Module, prefix: str, leaves, *, alpha: float, metadata: bool
 ):
-    """A diffusers-format adapter for ``module``; returns ``{module path: (A, B)}``."""
     gen = torch.Generator().manual_seed(0)
     params = dict(module.named_parameters())
     state, factors = {}, {}
@@ -307,7 +302,6 @@ def test_backend_bake_records_the_adapters_for_status(tmp_path):
     assert merged == 2 * len(_WAN_LEAVES)
     assert video_lora.baked_lora_names(pipe) == ["my-wan"]
     assert video_lora.baked_lora_specs(pipe) == [{"id": "my-wan", "weight": 1.0}]
-    # A plain load never marks its pipeline.
     assert video_lora.baked_lora_names(types.SimpleNamespace(transformer = module)) == []
     assert video_lora.baked_lora_specs(None) == []
 
@@ -366,7 +360,6 @@ def test_a_lora_bake_never_writes_the_base_models_quant_cache():
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in writers
     ]
-    # Every writer call sits under that guard's else branch (the definitions themselves are not calls).
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.If)
