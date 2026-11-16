@@ -265,7 +265,14 @@ test("On Device groups rows like the header picker, NPU and custom folders inclu
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /useNpuCatalog\(/);
-  assert.match(picker, /kind: "npu",\s+section: "npu"/);
+  assert.match(
+    picker,
+    /device\.push\(\.\.\.npuPickerRows\(npuModels, true\)\)/,
+  );
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
+    /kind: "npu",\s+section: "npu"/,
+  );
   assert.match(picker, /useCustomFolders\(/);
   assert.match(
     picker,
