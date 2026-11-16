@@ -13,6 +13,7 @@ import copy
 import logging
 import os
 import psutil
+import re
 import warnings
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -521,6 +522,30 @@ def _uses_multimodal_rope(model_config) -> bool:
         elif isinstance(node, (list, tuple)):
             stack.extend(x for x in node if isinstance(x, (dict, list, tuple)))
     return False
+
+
+_MROPE_2D_EXPANSION = re.compile(r"position_ids\[None, \.\.\.\]\.expand\(\s*(\d)\s*,")
+
+
+def _mrope_2d_position_ids_leak(model, model_config) -> bool:
+    """True when the mRoPE text model expands 2D position_ids to 3 rope rows only: no text row, so no packed
+    mask and padding-free rows attend across documents (Qwen2-VL / 2.5-VL, GLM-4V; Qwen3-VL on transformers 4.x)."""
+    if model_config is None or isinstance(model, str) or not hasattr(model, "modules"):
+        return False
+    if not _uses_multimodal_rope(model_config):
+        return False
+    rows, seen = set(), set()
+    for module in model.modules():
+        forward = getattr(type(module), "forward", None)
+        if forward is None or forward in seen:
+            continue
+        seen.add(forward)
+        try:
+            source = inspect.getsource(forward)
+        except (OSError, TypeError):
+            continue
+        rows.update(int(r) for r in _MROPE_2D_EXPANSION.findall(source))
+    return bool(rows) and 4 not in rows
 
 
 # mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
@@ -1943,6 +1968,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     model_types if _packing_gate_deferred else (),
                 )
         boundary_blocker = packing_boundary_blocker(model, model_types)
+        if boundary_blocker is None and _mrope_2d_position_ids_leak(model, model_config):
+            boundary_blocker = (
+                f"{model_types[0] if model_types else 'this mRoPE model'} (2D position_ids)"
+            )
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
