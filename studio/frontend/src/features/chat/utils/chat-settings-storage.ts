@@ -240,16 +240,13 @@ function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
 
 function sanitizePresetEditedKeys(
   value: unknown,
-): RecommendedSamplingKey[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return [
-    ...new Set(
-      value.filter(
-        (key): key is RecommendedSamplingKey =>
-          typeof key === "string" && isRecommendedSamplingKey(key),
-      ),
+): Partial<Record<RecommendedSamplingKey, boolean>> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([key, kept]) => isRecommendedSamplingKey(key) && typeof kept === "boolean",
     ),
-  ];
+  );
 }
 
 function sanitizeReasoningEffort(value: unknown): ReasoningEffort | undefined {

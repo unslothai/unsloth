@@ -607,8 +607,8 @@ class ChatSettingsPayload(BaseModel):
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
     presetEditedKeys: Optional[
-        list[Literal["temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens"]]
-    ] = Field(default = None, max_length = 6)
+        dict[Literal["temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens"], bool]
+    ] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]

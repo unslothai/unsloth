@@ -45,7 +45,8 @@ export interface PersistedChatSettings {
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
-  presetEditedKeys?: RecommendedSamplingKey[];
+  /** Per key, so edits from two tabs merge; `false` clears a key. */
+  presetEditedKeys?: Partial<Record<RecommendedSamplingKey, boolean>>;
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;

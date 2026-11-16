@@ -197,17 +197,20 @@ test("the kept keys are saved with the source", async () => {
   moveSlider("temperature", 0.2);
   await settled();
   assert.equal(stored().activePresetSource, "modified");
-  assert.deepEqual(stored().presetEditedKeys, ["temperature"]);
+  assert.equal((stored().presetEditedKeys as Record<string, boolean>).temperature, true);
   pickPreset(BUILTIN_PRESETS[0]);
   await settled();
-  assert.deepEqual(stored().presetEditedKeys, []);
+  assert.deepEqual(
+    stored().presetEditedKeys,
+    Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false])),
+  );
 });
 
 test("unknown kept keys are dropped when settings are read", () => {
   assert.deepEqual(
-    sanitizeChatSettings({ presetEditedKeys: ["temperature", "systemPrompt", "temperature", 3] })
+    sanitizeChatSettings({ presetEditedKeys: { temperature: true, topK: false, systemPrompt: true, minP: 1 } })
       .presetEditedKeys,
-    ["temperature"],
+    { temperature: true, topK: false },
   );
 });
 
@@ -215,7 +218,7 @@ test("hydration restores the kept keys, and an older `modified` keeps every key"
   settingsHttp.settings = {
     activePreset: "Default",
     activePresetSource: "modified",
-    presetEditedKeys: ["topK"],
+    presetEditedKeys: { topK: true, temperature: false },
   };
   useChatRuntimeStore.setState({ settingsHydrated: false });
   await useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -225,5 +228,78 @@ test("hydration restores the kept keys, and an older `modified` keeps every key"
   useChatRuntimeStore.setState({ settingsHydrated: false });
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
+  settingsHttp.settings = {};
+});
+
+async function rehydrate(settings: Record<string, unknown>): Promise<void> {
+  settingsHttp.settings = settings;
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+}
+
+test("a prompt edit made before hydration keeps a restored custom preset's values", async () => {
+  load(QWEN);
+  await settled();
+  settingsHttp.settings = {
+    activePreset: "Pirate",
+    activePresetSource: "custom",
+    inferenceParams: { temperature: 0.3, topP: 0.7, topK: 10, presencePenalty: 0 },
+  };
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  saveSystemPrompt("Arr.");
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(useChatRuntimeStore.getState().activePreset, "Pirate");
+  load(GEMMA);
+  assert.deepEqual(sampling(), { temperature: 0.3, topP: 0.7, topK: 10, presencePenalty: 0 });
+  await settled();
+  await rehydrate(stored());
+  load(LLAMA);
+  assert.deepEqual(sampling(), { temperature: 0.3, topP: 0.7, topK: 10, presencePenalty: 0 });
+  settingsHttp.settings = {};
+});
+
+test("a pre-hydration prompt edit keeps the keys an earlier session moved", async () => {
+  load(QWEN);
+  await settled();
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "modified",
+    presetEditedKeys: { temperature: true },
+    inferenceParams: { temperature: 0.2 },
+  };
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  saveSystemPrompt("Be terse.");
+  settingsHttp.release?.();
+  await hydrating;
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, ["temperature"]);
+  settingsHttp.settings = {};
+});
+
+test("a stale tab's prompt edit does not erase a key another tab moved", async () => {
+  load(QWEN);
+  await settled();
+  // Another tab moved Temperature after this one hydrated on Default.
+  settingsHttp.settings = {
+    activePreset: "Default",
+    activePresetSource: "modified",
+    presetEditedKeys: { temperature: true },
+    inferenceParams: { temperature: 0.2 },
+  };
+  settingsHttp.puts.length = 0;
+  saveSystemPrompt("Be terse.");
+  await settled();
+  // A fresh session: no model resident, so nothing replays over the saved temperature.
+  useChatRuntimeStore.getState().clearCheckpoint();
+  useChatRuntimeStore.setState({ paramsByModel: {} });
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, ["temperature"]);
+  load(GEMMA);
+  assert.equal(sampling().temperature, 0.2);
   settingsHttp.settings = {};
 });

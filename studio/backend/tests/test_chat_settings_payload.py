@@ -139,22 +139,24 @@ def test_max_tool_calls_off_survives_the_payload():
     assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
 
 
-def test_preset_edited_keys_round_trip_and_replace():
+def test_preset_edited_keys_round_trip_and_merge_per_key():
     payload = ChatSettingsPayload.model_validate(
-        {"activePresetSource": "modified", "presetEditedKeys": ["temperature", "minP"]}
+        {"activePresetSource": "modified", "presetEditedKeys": {"temperature": True, "minP": False}}
     )
     assert payload.model_dump(exclude_unset = True) == {
         "activePresetSource": "modified",
-        "presetEditedKeys": ["temperature", "minP"],
+        "presetEditedKeys": {"temperature": True, "minP": False},
     }
-    # A list replaces, so picking a preset clears the keys an earlier edit kept.
-    merged = _deep_merge_settings({"presetEditedKeys": ["temperature"]}, {"presetEditedKeys": []})
-    assert merged["presetEditedKeys"] == []
+    # Per key, so another tab's kept key survives this tab's edit.
+    merged = _deep_merge_settings(
+        {"presetEditedKeys": {"temperature": True}}, {"presetEditedKeys": {"topK": True}}
+    )
+    assert merged["presetEditedKeys"] == {"temperature": True, "topK": True}
 
 
 def test_preset_edited_keys_rejects_a_key_the_recommendation_does_not_set():
     with pytest.raises(ValidationError):
-        ChatSettingsPayload.model_validate({"presetEditedKeys": ["systemPrompt"]})
+        ChatSettingsPayload.model_validate({"presetEditedKeys": {"systemPrompt": True}})
 
 
 @pytest.mark.parametrize(

@@ -3340,18 +3340,28 @@ function persistPresetDefaults(params: InferenceParams): void {
 }
 
 /** An edited custom preset keeps every recommended key, as the preset did. */
-function nextPresetEditedKeys(
-  state: ChatRuntimeStore,
+function heldPresetEditedKeys(
+  activePreset: string,
   source: ChatPresetSource,
-  editedKey: RecommendedSamplingKey | undefined,
+  editedKeys: readonly RecommendedSamplingKey[],
 ): RecommendedSamplingKey[] {
   if (source !== "modified") return [];
-  if (getPresetSource(state.activePreset) === "custom") {
+  if (getPresetSource(activePreset) === "custom") {
     return [...RECOMMENDED_SAMPLING_KEYS];
   }
-  const kept =
-    state.activePresetSource === "modified" ? state.presetEditedKeys : [];
-  return editedKey && !kept.includes(editedKey) ? [...kept, editedKey] : kept;
+  return [...new Set(editedKeys)];
+}
+
+// Saved per key, so another tab's kept key survives this one's edit; only leaving `modified` clears.
+function presetEditedKeysPatch(
+  keys: readonly RecommendedSamplingKey[],
+  source: ChatPresetSource,
+): Partial<Record<RecommendedSamplingKey, boolean>> {
+  return Object.fromEntries(
+    source === "modified"
+      ? keys.map((key) => [key, true])
+      : RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false]),
+  );
 }
 
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
@@ -3481,16 +3491,26 @@ function getHydratedPresetState(
   if (activePresetMutationVersion === versions.activePreset) {
     nextState.activePreset = settings.activePreset ?? state.activePreset;
   }
-  if (activePresetSourceMutationVersion === versions.activePresetSource) {
-    const activePreset = nextState.activePreset ?? state.activePreset;
-    nextState.activePresetSource =
-      settings.activePresetSource ?? getPresetSource(activePreset);
-    // A `modified` saved before the list existed kept every key, so it still does.
-    nextState.presetEditedKeys =
-      nextState.activePresetSource === "modified"
-        ? (settings.presetEditedKeys ?? [...RECOMMENDED_SAMPLING_KEYS])
-        : [];
-  }
+  const activePreset = nextState.activePreset ?? state.activePreset;
+  const savedSource = settings.activePresetSource ?? getPresetSource(activePreset);
+  const sourceEditedLocally =
+    activePresetSourceMutationVersion !== versions.activePresetSource;
+  if (!sourceEditedLocally) nextState.activePresetSource = savedSource;
+  // A `modified` saved before the keys existed kept every key, so it still does.
+  const savedKeys = heldPresetEditedKeys(
+    activePreset,
+    savedSource,
+    settings.presetEditedKeys
+      ? RECOMMENDED_SAMPLING_KEYS.filter((key) => settings.presetEditedKeys?.[key])
+      : RECOMMENDED_SAMPLING_KEYS,
+  );
+  // An edit made before hydration adds to the saved keys rather than replacing them.
+  nextState.presetEditedKeys = sourceEditedLocally
+    ? heldPresetEditedKeys(activePreset, state.activePresetSource, [
+        ...savedKeys,
+        ...state.presetEditedKeys,
+      ])
+    : savedKeys;
   // A model resident before hydration loaded under the placeholder source, so restoring a custom
   // preset here is its load under that preset.
   notePresetOnLoad(
@@ -4898,12 +4918,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         activePresetSource === "builtin-default" &&
         state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
-      const presetEditedKeys = nextPresetEditedKeys(
-        state,
+      const presetEditedKeys = heldPresetEditedKeys(
+        state.activePreset,
         activePresetSource,
-        editedKey,
+        [
+          ...(state.activePresetSource === "modified" ? state.presetEditedKeys : []),
+          ...(editedKey ? [editedKey] : []),
+        ],
       );
-      saveSettingsPatch({ activePresetSource, presetEditedKeys });
+      saveSettingsPatch({
+        activePresetSource,
+        presetEditedKeys: presetEditedKeysPatch(presetEditedKeys, activePresetSource),
+      });
       return { activePresetSource, presetEditedKeys };
     });
     if (returnedToBuiltInDefault) {
