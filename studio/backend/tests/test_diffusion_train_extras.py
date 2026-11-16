@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from core.training.diffusion_train_extras import (
+    _LATENT_CACHE_VERSION,
     BUCKET_DIVISOR,
     BucketBatchSampler,
     LoRAEMA,
@@ -172,7 +173,9 @@ def test_cache_key_tracks_content_family_and_resolution(tmp_path):
 def test_latent_cache_misses_entries_encoded_before_white_flattening(tmp_path):
     cache = PersistentConditioningCache(tmp_path / "cc", "qwen-image", 512)
     img = _make_image(tmp_path)
-    stale = cache.latent_key(img, (0.5, 0.5, False)).replace("lat_v2_", "lat_v1_", 1)
+    stale = cache.latent_key(img, (0.5, 0.5, False)).replace(
+        f"lat_v{_LATENT_CACHE_VERSION}", "lat_v1", 1
+    )
     cache.put(stale, (torch.zeros(1), torch.zeros(1)))
     assert stale != cache.latent_key(img, (0.5, 0.5, False))
     assert not cache.has(cache.latent_key(img, (0.5, 0.5, False)))
