@@ -69,7 +69,7 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-PANEL = 'div[role="dialog"] main div.hover-scrollbar'
+PANEL = 'div[role="dialog"] main [data-settings-main-scroll]'
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
 # vite appends ?t= or ?v= to module URLs.
@@ -213,7 +213,7 @@ def open_dialog(page, tab: str | None = None) -> None:
 
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
-    elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+    elements: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
@@ -221,7 +221,7 @@ ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
     setTimeout(() => {
-        const panel = document.querySelector('div[role="dialog"] main div.hover-scrollbar');
+        const panel = document.querySelector('div[role="dialog"] main [data-settings-main-scroll]');
         window.__abandonedAt = {
             elements: panel ? panel.querySelectorAll('*').length : null,
             subpage: !!document.querySelector('div[role="dialog"] main header button'),
@@ -301,7 +301,7 @@ def run_chunk_fail(page) -> None:
             nav: document.querySelectorAll('[data-testid^="settings-tab-"]').length,
             harness: !!document.querySelector('[data-testid="harness-root"]'),
             boundary: !!document.querySelector('[data-testid="harness-error-boundary"]'),
-            panelText: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+            panelText: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
                 || {}).innerText || null,
             bodyText: (document.body.innerText || '').trim().length,
         })"""
