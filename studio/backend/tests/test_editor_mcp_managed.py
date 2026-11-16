@@ -291,6 +291,7 @@ def fresh_install_cache(monkeypatch, tmp_path):
 
     installed._cache.clear()
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser("~") reads this on Windows
     monkeypatch.setattr(installed.shutil, "which", lambda name: None)
     monkeypatch.setattr(installed.sys, "platform", "linux")
     yield installed
@@ -343,7 +344,37 @@ async def test_roblox_studio_runs_its_stdio_launcher_on_windows_and_macos(monkey
     monkeypatch.setattr(editors.sys, "platform", "darwin")
     assert editors.catalog_item("roblox").available
     row = editors.resolve_server({"builtin_id": "roblox", "builtin_config_json": "{}"})
-    assert row["url"].endswith("mcp_argument_echo_server.py") and row["headers_json"] is None
+    assert mcp_client.parse_stdio_command(row["url"]) == [sys.executable, str(fixture)]
+    assert row["headers_json"] is None
+    result = await editors.probe("roblox", EditorSettings())
+    assert result.ok and result.tool_count >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason = "runs Roblox's real cmd.exe /c %LOCALAPPDATA%\\Roblox\\mcp.bat launch",
+)
+async def test_roblox_studio_launches_its_batch_file_on_windows(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
+    fixture = Path(__file__).resolve().parent / "fixtures" / "mcp_argument_echo_server.py"
+    local = tmp_path / "App Data"
+    (local / "Roblox").mkdir(parents = True)
+    (local / "Roblox" / "mcp.bat").write_text(
+        f'@echo off\r\n"{sys.executable}" "{fixture}"\r\n', encoding = "utf-8"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    assert editors.catalog_item("roblox").available
+    row = editors.resolve_server({"builtin_id": "roblox", "builtin_config_json": "{}"})
+    assert mcp_client.parse_stdio_command(row["url"]) == [
+        "cmd.exe",
+        "/c",
+        str(local / "Roblox" / "mcp.bat"),
+    ]
     result = await editors.probe("roblox", EditorSettings())
     assert result.ok and result.tool_count >= 1
 
