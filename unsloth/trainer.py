@@ -525,16 +525,18 @@ def _uses_multimodal_rope(model_config) -> bool:
 
 
 _MROPE_2D_EXPANSION = re.compile(r"position_ids\[None, \.\.\.\]\.expand\(\s*(\d)\s*,")
+_MROPE_NO_TEXT_ROW = re.compile(r"text_position_ids\s*=\s*None")
 
 
 def _mrope_2d_position_ids_leak(model, model_config) -> bool:
-    """True when the mRoPE text model expands 2D position_ids to 3 rope rows only: no text row, so no packed
-    mask and padding-free rows attend across documents (Qwen2-VL / 2.5-VL, GLM-4V; Qwen3-VL on transformers 4.x)."""
+    """True when an mRoPE text model turns 2D position_ids into 3 rope rows and then drops the text row
+    (`text_position_ids = None`): no packed mask, so padding-free rows attend across documents
+    (Qwen2-VL / 2.5-VL, GLM-4V). Qwen3-VL keeps a text row on transformers 4.x and 5.x."""
     if model_config is None or isinstance(model, str) or not hasattr(model, "modules"):
         return False
     if not _uses_multimodal_rope(model_config):
         return False
-    rows, seen = set(), set()
+    seen = set()
     for module in model.modules():
         forward = getattr(type(module), "forward", None)
         if forward is None or forward in seen:
@@ -544,8 +546,10 @@ def _mrope_2d_position_ids_leak(model, model_config) -> bool:
             source = inspect.getsource(forward)
         except (OSError, TypeError):
             continue
-        rows.update(int(r) for r in _MROPE_2D_EXPANSION.findall(source))
-    return bool(rows) and 4 not in rows
+        rows = {int(r) for r in _MROPE_2D_EXPANSION.findall(source)}
+        if 3 in rows and 4 not in rows and _MROPE_NO_TEXT_ROW.search(source):
+            return True
+    return False
 
 
 # mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),

@@ -36,7 +36,21 @@ class _Text3(nn.Module):
     def forward(self, position_ids = None):
         if position_ids.ndim == 2:
             position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
-        return position_ids
+        if position_ids.shape[0] == 4:
+            text_position_ids = position_ids[0]
+        else:
+            text_position_ids = None
+        return text_position_ids
+
+
+class _Text3KeepsRow(nn.Module):
+    """Qwen3-VL on transformers 4.x: 3 rows, but the text row is position_ids[0]."""
+
+    def forward(self, position_ids = None):
+        if position_ids.ndim == 2:
+            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+        text_position_ids = position_ids[0]
+        return text_position_ids
 
 
 class _Text4(nn.Module):
@@ -102,14 +116,22 @@ def test_text_row_mrope_and_plain_rope_keep_padding_free(packing):
         assert args.padding_free is True and bool(args.packing) is packing
 
 
-def test_real_qwen2_5_vl_text_model_is_detected():
-    pytest.importorskip("transformers.models.qwen2_5_vl")
-    from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl as m
+@pytest.mark.parametrize(
+    "module,cls,leaks",
+    [
+        ("qwen2_5_vl", "Qwen2_5_VLTextModel", True),
+        ("qwen2_vl", "Qwen2VLTextModel", True),
+        ("qwen3_vl", "Qwen3VLTextModel", False),
+    ],
+)
+def test_real_transformers_text_models(module, cls, leaks):
+    import importlib
 
-    cfg = _Cfg("qwen2_5_vl", text_config = MROPE)
+    m = importlib.import_module(f"transformers.models.{module}.modeling_{module}")
+    cfg = _Cfg(module, text_config = MROPE)
     model = _Model(cfg, nn.Module())
-    model.language_model.__class__ = type("T", (m.Qwen2_5_VLTextModel,), {})
-    assert trainer_module._mrope_2d_position_ids_leak(model, cfg)
+    model.language_model.__class__ = type("T", (getattr(m, cls),), {})
+    assert trainer_module._mrope_2d_position_ids_leak(model, cfg) is leaks
 
 
 if __name__ == "__main__":
