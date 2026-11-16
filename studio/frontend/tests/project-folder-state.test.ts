@@ -111,6 +111,6 @@ test("the web picks a working folder by path, and only when the backend allows i
   const create = readSrc("features/chat/components/new-project-dialog.tsx");
   assert.match(
     create,
-    /if \(serverFolder\) \{\n\s*project = await setChatProjectWorkingFolderPath\(/,
+    /if \(serverFolder\) \{\n\s*(?:try \{\n\s*)?project = await setChatProjectWorkingFolderPath\(/,
   );
 });

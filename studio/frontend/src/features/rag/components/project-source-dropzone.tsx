@@ -336,25 +336,30 @@ export function ProjectSourceDropzone({
           if (disabled) return;
           endDrag();
           // A browser folder drop is walked to its files; the desktop links folders instead.
-          void filesFromDrop(e.dataTransfer, isSupportedSourceName).then(
-            ({ files, truncated, hadFolder }) => {
-              if (!mounted.current) return;
-              if (hadFolder && files.length === 0) {
-                toast.info("No supported files in that folder", {
-                  description: SUPPORTED_SOURCES_HINT,
-                });
-                return;
-              }
-              if (truncated > 0) {
-                toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
-                  description:
-                    "The rest were left out. Drop a smaller folder for them.",
-                });
-              }
-              addFiles(files);
-            },
-            () => toast.error("Couldn't read the dropped folder"),
-          );
+          // Pending until the files are staged, so Create cannot run without them.
+          const claimed = generation.current;
+          addPending(1);
+          void filesFromDrop(e.dataTransfer, isSupportedSourceName)
+            .then(
+              ({ files, truncated, hadFolder }) => {
+                if (!mounted.current || claimed !== generation.current) return;
+                if (hadFolder && files.length === 0) {
+                  toast.info("No supported files in that folder", {
+                    description: SUPPORTED_SOURCES_HINT,
+                  });
+                  return;
+                }
+                if (truncated > 0) {
+                  toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+                    description:
+                      "The rest were left out. Drop a smaller folder for them.",
+                  });
+                }
+                addFiles(files);
+              },
+              () => toast.error("Couldn't read the dropped folder"),
+            )
+            .finally(() => addPending(-1));
         }}
         className={cn(
           "rounded-2xl border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",

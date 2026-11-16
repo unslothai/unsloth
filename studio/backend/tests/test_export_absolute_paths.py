@@ -233,6 +233,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     for name in (
         "BrowseEntry",
         "BrowseFoldersResponse",
+        "BrowsePlace",
         "ExportSizeResponse",
         "GgufVariantDetail",
         "GgufVariantsResponse",
