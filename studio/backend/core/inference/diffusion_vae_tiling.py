@@ -696,8 +696,7 @@ def _log_stock_fallback(vae: Any, reason: str) -> None:
 
 
 def _log_full_map_once(vae: Any, engaged: bool, reason: str) -> None:
-    """One line per VAE and outcome: which decode a FLUX.2-class tiled request took, and why (a small card can tell
-    it decoded in tiles, colour shift possible)."""
+    """Log once per VAE and outcome which decode a FLUX.2-class tiled request took, and why."""
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_full_map_logged", set())
     if logger is None or engaged in seen:
@@ -722,9 +721,8 @@ def full_map_decode(
     z: Any,
     return_dict: bool = True,
 ) -> Any:
-    """FLUX.2-class VAEs: the whole-map strip decode instead of tiles when its peak fits ``FREE_FRACTION`` of the free
-    memory (tiles cut from a large latent take their own GroupNorm stats and shift colour); None to tile, logged once.
-    See diffusion_vae_strips."""
+    """FLUX.2-class whole-map decode when its peak fits ``FREE_FRACTION`` of free memory (per-tile GroupNorm stats
+    shift colour); None to tile."""
     try:
         import torch
 

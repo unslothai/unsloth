@@ -57,7 +57,6 @@ def full_map_disabled() -> bool:
 
 
 def _portable() -> bool:
-    """This decode runs the torch fallbacks (no Triton kernels on this device / build)."""
     return bool(getattr(_LOCAL, "portable", False))
 
 
@@ -256,8 +255,7 @@ def _stats_torch(
     norm: Any,
     in_bias: Any = None,
 ) -> tuple:
-    """fp32 ``(mean, rstd)`` per group over the whole map, in row strips (two passes: mean, then centred squares).
-    fp32 accumulators on the map's device: no fp64 (Intel XPU, MPS) and no host sync per strip."""
+    """fp32 per-group ``(mean, rstd)`` over the whole map in row strips; fp32 on device (no fp64 on XPU/MPS, no host sync)."""
     torch = fused._torch()
     _, c, h, w = x.shape
     g = int(norm.num_groups)
@@ -549,8 +547,7 @@ def full_map_ok(vae: Any) -> bool:
 
 
 def full_map_decode(vae: Any, z: Any) -> Any:
-    """The untiled decode of a (B, C, H, W) latent with every GroupNorm over the whole map, in bounded row strips:
-    Triton kernels where the strip path runs, torch ops elsewhere."""
+    """Untiled decode of a (B, C, H, W) latent with whole-map GroupNorm, in bounded row strips."""
     torch = fused._torch()
     decoder = vae.decoder
     dtype = decoder.conv_in.weight.dtype
@@ -603,8 +600,7 @@ def _score_budget_mb() -> int:
 
 
 def full_map_decode_mib(vae: Any, z: Any) -> float:
-    """Peak MiB of ``full_map_decode``: the strip slope over the frame (scaled by element size), the strip
-    temporaries (the torch fallback holds a few fp32 strips) and the chunked mid-block attention's score tile."""
+    """Peak MiB of ``full_map_decode``: strip slope over the frame + fp32 strip temporaries + chunked attention scores."""
     slope = DECODE_STRIPS_MIB_PER_LATENT
     elem = vae.decoder.conv_in.weight.element_size()
     strip = (strip_elems(z.device) if z.is_cuda else (STRIP_ELEMS or 1 << 24)) * 4
