@@ -108,7 +108,7 @@ def test_load_without_baked_adapters_keeps_the_old_call_shape(monkeypatch):
 def test_status_reports_the_load_request_behind_a_bake():
     pipe = types.SimpleNamespace()
     diffusion_module._record_baked_lora_specs(pipe, [("tarot-lora", 0.8), ("off", 0.0)])
-    assert diffusion_module._baked_lora_specs(pipe) == []  # not baked: nothing to report
+    assert diffusion_module._baked_lora_specs(pipe) == []
     pipe._unsloth_loras_baked = True
     assert diffusion_module._baked_lora_specs(pipe) == [{"id": "tarot-lora", "weight": 0.8}]
 
@@ -123,7 +123,7 @@ def _baked_quant_state():
 
 
 def test_reporting_the_baked_specs_back_keeps_the_bake_on(monkeypatch):
-    # What the route now sends when the client omits loras: the baked set, unchanged, stays on.
+    # Omitted loras: the route sends the baked set unchanged.
     backend = diffusion_module.DiffusionBackend.__new__(diffusion_module.DiffusionBackend)
     monkeypatch.setattr(
         backend,

@@ -968,7 +968,7 @@ def _baked_lora_names(pipe: Any) -> list:
     return names
 
 
-# The load request's (discovery id, weight) pairs behind a baked set, so a route without a LoRA field can render with it.
+# Load-request (id, weight) pairs behind a baked set.
 _BAKED_LORA_SPECS_ATTR = "_unsloth_baked_lora_specs"
 
 

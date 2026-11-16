@@ -53894,7 +53894,6 @@ async def _generate_openai_images(
         "transformer_cache": result.get("transformer_cache"),
         "cpu_offload": result.get("cpu_offload"),
         "baked_loras": list(result.get("baked_loras") or []),
-        # Same id:weight record as /images/generate, so the gallery shows the adapters this render used.
         "loras": [f"{lora_id}:{weight:g}" for lora_id, weight in loras],
         "workflow": result.get("workflow"),
         "created_at": float(created),

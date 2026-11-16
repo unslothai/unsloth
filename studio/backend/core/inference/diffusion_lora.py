@@ -435,7 +435,7 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
 
 
 class LoraSelectionError(ValueError):
-    """A LoRA selection the loaded model cannot take (unknown, wrong family, or needing a reload): the caller's to fix."""
+    """A LoRA selection the loaded model cannot take; the caller's to fix."""
 
 
 def resolve_one(
