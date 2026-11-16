@@ -250,7 +250,17 @@ def triton_available() -> bool:
     Windows)."""
     try:
         from . import diffusion_int8_attention_triton as triton_kernel
-        return triton_kernel.triton is not None
+
+        if triton_kernel.triton is None:
+            return False
+        # NVIDIA Triton 3.3 (torch 2.7) cannot compile the Q / K rotation ("'tt.join' op failed to infer returned
+        # types"; 3.2 and 3.4+ compile it), and a column-wise rewrite that does was 1.3-2.9x slower than native
+        # attention there (L4, A100), so the speed race would keep native anyway: skip the failing compile.
+        try:
+            version = tuple(int(x) for x in triton_kernel.triton.__version__.split(".")[:2])
+        except Exception:  # noqa: BLE001 -- unparsable: read as a current Triton
+            return True
+        return not (version == (3, 3) and not triton_kernel._rocm_build())
     except Exception:  # noqa: BLE001
         return False
 
