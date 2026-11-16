@@ -40,7 +40,6 @@ _SAFETENSORS_DTYPES = {
     "F32": torch.float32,
     "F64": torch.float64,
 }
-# from_pretrained keywords that are not config attributes (the rest of a config-less call updates the config).
 _LOAD_ONLY_KWARGS = (
     "cache_dir",
     "force_download",
@@ -120,7 +119,6 @@ def is_linear4bit(module):
 
 
 def quantized_weights(model):
-    """{id(weight): Linear4bit module} of a model built by prequantized_skeleton."""
     return {
         id(m._parameters["weight"]): m
         for m in model.modules()
@@ -174,7 +172,6 @@ def _no_missing_key_init():
 
 
 def meta_state_dict(reader):
-    """The checkpoint's non-quantized tensors as meta tensors (shape and dtype from the safetensors headers)."""
     packed = QuantReads(reader, {}).packed_keys()
     out = {}
     for key in reader.index:
@@ -222,8 +219,6 @@ def prequantized_skeleton(original, cls, name, args, kwargs, config, state_dict)
 
 
 class QuantReads:
-    """The bitsandbytes 4-bit reads of one checkpoint (`reader` is tp_native._SliceReader)."""
-
     def __init__(self, reader, quantized):
         self.reader, self.quantized = reader, quantized
         self._stats = None
@@ -242,7 +237,6 @@ class QuantReads:
         return self._stats
 
     def packed_keys(self):
-        """Checkpoint keys of the packed 4-bit weights (those with QuantState statistics)."""
         return set(self._stat_index())
 
     def stat_keys(self, key):
@@ -292,7 +286,6 @@ class QuantReads:
         return new
 
     def whole(self, key, module, device):
-        """The Params4bit a full transformers load builds (same bytes, same QuantState)."""
         return self._param(self.reader.full(key), self.stats(key), module, device)
 
     def placeholder(self, key, module, device):

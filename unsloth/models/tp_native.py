@@ -2164,7 +2164,7 @@ def _shard_projection(region, proj, mesh, rank, tp):
     if proj.style == KV_REPLICATED:
         _shard_kv_replicated(region, proj, mesh, rank, tp)
     elif _preloaded(weight) is not None and _is_params4bit(weight):
-        pass  # sharded_loading read this rank's 4-bit shard already
+        pass
     elif _preloaded(weight) is not None:
         _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
     elif _is_params4bit(weight):

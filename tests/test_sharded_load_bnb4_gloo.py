@@ -112,7 +112,6 @@ def _is4(p):
 
 
 def _quant_fields(state, prefix = ""):
-    """{name: tensor / value} of a bitsandbytes QuantState (nested state included)."""
     if state is None:
         return {}
     out = {
@@ -196,9 +195,6 @@ def _held_4bit_bytes(model):
         for v in _quant_fields(p.quant_state).values():
             add(v)
     return total
-
-
-# ----------------------------------------------------------------------------------------------- cases
 
 
 def _case_pp(

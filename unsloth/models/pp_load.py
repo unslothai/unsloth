@@ -135,8 +135,7 @@ def _split_for(model, mesh, schedule, config):
     v = resolve_stages_per_rank(spec, config.stages_per_rank)
     pp, rank = mesh.size(), mesh.get_local_rank()
     parts = _find_parts(model)
-    # The structural refusals (MoE, MLA, ...) before anything is read; the rest run again at
-    # apply_pipeline_parallel, after get_peft_model freezes the base.
+    # Structural refusals before anything is read; the rest run again at apply_pipeline_parallel.
     _refuse_unsupported(model, parts, at_load = True, allow_moe = False)
     bounds = derive_pp_split(model, pp * v, config)
     local = stage_indices(spec, rank, pp, v)
