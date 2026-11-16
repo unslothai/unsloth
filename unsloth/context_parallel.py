@@ -46,11 +46,14 @@ def _torch_supports_context_parallel() -> bool:
     ) >= Version("2.7.0")
 
 
-def _ring_sdpa_backends():
-    # The math kernel is not ringed: it would attend over the local shard only.
+def _ring_sdpa_backends(efficient = False):
+    # The math kernel is not ringed: it would attend over the local shard only. The efficient kernel is ringed,
+    # but its load balanced backward returns wrong dq / dk in fp16 / bf16 (torch 2.14); float32 only.
     if SDPBackend is None:
         return None
-    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    backends = [SDPBackend.FLASH_ATTENTION]
+    if efficient:
+        backends.append(SDPBackend.EFFICIENT_ATTENTION)
     cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
@@ -65,6 +68,17 @@ def _ring_sdpa_backends():
         if isinstance(handled, dict) and op.default in handled:
             backends.append(cudnn)
     return backends
+
+
+def _compute_dtype(model):
+    config = getattr(model, "config", None)
+    for c in (getattr(config, "text_config", None), config):
+        dtype = getattr(c, "dtype", None) or getattr(c, "torch_dtype", None)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype, None)
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    return getattr(model, "dtype", None)
 
 
 def _cp_replaced_functions():
@@ -706,6 +720,7 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        self._ring_float32 = _compute_dtype(model) == torch.float32
         if any(
             isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
             for m in model.modules()
@@ -992,7 +1007,7 @@ class ContextParallelManager:
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
-        ring_backends = _ring_sdpa_backends()
+        ring_backends = _ring_sdpa_backends(self.__dict__.get("_ring_float32", False))
         registry = _cp_replaced_functions()
         wrappers = set(registry) if registry is not None else None
         raised = False

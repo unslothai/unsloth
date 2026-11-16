@@ -4,6 +4,7 @@
 """Context parallelism plumbing that runs without a process group (the ring itself needs >= 2 GPUs)."""
 
 import contextlib
+import types
 
 import pytest
 import torch
@@ -541,6 +542,49 @@ def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
         out = ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
     assert seen[0] == torch.float32 and seen[1] in (torch.bfloat16, torch.float16)
     assert out.dtype == torch.float32
+
+
+def test_ring_downcast_fp32_inputs_never_take_the_efficient_kernel(monkeypatch):
+    import contextlib
+
+    if cp.SDPBackend is None:
+        pytest.skip("torch without SDPBackend")
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    kernels, active = [], []
+
+    @contextlib.contextmanager
+    def record(backends):
+        active.append(list(backends))
+        yield
+        active.pop()
+
+    monkeypatch.setattr(ad, "_sdpa_kernel", record)
+    monkeypatch.setattr(
+        ad,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **k: (kernels.append((Q.dtype, active[-1] if active else None)), Q)[1],
+    )
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 4, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 4,
+        head_dim = 8,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.zeros(1, 4, 4, 8, dtype = torch.float32)
+    manager = _manager()
+    manager.mesh = None
+    manager._ring_float32 = True  # an fp32 model: the step-wide list allows efficient attention
+    with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+        ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    ((dtype, pinned),) = kernels
+    assert dtype in (torch.bfloat16, torch.float16)
+    assert pinned is not None and cp.SDPBackend.EFFICIENT_ATTENTION not in pinned
 
 
 @pytest.mark.parametrize("distributed_type, fsdp_version", [("DEEPSPEED", None), ("FSDP", 1)])
@@ -1264,13 +1308,15 @@ def test_rotate_method_is_set_for_the_step_and_restored(monkeypatch, raises):
     assert cp._cp_options.rotate_method == before
 
 
+@pytest.mark.parametrize("float32", [False, True])
 @pytest.mark.parametrize("raises", [False, True])
-def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
+def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises, float32):
     if cp.sdpa_kernel is None:
         pytest.skip("no torch.nn.attention.sdpa_kernel")
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
     manager = _manager()
     manager.mesh = None
+    manager._ring_float32 = float32
     cuda = torch.backends.cuda
     before = (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled())
     seen = []
@@ -1285,7 +1331,8 @@ def test_ring_pins_sdpa_to_kernels_the_dispatcher_rings(monkeypatch, raises):
             )
             if raises:
                 raise RuntimeError("boom")
-    assert seen == [(True, True, False)]
+    # Half precision: flash only (the ringed efficient backward is wrong there); float32 keeps efficient.
+    assert seen == [(True, float32, False)]
     assert (
         cuda.flash_sdp_enabled(),
         cuda.mem_efficient_sdp_enabled(),
@@ -1299,7 +1346,12 @@ def test_cudnn_is_pinned_only_where_the_ring_handles_it():
         pytest.skip("no SDPBackend")
     from torch.nn.attention import SDPBackend
 
-    assert backends[:2] == [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    assert backends[0] == SDPBackend.FLASH_ATTENTION
+    assert SDPBackend.EFFICIENT_ATTENTION not in backends
+    assert cp._ring_sdpa_backends(True)[:2] == [
+        SDPBackend.FLASH_ATTENTION,
+        SDPBackend.EFFICIENT_ATTENTION,
+    ]
     from packaging.version import Version
 
     if Version(Version(torch.__version__).base_version) >= Version("2.13"):
@@ -1698,3 +1750,12 @@ def test_ulysses_packing_blocker_classifies_model_id_strings(model_type, blocker
     # A model ID string has no modules yet: its config's model type must give the instance outcome,
     # so SFT also turns eval_packing off for hybrids whose Ulysses mixers refuse packed batches.
     assert cp.ulysses_packing_blocker("some/model-id", model_types = (model_type,)) == blocker
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_ring_keeps_efficient_attention_for_float32_models_only(dtype):
+    model = torch.nn.Linear(2, 2).to(dtype)
+    model.config = types.SimpleNamespace(torch_dtype = str(dtype).split(".")[-1])
+    manager = _manager()
+    manager.attach_attention_hooks(model)
+    assert manager._ring_float32 is (dtype == torch.float32)
