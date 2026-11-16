@@ -1029,6 +1029,7 @@ export const ar = {
       videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
+      customizeProfileMenu: "تخصيص قائمة الملف الشخصي",
       newBadge: "جديد",
       export: "تصدير",
       recents: "العناصر الأخيرة",

@@ -634,7 +634,7 @@ def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
     if not lora_quant_merge.merged(pipe):
         return False
     if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
-        raise ValueError(
+        raise LoraSelectionError(
             "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
             "until the model is reloaded. Reload the model with the new adapter weights."
         )
@@ -14326,7 +14326,7 @@ class DiffusionBackend:
         # diffusers load_lora_weights takes safetensors only; reject a .gguf adapter as a clean 400.
         bad = [r.id for r in resolved if r.fmt != "safetensors"]
         if bad:
-            raise ValueError(
+            raise LoraSelectionError(
                 "GGUF LoRA adapters are not supported on the diffusers engine "
                 f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
             )
@@ -14382,7 +14382,7 @@ class DiffusionBackend:
 
         blocked = _lora_load_block_reason(pipe)
         if blocked:
-            raise ValueError(blocked)
+            raise LoraSelectionError(blocked)
         unavailable = diffusion_lora.lora_unavailable_reason(
             engine = "diffusers",
             family = getattr(state.family, "name", None),
@@ -14391,7 +14391,7 @@ class DiffusionBackend:
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
         )
         if unavailable:
-            raise ValueError(unavailable)
+            raise LoraSelectionError(unavailable)
 
         desired = self._resolve_lora_set(
             specs,
@@ -14468,7 +14468,7 @@ class DiffusionBackend:
         )
         if tuple(desired) == tuple(current):
             return
-        raise ValueError(
+        raise LoraSelectionError(
             "MiniMax-H3-Image merges LoRA adapters into its weights when the model loads, so the LoRA selection "
             "and weights are fixed for this load. Load the model again with the new LoRA selection."
         )
