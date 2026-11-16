@@ -50,6 +50,8 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # Only needs to outlast the 100 ms follow-up wait.
 RAPID_FIRST_TURN_HOLD_S = 3.0
+# aria-label suffix of the collapsed model picker row (composer-model-picker.tsx); clicking it shows the search.
+PICKER_SHOW_ALL_SUFFIX = ": show all models"
 
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 
@@ -1418,10 +1420,17 @@ with sync_playwright() as p:
         soft_fail("model picker button not found")
     else:
         picker_btn.click()
-        search = wait_for_first(
-            page.get_by_placeholder(re.compile(r"Search.*models?", re.I)),
-            timeout_ms = 10_000,
-        )
+        search_box = page.get_by_placeholder(re.compile(r"Search.*models?", re.I))
+        # With a model loaded the picker opens collapsed to that model's row; the row expands it.
+        show_all = page.locator(f'button[aria-label$="{PICKER_SHOW_ALL_SUFFIX}"]')
+        if (
+            wait_for_first(search_box.or_(show_all), timeout_ms = 10_000) is not None
+            and search_box.count() == 0
+            and show_all.count() > 0
+        ):
+            info("model picker opened collapsed; expanding it")
+            show_all.first.click()
+        search = wait_for_first(search_box, timeout_ms = 10_000)
         shoot("03c-model-picker-open")
         if search is None:
             soft_fail("model picker search input not found")
