@@ -13380,13 +13380,22 @@ def test_alias_config_failed_load_does_not_adopt_configuration(monkeypatch):
     assert getattr(backend, "last_load_intent", None) is None
 
 
-def test_alias_config_disabled_switch_reuses_only_matching_runtime(monkeypatch):
+@pytest.mark.parametrize("idle_unload", [False, True])
+@pytest.mark.parametrize("claim_resident", [False, True])
+def test_alias_config_disabled_switch_reuses_only_matching_runtime(
+    monkeypatch, idle_unload, claim_resident
+):
     # Disabling auto-switch never silently serves a different configured window.
     backend, rec = _wire_alias_config(monkeypatch, enabled = False)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: idle_unload)
+    monkeypatch.setattr(inference_route, "_preview_resident_ident", backend.model_identifier)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
+                _ALIAS_TARGET,
+                _alias_config_request(_ALIAS_LONG),
+                "tester",
+                claim_resident = claim_resident,
             )
         )
     assert exc.value.status_code == 409
@@ -13398,10 +13407,16 @@ def test_alias_config_disabled_switch_reuses_only_matching_runtime(monkeypatch):
     )
     asyncio.run(
         inference_route._maybe_auto_switch_model(
-            _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
+            _ALIAS_TARGET,
+            _alias_config_request(_ALIAS_LONG),
+            "tester",
+            claim_resident = claim_resident,
         )
     )
     assert not rec.calls
+    assert inference_route._get_preview_resident() == (
+        None if claim_resident else backend.model_identifier
+    )
 
 
 def test_alias_config_loaded_only_refuses_mismatching_runtime(monkeypatch):

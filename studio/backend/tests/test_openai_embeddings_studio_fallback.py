@@ -89,6 +89,56 @@ def _http_error(body):
     return exc.value
 
 
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("resident_loaded", [False, True])
+def test_rag_embedding_alias_configuration_is_rejected_before_fallback(
+    studio_embedder, configured, resident_loaded
+):
+    # Real alias rewriting must reject configured embeddings while preserving plain aliases.
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    from utils import model_aliases
+    from utils.api_errors import install_api_error_handlers
+
+    config = {"max_seq_length": 4096, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    alias = {"name": "embed", "model": f"{MODEL}-GGUF"}
+    if configured:
+        alias["load_config"] = config
+    studio_embedder.setattr(model_aliases, "get_model_aliases", lambda: [alias])
+    studio_embedder.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = resident_loaded, is_embedding_gguf = False),
+    )
+    encoded = []
+    studio_embedder.setattr(
+        rag_embeddings, "encode", lambda texts, **kw: encoded.append(texts) or _vectors(texts)
+    )
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.add_middleware(model_aliases.ModelAliasMiddleware)
+
+    @app.post("/v1/embeddings")
+    async def endpoint(request: Request):
+        request.state.skip_api_monitor = True
+        return await inference_route.openai_embeddings(request, "tester")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/embeddings", json = {"model": "embed", "input": "alpha", "load_config": config}
+        )
+    assert response.status_code == (400 if configured else 200)
+    if configured:
+        assert "Configured aliases" in response.json()["error"]["message"]
+        assert not encoded
+    else:
+        assert response.json()["model"] == IDENTITY
+        assert encoded == [["alpha"]]
+
+
 def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)

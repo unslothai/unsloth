@@ -11673,7 +11673,11 @@ async def _maybe_auto_switch_model(
             return
 
     if alias_config and not auto_switch_on:
+        await _refuse_foreign_resident()
         await _config_requires_switch()
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
+        return
 
     from core.inference.npu_backend import is_npu_model_path
 
@@ -39807,6 +39811,10 @@ async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict
     requested = body.get("model")
     if not isinstance(requested, str) or not requested.strip():
         return None
+    from utils.model_aliases import request_alias_load_config
+
+    if request_alias_load_config(getattr(request, "scope", None), requested):
+        raise HTTPException(status_code = 400, detail = "Configured aliases do not support embeddings.")
     model = await asyncio.to_thread(_names_studio_embedder, requested)
     return (body, model) if model else None
 
