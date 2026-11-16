@@ -339,6 +339,19 @@ class _Parts:
     tied: bool
     # [(container, name, module)]
     towers: list = dataclasses.field(default_factory = list)
+    ple: Optional["_PerLayerInputs"] = None
+
+
+@dataclasses.dataclass
+class _PerLayerInputs:
+    """Gemma 4 E2B / E4B per-layer inputs: the first stage sends later layers' projection columns with the hidden
+    states; each stage looks up its own layers' table columns."""
+
+    layers: int
+    width: int
+    table: str = "embed_tokens_per_layer"
+    projection: str = "per_layer_model_projection"
+    norm: str = "per_layer_projection_norm"
 
 
 def _has_params(module):
@@ -421,6 +434,9 @@ def _cut_points(parts):
     import sys
 
     n = len(parts.layers)
+    reads = _kv_shared_reads(parts)
+    if reads:
+        return [cut for cut in range(1, n) if not any(s < cut <= j for s, j in reads)]
     config = getattr(parts.inner, "config", None)
     for obj in (parts.inner, parts.decoder):
         keys = getattr(sys.modules.get(type(obj).__module__), "pipeline_handoff_keys", None)
@@ -489,6 +505,9 @@ def _find_parts(model) -> _Parts:
         raise ValueError("Unsloth: pipeline parallelism v1 needs the lm_head outside the decoder.")
     norms = []
     tables = {name for name, _ in _layer_tables(decoder, layers, layers_name)}
+    ple = _per_layer_inputs(decoder, text, len(layers))
+    if ple is not None:
+        tables |= {ple.table, ple.projection, ple.norm}
     for name, child in named.items():
         if child is layers or child is embed or name in tables or not _has_params(child):
             continue
@@ -558,7 +577,42 @@ def _find_parts(model) -> _Parts:
     e_w = getattr(embed, "weight", None)
     h_w = getattr(lm_head, "weight", None)
     tied = e_w is not None and e_w is h_w
-    return _Parts(inner, decoder, layers, layers_name, embed, lm_head, norms, source, tied, towers)
+    return _Parts(
+        inner, decoder, layers, layers_name, embed, lm_head, norms, source, tied, towers, ple
+    )
+
+
+def _per_layer_inputs(decoder, text, n):
+    width = getattr(text, "hidden_size_per_layer_input", None)
+    spec = _PerLayerInputs(n, width) if isinstance(width, int) and width > 0 else None
+    if spec is None or getattr(text, "altup_num_inputs", None):
+        return None
+    modules = [decoder._modules.get(name) for name in (spec.table, spec.projection, spec.norm)]
+    methods = [
+        getattr(decoder, name, None)
+        for name in ("get_per_layer_inputs", "project_per_layer_inputs")
+    ]
+    if not all(isinstance(m, nn.Module) for m in modules) or not all(callable(m) for m in methods):
+        return None
+    weight = getattr(modules[0], "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.dim() != 2 or weight.shape[1] != n * width:
+        return None
+    return spec
+
+
+def _kv_shared_reads(parts):
+    """[(source layer, KV-shared layer)]; None when a shared layer's source is unknown."""
+    sources, reads = {}, []
+    for i, layer in enumerate(parts.layers):
+        attn = getattr(layer, "self_attn", None)
+        kind = getattr(attn, "layer_type", None)
+        if getattr(attn, "is_kv_shared_layer", False) is True:
+            if kind not in sources:
+                return None
+            reads.append((sources[kind], i))
+        elif getattr(attn, "store_full_length_kv", False) is True:
+            sources[kind] = i
+    return reads
 
 
 def _media_keys(inner):
@@ -912,6 +966,10 @@ def _refuse_unsupported(
             )
     for key in _CROSS_LAYER_CONFIG_KEYS:
         value = getattr(text, key, None)
+        if key == "hidden_size_per_layer_input" and parts.ple is not None:
+            continue
+        if key == "num_kv_shared_layers" and _kv_shared_reads(parts):
+            continue
         if value:
             what = "multi-head latent attention" if key == "kv_lora_rank" else "cross-layer state"
             raise ValueError(
@@ -956,6 +1014,13 @@ def _refuse_unsupported(
             "Unsloth: this model is already distributed (DTensor parameters or a transformers tp_plan); "
             "load it without tp_plan before apply_pipeline_parallel."
         )
+    if parts.ple is not None and not at_load:
+        table = parts.decoder._modules[parts.ple.table]
+        if any(p.requires_grad for p in table.parameters()):
+            raise ValueError(
+                f"Unsloth: pipeline parallelism splits the per-layer embedding table ({parts.ple.table}) by layer "
+                "and needs it frozen; leave it out of modules_to_save / trainable_token_indices."
+            )
     if parts.tied and parts.embed.weight.requires_grad and not at_load:
         raise ValueError(
             "Unsloth: pipeline parallelism v1 cannot train tied input / output embeddings (the first and "
@@ -1266,6 +1331,104 @@ def _tower_adapter_state(model, parts):
     return out if any(out.values()) else None
 
 
+class _PPLayerTableSlice(nn.Module):
+    """This rank's layers' columns of embed_tokens_per_layer; lookups zero-fill the other layers."""
+
+    def __init__(self, source, owned, layers, width):
+        super().__init__()
+        weight = source.weight
+        index = torch.tensor(
+            [i * width + j for i in owned for j in range(width)],
+            dtype = torch.long,
+            device = weight.device,
+        )
+        with torch.no_grad():
+            self.weight = nn.Parameter(weight.index_select(1, index), requires_grad = False)
+        scale = source._buffers.get("embed_scale")
+        if scale is not None:
+            self.register_buffer("embed_scale", scale.detach().clone(), persistent = False)
+        self.padding_idx = getattr(source, "padding_idx", None)
+        self.__dict__["_pp_layers"] = (tuple(owned), layers, width)
+
+    def forward(self, input_ids):
+        owned, layers, width = self._pp_layers
+        rows = torch.nn.functional.embedding(input_ids, self.weight, self.padding_idx)
+        scale = self._buffers.get("embed_scale")
+        if scale is not None:
+            rows = rows * scale.to(self.weight.dtype)
+        out = rows.new_zeros((*input_ids.shape, layers, width))
+        index = torch.tensor(owned, dtype = torch.long, device = rows.device)
+        return out.index_copy(-2, index, rows.view(*input_ids.shape, len(owned), width))
+
+    def extra_repr(self):
+        owned, layers, width = self._pp_layers
+        return f"layers {list(owned)} of {layers}, {width} columns each"
+
+
+def _ple_get(
+    ctx,
+    decoder,
+    original,
+    input_ids = None,
+    inputs_embeds = None,
+):
+    if not ctx.active:
+        return original(input_ids, inputs_embeds)
+    if input_ids is None:
+        raise RuntimeError(
+            "Unsloth: pipeline parallelism looks up the per-layer inputs by token id; it was called without "
+            "input_ids."
+        )
+    return decoder._modules[ctx.ple.table](input_ids)
+
+
+def _ple_project(
+    ctx,
+    decoder,
+    original,
+    inputs_embeds,
+    per_layer_inputs = None,
+):
+    if not ctx.active:
+        return original(inputs_embeds, per_layer_inputs)
+    layers, width = ctx.ple.layers, ctx.ple.width
+    if ctx.is_first:
+        projection = original(inputs_embeds, None)
+    else:
+        received = ctx.ple_input
+        received = received.view(*received.shape[:2], layers - ctx.start, width)
+        head = received.new_zeros((*received.shape[:2], ctx.start, width))
+        projection = torch.cat([head, received], dim = 2)
+    if not ctx.is_last:
+        ctx.ple_output = projection[:, :, ctx.end :]
+    if per_layer_inputs is None:
+        return projection
+    return (projection + per_layer_inputs.to(projection.dtype)) * decoder.per_layer_input_scale
+
+
+def _install_per_layer_inputs(pp_stage, parts, owned, kept):
+    """The projection and its norm train on the first stage only."""
+    ple, decoder, ctx = parts.ple, parts.decoder, pp_stage.ctx
+    ctx.ple = ple
+    table = decoder._modules[ple.table]
+    stub = _PPLayerTableSlice(table, owned, ple.layers, ple.width)
+    if kept is not None:
+        kept.append((decoder, ple.table, table, stub))
+    setattr(decoder, ple.table, stub)
+    for name, fn in (
+        ("get_per_layer_inputs", _ple_get),
+        ("project_per_layer_inputs", _ple_project),
+    ):
+        decoder.__dict__[name] = functools.partial(fn, ctx, decoder, getattr(decoder, name))
+    if pp_stage.is_first:
+        return []
+    foreign = [decoder._modules[ple.projection], decoder._modules[ple.norm]]
+    for module in foreign:
+        for p in module.parameters():
+            p.requires_grad_(False)
+    return foreign
+
+
 def _placeholder(weight):
     """Same shape / dtype / device as `weight`, no storage (zero stride)."""
     return torch.zeros((), dtype = weight.dtype, device = weight.device).expand(weight.shape)
@@ -1349,6 +1512,9 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        self.ple = None
+        self.ple_input = None
+        self.ple_output = None
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -1487,6 +1653,22 @@ class _PPStageModule(nn.Module):
             out.append(t)
         return tuple(out)
 
+    def _ple_wire(self, hidden):
+        ctx = self._pp_ctx
+        out = ctx.ple_output
+        if out is None:
+            raise RuntimeError(
+                "Unsloth: this pipeline stage did not compute its per-layer inputs (project_per_layer_inputs)."
+            )
+        out = out.reshape(*out.shape[:2], -1).to(self._pp_dtype)
+        if not out.requires_grad and torch.is_grad_enabled():
+            # Frozen projection: a leaf so the next stage's gradient has somewhere to go.
+            return out.detach().clone().requires_grad_()
+        # Split-backward schedules detach stage outputs in place: no views.
+        if out._is_view() or not out.is_contiguous():
+            out = out.clone(memory_format = torch.contiguous_format)
+        return out
+
     def _router_statistics(self, captured, carry, attention_mask, device):
         """This stage's load-balancing statistics added to the received ones (`carry`, from the previous
         stage), or None when the auxiliary loss is off (config.output_router_logits)."""
@@ -1532,6 +1714,8 @@ class _PPStageModule(nn.Module):
                 )
             else:
                 ctx.stage_input = x
+                if ctx.ple is not None:
+                    ctx.ple_input, carry = carry[0], carry[1:]
         ctx.active = True
         captured = None
         try:
@@ -1579,24 +1763,27 @@ class _PPStageModule(nn.Module):
                         stacklevel = 2,
                     )
                 hidden = hidden.to(self._pp_dtype)
+            if ctx.ple is not None:
+                hidden = (hidden, self._ple_wire(hidden))
             if moe is None:
                 return hidden
+            sent = hidden if isinstance(hidden, tuple) else (hidden,)
+            device = sent[0].device
             stats = self._router_statistics(
-                ctx.router_logits, carry, kwargs.get("attention_mask"), hidden.device
+                ctx.router_logits, carry, kwargs.get("attention_mask"), device
             )
             if stats is None:  # auxiliary loss off: nothing to carry (a zero placeholder)
                 if carry:
                     # Still tied to the received carry: torch 2.10 / 2.11 pipelining needs a gradient for every
                     # received input (a zero one here).
-                    stats = carry[0].to(hidden.device) * 0
+                    stats = carry[0].to(device) * 0
                 else:
-                    stats = torch.zeros(
-                        2 * moe.num_experts + 1, dtype = torch.float32, device = hidden.device
-                    )
-            return hidden, stats
+                    stats = torch.zeros(2 * moe.num_experts + 1, dtype = torch.float32, device = device)
+            return (*sent, stats)
         finally:
             ctx.active = False
             ctx.stage_input = None
+            ctx.ple_input = ctx.ple_output = None
             captured, ctx.router_logits = ctx.router_logits, None
         if not ctx.is_last:
             raise RuntimeError(
@@ -1990,17 +2177,28 @@ class PipelineParallel:
                 for shape, dtype in self.carry
             )
 
+        def per_layer(layer):
+            ple = self.ctx.ple
+            width = (ple.layers - layer) * ple.width
+            return torch.empty(
+                (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
+            )
+
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
             else:
                 example_in = streams()
+                if self.ctx.ple is not None:
+                    example_in = (example_in, per_layer(self.bounds[index][0]))
             if index == self.total_stages - 1:
                 example_out = torch.empty(
                     (), dtype = torch.float32, device = "meta", requires_grad = True
                 )
             else:
                 example_out = streams()
+                if self.ctx.ple is not None:
+                    example_out = (example_out, per_layer(self.bounds[index][1]))
             if moe is not None:
                 # The router load-balancing statistics travel with the hidden states (gradient back to
                 # every stage's routers).
@@ -2797,6 +2995,13 @@ def apply_pipeline_parallel(
                 if kept is not None:
                     kept.append((tables, key, tables[key], stub))
                 tables[key] = stub
+    ple_foreign = []
+    if parts.ple is not None:
+        if carry is not None or pp_stage.ctx.stage_forward is not None:
+            raise ValueError(
+                "Unsloth: pipeline parallelism carries per-layer inputs only beside one hidden state stream."
+            )
+        ple_foreign = _install_per_layer_inputs(pp_stage, parts, owned, kept)
     embed, lm_head = parts.embed, parts.lm_head
     if not is_first:
         parent, attr = _owner(parts.decoder, parts.embed)
@@ -2813,7 +3018,7 @@ def apply_pipeline_parallel(
     # A norm registered before the layer list (Bloom's word_embeddings_layernorm) feeds the first stage; one
     # after it (the final norm) the last. Other stages keep it frozen, so it trains on its owner only.
     order = list(parts.decoder._modules)
-    foreign = []
+    foreign = list(ple_foreign)
     for name, norm in parts.norms:
         input_side = order.index(name) < order.index(parts.layers_name)
         if not (is_first if input_side else is_last):
@@ -2870,6 +3075,11 @@ def apply_pipeline_parallel(
             + (
                 f"; text only, towers kept out of the pipeline ({', '.join(n for _, n, _ in parts.towers)})"
                 if parts.towers
+                else ""
+            )
+            + (
+                "; per-layer inputs: table columns per stage, the projection sent from the first stage"
+                if parts.ple is not None
                 else ""
             )
             + (
