@@ -448,21 +448,49 @@ def _as_storage(local, info, dtype):
     return local.contiguous().reshape(-1).view(torch.uint8).view(dtype).reshape(-1, 1)
 
 
-def _full_from_chunks(local, info, mesh, dtype):
-    """All-gather the dim-0 chunks back into the full tensor (exactly the checkpoint's)."""
+# Rows per all-gather slice of a replicated chunk: about this many bytes per rank.
+_GATHER_SLICE_BYTES = 64 << 20
+
+
+def _full_from_chunks(
+    local,
+    info,
+    mesh,
+    dtype,
+    device = None,
+):
+    """All-gather the dim-0 chunks back into the full tensor (exactly the checkpoint's), written slice by slice
+    into one output on `device` (default: the chunk's). Holds the output plus a few MiB per rank, not the
+    padded chunk, every rank's copy and their concatenation (5x the chunk: a 2.4 GiB lm_head OOMed a T4)."""
     import torch.distributed as dist
 
     if info.get("packed"):
         raw = local.contiguous().reshape(-1).view(torch.uint8).reshape(-1, 1)
-        full = _full_from_chunks(raw, dict(info, packed = False), mesh, torch.uint8)
+        full = _full_from_chunks(raw, dict(info, packed = False), mesh, torch.uint8, device)
         return _as_storage(full, info, dtype)
     rows, world = info["shape"][0], info["world"]
     size = math.ceil(rows / world)
-    padded = local.new_zeros((size,) + tuple(info["shape"][1:]))
-    padded[: local.shape[0]].copy_(local)
-    pieces = [torch.empty_like(padded) for _ in range(world)]
-    dist.all_gather(pieces, padded.contiguous(), group = mesh.get_group())
-    return torch.cat(pieces, 0)[:rows].to(dtype).contiguous()
+    tail = tuple(info["shape"][1:])
+    row_bytes = max(1, math.prod(tail) * local.element_size())
+    step = max(1, min(size, _GATHER_SLICE_BYTES // row_bytes)) if size else 1
+    full = torch.empty(
+        (rows,) + tail, dtype = local.dtype, device = local.device if device is None else device
+    )
+    group = mesh.get_group()
+    for start in range(0, size, step):
+        n = min(step, size - start)
+        piece = local.new_zeros((n,) + tail)
+        have = max(0, min(n, local.shape[0] - start))
+        if have:
+            piece[:have].copy_(local[start : start + have])
+        pieces = [torch.empty_like(piece) for _ in range(world)]
+        dist.all_gather(pieces, piece, group = group)
+        for r, got in enumerate(pieces):
+            first = r * size + start
+            keep = min(n, rows - first)
+            if keep > 0:
+                full[first : first + keep].copy_(got[:keep])
+    return full if full.dtype == dtype else full.to(dtype)
 
 
 def gather_replicated(
@@ -471,10 +499,11 @@ def gather_replicated(
     replicated,
     mesh,
     also = (),
+    device = None,
 ):
-    """Chunks whose parameter stays replicated (outside FSDP2) are gathered whole, and swapped in
-    `replicated` and the sets in `also`. Collective over `mesh`; every rank reaches it with the same set
-    (the layout and dtype decisions are agreed)."""
+    """Chunks whose parameter stays replicated (outside FSDP2) are gathered whole (onto `device`, default the
+    chunk's), and swapped in `replicated` and the sets in `also`. Collective over `mesh`; every rank reaches it
+    with the same set (the layout and dtype decisions are agreed)."""
     if not pending:
         return 0
     keep = {id(p) for p in replicated}
@@ -487,7 +516,7 @@ def gather_replicated(
             local, info = pending.pop(key)
             if id(p) not in done:
                 with torch.no_grad():
-                    full = _full_from_chunks(local, info, mesh, p.dtype)
+                    full = _full_from_chunks(local, info, mesh, p.dtype, device)
                 if info.get("packed"):
                     new = torch.Tensor._make_subclass(type(p), full, p.requires_grad)
                 else:
