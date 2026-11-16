@@ -130,7 +130,6 @@ test("the load panel shows the picker on pipeline loads, the baked set, and Relo
   );
   // Catalog filtered to the loaded family, as on Images.
   assert.match(page, /listDiffusionLoras\(loraFamily \?\? undefined\)/);
-  assert.match(page, /<StatusChip label="LoRA" value=\{status\.baked_loras\.join\(", "\)\} \/>/);
   const field = readSrc("features/video/video-lora-field.tsx");
   assert.match(field, /Reload to apply/);
   assert.match(field, /Baked into the loaded model: \{baked\.join\(", "\)\}/);

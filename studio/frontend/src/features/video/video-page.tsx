@@ -4290,9 +4290,6 @@ function VideoGenerator({
                 <StatusChip label="Offload" value={status.offload_policy} />
               )}
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
-              {status.baked_loras && status.baked_loras.length > 0 && (
-                <StatusChip label="LoRA" value={status.baked_loras.join(", ")} />
-              )}
             </div>
           )}
           <div data-media-header-centre className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
