@@ -2066,6 +2066,25 @@ if _IS_MLX:
             fields.append(
                 ("loss_type", list[str], _dataclasses.field(default_factory = lambda: ["sigmoid"]))
             )
+        # Fields are collected along the reversed MRO, so UnslothTrainingArguments' copy of each
+        # MLXTrainingConfig field would hide the zoo config's own default (e.g. GRPO's loss_type).
+        declared = {name for name, *_ in fields}
+        base_fields = {field.name: field for field in _dataclasses.fields(MLXTrainingConfig)}
+        for name, field in zoo_fields.items():
+            base = base_fields.get(name)
+            if base is None or name in declared:
+                continue
+            if (field.default, field.default_factory) == (base.default, base.default_factory):
+                continue
+            fields.append(
+                (
+                    name,
+                    field.type,
+                    _dataclasses.field(
+                        default = field.default, default_factory = field.default_factory
+                    ),
+                )
+            )
         return fields
 
     def _build_mlx_trl_policy_trainers():

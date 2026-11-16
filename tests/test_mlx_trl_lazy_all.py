@@ -410,6 +410,10 @@ assert trl.DPOConfig(output_dir="o").max_prompt_length == (None if modern else 5
 assert trl.DPOConfig(output_dir="o", max_prompt_length=64).max_prompt_length == 64
 grpo = trl.GRPOConfig(output_dir="o", num_generations=2, per_device_train_batch_size=2)
 assert grpo.max_completion_length == (512 if Version(trl.__version__) >= Version("1.10.0") else 256)
+assert grpo.loss_type == "dapo"
+assert trl.KTOConfig(output_dir="o").loss_type == "kto"
+assert trl.CPOConfig(output_dir="o").loss_type == "sigmoid"
+assert trl.SFTConfig(output_dir="o").loss_type == "nll"
 
 over = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], max_grad_norm=0, dataset_order="default").args
 assert (over.max_grad_norm, over.dataset_order) == (0, "default")
