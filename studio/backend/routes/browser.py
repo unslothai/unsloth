@@ -1621,6 +1621,8 @@ class BrowserFetchRequest(BaseModel):
     # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
     error_page: bool = False
+    # The page a tab navigation came from (the panel's own record of it); none for a typed address.
+    initiator: Optional[str] = Field(default = None, max_length = 8192)
 
 
 _BOMS = (
@@ -2019,27 +2021,49 @@ def _inline_module_scripts(
     return "".join(parts)
 
 
+def _site(url: str) -> Optional[str]:
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not host:
+        return None
+    return host.rstrip(".").lower()
+
+
 def _fetch(
     request: BrowserFetchRequest,
     cancel_event: threading.Event,
     subject: Optional[str] = None,
 ) -> tuple[Optional[str], bytes, str, dict]:
     meta: dict = {}
-    # A navigation is first-party at every hop, so each site gets and sets its own cookies.
-    at = {"url": request.url}
+    # Each hop sets its own site's cookies; which it is sent follows SameSite against the initiator.
+    site = None if request.initiator is None else (_site(request.initiator) or "")
+    at = {"url": request.url, "method": request.method, "cross": False}
+
+    def mark_cross() -> None:
+        # Same host stands for same site (no public suffix list): stricter than a browser.
+        # Once a chain has left the initiator's site it stays cross-site (Fetch's tainted origin).
+        at["cross"] = at["cross"] or (site is not None and site != _site(at["url"]))
 
     def host_headers(host: str) -> dict:
         headers = dict(_studio_headers(host))
         if subject is not None:
-            cookies = cookie_header(subject, at["url"])
+            cookies = cookie_header(
+                subject, at["url"], cross_site = at["cross"], method = at["method"]
+            )
             if cookies:
                 headers["Cookie"] = cookies
         return headers
 
-    def on_redirect(url: str, _method: str, _has_body: bool, headers) -> None:
+    def on_redirect(url: str, method: str, _has_body: bool, headers) -> None:
         if subject is not None:
             store_cookies(subject, at["url"], headers)
-        at["url"] = url
+        at["url"], at["method"] = url, method
+        mark_cross()
+
+    mark_cross()
 
     error, body, content_type = _fetch_url_raw(
         request.url,

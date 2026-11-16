@@ -36,6 +36,8 @@ export type BrowserRequest = {
   maxBytes?: number;
   /** show the site's HTTP error page; tab loads only. */
   errorPage?: boolean;
+  /** the page a tab navigation came from, so the site's SameSite cookies stay home; none when typed. */
+  initiator?: string;
 };
 
 let annotateCode: Promise<string> | null = null;
@@ -109,6 +111,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
       body: request.body ?? null,
       max_bytes: request.maxBytes ?? null,
       error_page: request.errorPage ?? false,
+      initiator: request.initiator ?? null,
     }),
     signal,
   });

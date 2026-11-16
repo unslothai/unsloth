@@ -46,9 +46,9 @@ def _site(
 
     def fake_fetch(url, **kwargs):
         current = url
-        for next_url, headers in hops:
+        for next_url, headers, *method in hops:
             sent.append((current, kwargs["host_headers"](current.split("/")[2]).get("Cookie")))
-            refused = kwargs["on_redirect"](next_url, "GET", False, headers)
+            refused = kwargs["on_redirect"](next_url, (method or ["GET"])[0], False, headers)
             if refused:
                 return refused, "", ""
             current = next_url
@@ -118,6 +118,52 @@ def test_cookies_stay_with_their_site_scheme_and_account(monkeypatch):
     assert cookies.cookie_header("user", "https://www.example.com/") is None
     assert cookies.cookie_header("user", "https://example.org/") is None
     assert cookies.cookie_header("other", "https://app.example.com/x") is None
+
+
+def test_a_navigation_from_another_site_follows_samesite(monkeypatch):
+    cookies.store_cookies(
+        "user",
+        "https://bank.example/",
+        [
+            ("Set-Cookie", "strict=1; SameSite=Strict"),
+            ("Set-Cookie", "lax=1; samesite=lax"),
+            ("Set-Cookie", "plain=1"),
+            ("Set-Cookie", "none=1; SameSite=None; Secure"),
+        ],
+    )
+    every = "strict=1; lax=1; plain=1; none=1"
+    sent = _site(monkeypatch, [])
+    _load("https://bank.example/pay", method = "POST", body = "to=evil", initiator = "https://evil.test/")
+    assert sent == [("https://bank.example/pay", "none=1")]
+    _load("https://bank.example/", initiator = "https://evil.test/")
+    assert sent[-1] == ("https://bank.example/", "lax=1; plain=1; none=1")
+    # A typed address, and the site's own pages, are same-site; so is the host with a trailing dot.
+    _load("https://bank.example/pay", method = "POST", body = "to=me")
+    _load("https://bank.example/pay", method = "POST", body = "to=me", initiator = "https://BANK.example./a")
+    assert sent[-2:] == [("https://bank.example/pay", every)] * 2
+    # A subdomain counts as another site here.
+    _load("https://bank.example/pay", method = "POST", body = "x", initiator = "https://www.bank.example/")
+    assert sent[-1] == ("https://bank.example/pay", "none=1")
+
+
+def test_a_redirect_chain_that_left_the_site_stays_cross_site(monkeypatch):
+    cookies.store_cookies(
+        "user", "https://bank.example/", [("Set-Cookie", "strict=1; SameSite=Strict")]
+    )
+    sent = _site(
+        monkeypatch,
+        [("https://evil.test/bounce", None, "POST"), ("https://bank.example/pay", None, "POST")],
+    )
+    _load("https://bank.example/start", method = "POST", body = "x", initiator = "https://bank.example/")
+    assert sent == [
+        ("https://bank.example/start", "strict=1"),
+        ("https://evil.test/bounce", None),
+        ("https://bank.example/pay", None),
+    ]
+    # A typed address is same-site at every hop, as a browser's own navigation is.
+    sent = _site(monkeypatch, [("https://www.bank.example/", None), ("https://bank.example/", None)])
+    _load("https://bank.example/")
+    assert sent[-1] == ("https://bank.example/", "strict=1")
 
 
 def test_host_only_and_public_suffix_cookies_never_reach_another_site():

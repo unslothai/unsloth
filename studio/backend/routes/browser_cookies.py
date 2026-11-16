@@ -37,6 +37,22 @@ class _Policy(http.cookiejar.DefaultCookiePolicy):
             cookie.domain, cookie.domain_specified, cookie.domain_initial_dot = erhn, False, False
         return super().set_ok(cookie, request)
 
+    def return_ok(self, cookie, request):
+        # Cross-site, Strict never goes and Lax (the default when absent) only with a safe method
+        # (draft-ietf-httpbis-rfc6265bis 5.8.3); None goes as before.
+        cross = getattr(request, "cross_site", None)
+        mode = _same_site(cookie) if cross else ""
+        if cross and (mode == "strict" or (mode != "none" and not cross["safe"])):
+            return False
+        return super().return_ok(cookie, request)
+
+
+def _same_site(cookie: http.cookiejar.Cookie) -> str:
+    for name, value in cookie._rest.items():  # type: ignore[attr-defined]
+        if name.lower() == "samesite" and isinstance(value, str):
+            return value.strip().lower()
+    return "lax"
+
 
 def _jar(subject: str) -> http.cookiejar.CookieJar:
     with _lock:
@@ -61,11 +77,15 @@ def _request(url: str) -> Optional[urllib.request.Request]:
     return request if request.type in ("http", "https") and request.host else None
 
 
-def cookie_header(subject: str, url: str) -> Optional[str]:
-    """The Cookie header a browser would send ``url``, or None."""
+def cookie_header(
+    subject: str, url: str, cross_site: bool = False, method: str = "GET"
+) -> Optional[str]:
+    """The Cookie header a browser would send ``url``, or None; ``cross_site`` applies SameSite."""
     request = _request(url)
     if request is None:
         return None
+    if cross_site:
+        request.cross_site = {"safe": method.upper() in ("GET", "HEAD")}  # type: ignore[attr-defined]
     _jar(subject).add_cookie_header(request)
     return request.get_header("Cookie")
 
