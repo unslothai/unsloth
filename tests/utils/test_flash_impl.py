@@ -618,17 +618,21 @@ def _varlen(
     cu = torch.tensor(
         [0, *torch.tensor(lengths).cumsum(0).tolist()], device = "cuda", dtype = torch.int32
     )
-    out = varlen_attn(
-        q,
-        k,
-        v,
-        cu,
-        cu,
-        max(lengths),
-        max(lengths),
-        window_size = (window - 1, 0) if window else (-1, 0),
-        enable_gqa = True,
-    )
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    # torch 2.15's varlen_attn takes cuDNN first on sm90 / sm100, which no impl replaces: pin flash.
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        out = varlen_attn(
+            q,
+            k,
+            v,
+            cu,
+            cu,
+            max(lengths),
+            max(lengths),
+            window_size = (window - 1, 0) if window else (-1, 0),
+            enable_gqa = True,
+        )
     out.backward(randn(*out.shape))
     return out.detach(), q.grad, k.grad, v.grad
 
@@ -650,7 +654,9 @@ def test_fa4_varlen_matches_bundled_flash(real_fa4):
     model = _model(num_attention_heads = 16, num_key_value_heads = 4)
     assert fi.maybe_activate_flash_attention_impl(model) == "FA4", fi.FLASH_IMPL_STATE["reason"]
     for case, ref in zip(cases, refs):
-        got = _varlen(*case)
+        with fi._count_impl_calls("FA4") as calls:
+            got = _varlen(*case)
+        assert calls["fwd"] and calls["bwd"], (case, calls)
         for a, b in zip(got, ref):
             err = (a.float() - b.float()).abs().max().item() / b.float().abs().max().item()
             assert err < 2e-2, (case, err)
@@ -1013,3 +1019,24 @@ def test_fa4_runs_inside_the_compiled_packed_block(real_fa4, window):
         assert torch.equal(a[:, lengths[0] :], b[:, lengths[0] :])
         frames.append(counter.frame_count)
     assert frames[1] == frames[2], frames
+
+
+@pytest.mark.parametrize("impl", [None, "FA3", "FA4"])
+def test_packed_block_probe_is_keyed_on_the_active_impl(monkeypatch, impl):
+    """The compiled block's varlen probe answers per impl: a verdict cached under bundled flash is
+    not reused once FA3 (sm90, capability mocked) or FA4 is behind torch's flash op."""
+    from unsloth.utils import attention_dispatch as ad
+
+    registry = types.SimpleNamespace(_FLASH_ATTENTION_ACTIVE = impl and (impl, object()))
+    monkeypatch.setattr(fi, "_TORCH_FLASH_REGISTRY", registry)
+    monkeypatch.setattr(ad, "_DEVICE_BACKENDS", None)
+    monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
+    monkeypatch.setattr(ad, "get_cp_manager", lambda: None)
+    monkeypatch.delenv("UNSLOTH_TORCH_VARLEN", raising = False)
+    seen = []
+    monkeypatch.setattr(ad, "_packed_varlen_ok_eager", lambda *key: seen.append(key) or True)
+    config = types.SimpleNamespace(num_attention_heads = 8, num_key_value_heads = 2, sliding_window = 64)
+    attention = types.SimpleNamespace(config = config, head_dim = 128, attention_dropout = 0.0)
+    layer = types.SimpleNamespace(self_attn = attention, training = True)
+    assert ad._packed_block_kernel(layer, torch.zeros(1, 4, 8, dtype = torch.bfloat16))
+    assert {key[-1] for key in seen} == {impl} and {key[-2] for key in seen} == {None, 64}
