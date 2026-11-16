@@ -179,11 +179,11 @@ def reference_v_range(vh, vstep, nvc, vrows):
 
 def reference_residuals(vh, vc, vg, clip):
     """(rcnt, ridx, rres) of the residual job: per clipping head, the keys whose (v - centre) / gain leaves [-1, 1]
-    by more than 0.25 in some channel, in key order, and the part clipped off."""
+    by more than 1/16 (SINK_MIN) in some channel, in key order, and the part clipped off."""
     BH, Sk, D = vh.shape
     x = (vh - vc[:, None, :]) / vg[:, None, :]
     res = x - x.clamp(-1, 1)
-    out = (res.abs() > 0.25).any(-1) & clip[:, None]
+    out = (res.abs() > 0.0625).any(-1) & clip[:, None]
     rcnt = out.sum(1)
     n = max(1, int(rcnt.max()))
     ridx = torch.zeros(BH, n, dtype = torch.long, device = vh.device)

@@ -1114,11 +1114,12 @@ extern "C" __global__ void unsloth_i8stats_q(
 // SINK_MARGIN, never past the full range): that chunk's keys are clipped to it in place and the parts clipped off by
 // more than SINK_MIN (in units of the gain) are added back exactly after the attention kernel (unsloth_i8quant_kv's
 // residual job lists them, unsloth_i8resid adds them); each costs every query row a dot product, so only the sinks
-// and the few keys near them go there (FLUX.3 / Z-Image: 1-13 keys a head). Any other head keeps the full range,
-// bit for bit. smc / smr get the centre and 1 / gain of channels c < HD; returns whether the head clips.
+// and the few keys near them go there (FLUX.3 / Z-Image captures: 2-25 keys a head, with a V error 0.4% above that of
+// an exact residual for every clipped key; SINK_MIN 1/4 was 16% above it on FLUX.3). Any other head keeps the full
+// range, bit for bit. smc / smr get the centre and 1 / gain of channels c < HD; returns whether the head clips.
 #define SINK_RATIO 2.0f
 #define SINK_MARGIN 2.0f
-#define SINK_MIN 0.25f
+#define SINK_MIN 0.0625f
 __device__ bool v_range(const float* __restrict__ vpart, const float* __restrict__ vsink, i64 bh, int nvc,
                         int vstep, float* smc, float* smr, float (*smx)[HD], float* smw, int* sc_out, u32 tid,
                         u32 nt) {
@@ -1387,6 +1388,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
 #ifdef SINKS
 
 #define NTR 256  // threads per block of unsloth_i8resid: a warp per query row
+#define RCH 32   // clipped keys staged in shared memory at a time
 #define RMAGIC_I 0x4b400000
 #define RMAGIC_F 12582912.0f
 
@@ -1395,46 +1397,76 @@ extern "C" __global__ void unsloth_i8quant_kv(
 // lane group) in the frame of the kernel's row maximum mref, times the part of its (v - centre) / gain clipped off,
 // over the kernel's l (which holds the rounded P of the clipped key), times the gain. A head with rcnt 0 returns at
 // once. rml [BH, n_qpad, 2] = (mref, l) per row from the attention kernel; out as the kernel writes it.
-// grid (BH, blocks), NTR threads; warp w of block y takes the rows y * NTR / 32 + w, + gridDim.y * NTR / 32, ...
+// grid (BH, blocks), NTR threads; warp w of block y takes the rows y * NTR / 32 + w, + gridDim.y * NTR / 32, ...;
+// the block stages the keys' int8 K rows, residuals and K scales in shared memory, RCH keys at a time (all of them
+// once where there are at most RCH, as on FLUX.3 and Z-Image).
 extern "C" __global__ void unsloth_i8resid(
     const s8* __restrict__ qi, const s8* __restrict__ ki, const float* __restrict__ qs, const float* __restrict__ ks,
     const float* __restrict__ vg, const int* __restrict__ rcnt, const int* __restrict__ ridx,
     const float* __restrict__ rres, const float* __restrict__ rml, void* __restrict__ out, int n_q, int n_qpad,
     int n_kpad, int n_heads, int rstride, i64 o_sb, i64 o_ss, i64 o_sh, int out_kind) {
+  __shared__ i32 skw[RCH][HD / 4];
+  __shared__ float srr[RCH][HD];
+  __shared__ float sks[RCH];
   const i64 bh = blockIdx.x;
   const int nres = rcnt[bh];
   if (nres == 0) return;
-  const u32 lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
+  const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   constexpr int CPL = HD / 32;  // channels per lane: lane, lane + 32, ...
+  constexpr int NW = NTR / 32;
   float g[CPL];
 #pragma unroll
   for (int j = 0; j < CPL; ++j) g[j] = vg[bh * HD + lane + 32 * j];
   const i64 obase = (bh / n_heads) * o_sb + (bh % n_heads) * o_sh + lane;
-  for (int row = blockIdx.y * (NTR / 32) + warp; row < n_q; row += gridDim.y * (NTR / 32)) {
-    const i64 r = bh * n_qpad + row;
+  // keys c0 .. c0 + RCH - 1 (those below nres) into shared memory
+  auto stage = [&](int c0) {
+    const int n = min(RCH, nres - c0);
+    for (int x = tid; x < n * (HD / 4); x += NTR) {
+      const int i = x / (HD / 4), w = x % (HD / 4);
+      const int key = ridx[bh * rstride + c0 + i];
+      skw[i][w] = *reinterpret_cast<const i32*>(ki + (bh * n_kpad + key) * HD + 4 * w);
+      if (w == 0) sks[i] = ks[(bh * (n_kpad / 32) + (key >> 5)) * 4 + ((key & 7) >> 1)];
+    }
+    for (int x = tid; x < n * HD; x += NTR) srr[x / HD][x % HD] = rres[(bh * rstride + c0) * HD + x];
+  };
+  const bool once = nres <= RCH;
+  if (once) {
+    stage(0);
+    __syncthreads();
+  }
+  // a whole number of row groups per block, so every warp meets the barriers of a restage
+  for (int r0 = blockIdx.y * NW; r0 < n_q; r0 += gridDim.y * NW) {
+    const int row = r0 + warp;
+    const bool live = row < n_q;  // uniform per warp
+    const i64 r = bh * n_qpad + (live ? row : 0);
     // HD / 4 words of the row; lanes past them hold zeros
     const i32 qw = lane < HD / 4 ? *reinterpret_cast<const i32*>(qi + r * HD + 4 * lane) : 0;
     const float qsc = qs[r], mref = rml[2 * r], il = 1.f / rml[2 * r + 1];
     float a[CPL];
 #pragma unroll
     for (int j = 0; j < CPL; ++j) a[j] = 0.f;
-    for (int i = 0; i < nres; ++i) {
-      const int key = ridx[bh * rstride + i];
-      const i32 kw = lane < HD / 4 ? *reinterpret_cast<const i32*>(ki + (bh * n_kpad + key) * HD + 4 * lane) : 0;
-      i32 sc = __dp4a(qw, kw, 0);
+    for (int c0 = 0; c0 < nres; c0 += RCH) {
+      if (!once) {
+        __syncthreads();
+        stage(c0);
+        __syncthreads();
+      }
+      const int n = min(RCH, nres - c0);
+      for (int i = 0; i < n && live; ++i) {
+        i32 sc = __dp4a(qw, lane < HD / 4 ? skw[i][lane] : 0, 0);
 #pragma unroll
-      for (int m = 16; m > 0; m >>= 1) sc += __shfl_xor_sync(0xffffffffu, sc, m);
-      const float ksc = ks[(bh * (n_kpad / 32) + (key >> 5)) * 4 + ((key & 7) >> 1)];
-      // |score| < 2^22: the int to float conversion by the magic addition, as the kernel's
-      const float f = __int_as_float(sc + RMAGIC_I) - RMAGIC_F;
-      const float e = fmaf(f, fmaxf(qsc * ksc, 1e-30f), -mref);
-      float p;
-      asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(p) : "f"(e));
-      p *= 255.f;
-      const float* rr = rres + (bh * rstride + i) * HD + lane;
+        for (int m = 16; m > 0; m >>= 1) sc += __shfl_xor_sync(0xffffffffu, sc, m);
+        // |score| < 2^22: the int to float conversion by the magic addition, as the kernel's
+        const float f = __int_as_float(sc + RMAGIC_I) - RMAGIC_F;
+        const float e = fmaf(f, fmaxf(qsc * sks[i], 1e-30f), -mref);
+        float p;
+        asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(p) : "f"(e));
+        p *= 255.f;
 #pragma unroll
-      for (int j = 0; j < CPL; ++j) a[j] = fmaf(p, rr[32 * j], a[j]);
+        for (int j = 0; j < CPL; ++j) a[j] = fmaf(p, srr[i][lane + 32 * j], a[j]);
+      }
     }
+    if (!live) continue;
 #pragma unroll
     for (int j = 0; j < CPL; ++j) {
       const i64 e = obase + (i64)row * o_ss + 32 * j;
