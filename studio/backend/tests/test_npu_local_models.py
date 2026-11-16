@@ -344,6 +344,17 @@ def test_the_picker_lists_converted_folders_beside_the_catalog(runtime):
 
 
 @posix_only
+def test_a_converted_row_carries_the_memory_fit_of_its_size(runtime, monkeypatch):
+    monkeypatch.setattr(nb.npu_memory, "system_ram_gb", lambda: 0.5)
+    _converted()
+    rows = {model.id: model for model in runtime.catalog()}
+    [local] = [model for model in rows.values() if model.local]
+    base = rows["qwen3-0.6b-FLM"]
+    assert local.fits_memory is False and local.fits_memory == base.fits_memory
+    assert local.memory_needed_gb is not None and local.memory_needed_gb == base.memory_needed_gb
+
+
+@posix_only
 def test_load_registers_the_folder_then_loads_it(runtime):
     folder = _converted()
     [local] = nlm.account_local_models()

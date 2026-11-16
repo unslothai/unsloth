@@ -810,10 +810,10 @@ class LemonadeNpuBackend:
                     fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
-        models.extend(self._local_rows(models))
+        models.extend(self._local_rows(models, window_gb))
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
 
-    def _local_rows(self, catalog: list[NpuModel]) -> list[NpuModel]:
+    def _local_rows(self, catalog: list[NpuModel], window_gb: Optional[float]) -> list[NpuModel]:
         by_checkpoint = {model.checkpoint: model for model in catalog}
         rows = []
         for local in self._account_local_models():
@@ -823,14 +823,17 @@ class LemonadeNpuBackend:
                 for label in (base.labels if base else ("chat",))
                 if local.vision or label != "vision"
             )
+            size_gb = base.size_gb if base else round(local.size_bytes / 1e9, 2)
             rows.append(
                 NpuModel(
                     id = local.id,
                     checkpoint = local.checkpoint,
-                    size_gb = base.size_gb if base else round(local.size_bytes / 1e9, 2),
+                    size_gb = size_gb,
                     downloaded = True,
                     labels = labels,
                     max_context_length = base.max_context_length if base else None,
+                    memory_needed_gb = npu_memory.npu_memory_needed_gb(size_gb),
+                    fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                     local = {
                         "folder": local.display,
                         "base": local.base,
