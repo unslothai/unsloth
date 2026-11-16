@@ -69,6 +69,10 @@ class SummaryFailed(Exception):
     """The summary call returned an error, nothing, or timed out; the caller falls back."""
 
 
+class SummaryCutOff(SummaryFailed):
+    pass
+
+
 _OVERFLOW_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -361,6 +365,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
 
     async def _read() -> str:
         parts: list[str] = []
+        finish_reason = None
         try:
             async for line in stream:
                 payload = _sse_json(line)
@@ -375,6 +380,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
                     text = delta.get("content")
                     if isinstance(text, str):
                         parts.append(text)
+                    finish_reason = (choice or {}).get("finish_reason") or finish_reason
         finally:
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:
@@ -382,6 +388,8 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
                     await aclose()
                 except RuntimeError:
                     pass
+        if finish_reason == "length":
+            raise SummaryCutOff("the summary was cut off at its token limit")
         return "".join(parts)
 
     try:
@@ -403,6 +411,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
 _MEMORY_SUMMARIES_MAX = 64
 _memory_summaries: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _memory_lock = threading.Lock()
+_cut_off_threads: "OrderedDict[str, None]" = OrderedDict()
 
 
 def _remember(thread_id: str, record: dict) -> None:
@@ -411,6 +420,21 @@ def _remember(thread_id: str, record: dict) -> None:
         _memory_summaries.move_to_end((thread_id, record["covered_digest"]))
         while len(_memory_summaries) > _MEMORY_SUMMARIES_MAX:
             _memory_summaries.popitem(last = False)
+
+
+def remember_cut_off(thread_id: Optional[str]) -> None:
+    if not thread_id:
+        return
+    with _memory_lock:
+        _cut_off_threads[thread_id] = None
+        _cut_off_threads.move_to_end(thread_id)
+        while len(_cut_off_threads) > _MEMORY_SUMMARIES_MAX:
+            _cut_off_threads.popitem(last = False)
+
+
+def summary_was_cut_off(thread_id: Optional[str]) -> bool:
+    with _memory_lock:
+        return bool(thread_id) and thread_id in _cut_off_threads
 
 
 def save_summary(
@@ -431,6 +455,8 @@ def save_summary(
     if not thread_id:
         return record
     _remember(thread_id, record)
+    with _memory_lock:
+        _cut_off_threads.pop(thread_id, None)
     try:
         from storage import studio_db
         studio_db.save_chat_thread_summary(
