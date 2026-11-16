@@ -168,6 +168,13 @@ function splitLongLine(line: string, limit: number): TranslateChunk[] {
   return pieces;
 }
 
+/** The first `max` code units, less one when that would keep only half of a surrogate pair. */
+export function clipText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = /[\uD800-\uDBFF]/.test(text[max - 1] ?? "") ? max - 1 : max;
+  return text.slice(0, cut);
+}
+
 /**
  * Splits at line breaks, packing whole lines up to `limit`, so a long document is translated a
  * passage at a time. Joining every `text + after` gives the source back exactly.

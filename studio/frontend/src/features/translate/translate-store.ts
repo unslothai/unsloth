@@ -36,6 +36,7 @@ import {
   type TranslateMode,
   type TranslatePromptOptions,
   type TranslateTone,
+  clipText,
 } from "./translate-text";
 
 const PREFS_KEY = "unsloth_translate_prefs";
@@ -230,7 +231,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   readyModels: [],
 
   setSource: (source) => {
-    const next = source.slice(0, TRANSLATE_SOURCE_MAX_CHARS);
+    const next = clipText(source, TRANSLATE_SOURCE_MAX_CHARS);
     if (next.trim() === "") {
       // Emptying the draft discards the translation with it.
       get().stop();
@@ -273,7 +274,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     get().setTarget(prefs.from);
     if (output) {
       set({
-        source: output.slice(0, TRANSLATE_SOURCE_MAX_CHARS),
+        source: clipText(output, TRANSLATE_SOURCE_MAX_CHARS),
         output: "",
         error: null,
         result: null,

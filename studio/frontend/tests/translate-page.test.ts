@@ -38,6 +38,7 @@ import {
 import {
   SOURCE_PLACEHOLDER,
   TARGET_PLACEHOLDER,
+  clipText,
   restoreChunkWhitespace,
   splitForTranslation,
   stripLeadingReasoning,
@@ -516,4 +517,12 @@ test("a stopped load is cancelled on the server and a serving repo counts only a
     /unloadModel\(\{\s*model_path: model\.repo,\s*cancel_load_request_id: loadRequestId,\s*\}\)\.catch\(\(\) => \{\}\)/,
   );
   assert.match(ensure, /signal\.removeEventListener\("abort", cancelLoad\)/);
+});
+
+test("the source limit never keeps half of a surrogate pair", () => {
+  assert.equal(clipText("ab😀", 3), "ab");
+  assert.equal(clipText("ab😀", 4), "ab😀");
+  assert.equal(clipText("abc", 5), "abc");
+  const store = readText("../src/features/translate/translate-store.ts");
+  assert.doesNotMatch(store, /\.slice\(0, TRANSLATE_SOURCE_MAX_CHARS\)/);
 });
