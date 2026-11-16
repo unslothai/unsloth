@@ -299,7 +299,7 @@ function writeExpanded(expanded: boolean): void {
   }
 }
 
-// The user's expand choice per resident model, kept until that model is ejected.
+// Expand choice per resident model, cleared on eject.
 const MODEL_EXPANDED_KEY = "unsloth_composer_picker_model_expanded";
 const MODEL_EXPANDED_MAX = 20;
 
@@ -553,7 +553,7 @@ function rowMaker(
   if (!row || row.kind === "external") {
     return null;
   }
-  // A loaded HF-cache snapshot path names its repo, so the logo shows before the inventory lands.
+  // A cache snapshot path names its repo, so the logo shows before rows load.
   const parts =
     hubParts(row.id) ??
     hubParts(row.lora?.baseModel) ??
@@ -701,7 +701,7 @@ type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   lora?: LoraModelOption;
 };
 
-/** Only a model's own logo (curated maker, or its connection's provider); no placeholder otherwise. */
+/** A model's own logo only; no placeholder. */
 function hasRowMark(row?: RowMarkRow): boolean {
   return row?.kind === "external"
     ? Boolean(row.providerType)
@@ -1539,7 +1539,7 @@ export function ComposerModelPicker({
     setConfigStandalone(false);
   };
   const [expanded, setExpandedState] = useState(readExpanded);
-  // undefined until the first residency check after mount.
+  // undefined: not checked yet since mount.
   const residentKeyRef = useRef<string | null | undefined>(undefined);
   const setExpanded = useCallback((next: boolean) => {
     setExpandedState(next);
@@ -1595,7 +1595,6 @@ export function ComposerModelPicker({
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
-  // Marks the run settings' Back + title row once it sticks (index.css), as the Library header does.
   useEffect(() => {
     const el = settingsRef.current;
     if (!(configTarget && el)) {
@@ -1604,7 +1603,7 @@ export function ComposerModelPicker({
     let frame = 0;
     const update = () => {
       frame = 0;
-      // As the Library header: stuck once the row has pulled away from the eyebrow above it.
+      // Stuck once the row has pulled away from the eyebrow above it.
       const row = el.querySelector<HTMLElement>("[data-config-header-row]");
       const above = row?.previousElementSibling;
       const stuck =
@@ -2748,13 +2747,11 @@ export function ComposerModelPicker({
             !isExternalModelId(checkpoint) &&
             source?.loaded !== false),
       );
-  // Each load starts collapsed, a model already resident (mount, refresh) keeps the user's choice for
-  // it, and an eject expands and forgets it; a switch to a connected model is neither.
+  // A load starts collapsed, a resident model keeps its choice, an eject expands and forgets it.
   const residentKey =
     chosenLoaded && checkpoint ? `${checkpoint}\n${activeVariant ?? ""}` : null;
   const sawLoad = useRef(false);
-  // modelLoading also covers unloads, and an eject cancelled at its confirmation (or a failed one)
-  // must keep the choice: only a cycle that carried a load pick is a fresh load. Panes only load.
+  // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
   useEffect(() => {
@@ -4995,7 +4992,7 @@ export function ComposerModelPicker({
                       }}
                       className={cn(
                         "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
-                        // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
+                        // No logo: the eject slot is zero-width until hover (-mr cancels the gap).
                         hasRowMark(chosenMark)
                           ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
                           : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
@@ -5069,7 +5066,6 @@ export function ComposerModelPicker({
                   }}
                   className={cn(
                     "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
-                    // No logo to swap: the eject slot takes no room (the -mr cancels the chip's gap) until hover.
                     hasRowMark(chosenMark)
                       ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
                       : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",

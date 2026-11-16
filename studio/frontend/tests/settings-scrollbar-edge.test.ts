@@ -26,7 +26,6 @@ test("the pane's scrollbar is drawn on the dialog's very edge", () => {
     css,
     /\[data-settings-main-scroll\]::-webkit-scrollbar \{\s*display: none;/,
   );
-  // Same look as the hover-scrollbar it replaced; only its position moved.
   assert.match(
     css,
     /\.settings-scroll-thumb \{\s*width: 6px;\s*background: oklch\(0\.5 0 0 \/ 0\.4\);/,

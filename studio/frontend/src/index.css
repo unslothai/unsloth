@@ -5307,9 +5307,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-run-settings [data-config-header] {
 	padding-bottom: calc(12px * var(--ui-space-scale, 1));
 }
-/* As the Library header: the eyebrow scrolls away and the Back + title row sticks near the top,
-   so the bar is one row with no jump. Once stuck (data-header-stuck) it covers the strip above
-   it and fades into the rows below. */
+/* The eyebrow scrolls away; the Back + title row sticks, covering above and fading below once stuck. */
 .composer-run-settings {
 	--run-settings-stick-at: calc(14px * var(--ui-space-scale, 1));
 }
@@ -5356,8 +5354,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	--config-header-gap: calc(4px * var(--ui-space-scale, 1));
 	margin-top: var(--config-header-gap);
 }
-/* At rest Back centres on the eyebrow and title together, as before the row could stick; pinned,
-   with the eyebrow gone, it slides level with the title. */
+/* Back centres on both lines at rest and levels with the title once pinned. */
 [data-config-header-row] {
 	--config-eyebrow-h: var(--text-ui-10);
 	--config-header-gap: calc(var(--spacing) * 1.5);
@@ -5798,7 +5795,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
-/* The drawn thumb wears the hover-scrollbar thumb colours at the native thin bar's width, which does not scale. */
+/* hover-scrollbar thumb colours at the native thin bar's width (unscaled). */
 .settings-scroll-thumb {
 	width: 6px;
 	background: oklch(0.5 0 0 / 0.4);

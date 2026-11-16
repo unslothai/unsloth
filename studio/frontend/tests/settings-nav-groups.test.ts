@@ -29,14 +29,12 @@ test("every settings tab sits in exactly one rail group", () => {
 test("headed groups name themselves once and vanish when empty", () => {
   assert.match(groups, /headingKey: "settings\.navGroups\.connections"/);
   assert.match(groups, /headingKey: "settings\.navGroups\.dataAccess"/);
-  // Tabs keep their TABS order inside a group, whatever order the group lists them in.
   assert.match(
     dialog,
     /tabs: visibleTabs\.filter\(\(tab\) => group\.ids\.includes\(tab\.id\)\)/,
   );
   assert.match(dialog, /\.filter\(\(group\) => group\.tabs\.length > 0\)/);
   assert.match(dialog, /role="group"\s+aria-labelledby=\{headingId\}/);
-  // Stacked, the rail is one row: no headings, groups flattened into it.
   assert.match(
     dialog,
     /group-data-stacked\/settings:hidden"\s*>\s*\{t\(group\.headingKey\)\}/,
