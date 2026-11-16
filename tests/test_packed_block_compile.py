@@ -12,6 +12,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 ad = pytest.importorskip("unsloth.utils.attention_dispatch")
+from real_accelerator import has_real_cuda  # noqa: E402  tests/_shared, on sys.path via tests/conftest.py
 from unsloth.utils import packing  # noqa: E402
 
 _DIR = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models")
@@ -181,7 +182,7 @@ def test_prepared_attention_is_block_diagonal_and_compiles_once(window):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize("window", [None, 5])
 def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
     """sm80+: aten's flash varlen inside the graph (not the dense-mask fallback), no recompile."""
@@ -216,7 +217,7 @@ def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_prepared_attention_downcasts_fp32_projections_to_flash_varlen():
     """DoRA's fp32 q/k/v keep flash varlen, not a dense mask over the whole packed row."""
     if torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 8:
@@ -266,7 +267,7 @@ def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeyp
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_prepare_rechecks_the_flash_policy_and_declines_inference_lengths(monkeypatch):
     import types
 
