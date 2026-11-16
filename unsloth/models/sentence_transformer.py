@@ -3134,7 +3134,6 @@ class FastSentenceTransformer(FastModel):
 
                 from ._utils import reject_alora
 
-                # Unsloth's LoRA forwards ignore aLoRA offsets, as in FastModel.get_peft_model.
                 reject_alora(inner_model, kwargs.get("alora_invocation_tokens"))
 
                 is_quantized = (
@@ -3211,7 +3210,6 @@ class FastSentenceTransformer(FastModel):
                 from transformers import set_seed as transformers_set_seed
 
                 transformers_set_seed(random_state)
-                # The other LoRA options (exclude_modules, lora_bias, ...) and task_type.
                 lora_options = inspect.signature(LoraConfig).parameters
                 lora_config = LoraConfig(
                     r = r,
