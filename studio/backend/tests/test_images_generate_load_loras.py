@@ -176,3 +176,50 @@ def test_a_load_swapped_in_before_the_slot_retries_with_its_own_set(client, monk
     resp = _gen(client, steps = 8, guidance = 1.0, width = 1024, height = 1024)
     assert resp.status_code == 200, resp.text
     assert backend.seen == [[("tarot-lora", 0.8)]]
+
+
+def test_a_same_model_reload_with_other_adapters_retries_with_its_own_set(client, monkeypatch):  # noqa: F811
+    """Same repo, base and family, reloaded with a baked LoRA before the slot: the identity pin alone still matches,
+    so the adapter signature must refuse it and the retry must render with the new load's set."""
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError,
+        load_identity,
+        load_lora_signature,
+    )
+
+    class _SameModelReload(_BakedLoad):
+        def __init__(self):
+            super().__init__(baked = [])
+            self.swapped = False
+
+        def generate(self, **kwargs):
+            if not self.swapped:
+                self.swapped, self._baked = True, list(BAKED)
+            loaded = load_identity("x/z-image", None, "z-image")
+            expected = kwargs.get("expected_load")
+            if expected is not None and expected != loaded:
+                raise DiffusionModelReplacedError(expected, loaded)
+            pinned = kwargs.get("expected_load_loras")
+            if pinned is not None and tuple(pinned) != load_lora_signature(
+                self.status()["load_lora_specs"]
+            ):
+                raise DiffusionModelReplacedError(expected or loaded, loaded)
+            return super().generate(**kwargs)
+
+    backend = _SameModelReload()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = _gen(client, steps = 8, guidance = 1.0, width = 1024, height = 1024)
+    assert resp.status_code == 200, resp.text
+    assert backend.seen == [[("tarot-lora", 0.8)]]
+
+
+def test_the_diffusers_backend_checks_the_adapter_pin_in_its_slot():
+    """The route only sends the adapter pin to an engine that takes it; the diffusers backend must, and must compare
+    it inside the generation slot next to the load identity."""
+    import inspect
+
+    from core.inference.diffusion import DiffusionBackend
+
+    assert "expected_load_loras" in inspect.signature(DiffusionBackend.generate).parameters
+    src = inspect.getsource(DiffusionBackend.generate)
+    assert "expected_load_loras" in src and "load_lora_signature(" in src
