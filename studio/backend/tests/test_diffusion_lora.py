@@ -1283,3 +1283,42 @@ def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
     with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
         b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
+
+
+def test_hunyuanimage_21_is_gated_off_for_lora():
+    """diffusers' HunyuanImagePipeline has no LoRA loader: refuse up front, not with an AttributeError mid-generate."""
+    assert not dl.diffusers_lora_family_supported("hunyuanimage-2.1")
+    for quant in (None, "int8", "fp8"):
+        assert not dl.supports_lora(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+        assert "no LoRA loader" in dl.lora_unavailable_reason(
+            engine = "diffusers",
+            family = "hunyuanimage-2.1",
+            model_kind = "pipeline",
+            transformer_quant = quant,
+        )
+
+
+def test_every_diffusers_pipeline_family_has_a_lora_loader_or_is_gated_off():
+    """A family whose diffusers pipeline class lacks load_lora_weights must be listed as unsupported."""
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_families import _FAMILIES
+
+    missing = []
+    for fam in _FAMILIES:
+        name = getattr(fam, "pipeline_class", None)
+        if not name or not dl.diffusers_lora_family_supported(fam.name):
+            continue  # already gated off
+        try:
+            cls = getattr(diffusers, name, None)
+        except Exception as exc:  # noqa: BLE001 - the pipeline's own imports fail in this environment
+            pytest.skip(f"cannot import diffusers.{name}: {exc}")
+        if cls is None:
+            continue  # in-tree pipeline with its own loader (MOSS-Image, MiniMax-H3-Image)
+        if not hasattr(cls, "load_lora_weights"):
+            missing.append(fam.name)
+    assert missing == []
