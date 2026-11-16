@@ -85,6 +85,14 @@ test("the thread fades out under the see-through header of a background or macOS
 	);
 });
 
+test("the header fade covers the thread's left edge, unmasking only the scrollbar side", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(
+		css,
+		/\+ 1\.5rem\)\),\n    linear-gradient\(#000, #000\);\n  mask-size: 100% 100%, var\(--thread-scrollbar-gutter, 10px\) 100%;\n  mask-position: 0 0, right;/,
+	);
+});
+
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);
