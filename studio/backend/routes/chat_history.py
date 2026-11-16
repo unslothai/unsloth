@@ -606,7 +606,6 @@ class ChatSettingsPayload(BaseModel):
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
-    # Under an edited Default, the recommended keys the user moved; the rest follow each model.
     presetEditedKeys: Optional[
         list[Literal["temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens"]]
     ] = Field(default = None, max_length = 6)

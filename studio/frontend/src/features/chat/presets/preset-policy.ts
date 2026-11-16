@@ -76,7 +76,6 @@ export function heldRecommendedKeys(
   return new Set(presetEditedKeys);
 }
 
-/** `values` without the keys the active pick holds; null when nothing is left to apply. */
 export function recommendedValuesForPick<T extends Partial<InferenceParams>>(
   values: T | null,
   presetSource: ChatPresetSource,
@@ -337,7 +336,6 @@ export function mergeBackendRecommendedInference({
   response: BackendInferenceEnvelope;
   modelId: string;
   presetSource: ChatPresetSource;
-  /** The store's `presetEditedKeys`: under an edited Default, the keys kept over the recommendation. */
   presetEditedKeys: readonly RecommendedSamplingKey[];
   /** The constructor's reading, not the raw field, which may echo the request. */
   loadedContextLength: number | null;

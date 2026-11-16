@@ -45,7 +45,6 @@ export interface PersistedChatSettings {
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
-  /** Written with `activePresetSource`: the recommended keys an edited Default keeps. */
   presetEditedKeys?: RecommendedSamplingKey[];
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;

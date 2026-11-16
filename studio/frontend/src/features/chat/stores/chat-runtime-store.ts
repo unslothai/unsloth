@@ -2514,8 +2514,7 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  /** Under an edited Default, the recommended keys the user moved; every other key still follows
-   *  the loaded model. Empty for any other source. */
+  /** Under an edited Default, the recommended keys the user moved; empty for any other source. */
   presetEditedKeys: RecommendedSamplingKey[];
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
@@ -3340,8 +3339,7 @@ function persistPresetDefaults(params: InferenceParams): void {
   }
 }
 
-/** The recommended keys an edited Default keeps after this source change. An edited custom preset
- *  keeps them all, as the preset did; any other source keeps none. */
+/** An edited custom preset keeps every recommended key, as the preset did. */
 function nextPresetEditedKeys(
   state: ChatRuntimeStore,
   source: ChatPresetSource,
