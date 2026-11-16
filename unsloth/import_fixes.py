@@ -8512,9 +8512,7 @@ def _rocm_windows_math_off():
 
 
 def _sdpa_math_only(token, query, key, value, *args, **kwargs):
-    """allow_in_graph: one graph node, so a compiled call switches to math and restores the caller's
-    backends at run time; inlined, the exit would restore the backends seen at trace time. AOTAutograd
-    traces through it, so the compiled SDPA decomposes to math."""
+    """allow_in_graph so the restore uses run-time backends; inlined it would restore trace-time ones."""
     _rocm_windows_math_on()
     try:
         return _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token](query, key, value, *args, **kwargs)
@@ -8523,9 +8521,7 @@ def _sdpa_math_only(token, query, key, value, *args, **kwargs):
 
 
 def rocm_windows_wide_head_sdpa(sdpa):
-    """``sdpa`` with every call whose head is wider than 256 pinned to the math backend.
-
-    Already guarded (here or by Studio) -> ``sdpa`` itself, so installing twice never nests."""
+    """``sdpa`` with heads wider than 256 pinned to math; already guarded -> ``sdpa`` itself."""
     if _sdpa_has_flag(sdpa, _ROCM_WINDOWS_WIDE_HEAD_FLAG):
         return sdpa
     import torch
@@ -8540,10 +8536,8 @@ def rocm_windows_wide_head_sdpa(sdpa):
 
     @functools.wraps(sdpa)
     def scaled_dot_product_attention(query, key, value, *args, **kwargs):
-        # A TorchFunctionMode sees func = this wrapper, which `is F.scaled_dot_product_attention`, so
-        # matchers written against F (diffusers layer_skip, Studio's VAE chunking, tp_native) still match;
-        # calling func again lands back here. Tensor subclasses are left to torch's builtin below, which
-        # hands them func = the builtin as stock torch does (nested jagged tensors only match that).
+        # Modes see func = this wrapper (is F.sdpa), so F-based matchers still match; tensor subclasses
+        # go to torch's builtin below, as nested jagged tensors only match that.
         if (
             not torch.compiler.is_compiling()
             and torch._C._is_torch_function_mode_enabled()
@@ -8570,13 +8564,9 @@ def rocm_windows_wide_head_sdpa(sdpa):
 def fix_rocm_windows_wide_head_sdpa():
     """Windows ROCm: run SDPA with a head wider than 256 on the math backend.
 
-    AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151 accepts head dim 512 in its flash and
-    efficient SDPA kernels and computes it wrong (forward and dq / dk / dv off fp64 math by relative
-    error 1 to 1e20, or non-finite, at Gemma 4's global-layer shapes); math is right, and Linux ROCm
-    refuses those kernels so already runs math. Heads up to 256 keep their fused kernels. Not
-    probe-gated: the corruption depends on sequence length, mask and GQA layout, so a single probe
-    shape can pass while real calls are wrong. UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA=1 opts out.
-    Returns True when the guard is in place (installed now or before, by this or by Studio).
+    torch 2.11.0+rocm7.14.0 on gfx1151 runs head dim 512 through flash/efficient kernels and gets it
+    wrong; Linux ROCm refuses them. Not probe-gated: corruption depends on seq len, mask and GQA, so
+    one probe shape can pass. UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA=1 opts out. True if installed.
     """
     if os.environ.get("UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA", "0") == "1":
         return False
