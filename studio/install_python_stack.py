@@ -1989,13 +1989,7 @@ _WINDOWS_DISPLAY_CLASS_KEY = (
 
 
 def _windows_amd_gpu_names_from_registry() -> list[str]:
-    """Return healthy AMD display-adapter names without starting PowerShell.
-
-    WMI can time out or be unavailable on Windows installs with a damaged repository. The
-    display-adapter class key is maintained by the driver and is the same fast fallback used
-    by the native llama prebuilt selector. It is advisory: registry failures simply return no
-    names so the caller can keep its existing probes.
-    """
+    """AMD display-adapter names from the driver class key, for hosts whose WMI does not answer."""
     if not IS_WINDOWS:
         return []
     try:
@@ -2170,6 +2164,7 @@ def _detect_windows_gfx_arch() -> str | None:
 
     # Last resort: GPU name via WMI -> arch table (mirrors setup.ps1's $nameArchTable) for driver-only
     # hosts. Only AMD adapters with ConfigManagerErrorCode 0, as setup.ps1 filters $wmiGpus.
+    _wmi_answered = False
     try:
         result = subprocess.run(
             [
@@ -2187,6 +2182,7 @@ def _detect_windows_gfx_arch() -> str | None:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
+            _wmi_answered = True
             # Lines are "<name>|<ConfigManagerErrorCode>"; a bare name counts as healthy.
             _all_names, _healthy = [], []
             for _line in result.stdout.decode(errors = "replace").splitlines():
@@ -2256,9 +2252,10 @@ def _detect_windows_gfx_arch() -> str | None:
     except Exception:
         pass
 
-    # A slow or broken WMI repository can make the installer miss an otherwise healthy AMD
-    # adapter. The display-driver registry key is local and fast, so use it before falling back
-    # to CPU-only installation. This also covers driver-only laptops with no HIP SDK installed.
+    # Only when WMI did not answer: class keys outlive removed hardware, so a working WMI that lists no
+    # AMD adapter must not be overruled by a stale one.
+    if _wmi_answered:
+        return None
     _registry_names = _windows_amd_gpu_names_from_registry()
     _registry_tokens = [
         _arch for _name in _registry_names if (_arch := _gfx_arch_from_gpu_name(_name)) is not None
@@ -2282,9 +2279,10 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),  # Navi 32
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    # RDNA 2: every row resolves to gfx103X-all (6850M XT is Navi 22, filed here like 6750 / 6700).
-    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
-    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
+    # RDNA 2: Windows installs one device pack per exact arch, so Navi 23 laptop parts (6700S / 6800S) go first.
+    (r"RX 6800S|RX 6700S|RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
+    (r"RX 6850|RX 6800M|RX 6750|RX 6700", "gfx1031"),  # Navi 22
+    (r"RX 6950|RX 6900|RX 6800|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
     (
         r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",

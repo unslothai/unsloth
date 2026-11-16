@@ -289,6 +289,17 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon 880M Graphics": "gfx1150",
     "AMD Radeon 860M Graphics": "gfx1152",
     "AMD Radeon 840M Graphics": "gfx1152",
+    # RDNA 2 by die (pci.ids 73bf / 73df / 73ef / 73ff; LLVM AMDGPUUsage). Windows device packs are per arch.
+    "AMD Radeon RX 6800 XT": "gfx1030",
+    "AMD Radeon RX 6900 XT": "gfx1030",
+    "AMD Radeon RX 6700 XT": "gfx1031",
+    "AMD Radeon RX 6750 XT": "gfx1031",
+    "AMD Radeon RX 6800M": "gfx1031",
+    "AMD Radeon RX 6850M XT": "gfx1031",
+    "AMD Radeon RX 6700S": "gfx1032",
+    "AMD Radeon RX 6800S": "gfx1032",
+    "AMD Radeon RX 6650 XT": "gfx1032",
+    "AMD Radeon RX 6600M": "gfx1032",
 }
 
 
@@ -345,11 +356,8 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
-# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
-_SPOOF_DIVERGENCES = {
-    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
-}
+# The spoof fixture maps gfx -> name, an independent witness.
+_SPOOF_DIVERGENCES: dict[str, str] = {}
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:

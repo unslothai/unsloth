@@ -48,15 +48,8 @@ class _RegistryKey:
 class _FakeWinreg:
     HKEY_LOCAL_MACHINE = object()
 
-    def __init__(self):
-        self.adapters = {
-            "0000": _RegistryKey(
-                values = {
-                    "MatchingDeviceId": "PCI\\VEN_1002&DEV_743F",
-                    "DriverDesc": "AMD Radeon RX 6700S",
-                }
-            )
-        }
+    def __init__(self, adapters: dict[str, dict[str, str]]):
+        self.adapters = {k: _RegistryKey(values = v) for k, v in adapters.items()}
         self.root = _RegistryKey(subkeys = tuple(self.adapters))
 
     def OpenKey(self, parent, name):
@@ -79,27 +72,47 @@ class _FakeWinreg:
         return key.values[name], 1
 
 
-def test_registry_fallback_recovers_an_amd_gfx_target(monkeypatch):
-    fake_winreg = _FakeWinreg()
-    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+_RX_6700S = {"MatchingDeviceId": "PCI\\VEN_1002&DEV_73EF", "DriverDesc": "AMD Radeon RX 6700S"}
+
+
+def _windows_host(
+    monkeypatch,
+    adapters,
+    wmi_returncode,
+    wmi_stdout = b"",
+):
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(adapters))
     monkeypatch.setattr(stack, "IS_WINDOWS", True)
     monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(stack, "_pick_visible_index", lambda _count, warn = True: 0)
+    monkeypatch.setattr(stack.os.path, "isfile", lambda _path: False)
     monkeypatch.setattr(stack, "_safe_print", lambda *_args, **_kwargs: None)
+    for var in ("UNSLOTH_ROCM_GFX_ARCH", "HIP_PATH", "ROCM_PATH", "HIP_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
 
-    class _FailedWmi:
-        returncode = 1
-        stdout = b""
+    class _Wmi:
+        returncode = wmi_returncode
+        stdout = wmi_stdout
 
-    monkeypatch.setattr(stack.subprocess, "run", lambda *_args, **_kwargs: _FailedWmi())
+    monkeypatch.setattr(stack.subprocess, "run", lambda *_args, **_kwargs: _Wmi())
 
+
+def test_registry_fallback_recovers_the_card_when_wmi_fails(monkeypatch):
+    _windows_host(monkeypatch, {"0000": _RX_6700S}, wmi_returncode = 1)
     assert stack._windows_amd_gpu_names_from_registry() == ["AMD Radeon RX 6700S"]
-    assert stack._detect_windows_gfx_arch() == "gfx1030"
+    assert stack._detect_windows_gfx_arch() == "gfx1032"
 
 
-def test_registry_fallback_is_after_the_existing_wmi_probe():
-    source = STACK_PATH.read_text(encoding = "utf-8")
-    assert "_windows_amd_gpu_names_from_registry()" in source
-    assert source.rindex("_windows_amd_gpu_names_from_registry()") > source.index(
-        "Get-CimInstance Win32_VideoController"
-    )
+def test_stale_registry_key_does_not_overrule_a_working_wmi(monkeypatch):
+    stale_amd = {
+        "MatchingDeviceId": "PCI\\VEN_1002&DEV_73DF",
+        "DriverDesc": "AMD Radeon RX 6700 XT",
+    }
+    _windows_host(monkeypatch, {"0000": stale_amd}, wmi_returncode = 0, wmi_stdout = b"")
+    assert stack._detect_windows_gfx_arch() is None
+
+
+def test_wmi_named_rx_6700s_gets_its_own_device_pack(monkeypatch):
+    _windows_host(monkeypatch, {}, wmi_returncode = 0, wmi_stdout = b"AMD Radeon RX 6700S|0\r\n")
+    gfx = stack._detect_windows_gfx_arch()
+    assert gfx == "gfx1032"
+    assert stack._windows_multiarch_torch_pkg_specs(gfx)[0].startswith("torch[device-gfx1032]==")
