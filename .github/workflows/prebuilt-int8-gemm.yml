@@ -42,7 +42,8 @@ jobs:
           - platform: manylinux_2_28_x86_64
             runner: ubuntu-latest
           - platform: win_amd64
-            runner: windows-latest
+            # CUDA 12.8's host_config.h accepts MSVC 2017 to 2022; windows-latest now ships VS 2026.
+            runner: windows-2022
     defaults:
       run:
         shell: bash
