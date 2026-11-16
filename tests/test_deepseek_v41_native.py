@@ -385,8 +385,7 @@ def test_released_layout_converts_to_the_native_layout_on_any_transformers(tmp_p
 
 
 def test_the_declared_released_renames_reach_every_module_name():
-    """unsloth_zoo's merged export rewrites the released files and finds each adapter's tensor through
-    _unsloth_checkpoint_conversion_mapping; every released name it renames must land on the native name."""
+    """Every released name the merged export renames must land on the native name."""
     import re
 
     mapping = dsv41.DeepseekV41ForCausalLM._unsloth_checkpoint_conversion_mapping
@@ -1034,11 +1033,8 @@ def test_packed_sequences_match_each_sequence_run_alone():
 
 
 def test_packed_documents_at_every_boundary_match_unpacked_runs_and_never_leak():
-    """Padding-free packing at the attention boundaries: a 1-token document, one exactly the sliding window, one past
-    it, one compressor block (ratio 2), one past the indexer budget, an odd one. Per document: logits equal the
-    document run alone (unpadded); the summed loss and every gradient equal the per-document sum; perturbing one
-    document leaves the others unchanged. 16 indexer heads: with 2, relu often zeroes a whole score, and top-k breaks
-    exact ties by tensor width (the unpadded run has fewer compressed entries than the relayout's padded row)."""
+    """Padding-free packing at the window / compressor / indexer boundaries matches per-document runs.
+    16 indexer heads: with 2, relu often zeroes a whole score and top-k ties break by tensor width."""
     model = _tiny_model(index_n_heads = 16)
     text = model.config.text_config
     lengths = [1, text.sliding_window, text.sliding_window + 1, 2, 17, 5]
@@ -1058,7 +1054,6 @@ def test_packed_documents_at_every_boundary_match_unpacked_runs_and_never_leak()
         for doc, lo in zip(docs, starts):
             alone = model(input_ids = doc.unsqueeze(0)).logits[0]
             torch.testing.assert_close(packed[lo : lo + len(doc)], alone, rtol = 1e-5, atol = 1e-5)
-        # perturb document 2 only: every other document's logits stay put, document 2's move
         bumped = ids.clone()
         bumped[0, starts[2] : starts[2] + lengths[2]] = (
             bumped[0, starts[2] : starts[2] + lengths[2]] + 7
@@ -1175,9 +1170,7 @@ def test_gradient_checkpointing_without_the_zoo_replay_fails_closed(monkeypatch)
 
 
 def test_layer_config_ints_stay_constant_under_dynamic_compile(monkeypatch):
-    """unsloth_zoo compiles the forwards with dynamic=True and sets allow_unspec_int_on_nn_module, which made every
-    module int (compress_ratio, window, head_dim, top-k) a SymInt: floor divisions by a symbolic compress ratio sent
-    AOT / Inductor into sympy for an hour (fp32 full finetuning, NVFP4 LoRA). The model forward keeps them constant."""
+    """Module ints must stay constant under dynamic=True, else Inductor spends an hour in sympy."""
     from torch._dynamo.testing import EagerAndRecordGraphs
 
     model = _tiny_model()
@@ -1212,8 +1205,7 @@ def test_layer_config_ints_stay_constant_under_dynamic_compile(monkeypatch):
 
 
 def test_gradient_checkpointing_enable_takes_the_trainer_keywords(monkeypatch):
-    """transformers 5.22+ Trainer.train calls gradient_checkpointing_enable(..., every_n_layers=, offload=); the
-    native override must take them on every transformers (honoured where the parent has them)."""
+    """transformers 5.22+ passes every_n_layers= / offload= to gradient_checkpointing_enable."""
     import inspect
 
     from transformers import PreTrainedModel
@@ -1327,8 +1319,7 @@ def _zoo_ast_rewriter():
 
 
 def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
-    """The compiler's fused-CE rewrite of the forward also scores labels with logits_to_keep (kept positions against
-    their own targets) through the fused kernel, with the unfused loss."""
+    """The fused-CE rewrite also handles labels with logits_to_keep."""
     import inspect
     import textwrap
 
@@ -1377,9 +1368,7 @@ def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
 
 
 def test_greedy_generate_equals_full_prefix_recompute_across_the_boundaries():
-    """No KV cache: every generate step recomputes the whole prefix. Token by token, batch 2 (left padded) and with a
-    LoRA adapter on and off, greedy generate equals argmax of a fresh full-prefix forward, past the sliding window,
-    compressor blocks and the indexer budget."""
+    """No KV cache: greedy generate equals argmax of a fresh full-prefix forward."""
     from peft import LoraConfig, get_peft_model
 
     model = _tiny_model(index_n_heads = 16)
@@ -1433,8 +1422,7 @@ def test_greedy_generate_equals_full_prefix_recompute_across_the_boundaries():
 
 
 def test_opt_in_fast_lora_matches_peft_on_the_plain_projections(monkeypatch):
-    """UNSLOTH_DSV41_FAST_LORA=1 routes q_a / q_b / kv / o_b and the shared expert's LoRA through LoRA_W; loss and
-    every gradient equal PEFT's forward (fp32), and a dropout adapter keeps PEFT's forward."""
+    """UNSLOTH_DSV41_FAST_LORA=1 matches PEFT's loss and gradients; a dropout adapter keeps PEFT's forward."""
     fast_lora = pytest.importorskip("unsloth.kernels.fast_lora")
     from peft import LoraConfig, get_peft_model
 
@@ -2211,9 +2199,7 @@ def test_cpu_backend_import_registers_deepseek_v41(fresh_cpu_child):
 
 
 def test_no_module_attribute_shares_a_def_name():
-    """unsloth_zoo's compiler picks the module attributes whose name is a `def` in this file and is called in it, then
-    swaps them for compiled functions: an imported module named like a method (`import copy` next to
-    DeepseekV41GroupState.copy) is replaced, and `copy.deepcopy` in from_pretrained raises."""
+    """The compiler swaps names matching a `def`, so an `import copy` beside a `.copy` method gets replaced."""
     import inspect
     import re
 

@@ -723,13 +723,8 @@ def _compiled_auto_model(auto_model):
 
 
 def _sync_registered_auto_classes(auto_model):
-    """Point classes registered on an Auto factory at their modeling module's current class of that name.
-
-    `AutoModelForCausalLM.register(config, cls)` (Unsloth's native DeepSeek-V4.1) stores the class object itself, so
-    the compiler's module swap never reaches it: the model would load on the stock class and skip every compiled
-    forward of its own (the fused-CE loss of the *ForCausalLM head). A later restore of the stock class is followed
-    the same way.
-    """
+    """Point registered Auto classes at their module's current class: register() stores the class object, so the
+    compiler's module swap would otherwise be missed."""
     extra = getattr(getattr(auto_model, "_model_mapping", None), "_extra_content", None)
     if not isinstance(extra, dict):
         return
@@ -3438,7 +3433,6 @@ class FastModel(FastBaseModel):
                             is_vlm = False
             else:
                 auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
-        # After the factory is chosen: its registered classes must follow the compiler's swap.
         _sync_registered_auto_classes(auto_model)
 
         load_in_4bit_kwargs = load_in_4bit

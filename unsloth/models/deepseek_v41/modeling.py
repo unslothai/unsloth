@@ -101,12 +101,8 @@ def _count(key):
 
 
 class _StaticModuleInts:
-    """Keep the layers' config ints (compress ratio, window, head dims, top-k) constant while Dynamo traces.
-
-    unsloth_zoo compiles the forwards with dynamic=True and sets torch._dynamo.config.allow_unspec_int_on_nn_module,
-    which turns every module int into a SymInt. Shapes then carry floor divisions by a symbolic compress ratio, and
-    Inductor / AOT spent an hour in sympy (fp32 full finetuning, NVFP4 LoRA). The ints are fixed per layer, so each
-    layer kind gets its own graph instead; tensor sizes stay dynamic."""
+    """Keep layer config ints constant while Dynamo traces: as SymInts (allow_unspec_int_on_nn_module), symbolic
+    floor divisions sent Inductor into sympy for an hour."""
 
     __slots__ = ("_patch",)
 
@@ -144,11 +140,8 @@ if _FAST_LORA:
 
 
 def lora_linear(proj, x):
-    """``proj(x)``; with UNSLOTH_DSV41_FAST_LORA=1 a plain single-adapter LoRA layer (no dropout, no lora_B bias,
-    frozen base) runs as one LoRA_W instead. Only for the plain linears: q_a / q_b / kv / o_b and the shared expert.
-    Not ``o_a_proj`` (its LoRA applies group g's rows of B to group g's input, which LoRA_W's single X @ A @ B cannot
-    express), the compressor (zoo's pooled-LoRA patch reads the weights itself), nor the routed experts (3-D
-    grouped weights)."""
+    """``proj(x)``, via LoRA_W for a plain single-adapter LoRA when UNSLOTH_DSV41_FAST_LORA=1.
+    Not for o_a_proj (grouped LoRA), the compressor, or routed experts."""
     if not _FAST_LORA or _LoRA_W is None or not hasattr(proj, "lora_A"):
         return proj(x)
     # Several active adapters or QAT activation / forward-only fake quantization: PEFT's forward handles them.
@@ -1602,9 +1595,7 @@ def _parent_keywords(fn):
 
 
 def _released_key_renames():
-    """Released tensor name -> module name, the one-to-one renames (no backreferences) as a regex dict. transformers
-    5 registers them under the text sub-config, which unsloth_zoo's merge does not see, so the class states them for
-    it: a merged export rewrites the released files and has to find each adapter's tensor there."""
+    """Released -> module name renames; transformers 5 hides them in the text sub-config, which the zoo merge misses."""
     from .convert import _RENAMES
 
     out = {r"^head\.weight": "lm_head.weight"}
@@ -2209,9 +2200,7 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             else slice(None)
         )
         if labels is not None and not (isinstance(logits_to_keep, int) and logits_to_keep <= 0):
-            # Kept positions against their own next-token targets: shift the labels once over the whole sequence,
-            # then pick the same positions. One lm_head / loss_function pair below, so the compiler's fused-CE
-            # rewrite covers this case too (no full-vocab logits).
+            # Shift labels over the whole sequence, then pick kept positions; one lm_head / loss pair keeps fused CE.
             hidden, kwargs["shift_labels"] = self._kept_positions(hidden, labels, logits_to_keep)
             sl = slice(None)
         elif not isinstance(logits_to_keep, int):

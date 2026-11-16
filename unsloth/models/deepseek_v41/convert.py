@@ -118,9 +118,7 @@ def _dequant_fp4(
 
 
 def keep_fp4_experts_packed():
-    """fp4 experts stay MXFP4-packed unless UNSLOTH_DSV41_FP4_EXPERTS=bf16 (or 0) asks for a bf16 copy. Full
-    finetuning (Unsloth sets UNSLOTH_ENABLE_FULL_FINETUNING=1 before loading) trains the experts, which packed uint8
-    blocks cannot, so it takes the bf16 copy; an explicit packed request with full finetuning is refused."""
+    """Packed unless UNSLOTH_DSV41_FP4_EXPERTS=bf16/0; full finetuning needs bf16 (packed uint8 cannot train)."""
     requested = os.environ.get("UNSLOTH_DSV41_FP4_EXPERTS")
     full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
     if requested is None or not requested.strip():

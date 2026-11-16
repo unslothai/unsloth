@@ -80,8 +80,7 @@ def test_real_whisper_class_follows_module_swap(monkeypatch):
 
 
 def test_registered_auto_class_follows_the_module_swap_and_the_restore(monkeypatch):
-    """AutoModelForCausalLM.register stores the class itself (native DeepSeek-V4.1): it must follow the compiler's
-    swap, else the head loads on the stock class and skips its compiled fused-CE forward."""
+    """Registered Auto classes must follow the compiler's swap, else the compiled fused-CE forward is skipped."""
     stock = type("FakeForCausalLM", (_Stock,), {})
     module = _fake_module(monkeypatch, stock)
     compiled = _compiled(monkeypatch, type("FakeForCausalLM", (_Stock,), {}))
