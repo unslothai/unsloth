@@ -1078,12 +1078,41 @@ def _h3_image():
     return H
 
 
+def test_the_unset_switch_keeps_the_kernel_off_the_h3_image_blocks(monkeypatch):
+    """MiniMax-H3-Image: the block race picks the kernel on L4 / G4 / A100, which then renders 6-13% slower end to
+    end, so with the switch unset the blocks keep their backend with no check or race; forcing still routes them."""
+    import logging
+
+    H = _h3_image()
+    installs: list = []
+    monkeypatch.setattr(
+        I, "install_int8_attention", lambda t, **kw: installs.append(kw) or len(kw["modules"])
+    )
+    monkeypatch.setattr(H, "race_checkpoint_attention", lambda *a, **k: pytest.fail("no race"))
+    model, log = types.SimpleNamespace(), logging.getLogger(__name__)
+    blocks = [types.SimpleNamespace(processor = types.SimpleNamespace()) for _ in range(2)]
+    monkeypatch.delenv(I.INT8_ATTENTION_ENV, raising = False)
+    for sage in (None, True, False):
+        assert H._race_int8_kernel(model, blocks, {}, "cuda", torch.bfloat16, sage, False, log) == (
+            0,
+            None,
+        )
+    assert installs == []
+    monkeypatch.setenv(I.INT8_ATTENTION_ENV, "1")
+    assert H._race_int8_kernel(model, blocks, {}, "cuda", torch.bfloat16, True, True, log) == (
+        2,
+        None,
+    )
+    assert len(installs) == 1 and installs[0]["force"]
+
+
 def test_checkpoint_race_times_the_kernel_on_a_block(monkeypatch, _active_backend):
     import logging
     import sys
 
     h3, A = _h3()
     H = _h3_image()
+    monkeypatch.setattr(H, "KERNEL_AUTO", True)
     model = _tiny_h3(h3)
     model.set_attention_backend("_native_math")
     assert A.install_strided_attention(model) == 3
@@ -1245,6 +1274,11 @@ def test_checkpoint_attention_races_each_backend_once(monkeypatch, _active_backe
     engaged, timed, blocks = load("1")
     assert engaged == I.BACKEND and timed == []
     assert all(p._unsloth_int8 for p in blocks)
+    # switch unset: the kernel stays off the blocks (KERNEL_AUTO), SageAttention's own race decides them
+    engaged, timed, blocks = load()
+    assert engaged == "sage_hub" and timed == [False]
+    assert not any(p._unsloth_int8 for p in blocks)
+    monkeypatch.setattr(H, "KERNEL_AUTO", True)
     engaged, timed, blocks = load()
     assert engaged == I.BACKEND and timed == [True]
     engaged, timed, blocks = load(kernel_ms = 9.9)
@@ -2260,9 +2294,13 @@ def test_checkpoint_race_runs_the_kernel_on_a_resident_block(_active_backend):
     assert "kernel" not in plain and len(plain["ms"]) == 2 and I.STATS["int8"] == before + calls
     import logging
 
-    routed, race = H._race_int8_kernel(
-        model, blocks, saved, "cuda", dtype, None, False, logging.getLogger(__name__)
-    )
+    H.KERNEL_AUTO = True
+    try:
+        routed, race = H._race_int8_kernel(
+            model, blocks, saved, "cuda", dtype, None, False, logging.getLogger(__name__)
+        )
+    finally:
+        H.KERNEL_AUTO = False
     assert race is not None and "keep" in race
     record = getattr(model, H.ATTENTION_RACE_ATTR)
     assert record["timed"] == "block" and record["blocks"] == routed and routed in (0, 2)
