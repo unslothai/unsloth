@@ -217,3 +217,15 @@ def test_prefetch_is_off_under_a_distributed_process_group(monkeypatch):
     monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
     assert not prefetch.prefetch_enabled(trainer)
+
+
+def test_prefetch_patch_skips_a_trainer_without_a_train_dataloader():
+    # A trainer class without get_train_dataloader (a test stand-in, or a non-transformers trainer) keeps every
+    # other Unsloth patch: the prefetch wrapper has nothing to wrap, so it must not raise.
+    from unsloth.models._sentence_transformer_prefetch import patch_train_dataloader
+
+    class Trainer:
+        pass
+
+    patch_train_dataloader(Trainer)
+    assert not hasattr(Trainer, "get_train_dataloader")
