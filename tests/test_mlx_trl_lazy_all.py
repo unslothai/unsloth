@@ -275,6 +275,14 @@ for stem in ("DPO", "ORPO", "KTO", "GRPO", "CPO"):
     assert type(pickle.loads(pickle.dumps(cfg))) is config, stem
 for name in ("PatchDPOTrainer", "PatchKTOTrainer", "PatchFastRL"):
     assert getattr(unsloth, name)() is None
+import unsloth_zoo.rl_environments as rl_env
+for name in ("check_python_modules", "create_locked_down_function", "execute_with_time_limit", "Benchmarker", "is_port_open", "launch_openenv"):
+    assert getattr(unsloth, name) is getattr(rl_env, name), name
+for name in ("FastLlamaModel", "FastMistralModel", "FastQwen2Model", "FastQwen3Model", "FastFalconH1Model"):
+    assert getattr(unsloth, name) is unsloth.FastLanguageModel, name
+from datasets import Dataset
+rows = unsloth.to_sharegpt(Dataset.from_list([{"q": "a", "a": "b"}] * 2), merged_prompt="{q}", output_column_name="a")
+assert rows[0]["conversations"] == [{"from": "human", "value": "a"}, {"from": "gpt", "value": "b"}]
 
 # TRL's own positional order, ref_model and a trainer-level config field.
 cfg = trl.DPOConfig(max_steps=1, max_length=512, max_prompt_length=64)

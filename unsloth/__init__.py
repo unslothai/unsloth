@@ -435,6 +435,9 @@ if _IS_MLX:
 
     FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
+    # The MLX loader dispatches on the checkpoint's config, not on the class.
+    FastLlamaModel = FastMistralModel = FastGraniteModel = FastLanguageModel
+    FastQwen2Model = FastQwen3Model = FastQwen3MoeModel = FastFalconH1Model = FastLanguageModel
 
     class FastSentenceTransformer:
         @staticmethod
@@ -1682,6 +1685,19 @@ if _IS_MLX:
     def standardize_sharegpt(*args, **kwargs):
         """Alias ShareGPT standardization to the shared dataset-format helper."""
         return standardize_data_formats(*args, **kwargs)
+
+    def to_sharegpt(*args, **kwargs):
+        from .chat_templates import to_sharegpt as _to_sharegpt
+        return _to_sharegpt(*args, **kwargs)
+
+    from unsloth_zoo import rl_environments as _rl_environments
+
+    check_python_modules = _rl_environments.check_python_modules
+    create_locked_down_function = _rl_environments.create_locked_down_function
+    execute_with_time_limit = _rl_environments.execute_with_time_limit
+    Benchmarker = _rl_environments.Benchmarker
+    is_port_open = _rl_environments.is_port_open
+    launch_openenv = _rl_environments.launch_openenv
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
