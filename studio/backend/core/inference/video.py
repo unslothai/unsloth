@@ -502,8 +502,7 @@ def assert_video_precision_available(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
     )
     if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
-        # Every precision (unset included) lands on the released weights on a GPU without bf16: refuse a host that
-        # cannot hold them here, before the eviction and the pull.
+        # Refuse before the eviction and the pull: without bf16 every precision lands on the dense weights.
         with diffusion_device_scope(gpu_ordinal):
             target = (
                 resolve_diffusion_device_target()
@@ -890,11 +889,9 @@ def h3_fp16_host_shortfall(
     model_kind: str,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bfloat16, else None. There the hosted INT8 /
-    FP8 parts never engage (``_h3_auto_precision_ok``), so every precision lands on the released bf16 components,
-    promoted to float32, all of which the offload rotation keeps in host RAM; only an explicit hosted conditioner
-    (``text_encoder_quant='int8'``) still engages there, priced at its int8 size. Refused before the eviction and the pull
-    instead of downloading 144 GB and exhausting host RAM. Never raises; unreadable sizes or RAM refuse nothing."""
+    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bf16, else None. There every precision lands on
+    the released components promoted to float32 (only an explicit int8 conditioner stays int8), all held in host RAM.
+    Never raises; unreadable sizes or RAM refuse nothing."""
     try:
         import torch
 
@@ -909,7 +906,6 @@ def h3_fp16_host_shortfall(
         if len(sizes) != 3:
             return None
         scale = 2.0 if fp16_promotes_to_fp32(fam) else 1.0
-        # An explicit hosted conditioner (int8) still engages without bf16 and stays int8: price it, not the dense one.
         te_scheme = (
             None
             if _h3_precision_unset(text_encoder_quant)
