@@ -1291,7 +1291,7 @@ def _resident_npu_context(status: Optional[dict], model: str) -> int:
 
 def server_load_opts(ctx, load_opts: dict) -> dict:
     """Drop an untyped --load-in-4bit or --max-seq-length so the server can keep a resident
-    model's precision and context."""
+    model's precision, and a resident NPU model's context."""
     opts = dict(load_opts)
     for name in ("load_in_4bit", "max_seq_length"):
         source = ctx.get_parameter_source(name)

@@ -214,8 +214,9 @@ def chat(
         "--max-seq-length",
         "--context-length",
         help = "Runtime context length in tokens (0 = model default for GGUF and MLX; 2048 "
-        "for hub models). --context-length works too. Left unset, a running Unsloth server that "
-        "already has this model loaded keeps its context; a value that differs reloads it.",
+        "for hub models). --context-length works too. A value that differs from a running "
+        "Unsloth server's reloads the model; left unset, an NPU model it already has loaded "
+        "keeps its context.",
     ),
     load_in_4bit: bool = typer.Option(
         True,
