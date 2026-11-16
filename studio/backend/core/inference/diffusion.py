@@ -421,6 +421,7 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
+from .diffusion_lora import LoraSelectionError
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
@@ -656,7 +657,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise ValueError(
+        raise LoraSelectionError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
@@ -965,6 +966,30 @@ def _baked_lora_names(pipe: Any) -> list:
         if name:
             names.append(str(name))
     return names
+
+
+# Load-request (id, weight) pairs behind a baked set.
+_BAKED_LORA_SPECS_ATTR = "_unsloth_baked_lora_specs"
+
+
+def _record_baked_lora_specs(pipe: Any, loras: Any) -> None:
+    specs = []
+    for entry in loras or ():
+        try:
+            lora_id, weight = entry
+            weight = float(weight)
+        except Exception:  # noqa: BLE001 - an unrecognised entry was not baked either
+            continue
+        if lora_id and weight:
+            specs.append((str(lora_id), weight))
+    setattr(pipe, _BAKED_LORA_SPECS_ATTR, tuple(specs))
+
+
+def _baked_lora_specs(pipe: Any) -> list:
+    """The adapters a load baked in, as the ``{id, weight}`` the load requested; [] when none were baked."""
+    if not getattr(pipe, "_unsloth_loras_baked", False):
+        return []
+    return [{"id": i, "weight": w} for (i, w) in getattr(pipe, _BAKED_LORA_SPECS_ATTR, ()) or ()]
 
 
 # Adapters baked into a quantized single file; ``_unsloth_loras_baked`` also stays set after a declined quantize.
@@ -10792,6 +10817,7 @@ class DiffusionBackend:
                                     )
                                     pipe._unsloth_loras = baked
                                     pipe._unsloth_loras_baked = True
+                                    _record_baked_lora_specs(pipe, loras)
                                     logger.info(
                                         "diffusion.lora_bake: %d adapter(s) attached before the pipeline "
                                         "quantize",
@@ -10954,6 +10980,7 @@ class DiffusionBackend:
                         )
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
+                        _record_baked_lora_specs(pipe, loras)
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
                         # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
                         quant_merged = (
@@ -12461,6 +12488,7 @@ class DiffusionBackend:
             )
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
+            _record_baked_lora_specs(pipe, lora_specs)
             logger.info(
                 "diffusion.lora_bake: %d adapter(s) attached before %s quantize",
                 len(baked),
@@ -14489,7 +14517,7 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
-            raise ValueError(
+            raise LoraSelectionError(
                 "This quantized (int8/fp8) load was built without LoRA adapters. Reload the "
                 "model with the adapter selection to bake it into the quantized transformer."
             )
@@ -14527,7 +14555,7 @@ class DiffusionBackend:
             for (name, path, _w) in current
         )
         if any(wanted.values()):
-            raise ValueError(
+            raise LoraSelectionError(
                 "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
                 "adapters at load time. Reload the model with the new adapter selection."
             )
@@ -16610,6 +16638,7 @@ class DiffusionBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
+            "baked_lora_specs": _baked_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(

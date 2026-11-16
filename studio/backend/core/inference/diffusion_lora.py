@@ -434,6 +434,10 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     return out
 
 
+class LoraSelectionError(ValueError):
+    """A LoRA selection the loaded model cannot take; the caller's to fix."""
+
+
 def resolve_one(
     spec_id: str,
     weight: float,
@@ -450,7 +454,7 @@ def resolve_one(
     if entry is not None:
         req_fam = (family or "").strip().lower()
         if entry.families and req_fam and req_fam not in {f.lower() for f in entry.families}:
-            raise ValueError(
+            raise LoraSelectionError(
                 f"LoRA '{spec_id}' is for {', '.join(entry.families)}, not the loaded "
                 f"'{family}' model family; pick a LoRA built for this family."
             )
@@ -463,7 +467,7 @@ def resolve_one(
                 raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
         if not entry.repo_id or not entry.weight_name:
-            raise ValueError(f"LoRA '{spec_id}' has no downloadable weight")
+            raise LoraSelectionError(f"LoRA '{spec_id}' has no downloadable weight")
         path = hf_hub_download_with_xet_fallback(
             entry.repo_id, entry.weight_name, hf_token, cancel_event = cancel_event
         )
@@ -570,7 +574,7 @@ def resolve_specs(
         EntryNotFoundError,
         GatedRepoError,
     ) as exc:
-        raise ValueError(_scrub_hub_url(str(exc))) from exc
+        raise LoraSelectionError(_scrub_hub_url(str(exc))) from exc
     except RuntimeError as exc:
         if str(exc) == "Cancelled":
             raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
