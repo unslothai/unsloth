@@ -171,6 +171,226 @@ def test_a_single_string_target_is_one_name():
     assert ml.inject_multi_lora(model, "1", 2) == ["1"]
 
 
+def _dense_per_adapter_loss(
+    logits,
+    labels,
+    ids,
+    num_adapters,
+    ignore_index = -100,
+):
+    shift = logits[:, :-1].float()
+    token = torch.nn.functional.cross_entropy(
+        shift.reshape(-1, shift.shape[-1]),
+        labels[:, 1:].reshape(-1),
+        ignore_index = ignore_index,
+        reduction = "none",
+    ).view(labels[:, 1:].shape)
+    valid = (labels[:, 1:] != ignore_index).float()
+    ids = ml._label_adapter_ids(ids, labels)
+    keep = (ids >= 0).float()
+    ids = ids.clamp_min(0).reshape(-1)
+    sums = torch.zeros(num_adapters, device = logits.device).index_add(
+        0, ids, (token * keep).reshape(-1)
+    )
+    counts = torch.zeros(num_adapters, device = logits.device).index_add(
+        0, ids, (valid * keep).reshape(-1)
+    )
+    losses = sums / counts.clamp_min(1)
+    return losses.sum(), losses.detach()
+
+
+# Losses agree to fp32 rounding; gradients to rounding in fp32, one rounding into the logits dtype in bf16.
+_CHUNKED_TOL = {
+    torch.float32: dict(rtol = 1e-6, atol = 1e-7),
+    torch.bfloat16: dict(rtol = 2**-7, atol = 1e-6),
+}
+
+
+def _chunked_vs_dense(
+    dtype,
+    per_token_ids,
+    V = 7,
+):
+    g = torch.Generator().manual_seed(0)
+    B, T, U = 4, 9, 3
+    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype)
+    labels = torch.randint(0, V, (B, T), generator = g)
+    labels[1, 4:] = -100
+    labels[3, :] = -100
+    if per_token_ids:
+        ids = torch.randint(-1, U, (B, T), generator = g)
+    else:
+        ids = torch.tensor([2, 0, 2, 1])
+
+    def run(fn):
+        x = logits.clone().requires_grad_()
+        total, losses = fn(x, labels, ids, U)
+        (total * 1.5).backward()
+        return total.detach(), losses, x.grad
+
+    return run(ml.per_adapter_loss), run(_dense_per_adapter_loss)
+
+
+def _assert_chunked_matches(new, old, dtype):
+    for a, b in zip(new, old):
+        assert a.dtype == b.dtype
+        torch.testing.assert_close(a, b, **_CHUNKED_TOL[dtype])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("chunk_elements", [1, 7 * 3, 7 * 8 * 2, 1 << 25])
+@pytest.mark.parametrize("per_token_ids", [False, True])
+def test_chunked_per_adapter_loss_matches_the_dense_loss(
+    monkeypatch, dtype, chunk_elements, per_token_ids
+):
+    monkeypatch.setattr(ml, "_CE_CHUNK_ELEMENTS", chunk_elements)
+    new, old = _chunked_vs_dense(dtype, per_token_ids)
+    _assert_chunked_matches(new, old, dtype)
+    err = (new[2].float() - old[2].float()).abs().max().item()
+    print(f"{dtype} chunk={chunk_elements} max |grad diff| {err:.3g}")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        # no onehot: the label's logit is never pushed up
+        ("-torch.ones_like(g)[:, None]", "0 * torch.ones_like(g)[:, None]"),
+        # no logsumexp: exp(x) instead of softmax
+        (".sub_(lse[b, t:e, None])", ""),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_the_chunked_parity_check_catches_a_broken_backward(monkeypatch, mutation, dtype):
+    import inspect
+
+    src = textwrap.dedent(inspect.getsource(ml._ChunkedTokenCrossEntropy))
+    assert mutation[0] in src
+    namespace = dict(vars(ml))
+    exec(src.replace(mutation[0], mutation[1], 1), namespace)
+    monkeypatch.setattr(ml, "_ChunkedTokenCrossEntropy", namespace["_ChunkedTokenCrossEntropy"])
+    new, old = _chunked_vs_dense(dtype, per_token_ids = True)
+    with pytest.raises(AssertionError):
+        _assert_chunked_matches(new, old, dtype)
+
+
+def test_chunked_per_adapter_loss_saves_no_full_vocab_fp32_copy(monkeypatch):
+    B, T, V, U = 8, 64, 4096, 4
+    logits = torch.randn(B, T, V).to(torch.bfloat16).requires_grad_()
+    labels = torch.randint(0, V, (B, T))
+    ids = torch.arange(B) % U
+    full = B * (T - 1) * V
+
+    def saved_bytes(fn):
+        saved = []
+
+        def pack(t):
+            saved.append(t)
+            return t
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            fn(logits, labels, ids, U)
+        own = logits.untyped_storage().data_ptr()
+        return sum(
+            t.numel() * t.element_size() for t in saved if t.untyped_storage().data_ptr() != own
+        )
+
+    dense = saved_bytes(_dense_per_adapter_loss)
+    chunked = saved_bytes(ml.per_adapter_loss)
+    assert dense >= 8 * full  # the fp32 copy and cross_entropy's fp32 log-softmax
+    assert chunked < full // 100, (chunked, dense)
+
+
+@pytest.mark.parametrize("per_token_ids", [False, True])
+def test_grad_scale_matches_scaling_an_fp32_copy_of_the_logits(per_token_ids):
+    # The fp16 loss-scale path used to scale the gradient of a full fp32 copy of the logits.
+    g = torch.Generator().manual_seed(1)
+    B, T, V, U = 3, 6, 11, 2
+    logits = (torch.randn(B, T, V, generator = g) * 3).half()
+    labels = torch.randint(0, V, (B, T), generator = g)
+    labels[0, 3:] = -100
+    ids = torch.randint(-1, U, (B, T), generator = g) if per_token_ids else torch.tensor([1, 0, 1])
+    scales = torch.tensor([2.0**16, 2.0**10])
+    per = scales[ids.clamp_min(0)]
+
+    x = logits.clone().requires_grad_()
+    up = x.float()
+    up.register_hook(lambda grad: grad * (per[:, None, None] if per.dim() == 1 else per[..., None]))
+    old_total, old_losses = ml.per_adapter_loss(up, labels, ids, U)
+    old_total.backward()
+
+    y = logits.clone().requires_grad_()
+    total, losses = ml.per_adapter_loss(y, labels, ids, U, grad_scale = per)
+    total.backward()
+    assert torch.equal(total, old_total) and torch.equal(losses, old_losses)
+    assert torch.equal(y.grad, x.grad)
+
+
+def test_chunked_per_adapter_loss_handles_one_token_rows():
+    logits = torch.randn(2, 1, 5, requires_grad = True)
+    total, losses = ml.per_adapter_loss(
+        logits, torch.zeros(2, 1, dtype = torch.long), torch.tensor([0, 1]), 2
+    )
+    total.backward()
+    assert total.item() == 0 and torch.equal(losses, torch.zeros(2))
+    assert torch.equal(logits.grad, torch.zeros_like(logits))
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("V", [7, 70000])
+def test_gpu_per_adapter_loss_matches_the_dense_loss(dtype, V):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16")
+    g = torch.Generator().manual_seed(0)
+    B, T, U = 4, 9, 3
+    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype).cuda()
+    labels = torch.randint(0, V, (B, T), generator = g).cuda()
+    labels[1, 4:] = -100
+    ids = torch.randint(-1, U, (B, T), generator = g).cuda()
+    scale = torch.tensor([2.0**10, 1.0, 2.0**4], device = "cuda")[ids.clamp_min(0)]
+
+    def run(fn, **kw):
+        x = logits.clone().requires_grad_()
+        total, losses = fn(x, labels, ids, U, **kw)
+        total.backward()
+        return total.detach(), losses, x.grad
+
+    new = run(ml.per_adapter_loss, grad_scale = scale)
+    # Reference: dense fp32 loss, scaled in fp32, rounded once into the logits dtype.
+    x = logits.float().requires_grad_()
+    x.register_hook(lambda grad: grad * scale[..., None])
+    total, losses = _dense_per_adapter_loss(x, labels, ids, U)
+    total.backward()
+    rtol = {torch.float32: 1e-5, torch.bfloat16: 2**-7, torch.float16: 2**-10}[dtype]
+    torch.testing.assert_close(new[0], total.detach(), rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(new[1], losses, rtol = 1e-5, atol = 1e-6)
+    torch.testing.assert_close(new[2], x.grad.to(dtype), rtol = rtol, atol = 1e-6)
+
+
+def test_the_loss_follows_the_triton_switch(monkeypatch):
+    # Off = the PyTorch loss, as for the layers; on CUDA / XPU = the fused Triton cross entropy.
+    import unsloth.kernels.cross_entropy_loss as ce
+
+    calls = []
+    monkeypatch.setattr(ce.Fast_CrossEntropyLoss, "apply", lambda *a: calls.append(1) or 1 / 0)
+    monkeypatch.setattr(ml, "_use_triton", lambda x: ml._TRITON_ENABLED)
+    logits = torch.randn(2, 4, 5)
+    labels = torch.randint(0, 5, (2, 4))
+    ml.set_multi_lora_triton(False)
+    try:
+        ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+        assert calls == []
+        ml.set_multi_lora_triton(True)
+        if ml._TRITON_ENABLED:
+            with pytest.raises(ZeroDivisionError):
+                ml.per_adapter_loss(logits, labels, torch.tensor([0, 1]), 2)
+            assert calls == [1]
+    finally:
+        ml.set_multi_lora_triton(
+            ml.HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
+        )
+
+
 def test_per_adapter_loss_is_each_adapters_own_mean():
     logits = torch.randn(3, 5, 7)
     labels = torch.randint(0, 7, (3, 5))

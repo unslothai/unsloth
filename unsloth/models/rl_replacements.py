@@ -245,6 +245,22 @@ def gkd_trainer_mask_prompt(function_name, function):
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
+def gkd_trainer_text_tokenizer(call_args, extra_args):
+    # GKD is text only and TRL reads tokenizer attributes off processing_class: pass a processor's tokenizer.
+    if "processing_class" not in call_args:
+        return ""
+    return (
+        "from transformers import ProcessorMixin as _UnslothProcessorMixin\n"
+        "if isinstance(processing_class, _UnslothProcessorMixin) and getattr(processing_class, 'tokenizer', None) is not None:\n"
+        "    processing_class = processing_class.tokenizer\n"
+        "if isinstance(locals().get('tokenizer'), _UnslothProcessorMixin) and getattr(tokenizer, 'tokenizer', None) is not None:\n"
+        "    tokenizer = tokenizer.tokenizer\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(gkd_trainer_text_tokenizer)
+
+
 def gkd_trainer_generate_before_counting(function_name, function):
     if function_name != "training_step":
         return function
@@ -1748,6 +1764,21 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
     unwrapped._unsloth_prefix_grouper_nograd_disabled = True
+
+
+def _unsloth_grpo_refuse_rank_local_forwards(self, model):
+    """Sharded FSDP2: packing/PrefixGrouper verify forwards are rank-local and would hang the collective."""
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if not grpo_forwards_are_collective(unwrapped):
+            return False
+    except Exception:
+        return False
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
+    return True
 
 
 def _unsloth_grpo_autocast(self):
@@ -3815,6 +3846,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # A hooked output head must run as a module: score the real logits its own call returns.
             _unsloth_head_hooked = _unsloth_grpo_head_hooked(unwrapped_model)
             _unsloth_grpo_refuse_boundary_blind_packing(self, model)
+            _grpo_collective_forwards = _unsloth_grpo_refuse_rank_local_forwards(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -3946,6 +3978,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     self.args.unsloth_logit_chunk_multiplier,
                 )
                 B = total_rows // B
+                if _grpo_collective_forwards:
+                    # Sized from this rank's sequence length: agree, or the forward counts differ.
+                    from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
+                    B = grpo_agree_mini_batch(B, input_ids.device)
             else:
                 B = self.args.unsloth_grpo_mini_batch
 
@@ -5160,6 +5196,7 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_rank_local_forwards))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -5286,6 +5323,7 @@ def grpo_trainer_compute_loss(function_name, function):
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
+        _unsloth_grpo_refuse_rank_local_forwards(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).
@@ -5654,7 +5692,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1)
 
-        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo"]:
+        if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages < 0)
             is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages > 0)
             is_region_clipped = is_low_clipped | is_high_clipped
@@ -6667,7 +6705,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
                 self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
             except Exception:
                 pass
-        return loss
+        # The head may sit on another GPU (dispatched student); the Trainer accumulates on the input device.
+        return loss.to(inputs["input_ids"].device)
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
@@ -6692,7 +6731,126 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
         except Exception:
             pass
-    return loss
+    return loss.to(inputs["input_ids"].device)
+
+
+def _unsloth_prepare_frozen_teacher(accelerator, teacher):
+    """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
+    (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
+    default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    try:
+        from accelerate.utils import DistributedType
+
+        if (
+            os.environ.get("UNSLOTH_KD_TEACHER_PLACEMENT", "1") == "0"
+            or not isinstance(teacher, torch.nn.Module)
+            or accelerator.distributed_type != DistributedType.NO
+            or accelerator.device.type != "cuda"
+            or getattr(teacher, "_is_accelerate_prepared", False)
+        ):
+            return default()
+        params = list(teacher.parameters())
+        if (
+            len(params) == 0
+            or any(p.requires_grad for p in params)
+            or any(p.device.type != "cuda" for p in params)
+        ):
+            return default()
+        # Buffers may sit on CPU by design (Unsloth's rotary inv_freq); those stay where they are.
+        tensors = params + [b for b in teacher.buffers() if b.device.type == "cuda"]
+        train = accelerator.device.index
+        train = torch.cuda.current_device() if train is None else train
+        on_device = {}
+        for t in tensors:
+            on_device[t.device.index] = on_device.get(t.device.index, 0) + t.nbytes
+        if on_device.get(train, 0) > 0 and torch.cuda.device_count() > 1:
+
+            def free_total(d):
+                # NVML first: mem_get_info would open a CUDA context on every probed card.
+                try:
+                    total = torch.cuda.get_device_properties(d).total_memory
+                    return total - torch.cuda.device_memory_used(d), total
+                except Exception:
+                    return torch.cuda.mem_get_info(d)
+
+            free = {d: free_total(d) for d in range(torch.cuda.device_count()) if d != train}
+            target = max(free, key = lambda d: free[d][0])
+            available, total = free[target]
+            need = sum(n for d, n in on_device.items() if d != target)
+            if available - need >= max(2**30, total // 10):
+                from accelerate.hooks import (
+                    AlignDevicesHook,
+                    add_hook_to_module,
+                    remove_hook_from_module,
+                )
+
+                remove_hook_from_module(teacher, recurse = True)
+                device = torch.device("cuda", target)
+                teacher._apply(lambda t: t.to(device) if t.device.type == "cuda" else t)
+                skip_keys = getattr(teacher, "_skip_keys_device_placement", None)
+                add_hook_to_module(
+                    teacher,
+                    AlignDevicesHook(
+                        execution_device = target, io_same_device = True, skip_keys = skip_keys
+                    ),
+                )
+                teacher.hf_device_map = {"": target}
+                try:
+                    from unsloth_zoo.patching_utils import verify_and_set_device
+                    for module in teacher.modules():
+                        if "_per_layer_device_index" in module.__dict__:
+                            verify_and_set_device(module)
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+                on_device = {target: sum(on_device.values())}
+                print(
+                    f"Unsloth: moved the frozen teacher ({need / 2**30:.2f} GiB) to cuda:{target}, "
+                    f"off the training card cuda:{train}."
+                )
+        if train in on_device:
+            return default()
+        # accelerate's 4/8-bit device check reads hf_device_map, so hide it for the call.
+        if getattr(teacher, "_hf_hook", None) is None:
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            add_hook_to_module(
+                teacher,
+                AlignDevicesHook(
+                    execution_device = next(iter(on_device)),
+                    io_same_device = True,
+                    skip_keys = getattr(teacher, "_skip_keys_device_placement", None),
+                ),
+            )
+        hidden = [
+            (m, m.__dict__.pop("hf_device_map"))
+            for m in teacher.modules()
+            if "hf_device_map" in m.__dict__
+        ]
+        try:
+            prepared = accelerator.prepare_model(
+                teacher, device_placement = False, evaluation_mode = True
+            )
+        finally:
+            for m, device_map in hidden:
+                m.hf_device_map = device_map
+        prepared._unsloth_teacher_devices = sorted(on_device)
+        return prepared
+    except Exception as e:
+        print(f"Unsloth: frozen teacher placement skipped ({e}).")
+        return default()
+
+
+def gkd_trainer_prepare_teacher(function_name, function):
+    if function_name != "__init__":
+        return function
+    return re.sub(
+        r"self\.accelerator\.prepare_model\(\s*teacher_model\s*,\s*evaluation_mode\s*=\s*True\s*\)",
+        "_unsloth_prepare_frozen_teacher(self.accelerator, teacher_model)",
+        function,
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_prepare_teacher)
 
 
 def gkd_trainer_compute_loss(function_name, function):
@@ -6747,6 +6905,7 @@ for _gkd_item in (
     _unsloth_gkd_chunk_size,
     _unsloth_gkd_right_align,
     _unsloth_gkd_chunked_loss,
+    _unsloth_prepare_frozen_teacher,
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
 RL_PRE_ITEMS["gkd_trainer"].append(
@@ -7149,12 +7308,7 @@ def _unsloth_dpo_chunked_head(
         reason = "use_weighting needs full-vocabulary log-probs"
     elif getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         reason = "FSDP / DeepSpeed"
-    elif any(
-        k in concatenated_batch
-        for k in ("pixel_values", "pixel_attention_mask", "image_sizes", "token_type_ids")
-        + tuple(_DPO_VISION_KEYS)
-    ):
-        reason = "vision inputs"
+    # Vision inputs are fine: the head sees final hidden states, trimmed to the labels' length like LLaVA logits.
     if reason is None:
         try:
             unwrapped = self.accelerator.unwrap_model(model)

@@ -37,7 +37,7 @@ test("the titlebar drops the sidebar surface while the update screen is shown", 
   const surface = region(
     PROVIDER,
     "const showSidebarSurface =",
-    "<WindowTitlebar showSidebarSurface={showSidebarSurface} />",
+    "<WindowTitlebar",
   );
   assert.match(surface, /!updateScreenShown/);
 });

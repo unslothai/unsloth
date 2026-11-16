@@ -91,14 +91,34 @@ class BlenderSetup(BlenderSettings):
     consent: bool = False
 
 
-class McpBuiltinResponse(BlenderSettings):
+class EditorSettings(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    port: Optional[int] = Field(default = None, ge = 1, le = 65535, strict = True)
+    project_path: StrictStr = Field(default = "", max_length = 4096, pattern = r"^[^\x00]*$")
+
+
+class EditorTest(EditorSettings):
+    consent: bool = Field(default = False, strict = True)
+
+
+class EditorSetup(EditorSettings):
+    is_enabled: bool
+    consent: bool = False
+
+
+class McpBuiltinResponse(BaseModel):
     builtin_id: str = "blender"
     display_name: str = "Blender"
     server_id: Optional[str] = None
     is_enabled: bool = False
     available: bool
     unavailable_reason: Optional[str] = None
-    min_blender_version: str
+    port: int = 9876
+    blender_path: str = ""
+    min_blender_version: Optional[str] = None
+    project_path: str = ""
+    installed: Optional[bool] = None
 
 
 class McpStdioDecodeRequest(BaseModel):
@@ -120,6 +140,8 @@ class McpServerProbeResult(BaseModel):
     error: Optional[str] = None
     blender_ready: Optional[bool] = None
     blender_error: Optional[str] = None
+    editor_ready: Optional[bool] = None
+    editor_error: Optional[str] = None
 
 
 class McpServerImportRequest(BaseModel):

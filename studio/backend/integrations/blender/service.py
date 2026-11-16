@@ -13,6 +13,7 @@ from core.inference.mcp_client import (
 )
 from integrations.blender import MIN_BLENDER_VERSION, MIN_PYTHON_VERSION, launch_command
 from integrations.blender.runtime import ensure_runtime
+from integrations.installed import is_installed
 from models.mcp_servers import BlenderSettings, McpBuiltinResponse, McpServerProbeResult
 
 
@@ -50,8 +51,10 @@ def resolve_server(row: dict) -> dict:
 
 def catalog_item(row = None):
     reason = unavailable_reason()
+    settings = settings_for(row)
     return McpBuiltinResponse(
-        **settings_for(row).model_dump(),
+        **settings.model_dump(),
+        installed = is_installed("blender", settings.blender_path),
         server_id = row["id"] if row else None,
         is_enabled = bool(row and row["is_enabled"]),
         available = reason is None,

@@ -11,6 +11,7 @@ const CHAT_STUB =
       " export const useChatNavigationStore = { getState: () => ({}) };" +
       " export const onChatThreadsDeleted = (listener) => void (globalThis.__chatDeleted = listener);" +
       " export const visibleChatItems = () => globalThis.__chatItems ?? [];" +
+      " export const getStoredChatThread = async (id) => (globalThis.__storedThreads?.has(id) ? { id } : undefined);" +
       " export const openChatItemById = (item) => void (globalThis.__openedChats ??= []).push(item);",
   );
 
@@ -38,6 +39,7 @@ const CHAT_SPECIFIERS = new Set([
   "@/features/chat",
   "@/features/chat/stores/chat-runtime-store",
   "@/features/chat/utils/chat-thread-tombstones",
+  "@/features/chat/utils/chat-history-storage",
 ]);
 
 export function resolve(specifier, context, next) {

@@ -20,6 +20,9 @@
     "windowed_duplicate_ordinals",
     // Window index published as the thread position, the likeliest accidental bug.
     "windowed_from_one",
+    // Once, halfway up, scrollTop jumps 600px further, as a list re-anchoring on rows that mounted
+    // taller than estimated; a fixed step then skips a row.
+    "windowed_anchor_jump",
   ];
 
   function marker(i) {
@@ -166,6 +169,14 @@
         render(Math.max(0, state.store.length - windowSize), windowSize, true);
         pin();
         viewport.addEventListener("scroll", () => {
+          if (
+            mode === "windowed_anchor_jump" &&
+            !state.jumped &&
+            viewport.scrollTop < viewport.scrollHeight / 2
+          ) {
+            state.jumped = true;
+            viewport.scrollTop = Math.max(0, viewport.scrollTop - 600);
+          }
           state.renderWindowAround(viewport.scrollTop);
           jump.classList.toggle(
             "invisible",

@@ -1352,6 +1352,7 @@ def _direct_params(model) -> bool:
     try:
         from .models import tp_native
         _, layers = tp_native._decoder_layers(model)
+        text = tp_native._text_config(model)
     except Exception:
         return False
     for layer in layers:
@@ -1363,8 +1364,11 @@ def _direct_params(model) -> bool:
                 not attention and tp_native._is_moe_block(child)
             ):
                 continue
-            if next(child.named_parameters(recurse = False), None) is not None:
-                return True
+            # tp_native._region shards a latent-query MQA's own sinks with its heads (DeepSeek-V4.1).
+            latent = attention and tp_native._is_latent_mqa(child, text)
+            for name, param in child.named_parameters(recurse = False):
+                if not (latent and name in tp_native._HEAD_PARAMS and param.ndim == 1):
+                    return True
     return False
 
 

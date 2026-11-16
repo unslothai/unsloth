@@ -330,8 +330,18 @@ def ensure_dynamo_imported(
         _dynamo_lock.release()
 
 
+def _heal_kernels_conflict(log) -> None:
+    """A kernels install transformers cannot import fails every diffusers import: repair or hide it first."""
+    try:
+        from utils.kernels_compat import heal_kernels_conflict
+    except Exception:  # noqa: BLE001
+        return
+    heal_kernels_conflict(log or logger)
+
+
 def close_dynamo_import_window(log) -> bool:
     """Call before importing diffusers, itself a dynamo importer that cannot recover a lost race; wrap the import of this module too."""
+    _heal_kernels_conflict(log)
     imported = ensure_dynamo_imported(log = log, reason = "diffusers import")
     # `import diffusers` probes CUDA at module level (diffusers.utils.torch_utils) with the GIL held.
     _prime_cuda_driver()
@@ -356,6 +366,7 @@ _media_import_owner: Optional[int] = None
 def background_media_import():
     """Hold the window for background work; yields False once a load has claimed it (skip then)."""
     global _media_import_owner
+    _heal_kernels_conflict(None)
     with _media_import_lock:
         _media_import_owner = threading.get_ident()
         try:

@@ -11,6 +11,7 @@ the only path a UI user has.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import types as _types
 from pathlib import Path
@@ -166,9 +167,10 @@ def _launch(
     *,
     shim_has_ngl = True,
     n_ctx = 4096,
+    runner_log = None,
     **kwargs,
 ):
-    """Drive the real _start_diffusion_server to the health wait; return (argv, backend)."""
+    """Drive the real _start_diffusion_server to the health wait (past it with runner_log); return (argv, backend)."""
     backend = _fit_host(monkeypatch, gpus)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("DG_GPU", raising = False)
@@ -195,10 +197,15 @@ def _launch(
     )
     monkeypatch.setattr(llama_cpp_module, "_swa_cache_path", lambda: tmp_path / "swa.json")
     monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", _FakePopen)
-    monkeypatch.setattr(
-        backend, "_wait_for_health", lambda **_kw: (_ for _ in ()).throw(_StopAtHealth())
-    )
-    with pytest.raises(_StopAtHealth):
+
+    def _health(**_kw):
+        if runner_log is None:
+            raise _StopAtHealth()
+        backend._stdout_lines = list(runner_log)
+        return True
+
+    monkeypatch.setattr(backend, "_wait_for_health", _health)
+    with pytest.raises(_StopAtHealth) if runner_log is None else contextlib.nullcontext():
         backend._start_diffusion_server(
             model_path = "/m.gguf",
             gguf_path = "/m.gguf",
@@ -238,6 +245,44 @@ def test_fitted_launch_pins_the_context_it_was_sized_for(monkeypatch, tmp_path):
         assert backend._effective_context_length == 4096
     cmd, _backend = _launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)], n_ctx = 2048)
     assert (_ngl(cmd), _maxtok(cmd)) == ("11", "2048")
+
+
+def _warnings(monkeypatch):
+    lines = []
+    monkeypatch.setattr(
+        llama_cpp_module.logger,
+        "warning",
+        lambda msg, *a, **_kw: lines.append(msg % a if a else msg),
+    )
+    return lines
+
+
+@pytest.mark.parametrize(
+    "gpus, n_ctx, runner_log, effective",
+    [
+        ([(0, 14_900, 15_360)], 24576, ["context: MAXTOK=4096 requested=4096"], 4096),
+        ([(0, 23_500, 24_576)], 24576, ["context: MAXTOK=65536 requested=0 budget=vram"], 65536),
+        ([(0, 23_500, 24_576)], 100_000, ["context: MAXTOK=32768 requested=0 budget=vram"], 32768),
+    ],
+)
+def test_a_context_the_runner_did_not_apply_is_logged(
+    monkeypatch, tmp_path, gpus, n_ctx, runner_log, effective
+):
+    lines = _warnings(monkeypatch)
+    _cmd, backend = _launch(monkeypatch, tmp_path, gpus, n_ctx = n_ctx, runner_log = runner_log)
+    assert backend._effective_context_length == effective
+    assert [ln for ln in lines if f"{effective}-token" in ln and str(n_ctx) in ln]
+    # The reload dedup still compares the request as it was made.
+    assert backend._requested_n_ctx == n_ctx
+
+
+@pytest.mark.parametrize(
+    "n_ctx, runner_log", [(8192, ["context: MAXTOK=8192"]), (0, ["MAXTOK=65536"])]
+)
+def test_an_applied_or_auto_context_logs_nothing(monkeypatch, tmp_path, n_ctx, runner_log):
+    lines = _warnings(monkeypatch)
+    _launch(monkeypatch, tmp_path, [(0, 23_500, 24_576)], n_ctx = n_ctx, runner_log = runner_log)
+    assert not [ln for ln in lines if "context" in ln]
 
 
 def test_zero_layer_fit_runs_on_the_cpu(monkeypatch, tmp_path):

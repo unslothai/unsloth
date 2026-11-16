@@ -25,11 +25,11 @@ if triton is not None:
         N,
         SEED,
         TILE,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         i = TILE.to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         valid = i < N
@@ -68,11 +68,11 @@ if triton is not None:
         SEED,
         LR,
         sizes,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         start = tl.full((), 0, tl.int64)
@@ -108,11 +108,11 @@ if triton is not None:
         LR,
         N,
         SEED,
-        B1: tl.constexpr,
-        B2: tl.constexpr,
-        EPS: tl.constexpr,
-        WD: tl.constexpr,
-        BLOCK: tl.constexpr,
+        B1: tl.constexpr,  # beta1
+        B2: tl.constexpr,  # beta2
+        EPS: tl.constexpr,  # Adam eps
+        WD: tl.constexpr,  # weight decay
+        BLOCK: tl.constexpr,  # elements per program
     ):
         _adamw_tile(P, G, M, V, STEP, LR, N, SEED, tl.program_id(0), B1, B2, EPS, WD, BLOCK)
 
@@ -207,8 +207,11 @@ def prepare_bf16_training(model):
 
 def _cpu_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
     generator = torch.Generator(device = "cpu")
-    stream = (int(seed) + int(step)) % (2**63 - 1)
-    generator.manual_seed(stream ^ (stream >> 32))
+    # CPU generators keep only the low 32 seed bits; sr_seed holds the index in the high 32 (splitmix64).
+    z = (int(seed) + int(step)) % (2**63 - 1)
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & (2**64 - 1)
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & (2**64 - 1)
+    generator.manual_seed((z ^ (z >> 31)) & 0xFFFFFFFF)
     gf = g.float()
     m.lerp_(gf, 1 - beta1)
     v.lerp_(gf.square(), 1 - beta2)

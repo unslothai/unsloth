@@ -37,6 +37,12 @@ function loadApis(): ImagesApi {
     new URL("../src/features/images/api.ts", import.meta.url),
     {
       "@/lib/model-lifecycle-events": { withBackgroundLoadNotice: (f: unknown) => f },
+      "@/features/settings/api/vram-budget": {
+        dropVramBudgetRetry: () => {},
+        loadVramBudgetSettings: async () => null,
+        settleVramBudgetSave: () => null,
+        setVramBudgetLocked: () => {},
+      },
       "@/features/auth": { authFetch: auth.authFetch },
       "@/lib/format-fastapi-error": { readFastApiError: async () => "" },
       "@/lib/multi-model-refusal": { parseLoadJson: async () => ({}) },

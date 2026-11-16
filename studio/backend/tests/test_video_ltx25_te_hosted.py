@@ -345,7 +345,8 @@ def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path
             "base": BASE,
         },
     }
-    with pytest.raises(RuntimeError, match = "needs about 24 GB"):
+    # One decimal on both sides (#17948), so the need can never read as no more than what is free.
+    with pytest.raises(RuntimeError, match = r"needs about 23\.9 GB of free memory \(8\.0 GB free\)"):
         worker._load(config)
     monkeypatch.setattr(worker, "_available_host_bytes", lambda: 64 * 1000**3)
     worker._load(config)
@@ -365,7 +366,10 @@ def test_the_dense_fallback_room_check_prices_the_load_dtype(dtype, free_gb, ref
     monkeypatch.setattr(worker, "_available_host_bytes", lambda: free_gb * 1000**3)
     config = {"dtype": dtype, "dense_te_gb": v25.LTX25_TE_BF16_GB}
     if refused:
-        with pytest.raises(RuntimeError, match = "needs about 48 GB"):
+        # A float32 load needs twice the bf16 encoder; both figures print to one decimal (#17948).
+        need = 2 * v25.LTX25_TE_BF16_GB
+        message = rf"needs about {need:.1f} GB of free memory \({free_gb:.1f} GB free\)"
+        with pytest.raises(RuntimeError, match = message):
             worker._require_room_for_dense(config, OSError("hosted file absent"))
     else:
         worker._require_room_for_dense(config, OSError("hosted file absent"))

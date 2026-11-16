@@ -353,6 +353,7 @@ from .import_fixes import (
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_fp8_modulelist_experts,
     fix_transformers_fp8_unscaled_checkpoint_linears,
+    fix_transformers_quantizer_unquantized_converters,
     fix_transformers_validate_rope_ignore_keys,
     fix_transformers5_remote_code_legacy_defaults,
     fix_transformers_config_only_remote_code,
@@ -373,6 +374,7 @@ from .import_fixes import (
     fix_cudnn_sdpa_backward_grad_layout,
     fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
+    fix_rocm_windows_wide_head_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
@@ -436,6 +438,7 @@ del check_transformers_prequantized_vlm_quant_state
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
 fix_transformers_fp8_unscaled_checkpoint_linears()
+fix_transformers_quantizer_unquantized_converters()
 fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
@@ -467,6 +470,8 @@ fix_cudnn_sdpa_backward_grad_layout()
 fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
+# Windows ROCm only: fused SDPA miscomputes heads wider than 256 (Gemma 4 global layers) there.
+fix_rocm_windows_wide_head_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -515,6 +520,7 @@ del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
+del fix_transformers_quantizer_unquantized_converters
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
@@ -535,6 +541,7 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_cudnn_sdpa_backward_grad_layout
 del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
+del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race

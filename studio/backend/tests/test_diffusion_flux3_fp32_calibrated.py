@@ -123,11 +123,37 @@ def test_calibrated_activation_routes_float32_flux3_only(monkeypatch):
 
 
 def test_only_the_load_plan_reads_the_scaled_table():
+    """The scaled (float32) row is read by the load plan, and by the generation guard only to re-read the row a
+    calibrated placement was sized from (#17949); every other reader keeps the unscaled default."""
     import ast
     import inspect
 
     import core.inference.diffusion as d
 
-    src = ast.unparse(ast.parse(inspect.getsource(d.DiffusionBackend)))
+    tree = ast.parse(inspect.getsource(d.DiffusionBackend))
+    src = ast.unparse(tree)
     assert "calibrated_activation=_calibrated_activation(fam, target, fp32_scaled=True)" in src
-    assert src.count("fp32_scaled=True") == 1
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    readers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            k.arg == "fp32_scaled" and isinstance(k.value, ast.Constant) and k.value.value is True
+            for k in node.keywords
+        )
+    ]
+    assert len(readers) == 2, [ast.unparse(node) for node in readers]
+    plan = [node for node in readers if isinstance(parents.get(node), (ast.keyword, ast.IfExp))]
+    guard = [node for node in readers if node not in plan]
+    assert len(plan) == 1 and len(guard) == 1, [ast.unparse(node) for node in readers]
+
+    # The guard's read sits under `if ... calibrated_placement ...`: an uncalibrated load never reads the scaled row.
+    node = guard[0]
+    while node is not None and not (
+        isinstance(node, ast.If) and "calibrated_placement" in ast.unparse(node.test)
+    ):
+        node = parents.get(node)
+    assert (
+        node is not None
+    ), "the guard reads the scaled row outside the calibrated_placement branch"

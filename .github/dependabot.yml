@@ -13,6 +13,13 @@ updates:
       # Semver cooldown knobs are rejected for github-actions; only default-days applies.
       default-days: 7
     groups:
+      # Sub-path actions are separate dependency names to Dependabot (codeql-action/init and
+      # /analyze, cache/restore and /save), so group-by below would split one action across two
+      # PRs, each failing the one-SHA test. The first matching group wins.
+      codeql-action:
+        patterns: ["github/codeql-action*"]
+      cache-action:
+        patterns: ["actions/cache*"]
       actions:
         patterns: ["*"]
         # One PR per action across both directories; tests/studio/

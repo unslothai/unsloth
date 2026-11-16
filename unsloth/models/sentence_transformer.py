@@ -532,6 +532,14 @@ def _save_pretrained_gguf(
         print(f"Unsloth: Uploading to {repo_id}...")
         try:
             api.create_repo(repo_id = repo_id, exist_ok = True, private = kwargs.get("private", False))
+        except Exception as e:
+            print(f"Unsloth: Upload failed: {e}")
+            return result
+        from ..save import _refuse_private_push_to_public_repo
+
+        # Outside the try below: a refusal must stop the upload, not print as a failed one.
+        _refuse_private_push_to_public_repo(repo_id, kwargs.get("private", False), api = api)
+        try:
             api.upload_folder(
                 folder_path = save_directory,
                 repo_id = repo_id,
@@ -636,6 +644,9 @@ def _push_to_hub_gguf(
         )
     except Exception as e:
         print(f"Unsloth Warning: Could not create repo: {e}")
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(full_repo_id, private, api = api)
 
     with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
         print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
@@ -702,14 +713,17 @@ def _push_to_hub_gguf(
             )
 
         gguf_basenames = [os.path.basename(f) for f in gguf_files if os.path.exists(f)]
+        if isinstance(tags, str):
+            tags = [tags]
+        card_tags = ["gguf", "llama.cpp", "llama-cpp", "unsloth", "sentence-transformers"]
+        if is_vlm:
+            card_tags.append("vision-language-model")
+        tags_yaml = "".join(
+            f"- {json.dumps(t)}\n" for t in dict.fromkeys(card_tags + list(tags or []))
+        )
         readme_content = f"""---
 tags:
-- gguf
-- llama.cpp
-- unsloth
-- sentence-transformers
-{"- vision-language-model" if is_vlm else ""}
----
+{tags_yaml}---
 
 # {model_name} - GGUF
 
@@ -748,19 +762,6 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
             create_pr = create_pr,
             revision = revision,
         )
-
-    all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
-    if is_vlm:
-        all_tags.append("vision-language-model")
-    if tags is not None:
-        if isinstance(tags, (list, tuple)):
-            all_tags.extend(tags)
-        else:
-            all_tags.append(tags)
-    try:
-        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
-    except:
-        pass
 
     print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
     return full_repo_id
@@ -1165,28 +1166,6 @@ class FastSentenceTransformer(FastModel):
             )
 
         modeling_distilbert.DistilBertModel.forward = forward
-
-    @staticmethod
-    def _add_unsloth_tags(
-        repo_id,
-        token,
-        tags = None,
-    ):
-        """Add Unsloth + sentence-transformers tags to the HF Hub repo."""
-        from huggingface_hub import HfApi
-
-        api = HfApi(token = token)
-        if tags is None:
-            tags = []
-        tags.extend(["unsloth", "sentence-transformers"])
-        try:
-            api.add_tags(
-                repo_id = repo_id,
-                tags = tags,
-                repo_type = "model",
-            )
-        except:
-            pass
 
     @staticmethod
     def _add_unsloth_branding(save_directory):
@@ -2689,6 +2668,13 @@ class FastSentenceTransformer(FastModel):
                 disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
                 **_remote_class_probe_kwargs,
             )
+            if (
+                encoder_attn_impl == "sdpa"
+                and model_type.lower() == "modernbert"
+                and Version(transformers.__version__).major < 5
+            ):
+                # transformers 4 ModernBERT self-selects FA2 and skips padding; forcing SDPA is slower.
+                encoder_attn_impl = None
             supports_sdpa = encoder_attn_impl == "sdpa"
             if encoder_attn_impl is not None:
                 model_kwargs["attn_implementation"] = encoder_attn_impl
@@ -2818,7 +2804,9 @@ class FastSentenceTransformer(FastModel):
                     )
                 except:
                     pass
-                FastSentenceTransformer._add_unsloth_tags(repo_id, hub_token)
+                from ..save import _refuse_private_push_to_public_repo
+
+                _refuse_private_push_to_public_repo(repo_id, push_kwargs.get("private"), api = api)
                 with tempfile.TemporaryDirectory() as temp_dir:
                     self.save_pretrained_merged(temp_dir, **push_kwargs)
                     api.upload_folder(
@@ -3092,8 +3080,9 @@ class FastSentenceTransformer(FastModel):
                 )
             except:
                 pass
+            from ..save import _refuse_private_push_to_public_repo
 
-            FastSentenceTransformer._add_unsloth_tags(repo_id, token)
+            _refuse_private_push_to_public_repo(repo_id, private, api = api)
 
             with tempfile.TemporaryDirectory() as temp_dir:
                 self.save_pretrained_merged(temp_dir, **kwargs)
@@ -3106,6 +3095,9 @@ class FastSentenceTransformer(FastModel):
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         st_model._unsloth_trust_remote_code = trust_remote_code
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_decoder_packing
+
+        enable_sentence_transformer_decoder_packing(st_model)
         FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
@@ -3149,6 +3141,10 @@ class FastSentenceTransformer(FastModel):
             if is_fast_encoder:
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
+
+                from ._utils import reject_alora
+
+                reject_alora(inner_model, kwargs.get("alora_invocation_tokens"))
 
                 is_quantized = (
                     getattr(inner_model, "is_quantized", False)
@@ -3224,6 +3220,7 @@ class FastSentenceTransformer(FastModel):
                 from transformers import set_seed as transformers_set_seed
 
                 transformers_set_seed(random_state)
+                lora_options = inspect.signature(LoraConfig).parameters
                 lora_config = LoraConfig(
                     r = r,
                     lora_alpha = lora_alpha,
@@ -3237,10 +3234,13 @@ class FastSentenceTransformer(FastModel):
                     modules_to_save = modules_to_save,
                     init_lora_weights = init_lora_weights,
                     loftq_config = loftq_config or {},
-                    task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
+                    **{k: v for k, v in kwargs.items() if k in lora_options},
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                if os.environ.get("UNSLOTH_ST_LEAN_LORA", "1") != "0":
+                    from ._lean_lora import apply_lean_lora
+                    apply_lean_lora(peft_model)
                 from ._utils import _mark_unsloth_disable_data_parallel
                 from .llama import _unfreeze_modules_to_save
 
@@ -3448,6 +3448,9 @@ def _patch_sentence_transformer_trainer():
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer.train = _patched_train
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
+    from ._sentence_transformer_prefetch import patch_train_dataloader
+
+    patch_train_dataloader(SentenceTransformerTrainer)
 
 
 def _patch_st_trainer_load_from_checkpoint():
