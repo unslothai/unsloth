@@ -20,6 +20,12 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+# PyMuPDF / MuPDF is not safe across threads (#17981). Linked-folder ingest runs
+# several workers; concurrent page_get_textpage / get_cdrawings can fatal the
+# whole backend (Windows 0xc0000028) and trip the health watchdog. Web PDF
+# extraction takes the same lock before calling parse_pdf_bytes.
+PYMUPDF_LOCK = threading.RLock()
+
 
 @dataclass(frozen = True)
 class Page:
@@ -766,6 +772,15 @@ def _pdf(
     want_images: bool,
     max_pages: int | None = None,
 ) -> tuple[list[Page], list[ParsedImage], int]:
+    with PYMUPDF_LOCK:
+        return _pdf_unlocked(source, want_images, max_pages)
+
+
+def _pdf_unlocked(
+    source: str | bytes,
+    want_images: bool,
+    max_pages: int | None = None,
+) -> tuple[list[Page], list[ParsedImage], int]:
     import fitz
 
     pages: list[Page] = []
@@ -854,16 +869,17 @@ def mupdf_document_text(path: str) -> str:
     """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
     import pymupdf
 
-    with pymupdf.open(path) as doc:
-        # A tall page keeps paragraphs from splitting at page breaks.
-        doc.layout(width = 1000, height = 100000, fontsize = 11)
-        paragraphs = [
-            " ".join(block[4].split())
-            for page in doc
-            for block in page.get_text("blocks")
-            if block[6] == 0
-        ]
-    return "\n\n".join(p for p in paragraphs if p)
+    with PYMUPDF_LOCK:
+        with pymupdf.open(path) as doc:
+            # A tall page keeps paragraphs from splitting at page breaks.
+            doc.layout(width = 1000, height = 100000, fontsize = 11)
+            paragraphs = [
+                " ".join(block[4].split())
+                for page in doc
+                for block in page.get_text("blocks")
+                if block[6] == 0
+            ]
+        return "\n\n".join(p for p in paragraphs if p)
 
 
 def _merge_rects(boxes: list) -> list:
@@ -930,22 +946,23 @@ def pages_with_figures(
         import pymupdf
     except Exception:
         return []
-    try:
-        doc = pymupdf.open(path)
-    except Exception:
-        return []
-    pages: list[int] = []
-    try:
-        for i, page in enumerate(doc):
-            if (i + 1) in exclude:
-                continue
-            if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
-                pages.append(i + 1)
-                if len(pages) >= max_pages:
-                    break
-        return pages
-    finally:
-        doc.close()
+    with PYMUPDF_LOCK:
+        try:
+            doc = pymupdf.open(path)
+        except Exception:
+            return []
+        pages: list[int] = []
+        try:
+            for i, page in enumerate(doc):
+                if (i + 1) in exclude:
+                    continue
+                if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
+                    pages.append(i + 1)
+                    if len(pages) >= max_pages:
+                        break
+            return pages
+        finally:
+            doc.close()
 
 
 def render_pdf_figure_tiles(
@@ -969,52 +986,53 @@ def render_pdf_figure_tiles(
         import pymupdf
     except Exception:
         return []
-    try:
-        doc = pymupdf.open(path)
-    except Exception:
-        return []
-    out: list[ParsedImage] = []
-    try:
-        for num in wanted:
-            if num < 1 or num > doc.page_count:
-                continue
-            page = doc[num - 1]
-            rect = page.rect
-            clips: list = [rect] if fullpage else []
-            cw, ch = rect.width / cols, rect.height / rows
-            ox, oy = cw * overlap, ch * overlap
-            for r in range(rows):
-                for c in range(cols):
-                    clips.append(
-                        pymupdf.Rect(
-                            rect.x0 + c * cw - ox,
-                            rect.y0 + r * ch - oy,
-                            rect.x0 + (c + 1) * cw + ox,
-                            rect.y0 + (r + 1) * ch + oy,
-                        )
-                        & rect
-                    )
-            for index, clip in enumerate(clips):
-                try:
-                    pix = page.get_pixmap(dpi = dpi, clip = clip)
-                    is_full_page = fullpage and index == 0
-                    out.append(
-                        ParsedImage(
-                            image_bytes = pix.tobytes("png"),
-                            page_number = num,
-                            xref = 0,
-                            full_page = is_full_page,
-                            tile_index = None if is_full_page else index - int(fullpage),
-                            tile_count = rows * cols,
-                        )
-                    )
-                except Exception:
+    with PYMUPDF_LOCK:
+        try:
+            doc = pymupdf.open(path)
+        except Exception:
+            return []
+        out: list[ParsedImage] = []
+        try:
+            for num in wanted:
+                if num < 1 or num > doc.page_count:
                     continue
-                if len(out) >= max_tiles:
-                    return out
-        return out
-    finally:
-        doc.close()
+                page = doc[num - 1]
+                rect = page.rect
+                clips: list = [rect] if fullpage else []
+                cw, ch = rect.width / cols, rect.height / rows
+                ox, oy = cw * overlap, ch * overlap
+                for r in range(rows):
+                    for c in range(cols):
+                        clips.append(
+                            pymupdf.Rect(
+                                rect.x0 + c * cw - ox,
+                                rect.y0 + r * ch - oy,
+                                rect.x0 + (c + 1) * cw + ox,
+                                rect.y0 + (r + 1) * ch + oy,
+                            )
+                            & rect
+                        )
+                for index, clip in enumerate(clips):
+                    try:
+                        pix = page.get_pixmap(dpi = dpi, clip = clip)
+                        is_full_page = fullpage and index == 0
+                        out.append(
+                            ParsedImage(
+                                image_bytes = pix.tobytes("png"),
+                                page_number = num,
+                                xref = 0,
+                                full_page = is_full_page,
+                                tile_index = None if is_full_page else index - int(fullpage),
+                                tile_count = rows * cols,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    if len(out) >= max_tiles:
+                        return out
+            return out
+        finally:
+            doc.close()
 
 
 def render_pdf_pages(
@@ -1031,24 +1049,25 @@ def render_pdf_pages(
         import pymupdf
     except Exception:
         return {}
-    try:
-        doc = pymupdf.open(path)
-    except Exception:
-        return {}
-    out: dict[int, bytes] = {}
-    try:
-        for i, page in enumerate(doc):
-            num = i + 1
-            if num not in wanted:
-                continue
-            try:
-                pix = page.get_pixmap(dpi = dpi)
-                out[num] = pix.tobytes("png")
-            except Exception:
-                continue
-        return out
-    finally:
-        doc.close()
+    with PYMUPDF_LOCK:
+        try:
+            doc = pymupdf.open(path)
+        except Exception:
+            return {}
+        out: dict[int, bytes] = {}
+        try:
+            for i, page in enumerate(doc):
+                num = i + 1
+                if num not in wanted:
+                    continue
+                try:
+                    pix = page.get_pixmap(dpi = dpi)
+                    out[num] = pix.tobytes("png")
+                except Exception:
+                    continue
+            return out
+        finally:
+            doc.close()
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
