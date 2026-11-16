@@ -303,8 +303,7 @@ def _no_output_capture(layer):
         if hasattr(fn, "__wrapped__") and "make_capture_wrapper" in qual:
             swapped.append((module, fn))
             module.forward = fn.__wrapped__
-    # Live collector, trial entries trimmed after: hiding it (None) compiled a trial graph that
-    # the real calls guard away from, one wasted compile per layer kind and grad mode.
+    # Live collector, trial entries trimmed after: a hidden (None) one compiled a graph no real call reuses.
     try:
         from transformers.utils.output_capturing import _active_collector
         collected = _active_collector.get()
