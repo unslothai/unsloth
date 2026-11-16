@@ -97,7 +97,7 @@ type LinkedFile = Pick<BrowserDownload, "site" | "temporary"> & { agentRule: (fi
 export function saveLinkedFile(url: string, name: string, file: LinkedFile, askFirst = false): void {
   const temporary = file.temporary ?? useChatRuntimeStore.getState().incognito;
   const save = () =>
-    fetchBrowserPage({ url }, new AbortController().signal).then(
+    fetchBrowserPage({ url, initiator: file.site }, new AbortController().signal).then(
       (page) => saveBrowserDownload({ ...linkDownload(page, url, name), site: file.site, temporary, agentRule: file.agentRule(page.url) }),
       (error: unknown) => void toast.error(error instanceof Error ? error.message : String(error)),
     );
