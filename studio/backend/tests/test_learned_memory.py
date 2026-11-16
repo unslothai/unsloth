@@ -91,6 +91,7 @@ def test_opted_out_chats_get_no_memory(db):
     payload = ChatCompletionRequest(
         model = "test",
         thread_id = "chat",
+        studio_tool_history = True,
         messages = [
             ChatMessage(role = "assistant", content = "<tool_call>update_memory</tool_call>"),
             ChatMessage(role = "user", content = "Remember another fact"),
@@ -164,3 +165,39 @@ def test_client_contracts_keep_the_memory_tool_out(db, contract):
 )
 def test_saved_chats_get_the_memory_tool(db, fields):
     assert _routed(**fields)
+
+
+@pytest.mark.parametrize("studio_history", [None, False, True])
+def test_disabled_memory_does_not_rewrite_client_tool_contract(db, studio_history):
+    db[0]["learned_memory_enabled"] = False
+    payload = ChatCompletionRequest(
+        messages = _history("update_memory"),
+        tools = [{"type": "function", "function": {"name": "update_memory"}}],
+        studio_tool_history = studio_history,
+    )
+    before = payload.model_dump()
+    memory.apply_to_request(payload)
+    assert payload.model_dump() == before
+
+
+def test_unmarked_tool_history_does_not_get_studio_warning(db):
+    db[0]["learned_memory_enabled"] = False
+    payload = ChatCompletionRequest(messages = _history("update_memory"))
+    before = payload.model_dump()
+    memory.apply_to_request(payload)
+    assert payload.model_dump() == before
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_responses_conversion_preserves_memory_context(db, stream):
+    from models.inference import ResponsesRequest
+    from routes.inference import _build_chat_request
+
+    memory.update(None, "language", "Python", 0)
+    payload = ResponsesRequest(input = "What language do I prefer?", thread_id = "chat", stream = stream)
+    chat = _build_chat_request(
+        payload, [ChatMessage(role = "user", content = payload.input)], stream = stream
+    )
+    memory.apply_to_request(chat, 8192)
+    assert chat.thread_id == "chat"
+    assert "personal.language" in chat.messages[0].content

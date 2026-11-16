@@ -253,9 +253,14 @@ def apply_to_request(payload, resident_context_length = None):
     block = context(getattr(payload, "thread_id", None), limit)
     messages = list(payload.messages or [])
     if not block["text"]:
-        if thread_context(getattr(payload, "thread_id", None)) is None and any(
-            message.role == "assistant" and "update_memory" in message.model_dump_json()
-            for message in messages
+        if (
+            getattr(payload, "studio_tool_history", None) is True
+            and not getattr(payload, "tools", None)
+            and thread_context(getattr(payload, "thread_id", None)) is None
+            and any(
+                message.role == "assistant" and "update_memory" in message.model_dump_json()
+                for message in messages
+            )
         ):
             block["text"] = (
                 "Persistent memory is disabled in this chat. Do not call update_memory or claim to save facts."

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { authFetch } from "@/features/auth";
 import { refreshContextUsage, useChatRuntimeStore } from "@/features/chat";
 import { listChatProjects } from "@/features/chat/api/chat-api";
@@ -41,7 +42,10 @@ type MemoryDraft = { kind: "new" | "edit"; key: string; value: string };
 function newMemoryDraft(): MemoryDraft {
   return {
     kind: "new",
-    key: `note_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    key: `note_${createNavigationNonce()
+      .replace(/[^a-z0-9_]/gi, "")
+      .toLowerCase()
+      .slice(0, 59)}`,
     value: "",
   };
 }

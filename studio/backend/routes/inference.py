@@ -40888,6 +40888,7 @@ def _build_chat_request(
     chat_kwargs: dict = dict(
         messages = messages,
         stream = stream,
+        thread_id = getattr(payload, "thread_id", None),
     )
     # Forward only an explicit model so an omitted one stays reload-only.
     if "model" in payload.model_fields_set:
@@ -42063,7 +42064,6 @@ async def _responses_in_process_stream(
     # Registered by the chat handler's tracker, so a cancel by response id, thread or run
     # reaches the run just as it does on llama-server.
     chat_req.cancel_id = resp_id
-    chat_req.thread_id = getattr(payload, "thread_id", None)
     chat_req.generation_run_id = getattr(payload, "generation_run_id", None)
     source = await _InProcessChatStream.open(chat_req, request, current_subject)
     try:
@@ -42237,7 +42237,6 @@ async def _responses_stream(
         # Facts only: this passthrough has no tool loop to offer update_memory.
         from core.chat_memory import apply_to_request
 
-        chat_req.thread_id = getattr(payload, "thread_id", None)
         apply_to_request(chat_req, llama_backend.context_length)
 
         # Streaming /v1/responses builds the passthrough body directly (bypassing
