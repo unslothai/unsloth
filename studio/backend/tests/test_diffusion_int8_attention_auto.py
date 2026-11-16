@@ -313,3 +313,67 @@ def test_dispatch_route_skips_a_triton_stand_in_for_cuda_only_families(monkeypat
         floors.clear()
         assert D.install(pipe, _TARGET) == routed, name
         assert bool(floors) == bool(routed)
+
+
+class _Stock:
+    """A stock processor (no ``_unsloth_int8`` on its class): what the module ran before the strided swap."""
+
+    _parallel_config = None
+    _attention_backend = "_native_cudnn"
+
+
+def _swapping_pipe(card, monkeypatch):
+    """A pipe whose modules hold stock processors, and the strided swap ``ensure_strided_processors`` makes."""
+    from core.inference import diffusion_flux3_attn
+
+    pipe = _pipe()
+    stocks = []
+    for m in pipe.transformer.blocks:
+        m.processor = _Stock()
+        stocks.append(m.processor)
+
+    def ensure(
+        pipe,
+        target,
+        logger = None,
+    ):
+        for m in pipe.transformer.blocks:
+            if type(m.processor) is _Stock:
+                new = _Processor()
+                new._unsloth_stock = m.processor
+                m.processor = new
+        return len(pipe.transformer.blocks)
+
+    monkeypatch.setattr(diffusion_flux3_attn, "ensure_strided_processors", ensure)
+    return pipe, stocks
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        {"ok": False, "min_tokens": None, "impl": "cuda"},
+        {"ok": True, "min_tokens": None, "impl": "cuda"},
+    ],
+)
+def test_a_lost_race_gives_every_module_back_its_own_processor(card, monkeypatch, found):
+    """Accuracy check failed, or torch won every race: every module carries the very processor it had before (so
+    FLUX.3's fused Q/K swap applies to it as on base), and the dispatch route does not race it again."""
+    card.found = found
+    pipe, stocks = _swapping_pipe(card, monkeypatch)
+    assert I.install_auto(pipe, _TARGET) == 0
+    assert all(m.processor is s for m, s in zip(pipe.transformer.blocks, stocks))
+    monkeypatch.setattr(D, "_dits", lambda p: [pipe.transformer])
+    monkeypatch.setattr(D, "routable_modules", lambda dit: list(dit.blocks))
+    routed = []
+    monkeypatch.setattr(D, "install_dispatch_route", lambda: routed.append(1) or 1)
+    assert D.install(pipe, _TARGET) == 0 and not routed
+
+
+def test_a_won_race_keeps_only_the_engaged_strided_processors(card, monkeypatch):
+    """Won where the card has a kernel: those modules run the strided processor; the head dim with no kernel gets its
+    own processor back."""
+    pipe, stocks = _swapping_pipe(card, monkeypatch)
+    assert I.install_auto(pipe, _TARGET) == 3
+    blocks = list(pipe.transformer.blocks)
+    assert all(m.processor._unsloth_int8 for m in blocks[:3])
+    assert blocks[3].processor is stocks[3]

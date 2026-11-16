@@ -1822,9 +1822,31 @@ def install_auto(
             }, None
         return dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
 
-    return install_int8_attention(
+    engaged = install_int8_attention(
         transformer, device = device, dtype = dtype, logger = logger, floor = floor
     )
+    _give_back_unengaged(transformer)
+    return engaged
+
+
+def _give_back_unengaged(transformer: Any) -> None:
+    """A strided processor ``install_auto`` put in for the race (``_unsloth_stock``) that did not engage gives the
+    module the processor it replaced, so a lost race leaves the module as base had it (FLUX.3: its fused Q/K swap
+    follows). That processor is marked raced: the dispatch route does not race it again."""
+    for m in int8_processors(transformer):
+        proc = m.processor
+        stock = getattr(proc, "_unsloth_stock", None)
+        if stock is None or getattr(proc, "_unsloth_int8", False):
+            continue
+        try:
+            stock._unsloth_int8_raced = True
+        except Exception:  # noqa: BLE001 -- a slotted processor: the route's cached verdict decides alike
+            pass
+        setter = getattr(m, "set_processor", None)
+        if callable(setter):
+            setter(stock)
+        else:
+            m.processor = stock
 
 
 def remove_int8_attention(transformer: Any) -> int:

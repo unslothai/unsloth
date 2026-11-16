@@ -652,7 +652,12 @@ def _install(
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
         ):
             continue
-        mods = routable_modules(dit)
+        mods = [
+            m
+            for m in routable_modules(dit)
+            # a processor the strided race already lost for (install_auto) stays as it was
+            if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
+        ]
         candidates.extend(mods)
         if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
             cuda_only.update(id(m) for m in mods)
