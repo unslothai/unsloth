@@ -460,7 +460,6 @@ test("a script cookie's SameSite goes with its write, and one a browser would re
   openPage("http://plain.example/").document.cookie = "e=1; SameSite=None; Secure";
   stop();
   assert.deepEqual(writes, [["token=/", "strict"], ["a=/", "lax"], ["b=/", undefined], ["c=/", "none"]]);
-  // The stored form is unchanged: the attribute lives with the backend's copy only.
   assert.deepEqual(readPageStorage("https://example.com", "tab-1").cookie, [["token=/", "|secret"], ["a=/", "|1"], ["b=/", "|1"], ["c=/", "|1"]]);
   assert.equal(page.document.cookie, "token=secret; a=1; b=1; c=1");
 });

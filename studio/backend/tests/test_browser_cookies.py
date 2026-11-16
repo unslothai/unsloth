@@ -457,7 +457,6 @@ def test_a_script_cookies_samesite_holds_on_cross_site_requests():
     assert cookies.cookie_header("user", site) == every
     assert cookies.cookie_header("user", site, cross_site = True) == "lax=1; plain=1; odd=1; none=1"
     assert cookies.cookie_header("user", site, cross_site = True, method = "POST") == "none=1"
-    # The frame's form never carries the attribute, and the page still sees every one.
     assert [key for key, _ in cookies.page_cookies("user", site)] == [
         "strict=/",
         "lax=/",
@@ -465,7 +464,6 @@ def test_a_script_cookies_samesite_holds_on_cross_site_requests():
         "odd=/",
         "none=/",
     ]
-    # SameSite=None needs Secure, which a script cookie over http never has.
     _write_page_cookie("http://plain.example/", "none=/", "|1", "none")
     assert cookies.cookie_header("user", "http://plain.example/") is None
 
@@ -473,7 +471,6 @@ def test_a_script_cookies_samesite_holds_on_cross_site_requests():
 def test_the_page_and_its_requests_say_whether_the_site_has_cookies(monkeypatch):
     _site(monkeypatch, [], [], body = b"<html></html>")
     assert _load("https://app.example.com/")["siteCookies"] is False
-    # HttpOnly: invisible to the page, but its requests must still go through the backend to carry it.
     cookies.store_cookies("user", "https://app.example.com/", _headers("sid=1; Path=/; HttpOnly"))
     cookies.store_cookies("user", "https://other.example.com/", _headers("x=1"))
     assert _load("https://app.example.com/")["siteCookies"] is True

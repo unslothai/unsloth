@@ -292,7 +292,6 @@ test("once the backend holds the site's cookies, its own requests go there to ca
   t.reply(sent.get("https://site.test/api/me")?.id, ok("{}"));
   t.reply(sent.get("https://site.test/api/save")?.id, ok("{}"));
   await Promise.all([read, write]);
-  // A request that sends no cookies stays the browser's.
   void t.window.fetch("/api/public", { credentials: "omit" });
   await tick();
   assert.equal(t.native.length, 1);
@@ -309,7 +308,6 @@ test("an answer saying the site has cookies moves its later requests to the pane
   await tick();
   assert.equal(t.native.length, 0);
   assert.equal(t.posted.length, 2);
-  // Signed out (or cleared): requests the browser can read are its own again.
   t.reply(t.posted[1].id, ok("{}", { siteCookies: false }));
   await me;
   void t.window.fetch("/api/me");
@@ -346,7 +344,6 @@ test("an answer asked for before the page set a cookie can't route its requests 
   await tick();
   assert.equal(t.native.length, 0);
   assert.equal(t.posted.length, 2);
-  // Asked for after the write, a newer answer still turns it off.
   t.reply(t.posted[1].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 6] }));
   await tick();
   void t.window.fetch("/api/me");

@@ -357,7 +357,6 @@ _PAGE_STORAGE_JS = r"""
             else if (key === "path" && setting.startsWith("/")) path = setting;
             else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
             else if (key === "secure") secure = true;
-            // An unknown value is no SameSite at all, as in a browser.
             else if (key === "samesite") sameSite = ["strict", "lax", "none"].includes(setting.toLowerCase()) ? setting.toLowerCase() : null;
           }
           // A browser ignores SameSite=None without Secure, and Secure from an http page (rfc6265bis 5.7).
@@ -2162,7 +2161,7 @@ def _build_response(
             "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
             "cookies": meta.get("cookies") or [],
             "cookiesVersion": meta.get("cookies_version"),
-            # The site has cookies, HttpOnly ones too: its own requests go through the backend to carry them.
+            # HttpOnly ones count: the page's requests go through the backend to carry them.
             "siteCookies": meta.get("site_cookies") is True,
             "refresh": refresh,
             "html": page,
@@ -2392,7 +2391,7 @@ def _page_request(
         return {**_studio_headers(current_host), **own_headers}
 
     def with_cookie_state(answer: dict) -> dict:
-        # On every answer, an opaque redirect too: the redirect a sign-in stops at may have set the session.
+        # Opaque redirects too: the one a sign-in stops at may have set the session.
         if subject is not None:
             answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(
                 subject, request.page

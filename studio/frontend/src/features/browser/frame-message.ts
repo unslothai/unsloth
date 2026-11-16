@@ -46,7 +46,6 @@ export type FrameMessage =
       value: string | null;
       url: string | null;
       seq: number | null;
-      /** A cookie write's SameSite: strict, lax or none. */
       sameSite?: SameSite;
     };
 

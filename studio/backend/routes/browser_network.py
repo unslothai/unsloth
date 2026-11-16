@@ -37,7 +37,7 @@ BROWSER_NETWORK_JS = r"""
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
         let lastRequest = 0;
-        // The store version of the newest answer seen, so one asked for earlier can't roll the routing back.
+        // Newest store version seen, so an answer asked for earlier can't roll the routing back.
         let routedVersion = null;
         const route = (reply, writes) => {
           if (typeof reply.siteCookies !== "boolean") return;
@@ -70,8 +70,7 @@ BROWSER_NETWORK_JS = r"""
           post({ type: "request", id, ...request });
         });
         const bodiless = (method) => method === "GET" || method === "HEAD";
-        // The panel holds cookies for the site (cfg.siteCookies, kept current by its answers): a
-        // request that may carry them goes there, since the sandbox's own would go without them.
+        // The sandbox's own request would go without the cookies the panel holds for the site.
         const withCookies = (request) => cfg.siteCookies === true && request.credentials !== "omit";
         // A GET or HEAD tries the browser first: where the site already answers the sandbox's origin
         // (an API sending ACAO null or *), streams, long polls and large bodies stay as they were. One
