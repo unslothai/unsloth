@@ -982,11 +982,25 @@ def _forward_function(module):
     return forward
 
 
+def _layer_loop_source(decoder, layers_name):
+    """Source of the decoder forward that loops over its layers, found through __wrapped__ and the closures of
+    wrappers that drop it (Unsloth Zoo's Gemma 4 KV-sharing forward)."""
+    first = _forward_function(decoder)
+    for fn in [first, *_forward_candidates(decoder)]:
+        try:
+            source = textwrap.dedent(inspect.getsource(fn))
+        except (OSError, TypeError):
+            continue
+        if f"self.{layers_name}" in source:
+            return source
+    return textwrap.dedent(inspect.getsource(first))
+
+
 def _layer_call_format(decoder, layers_name):
     """'tuple' when the decoder forward reads `out = layer(...); hidden = out[0]` (Unsloth fast forwards,
     transformers 4.x), 'tensor' when it reads `hidden = layer(...)` (transformers 5.x)."""
     try:
-        source = textwrap.dedent(inspect.getsource(_forward_function(decoder)))
+        source = _layer_loop_source(decoder, layers_name)
         tree = ast.parse(source)
     except (OSError, TypeError, SyntaxError) as exc:
         raise ValueError(

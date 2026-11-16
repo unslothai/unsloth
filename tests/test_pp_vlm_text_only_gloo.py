@@ -314,6 +314,22 @@ def test_towers_are_found_beside_the_language_model():
         assert type(parts.decoder).__name__.endswith("TextModel"), type(parts.decoder)
 
 
+def test_layer_loop_found_through_a_closure_wrapper():
+    # Unsloth Zoo wraps Gemma4TextModel.forward in a closure without __wrapped__ (KV-sharing / checkpointing fix).
+    model = tiny.build("gemma4", lora = False)
+    decoder = ppn._find_parts(model).decoder
+    original = type(decoder).forward
+
+    def outer(orig):
+        def forward(self, *args, **kwargs):
+            return orig(self, *args, **kwargs)
+
+        return forward
+
+    decoder.forward = outer(original).__get__(decoder)
+    assert ppn._layer_call_format(decoder, "layers") == "tensor"
+
+
 def _pp_env():
     return _load("pp_env")
 
