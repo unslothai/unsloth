@@ -33,7 +33,6 @@ _ALIAS_ROUTES = frozenset(
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
 
-
 class ModelAliasLoadConfig(BaseModel):
     """Explicit GGUF launch controls; never arbitrary loader arguments."""
 
@@ -46,7 +45,6 @@ class ModelAliasLoadConfig(BaseModel):
     @classmethod
     def supported_cache_type(cls, value: str) -> str:
         from utils.openai_auto_switch_settings import VALID_KV_CACHE_DTYPES
-
         if value not in VALID_KV_CACHE_DTYPES:
             raise ValueError("Unsupported KV cache type")
         return value
@@ -73,6 +71,7 @@ def alias_config_matches(backend: Any, config: dict) -> bool:
             ("speculative_type", "speculative_type"),
         )
     )
+
 
 def normalize_model_aliases(raw: Any) -> list[dict[str, Any]]:
     """Validated ``[{"name", "model"}]``; raises ValueError naming the first bad entry."""
@@ -104,7 +103,9 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, Any]]:
         seen.add(name.lower())
         alias = {"name": name, "model": model}
         if entry.get("load_config") is not None:
-            alias["load_config"] = ModelAliasLoadConfig.model_validate(entry["load_config"]).model_dump()
+            alias["load_config"] = ModelAliasLoadConfig.model_validate(
+                entry["load_config"]
+            ).model_dump()
         aliases.append(alias)
     # One hop only: a target naming another alias would be served as a literal model id.
     for alias in aliases:
@@ -253,9 +254,7 @@ class ModelAliasMiddleware:
         rewritten = _rewrite_alias_body(body, aliases)
         if rewritten is not None:
             name = json.loads(body)["model"].strip().lower()
-            configured = next(
-                (entry for entry in entries if entry["name"].lower() == name), None
-            )
+            configured = next((entry for entry in entries if entry["name"].lower() == name), None)
             if configured and configured.get("load_config"):
                 scope[MODEL_ALIAS_CONFIG_SCOPE_KEY] = {
                     "model": configured["model"],

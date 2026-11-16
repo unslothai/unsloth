@@ -4,7 +4,17 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-export type ModelAlias = { name: string; model: string };
+export type ModelAliasLoadConfig = {
+  max_seq_length: number;
+  cache_type_kv: string;
+  speculative_type: "auto" | "off" | "ngram";
+};
+
+export type ModelAlias = {
+  name: string;
+  model: string;
+  load_config?: ModelAliasLoadConfig;
+};
 
 function parseAliases(body: unknown): ModelAlias[] {
   const aliases = (body as { aliases?: unknown } | null)?.aliases;
@@ -13,7 +23,11 @@ function parseAliases(body: unknown): ModelAlias[] {
   }
   return aliases.flatMap((entry) =>
     typeof entry?.name === "string" && typeof entry?.model === "string"
-      ? [{ name: entry.name, model: entry.model }]
+      ? [{
+          name: entry.name,
+          model: entry.model,
+          ...(entry.load_config != null ? { load_config: entry.load_config } : {}),
+        }]
       : [],
   );
 }

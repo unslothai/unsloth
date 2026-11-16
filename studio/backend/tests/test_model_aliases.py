@@ -371,6 +371,7 @@ _CONFIG = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type":
 def test_configured_alias_roundtrips_settings_schema(store):
     # Saving and returning an alias retains its independently selectable launch configuration.
     from routes.settings import ModelAliasesPayload, ModelAliasesResponse, get_model_aliases_setting
+
     entries = [{"name": "long", "model": "org/model:Q4_K_M", "load_config": _CONFIG}]
     payload = ModelAliasesPayload(aliases = entries)
     assert set_model_aliases([e.model_dump(exclude_none = True) for e in payload.aliases]) == entries
@@ -380,12 +381,20 @@ def test_configured_alias_roundtrips_settings_schema(store):
     }
 
 
-@pytest.mark.parametrize("config", [
-    {}, {**_CONFIG, "max_seq_length": True}, {**_CONFIG, "max_seq_length": "4096"},
-    {**_CONFIG, "max_seq_length": 0}, {**_CONFIG, "max_seq_length": 1048577},
-    {**_CONFIG, "max_seq_length": None}, {**_CONFIG, "cache_type_kv": "bogus"},
-    {**_CONFIG, "speculative_type": "eagle3"}, {**_CONFIG, "llama_extra_args": ["--port", "9"]},
-])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {**_CONFIG, "max_seq_length": True},
+        {**_CONFIG, "max_seq_length": "4096"},
+        {**_CONFIG, "max_seq_length": 0},
+        {**_CONFIG, "max_seq_length": 1048577},
+        {**_CONFIG, "max_seq_length": None},
+        {**_CONFIG, "cache_type_kv": "bogus"},
+        {**_CONFIG, "speculative_type": "eagle3"},
+        {**_CONFIG, "llama_extra_args": ["--port", "9"]},
+    ],
+)
 def test_configured_alias_rejects_invalid_config(config):
     # Invalid or unsupported launch settings cannot be persisted as apparently usable configurations.
     with pytest.raises(ValueError):
@@ -398,19 +407,27 @@ def test_configured_alias_middleware_binds_trusted_config_to_target(store):
     seen = _run_middleware(b'{"model":"long","load_config":{"max_seq_length":1}}')
     assert aliases_mod.request_alias_load_config(seen["scope"], "org/model") == _CONFIG
     assert aliases_mod.request_alias_load_config(seen["scope"], "another/model") == {}
-    for body in (b'{"model":"org/model","load_config":{"max_seq_length":1}}',
-                 b'{"model":"org/model","nested":{"model":"long"}}'):
+    for body in (
+        b'{"model":"org/model","load_config":{"max_seq_length":1}}',
+        b'{"model":"org/model","nested":{"model":"long"}}',
+    ):
         scope = _run_middleware(body)["scope"]
         assert aliases_mod.request_alias_load_config(scope, "org/model") == {}
 
 
 def test_configured_alias_catalog_follows_visible_target(store):
     # Different configurations remain separate choices without advertising hidden model targets.
-    set_model_aliases([
-        {"name": "long", "model": "org/model", "load_config": _CONFIG},
-        {"name": "fast", "model": "org/model", "load_config": {**_CONFIG, "max_seq_length": 53248}},
-        {"name": "hidden", "model": "private/model", "load_config": _CONFIG},
-    ])
+    set_model_aliases(
+        [
+            {"name": "long", "model": "org/model", "load_config": _CONFIG},
+            {
+                "name": "fast",
+                "model": "org/model",
+                "load_config": {**_CONFIG, "max_seq_length": 53248},
+            },
+            {"name": "hidden", "model": "private/model", "load_config": _CONFIG},
+        ]
+    )
     rows = alias_model_objects([{"id": "org/model", "object": "model"}])
     assert [row["id"] for row in rows] == ["long", "fast"]
     assert all(row["alias_for"] == "org/model" for row in rows)
@@ -421,13 +438,19 @@ def test_alias_config_compares_requested_launch_intent():
     from types import SimpleNamespace
     from dataclasses import replace
     from core.inference.llama_cpp import GgufLoadIntent
-    intent = GgufLoadIntent(model_identifier = "org/model", n_ctx = 98304,
-                            cache_type_kv = "q5_1", speculative_type = "auto")
+
+    intent = GgufLoadIntent(
+        model_identifier = "org/model", n_ctx = 98304, cache_type_kv = "q5_1", speculative_type = "auto"
+    )
     backend = SimpleNamespace(last_load_intent = intent, speculative_type = "mtp")
     config = {**_CONFIG, "speculative_type": "auto"}
     assert aliases_mod.alias_config_matches(backend, config)
-    for changed in (replace(intent, n_ctx = 4096), replace(intent, cache_type_kv = "q4_0"),
-                    replace(intent, speculative_type = "off"), None):
+    for changed in (
+        replace(intent, n_ctx = 4096),
+        replace(intent, cache_type_kv = "q4_0"),
+        replace(intent, speculative_type = "off"),
+        None,
+    ):
         backend.last_load_intent = changed
         assert not aliases_mod.alias_config_matches(backend, config)
 

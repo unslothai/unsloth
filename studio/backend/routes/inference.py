@@ -11444,7 +11444,9 @@ async def _maybe_auto_switch_model(
     """
     from utils.model_aliases import alias_config_matches, request_alias_load_config
 
-    alias_config = request_alias_load_config(getattr(fastapi_request, "scope", None), requested_model)
+    alias_config = request_alias_load_config(
+        getattr(fastapi_request, "scope", None), requested_model
+    )
 
     def _config_matches() -> bool:
         return alias_config_matches(get_llama_cpp_backend(), alias_config)
@@ -11456,15 +11458,19 @@ async def _maybe_auto_switch_model(
                 detail = openai_error_body(
                     "The alias configuration is not loaded. Enable automatic model switching "
                     "with a credential allowed to load models.",
-                    status = 409, code = "model_configuration_not_loaded", param = "model",
+                    status = 409,
+                    code = "model_configuration_not_loaded",
+                    param = "model",
                 ),
             )
 
     if alias_config:
         from utils.multi_model_settings import get_multi_model_mode
-
         path = getattr(getattr(fastapi_request, "url", None), "path", "")
-        if path.rstrip("/").endswith("/embeddings") or await asyncio.to_thread(get_multi_model_mode) != "off":
+        if (
+            path.rstrip("/").endswith("/embeddings")
+            or await asyncio.to_thread(get_multi_model_mode) != "off"
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "Configured aliases require GGUF text generation with Keep multiple models loaded Off.",
@@ -11644,7 +11650,11 @@ async def _maybe_auto_switch_model(
         return
 
     # Check resident state before the filesystem index; rebuilding it can take seconds.
-    if auto_switch_on and _config_matches() and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if (
+        auto_switch_on
+        and _config_matches()
+        and await asyncio.to_thread(_loaded_identity_satisfies, requested_model)
+    ):
         await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
@@ -11666,7 +11676,9 @@ async def _maybe_auto_switch_model(
 
     if auto_switch_on and named_model and is_npu_model_path(named_model):
         if alias_config:
-            raise HTTPException(status_code = 400, detail = "Configured aliases require a local GGUF text model.")
+            raise HTTPException(
+                status_code = 400, detail = "Configured aliases require a local GGUF text model."
+            )
         # Refused before the switch, so a request the NPU cannot serve never evicts the resident model.
         await _refuse_unservable_npu_switch(
             named_model,
@@ -11722,7 +11734,9 @@ async def _maybe_auto_switch_model(
                     include_companion_scope = True,
                 )
         if resolved is None and alias_config:
-            raise HTTPException(status_code = 404, detail = "Configured alias target is not available locally.")
+            raise HTTPException(
+                status_code = 404, detail = "Configured alias target is not available locally."
+            )
         if resolved is None:
             # A "<run>/checkpoint-N" name looks like a Hub id; the reject below refuses it instead.
             trained = (
@@ -11806,7 +11820,9 @@ async def _maybe_auto_switch_model(
             and await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         )
         if alias_config and not target_is_gguf:
-            raise HTTPException(status_code = 400, detail = "Configured aliases require a local GGUF text model.")
+            raise HTTPException(
+                status_code = 400, detail = "Configured aliases require a local GGUF text model."
+            )
         gguf_companion_roots: tuple[str, ...] = ()
         if target_is_gguf:
             if resolved is None:
