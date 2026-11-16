@@ -54,6 +54,7 @@ def test_specs_cover_the_dit_families():
         "krea-2",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
         "wan2.2-ti2v-5b",
     }
@@ -68,6 +69,9 @@ def test_specs_cover_the_dit_families():
     assert _SPECS["krea-2"].force_bf16 is True
     assert _SPECS["flux.2-klein"].force_bf16 is True
     assert _SPECS["flux.2-dev"].force_bf16 is True
+    # FLUX.3 has no added-kv projections either; the distilled Klein is a deploy target, never a trainer.
+    assert "add_q_proj" not in _SPECS["flux.3-klein-base"].lora_targets
+    assert _SPECS["flux.3-klein-base"].force_bf16 is True
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():

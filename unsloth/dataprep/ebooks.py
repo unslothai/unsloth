@@ -72,8 +72,8 @@ _VOID = {
     "track",
     "wbr",
 }
-# Ruby readings (<rt>) and their fallback parentheses (<rp>) are not prose.
-_IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp"}
+# Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
+_IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
 class _BookTextParser(HTMLParser):

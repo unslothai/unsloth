@@ -739,6 +739,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
+        # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/flux-3-image-klein-base",),
+        deploy_base_repos = (
+            ("black-forest-labs/flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein"),
+        ),
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -1558,6 +1564,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # No scheduler or sigmas: sd.cpp's own H3-Image schedule is the PDD grid the heads were distilled on.
         sd_cpp_sampling_method = "euler",
         sd_cpp_rng = "cpu",
+        # LoRA training (diffusion_h3_image_trainer): the release itself is the base, trained as bf16 or int8.
+        trainable = True,
+        train_base_repos = ("MiniMaxAI/MiniMax-H3-Image",),
+        profile = FamilyProfile(train_scheme_deny = frozenset({"nf4", "fp8", "mxfp8"})),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.

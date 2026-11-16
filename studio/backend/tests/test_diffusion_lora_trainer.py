@@ -239,13 +239,13 @@ def test_config_normalized_krea2_requires_bf16_compute():
 
 def test_force_bf16_families_matches_trainer_specs():
     # Must list every family whose trainer refuses fp16, else fp16 passes preflight and evicts residents.
-    # MiniMax-H3 declares it on its own trainer, so the set is a union, not just _SPECS.
+    # MiniMax-H3 (video and image) declare it on their own trainers, so the set is a union, not just _SPECS.
     from core.training.diffusion_dit_trainer import _SPECS
     from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
 
     dit_bf16_only = {fam for fam, spec in _SPECS.items() if spec.force_bf16}
     assert dit_bf16_only <= _FORCE_BF16_FAMILIES
-    assert _FORCE_BF16_FAMILIES - dit_bf16_only == {"minimax-h3"}
+    assert _FORCE_BF16_FAMILIES - dit_bf16_only == {"minimax-h3", "minimax-h3-image"}
 
 
 def _cfg(**kw):
