@@ -2218,6 +2218,17 @@ def _rebind_swapped_modules(model, units):
                 )
 
 
+def _lazy_init_root(root, units):
+    """FSDP2 roots at the first unit to run forward; a decode loop calling blocks would make a block root."""
+    top = root if isinstance(root, _fsdp_module_class()) else next(iter(units), None)
+    state = getattr(top, "_get_fsdp_state", None)
+    if not callable(state):
+        return
+    state = state()
+    if getattr(state, "_is_root", None) is None:
+        state._lazy_init()
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -2242,6 +2253,7 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
+        _lazy_init_root(root, units)
         # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
