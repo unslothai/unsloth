@@ -183,3 +183,27 @@ def test_tp_dpo_trained_adapter_is_refused():
         assert res["init_error"] is not None
         assert res["init_error"].startswith("ValueError"), res["init_error"]
         assert "tensor parallel" in res["init_error"]
+
+
+@pytest.mark.parametrize("change", ["none", "embedding_b", "saved_module"])
+def test_tp_dpo_fresh_check_sees_embedding_and_saved_modules(monkeypatch, change):
+    from unsloth.models import _utils
+
+    model = torch.nn.Module()
+    params = {
+        "embed.lora_embedding_B.default": torch.zeros(4, 2),
+        "proj.lora_B.default.weight": torch.zeros(4, 2),
+        "head.original_module.weight": torch.ones(3, 4),
+        "head.modules_to_save.default.weight": torch.ones(3, 4),
+    }
+    if change == "embedding_b":
+        params["embed.lora_embedding_B.default"][0, 0] = 1.0
+    elif change == "saved_module":
+        params["head.modules_to_save.default.weight"][0, 0] = 2.0
+    monkeypatch.setattr(model, "named_parameters", lambda: iter(params.items()))
+    monkeypatch.setattr(_utils, "_is_unsloth_tensor_parallel", lambda m: True)
+    if change == "none":
+        assert _utils._unsloth_tp_skip_dpo_ref_adapter(model) is True
+    else:
+        with pytest.raises(ValueError, match = "tensor parallel"):
+            _utils._unsloth_tp_skip_dpo_ref_adapter(model)

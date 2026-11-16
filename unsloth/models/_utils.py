@@ -6921,11 +6921,26 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
     if not tp:
         return False
     nonzero, device = 0, torch.device("cpu")
+    params = dict(model.named_parameters())
     with torch.no_grad():
-        for name, param in model.named_parameters():
-            if ".default." not in name or not ("lora_B" in name or "lora_embedding_B" in name):
-                continue
+        for name, param in params.items():
             local = param.to_local() if hasattr(param, "to_local") else param
+            if ".modules_to_save.default." in name:
+                # A trained saved module differs from the original the disabled-adapter reference runs.
+                original = params.get(
+                    name.replace(".modules_to_save.default.", ".original_module.")
+                )
+                if original is None:
+                    nonzero += 1
+                    continue
+                original = original.to_local() if hasattr(original, "to_local") else original
+                device = local.device
+                nonzero += int(not torch.equal(local, original.to(local.device)))
+                continue
+            if not (name.endswith(".default") or ".default." in name) or not (
+                "lora_B" in name or "lora_embedding_B" in name
+            ):
+                continue
             device = local.device
             nonzero += int(torch.count_nonzero(local).item())
     import torch.distributed as dist
@@ -6938,7 +6953,7 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
     if nonzero:
         raise ValueError(
             "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
-            'trained (non-zero lora_B) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
+            'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
             "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
             "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
         )
