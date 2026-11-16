@@ -423,6 +423,7 @@ from .diffusion_precision import (
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
 from .diffusion_lora import LoraSelectionError
+from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
@@ -11465,10 +11466,23 @@ class DiffusionBackend:
                     peak_model = _peak_model_identity(
                         repo_id, gguf_filename, kind, base, fetch_base
                     )
-                    if getattr(pipe, "_unsloth_loras", None):
-                        peak_model = (
-                            "unknown"  # adapters baked in at load: a build the key cannot name
+                    if getattr(pipe, "_unsloth_loras", None) and (
+                        price_attached_loras(
+                            pipe,
+                            cfg = bool(getattr(fam, "uses_negative_prompt", False)),
+                            compute_bytes = _float_load_itemsize(
+                                _resolve_diffusion_compute_dtype(
+                                    fam, getattr(target, "dtype", None)
+                                )
+                            ),
+                            compute_dtype = _resolve_diffusion_compute_dtype(
+                                fam, getattr(target, "dtype", None)
+                            ),
                         )
+                        is None
+                    ):
+                        # unpriceable adapters: a build the key cannot name; priced ones' renders still record nothing
+                        peak_model = "unknown"
                     try:
                         # the phase-table seed holds only where it was measured; unpriced references size flat
                         pipe._unsloth_phase_seeds = (
