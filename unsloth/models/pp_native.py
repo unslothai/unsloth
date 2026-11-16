@@ -58,7 +58,9 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # adds its layers' load-balancing statistics to the ones it received and the last stage forms the loss
 # (tests/test_pp_moe_aux_gloo.py proves each against one process). Every other MoE family stays refused.
 # Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
-_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM")
+# The ConditionalGeneration wrappers (text only, towers out) read num_experts / top-k / coef from text_config.
+_PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
+_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
 # Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
 # updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
@@ -87,8 +89,14 @@ _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attent
 # "qwen_sparse_attention" up to 5.2x and "indexed_attention" after.
 _PP_HYBRID_FAMILIES = {
     "Qwen4ExpForCausalLM": {"linear_attention", "qwen_sparse_attention", "indexed_attention"},
+    "Qwen4ExpForConditionalGeneration": {
+        "linear_attention",
+        "qwen_sparse_attention",
+        "indexed_attention",
+    },
     "Qwen3_5ForCausalLM": {"linear_attention"},
     "Qwen3_5ForConditionalGeneration": {"linear_attention"},
+    "Qwen3_5MoeForConditionalGeneration": {"linear_attention"},
 }
 _MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
 # A text-only pipeline refuses these batch keys, never drops them.
@@ -715,12 +723,12 @@ def check_pipeline_model(model):
 class _MoEAux:
     """How a stage collects its routers' logits and forms the load-balancing loss (_moe_aux_plan)."""
 
-    owner: (
-        nn.Module
-    )  # the CausalLM (num_experts, num_experts_per_tok, router_aux_loss_coef, config)
+    owner: nn.Module  # the model whose forward adds the auxiliary loss
+    config: object  # holds output_router_logits (the CausalLM's config, a wrapper's text_config)
     router_class: type  # the module whose output[index] is a layer's router logits
     index: int
     num_experts: int
+    top_k: int
     routers: dict = dataclasses.field(default_factory = dict)  # {decoder layer: routers in it}
 
 
@@ -830,8 +838,13 @@ def _moe_aux_plan(parts):
         or getattr(recorder, "layer_name", None)
     ):
         return None
-    num_experts = getattr(inner, "num_experts", None)
-    top_k = getattr(inner, "num_experts_per_tok", None)
+    wrapper = type(inner).__name__ in _PP_MOE_AUX_WRAPPERS
+    config = inner.config.get_text_config() if wrapper else inner.config
+    if wrapper and not isinstance(getattr(config, "router_aux_loss_coef", None), (int, float)):
+        return None
+    source = config if wrapper else inner
+    num_experts = getattr(source, "num_experts", None)
+    top_k = getattr(source, "num_experts_per_tok", None)
     if (
         not isinstance(num_experts, int)
         or not isinstance(top_k, int)
@@ -847,7 +860,14 @@ def _moe_aux_plan(parts):
         type(inner).__module__, num_experts, top_k
     ):
         return None
-    return _MoEAux(inner, router_class, index, num_experts, routers)
+    return _MoEAux(inner, config, router_class, index, num_experts, top_k, routers)
+
+
+def _router_aux_coef(moe):
+    """Read per step, as the forward does: trainers rewrite a CausalLM's cached coef / a wrapper's text_config."""
+    if type(moe.owner).__name__ in _PP_MOE_AUX_WRAPPERS:
+        return moe.config.router_aux_loss_coef
+    return moe.owner.router_aux_loss_coef
 
 
 def _scaler_called_by(fn, depth = 1):
@@ -1674,10 +1694,10 @@ class _PPStageModule(nn.Module):
         stage), or None when the auxiliary loss is off (config.output_router_logits)."""
         ctx = self._pp_ctx
         moe = ctx.moe
-        if not getattr(moe.owner.config, "output_router_logits", False):
+        if not getattr(moe.config, "output_router_logits", False):
             return None
         if torch.is_grad_enabled():  # checkpointing can be turned on after the split
-            _refuse_aux_with_reentrant_checkpointing(self, moe.owner.config)
+            _refuse_aux_with_reentrant_checkpointing(self, moe.config)
         expected = sum(moe.routers.get(i, 0) for i in range(ctx.start, ctx.end))
         if len(captured) != expected:
             raise RuntimeError(
@@ -1685,9 +1705,7 @@ class _PPStageModule(nn.Module):
                 f"{moe.router_class.__name__} routers, expected {expected}: the router auxiliary loss "
                 "would miss some of them (a forward that bypasses the router module)."
             )
-        stats = _router_statistics(
-            captured, moe.num_experts, int(moe.owner.num_experts_per_tok), attention_mask
-        )
+        stats = _router_statistics(captured, moe.num_experts, moe.top_k, attention_mask)
         if stats.device != device:
             stats = stats.to(device)
         return stats + carry[0] if carry else stats
@@ -1806,7 +1824,7 @@ class _PPStageModule(nn.Module):
                     coef, divisor = ctx.trainer_aux
                     loss = loss + coef * aux.to(loss.device) / divisor
                 else:
-                    term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                    term = _router_aux_coef(moe) * aux.to(loss.device)
                     loss = loss + _forward_aux_weighting(
                         moe.owner, term, kwargs, ctx.num_items_in_batch
                     )
@@ -2888,7 +2906,7 @@ def apply_pipeline_parallel(
             f"(one stage per rank) only; got {schedule!r} with {stages_per_rank} stages per rank."
         )
     if moe is not None:
-        _refuse_aux_with_reentrant_checkpointing(model, moe.owner.config)
+        _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
     if stages_per_rank > 1:
