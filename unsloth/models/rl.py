@@ -516,6 +516,10 @@ try:
     from unsloth.models._utils import _unsloth_dataset_column_names
 except Exception:
     def _unsloth_dataset_column_names(dataset): return dataset.column_names
+try:
+    from unsloth.models._utils import _unsloth_tp_skip_dpo_ref_adapter
+except Exception:
+    def _unsloth_tp_skip_dpo_ref_adapter(model): return False
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -4210,6 +4214,25 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
+# TRL >= 1.0 DPOTrainer copies ".default." into a "ref" adapter (1.0-1.6 peft_config["default"], 1.7+ default_config).
+_DPO_REF_ADAPTER_BLOCK = re.compile(
+    r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
+    r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
+    r"(?P<body>.*?ref_param\.data\.copy_\(param\.data\)[ \t]*)$",
+    flags = re.DOTALL | re.MULTILINE,
+)
+
+
+def _guard_dpo_ref_adapter_for_tp(init):
+    def _guard(match):
+        indent = match.group("indent")
+        lines = match.group(0).split("\n")
+        body = "\n".join("    " + line if line.strip() else line for line in lines)
+        return f"{indent}if not _unsloth_tp_skip_dpo_ref_adapter(model):\n{body}"
+
+    return _DPO_REF_ADAPTER_BLOCK.sub(_guard, init, count = 1)
+
+
 def patch_functions(
     RLTrainer,
     trainer_file,
@@ -4269,6 +4292,9 @@ def patch_functions(
         return "\n".join(commented_lines)
 
     init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+
+    if trainer_file == "dpo_trainer":
+        init = _guard_dpo_ref_adapter_for_tp(init)
 
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches the first match, .+? the final one.
