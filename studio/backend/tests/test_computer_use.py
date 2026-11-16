@@ -501,6 +501,15 @@ def test_a_terminal_known_by_its_start_menu_name_asks_every_time(desktop, name):
     assert policy.risks([{"op": "open_app", "name": name}], FrontWindow(app = "Notes"))
 
 
+def test_the_shut_down_dialog_asks_every_time(desktop):
+    dialog = FrontWindow(app = "Cinnamon-session-quit.py", app_id = "cinnamon-session-quit.py")
+    assert policy.asks_every_time(dialog.app, dialog.app_id)
+    with pytest.raises(ValueError, match = "asks every time"):
+        policy.allow_app(dialog.app)
+    enter = [{"op": "key", "chords": [((), "enter")]}]
+    assert "shut-down" in policy.risks(enter, dialog)[0]
+
+
 def test_grid_coordinates_span_the_picture(desktop):
     desktop.chosen["coordinates"] = "grid"
     key = state.session_key(SESSION)
@@ -604,6 +613,11 @@ def test_input_to_an_app_that_cannot_be_identified_asks_first(desktop, monkeypat
         ("win32", "win+l"),
         ("win32", "ctrl+alt+del"),
         ("linux", "ctrl+alt+backspace"),
+        ("linux", "ctrl+alt+end"),
+        ("linux", "alt+ctrl+End"),
+        ("linux", "ctrl+alt+esc"),
+        ("linux", "ctrl+alt+f1"),
+        ("linux", "ctrl+alt+F12"),
     ],
 )
 def test_keys_that_take_the_screen_away_are_never_sent(desktop, monkeypatch, platform, combo):

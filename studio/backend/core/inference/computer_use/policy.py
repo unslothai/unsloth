@@ -48,6 +48,8 @@ _PROTECTED = (
     "authorizationhost", "polkit", "pinentry", "askpass", "gcr-prompter", "kdesu", "consent",
     "credentialuibroker",
 )  # fmt: skip
+# Cinnamon's shut-down, restart and log-out dialog is "Cinnamon-session-quit.py".
+_SESSION_DIALOGS = ("session-quit",)
 _EXACT = {"cmd": "a terminal", "wt": "a terminal", "hyper": "a terminal", "mmc": "a system tool"}
 
 # Whole names, since "arc" or "edge" inside another app's name is not a browser.
@@ -67,7 +69,11 @@ _OWN_APP_IDS = ("ai.unsloth.studio",)
 _BLOCKED = {
     "darwin": {"ctrl+cmd+q", "shift+cmd+q", "alt+shift+cmd+q", "alt+cmd+escape", "alt+shift+cmd+escape"},
     "win32": {"cmd+l", "ctrl+alt+delete"},
-    "linux": {"cmd+l", "ctrl+alt+delete", "ctrl+alt+backspace", "ctrl+alt+l"},
+    "linux": {
+        "cmd+l", "ctrl+alt+delete", "ctrl+alt+backspace", "ctrl+alt+l",
+        # Cinnamon's shut-down dialog and restart, and the X server's switch to a text console.
+        "ctrl+alt+end", "ctrl+alt+escape", *(f"ctrl+alt+f{n}" for n in range(1, 13)),
+    },
 }  # fmt: skip
 _RISKY = {
     "darwin": {"cmd+q", "cmd+backspace", "shift+cmd+backspace", "alt+shift+cmd+backspace", "alt+cmd+backspace"},
@@ -254,6 +260,7 @@ def _sensitive_kind(front: FrontWindow) -> Optional[str]:
         (_TERMINALS, "a terminal"),
         (_SECRETS, "a password manager"),
         (_SYSTEM, "a system tool"),
+        (_SESSION_DIALOGS, "the shut-down and log-out dialog"),
     ):
         if any(word in name for word in words for name in names if name):
             return kind
