@@ -51,9 +51,10 @@ def _drive(coro):
             loop.close()
 
 
-def _make_gemini_client(
-    base_url: str = "https://generativelanguage.googleapis.com/v1beta",
-) -> ExternalProviderClient:
+_GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _make_gemini_client(base_url: str = _GEMINI_API) -> ExternalProviderClient:
     return ExternalProviderClient(
         provider_type = "gemini",
         base_url = base_url,
@@ -169,9 +170,10 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
     temperature = kwargs.pop("temperature", 0.7)
     top_p = kwargs.pop("top_p", 0.95)
     max_tokens = kwargs.pop("max_tokens", 64)
+    client_kwargs = {"base_url": kwargs.pop("base_url")} if "base_url" in kwargs else {}
 
     async def run():
-        client = _make_gemini_client()
+        client = _make_gemini_client(**client_kwargs)
         async for _ in client.stream_chat_completion(
             messages = messages,
             model = model,
@@ -4018,6 +4020,38 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
     assert "googleSearch" not in tool_kinds, body
     assert "codeExecution" not in tool_kinds, body
     assert "functionDeclarations" in tool_kinds, body
+
+
+@pytest.mark.parametrize(
+    ("enabled_tools", "with_functions", "base_url", "expect_flag"),
+    [
+        (["code_execution"], True, _GEMINI_API, True),
+        (["web_search"], True, _GEMINI_API, True),
+        (["code_execution"], False, _GEMINI_API, False),
+        ([], True, _GEMINI_API, False),
+        (["code_execution"], True, "https://aiplatform.googleapis.com/v1/publishers/google", False),
+    ],
+    ids = ["code+functions", "search+functions", "code-only", "functions-only", "vertex"],
+)
+def test_gemini_hosted_tools_beside_functions_send_server_side_invocations(
+    monkeypatch, enabled_tools, with_functions, base_url, expect_flag
+):
+    """The Gemini API 400s on hosted tools plus functionDeclarations without the flag; Vertex rejects it."""
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.5-flash",
+        enabled_tools = enabled_tools,
+        tools = _tools(name = "search_knowledge_base", parameters = {"type": "object"})
+        if with_functions
+        else None,
+        tool_choice = "auto" if with_functions else None,
+        base_url = base_url,
+    )
+    body = captured["body"]
+    tool_config = body.get("toolConfig") or {}
+    assert tool_config.get("includeServerSideToolInvocations", False) is expect_flag, body
+    if with_functions:
+        assert tool_config["functionCallingConfig"] == {"mode": "AUTO"}, body
 
 
 def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
