@@ -691,14 +691,17 @@ _unsloth_uninstall_main() {
         _ld_plist="$HOME/Library/LaunchAgents/$_ld_label.plist"
         [ -f "$_ld_plist" ] || return 0
         [ "$(sed -n 2p "$_ld_plist" 2>/dev/null)" = "<!-- unsloth-studio-managed-launchd -->" ] || return 0
+        # The $HOME owner's domain, not id -u: under sudo (HOME kept) the agent lives in gui/<owner>.
+        _ld_uid=$(_home_uid)
+        _ld_uid=${_ld_uid:-$_uid}
         _ld_stopped=0
         if command -v launchctl >/dev/null 2>&1; then
-            if ! launchctl print "gui/$_uid/$_ld_label" >/dev/null 2>&1; then
+            if ! launchctl print "gui/$_ld_uid/$_ld_label" >/dev/null 2>&1; then
                 _ld_stopped=1
-            elif launchctl bootout "gui/$_uid/$_ld_label" 2>/dev/null; then
+            elif launchctl bootout "gui/$_ld_uid/$_ld_label" 2>/dev/null; then
                 _ld_stopped=1
             # A job still loaded here would be respawned by KeepAlive after the kill sweep below; `remove` drops it by label.
-            elif launchctl remove "$_ld_label" 2>/dev/null; then
+            elif _run_as_home_owner launchctl remove "$_ld_label" 2>/dev/null; then
                 _ld_stopped=1
             fi
         fi

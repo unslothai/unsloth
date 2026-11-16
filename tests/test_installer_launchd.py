@@ -411,7 +411,7 @@ def test_installer_asks_no_launchd_question():
 def _uninstall_removal_script(uid: str = "501") -> str:
     source = UNINSTALL_SH.read_text(encoding = "utf-8")
     parts = [f"_os=Darwin\n_uid={uid}\n"]
-    for name in ("_set_marker", "_remove_path"):
+    for name in ("_set_marker", "_remove_path", "_home_uid", "_run_as_home_owner"):
         m = re.search(rf"^{name}\(\) \{{.*?^\}}", source, flags = re.DOTALL | re.MULTILINE)
         parts.append(m.group(0))
     m = re.search(
@@ -424,14 +424,22 @@ def _uninstall_removal_script(uid: str = "501") -> str:
     return "\n".join(parts)
 
 
-def _run_uninstall_removal(tmp_path: Path, plist_text: str | None, launchctl: str) -> str:
+def _run_uninstall_removal(
+    tmp_path: Path,
+    plist_text: str | None,
+    launchctl: str,
+    caller_uid: str = "501",
+) -> str:
     if plist_text is not None:
         plist = _plist_path(tmp_path)
         plist.parent.mkdir(parents = True)
         plist.write_text(plist_text)
     log = _fake_mac(tmp_path, launchctl)
+    _fake_bin(tmp_path, "stat", "echo 501")
+    _fake_bin(tmp_path, "id", f"echo {caller_uid}")
+    _fake_bin(tmp_path, "sudo", "exit 0")
     r = subprocess.run(
-        ["sh", "-c", _uninstall_removal_script()],
+        ["sh", "-c", _uninstall_removal_script(caller_uid)],
         capture_output = True,
         text = True,
         env = _env(tmp_path),
@@ -480,6 +488,17 @@ def test_uninstall_still_removes_the_file_when_launchd_refuses(tmp_path):
     launchctl = 'case "$1" in bootout|remove) exit 5 ;; esac; exit 0'
     out = _run_uninstall_removal(tmp_path, _OURS, launchctl)
     assert "could not unload it from launchd" in out
+    assert not _plist_path(tmp_path).exists()
+
+
+def test_uninstall_under_sudo_unloads_the_home_owners_agent(tmp_path):
+    out = _run_uninstall_removal(
+        tmp_path, _OURS, '[ "$1" = bootout ] && exit 5; exit 0', caller_uid = "0"
+    )
+    assert f"print gui/501/{LABEL}" in out
+    assert f"bootout gui/501/{LABEL}" in out
+    assert f"asuser 501 sudo -u #501 launchctl remove {LABEL}" in out
+    assert "gui/0/" not in out
     assert not _plist_path(tmp_path).exists()
 
 
