@@ -253,9 +253,7 @@ class TestGgufVariantFileResolution:
         snap = _build_cache(hf_cache, repo, {"Qwen3-0.6B-UD-Q6_K_XL.gguf": 4})
 
         assert cached_gguf_for_load(repo, "Q6_K") is None
-        assert cached_gguf_for_load(repo, "UD-Q6_K_XL") == str(
-            snap / "Qwen3-0.6B-UD-Q6_K_XL.gguf"
-        )
+        assert cached_gguf_for_load(repo, "UD-Q6_K_XL") == str(snap / "Qwen3-0.6B-UD-Q6_K_XL.gguf")
 
     def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
         from utils.models.model_config import list_gguf_variants
