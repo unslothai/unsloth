@@ -61,22 +61,32 @@ export type SiteCookies = Array<[string, string]>;
 
 // The backend holds each site's cookies and sends them with the page's requests. A page's own
 // document.cookie writes are sent there, and what the site set comes back to the frame's store.
-// One after another, so a later write to the same cookie can't land before an earlier one.
+// One after another, so a later write to the same cookie can't land before an earlier one, and a
+// clear goes in the same line: a write queued before it is dropped, so none lands after it.
 let lastCookieWrite: Promise<unknown> | null = null;
+let cookieClears = 0;
+
+function afterCookieWrites<T>(work: () => Promise<T>): Promise<T> {
+  const run = lastCookieWrite ? lastCookieWrite.then(work) : work();
+  const settled: Promise<unknown> = run.catch(() => undefined);
+  lastCookieWrite = settled;
+  void settled.finally(() => {
+    if (lastCookieWrite === settled) lastCookieWrite = null;
+  });
+  return run;
+}
 
 onPageStorageWrite(({ origin, area, key, value, from }) => {
   // Only a page's own write: the mirror below writes with no `from`.
   if (area !== "cookie" || key === null || !from) return;
-  const send = () =>
-    authFetch("/api/browser/cookie", {
+  const clears = cookieClears;
+  void afterCookieWrites(async () => {
+    if (clears !== cookieClears) return;
+    await authFetch("/api/browser/cookie", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ page: `${origin}/`, key, value }),
     }).catch(() => undefined);
-  const sent: Promise<unknown> = lastCookieWrite ? lastCookieWrite.then(send) : send();
-  lastCookieWrite = sent;
-  void sent.finally(() => {
-    if (lastCookieWrite === sent) lastCookieWrite = null;
   });
 });
 
@@ -178,7 +188,8 @@ function fromBase64(text: string): ArrayBuffer {
 
 /** Forgets the cookies sites set on pages the backend fetched for this account. */
 export async function clearSiteCookies(): Promise<void> {
-  const response = await authFetch("/api/browser/clear-cookies", { method: "POST" });
+  cookieClears++;
+  const response = await afterCookieWrites(() => authFetch("/api/browser/clear-cookies", { method: "POST" }));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 

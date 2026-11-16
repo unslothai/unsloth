@@ -238,6 +238,43 @@ def test_a_script_cookie_set_over_https_stays_off_http():
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/", "|forged")
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/", None)
     assert ("token=/", "|secret") in cookies.page_cookies("user", "https://app.example.com/")
+    # Nor one at a deeper path, which would be sent ahead of it.
+    cookies.set_page_cookie("user", "http://app.example.com/", "token=/app", "|forged")
+    assert cookies.cookie_header("user", "https://app.example.com/app/x") == "token=secret; theme=dark"
+
+
+def test_an_http_response_leaves_a_secure_cookie_alone():
+    site = "https://app.example.com/"
+    cookies.store_cookies("user", site, _headers("sid=secret; HttpOnly; Secure; Path=/"))
+    for forged in ("sid=attacker; Path=/", "sid=attacker; Path=/app", "sid=; Path=/; Max-Age=0"):
+        cookies.store_cookies("user", "http://app.example.com/", _headers(forged))
+        assert cookies.cookie_header("user", site + "app/x") == "sid=secret"
+    # Another name, or a path the Secure one doesn't cover, still sets over http.
+    cookies.store_cookies("user", "http://app.example.com/a", _headers("theme=dark; Path=/"))
+    assert cookies.cookie_header("user", "http://app.example.com/") == "theme=dark"
+    cookies.store_cookies("user", "https://app.example.com/", _headers("k=s; Secure; Path=/app"))
+    cookies.store_cookies("user", "http://app.example.com/", _headers("k=h; Path=/"))
+    assert cookies.cookie_header("user", "http://app.example.com/app") == "theme=dark; k=h"
+    # https still replaces and deletes it.
+    cookies.store_cookies("user", site, _headers("sid=; Path=/; Max-Age=0"))
+    assert "sid=" not in cookies.cookie_header("user", site)
+
+
+def test_secure_and_prefixed_cookies_need_https_and_their_prefix_rules():
+    http, https = "http://app.example.com/", "https://app.example.com/a/"
+    for value in ("s=1; Secure", "__Secure-a=1; Secure", "__Host-a=1; Secure; Path=/"):
+        cookies.store_cookies("user", http, _headers(value))
+    for value in (
+        "__Secure-b=1",
+        "__Host-b=1; Secure",
+        "__Host-c=1; Secure; Path=/a",
+        "__Host-d=1; Secure; Path=/; Domain=app.example.com",
+        "__host-e=1; Path=/",
+    ):
+        cookies.store_cookies("user", https, _headers(value))
+    assert cookies.cookie_header("user", https) is None
+    cookies.store_cookies("user", https, _headers("__Secure-f=1; Secure", "__Host-g=1; Secure; Path=/"))
+    assert cookies.cookie_header("user", https) == "__Secure-f=1; __Host-g=1"
 
 
 def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):

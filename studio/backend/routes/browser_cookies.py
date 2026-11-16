@@ -25,11 +25,21 @@ _MAX_SET_COOKIE_CHARS = 8192
 _MAX_PAGE_COOKIE_CHARS = 64 * 1024
 
 _lock = threading.Lock()
-_jars: "OrderedDict[str, http.cookiejar.CookieJar]" = OrderedDict()
+_jars: "OrderedDict[str, _Jar]" = OrderedDict()
 
 
 class _Policy(http.cookiejar.DefaultCookiePolicy):
     def set_ok(self, cookie, request):
+        # Secure only from https, and the __Secure- / __Host- prefixes hold (rfc6265bis 5.7 steps 13, 20, 21).
+        name = (cookie.name or "").lower()
+        if cookie.secure and request.type != "https":
+            return False
+        if name.startswith(("__secure-", "__host-")) and not cookie.secure:
+            return False
+        if name.startswith("__host-") and (
+            cookie.domain_specified or cookie.path != "/" or not cookie.path_specified
+        ):
+            return False
         # With no public suffix list here, a parent Domain (co.uk, github.io) can't be told from the
         # site's own, so it stays host-only; one that isn't a parent is refused below (RFC 6265 5.3).
         req_host, erhn = http.cookiejar.eff_request_host(request)
@@ -47,6 +57,44 @@ class _Policy(http.cookiejar.DefaultCookiePolicy):
         return super().return_ok(cookie, request)
 
 
+def _domain_match(host: str, domain: str) -> bool:
+    host, domain = host.lstrip("."), domain.lstrip(".")
+    return host == domain or host.endswith("." + domain)
+
+
+def _path_match(path: str, cookie_path: str) -> bool:
+    return path == cookie_path or (
+        path.startswith(cookie_path) and (cookie_path.endswith("/") or path[len(cookie_path)] == "/")
+    )
+
+
+class _Jar(http.cookiejar.CookieJar):
+    """While ``insecure``, a cookie set or deleted over http leaves a Secure one of the same name
+    alone when the domains match either way and its path is under the Secure one's (rfc6265bis 5.7
+    step 16). Deletions run inside ``make_cookies`` before any policy check, hence ``clear``."""
+
+    insecure = False
+
+    def _shadows_secure(self, domain, path, name) -> bool:
+        return any(
+            cookie.secure
+            and cookie.name == name
+            and (_domain_match(cookie.domain, domain) or _domain_match(domain, cookie.domain))
+            and _path_match(path or "/", cookie.path or "/")
+            for cookie in self
+        )
+
+    def set_cookie(self, cookie):
+        if self.insecure and self._shadows_secure(cookie.domain, cookie.path, cookie.name):
+            return
+        super().set_cookie(cookie)
+
+    def clear(self, domain = None, path = None, name = None):
+        if self.insecure and name is not None and self._shadows_secure(domain, path, name):
+            return
+        super().clear(domain, path, name)
+
+
 def _same_site(cookie: http.cookiejar.Cookie) -> str:
     for name, value in cookie._rest.items():  # type: ignore[attr-defined]
         if name.lower() == "samesite" and isinstance(value, str):
@@ -54,7 +102,7 @@ def _same_site(cookie: http.cookiejar.Cookie) -> str:
     return "lax"
 
 
-def _jar(subject: str) -> http.cookiejar.CookieJar:
+def _jar(subject: str) -> _Jar:
     with _lock:
         jar = _jars.get(subject)
         if jar is None:
@@ -62,7 +110,7 @@ def _jar(subject: str) -> http.cookiejar.CookieJar:
             policy = _Policy(
                 strict_ns_domain = http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain
             )
-            jar = _jars[subject] = http.cookiejar.CookieJar(policy)
+            jar = _jars[subject] = _Jar(policy)
             while len(_jars) > _MAX_ACCOUNTS:
                 _jars.popitem(last = False)
         _jars.move_to_end(subject)
@@ -138,7 +186,12 @@ def store_cookies(subject: str, url: str, headers) -> None:
     if request is None:
         return
     jar = _jar(subject)
-    jar.extract_cookies(_Response(values), request)
+    with jar._cookies_lock:  # type: ignore[attr-defined]
+        jar.insecure = request.type != "https"
+        try:
+            jar.extract_cookies(_Response(values), request)
+        finally:
+            jar.insecure = False
     _trim(jar)
 
 
@@ -173,7 +226,7 @@ def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
 def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> None:
     """A page's own ``document.cookie`` write, in the frame's form; ``stored`` None removes it.
     Host-only, Secure when written over https (the frame's store is per scheme), and never over an
-    HttpOnly cookie, nor a Secure one from http (draft-ietf-httpbis-rfc6265bis 5.7)."""
+    HttpOnly cookie; ``store_cookies`` keeps a Secure one from an http write (rfc6265bis 5.7)."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return
@@ -181,13 +234,8 @@ def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> 
     if request is None:
         return
     jar = _jar(subject)
-    host = http.cookiejar.eff_request_host(request)[1]
     for cookie in list(jar):
-        if cookie.name != name or cookie.path != path:
-            continue
-        if cookie.secure and request.type != "https" and cookie.domain == host:
-            return
-        if _http_only(cookie):
+        if cookie.name == name and cookie.path == path and _http_only(cookie):
             probe = _request(f"{request.type}://{request.host}{path}")
             if probe is not None and jar._policy.return_ok(cookie, probe):  # type: ignore[attr-defined]
                 return

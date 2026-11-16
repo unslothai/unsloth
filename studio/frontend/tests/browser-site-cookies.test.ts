@@ -9,7 +9,7 @@ const localStorage = { getItem: () => null, setItem: () => undefined, removeItem
 Object.assign(globalThis, { localStorage, window: { localStorage, location: { protocol: "http:" }, addEventListener: () => {} } });
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 
-const { fetchBrowserPage, mirrorSiteCookies } = await import("../src/features/browser/api.ts");
+const { clearSiteCookies, fetchBrowserPage, mirrorSiteCookies } = await import("../src/features/browser/api.ts");
 const { readPageStorage, writePageStorage } = await import("../src/features/browser/page-storage.ts");
 
 const SITE = "https://app.example.com";
@@ -70,5 +70,28 @@ test("successive cookie writes reach the backend in the order the page made them
   pending.shift()?.();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(sent, ["|1", null]);
+  pending.shift()?.();
+});
+
+test("clearing site cookies waits for a write in flight and drops the ones queued behind it", async () => {
+  const sent: string[] = [];
+  const pending: Array<() => void> = [];
+  (globalThis as { __authFetch?: unknown }).__authFetch = (url: string, init: { body?: string }) => {
+    sent.push(url.endsWith("/clear-cookies") ? "clear" : JSON.parse(init.body ?? "{}").value);
+    return new Promise((resolve) => pending.push(() => resolve(new Response(null, { status: 204 }))));
+  };
+  writePageStorage(SITE, "tab", "cookie", "a=/", "|1", {}, `${SITE}/`);
+  writePageStorage(SITE, "tab", "cookie", "b=/", "|2", {}, `${SITE}/`);
+  const cleared = clearSiteCookies();
+  writePageStorage(SITE, "tab", "cookie", "c=/", "|3", {}, `${SITE}/`);
+  assert.deepEqual(sent, ["|1"]);
+  pending.shift()?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(sent, ["|1", "clear"]);
+  pending.shift()?.();
+  await cleared;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // A write made after the clear started still goes, after it.
+  assert.deepEqual(sent, ["|1", "clear", "|3"]);
   pending.shift()?.();
 });
