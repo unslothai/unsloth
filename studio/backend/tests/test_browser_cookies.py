@@ -492,3 +492,20 @@ def test_the_page_and_its_requests_say_whether_the_site_has_cookies(monkeypatch)
     assert request()["siteCookies"] is True
     _site(monkeypatch, [], [("Set-Cookie", "sid=; Path=/; Max-Age=0")], body = b"{}")
     assert request()["siteCookies"] is False
+
+
+def test_a_sign_in_stopped_at_a_manual_redirect_still_says_the_site_has_cookies(monkeypatch):
+    _site(monkeypatch, [("https://app.example.com/home", _headers("sid=abc; Path=/; HttpOnly"))])
+    answer = browser_mod._page_request(
+        browser_mod.BrowserPageRequest(
+            page = "https://app.example.com/login",
+            url = "https://app.example.com/session",
+            method = "POST",
+            redirect = "manual",
+        ),
+        threading.Event(),
+        "user",
+    )
+    assert answer["opaqueRedirect"] is True and answer["status"] == 0 and answer["headers"] == []
+    assert answer["siteCookies"] is True and answer["cookies"] == []
+    assert answer["cookiesVersion"][1] > 0

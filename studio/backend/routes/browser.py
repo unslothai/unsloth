@@ -2391,6 +2391,14 @@ def _page_request(
                 own_headers = {**own_headers, "Cookie": cookies}
         return {**_studio_headers(current_host), **own_headers}
 
+    def with_cookie_state(answer: dict) -> dict:
+        # On every answer, an opaque redirect too: the redirect a sign-in stops at may have set the session.
+        if subject is not None:
+            answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(
+                subject, request.page
+            )
+        return answer
+
     meta: dict = {}
     error, raw, _content_type = _fetch_url_raw(
         request.url,
@@ -2411,14 +2419,16 @@ def _page_request(
         store_cookies(jar, meta.get("url") or hops["url"], meta.get("headers"))
     # "manual" gets an opaque redirect: no status, headers or body reach the page.
     if hops["stopped"] and request.redirect == "manual":
-        return {
-            "opaqueRedirect": True,
-            "status": 0,
-            "statusText": "",
-            "url": request.url,
-            "headers": [],
-            "body": "",
-        }
+        return with_cookie_state(
+            {
+                "opaqueRedirect": True,
+                "status": 0,
+                "statusText": "",
+                "url": request.url,
+                "headers": [],
+                "body": "",
+            }
+        )
     status = meta.get("status")
     if not isinstance(status, int) or not isinstance(raw, bytes):
         raise HTTPException(status_code = 502, detail = error or "The request failed.")
@@ -2461,11 +2471,7 @@ def _page_request(
         "cors": not hops["same_origin"],
         "cookies": [],
     }
-    if subject is not None:
-        answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(
-            subject, request.page
-        )
-    return answer
+    return with_cookie_state(answer)
 
 
 def _fetch_and_build(
