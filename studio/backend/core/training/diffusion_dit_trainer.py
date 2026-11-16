@@ -3089,6 +3089,7 @@ def _train_dit(
         with isolated_sampling(device, False):
             with report_model_load_progress(on_event):
                 pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+            _guard_vae_attention(vae)
             encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
         sample_embeds = dict(zip(sample_texts, encoded))
         _free_text_encoders(pipe)

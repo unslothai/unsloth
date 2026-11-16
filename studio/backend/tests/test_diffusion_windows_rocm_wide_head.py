@@ -152,3 +152,80 @@ def test_a_rejected_fp32_head_runs_explicit_math_not_the_default_dispatch(
     with C.chunked_attention_mode(budget = 64 * 1024):
         out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
     assert calls and torch.allclose(out, ref, atol = 1e-5)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_dit_trainer_guards_the_preview_vae_a_warm_cache_loads(monkeypatch, tmp_path, warm):
+    # A warm conditioning cache skips the encode but still loads the VAE to decode previews: that decode goes
+    # through the same head-512 attention, so it needs the same routing as the cold path's encode.
+    import contextlib
+    import random
+
+    from core.training import diffusion_dit_trainer as dit
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    for name, ns in (
+        ("diffusers", types.SimpleNamespace(FlowMatchEulerDiscreteScheduler = object)),
+        ("diffusers.optimization", types.SimpleNamespace(get_scheduler = object)),
+        ("diffusers.training_utils", types.SimpleNamespace(cast_training_params = object)),
+        ("peft", types.SimpleNamespace(LoraConfig = object)),
+        ("peft.utils", types.SimpleNamespace(get_peft_model_state_dict = object)),
+    ):
+        monkeypatch.setitem(sys.modules, name, ns)
+    monkeypatch.setattr("loggers.config.quiet_third_party_progress_bars", lambda: None)
+    monkeypatch.setattr(dit, "plan_image_canvases", lambda *_a: (None, False))
+    monkeypatch.setattr(dit, "_plan_cache_variants", lambda *_a, **_k: object())
+    monkeypatch.setattr(dit, "_free_text_encoders", lambda *_a: None)
+    monkeypatch.setattr(
+        dit, "_encode_prompts_cached", lambda _s, _p, texts, *_a: [object() for _ in texts]
+    )
+    monkeypatch.setattr(dit, "_resolve_base_precision", lambda *_a: "bf16")
+    monkeypatch.setattr(dit, "isolated_sampling", lambda *_a: contextlib.nullcontext())
+    monkeypatch.setattr(dit, "_build_latent_cache", lambda *_a, **_k: [object()])
+    monkeypatch.setattr(dit, "plan_samples", lambda *_a: types.SimpleNamespace(encode_texts = ["p"]))
+    monkeypatch.setattr("core.training.diffusion_train_extras.source_revision", lambda *_a: "local")
+    monkeypatch.setattr(dit, "PersistentConditioningCache", lambda *_a: object())
+    monkeypatch.setattr(
+        dit,
+        "_load_warm_conditioning",
+        lambda *_a: ({"caption": object()}, [object()]) if warm else (None, None),
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_LATENT_CACHE", raising = False)
+    guarded = []
+    monkeypatch.setattr(dit, "_guard_vae_attention", lambda v: guarded.append(v) or 1)
+
+    class _Stop(Exception):
+        pass
+
+    def stop(*_a):
+        raise _Stop
+
+    vae = types.SimpleNamespace(to = lambda *_a: None)
+    spec = types.SimpleNamespace(
+        family = "flux.1",
+        lora_targets = ("to_q",),
+        decode_latents = True,
+        load_conditioners = lambda *_a: (types.SimpleNamespace(), vae),
+        load_transformer = stop,
+    )
+    cfg = DiffusionLoraConfig(
+        base_model = "unsloth/FLUX.1-dev",
+        data_dir = str(tmp_path),
+        output_dir = str(tmp_path / "out"),
+        cache_latents = True,
+        cond_cache_dir = str(tmp_path / "cache"),
+    )
+    with pytest.raises(_Stop):
+        dit._train_dit(
+            cfg,
+            spec,
+            [(str(tmp_path / "image.png"), "caption")],
+            random.Random(0),
+            "cpu",
+            None,
+            lambda *_a: None,
+            lambda: False,
+            lambda: True,
+            None,
+        )
+    assert guarded and all(v is vae for v in guarded)
