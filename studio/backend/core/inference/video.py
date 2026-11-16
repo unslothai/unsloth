@@ -501,6 +501,18 @@ def assert_video_precision_available(
     refuse_disabled_nvfp4(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
     )
+    if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
+        # Every precision (unset included) lands on the released weights on a GPU without bf16: refuse a host that
+        # cannot hold them here, before the eviction and the pull.
+        with diffusion_device_scope(gpu_ordinal):
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            shortfall = h3_fp16_host_shortfall(fam, target, model_kind = model_kind)
+        if shortfall is not None:
+            raise RuntimeError(shortfall)
     if precision_fallback_allowed():
         return
     pinned = normalize_transformer_quant(transformer_quant)
@@ -867,6 +879,43 @@ def _h3_hosted_fp8_native(fam: Any, target: Any, scheme: Optional[str]) -> bool:
     from .video_minimax_h3_native_quant import h3_hosted_fp8_native
 
     return h3_hosted_fp8_native(target)
+
+
+def h3_fp16_host_shortfall(fam: Any, target: Any, *, model_kind: str) -> Optional[str]:
+    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bfloat16, else None. There the hosted INT8 /
+    FP8 parts never engage (``_h3_auto_precision_ok``), so every precision lands on the released bf16 components,
+    promoted to float32, all of which the offload rotation keeps in host RAM. Refused before the eviction and the pull
+    instead of downloading 144 GB and exhausting host RAM. Never raises; unreadable sizes or RAM refuse nothing."""
+    try:
+        import torch
+
+        if getattr(fam, "name", None) != "minimax-h3" or model_kind != "pipeline":
+            return None
+        if (
+            getattr(target, "device", None) != "cuda"
+            or getattr(target, "dtype", None) is not torch.float16
+        ):
+            return None
+        sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
+        if len(sizes) != 3:
+            return None
+        scale = 2.0 if fp16_promotes_to_fp32(fam) else 1.0
+        need_gb = sum(sizes) * scale
+        from .diffusion_memory import _host_ram_capacity_mib
+
+        host_mib = _host_ram_capacity_mib()
+        if not host_mib or need_gb * 1e9 <= host_mib * 1048576:
+            return None
+    except Exception:  # noqa: BLE001 -- a probe must never refuse a load it cannot size
+        return None
+    dtype = "float32" if scale == 2.0 else "float16"
+    return (
+        f"{getattr(fam, 'label', None) or 'MiniMax-H3'} cannot load on this GPU: it has no native bfloat16, so the "
+        f"hosted INT8 / FP8 weights cannot run here and every precision falls back to the released weights in "
+        f"{dtype}, about {need_gb:.0f} GB (denoiser {sizes[0] * scale:.1f}, text encoder {sizes[1] * scale:.1f}, "
+        f"VAEs {sizes[2] * scale:.1f}) that must sit in system RAM, which has {host_mib / 953.674:.0f} GB. "
+        "Load the MiniMax-H3 GGUF build instead, or use a bfloat16 GPU (NVIDIA Ampere or newer)."
+    )
 
 
 def _assert_video_precision_for_target(
