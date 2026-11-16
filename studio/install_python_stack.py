@@ -1983,50 +1983,6 @@ def _pick_visible_index(
     return 0
 
 
-_WINDOWS_DISPLAY_CLASS_KEY = (
-    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-)
-
-
-def _windows_amd_gpu_names_from_registry() -> list[str]:
-    """AMD display-adapter names from the driver class key, for hosts whose WMI does not answer."""
-    if not IS_WINDOWS:
-        return []
-    try:
-        import winreg
-    except ImportError:
-        return []
-    names: list[str] = []
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
-            for index in range(winreg.QueryInfoKey(class_key)[0]):
-                try:
-                    subkey = winreg.EnumKey(class_key, index)
-                    if not subkey.isdigit():
-                        continue
-                    with winreg.OpenKey(class_key, subkey) as adapter_key:
-                        try:
-                            matching_id = str(
-                                winreg.QueryValueEx(adapter_key, "MatchingDeviceId")[0]
-                            )
-                        except OSError:
-                            matching_id = ""
-                        try:
-                            description = str(winreg.QueryValueEx(adapter_key, "DriverDesc")[0])
-                        except OSError:
-                            description = ""
-                        if (
-                            "ven_1002" in matching_id.lower()
-                            or re.search(r"amd|radeon", description, re.IGNORECASE)
-                        ) and description:
-                            names.append(description)
-                except OSError:
-                    continue
-    except Exception:
-        return []
-    return names
-
-
 def _detect_windows_gfx_arch() -> str | None:
     """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
@@ -2164,7 +2120,6 @@ def _detect_windows_gfx_arch() -> str | None:
 
     # Last resort: GPU name via WMI -> arch table (mirrors setup.ps1's $nameArchTable) for driver-only
     # hosts. Only AMD adapters with ConfigManagerErrorCode 0, as setup.ps1 filters $wmiGpus.
-    _wmi_answered = False
     try:
         result = subprocess.run(
             [
@@ -2182,7 +2137,6 @@ def _detect_windows_gfx_arch() -> str | None:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
-            _wmi_answered = True
             # Lines are "<name>|<ConfigManagerErrorCode>"; a bare name counts as healthy.
             _all_names, _healthy = [], []
             for _line in result.stdout.decode(errors = "replace").splitlines():
@@ -2251,25 +2205,6 @@ def _detect_windows_gfx_arch() -> str | None:
                     )
     except Exception:
         pass
-
-    # Only when WMI did not answer: class keys outlive removed hardware, so a working WMI that lists no
-    # AMD adapter must not be overruled by a stale one.
-    if _wmi_answered:
-        return None
-    _registry_names = _windows_amd_gpu_names_from_registry()
-    if not _registry_names:
-        return None
-    _registry_tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _registry_names) if _a]
-    # Mask indexes the adapter list, as in the WMI path; borrow another adapter's arch only unpinned.
-    if _visible_devices_pinned():
-        _registry_pick = _gfx_arch_from_gpu_name(
-            _registry_names[_pick_visible_index(len(_registry_names), warn = False)]
-        )
-    else:
-        _registry_pick = _dedup_pick(_registry_tokens, warn = False)
-    if _registry_pick:
-        _safe_print(f"   gfx arch inferred from GPU registry: {_registry_pick}")
-        return _registry_pick
     return None
 
 
