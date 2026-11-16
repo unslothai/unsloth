@@ -262,7 +262,8 @@ def _pending_messages(
     elif revision in transcript.earlier:
         ends = transcript.earlier[revision]
         pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
-    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+    # ":images" is the newest reader; a revert to an image-free point drops back to ":items".
+    elif revision.partition(":")[2] not in (transcript.revision.partition(":")[2], "images"):
         pending = _reread_messages(transcript, turns, revision, stored)
     else:
         pending = transcript.messages[transcript.inherited :]

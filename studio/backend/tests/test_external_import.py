@@ -1229,6 +1229,37 @@ def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
     assert run_import(codex.SOURCE).messages == 1
 
 
+def test_codex_revert_past_every_image_leaves_a_deleted_turn_deleted(codex_home):
+    body = [
+        _completed("UserMessage", "Hello"),
+        _completed("AgentMessage", "Hi"),
+        *_pasted(""),
+        _completed("AgentMessage", "Blue"),
+    ]
+    _rollout(codex_home, sid = "img", history_mode = "paginated", body = body)
+    assert run_import(codex.SOURCE).messages == 4
+    tid = thread_id_for(codex.SOURCE, "img")
+    kept = [m for m in _messages(codex.SOURCE, "img") if m["content"][0].get("text") != "Hi"]
+    studio_db.sync_chat_messages(tid, kept, prune_missing = True)
+
+    meta = {
+        "id": "img",
+        "cwd": "/Users/me/app",
+        "history_mode": "paginated",
+        "history_base": {"thread_id": "img", "end_ordinal_exclusive": 5},
+    }
+    _write(
+        codex_home / "sessions" / "2026" / "09" / "22" / "rollout-2026-09-22T12-00-01-img_r2.jsonl",
+        [
+            {**x_line("session_meta", meta), "ordinal": 5},
+            {**_completed("UserMessage", "Try again"), "ordinal": 6},
+        ],
+    )
+    assert run_import(codex.SOURCE).messages == 1
+    texts = [m["content"][-1].get("text") for m in _messages(codex.SOURCE, "img")]
+    assert "Try again" in texts and "Hi" not in texts
+
+
 def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
     base = _paginated_rollout(codex_home)
     meta = {
