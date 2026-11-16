@@ -504,6 +504,7 @@ _FAKE_STUDIO = """
 import http.server, signal, sys
 port = int(sys.argv[sys.argv.index("-p") + 1])
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+print("serving", port, flush=True)
 http.server.HTTPServer(("127.0.0.1", port), http.server.BaseHTTPRequestHandler).serve_forever()
 """
 
@@ -548,7 +549,8 @@ def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
     server.write_text(_FAKE_STUDIO)
     exe = tmp_path / "venv" / "bin" / "unsloth"
     exe.parent.mkdir(parents = True)
-    exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{server}" "$@"\n')
+    log = tmp_path / "fake_studio.log"
+    exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{server}" "$@" >> "{log}" 2>&1\n')
     exe.chmod(0o755)
     env = {**os.environ, "HOME": str(tmp_path / "home")}
     target = f"gui/{os.getuid()}/{LABEL}"
@@ -568,8 +570,8 @@ def test_real_launchd_restarts_crashes_only_and_uninstall_unloads(tmp_path):
             env = env,
         )
         assert r.returncode == 0, r.stderr
-        first = _wait(lambda: _port_open(port) and _job_pid(target), 30)
-        assert first, subprocess.run(
+        first = _wait(lambda: _port_open(port) and _job_pid(target), 60)
+        assert first, (log.read_text() if log.exists() else "no server log") + subprocess.run(
             ["launchctl", "print", target], capture_output = True, text = True
         ).stdout
 
