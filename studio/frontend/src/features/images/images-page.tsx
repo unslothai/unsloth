@@ -275,6 +275,7 @@ import {
   familyPresetsCopy,
   familyPresetsWithin,
   inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
   resolveEditSize,
   restoreInputsNote,
@@ -6910,7 +6911,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
