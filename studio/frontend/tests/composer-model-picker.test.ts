@@ -324,7 +324,7 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
   );
   assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
   // A load seen in flight is fresh: collapsed, whatever was stored for that model.
-  assert.match(picker, /if \(modelLoading\) \{\s+sawLoad\.current = true;/);
+  assert.match(picker, /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/);
   assert.match(
     picker,
     /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
@@ -1558,9 +1558,14 @@ test("run settings keep Back and the title pinned, as the Library header", () =>
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /el\.querySelector<HTMLElement>\("\[data-config-header-row\]"\)/);
+  assert.match(
+    picker,
+    /el\.querySelector<HTMLElement>\("\[data-config-header-row\]"\)/,
+  );
   assert.match(picker, /el\.dataset\.headerStuck = "";/);
-  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  );
   // The eyebrow sits outside the sticky row, so it scrolls away instead of collapsing; neither is
   // wrapped, since a sticky row only sticks within its parent (here, the whole page).
   assert.match(
@@ -1568,10 +1573,41 @@ test("run settings keep Back and the title pinned, as the Library header", () =>
     /<>\s*<div\s+data-config-eyebrow=""[\s\S]*?Run settings\s*<\/div>\s*<div\s+data-config-header=""\s+data-config-header-row=""\s+className="mt-1\.5 flex items-center gap-2\.5 pb-5"\s*>/,
   );
   const css = readSrc("index.css");
-  assert.match(css, /\.composer-run-settings \[data-config-header-row\] \{\s*position: sticky;\s*top: calc\(var\(--run-settings-stick-at\) - var\(--run-settings-pad-y\)\);/);
-  assert.match(css, /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/);
+  assert.match(
+    css,
+    /\.composer-run-settings \[data-config-header-row\] \{\s*position: sticky;\s*top: calc\(var\(--run-settings-stick-at\) - var\(--run-settings-pad-y\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/,
+  );
   // Back keeps its centred spot at rest and only slides level with the title once pinned.
-  assert.match(css, /\[data-config-header-row\] > button:first-child \{\s*transform: translateY\(calc\(-0\.5 \* \(var\(--config-eyebrow-h\) \+ var\(--config-header-gap\)\)\)\);/);
-  assert.match(css, /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\] > button:first-child \{\s*transform: none;/);
+  assert.match(
+    css,
+    /\[data-config-header-row\] > button:first-child \{\s*transform: translateY\(calc\(-0\.5 \* \(var\(--config-eyebrow-h\) \+ var\(--config-header-gap\)\)\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\] > button:first-child \{\s*transform: none;/,
+  );
   assert.doesNotMatch(css, /\[data-scrolled\] \[data-config-eyebrow\]/);
+});
+
+test("a cancelled or failed eject keeps the expand choice; only a real load starts collapsed", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // modelLoading also runs for unloads, so a fresh load needs the load pick that only loads set.
+  assert.match(
+    picker,
+    /const loadPicked = useChatRuntimeStore\(\(s\) => s\.loadingModelPick !== null\);/,
+  );
+  assert.match(
+    picker,
+    /const loadingFresh = pane \? modelLoading : modelLoading && loadPicked;/,
+  );
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
+  );
 });

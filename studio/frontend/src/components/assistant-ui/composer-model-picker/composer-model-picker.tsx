@@ -2753,9 +2753,15 @@ export function ComposerModelPicker({
   const residentKey =
     chosenLoaded && checkpoint ? `${checkpoint}\n${activeVariant ?? ""}` : null;
   const sawLoad = useRef(false);
+  // modelLoading also covers unloads, and an eject cancelled at its confirmation (or a failed one)
+  // must keep the choice: only a cycle that carried a load pick is a fresh load. Panes only load.
+  const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
+  const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
   useEffect(() => {
     if (modelLoading) {
-      sawLoad.current = true;
+      if (loadingFresh) {
+        sawLoad.current = true;
+      }
       return;
     }
     const fresh = sawLoad.current;
@@ -2773,7 +2779,7 @@ export function ComposerModelPicker({
       writeModelExpanded(prev, null);
       setExpanded(true);
     }
-  }, [residentKey, modelLoading, checkpoint, setExpanded]);
+  }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
