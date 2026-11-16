@@ -1486,25 +1486,19 @@ def _precheck_band(
                 setattr(obj, _LONG_BAND_ATTR, False)
 
 
-# transformers hands a layer a mask tensor for a padded micro batch and None for an unpadded one (a pure
-# causal 4D mask or an all-ones 2D padding mask is dropped), and dynamo guards on which: every block kind
-# compiled a second graph per grad mode mid run (gemma-4 / Qwen3.5 vision: 6-147 s stalls). Once a layer
-# has seen a mask tensor, a None mask is rebuilt in that layout (4D: causal, or all True for a
-# bidirectional layer; 2D: all ones), the same attention SDPA computes for None, so both run one graph.
+# transformers drops the mask (None) for unpadded micro batches and dynamo guards on mask vs None, so
+# each flip recompiles. Once a layer has seen a mask, rebuild None in that layout (same SDPA result).
 _MASK_KWARG = "attention_mask"
 _MASK_SPEC = "_unsloth_block_mask_spec"
 _MASK_FLAGS = "_unsloth_block_mask_flags"
 _MATERIALISED_ATTR = "_unsloth_block_materialised"
 _MASK_FLAG_ATTRS = ("_unsloth_block_band", _PLAIN_CAUSAL_ATTR, _LONG_BAND_ATTR)
-# Last rebuilt mask (key, tensor): the layers of one forward and their recomputes share it. Kept between
-# steps only up to this size; a larger one is held weakly (rebuilt per layer once freed).
+# Shared rebuilt mask; held strongly only up to this size.
 _MATERIALISED = [None]
 _MATERIALISED_KEEP_BYTES = 1 << 28
 
 
 def _mask_layout(mask, seq_len):
-    """(dim, dtype, heads, broadcast dims, view) of a self-attention mask over seq_len this module can rebuild,
-    else None."""
     if not isinstance(mask, torch.Tensor) or mask.requires_grad or mask.is_floating_point():
         return None
     if mask.is_inference() or getattr(mask, "is_nested", False) or mask.shape[-1] != seq_len:
@@ -1517,7 +1511,6 @@ def _mask_layout(mask, seq_len):
         return None
     shape, stride = mask.shape, mask.stride()
     broadcast = tuple(i for i in range(mask.dim()) if stride[i] == 0 and shape[i] > 1)
-    # Rebuilt masks are contiguous outside the broadcast dims: only take that layout.
     expected, step = [0] * mask.dim(), 1
     for i in reversed(range(mask.dim())):
         if i in broadcast:
@@ -1526,8 +1519,7 @@ def _mask_layout(mask, seq_len):
         step *= shape[i]
     if any(shape[i] > 1 and stride[i] != expected[i] for i in range(mask.dim())):
         return None
-    # Dynamo also guards a view's base (transformers expands its 4D mask, slices its 2D one): rebuild a
-    # view of a contiguous base only when the mask is one, over the same stored shape.
+    # Dynamo also guards a view's base (transformers expands/slices its masks).
     view = mask._base is not None
     if view:
         base = mask._base
@@ -1540,7 +1532,6 @@ def _mask_layout(mask, seq_len):
 
 
 def _layer_is_causal(layer):
-    """The layer's attention is_causal flag (what SDPA applies for a None mask); None when unknown."""
     attn = getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
     causal = getattr(attn, "is_causal", None)
     return causal if isinstance(causal, bool) else None
@@ -1564,7 +1555,6 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
         mask = torch.empty(stored, dtype = torch.bool, device = device)
         mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
     else:
-        # All ones (2D padding, or a bidirectional 4D mask) in the stored shape, broadcast dims kept at 1.
         mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
     if view:
         mask = mask.expand(full)
@@ -1575,7 +1565,6 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
 
 
 def _normalise_mask(layer, hidden_states, kwargs):
-    """Returns kwargs with a None mask rebuilt in the layout this layer last saw (only after it saw one)."""
     if _MASK_KWARG not in kwargs or hidden_states.dim() != 3:
         return kwargs
     mask = kwargs[_MASK_KWARG]
@@ -1588,7 +1577,6 @@ def _normalise_mask(layer, hidden_states, kwargs):
                 layer.__dict__.pop(_MASK_SPEC, None)
         return kwargs
     layout = layer.__dict__.get(_MASK_SPEC)
-    # A per-call is_causal override decides what None means: leave it to the attention.
     if layout is None or kwargs.get("is_causal") is not None:
         return kwargs
     causal = _layer_is_causal(layer) if layout[0] == 4 else None
@@ -1601,8 +1589,7 @@ def _normalise_mask(layer, hidden_states, kwargs):
 
 
 def _settle_mask_flags(layer, kwargs):
-    """After _precheck_band: a rebuilt mask keeps a fast-path flag only where the layer's last real mask had
-    it too (dynamo guards on these flags; a flag off just keeps masked SDPA, which is always correct)."""
+    # Dynamo guards on fast-path flags: keep one only where the last real mask had it.
     mask = kwargs.get(_MASK_KWARG)
     if not isinstance(mask, torch.Tensor):
         return

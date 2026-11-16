@@ -175,8 +175,7 @@ def _padded_mask(
 
 @pytest.mark.parametrize("causal", [True, False], ids = ["causal", "bidirectional"])
 def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
-    """gemma-4 / Qwen3.5 vision: a padded micro batch hands the layer a mask, an unpadded one None; each
-    flip compiled a new graph per block kind and grad mode mid run (6-147 s stalls)."""
+    """Padded vs unpadded micro batches must not flip mask/None and recompile."""
     M = _load()
     counter = _compile_counter(monkeypatch)
     M._wrap(_MaskDecoderLayer, {})
@@ -199,7 +198,7 @@ def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
     step([16, 12], 16, True)
     step([20, 17], 20, True)
     before = counter.frame_count
-    step([24, 24], 24, False)  # unpadded: transformers passes None
+    step([24, 24], 24, False)
     step([18, 9], 18, True)
     step([14, 14], 14, False)
     extra = counter.frame_count - before
@@ -208,16 +207,13 @@ def test_unpadded_batch_reuses_the_masked_graph(monkeypatch, causal):
 
 
 def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
-    """Batch size 1 / never padded: None stays None (is_causal SDPA keeps its fast kernel)."""
     M = _load()
     layer = _MaskDecoderLayer().train()
     hidden = torch.zeros(2, 6, 8)
     assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
-    # Unknown attention direction: a 4D mask is not guessed.
     layer.self_attn = types.SimpleNamespace()
     M._normalise_mask(layer, hidden, {"attention_mask": _padded_mask([6, 4], 6)})
     assert M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"] is None
-    # 2D padding masks (GDN / linear attention) rebuild as all ones in the same dtype.
     M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
     rebuilt = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
     assert rebuilt.dtype == torch.long and rebuilt.shape == (2, 6) and bool((rebuilt == 1).all())
@@ -233,7 +229,6 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
     assert (
         M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]._base is None
     )
-    # A padding-only (B, 1, 1, L) mask expanded over queries: all True when bidirectional, kept None when causal.
     padding = torch.tensor([[True] * 6, [True] * 4 + [False] * 2])[:, None, None, :].clone()
     for causal, want in ((False, torch.ones(2, 1, 6, 6, dtype = torch.bool)), (True, None)):
         layer = _MaskDecoderLayer().train()
@@ -252,14 +247,12 @@ def test_mask_rebuilt_only_after_a_mask_was_seen(monkeypatch):
     assert rebuilt._base is None and torch.equal(
         rebuilt, torch.ones(6, 6, dtype = torch.bool).tril()[None, None]
     )
-    # A per-call is_causal override keeps None (the module attribute does not decide then).
     assert (
         M._normalise_mask(layer, one, {"attention_mask": None, "is_causal": False})[
             "attention_mask"
         ]
         is None
     )
-    # A token-broadcast 2D mask rebuilds as all ones in that layout.
     layer = _MaskDecoderLayer().train()
     M._MATERIALISED[0] = None
     M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1], [0]]).expand(2, 6)})
