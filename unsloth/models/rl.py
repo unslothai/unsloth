@@ -5017,9 +5017,16 @@ def _packing_honored(
     training = [(module, module.training) for module in backbone.modules()]
     # Train mode as in the trainer (gpt-oss differs), dropout off for a deterministic compare.
     backbone.train()
+    rates = []
     for module in backbone.modules():
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):
             module.training = False
+        # Functional attention dropout (`dropout_p = self.attention_dropout if self.training`).
+        for attr in ("attention_dropout", "dropout"):
+            value = getattr(module, attr, None)
+            if type(value) is float and value > 0:
+                rates.append((module, attr, value))
+                setattr(module, attr, 0.0)
 
     def hidden(input_ids, position_ids, lengths):
         extra = {}
@@ -5048,6 +5055,8 @@ def _packing_honored(
     finally:
         for module, mode in training:
             module.training = mode
+        for module, attr, value in rates:
+            setattr(module, attr, value)
     leak = (packed - alone).abs().mean()
     control = (crossed - alone).abs().mean()
     return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)

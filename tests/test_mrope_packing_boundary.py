@@ -225,6 +225,18 @@ def test_remote_code_that_mixes_documents_falls_back_to_padded_rows(packing):
     assert not trainer.args.padding_free and not trainer.args.packing
 
 
+def test_probe_ignores_functional_attention_dropout():
+    model = _qwen_vl("qwen3_vl")
+    attention = [
+        m for m in model.modules() if isinstance(getattr(m, "attention_dropout", None), float)
+    ]
+    assert attention
+    for module in attention:
+        module.attention_dropout = 0.5
+    assert trainer_module._packed_rows_verdict(model, model.config) == "as_is"
+    assert all(module.attention_dropout == 0.5 for module in attention)
+
+
 def test_probe_runs_once_and_not_when_packing_is_off(monkeypatch):
     import unsloth.models.rl as rl
 
