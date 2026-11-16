@@ -6150,6 +6150,31 @@ def _probe_torchvision_binary(
         ) from error
 
 
+def _torch_in_torchvision_declared_range(torch_version_raw):
+    """True when the installed torchvision's metadata declares a torch range (not only an exact == pin)
+    that contains the installed torch. Exact pins stay with the table / formula below."""
+    try:
+        from packaging.requirements import Requirement
+        requires = importlib_distribution("torchvision").requires or []
+        torch_v = TrueVersion(str(torch_version_raw))
+    except Exception:
+        return False
+    for line in requires:
+        try:
+            requirement = Requirement(line)
+        except Exception:
+            continue
+        if requirement.name.lower() != "torch":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        specifiers = list(requirement.specifier)
+        if not specifiers or all(s.operator in ("==", "===") for s in specifiers):
+            return False
+        return requirement.specifier.contains(torch_v, prereleases = True)
+    return False
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -6181,6 +6206,11 @@ def torchvision_compatibility_check():
         (2, 5): (0, 20),
         (2, 4): (0, 19),
     }
+
+    # torchvision 0.29.1+ declares a torch range, not an exact pin, which the minor formula below would refuse.
+    if _torch_in_torchvision_declared_range(torch_version_raw):
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, tv_v.release[:3])
+        return
 
     torch_release = torch_v.release
     if len(torch_release) < 2:
@@ -13404,6 +13434,44 @@ def fix_transformers_longcat_lsa_config():
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
+
+
+def fix_transformers_deepseek_v41_native():
+    """On AutoConfig's unknown-architecture error for deepseek_v41, register the native implementation and retry."""
+    try:
+        import importlib.util
+        from transformers import AutoConfig
+    except Exception:
+        return
+    try:
+        if importlib.util.find_spec("transformers.models.deepseek_v41") is not None:
+            return
+    except Exception:
+        pass
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_deepseek_v41", False):
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except (ValueError, KeyError) as error:
+            if "deepseek_v41" not in str(error):
+                raise
+            from .models.deepseek_v41 import register_deepseek_v41
+
+            if register_deepseek_v41() is None:
+                raise
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_deepseek_v41 = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: deepseek_v41 configs load on Unsloth's native DeepSeek-V4.1 implementation."
         )
 
 

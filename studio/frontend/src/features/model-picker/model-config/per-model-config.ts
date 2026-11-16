@@ -213,7 +213,7 @@ export function presetLoadSettingNames(
   chatOnlyReason?: string | null,
 ): string {
   if (isGguf) {
-    return "context length, KV cache dtype, speculative decoding, GPU layers";
+    return "context window, KV cache dtype, speculative decoding, GPU layers";
   }
   return isServedByMlx(isGguf, deviceType, chatOnlyReason)
     ? "max seq length, KV cache dtype"
