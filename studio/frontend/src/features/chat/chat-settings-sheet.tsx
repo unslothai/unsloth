@@ -113,6 +113,7 @@ import {
 } from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
+  externalMaxTokensCapSettled,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   modelCatalogVersion,
@@ -121,6 +122,7 @@ import {
   resolveExternalMaxTokensClamp,
   subscribeModelCatalog,
 } from "./provider-capabilities";
+import { refreshServedContextWindow } from "./served-window-refresh";
 import {
   isLocalModelPath,
   useChatRuntimeStore,
@@ -831,11 +833,15 @@ export function ChatSettingsPanel({
     activeExternalProvider?.enablePromptCaching !== false;
   // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
+  useEffect(() => {
+    refreshServedContextWindow(activeExternalProvider, externalSelection?.modelId);
+  }, [activeExternalProvider, externalSelection?.modelId]);
   const maxTokensMax = isExternalModel
     ? getExternalMaxOutputTokens(
         externalProviderType,
         externalSelection?.modelId,
         activeExternalProvider?.maxOutputTokens,
+        activeExternalProvider?.id,
       )
     : localMaxTokensCeiling(baseContext, params.maxSeqLength);
   const showOpenAICodeExecSection =
@@ -876,6 +882,8 @@ export function ChatSettingsPanel({
   }
 
   const setSeed = set("seed");
+  // A render value, so the clamp re-runs when the window listing lands even if the cap is unchanged.
+  const maxTokensCapSettled = externalMaxTokensCapSettled(activeExternalProvider);
 
   useEffect(() => {
     const clampedMaxTokens = resolveExternalMaxTokensClamp({
@@ -884,6 +892,7 @@ export function ChatSettingsPanel({
       isExternalModel,
       maxTokens: params.maxTokens,
       maxTokensMax,
+      capSettled: maxTokensCapSettled,
     });
     if (clampedMaxTokens == null) {
       return;
@@ -900,6 +909,7 @@ export function ChatSettingsPanel({
     activePresetBaseline,
     isExternalModel,
     maxTokensMax,
+    maxTokensCapSettled,
     setParams,
     params,
     settingsHydrated,

@@ -255,49 +255,50 @@ export function setProviderModelCatalog(
   notifyCatalogChange();
 }
 
-/** Merge context windows advertised by an OpenAI-compatible /models endpoint into the live catalog. */
-export function learnProviderModelContextLengths(
-  providerType: string,
+// Not LIVE_CATALOG (would shadow snapshot reasoning, feed compaction); not persisted: a restarted
+// server's stale window would stick, since the Max Tokens clamp only lowers.
+const servedWindows = new Map<string, { endpoint: string; windows: Record<string, number> }>();
+
+/** Replaces a connection's windows with what its server lists now. */
+export function learnServedContextWindows(
+  connectionId: string | null | undefined,
   models: readonly ProviderModelInfo[],
-  fetchedAt: number = Date.now(),
+  baseUrl: string,
 ): void {
-  const normalizedProvider = providerType.trim().toLowerCase();
-  if (!normalizedProvider) return;
-  hydrateLiveCatalog();
-  const current = LIVE_CATALOG.get(normalizedProvider);
-  const entries: Record<string, ModelCatalogEntry> = {
-    ...(current?.models ?? {}),
-  };
-  let changed = false;
+  if (!connectionId) return;
+  const windows: Record<string, number> = {};
   for (const model of models) {
     const id = model.id?.trim().toLowerCase();
-    const contextLength =
-      typeof model.context_length === "number" &&
-      Number.isFinite(model.context_length) &&
-      model.context_length > 0
-        ? Math.floor(model.context_length)
-        : null;
-    if (!id || contextLength === null) continue;
-    const previous = entries[id];
-    if (previous?.contextLength === contextLength) continue;
-    entries[id] = {
-      reasoning: previous?.reasoning ?? false,
-      efforts: previous?.efforts ?? [],
-      mandatory: previous?.mandatory ?? false,
-      defaultEffort: previous?.defaultEffort ?? null,
-      inputModalities: previous?.inputModalities ?? null,
-      maxOutputTokens: previous?.maxOutputTokens ?? null,
-      contextLength,
-    };
-    changed = true;
+    const served = model.served_context_window;
+    if (!id || typeof served !== "number" || !Number.isFinite(served) || served <= 0) continue;
+    windows[id] = Math.floor(served);
   }
-  if (!changed) return;
-  LIVE_CATALOG.set(normalizedProvider, {
-    fetchedAt: current?.fetchedAt ?? fetchedAt,
-    models: entries,
-  });
-  persistLiveCatalog();
-  notifyCatalogChange();
+  const previous = servedWindows.get(connectionId);
+  servedWindows.set(connectionId, { endpoint: baseUrl, windows });
+  // A first or moved listing settles the cap even when it reports no windows.
+  if (
+    previous?.endpoint !== baseUrl ||
+    JSON.stringify(windows) !== JSON.stringify(previous.windows)
+  ) {
+    notifyCatalogChange();
+  }
+}
+
+export function forgetServedContextWindows(connectionId: string): void {
+  if (servedWindows.delete(connectionId)) notifyCatalogChange();
+}
+
+export function servedWindowsListedFrom(connectionId: string): string | undefined {
+  return servedWindows.get(connectionId)?.endpoint;
+}
+
+export function servedContextWindow(
+  connectionId: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  const id = modelId?.trim().toLowerCase();
+  if (!connectionId || !id) return null;
+  return servedWindows.get(connectionId)?.windows[id] ?? null;
 }
 
 export function clearProviderModelCatalog(providerType: string): void {

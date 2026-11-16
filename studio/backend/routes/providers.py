@@ -48,6 +48,7 @@ from core.inference.external_provider import (
     _CATALOG_WINDOW_PROVIDERS,
     _SERVED_WINDOW_PROVIDERS,
     ExternalProviderClient,
+    served_window_from_listing,
 )
 
 from core.inference import openai_codex_auth, openai_codex_client
@@ -1613,6 +1614,7 @@ async def list_provider_models(
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
                 capabilities = _model_capability_names(m),
+                served_context_window = served_window_from_listing(payload.provider_type, m),
             )
             for m in models
         ]

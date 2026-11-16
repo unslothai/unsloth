@@ -98,7 +98,7 @@ import {
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
-import { learnProviderModelContextLengths } from "./model-catalog";
+import { learnServedContextWindows } from "./model-catalog";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -1042,8 +1042,11 @@ export function ChatProvidersSettings({
       if (!owned()) return null;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
-      learnProviderModelContextLengths(providerType, models);
       learnModelDisplayNames(providerType, models);
+      // A draft Base URL is not the saved server; its window waits for Save and the next listing.
+      if ((baseUrl ?? "") === (editingProvider?.baseUrl ?? "")) {
+        learnServedContextWindows(editingProviderId, models, editingProvider?.baseUrl ?? "");
+      }
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : liveModelSeeds(
