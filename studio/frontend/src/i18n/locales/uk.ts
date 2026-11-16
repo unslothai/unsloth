@@ -4710,7 +4710,7 @@ export const uk = {
       useEpochs: "Використовувати епохи",
       maxStepsTooltip: "Перевизначити загальну кількість кроків оптимізатора.",
       epochsTooltip: "Кількість повних проходів набором даних.",
-      contextLength: "Довжина контексту",
+      contextLength: "Контекст",
       contextLengthTooltip:
         "Максимальна кількість токенів в одному зразку для навчання.",
       customContextLength: "Введіть власне значення",
@@ -5027,7 +5027,7 @@ export const uk = {
       learningRate: "Швидкість навчання",
       optimizer: "Оптимізатор",
       maxSteps: "Макс. кроків",
-      contextLength: "Довжина контексту",
+      contextLength: "Контекст",
       warmupSteps: "Кроки розігріву",
       rank: "Ранг",
       alpha: "Альфа",

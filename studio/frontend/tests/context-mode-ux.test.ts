@@ -18,7 +18,7 @@ const panel = readFileSync(
 );
 const panelCode = panel.replace(/\s+/g, " ");
 
-test("the far-left slider position is Auto", () => {
+test("the far-right slider position is Auto, a full bar", () => {
   assert.match(
     panelCode,
     /const contextIsAuto = config\.customContextLength == null;/,
@@ -27,19 +27,23 @@ test("the far-left slider position is Auto", () => {
     panelCode,
     /<GgufContextLengthSetting value=\{contextIsAuto \? 0 : contextValue\}/,
   );
-  assert.match(panelCode, /<Slider min=\{0\}/);
+  assert.match(panelCode, /<Slider min=\{min\} max=\{max\}/);
+  // Auto (0) sits at max on the slider; within one step of max is the max position.
+  assert.match(panelCode, /const toSlider = \(v: number\) => \(v === 0 \? max : v\);/);
+  assert.match(panelCode, /const isMaxPosition = \(v: number\) => v > max - CONTEXT_SLIDER_STEP;/);
   assert.match(panelCode, /customContextLength: v === 0 \? null : v/);
-  assert.match(panelCode, /<span>Auto<\/span>/);
+  // The value box names Auto; the slider shares its row.
+  assert.match(panelCode, /displayValue=\{isAuto \? "Auto" : undefined\}/);
 });
 
-test("moving right or typing a number creates a custom context", () => {
+test("moving left or typing a number creates a custom context", () => {
   assert.match(
     panelCode,
     /onChange=\{\(v\) => update\(\{ customContextLength: v === 0 \? null : v \}\)\}/,
   );
   assert.match(
     panelCode,
-    /const \{ draft, sliderProps \} = useSliderDraft\(value, onChange\); const shown = draft \?\? value; const isAuto = shown === 0;/,
+    /useSliderDraft\(toSlider\(value\), \(v\) => onChange\(fromSlider\(v\)\), \); const shown = draft == null \? value : fromSlider\(draft\); const isAuto = shown === 0;/,
   );
   assert.match(
     panelCode,
@@ -59,7 +63,7 @@ test("the Auto number editor opens at the fitted or safe offload context", () =>
 test("the existing info hint owns the mode explanation and fitted result", () => {
   assert.match(
     panelCode,
-    /<InfoHint> Drag all the way left for Auto,[\s\S]*Custom values request an exact context;[\s\S]*Auto currently selected \$\{activeLoadedContext\.toLocaleString\(\)\} tokens\.[\s\S]*<\/InfoHint>/,
+    /<InfoHint> The model&apos;s context window\. Auto \(a full bar\) picks one that fits[\s\S]*the reset button returns to it\. A number requests an exact context window,[\s\S]*Auto currently selected \$\{activeLoadedContext\.toLocaleString\(\)\} tokens\.[\s\S]*<\/InfoHint>/,
   );
   assert.match(
     panelCode,
@@ -69,5 +73,37 @@ test("the existing info hint owns the mode explanation and fitted result", () =>
   assert.doesNotMatch(
     panelCode,
     /<p className="text-ui-11 leading-relaxed text-muted-foreground">/,
+  );
+});
+
+test("once a number is set, the far right is the real maximum and only reset returns to Auto", () => {
+  assert.match(
+    panelCode,
+    /const fromSlider = \(v: number\) => isMaxPosition\(v\) && !\(keyed\.current && v < max\) \? value === 0 \? 0 : max : v;/,
+  );
+  // An off-grid max: a key press down lands within a step of max and must still count as a decrement.
+  assert.match(
+    panelCode,
+    /onKeyDownCapture=\{\(\) => \{ keyed\.current = true; \}\} onPointerDownCapture=\{\(\) => \{ keyed\.current = false; \}\}/,
+  );
+  assert.match(
+    panelCode,
+    /<\/InfoHint> \{isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"[\s\S]*?<\/button> \)\} <\/span>/,
+  );
+});
+
+test("the context slider's left gap counts from the label text, with a tighter right gap", () => {
+  // The hint and reset float in the gap, so only the label text and the value set the slider's spacing.
+  assert.match(
+    panelCode,
+    /<div className="config-row flex min-h-8 items-center"> <div className="relative flex shrink-0 items-center"> <span className=\{LABEL_CLASS\}>Context<\/span> <span className="absolute left-full ml-1\.5 flex items-center gap-1">/,
+  );
+  assert.match(panelCode, /className="ml-12 mr-7 min-w-0 flex-1" aria-label="Context"/);
+});
+
+test("Reset all reads in the same color as Save", () => {
+  assert.doesNotMatch(
+    panelCode,
+    /className="text-muted-foreground" disabled=\{ \(pinnedSet !== null/,
   );
 });

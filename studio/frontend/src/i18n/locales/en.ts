@@ -3074,7 +3074,7 @@ export const en = {
         model:
           "Select a model. Without --model, unsloth start uses the model currently loaded in Unsloth and errors if none is loaded.",
         contextLength:
-          "Set the requested context length (alias: --max-seq-length).",
+          "Set the requested context window (alias: --max-seq-length).",
         ggufVariant: "Choose the GGUF quantization variant.",
         loadIn4bit: "Toggle 4-bit loading for Hugging Face models.",
         tensorParallel: "Toggle tensor-parallel across multiple GPUs.",
@@ -3127,7 +3127,7 @@ export const en = {
         "Override this setting from each chat's attachment menu.",
       rememberParamsPerModelHint:
         "When off, use the same settings for every model.",
-      autoCompactHint: "Local GGUF and MLX chats: evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context length you set, not available VRAM. API models: the provider summarizes older turns where it can, otherwise the oldest turns are dropped as the chat nears the model's published context window.",
+      autoCompactHint: "Local GGUF and MLX chats: evicted turns are indexed so the model can search them back in, and a reset quotes back the standing instructions that fit, word for word, keeping the oldest and newest over the middle. Archiving needs a saved chat and the vector index; without them older turns are dropped. Uses the context window you set, not available VRAM. API models: the provider summarizes older turns where it can, otherwise the oldest turns are dropped as the chat nears the model's published context window.",
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
@@ -4369,7 +4369,7 @@ export const en = {
       useEpochs: "Use Epochs",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
-      contextLength: "Context Length",
+      contextLength: "Context",
       contextLengthTooltip: "Maximum number of tokens per training sample.",
       customContextLength: "Enter a custom value",
       learningRate: "Learning Rate",
@@ -4673,7 +4673,7 @@ export const en = {
       learningRate: "Learning rate",
       optimizer: "Optimizer",
       maxSteps: "Max steps",
-      contextLength: "Context length",
+      contextLength: "Context",
       warmupSteps: "Warmup steps",
       rank: "Rank",
       alpha: "Alpha",

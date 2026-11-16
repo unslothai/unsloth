@@ -4414,7 +4414,7 @@ export const it = {
       maxStepsTooltip:
         "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",
-      contextLength: "Lunghezza di contesto",
+      contextLength: "Contesto",
       contextLengthTooltip:
         "Numero massimo di token per campione di addestramento.",
       customContextLength: "Inserisci un valore personalizzato",
@@ -4731,7 +4731,7 @@ export const it = {
       learningRate: "Tasso di apprendimento",
       optimizer: "Ottimizzatore",
       maxSteps: "Step massimi",
-      contextLength: "Lunghezza di contesto",
+      contextLength: "Contesto",
       warmupSteps: "Step di warmup",
       rank: "Rank",
       alpha: "Alpha",

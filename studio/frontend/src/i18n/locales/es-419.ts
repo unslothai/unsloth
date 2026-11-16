@@ -4741,7 +4741,7 @@ export const es419 = {
       useEpochs: "Usar épocas",
       maxStepsTooltip: "Reemplaza el total de pasos del optimizador.",
       epochsTooltip: "Número de pasadas completas sobre el conjunto de datos.",
-      contextLength: "Longitud de contexto",
+      contextLength: "Contexto",
       contextLengthTooltip:
         "Número máximo de tokens por muestra de entrenamiento.",
       customContextLength: "Ingresa un valor personalizado",
@@ -5069,7 +5069,7 @@ export const es419 = {
       learningRate: "Tasa de aprendizaje",
       optimizer: "Optimizador",
       maxSteps: "Pasos máximos",
-      contextLength: "Longitud de contexto",
+      contextLength: "Contexto",
       warmupSteps: "Pasos de calentamiento",
       rank: "Rango",
       alpha: "Alpha",
