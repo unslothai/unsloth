@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""save_pretrained_gguf on GPT-OSS takes the MXFP4 route, which keeps the packed experts as
-downloaded. With LoRA on the experts that route silently dropped the expert adapter from the
-GGUF, so such a model must be merged to 16-bit instead; attention-only LoRA keeps MXFP4."""
+"""GPT-OSS GGUF: expert LoRA must merge to 16-bit (MXFP4 drops it); attention-only keeps MXFP4."""
 
 import pytest
 
