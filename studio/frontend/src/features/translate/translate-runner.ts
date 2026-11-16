@@ -24,6 +24,7 @@ import {
 } from "@/features/hub/download-manager/download-manager-controller";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import {
   CHAT_TRANSLATE_MODEL,
   type DedicatedTranslateModel,
@@ -200,6 +201,8 @@ async function downloadModel(
       })
       .then(
         (outcome) => {
+          // Stopped during the preflight, before the job existed.
+          if (outcome === "started" && signal.aborted) cancelJob();
           // "conflict" and "busy" are settled in the Hub's download card; "error" already toasted.
           if (outcome !== "started")
             finish(new TranslateRunError("downloadFailed"));
@@ -246,8 +249,14 @@ async function ensureDedicatedModel(
 async function chatModel(signal: AbortSignal): Promise<string> {
   const picked = useChatRuntimeStore.getState().params.checkpoint;
   if (isExternalModelId(picked)) return picked;
-  const status = await getInferenceStatus(signal);
-  if (!status.active_model || status.is_audio || status.is_diffusion) {
+  // The slot serving Chat's pick, which is not the primary under Keep multiple models loaded.
+  const status = await getInferenceStatus(signal, picked || undefined);
+  if (
+    !status.active_model ||
+    status.is_audio ||
+    status.is_diffusion ||
+    isTranslationHeldSlot(status.active_model, picked)
+  ) {
     throw new TranslateRunError("noChatModel");
   }
   return status.active_model;

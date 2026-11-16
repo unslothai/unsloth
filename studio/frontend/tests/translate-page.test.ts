@@ -422,3 +422,15 @@ test("the translation model is fetched by a translation, never by opening the pa
     /runtime === "tts" \|\| runtime === "translate" \? "chat"/,
   );
 });
+
+test("a stopped download and the chat model's own slot are honoured", () => {
+  const runner = readText("../src/features/translate/translate-runner.ts");
+  // Stop during the start's preflight: the job appears only after the store listener is gone.
+  assert.match(
+    runner,
+    /\(outcome\) => \{[\s\S]*?if \(outcome === "started" && signal\.aborted\) cancelJob\(\);/,
+  );
+  const chat = runner.slice(runner.indexOf("async function chatModel"));
+  assert.match(chat, /getInferenceStatus\(signal, picked \|\| undefined\)/);
+  assert.match(chat, /isTranslationHeldSlot\(status\.active_model, picked\)/);
+});
