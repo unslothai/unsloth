@@ -220,8 +220,8 @@ def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_prepared_attention_downcasts_fp32_projections_to_flash_varlen():
     """DoRA's fp32 q/k/v keep flash varlen, not a dense mask over the whole packed row."""
-    if torch.cuda.get_device_capability()[0] < 8:
-        pytest.skip("flash varlen needs sm80+")
+    if torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("flash varlen needs CUDA sm80+")
     calls = []
 
     def backend(gm, example_inputs):
