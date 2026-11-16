@@ -344,7 +344,92 @@ def _case_attention_units(rank, world, tmp):
     return {"error": None}
 
 
-CASES = {"parity": _case_parity, "attention_units": _case_attention_units}
+def _naive_clip(
+    parameters,
+    max_norm,
+    mesh = None,
+    eps = 1e-6,
+):
+    """Fault: every rank's local squares summed over tp, so replicated gradients count once per rank."""
+    import torch.distributed as dist
+
+    params = [p for p in parameters if p.grad is not None]
+    total = torch.zeros(())
+    for p in params:
+        p.grad = tpn._replicate_grad(p.grad)
+        g = p.grad.to_local() if tpn._is_dtensor(p.grad) else p.grad
+        total = total + g.float().square().sum()
+    dist.all_reduce(total)
+    total = total.sqrt()
+    tpn._scale_grads_(params, total, max_norm, eps)
+    return total
+
+
+def _case_trainer(
+    rank,
+    world,
+    tmp,
+    steps = 6,
+    max_grad_norm = 0.05,
+    fault = None,
+):
+    """transformers Trainer (Accelerator hooks, tp clipping, logged grad_norm), one process or tp over world."""
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import Trainer, TrainerCallback, TrainingArguments
+
+    ids, labels = batch(2)
+    rows = [{"input_ids": ids[i], "labels": labels[i]} for i in range(ids.shape[0])]
+    model = build()
+    full = lambda g, p: g
+    tensor_parallel = world > 1
+    if tensor_parallel:
+        mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
+        model = tpn.apply_tensor_parallel(model, mesh)
+        assert tpn.tp_trainer_setup(model, phase = "pre")
+        full = tpn._full
+    if fault == "replicated_norm_per_rank":
+        tpn.tp_clip_grad_norm_ = _naive_clip
+    args = TrainingArguments(
+        output_dir = os.path.join(tmp, f"out{rank}"),
+        per_device_train_batch_size = len(rows),
+        max_steps = steps,
+        learning_rate = 1.0,
+        lr_scheduler_type = "constant",
+        optim = "sgd",  # step size = the clipped norm (Adam would normalize a wrong clip away)
+        max_grad_norm = max_grad_norm,  # below every step's norm: a wrong norm changes every update
+        logging_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        seed = 0,
+        dataloader_num_workers = 0,
+        remove_unused_columns = False,
+    )
+    grads = {}
+
+    class Grab(TrainerCallback):
+        def on_pre_optimizer_step(self, args, state, control, **kw):
+            if state.global_step == 0:
+                grads.update(_lora(model, full))
+
+    trainer = Trainer(model = model, args = args, train_dataset = rows, callbacks = [Grab()])
+    if tensor_parallel:
+        assert tpn.tp_trainer_setup(phase = "post", trainer = trainer)
+    trainer._get_train_sampler = lambda *a, **k: torch.utils.data.SequentialSampler(rows)
+    trainer.train()
+    hist = [h for h in trainer.state.log_history if "loss" in h]
+    return {
+        "losses": [h["loss"] for h in hist],
+        "grad_norms": [h["grad_norm"] for h in hist],
+        "grads": grads,
+    }
+
+
+CASES = {
+    "parity": _case_parity,
+    "attention_units": _case_attention_units,
+    "trainer": _case_trainer,
+}
 
 
 def _worker(rank, world, port, case, tmp, kwargs):
@@ -545,6 +630,52 @@ def test_tp_without_the_replicated_gradient_sum_breaks_parity():
     assert any(".kv_proj." in p for p in problems) and any(
         ".q_a_proj." in p for p in problems
     ), problems
+
+
+def _trainer_problems(ref, got):
+    problems = []
+    if got["losses"] != pytest.approx(ref["losses"], rel = 1e-5):
+        problems.append(f"losses {got['losses']} vs {ref['losses']}")
+    # Past step 1 the weights differ by fp32 order noise, which can flip a router / indexer top-k.
+    if got["grad_norms"][0] != pytest.approx(ref["grad_norms"][0], rel = 1e-5) or got["grad_norms"][
+        1:
+    ] != pytest.approx(ref["grad_norms"][1:], rel = 1e-2):
+        problems.append(f"grad_norms {got['grad_norms']} vs {ref['grad_norms']}")
+    if set(ref["grads"]) != set(got["grads"]):
+        problems.append(
+            f"gradient sets differ: {sorted(set(ref['grads']) ^ set(got['grads']))[:6]}"
+        )
+    for name, want in ref["grads"].items():
+        have = got["grads"].get(name)
+        scale = float(want.abs().max())
+        if have is not None and float((have - want).abs().max()) > 1e-7 + 1e-4 * scale:
+            problems.append(
+                f"{name}: gradient off by {float((have - want).abs().max()) / scale:.2e}"
+            )
+    return problems
+
+
+def test_tp_trainer_matches_one_process():
+    """The Trainer path: per-parameter clipped step-1 gradients, the logged grad_norm and 6 clipped steps."""
+    pytest.importorskip("accelerate")
+    (ref,) = _spawn("trainer", 1)
+    results = _spawn("trainer", 2)
+    assert len(ref["losses"]) == 6 and min(ref["grad_norms"]) > 0.05  # clipping engaged
+    assert any(".o_a_proj.lora_B" in n for n in ref["grads"])
+    for res in results:
+        assert _trainer_problems(ref, res) == []
+
+
+def test_tp_trainer_norm_counting_replicas_per_rank_breaks_parity():
+    """Flip: a norm that sums every rank's replicated gradients over tp is larger and clips differently."""
+    pytest.importorskip("accelerate")
+    (ref,) = _spawn("trainer", 1)
+    (res, _) = _spawn("trainer", 2, fault = "replicated_norm_per_rank")
+    assert res["grad_norms"][0] > ref["grad_norms"][0] * 1.05, (
+        res["grad_norms"],
+        ref["grad_norms"],
+    )
+    assert any("gradient off" in p for p in _trainer_problems(ref, res))
 
 
 def test_pp_refuses_layers_per_stage_at_an_unsafe_cut():
