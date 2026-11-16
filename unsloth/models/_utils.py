@@ -6907,8 +6907,8 @@ def _tensor_parallel_trainer_pre(model):
 
 
 def _unsloth_tp_skip_dpo_ref_adapter(model):
-    """Under tp TRL's "ref" adapter copy mixes DTensor shards and full tensors. A fresh adapter (lora_B all
-    zero) equals the disabled-adapter reference: True skips the copy, False off tp; raises if trained."""
+    """Under tp TRL's "ref" adapter copy mixes DTensor shards and full tensors. A fresh adapter (lora_B /
+    lora_embedding_A all zero) equals the disabled-adapter reference: True skips the copy, False off tp; raises if trained."""
     tp = _is_unsloth_tensor_parallel(model)
     if not tp:
         try:
@@ -6918,7 +6918,7 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
     if not tp:
         return False
     nonzero, device = 0, torch.device("cpu")
-    params = dict(model.named_parameters())
+    params = dict(model.named_parameters(remove_duplicate = False))
     with torch.no_grad():
         for name, param in params.items():
             local = param.to_local() if hasattr(param, "to_local") else param
@@ -6934,8 +6934,9 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
                 device = local.device
                 nonzero += int(not torch.equal(local, original.to(local.device)))
                 continue
+            # PEFT zero-inits linear lora_B but embedding lora_embedding_A.
             if not (name.endswith(".default") or ".default." in name) or not (
-                "lora_B" in name or "lora_embedding_B" in name
+                "lora_B" in name or "lora_embedding_A" in name
             ):
                 continue
             device = local.device

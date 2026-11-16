@@ -180,22 +180,31 @@ def test_tp_dpo_trained_adapter_is_refused():
         assert "tensor parallel" in res["init_error"]
 
 
-@pytest.mark.parametrize("change", ["none", "embedding_b", "saved_module"])
+@pytest.mark.parametrize("change", ["none", "embedding", "saved_module"])
 def test_tp_dpo_fresh_check_sees_embedding_and_saved_modules(monkeypatch, change):
+    from peft import LoraConfig, get_peft_model
     from unsloth.models import _utils
 
-    model = torch.nn.Module()
-    params = {
-        "embed.lora_embedding_B.default": torch.zeros(4, 2),
-        "proj.lora_B.default.weight": torch.zeros(4, 2),
-        "head.original_module.weight": torch.ones(3, 4),
-        "head.modules_to_save.default.weight": torch.ones(3, 4),
-    }
-    if change == "embedding_b":
-        params["embed.lora_embedding_B.default"][0, 0] = 1.0
-    elif change == "saved_module":
-        params["head.modules_to_save.default.weight"][0, 0] = 2.0
-    monkeypatch.setattr(model, "named_parameters", lambda: iter(params.items()))
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(16, 8)
+            self.proj = torch.nn.Linear(8, 8)
+            self.head = torch.nn.Linear(8, 16, bias = False)
+            self.head.weight = (
+                self.embed.weight
+            )  # tied, so named_parameters() dedups the original head
+
+        def forward(self, x):
+            return self.head(self.proj(self.embed(x)))
+
+    config = LoraConfig(r = 2, target_modules = ["embed", "proj"], modules_to_save = ["head"])
+    model = get_peft_model(Tiny(), config)
+    with torch.no_grad():
+        if change == "embedding":
+            model.base_model.model.embed.lora_embedding_A["default"].fill_(0.5)
+        elif change == "saved_module":
+            model.base_model.model.head.modules_to_save["default"].weight.add_(1.0)
     monkeypatch.setattr(_utils, "_is_unsloth_tensor_parallel", lambda m: True)
     if change == "none":
         assert _utils._unsloth_tp_skip_dpo_ref_adapter(model) is True
