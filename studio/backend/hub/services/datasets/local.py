@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from contextlib import suppress
@@ -487,7 +488,9 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    return UploadDatasetResponse(
+        filename = filename, stored_path = str(_reuse_identical_upload(stored_path))
+    )
 
 
 async def upload_dataset_response(
@@ -527,7 +530,57 @@ async def upload_dataset_response(
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    return UploadDatasetResponse(
+        filename = filename, stored_path = str(_reuse_identical_upload(stored_path))
+    )
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(LOCAL_UPLOAD_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reuse_identical_upload(stored_path: Path) -> Path:
+    suffix = stored_path.name.split("_", 1)[-1]
+    try:
+        size = stored_path.stat().st_size
+        candidates = [
+            path
+            for path in DATASET_UPLOAD_DIR.iterdir()
+            if path != stored_path
+            and path.is_file()
+            and path.name.split("_", 1)[-1] == suffix
+            and path.stat().st_size == size
+        ]
+        if not candidates:
+            return stored_path
+        new_digest = _file_digest(stored_path)
+        for existing in candidates:
+            if _file_digest(existing) == new_digest:
+                stored_path.unlink(missing_ok = True)
+                return existing
+    except OSError:
+        pass
+    return stored_path
+
+
+def delete_uploaded_dataset_response(dataset_id: str) -> dict:
+    name = Path(dataset_id or "").name
+    if not name or name != dataset_id or Path(name).suffix.lower() not in LOCAL_UPLOAD_EXTS:
+        raise HTTPException(status_code = 400, detail = "Invalid uploaded dataset id")
+    path = DATASET_UPLOAD_DIR / name
+    if not path.is_file() or path.is_symlink() or not within_account(path):
+        raise HTTPException(status_code = 404, detail = "Uploaded dataset not found")
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 500, detail = "Could not delete the uploaded dataset"
+        ) from exc
+    return {"status": "deleted", "id": name}
 
 
 def list_local_datasets_response() -> LocalDatasetsResponse:
