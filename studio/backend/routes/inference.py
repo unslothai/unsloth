@@ -19746,6 +19746,12 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        if request._required_alias_config and placement.diffusion_kind is True:
+            # The diffusion runner records no load intent, so the alias could never match after loading.
+            raise HTTPException(
+                status_code = 400,
+                detail = "Configured aliases are not supported for DiffusionGemma models.",
+            )
         # Ahead of the diffusion drop: an explicit reasoning flag is a refusal, not a no-op.
         await _validate_reasoning_budget_preflight(
             config, placement.diffusion_kind, extra_llama_args, request

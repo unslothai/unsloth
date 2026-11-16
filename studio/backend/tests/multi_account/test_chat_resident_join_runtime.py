@@ -292,3 +292,56 @@ def test_configured_alias_refuses_capacity_relaxed_join(
         assert preview.value.status_code == 503
         assert "Unload it before using this preview" in preview.value.detail
         assert not strict.unloaded
+
+
+def test_configured_alias_refuses_a_diffusion_target_before_replacing(
+    monkeypatch, strict, accounts
+):
+    # The diffusion runner ignores the alias settings and records no load intent: refuse before teardown.
+    from fastapi import HTTPException
+
+    class StopBeforeLaunch(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise StopBeforeLaunch()
+
+    async def diffusion_placement(*a, **k):
+        return inference._LoadPlacement(None, None, False, True)
+
+    monkeypatch.setattr(
+        inference.ModelConfig, "from_identifier", lambda *a, **k: SimpleNamespace(is_gguf = True)
+    )
+    monkeypatch.setattr(inference, "_require_resolved_base_access", lambda *a, **k: None)
+    monkeypatch.setattr(inference, "_resolve_inherited_extra_args", lambda *a, **k: None)
+    monkeypatch.setattr(inference, "_prepare_load_placement", diffusion_placement)
+    monkeypatch.setattr(inference, "_validate_reasoning_budget_preflight", stop)
+    request = LoadRequest(model_path = RESIDENT, gguf_variant = "Q8_0")
+    fastapi_request = SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+    )
+
+    def run():
+        return run_as(
+            accounts["alice"],
+            lambda: asyncio.run(
+                inference._load_model_impl(
+                    request, fastapi_request, current_subject = accounts["alice"].username
+                )
+            ),
+        )
+
+    # Without an alias configuration the same request continues toward the launch.
+    with pytest.raises(HTTPException) as reached:
+        run()
+    assert isinstance(reached.value.__cause__ or reached.value.__context__, StopBeforeLaunch)
+    request._required_alias_config = {
+        "max_seq_length": 4096,
+        "cache_type_kv": "f16",
+        "speculative_type": "off",
+    }
+    with pytest.raises(HTTPException) as exc:
+        run()
+    assert exc.value.status_code == 400
+    assert "DiffusionGemma" in exc.value.detail
+    assert not strict.unloaded
