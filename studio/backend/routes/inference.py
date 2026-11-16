@@ -11442,6 +11442,34 @@ async def _maybe_auto_switch_model(
     the chat route, the only one an NPU model serves; ``npu_request_check``
     refuses a request an NPU target would reject once loaded, given its catalog entry.
     """
+    from utils.model_aliases import alias_config_matches, request_alias_load_config
+
+    alias_config = request_alias_load_config(getattr(fastapi_request, "scope", None), requested_model)
+
+    def _config_matches() -> bool:
+        return alias_config_matches(get_llama_cpp_backend(), alias_config)
+
+    def _config_requires_switch() -> None:
+        if alias_config and not _config_matches():
+            raise HTTPException(
+                status_code = 409,
+                detail = openai_error_body(
+                    "The alias configuration is not loaded. Enable automatic model switching "
+                    "with a credential allowed to load models.",
+                    status = 409, code = "model_configuration_not_loaded", param = "model",
+                ),
+            )
+
+    if alias_config:
+        from utils.multi_model_settings import get_multi_model_mode
+
+        path = getattr(getattr(fastapi_request, "url", None), "path", "")
+        if path.rstrip("/").endswith("/embeddings") or await asyncio.to_thread(get_multi_model_mode) != "off":
+            raise HTTPException(
+                status_code = 400,
+                detail = "Configured aliases require GGUF text generation with Keep multiple models loaded Off.",
+            )
+
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
     gguf_requires_vision = (
         (require_audio_input or require_video) if tool_images_only else require_vision
@@ -11471,6 +11499,7 @@ async def _maybe_auto_switch_model(
         elif account_access.resident_hidden("chat", _loaded_slot_ident()):
             raise HTTPException(status_code = 404, detail = "Model not found")
     if routed is not None:
+        _config_requires_switch()
         return
 
     async def _refuse_foreign_resident() -> None:
@@ -11557,6 +11586,7 @@ async def _maybe_auto_switch_model(
         return
     # Preview route opts out so callers cannot switch away from the pinned checkpoint.
     if _auto_switch_opted_out(fastapi_request):
+        _config_requires_switch()
         return
     if (
         named_model
@@ -11568,6 +11598,7 @@ async def _maybe_auto_switch_model(
         if not await asyncio.to_thread(_loaded_identity_satisfies, named_model):
             raise HTTPException(status_code = 404, detail = "Model not found")
         await _refuse_foreign_resident()
+        _config_requires_switch()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
@@ -11606,13 +11637,14 @@ async def _maybe_auto_switch_model(
         # Reject before claiming the slot.
         await _reject_unservable_model(requested_model, fastapi_request)
         await _refuse_foreign_resident()
+        _config_requires_switch()
         # Auto-switch off: this non-preview turn uses the resident model, claim it.
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
 
     # Check resident state before the filesystem index; rebuilding it can take seconds.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if auto_switch_on and _config_matches() and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
         await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
@@ -11624,11 +11656,17 @@ async def _maybe_auto_switch_model(
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
+            _config_requires_switch()
             return
+
+    if alias_config and not auto_switch_on:
+        _config_requires_switch()
 
     from core.inference.npu_backend import is_npu_model_path
 
     if auto_switch_on and named_model and is_npu_model_path(named_model):
+        if alias_config:
+            raise HTTPException(status_code = 400, detail = "Configured aliases require a local GGUF text model.")
         # Refused before the switch, so a request the NPU cannot serve never evicts the resident model.
         await _refuse_unservable_npu_switch(
             named_model,
@@ -11683,6 +11721,8 @@ async def _maybe_auto_switch_model(
                     requested_model,
                     include_companion_scope = True,
                 )
+        if resolved is None and alias_config:
+            raise HTTPException(status_code = 404, detail = "Configured alias target is not available locally.")
         if resolved is None:
             # A "<run>/checkpoint-N" name looks like a Hub id; the reject below refuses it instead.
             trained = (
@@ -11765,6 +11805,8 @@ async def _maybe_auto_switch_model(
             and not looks_like_audio_cpp(target_id)
             and await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
         )
+        if alias_config and not target_is_gguf:
+            raise HTTPException(status_code = 400, detail = "Configured aliases require a local GGUF text model.")
         gguf_companion_roots: tuple[str, ...] = ()
         if target_is_gguf:
             if resolved is None:
@@ -11809,6 +11851,8 @@ async def _maybe_auto_switch_model(
         )
 
         def _already_serving() -> bool:
+            if not _config_matches():
+                return False
             # Match the load path and advertised repo id, so either load style counts as already serving.
             if not target_is_gguf:
                 active = getattr(target_backend, "active_model_name", None)
@@ -12121,6 +12165,14 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        if alias_config:
+                            override = {
+                                **override,
+                                "max_seq_length": alias_config["max_seq_length"],
+                                "custom_context_length": alias_config["max_seq_length"],
+                                "kv_cache_dtype": alias_config["cache_type_kv"],
+                                "speculative_type": alias_config["speculative_type"],
+                            }
                         if require_speech and resolved is not None and speech_budget is not None:
                             target_context = await asyncio.to_thread(
                                 _target_effective_context_length,
