@@ -20,10 +20,8 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-# PyMuPDF / MuPDF is not safe across threads (#17981). Linked-folder ingest runs
-# several workers; concurrent page_get_textpage / get_cdrawings can fatal the
-# whole backend (Windows 0xc0000028) and trip the health watchdog. Web PDF
-# extraction takes the same lock before calling parse_pdf_bytes.
+# MuPDF is not thread-safe: concurrent ingest workers crashed the backend (#17981). Every
+# in-process PyMuPDF call takes this lock; re-entrant because web fetch holds it around _pdf.
 PYMUPDF_LOCK = threading.RLock()
 
 

@@ -16774,12 +16774,10 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
-            # PyMuPDF is not thread-safe; share the RAG parsers lock so web
-            # fetch and linked-folder ingest cannot run MuPDF concurrently (#17981).
             from ..rag.parsers import PYMUPDF_LOCK
 
             queued_at = time.monotonic()
-            # An ingest can hold the lock for a whole document, so keep cancellation responsive.
+            # Ingest can hold the shared lock for a whole document; stay cancellable while queued.
             while not PYMUPDF_LOCK.acquire(timeout = 0.25):
                 cancelled = _fetch_budget_exceeded(None, cancel_event)
                 if cancelled is not None:

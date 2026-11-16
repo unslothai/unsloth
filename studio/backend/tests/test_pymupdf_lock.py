@@ -57,7 +57,6 @@ class PyMuPdfLockTests(unittest.TestCase):
         self.assertEqual(max_active, 1)
 
     def test_pymupdf_lock_is_reentrant(self):
-        # Web fetch holds the lock around parse_pdf_bytes, which locks again in _pdf.
         with parsers.PYMUPDF_LOCK:
             with parsers.PYMUPDF_LOCK:
                 held = True
@@ -81,7 +80,6 @@ class _Chunk:
     page_number = 1
 
 
-# Every in-process MuPDF entry point the ingest workers and web fetch reach.
 _ENTRY_POINTS = {
     "parse": lambda path: parsers.parse(path),
     "mupdf_document_text": lambda path: parsers.mupdf_document_text(path),
@@ -171,7 +169,6 @@ def test_web_pdf_fetch_cancels_while_waiting_for_lock(monkeypatch):
         assert thread.is_alive()
         cancel.set()
         thread.join(timeout = 5)
-        # Returned while an ingest still holds the lock.
         assert not thread.is_alive()
     assert "cancelled" in result[0]
 
