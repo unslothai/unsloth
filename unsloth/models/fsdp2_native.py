@@ -1468,7 +1468,8 @@ def _wrap_generate(model):
                 return _generate(*args, **kwargs)
             _GENERATE_DEPTH[0] += 1
             try:
-                with native_fsdp2_unsharded(target), torch.no_grad():
+                stream = _generate_streams_blocks(target)
+                with native_fsdp2_unsharded(target, stream_blocks = stream), torch.no_grad():
                     return _generate(*args, **kwargs)
             finally:
                 _GENERATE_DEPTH[0] -= 1
@@ -2246,11 +2247,130 @@ def _lazy_init_root(root, units):
         state._lazy_init()
 
 
+_GENERATE_GATHER_MODES = ("auto", "all", "block")
+
+
+def _generate_gather_mode():
+    """UNSLOTH_FSDP2_GENERATE_GATHER: "all" gathers every unit for the whole generate (no collective
+    per decode step), "block" gathers one decoder block at a time, "auto" (default) gathers all only
+    when every rank has the free device memory for it."""
+    value = os.environ.get("UNSLOTH_FSDP2_GENERATE_GATHER", "auto").strip().lower() or "auto"
+    if value in ("layer", "blocks", "stream"):
+        value = "block"
+    if value not in _GENERATE_GATHER_MODES:
+        raise ValueError(
+            f"Unsloth: UNSLOTH_FSDP2_GENERATE_GATHER={value} is not one of {list(_GENERATE_GATHER_MODES)}."
+        )
+    return value
+
+
+def _unit_gathered_bytes(unit):
+    """Bytes `unit.unshard()` allocates for the unit's own parameters (nested units excluded)."""
+    total = 0
+    for group in _unit_param_groups(unit):
+        for fsdp_param in getattr(group, "fsdp_params", ()):
+            size = getattr(fsdp_param, "_orig_size", None)
+            sharded = getattr(fsdp_param, "sharded_param", None)
+            if size is None and sharded is None:
+                continue
+            numel = math.prod(size) if size is not None else sharded.numel()
+            dtype = getattr(fsdp_param, "param_dtype", None) or getattr(
+                fsdp_param, "orig_dtype", None
+            )
+            if dtype is None:
+                dtype = sharded.dtype
+            total += numel * dtype.itemsize
+    return total
+
+
+def _generate_streams_blocks(model):
+    """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
+    time. Gathering every unit at once needs the whole model's weights on each rank next to its
+    shards (a 12B 4-bit model after training on 2x 16 GB ran out of memory there), so "auto" streams
+    unless every rank has the free memory for the whole gather."""
+    FSDPModule = _fsdp_module_class()
+    if FSDPModule is None or not is_native_fsdp2(model):
+        return False
+    mode = _generate_gather_mode()
+    if mode != "auto":
+        return mode == "block"
+    units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+    if not units or not _stream_block_lists(model, units):
+        return False
+    groups = _unit_param_groups(units[0])
+    mesh_info = getattr(groups[0], "mesh_info", None) if groups else None
+    device = getattr(groups[0], "device", None) if groups else None
+    if device is None or torch.device(device).type != "cuda":
+        return False  # host memory: keep the single gather
+    import torch.distributed as dist
+
+    if not dist.is_available() or not dist.is_initialized():
+        return False
+    sizes = [_unit_gathered_bytes(unit) for unit in units]
+    need = (
+        sum(sizes) + max(sizes) + (1 << 30)
+    )  # gathered weights + one all-gather buffer + decode scratch
+    torch.cuda.empty_cache()
+    free = torch.cuda.mem_get_info(device)[0]
+    fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
+    return not fits
+
+
+class _GenerateBlockStream:
+    """Stands in as `layers._unsloth_block_swap` during generate: the decode loops call enter(i) /
+    leave(i) around block i, which read its weights without calling it, so the block is gathered there
+    and resharded right after. No block lives on the host (`indices` is empty)."""
+
+    indices = ()
+
+    def __init__(self, units):
+        self.units = units  # {block index: FSDP unit}
+
+    def enter(self, index):
+        unit = self.units.get(index)
+        if unit is not None:
+            unit.unshard()
+
+    def leave(self, index):
+        unit = self.units.get(index)
+        if unit is not None:
+            unit.reshard()
+
+
+def _stream_block_lists(model, units):
+    """[(ModuleList, {index: unit})] for decoder-block lists whose entries are FSDP units."""
+    unit_ids = {id(unit) for unit in units}
+    found = []
+    for module in model.modules():
+        if not isinstance(module, nn.ModuleList):
+            continue
+        blocks = {i: m for i, m in enumerate(module) if id(m) in unit_ids}
+        if blocks:
+            found.append((module, blocks))
+    return found
+
+
+def _reshard_after_forward_on(unit):
+    """Reshard `unit` after each forward (post-forward mesh = its mesh, as reshard_after_forward=True)."""
+    state = unit._get_fsdp_state()
+    groups = _unit_param_groups(unit)
+    previous = [(group, group.post_forward_mesh_info) for group in groups]
+    auto = getattr(state, "_auto_reshard_after_forward", None)
+    for group in groups:
+        group.post_forward_mesh_info = group.mesh_info
+    if auto is not None:
+        state._auto_reshard_after_forward = False
+    return state, auto, previous
+
+
 @contextlib.contextmanager
-def native_fsdp2_unsharded(model):
+def native_fsdp2_unsharded(model, stream_blocks = False):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
     for code that reads weights without calling the blocks (Unsloth's decode loop, `PeftModel.generate`,
-    which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively."""
+    which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively.
+    stream_blocks (generate): units that are entries of a decoder-block list stay sharded; each is
+    gathered when it runs (its forward, or the decode loop's block-swap enter) and resharded after,
+    so about one block is gathered at a time next to the root's embeddings and head."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
@@ -2268,17 +2388,36 @@ def native_fsdp2_unsharded(model):
         return
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
     saved = {}
+    streams = []
+    streamed = set()
     try:
         _rebind_swapped_modules(root, units)
         _lazy_init_root(root, units)
+        if stream_blocks:
+            for layers, blocks in _stream_block_lists(model, units):
+                if layers.__dict__.get("_unsloth_block_swap", None) is not None:
+                    continue
+                streams.append(layers)
+                layers.__dict__["_unsloth_block_swap"] = _GenerateBlockStream(blocks)
+                streamed.update(id(unit) for unit in blocks.values())
+        # Streamed blocks may still be gathered (a forward that kept them); reshard them first.
+        for unit in units:
+            if id(unit) in streamed:
+                unit.reshard()
         # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
-            unit.unshard()
+            if id(unit) not in streamed:
+                unit.unshard()
         for unit in units:
-            saved[id(unit)] = _reshard_after_forward_off(unit)
+            if id(unit) in streamed:
+                saved[id(unit)] = _reshard_after_forward_on(unit)
+            else:
+                saved[id(unit)] = _reshard_after_forward_off(unit)
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
+        for layers in streams:
+            layers.__dict__.pop("_unsloth_block_swap", None)
         errors = []
         for unit in units:
             try:
@@ -2288,6 +2427,8 @@ def native_fsdp2_unsharded(model):
         for unit in units:
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
+        if streams and torch.cuda.is_available():
+            torch.cuda.empty_cache()  # the next whole-root gather needs its buffer in one piece
         if errors:
             raise errors[0]
 
