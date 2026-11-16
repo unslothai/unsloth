@@ -918,6 +918,17 @@ def _mark_batch_dynamic(batch, obj):
 
 
 _DYNAMIC_BATCH = os.environ.get("UNSLOTH_BLOCK_COMPILE_DYNAMIC_BATCH", "1") != "0"
+# Per-document metadata of a packed row: one entry per document (+1 for cu_seqlens).
+_PACKED_LENGTH_KWARGS = ("packed_seq_lengths", "cu_seq_lens_q", "cu_seq_lens_k", "cu_seqlens")
+
+
+def _mark_packed_dynamic(kwargs):
+    # The document count changes from one packed batch to the next: without the mark every block (and
+    # the attention frame after its graph break) recompiled once on the second packed batch.
+    for key in _PACKED_LENGTH_KWARGS:
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor) and value.dim() == 1:
+            torch._dynamo.maybe_mark_dynamic(value, 0)
 
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
@@ -2074,6 +2085,7 @@ def _wrap(
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
+            _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
