@@ -29,6 +29,19 @@ if importlib.util.find_spec("torch") is None:
 if importlib.util.find_spec("trl") is None or importlib.util.find_spec("unsloth") is None:
     pytest.skip("trl or unsloth not installed", allow_module_level = True)
 
+
+def _trl_has_assistant_only_loss():
+    import dataclasses
+
+    from trl import SFTConfig
+    return any(field.name == "assistant_only_loss" for field in dataclasses.fields(SFTConfig))
+
+
+# TRL added SFTConfig.assistant_only_loss in 0.20; below it (the GRPO fake-run floor lane, TRL 0.18.2) the flag
+# cannot be requested, so there is nothing to route.
+if not _trl_has_assistant_only_loss():
+    pytest.skip("this TRL's SFTConfig has no assistant_only_loss", allow_module_level = True)
+
 # Reuse the fake-train harness: it applies the CUDA spoof at import and provides the CPU patches.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_trl_fake_train_cpu as _harness  # noqa: E402
@@ -84,6 +97,11 @@ def _load(repo):
             )
     except OSError as e:
         pytest.skip(f"could not fetch {repo} (network/hub): {str(e)[:150]}")
+    except (KeyError, ValueError) as e:
+        # An architecture this transformers predates (Qwen3-VL before 4.57).
+        if "does not recognize this architecture" not in str(e) and not isinstance(e, KeyError):
+            raise
+        pytest.skip(f"{repo}: this transformers cannot build it ({str(e)[:120]})")
     model = model.to(torch.float32)
     if not hasattr(model, "for_training"):
         model.for_training = lambda *a, **k: model.train()
