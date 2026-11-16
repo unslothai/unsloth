@@ -897,10 +897,10 @@ _varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
 
 def block_varlen_kwargs(layer, hidden_states, kwargs):
     """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen carrier, a
-    tensor as long as the longest document) for its packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
-    read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
-    fall back to SDPA over the dense mask. None keeps that path; _LEAVE_BLOCK runs the eager
-    wrapper."""
+    tensor as long as the longest document) for its packed row, so attention runs torch's varlen op
+    inside the graph. Building them there needs a host read of the longest segment and the mask check a
+    host sync, which is why the traced wrapper used to fall back to SDPA over the dense mask. None keeps
+    that path; _LEAVE_BLOCK runs the eager wrapper."""
     seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
