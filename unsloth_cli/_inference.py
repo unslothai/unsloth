@@ -1334,14 +1334,13 @@ def connect_studio_server(
 
     npu_path = npu_model_path(model)
     if npu_path:
-        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
-        model = npu_path
+        # A bare id or the name Unsloth Studio shows; load it by the model path it resolves to.
         try:
-            prepare_npu_model(
+            model = prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(
                     method, path, payload, timeout = timeout
                 ),
-                model,
+                npu_path,
                 lambda line: typer.echo(line, err = True),
             )
         except RuntimeError as exc:
