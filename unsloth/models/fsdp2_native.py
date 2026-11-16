@@ -2063,6 +2063,25 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             m.to(
                 "cpu"
             )  # fully_shard(root) moves the buffers of every module it manages (Gemma's embed_scale)
+        if (
+            io_tables
+            and device.type == "cuda"
+            and _env_tristate("UNSLOTH_FSDP2_UNSHARD_ASYNC_OP") is not False
+            and hasattr(model, "_set_unshard_async_op")
+        ):
+            # Memory-tight sharded layout: implicit prefetch all-gathers into FSDP2's own stream, whose
+            # caching-allocator pool cannot reuse what the compute stream frees (a T4 OOMed on a 264 MiB
+            # block gather with 2.56 GiB cached and free). Gather on the current stream instead and keep
+            # the overlap with explicit one-ahead prefetch.
+            model._set_unshard_async_op(True)
+            if (
+                len(wrapped) > 1
+                and not config.forward_prefetch
+                and not config.backward_prefetch
+                and not layout.prefetch
+            ):
+                from .fsdp2_perf import apply_fsdp2_prefetch
+                apply_fsdp2_prefetch(wrapped, forward_depth = 1, backward_depth = 1)
         model._unsloth_reshard_after_forward = False
     setattr(model, _NATIVE_FLAG, True)
     for param in model.parameters():
