@@ -8539,10 +8539,15 @@ def rocm_windows_wide_head_sdpa(sdpa):
 
     @functools.wraps(sdpa)
     def scaled_dot_product_attention(query, key, value, *args, **kwargs):
-        # Like torch's Python functionals: a TorchFunctionMode / subclass sees func = this wrapper, which
-        # `is F.scaled_dot_product_attention`, so matchers written against F (diffusers layer_skip,
-        # Studio's VAE chunking, tp_native) still match; calling func again lands back here.
-        if not torch.compiler.is_compiling() and has_torch_function((query, key, value)):
+        # A TorchFunctionMode sees func = this wrapper, which `is F.scaled_dot_product_attention`, so
+        # matchers written against F (diffusers layer_skip, Studio's VAE chunking, tp_native) still match;
+        # calling func again lands back here. Tensor subclasses are left to torch's builtin below, which
+        # hands them func = the builtin as stock torch does (nested jagged tensors only match that).
+        if (
+            not torch.compiler.is_compiling()
+            and torch._C._is_torch_function_mode_enabled()
+            and has_torch_function((query, key, value))
+        ):
             return handle_torch_function(
                 scaled_dot_product_attention,
                 (query, key, value),

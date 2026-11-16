@@ -341,3 +341,49 @@ def test_overlapping_wide_head_calls_restore_the_callers_backends_once(
     threads["b"].join(5)
     assert seen == {"a": {attention.SDPBackend.MATH}, "b": {attention.SDPBackend.MATH}}
     assert set(_cur_sdpa_kernel_backends()) == before
+
+
+def _jagged(head_dim):
+    g = torch.Generator().manual_seed(0)
+    seqs = [torch.randn(2, n, head_dim, generator = g) for n in (5, 7)]  # (heads, seq, head_dim)
+    nt = torch.nested.nested_tensor([s.transpose(0, 1) for s in seqs], layout = torch.jagged)
+    return seqs, nt.transpose(1, 2)  # (batch, heads, jagged seq, head_dim)
+
+
+@pytest.mark.parametrize("head_dim", [64, 512])
+def test_nested_jagged_tensors_keep_working(stock_sdpa, windows_rocm, cpu_counts_as_gpu, head_dim):
+    """Nested jagged tensors route SDPA only when their __torch_function__ sees torch's builtin: re-dispatching
+    with func = the wrapper falls through to the dense kernel, which refuses them."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    assert fixes.fix_rocm_windows_wide_head_sdpa() is True
+    seqs, nt = _jagged(head_dim)
+    out = F.scaled_dot_product_attention(nt, nt, nt)
+    for got, s in zip(out.transpose(1, 2).unbind(), seqs):
+        with sdpa_kernel([SDPBackend.MATH]):
+            ref = stock_sdpa(s[None], s[None], s[None])[0]
+        torch.testing.assert_close(got.transpose(0, 1), ref, atol = 1e-5, rtol = 1e-5)
+
+
+def test_nested_jagged_tensors_under_a_mode(stock_sdpa, windows_rocm, cpu_counts_as_gpu):
+    from torch.overrides import TorchFunctionMode
+
+    class Seen(TorchFunctionMode):
+        hits = 0
+
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            if func is F.scaled_dot_product_attention:
+                Seen.hits += 1
+            return func(*args, **(kwargs or {}))
+
+    assert fixes.fix_rocm_windows_wide_head_sdpa() is True
+    _, nt = _jagged(512)
+    with Seen():
+        out = F.scaled_dot_product_attention(nt, nt, nt)
+    assert Seen.hits == 1 and out.is_nested
