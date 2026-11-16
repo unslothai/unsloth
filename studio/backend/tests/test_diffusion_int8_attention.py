@@ -1543,10 +1543,11 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
 
 
 @needs_kernel
-def test_a_new_prompt_length_takes_its_buckets_decision(monkeypatch):
-    """A plan whose query and key counts share a DECIDE_BUCKET with a decided plan's takes that decision at once: no
-    calls on the sink path to learn from, no reads, no race."""
-    monkeypatch.setattr(I, "_sink_race", lambda *a: pytest.fail("no sinks: no race"))
+def test_a_new_prompt_length_learns_its_own_sinks(monkeypatch):
+    """A plan whose query and key counts share a DECIDE_BUCKET with a decided sink-free plan does not take that
+    decision at once: it learns from its own first calls on the sink path (a sink-free head gets the same bits), so a
+    sink-free verdict never applies to a call with sinks."""
+    monkeypatch.setattr(I, "_sink_race", lambda *a, **k: pytest.fail("no sinks: no race"))
     config = _cuda_config(128)
     I.forget_plans()
     q, k, v = _case((1, 700, 4, 128), _card_dtype(), seed = 3)
@@ -1555,7 +1556,7 @@ def test_a_new_prompt_length_takes_its_buckets_decision(monkeypatch):
     q, k, v = _case((1, 710, 4, 128), _card_dtype(), seed = 4)
     I.int8_attention(q, k, v, config = config, mode = I.MODE_RACE)
     first, second = I._plans().values()
-    assert first["sinks"] is False and second["sinks"] is False and second["checks"] == []
+    assert first["sinks"] is False and second["sinks"] is None and len(second["checks"]) == 1
 
 
 @needs_kernel
@@ -1765,7 +1766,7 @@ def test_a_plan_that_decides_torch_attention_takes_its_bucket_out_of_the_raced_r
     # a processor that replaced a stock one gives it back, so the module's calls compile as before the install
     assert module.processor is stock and strided._unsloth_int8_min_tokens == 2560
     assert route.cards == {0: 4352, 1: 3072} and route.min_tokens == 3072 and not D._DECISIONS
-    assert I._decisions() == {("bucket",): "native"}
+    assert I._decisions() == {("bucket", True): "native"}
     I.forget_plans()
     assert I._decisions() == {} and I._ROUTES == []
 

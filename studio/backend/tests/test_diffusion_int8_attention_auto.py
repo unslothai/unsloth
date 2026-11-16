@@ -453,7 +453,7 @@ def _fake_plan(mode = None, **extra):
         "calls": 0,
         "sinks": None,
         "checks": [],
-        "decision": ("bucket",),
+        "decision": ("bucket", mode),  # a real decision key carries the mode
     }
     if mode is not None:
         plan["mode"] = mode
@@ -463,6 +463,7 @@ def _fake_plan(mode = None, **extra):
 
 def _recording_kernels(monkeypatch, plan):
     """_cuda_attention on CPU tensors with the launches recorded (their ``sinks`` flag) and no CUDA call."""
+    I.forget_plans()
     launched = []
 
     def find(
@@ -642,3 +643,39 @@ def test_forced_requests_of_the_sink_families_take_the_kernels_only_mode(monkeyp
     pipe = dit("ZImageTransformer2DModel")
     assert D.install(pipe, _TARGET, requested = "unsloth_int8") == 1
     assert pipe.transformer.attn.processor._attention_backend.sinks == I.MODE_KERNELS
+
+
+def test_a_bucket_decision_applies_only_to_plans_that_also_had_sinks(monkeypatch):
+    """Two prompt lengths in one DECIDE_BUCKET: a plan without sinks decides the kernels without the sink path, yet a
+    new plan of the bucket still learns its own calls; one with sinks races once, and the next with sinks takes that
+    verdict without a race (a verdict never crosses between sink and sink-free plans)."""
+    import contextlib
+
+    I.forget_plans()
+    names = ("unsloth_i8stats_q", "unsloth_i8quant_kv", "unsloth_i8resid")
+    monkeypatch.setattr(
+        I, "_functions", lambda *a, **k: (object(), {n: object() for n in names}, 0)
+    )
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    config = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
+
+    def plan(tokens):
+        x = torch.zeros(1, tokens, 4, 128, dtype = torch.bfloat16)
+        return I._plan(x, x, x, config, None, 0, I.MODE_RACE)
+
+    def decide(p, sinks, race):
+        p["calls"] = I.SINK_DECIDE_AT
+        p["checks"] = [(_Seen(), torch.full((2,), int(sinks), dtype = torch.int32))]
+        return I._choose_path(p, race = race)[0]
+
+    assert decide(plan(700), False, lambda: pytest.fail("no sinks: no race")) is False
+    sinky = plan(710)
+    assert sinky["sinks"] is None  # not the sink-free verdict: it learns its own first calls
+    races = []
+    assert decide(sinky, True, lambda: races.append(1) or True) is True and races == [1]
+    again = plan(720)
+    assert again["sinks"] is None
+    assert decide(again, True, lambda: pytest.fail("known verdict: no race")) is True
+    # a sink-free plan of the bucket after the race still runs the kernels without the sink path
+    assert decide(plan(730), False, lambda: pytest.fail("no sinks: no race")) is False

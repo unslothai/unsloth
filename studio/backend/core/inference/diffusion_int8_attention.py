@@ -472,8 +472,9 @@ RESID_BLOCKS = 128
 # calling in here, so a plan undecided by then keeps the sink path in the graph).
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
-# A plan's decision holds for every plan of its shape whose query and key counts fall in the same DECIDE_BUCKET
-# tokens (a new prompt length): they take it at once, with no calls to learn from and no race.
+# A plan's race verdict holds for every plan of its shape whose query and key counts fall in the same DECIDE_BUCKET
+# tokens (a new prompt length) and whose own first calls also had sinks: each plan learns whether it has sinks, and a
+# verdict reached with sinks never applies to one without them, nor the reverse; a known verdict skips the race.
 DECIDE_BUCKET = 256
 # The sink race keeps the kernels without the sink path only where their error against torch's attention on the
 # deciding call is at most this many times the sink path's (Qwen-Image-2.1: ~1.03, Z-Image-Turbo: ~1.6).
@@ -704,7 +705,7 @@ def _plan(
         "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
         # the sink path, decided by the plan's first calls (_choose_path)
         "calls": 0,
-        "sinks": _decisions().get(decision),
+        "sinks": None,
         "decision": decision,
         "checks": [],
         "shared": shared,
@@ -870,11 +871,19 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
                     seen = seen or bool(host.any())
                 plan["checks"] = []
-                plan["sinks"] = False if not seen else (True if race is None else race())
-                if "decision" in plan:
-                    _decisions()[plan["decision"]] = plan["sinks"]
-                    if plan["sinks"] == "native":
-                        _drop_routes(plan)
+                # the bucket's verdict for plans that, like this one, had sinks (or none: no race either way)
+                key = plan["decision"] + (seen,) if "decision" in plan else None
+                known = _decisions().get(key) if key is not None else None
+                if not seen:
+                    plan["sinks"] = False
+                elif known is not None:
+                    plan["sinks"] = known
+                else:
+                    plan["sinks"] = True if race is None else race()
+                    if key is not None:
+                        _decisions()[key] = plan["sinks"]
+                        if plan["sinks"] == "native":
+                            _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
 
 
