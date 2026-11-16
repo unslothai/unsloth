@@ -3808,6 +3808,62 @@ from utils.current_date_prompt_settings import (
 if TYPE_CHECKING:
     import numpy as np
 
+
+def _raise_alias_configuration_conflict(request: Request) -> None:
+    raise HTTPException(
+        status_code = 409,
+        detail = error_body_for_path(
+            getattr(getattr(request, "url", None), "path", ""),
+            "The requested alias configuration is not loaded. Automatic switching "
+            "requires permission to load this model and a compatible, unshared runtime.",
+            status = 409,
+            code = "model_configuration_not_loaded",
+            param = "model",
+        ),
+    )
+
+
+async def _alias_config_for_request(
+    model: Any,
+    request: Request,
+    *,
+    external: bool = False,
+) -> dict:
+    from utils.model_aliases import request_alias_load_config
+
+    config = request_alias_load_config(getattr(request, "scope", None), model)
+    if not config:
+        return {}
+    from utils.multi_model_settings import get_multi_model_mode
+
+    path = getattr(getattr(request, "url", None), "path", "")
+    if (
+        external
+        or _connection_model_ref(model) is not None
+        or path.rstrip("/").endswith("/embeddings")
+        or await asyncio.to_thread(get_multi_model_mode) != "off"
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Configured aliases require local GGUF text generation with Keep multiple models loaded Off.",
+        )
+    return config
+
+
+async def _validate_configured_alias_request(
+    request: Request, _subject: str = Depends(get_current_subject)
+) -> None:
+    from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
+    if request.scope.get(MODEL_ALIAS_CONFIG_SCOPE_KEY):
+        body = await request.json()
+        if isinstance(body, dict):
+            await _alias_config_for_request(
+                body.get("model"),
+                request,
+                external = bool(body.get("provider_id") or body.get("provider_type")),
+            )
+
+
 router = APIRouter()
 # Unsloth-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
@@ -11442,11 +11498,9 @@ async def _maybe_auto_switch_model(
     the chat route, the only one an NPU model serves; ``npu_request_check``
     refuses a request an NPU target would reject once loaded, given its catalog entry.
     """
-    from utils.model_aliases import alias_config_matches, request_alias_load_config
+    from utils.model_aliases import alias_config_matches
 
-    alias_config = request_alias_load_config(
-        getattr(fastapi_request, "scope", None), requested_model
-    )
+    alias_config = await _alias_config_for_request(requested_model, fastapi_request)
 
     def _config_matches() -> bool:
         return alias_config_matches(get_llama_cpp_backend(), alias_config)
@@ -11455,29 +11509,7 @@ async def _maybe_auto_switch_model(
         if alias_config and (
             not _config_matches() or not await asyncio.to_thread(_loaded_satisfies, requested_model)
         ):
-            raise HTTPException(
-                status_code = 409,
-                detail = error_body_for_path(
-                    getattr(getattr(fastapi_request, "url", None), "path", ""),
-                    "The requested alias configuration is not loaded. Automatic switching "
-                    "requires permission to load this model and a compatible, unshared runtime.",
-                    status = 409,
-                    code = "model_configuration_not_loaded",
-                    param = "model",
-                ),
-            )
-
-    if alias_config:
-        from utils.multi_model_settings import get_multi_model_mode
-        path = getattr(getattr(fastapi_request, "url", None), "path", "")
-        if (
-            path.rstrip("/").endswith("/embeddings")
-            or await asyncio.to_thread(get_multi_model_mode) != "off"
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Configured aliases require GGUF text generation with Keep multiple models loaded Off.",
-            )
+            _raise_alias_configuration_conflict(fastapi_request)
 
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
     gguf_requires_vision = (
@@ -12284,6 +12316,7 @@ async def _maybe_auto_switch_model(
 
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
+                                load_request._required_alias_config = alias_config
                                 if not beside:
                                     await _load_model_impl(
                                         load_request,
@@ -12348,10 +12381,10 @@ async def _maybe_auto_switch_model(
                                 await _switch_load(load_request)
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
-                            target_backend._loaded_by_user_action = False
                             # A shared-runtime join may intentionally ignore ordinary capacity defaults.
                             # Explicit alias settings must still hold before this request can generate.
                             await _config_requires_switch()
+                            target_backend._loaded_by_user_action = False
                             _switch_loaded_ok = True
                             _raise_if_generation_cancelled()
                         finally:
@@ -19486,6 +19519,10 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None
+            if request._required_alias_config:
+                from utils.model_aliases import alias_config_matches
+                if not alias_config_matches(llama_backend, request._required_alias_config):
+                    _raise_alias_configuration_conflict(fastapi_request)
             api_monitor.discard(_load_event)
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
             # A no-op Unsloth load of a preview-owned checkpoint still claims it.
@@ -32033,14 +32070,6 @@ def _chat_image_preflight(payload: ChatCompletionRequest, parsed_image_b64) -> d
 _CONNECTION_MODEL_PREFIX = "external::"
 
 
-def _refuse_configured_external_alias(model: Any, request: Request) -> None:
-    from utils.model_aliases import request_alias_load_config
-    if request_alias_load_config(getattr(request, "scope", None), model):
-        raise HTTPException(
-            status_code = 400, detail = "Configured aliases require a local GGUF text model."
-        )
-
-
 # The id the chat picker gives a Connection model: external::<connection id>::<url-encoded model>.
 def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
     if not isinstance(model, str) or not model.startswith(_CONNECTION_MODEL_PREFIX):
@@ -32298,7 +32327,7 @@ async def _collect_chat_completion(lines, model: str):
     return JSONResponse(body)
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", dependencies = [Depends(_validate_configured_alias_request)])
 @account_access.gpu_busy_route
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -32387,7 +32416,6 @@ async def produce_openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional: local providers may run without auth.
     if payload.provider_id or payload.provider_type:
-        _refuse_configured_external_alias(payload.model, request)
         from auth.authentication import request_admitted_without_credential
 
         # caller-chosen egress from this host, which is not the loaded model on offer
@@ -39252,7 +39280,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     }
 
 
-@router.post("/completions")
+@router.post("/completions", dependencies = [Depends(_validate_configured_alias_request)])
 @account_access.gpu_busy_route
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -39820,10 +39848,6 @@ async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict
     requested = body.get("model")
     if not isinstance(requested, str) or not requested.strip():
         return None
-    from utils.model_aliases import request_alias_load_config
-
-    if request_alias_load_config(getattr(request, "scope", None), requested):
-        raise HTTPException(status_code = 400, detail = "Configured aliases do not support embeddings.")
     model = await asyncio.to_thread(_names_studio_embedder, requested)
     return (body, model) if model else None
 
@@ -40102,7 +40126,7 @@ def _embeddings_input_present(body: dict) -> bool:
     return inp is not None
 
 
-@router.post("/embeddings")
+@router.post("/embeddings", dependencies = [Depends(_validate_configured_alias_request)])
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
@@ -42675,7 +42699,7 @@ async def _responses_stream(
     )
 
 
-@router.post("/responses")
+@router.post("/responses", dependencies = [Depends(_validate_configured_alias_request)])
 @account_access.gpu_busy_route
 async def openai_responses(
     payload: ResponsesRequest,
@@ -42691,8 +42715,6 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
-    if connection is not None:
-        _refuse_configured_external_alias(payload.model, request)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -44010,7 +44032,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
     return total, parts, rendered.get("prompt")
 
 
-@router.post("/chat/count_tokens")
+@router.post("/chat/count_tokens", dependencies = [Depends(_validate_configured_alias_request)])
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
@@ -44817,7 +44839,7 @@ async def _anthropic_messages_via_connection(
     return JSONResponse(_anthropic_message_from_events([event async for event in events]))
 
 
-@router.post("/messages/count_tokens")
+@router.post("/messages/count_tokens", dependencies = [Depends(_validate_configured_alias_request)])
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -45476,7 +45498,7 @@ async def _anthropic_in_process_messages(
     return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies = [Depends(_validate_configured_alias_request)])
 @account_access.gpu_busy_route
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
@@ -45495,7 +45517,6 @@ async def anthropic_messages(
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
-        _refuse_configured_external_alias(payload.model, request)
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection
         )

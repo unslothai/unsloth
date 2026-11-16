@@ -63,29 +63,27 @@ def alias_config_matches(backend: Any, config: dict) -> bool:
     if not config:
         return True
     intent = getattr(backend, "last_load_intent", None)
-    if intent is not None:
-        from utils.openai_auto_switch_settings import strip_args_shadowed_by
+    if intent is None:
+        return False
+    from core.inference.llama_cpp import _planned_main_cache_types
+    from utils.openai_auto_switch_settings import strip_args_shadowed_by
 
-        extras = getattr(backend, "requested_extra_args", None)
-        if extras is None:
-            extras = getattr(intent, "extra_args", None)
-        # Scalars are not authoritative when a manual launch supplied overriding flags.
-        if extras and strip_args_shadowed_by(extras, config) != list(extras):
-            return False
+    extras = getattr(backend, "requested_extra_args", None)
+    if extras is None:
+        extras = getattr(intent, "extra_args", None)
+    # Scalars are not authoritative when a manual launch supplied overriding flags.
+    if extras and strip_args_shadowed_by(extras, config) != list(extras):
+        return False
+    # Use the load-time pair: None means f16 unless the launch environment overrides it.
+    cache_types = getattr(backend, "_requested_cache_types", None)
+    if cache_types is None:
+        cache_types = _planned_main_cache_types(intent.cache_type_kv, extras)
     # Crash recovery records an Off load, then restores the original requested mode.
-    requested_spec_mode = getattr(
-        backend, "requested_spec_mode", getattr(intent, "speculative_type", None)
-    )
+    requested_spec_mode = getattr(backend, "requested_spec_mode", intent.speculative_type)
     return (
-        intent is not None
+        intent.n_ctx == config["max_seq_length"]
+        and cache_types == (config["cache_type_kv"], config["cache_type_kv"])
         and (requested_spec_mode or "auto") == config["speculative_type"]
-        and all(
-            getattr(intent, field, None) == config[key]
-            for key, field in (
-                ("max_seq_length", "n_ctx"),
-                ("cache_type_kv", "cache_type_kv"),
-            )
-        )
     )
 
 

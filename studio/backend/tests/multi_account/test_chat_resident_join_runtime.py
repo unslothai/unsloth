@@ -234,6 +234,9 @@ def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, acc
         strict.last_load_intent, n_ctx = 2048, cache_type_kv = "q4_0", speculative_type = "off"
     )
     strict._requested_spec_mode = "off"
+    strict._loaded_by_user_action = True
+    monkeypatch.setattr(inference, "_preview_resident_ident", RESIDENT)
+    prior_sharers = set(access._resident_sharers.get("chat", ()))
     target = f"{RESIDENT}:{VARIANT}"
     config = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "off"}
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -257,3 +260,6 @@ def test_configured_alias_refuses_capacity_relaxed_join(monkeypatch, strict, acc
     assert strict.last_load_intent.n_ctx == 2048
     assert strict.last_load_intent.cache_type_kv == "q4_0"
     assert not strict.unloaded
+    assert strict._loaded_by_user_action is True
+    assert inference._get_preview_resident() == RESIDENT
+    assert access._resident_sharers.get("chat", set()) == prior_sharers

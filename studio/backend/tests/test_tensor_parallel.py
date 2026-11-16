@@ -379,6 +379,7 @@ def test_runtime_recovery_preserves_auto_alias_configuration(monkeypatch):
 
     backend = _recovery_backend()
     backend._last_load_intent = replace(backend.last_load_intent, cache_type_kv = "q4_0")
+    backend._requested_cache_types = ("q4_0", "q4_0")
 
     def load_fallback(intent):
         backend._last_load_intent = intent

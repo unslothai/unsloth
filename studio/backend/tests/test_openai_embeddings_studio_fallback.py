@@ -95,8 +95,9 @@ def test_rag_embedding_alias_configuration_is_rejected_before_fallback(
     studio_embedder, configured, resident_loaded
 ):
     # Real alias rewriting must reject configured embeddings while preserving plain aliases.
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    from auth.authentication import get_current_subject
     from utils import model_aliases
     from utils.api_errors import install_api_error_handlers
 
@@ -120,11 +121,8 @@ def test_rag_embedding_alias_configuration_is_rejected_before_fallback(
     app = FastAPI()
     install_api_error_handlers(app)
     app.add_middleware(model_aliases.ModelAliasMiddleware)
-
-    @app.post("/v1/embeddings")
-    async def endpoint(request: Request):
-        request.state.skip_api_monitor = True
-        return await inference_route.openai_embeddings(request, "tester")
+    app.include_router(inference_route.router, prefix = "/v1")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
 
     with TestClient(app) as client:
         response = client.post(

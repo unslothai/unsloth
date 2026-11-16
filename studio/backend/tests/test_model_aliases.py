@@ -368,6 +368,53 @@ def test_saving_refuses_a_decision_model_id(store, monkeypatch):
 _CONFIG = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "ngram"}
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/chat/completions",
+        "/completions",
+        "/chat/count_tokens",
+        "/embeddings",
+        "/messages",
+        "/messages/count_tokens",
+        "/responses",
+    ],
+)
+def test_configured_connection_is_rejected_before_any_endpoint_dispatch(store, monkeypatch, path):
+    # Every alias-capable endpoint must reject unsupported configurations before its own shortcuts.
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from auth.authentication import authenticated_via_api_key, get_current_subject
+    from routes import inference
+    from utils.api_errors import install_api_error_handlers
+
+    set_model_aliases([{"name": "remote", "model": "external::c1::model", "load_config": _CONFIG}])
+    monkeypatch.setattr(
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: None)
+    app = FastAPI()
+    app.include_router(inference.router, prefix = "/v1")
+    app.add_middleware(ModelAliasMiddleware)
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    install_api_error_handlers(app)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1" + path,
+            json = {
+                "model": "remote",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 8,
+                "prompt": "hello",
+                "input": "hello",
+            },
+        )
+    assert response.status_code == 400, response.text
+    assert "error" in response.json()
+
+
 def test_configured_alias_roundtrips_settings_schema(store):
     # Saving and returning an alias retains its independently selectable launch configuration.
     from routes.settings import ModelAliasesPayload, ModelAliasesResponse, get_model_aliases_setting
