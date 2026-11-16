@@ -573,6 +573,31 @@ def test_alias_config_does_not_trust_scalars_shadowed_by_extra_flags(extras):
     assert not aliases_mod.alias_config_matches(backend, _CONFIG)
 
 
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--cache-type-k", "q5_1"],
+        ["--cache-type-k", "q5_1", "--cache-type-v=q5_1"],
+    ],
+)
+def test_alias_config_matches_cache_flags_that_agree_with_it(extras):
+    # Flags that produce the configured K/V pair are the configuration, not a conflict with it.
+    from types import SimpleNamespace
+    from core.inference.llama_cpp import GgufLoadIntent, _planned_main_cache_types
+
+    intent = GgufLoadIntent(
+        model_identifier = "org/model", n_ctx = 98304, speculative_type = "ngram", extra_args = extras
+    )
+    backend = SimpleNamespace(
+        last_load_intent = intent,
+        requested_extra_args = extras,
+        requested_spec_mode = "ngram",
+        _requested_cache_types = _planned_main_cache_types(None, extras),
+    )
+    assert backend._requested_cache_types == ("q5_1", "q5_1")
+    assert aliases_mod.alias_config_matches(backend, _CONFIG)
+
+
 def test_configured_alias_catalog_reports_only_matching_runtime_loaded(store, monkeypatch):
     # An unloaded configuration cannot advertise another configuration's live context or residency.
     import routes.inference as inf

@@ -71,8 +71,10 @@ def alias_config_matches(backend: Any, config: dict) -> bool:
     extras = getattr(backend, "requested_extra_args", None)
     if extras is None:
         extras = getattr(intent, "extra_args", None)
-    # Scalars are not authoritative when a manual launch supplied overriding flags.
-    if extras and strip_args_shadowed_by(extras, config) != list(extras):
+    # Scalars are not authoritative when a manual launch supplied overriding flags. Cache flags are
+    # left to the recorded pair below, which already applies them, so agreeing flags still match.
+    shadowing = {key: value for key, value in config.items() if key != "cache_type_kv"}
+    if extras and strip_args_shadowed_by(extras, shadowing) != list(extras):
         return False
     # Use the load-time pair: None means f16 unless the launch environment overrides it.
     cache_types = getattr(backend, "_requested_cache_types", None)
