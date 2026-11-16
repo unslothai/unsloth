@@ -43981,8 +43981,6 @@ async def chat_count_tokens(
     ):
         raise HTTPException(status_code = 404, detail = "Model not found")
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
-    if all(message.role in ("system", "developer") for message in payload.messages):
-        payload.messages = [*payload.messages, ChatMessage(role = "user", content = "")]
     from core.chat_memory import apply_to_request
 
     await _route_to_extra_slot(payload.model)
