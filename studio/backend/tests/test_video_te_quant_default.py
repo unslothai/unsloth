@@ -12,6 +12,12 @@ import types
 import pytest
 import torch
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 import core.inference.diffusion_te_prequant as tpq
 from core.inference.video import video_te_quant_request
 from core.inference.video_families import _FAMILIES, detect_video_family
@@ -50,8 +56,7 @@ HV15_BASES = (
 
 
 def test_every_generic_path_video_family_has_a_default():
-    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs,
-    and Cosmos3 has no text encoder."""
+    """Only H3 and LTX-2.5 resolve their own encoder default; Cosmos3 has no text encoder."""
     assert {f.name for f in _FAMILIES if f.te_quant_auto} == set(EXPECTED_DEFAULTS)
     assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {
         "minimax-h3",
@@ -72,8 +77,7 @@ def _family(name):
 
 
 def test_every_video_family_default_scheme_is_one_we_host():
-    """The video twin of the image sweep: a te_quant_auto with no hosted file would cost a dense download plus an
-    in-place cast on every default load."""
+    """A te_quant_auto with no hosted file means a dense download and in-place cast on load."""
     offenders = []
     for fam in _FAMILIES:
         scheme = getattr(fam, "te_quant_auto", None)
@@ -162,7 +166,12 @@ def test_wan_is_not_equivalent_to_other_encoders():
     assert not tpq.te_base_equivalent(WAN_BASES[2], "Qwen/Qwen-Image")
 
 
-def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one():
+@pytest.fixture
+def rows_published(monkeypatch):
+    monkeypatch.setattr(tpq, "te_int8_convrot_published", lambda *a, **k: True)
+
+
+def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one(rows_published):
     for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         source = tpq.resolve_te_prequant_source(_family(name), "text_encoder", "int8")
         assert source.location == WAN_REPO
@@ -173,7 +182,7 @@ def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one():
         ), name
 
 
-def test_wan_int8_needs_no_lm_head_trim(monkeypatch):
+def test_wan_int8_needs_no_lm_head_trim(monkeypatch, rows_published):
     """UMT5EncoderModel has no lm_head, so the keep-lm_head switch cannot push it onto the fp8 file."""
     from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
 
@@ -341,6 +350,7 @@ def _converter():
     return module
 
 
+@needs_torchao
 def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     """--drop-tied-copies writes UMT5's shared/embed_tokens pair once, the round trip still verifies, and the fp8
     loader fills the alias back from the model's own tie."""
@@ -565,12 +575,13 @@ def test_wan_int8_budget_covers_the_measured_file():
 
 def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LTX25_TE_INT8", raising = False)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: False)
     fam = types.SimpleNamespace(name = "ltx-2.5", bf16_components_gb = (40.0, 23.9))
     hosted = tpq.te_prequant_budget_scale(
         fam, te_quant_mode = "int8", target = None, base = "Lightricks/LTX-2.5-Diffusers"
     )
     assert hosted < 1.0
-    # Unset keeps the bf16 encoder (int8 is opt-in), so its budget is the dense one.
+    # Unset takes the hosted file only when it is confirmed; unconfirmed it loads bf16, so the budget is the dense one.
     assert (
         tpq.te_prequant_budget_scale(
             fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
@@ -592,6 +603,7 @@ def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypa
     )
 
 
+@needs_torchao
 def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
     import core.inference.prequant_safetensors as ps
 

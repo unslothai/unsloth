@@ -188,8 +188,7 @@ def test_legacy_model_alias_conflicts_with_long_form(monkeypatch):
 
 
 def test_clustered_tokens_are_not_promoted(monkeypatch):
-    """`-mg` / `-fa` / `-fitt` are llama-server flags and must survive
-    in the tail even though they start with `-m` / `-f`."""
+    """llama-server flags -mg, -fa and -fitt must survive, though they start with -m or -f."""
     captured = _invoke(
         monkeypatch,
         ["--model", "X", "-mg", "0", "-fa", "-fitt", "1024"],
@@ -366,8 +365,7 @@ def test_expand_np_handles_signed_attached_forms(monkeypatch, attached, expected
     [("-np8x", "8x"), ("-np-1foo", "-1foo"), ("-np9bar", "9bar")],
 )
 def test_expand_np_rewrites_numeric_prefix_even_with_junk(monkeypatch, attached, expected_suffix):
-    """`-np8x` would surface as a baffling --port error; rewriting to
-    `-np 8x` makes typer report against `-np` where it was typed."""
+    """Rewrite -np8x as -np 8x so errors cite the typed -np, not a baffling --port."""
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", attached])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-np", expected_suffix]
@@ -395,8 +393,7 @@ def test_consume_helper_rejects_empty_inline_value():
     ],
 )
 def test_third_party_importers_do_not_trigger_np_rewrite(monkeypatch, third_party_argv0):
-    """Only the `unsloth` / `unsloth.exe` console-script may run the
-    canonicaliser; third-party scripts must keep their argv intact."""
+    """Only unsloth and unsloth.exe may run the canonicaliser; third-party scripts keep argv."""
     import os as _os
     import importlib
 

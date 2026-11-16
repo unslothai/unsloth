@@ -498,8 +498,7 @@ def test_cancellation_keeps_its_class_across_the_process_boundary():
 
 
 def test_an_unknown_failure_arrives_as_a_worker_error_carrying_its_message():
-    # The exception object is never sent: a torch error that will not pickle
-    # would cost the caller its whole timeout instead of an error.
+    # The exception is never sent, since an unpicklable torch error would cost a full timeout.
     response = worker_module._error_response(TypeError("weird"))
 
     assert response == {"type": "error", "kind": "TypeError", "error": "weird"}
@@ -719,8 +718,7 @@ def test_a_child_that_outlived_a_cancelled_command_marks_its_handle_unusable(mon
 
 
 def test_a_handle_whose_child_did_exit_is_still_usable(monkeypatch):
-    # The flag is only for a child that outlived both signals; an ordinary
-    # close must not retire a handle that gave its memory back.
+    # Set only for a child that outlived both signals, so a normal close keeps the handle.
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
     handle = _wired_worker()
@@ -778,8 +776,7 @@ class _RefusingContext:
 
 
 def test_dictation_still_loads_and_transcribes_when_no_child_can_be_started(monkeypatch):
-    # This may only move work out of the backend, never remove a working
-    # configuration: a host that forbids spawn had dictation before.
+    # Moves work out of the backend only; a host forbidding spawn must keep working as before.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     monkeypatch.setattr(worker_module, "_CTX", _RefusingContext())
@@ -852,8 +849,7 @@ class _StillbornContext:
 
 
 def test_a_child_that_never_bootstraps_reads_as_a_host_that_cannot_spawn(monkeypatch):
-    # start() succeeding says only that the exec worked. A child that dies before
-    # answering took no device, so it must reach the fallback, not a second child.
+    # start() only proves exec; a child dying before answering holds no device, so fall back.
     from core.inference.stt_sidecar import WhisperSttSidecar
 
     monkeypatch.setattr(worker_module, "_CTX", _StillbornContext())
@@ -868,8 +864,7 @@ def test_a_child_that_never_bootstraps_reads_as_a_host_that_cannot_spawn(monkeyp
 
 
 def test_a_child_killed_by_a_signal_keeps_its_crash_instead_of_falling_back(monkeypatch):
-    # A child the box killed under memory pressure bootstrapped fine, so spawn
-    # works here; loading the same model in the backend would only repeat it.
+    # A signal-killed child bootstrapped, so spawn works; a backend load just repeats it.
     monkeypatch.setattr(worker_module, "_CTX", _StillbornContext(exitcode = -9))
     monkeypatch.setattr(
         worker_module,
@@ -933,8 +928,7 @@ class _NativeCrashContext:
         return threading.Event()
 
     def Process(self, **kwargs):
-        # Forward what start() actually passed, ready_event included: rebuilding the
-        # kwargs would drop it, and readiness is the whole signal this test turns on.
+        # Pass start()'s kwargs through, since rebuilding them would drop ready_event.
         process = _NativeCrashProcess(dict(kwargs.get("kwargs") or {}), self._faulted)
         self._process = process
         return process
@@ -992,8 +986,7 @@ def test_a_crash_in_the_child_load_is_never_repeated_inside_the_backend(monkeypa
 
 
 def test_the_child_says_it_is_ready_before_it_touches_a_command(monkeypatch):
-    # The handshake is what separates a host that cannot spawn from a child that
-    # failed at something, so it has to precede even a load that fails.
+    # The handshake separates no-spawn hosts from failed children, so it precedes every load.
     cmd_queue: queue.Queue = queue.Queue()
     resp_queue: queue.Queue = queue.Queue()
 

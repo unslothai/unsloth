@@ -545,7 +545,8 @@ class _H3LoopPipe:
         num_frames = None,
         **kwargs,
     ):
-        for _ in range(int(num_inference_steps or 1)):
+        # H3 grid points include the terminal 0
+        for _ in range(int(num_inference_steps or 2) - 1):
             self.outputs.append(self.transformer(timestep = None, return_dict = False))
             self.scheduler.step(object(), 0, object())
         return {"videos": [[object() for _ in range(int(num_frames or 1))]], "audio": None}

@@ -560,9 +560,8 @@ def test_patches_every_module_that_binds_the_flag(monkeypatch):
 
 
 def test_does_not_invent_the_flag_on_hub_versions_that_never_had_it(monkeypatch):
-    """Before 0.34 the Hub read os.environ per call, so the variable alone is the whole fix and
-    creating the attribute would put a value into a namespace upstream does not own.
-    """
+    """Hub versions before 0.34 read os.environ per call, so HF_HUB_DISABLE_XET alone is the fix;
+    setting the attribute would invent a flag upstream never had."""
     monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
     _fake_host(monkeypatch, "win-arm64")
     monkeypatch.setattr(IF, "_hf_xet_wheel_platform_tags", lambda: ("win_amd64",))

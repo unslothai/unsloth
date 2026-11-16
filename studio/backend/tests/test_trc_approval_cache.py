@@ -175,8 +175,7 @@ def test_sha_moved_forces_reprompt(monkeypatch):
 
 
 def test_local_offline_uses_fingerprint_only(monkeypatch):
-    # SHA unresolvable (local/offline): the fingerprint alone governs, so unchanged code
-    # still auto-approves.
+    # No SHA (local/offline): the fingerprint alone governs, so unchanged code still approves.
     _approve(monkeypatch, sha = None)
     d = _gate("org/m")
     assert d.blocked is False and d.reason == "approved by fingerprint"

@@ -110,7 +110,17 @@ test("Size sorts local folders by their scanned size, and Format follows the for
     "../src/features/hub/catalog/inventory-sort.ts"
   );
   const local = (modelFormat: string, extra: object = {}) =>
-    ({ variant: "local", row: { modelFormat, source: "custom", ...extra } }) as never;
+    ({
+      variant: "local",
+      row: {
+        kind: "local",
+        modelFormat,
+        source: "custom",
+        path: "/m/model",
+        title: "model",
+        ...extra,
+      },
+    }) as never;
   assert.equal(inventoryItemSize(local("gguf", { bytes: 5_000 })), 5_000);
   assert.equal(inventoryItemSize(local("gguf")), 0);
   const ranks = [
@@ -131,12 +141,26 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
     "../src/features/hub/catalog/inventory-sort.ts"
   );
   const row = (extra: object) =>
-    ({ kind: "local", modelFormat: "safetensors", source: "custom", ...extra }) as never;
+    ({
+      kind: "local",
+      modelFormat: "safetensors",
+      source: "custom",
+      path: "/models/Qwen3-8B",
+      title: "Qwen3-8B",
+      ...extra,
+    }) as never;
   const mlxByLibrary = row({ libraryName: "MLX" });
   const mlxByTag = row({ tags: ["mlx"] });
   const omlx = row({ source: "omlx" });
+  const mlxByPath = row({ path: "/models/Qwen3-8B-MLX" });
+  const mlxByRepo = {
+    kind: "cache",
+    modelFormat: "safetensors",
+    repoId: "mlx-community/Qwen3-8B-4bit",
+    repo: "Qwen3-8B-4bit",
+  } as never;
   const plain = row({});
-  for (const mlx of [mlxByLibrary, mlxByTag, omlx]) {
+  for (const mlx of [mlxByLibrary, mlxByTag, omlx, mlxByPath, mlxByRepo]) {
     assert.equal(matchesFormat(inventoryRowFormat(mlx), "mlx"), true);
     assert.equal(matchesFormat(inventoryRowFormat(mlx), "checkpoint"), false);
   }

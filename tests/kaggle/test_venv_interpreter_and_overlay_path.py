@@ -115,9 +115,8 @@ def test_the_mutation_this_rule_exists_for_is_actually_caught():
 
 
 def test_the_path_is_not_merely_a_string_containing_site_packages():
-    """`site-packages` has to be the directory packages are installed INTO, not
-    a decoration further up the path, or pip lays the tree somewhere dill still
-    reads by value."""
+    """The overlay --target must end in site-packages, the directory pip installs into; otherwise
+    pip lays the tree where dill still reads modules by value."""
     ov = _overlay_dir_from_generated_source()
     assert ov.name == "site-packages", (
         f"the overlay --target is {ov}, whose last component is {ov.name!r}; "

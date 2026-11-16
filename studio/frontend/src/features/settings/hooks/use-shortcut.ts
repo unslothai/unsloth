@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import {
+  COMPOSER_SURFACE,
+  FIND_SCOPE_SURFACE,
+  SIDEBAR_SURFACE,
+  trackedSurfaces,
+} from "@/lib/surface-registry";
 import { zoomTypedOffZoomKey } from "../../interface-zoom/lib/zoom-chords";
 import {
   SHORTCUT_SLOTS,
@@ -19,7 +25,23 @@ import {
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
-export const COMPOSER_INPUT_SELECTOR = ".aui-composer-input";
+export const COMPOSER_INPUT_SELECTOR = COMPOSER_SURFACE;
+
+// Every element these can match registers itself (useSurfaceRef), so a check reads a handful of
+// elements, not the whole document; any other selector is still a document query.
+const TRACKED_SURFACE_SELECTORS: ReadonlySet<string> = new Set([
+  COMPOSER_SURFACE,
+  SIDEBAR_SURFACE,
+  FIND_SCOPE_SURFACE,
+]);
+
+/** What `document.querySelectorAll(selector)` matches, in no particular order. */
+export function surfaceElements(selector: string): Element[] {
+  const tracked = TRACKED_SURFACE_SELECTORS.has(selector)
+    ? trackedSurfaces(selector, selector)
+    : null;
+  return tracked ?? [...document.querySelectorAll(selector)];
+}
 
 export function isTextEntryFocused(exceptFor?: string): boolean {
   if (typeof document === "undefined") return false;
@@ -37,12 +59,28 @@ export function isImeComposing(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229;
 }
 
+// Set only while the listeners re-read their snapshots. Nothing mutates the DOM between two
+// listeners (React schedules their re-renders), so each id and each document query is answered
+// once per pass instead of once per subscriber; a long chat makes every miss a whole-tree walk.
+let passAnswers: Map<string, boolean> | null = null;
+
+function answerOncePerPass(key: string, compute: () => boolean): boolean {
+  if (!passAnswers) return compute();
+  const known = passAnswers.get(key);
+  if (known !== undefined) return known;
+  const answer = compute();
+  passAnswers.set(key, answer);
+  return answer;
+}
+
 /** Checked at press time: a dialog leaves the route mounted and need not re-render `enabled`. */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
   // Every match: Compare keeps an inert base composer mounted; Radix aria-hides the page under a modal.
-  return [...document.querySelectorAll(selector)].some(
-    (el) => !el.closest('[aria-hidden="true"], [inert]'),
+  return answerOncePerPass(`foreground\0${selector}`, () =>
+    surfaceElements(selector).some(
+      (el) => !el.closest('[aria-hidden="true"], [inert]'),
+    ),
   );
 }
 
@@ -50,11 +88,13 @@ export function isSurfaceInForeground(selector: string): boolean {
  * backgrounded. */
 export function isSurfaceBackgrounded(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  const found = [...document.querySelectorAll(selector)];
-  return (
-    found.length > 0 &&
-    found.every((el) => el.closest('[aria-hidden="true"], [inert]') !== null)
-  );
+  return answerOncePerPass(`backgrounded\0${selector}`, () => {
+    const found = surfaceElements(selector);
+    return (
+      found.length > 0 &&
+      found.every((el) => el.closest('[aria-hidden="true"], [inert]') !== null)
+    );
+  });
 }
 
 /** Only Escape, function keys, and non-Shift modifier chords; caret keys count as typing. */
@@ -83,7 +123,23 @@ export interface ShortcutTrigger {
 
 const triggers = new Map<ShortcutId, ShortcutTrigger[]>();
 const triggerListeners = new Set<() => void>();
-const notifyTriggerListeners = () => triggerListeners.forEach((listener) => listener());
+let notifyQueued = false;
+function flushTriggerListeners(): void {
+  notifyQueued = false;
+  passAnswers = new Map();
+  try {
+    triggerListeners.forEach((listener) => listener());
+  } finally {
+    passAnswers = null;
+  }
+}
+// One pass per microtask: a dialog mounting or unmounting registers or drops a trigger per
+// shortcut and lands as several observer batches, and each pass re-asks every subscriber.
+const notifyTriggerListeners = () => {
+  if (notifyQueued) return;
+  notifyQueued = true;
+  queueMicrotask(flushTriggerListeners);
+};
 
 /** Exported for the test. Returns the unregister. */
 export function registerShortcutTrigger(
@@ -107,7 +163,8 @@ export function triggerShortcut(id: ShortcutId): boolean {
 
 // Modals show as aria-hidden, inert, or only a body-portaled backdrop when an aria-live region exists.
 let modalObserver: MutationObserver | null = null;
-function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
+/** Exported for the test. Returns the unsubscribe. */
+export function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
   triggerListeners.add(listener);
   if (watchModals && !modalObserver && typeof MutationObserver !== "undefined") {
     modalObserver = new MutationObserver(notifyTriggerListeners);
@@ -134,7 +191,9 @@ export function useShortcutAvailable(id: ShortcutId, watchModals: boolean): bool
     [watchModals],
   );
   return useSyncExternalStore(subscribe, () =>
-    (triggers.get(id) ?? []).some((t) => t.claims()),
+    answerOncePerPass(`available\0${id}`, () =>
+      (triggers.get(id) ?? []).some((t) => t.claims()),
+    ),
   );
 }
 

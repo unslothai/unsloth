@@ -241,9 +241,8 @@ def _managed_copy(tmp_path: Path) -> Path:
 
 
 def test_the_managed_install_on_this_machine_is_healthy():
-    """Read-only, against the install itself rather than a copy: the only sample available of
-    what the probe is actually asked about at launch.
-    """
+    """Read-only, runs against the real managed install rather than a copy, the only sample of what
+    the launch probe is asked; skipped when none is installed."""
     root = _managed_install()
     if root is None:
         pytest.skip("no managed llama.cpp install on this machine")

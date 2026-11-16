@@ -282,11 +282,11 @@ def test_nonreentrant_checkpoint_runs_without_graphs(monkeypatch):
 
     bc._wrap(CkptDecoderLayer, {**bc._COMPILE_OPTIONS, "triton.cudagraphs": True})
     layer = CkptDecoderLayer().train()
-    for reentrant, want in ((False, {"plain"}), (True, {"graphs"})):
+    for reentrant, want, calls in ((False, {"plain"}, 3), (True, {"graphs"}, 2)):
         seen.clear()
         x = torch.randn(2, 16, 8, requires_grad = True)
         checkpoint(layer, x, use_reentrant = reentrant).sum().backward()
-        assert len(seen) == 2 and set(seen) == want
+        assert len(seen) == calls and set(seen) == want
         assert x.grad is not None
     assert not bc._in_nonreentrant_checkpoint()
 
@@ -451,9 +451,8 @@ def test_no_pool_copies_outside_checkpointing(monkeypatch, trainable_input):
     "through", ["view", "view_add", "cat", "addmm_input", "addmm_bias", "embedding"]
 )
 def test_input_viewing_a_trainable_param_copies_its_gradient(monkeypatch, through):
-    """inputs_embeds = param.view(...): the view's backward passes the pool gradient straight to
-    AccumulateGrad, so the parameter's first .grad would alias the pool. An embedding lookup writes
-    a new gradient, so it needs no copy."""
+    """inputs_embeds = param.view(...) passes the pool gradient straight to AccumulateGrad, so the
+    parameter's first .grad would alias the pool; an embedding lookup needs no copy."""
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
     seen = _counting_clones(monkeypatch)
     A = _linear_layer_class("ViewInputDecoderLayer")

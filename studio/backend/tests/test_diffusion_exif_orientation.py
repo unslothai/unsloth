@@ -15,8 +15,7 @@ from core.inference.diffusion import decode_b64_image
 PIL = pytest.importorskip("PIL.Image")
 
 
-# One colour per quadrant: a two-band image satisfies orientation 5 and 6 alike, so a mirrored
-# fix would pass.
+# One colour per quadrant: two-band images satisfy orientations 5 and 6, so a mirror passes.
 RED, GREEN, BLUE, YELLOW = (220, 20, 20), (20, 200, 20), (20, 20, 220), (220, 200, 20)
 
 
@@ -64,8 +63,7 @@ def _raw_profile_png_data_url(
     width: int = 300,
     height: int = 100,
 ) -> str:
-    """A PNG carrying orientation only through ImageMagick's tEXt profile: header, byte count,
-    then the EXIF block as wrapped hex."""
+    """PNG with orientation only in ImageMagick's tEXt profile, the EXIF block as wrapped hex."""
     from PIL import PngImagePlugin
 
     img = _quadrant_image(width, height)

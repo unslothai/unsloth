@@ -362,6 +362,26 @@ def test_head_learning_rate_and_weight_decay(checkpoint, tmp_path, lora):
             assert group["weight_decay"] == (0.0 if name in no_decay else 0.01)
 
 
+@pytest.mark.skipif(
+    not hasattr(TrainingArguments, "activation_checkpointing"),
+    reason = "transformers < 5.23 reads gradient_checkpointing",
+)
+def test_trainer_checkpoints_the_encoder_not_the_wrapper(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model,
+        args = _args(tmp_path, max_steps = 1, gradient_checkpointing = True),
+        train_dataset = items,
+        processing_class = tokenizer,
+    )
+    assert trainer.args.activation_checkpointing is False
+    assert model.encoder.is_gradient_checkpointing
+    trainer.train()
+
+
 def test_length_grouping_only_with_gradient_accumulation(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
@@ -718,9 +738,8 @@ def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path,
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
-    # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
-    # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
-    # tuned to CPU arithmetic, not a GPU defect.
+    # The toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but only after ~100
+    # steps on GPU, so 80 steps is tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
     # Eager too: a compiled encoder draws the same accuracy from a different 45-decision RNG stream.
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")

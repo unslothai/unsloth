@@ -349,9 +349,8 @@ class TestSingleUseUploadUrl:
 
 
 class TestDeadlineEnforcement:
-    """One attempt can block for the full socket timeout, so the deadline has to be
-    checked BEFORE a request, not after, or the step timeout kills the process
-    before any summary is written."""
+    """One attempt can block for the full socket timeout, so the deadline must be checked before
+    each request, or the step timeout kills the process before any summary is written."""
 
     def test_request_checks_deadline_before_issuing(self):
         calls = []
@@ -733,9 +732,8 @@ class TestMarkdownEscaping:
 
 
 class TestAnnotationEscaping:
-    """Engine names, detection labels and error strings are third-party data.
-    Actions truncates an annotation at the first newline, which would drop the
-    engine list exactly when the scan is trying to alert a maintainer."""
+    """Engine names, detection labels and error strings are third-party data; Actions truncates an
+    annotation at its first newline, dropping the engine list."""
 
     def test_percent_is_escaped_before_the_newlines(self):
         # Escaping % last would double-encode %0A into %250A.
@@ -847,8 +845,7 @@ class TestWorkflowOrdering:
 
     @staticmethod
     def _runner_temp(path):
-        """Maps the spellings of the runner temp dir to one token, since `with:` and `run:` use
-        different ones."""
+        """Maps the runner temp dir spellings to one token, since `with:` and `run:` use different ones."""
         normalised = " ".join(str(path).split())
         for spelling in ("${{ runner.temp }}", "${RUNNER_TEMP}", "$RUNNER_TEMP"):
             normalised = normalised.replace(spelling, "<RUNNER_TEMP>")

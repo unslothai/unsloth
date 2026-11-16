@@ -10,7 +10,6 @@ import routes.inference as inf
 from core.inference import openai_codex_auth as codex_auth
 from core.inference import openai_codex_client as codex_client
 from core.inference.openai_codex_auth import OPENAI_CODEX_API_BASE
-from core.inference.providers import get_provider_info
 from models.inference import ChatCompletionRequest
 from .test_npu_chat_route import _request, flm  # noqa: F401  (flm is a fixture)
 
@@ -59,7 +58,7 @@ async def _ends_within(
 
 
 def _codex_provider(monkeypatch):
-    model = get_provider_info("openai_codex")["default_models"][0]
+    model = "gpt-5.4"
     monkeypatch.setattr(
         inf.providers_db,
         "get_provider",

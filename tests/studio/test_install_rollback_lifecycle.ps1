@@ -120,6 +120,10 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "new")
     Complete-StudioVenvRollback
     Check "new environment remains" ((Get-Content -LiteralPath (Join-Path $VenvDir "generation") -Raw) -eq "new")
+    # On Windows a background process deletes the parked tree after the commit returns.
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline -and @(Get-ChildItem -LiteralPath $StudioHome -Directory |
+        Where-Object { $_.Name -like "unsloth_studio.rollback.*" })) { Start-Sleep -Milliseconds 200 }
     Check "current rollback is removed" (-not @(Get-ChildItem -LiteralPath $StudioHome -Directory |
         Where-Object { $_.Name -like "unsloth_studio.rollback.*" }))
 

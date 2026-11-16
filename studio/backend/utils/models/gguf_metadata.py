@@ -432,10 +432,9 @@ def _walk_memo_store(f, key: tuple, started: int, *items: Tuple[tuple, tuple]) -
 
 
 def skip_gguf_strings(f, count: int) -> int:
-    """Skip up to ``count`` GGUF strings (u64 length + bytes) through one buffer; return how many,
-    with ``f`` at the next. Stops at an entry over 1 MiB, a length cut short by EOF, or a stream
-    that cannot rewind, so the caller's per-entry loop handles the rest exactly as before. A walk
-    already done on the same unchanged file is replayed as one seek."""
+    """Skips up to count GGUF strings (u64 length plus bytes) through one buffer and returns how
+    many, leaving f at the next; stops at an entry over 1 MiB, EOF or an unrewindable stream; an
+    unchanged file's walk replays as one seek."""
     if not _can_rewind(f):
         return 0
     key, hit, started = _walk_memo_lookup(f, count, None)

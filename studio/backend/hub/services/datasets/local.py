@@ -206,10 +206,22 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 _JSONL_SCHEMA_BYTES = 10 << 20
 
 
+def _first_significant_byte(f) -> bytes:
+    """First byte that ``bytes.strip`` would keep, or ``b""`` for an empty / all-whitespace file."""
+    while chunk := f.read(1 << 16):
+        if stripped := chunk.lstrip():
+            return stripped[:1]
+    return b""
+
+
 def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | None:
     """First ``preview_size`` JSON Lines objects and the bytes of the loader's first batch. ``None`` if not JSON Lines."""
     rows, keys, window, scanned = [], {}, [], 0
     with path.open("rb") as f:
+        # Only an object decodes to a dict: a minified JSON array is one huge line, so don't read or parse it here.
+        if preview_size > 0 and _first_significant_byte(f) not in (b"", b"{"):
+            return None
+        f.seek(0)
         for line in f:
             if line.strip():
                 try:
@@ -347,35 +359,29 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     from utils.datasets.cells import csv_as_text_kwargs
 
     if dataset_path.is_dir():
-        parquet_dir = (
-            dataset_path / "parquet-files"
-            if (dataset_path / "parquet-files").exists()
-            else dataset_path
-        )
-        parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
-        if parquet_files:
+        from utils.paths import dataset_files_in_dir
+
+        try:
+            files = dataset_files_in_dir(dataset_path)
+        except ValueError:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
+            ) from None
+        if files[0].suffix.lower() == ".parquet":
             if train_split == "train":
-                preview = _parquet_preview_slice(parquet_files, preview_size)
+                preview = _parquet_preview_slice(files, preview_size)
                 if preview is not None:
                     return preview
             dataset = load_dataset(
                 "parquet",
-                data_files = [str(path) for path in parquet_files],
+                data_files = [str(path) for path in files],
                 split = train_split,
             )
             total_rows = len(dataset)
             preview_slice = dataset.select(range(min(preview_size, total_rows)))
             return preview_slice, total_rows
-
-        candidate_files: list[Path] = []
-        for ext in LOCAL_FILE_EXTS:
-            candidate_files.extend(drop_appledouble_metadata(sorted(dataset_path.glob(f"*{ext}"))))
-        if not candidate_files:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unsupported local dataset directory (expected parquet/json/jsonl/csv files)",
-            )
-        dataset_path = candidate_files[0]
+        dataset_path = files[0]
 
     suffix = dataset_path.suffix.lower()
     # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.

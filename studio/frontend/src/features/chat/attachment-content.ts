@@ -1789,7 +1789,7 @@ export async function extractOfficeAttachmentText(
   const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
-    const deck = readPptx(bytes, { images: false });
+    const deck = readPptx(bytes, { images: false, notes: true });
     for (const [index, slide] of deck.slides.entries()) {
       if (budget.cut) break;
       const lines = [budget.take(`Slide ${index + 1}`)];
@@ -1798,21 +1798,19 @@ export async function extractOfficeAttachmentText(
         if (box.caption) lines.push(budget.take(box.caption));
         for (const row of box.table ?? []) lines.push(row.map((cell) => budget.take(cell)).join("\t"));
       }
+      if (slide.notes) lines.push(budget.take("Notes:"), ...slide.notes.map((text) => budget.take(text)));
       parts.push(lines.join("\n"));
     }
     if (deck.truncated && !budget.cut) {
       parts.push(`[Truncated: only the first ${deck.slides.length} slides are included.]`);
     }
   } else {
-    for (const sheet of readXlsx(bytes)) {
+    for (const sheet of readXlsx(bytes, undefined, { keepHidden: true })) {
       if (budget.cut) break;
       const lines = [budget.take(`Sheet: ${sheet.name}`)];
       for (const row of sheet.rows) {
         if (!row || budget.cut) continue;
-        const line = Array.from(row, (cell) => budget.take(cell?.text ?? ""))
-          .filter((_, index) => !sheet.hidden?.columns.has(index))
-          .join("\t")
-          .trimEnd();
+        const line = Array.from(row, (cell) => budget.take(cell?.text ?? "")).join("\t").trimEnd();
         if (line) lines.push(line);
       }
       if (sheet.truncated) {
