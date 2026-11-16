@@ -18,7 +18,8 @@ export function splitBreadcrumb(path: string): Crumb[] {
   const parts: Crumb[] = [];
 
   if (segments[0] === "") {
-    parts.push({ label: "/", value: "/" });
+    // No "/" crumb: the filesystem root is not browsable. Shown only when it is the open folder.
+    if (!segments.some(Boolean)) return [{ label: "/", value: "/" }];
     let cur = "";
     for (const seg of segments.slice(1)) {
       if (!seg) continue;

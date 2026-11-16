@@ -83,8 +83,9 @@ test("children join onto either separator style without doubling it", () => {
 test("breadcrumbs cover POSIX and drive paths", () => {
   assert.deepEqual(
     splitBreadcrumb("/home/me").map((crumb) => crumb.value),
-    ["/", "/home", "/home/me"],
+    ["/home", "/home/me"],
   );
+  assert.deepEqual(splitBreadcrumb("/"), [{ label: "/", value: "/" }]);
   assert.deepEqual(
     splitBreadcrumb("C:\\Users\\me").map((crumb) => crumb.value),
     ["C:/", "C:/Users", "C:/Users/me"],

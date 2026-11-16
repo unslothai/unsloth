@@ -10,7 +10,6 @@ import {
   DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -28,7 +27,7 @@ import { Folder02Icon, FolderAddIcon } from "@/lib/folder-icons";
 import {
   Clock01Icon,
   HardDriveIcon,
-  Home01Icon,
+  Home09Icon,
   PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
@@ -70,7 +69,7 @@ export interface FolderBrowserProps {
 }
 
 const PLACE_ICONS: Record<string, IconSvgElement> = {
-  home: Home01Icon,
+  home: Home09Icon,
   user: Folder02Icon,
   drive: HardDriveIcon,
   models: PackageIcon,
@@ -332,8 +331,9 @@ export function FolderBrowser({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Fixed height on the row, so the list fills whatever the sidebar leaves. */}
-        <div className="flex h-[calc(23rem*var(--ui-space-scale,1))] min-h-0 border-t border-border">
+        {/* Fixed height on the row, so the list fills whatever the sidebar leaves; the actions sit
+            under the list, so the places run to the bottom. */}
+        <div className="flex h-[calc(27rem*var(--ui-space-scale,1))] min-h-0 border-t border-border">
           <nav
             aria-label="Places"
             className="hidden w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2 sm:flex"
@@ -542,7 +542,7 @@ export function FolderBrowser({
               ref={attachList}
               onScroll={onListScroll}
               className={cn(
-                "model-list-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-2 py-1.5",
+                "model-list-scroll min-h-0 flex-1 overflow-y-auto px-2 py-1.5",
                 listFadeClass,
               )}
             >
@@ -710,42 +710,42 @@ export function FolderBrowser({
                 )}
               </div>
             </div>
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border py-3 pr-4 pl-5">
+              <label
+                htmlFor="folder-browser-show-hidden"
+                className="flex shrink-0 cursor-pointer items-center gap-2 text-ui-13 text-muted-foreground"
+              >
+                <Checkbox
+                  id="folder-browser-show-hidden"
+                  className="rounded-full"
+                  checked={showHidden}
+                  onCheckedChange={(checked) => {
+                    const next = checked === true;
+                    setShowHidden(next);
+                    navigate(current, next, { filter: typedPath ? "" : query });
+                  }}
+                />
+                Show hidden
+              </label>
+              <div className="flex min-w-0 items-center gap-2">
+                <DialogClose asChild={true}>
+                  <Button type="button" variant="ghost">
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button
+                  type="button"
+                  variant="dark"
+                  onClick={handleConfirm}
+                  disabled={!current || loading}
+                  title={current}
+                >
+                  {confirmLabel}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
-
-        <DialogFooter className="flex items-center gap-3 border-t border-border px-6 py-3 sm:justify-between">
-          <label
-            htmlFor="folder-browser-show-hidden"
-            className="flex shrink-0 cursor-pointer items-center gap-2 text-ui-13 text-muted-foreground"
-          >
-            <Checkbox
-              id="folder-browser-show-hidden"
-              className="rounded-full"
-              checked={showHidden}
-              onCheckedChange={(checked) => {
-                const next = checked === true;
-                setShowHidden(next);
-                navigate(current, next, { filter: typedPath ? "" : query });
-              }}
-            />
-            Show hidden
-          </label>
-          <div className="flex min-w-0 items-center gap-2">
-            <DialogClose asChild={true}>
-              <Button type="button" variant="ghost">
-                Cancel
-              </Button>
-            </DialogClose>
-            <Button
-              type="button"
-              onClick={handleConfirm}
-              disabled={!current || loading}
-              title={current}
-            >
-              {confirmLabel}
-            </Button>
-          </div>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
