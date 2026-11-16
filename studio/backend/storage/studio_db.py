@@ -326,6 +326,10 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
         raise
 
 
+# The sampling keys a model's recommendation sets, which an edited Default can keep.
+PRESET_EDITED_KEYS = ("temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens")
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -726,6 +730,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )
         """
+    )
+    # The same every-key hold _merge_settings_updates gives an older client's `modified`, for a row
+    # saved before presetEditedKeys existed. Done before any client reads, so a missing map means none.
+    conn.execute(
+        """
+        INSERT INTO chat_settings (key, value_json, updated_at)
+        SELECT 'presetEditedKeys', ?, ?
+        WHERE (SELECT value_json FROM chat_settings WHERE key = 'activePresetSource') = ?
+          AND NOT EXISTS (SELECT 1 FROM chat_settings WHERE key = 'presetEditedKeys')
+        """,
+        (
+            json.dumps({key: True for key in PRESET_EDITED_KEYS}),
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps("modified"),
+        ),
     )
     # One row per summarised prefix, so a branch that forks before a later summary still finds its own.
     conn.execute(
@@ -6033,7 +6052,12 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
             else:
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
-    return _deep_merge_settings(current, updates)
+    merged = _deep_merge_settings(current, updates)
+    # Current clients write the map with every source change, so a `modified` without one comes from
+    # an older client or an import, where it kept every key.
+    if merged.get("activePresetSource") == "modified" and "presetEditedKeys" not in merged:
+        merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
+    return merged
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:

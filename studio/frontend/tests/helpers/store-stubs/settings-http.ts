@@ -8,7 +8,6 @@ export const settingsHttp = {
   >,
   gets: 0,
   beforeConditionalApply: null as (() => void) | null,
-  conditionalGate: null as Promise<void> | null,
   conditionalStatus: 200,
   puts: [] as Record<string, unknown>[],
   putFailures: [] as Array<{ status: number; detail?: unknown }>,
@@ -126,7 +125,6 @@ export async function authFetch(
       expectedAbsentPaths?: string[][];
       patch: Record<string, unknown>;
     };
-    if (settingsHttp.conditionalGate) await settingsHttp.conditionalGate;
     settingsHttp.beforeConditionalApply?.();
     settingsHttp.beforeConditionalApply = null;
     responseSettings = settingsHttp.settings;

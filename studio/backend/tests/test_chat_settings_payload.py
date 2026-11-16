@@ -14,7 +14,9 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes.chat_history import ChatSettingsPayload  # noqa: E402
+from storage import studio_db  # noqa: E402
 from storage.studio_db import (  # noqa: E402
+    PRESET_EDITED_KEYS,
     CorruptSettingsError,
     _deep_merge_settings,
     get_connection,
@@ -304,3 +306,47 @@ def test_forgetting_a_model_s_params_names_its_keys():
     }
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate({"forgetInferenceParamsByModel": ["qwen"]})
+
+
+@pytest.mark.parametrize(
+    "saved, expected",
+    [
+        # A `modified` from before the map existed kept every key.
+        ({"activePresetSource": "modified"}, {key: True for key in PRESET_EDITED_KEYS}),
+        ({"activePresetSource": "builtin-default"}, None),
+        (
+            {"activePresetSource": "modified", "presetEditedKeys": {"topK": True}},
+            {"topK": True},
+        ),
+    ],
+)
+def test_startup_spells_out_an_older_modified_hold(tmp_path, monkeypatch, saved, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    studio_db.close_wal_keeper()
+    studio_db.reset_schema_state_for_tests()
+    try:
+        studio_db.upsert_chat_settings(saved)
+        studio_db.reset_schema_state_for_tests()
+        assert studio_db.list_chat_settings().get("presetEditedKeys") == expected
+    finally:
+        studio_db.close_wal_keeper()
+        studio_db.reset_schema_state_for_tests()
+
+
+def test_an_older_clients_modified_write_keeps_every_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    studio_db.close_wal_keeper()
+    studio_db.reset_schema_state_for_tests()
+    try:
+        merged = studio_db.upsert_chat_settings_merge({"activePresetSource": "modified"})
+        assert merged["presetEditedKeys"] == {key: True for key in PRESET_EDITED_KEYS}
+        studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "builtin-default", "presetEditedKeys": {"topK": False}}
+        )
+        merged = studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "modified", "presetEditedKeys": {}}
+        )
+        assert merged["presetEditedKeys"]["topK"] is False
+    finally:
+        studio_db.close_wal_keeper()
+        studio_db.reset_schema_state_for_tests()
