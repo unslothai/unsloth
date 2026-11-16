@@ -4920,7 +4920,7 @@ class SdCppDiffusionBackend:
                         model_kind = "gguf",
                         transformer_quant = None,
                     ):
-                        raise ValueError(
+                        raise diffusion_lora.LoraSelectionError(
                             f"LoRA is not supported for {state.family.name} on the native "
                             "sd.cpp engine."
                         )
