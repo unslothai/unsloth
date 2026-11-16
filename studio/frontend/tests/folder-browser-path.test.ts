@@ -11,6 +11,7 @@ import {
   filterEntries,
   folderName,
   isPathLike,
+  isWindowsPath,
   joinChild,
   readRecentFolders,
   rememberRecentFolder,
@@ -35,6 +36,17 @@ test("plain text narrows the list; anything naming a place is a path", () => {
   ]) {
     assert.equal(isPathLike(text), true, text);
   }
+});
+
+test("a backslash separates relative paths only on a Windows server", () => {
+  for (const text of ["src\\app", ".\\models", "..\\models"]) {
+    assert.equal(isPathLike(text, true), true, text);
+    assert.equal(isPathLike(text, false), false, text);
+  }
+  assert.equal(isWindowsPath("C:\\Users\\me"), true);
+  assert.equal(isWindowsPath("\\\\host\\share"), true);
+  assert.equal(isWindowsPath("/home/me"), false);
+  assert.equal(isWindowsPath(undefined), false);
 });
 
 test("a typed path is absolute, home-relative, or read against the open folder", () => {

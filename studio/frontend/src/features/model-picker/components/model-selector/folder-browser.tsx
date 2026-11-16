@@ -45,6 +45,7 @@ import {
   filterEntries,
   folderName,
   isPathLike,
+  isWindowsPath,
   joinChild,
   readRecentFolders,
   rememberRecentFolder,
@@ -213,7 +214,7 @@ export function FolderBrowser({
     () => collapseCrumbs(current ? splitBreadcrumb(current) : []),
     [current],
   );
-  const typedPath = isPathLike(query);
+  const typedPath = isPathLike(query, isWindowsPath(current));
   const visible = useMemo(
     () =>
       data

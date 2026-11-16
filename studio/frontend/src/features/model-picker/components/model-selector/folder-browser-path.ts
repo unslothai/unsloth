@@ -49,11 +49,22 @@ export function joinChild(current: string, name: string): string {
   return /[\\/]$/.test(current) ? `${current}${name}` : `${current}/${name}`;
 }
 
-/** Text that names a place rather than narrowing the list: `~/code`, `/srv`, `C:\x`, `src/app`. */
-export function isPathLike(text: string): boolean {
+/** Text that names a place rather than narrowing the list: `~/code`, `/srv`, `C:\x`, `src/app`. A
+ * backslash separates only on a Windows server (`src\app`, `..\models`); on POSIX it is a name character. */
+export function isPathLike(text: string, windowsServer = false): boolean {
   const value = text.trim();
   return (
-    /^(~|\/|\\|[A-Za-z]:)/.test(value) || value.includes("/") || value === ".."
+    /^(~|\/|\\|[A-Za-z]:)/.test(value) ||
+    value.includes("/") ||
+    (windowsServer && value.includes("\\")) ||
+    value === ".."
+  );
+}
+
+/** A drive (`C:\`) or UNC (`\\host\share`) path, i.e. the server lists Windows folders. */
+export function isWindowsPath(path: string | undefined): boolean {
+  return (
+    !!path && (/^[A-Za-z]:([\\/]|$)/.test(path) || path.startsWith("\\\\"))
   );
 }
 
