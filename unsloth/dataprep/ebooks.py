@@ -72,7 +72,7 @@ _VOID = {
     "track",
     "wbr",
 }
-# Ruby readings (<rt>, or text directly in an <rtc>) and their fallback parentheses (<rp>) are not prose.
+# Ruby annotations (<rt>, <rtc>) and their fallback parentheses (<rp>) are not prose.
 _IGNORE = {"head", "script", "style", "nav", "svg", "rt", "rp", "rtc"}
 
 
