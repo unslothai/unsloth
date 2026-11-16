@@ -135,7 +135,6 @@ import {
   NPU_TAG_TEXT,
   type NpuModel,
   NpuSetupNotice,
-  npuDisplayName,
   npuDownloadLabel,
   npuSizeLabel,
   useNpuCatalog,
@@ -238,7 +237,6 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
-import { npuOfferRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -1210,9 +1208,6 @@ function modelFacts(
   } else if (format) {
     facts.push(["Format", format]);
   }
-  if (row.kind === "npu") {
-    facts.push(["NPU", NPU_TAG_TEXT[NPU_CATALOG_TAG]]);
-  }
   const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
   if (size && size > 0) {
     facts.push(["Disk space", formatBytes(size)]);
@@ -2020,7 +2015,7 @@ export function ComposerModelPicker({
       device.push({
         key: `npu:${model.id}`,
         id: model.model_path,
-        label: npuDisplayName(model),
+        label: model.id,
         tab: DEVICE_TAB,
         kind: "npu",
         section: "npu",
@@ -2114,7 +2109,18 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    return [...marked, ...npuOfferRows(npuModels), ...hub, ...external];
+    const npuOffers: Row[] = (npuModels ?? [])
+      .filter((model) => !model.downloaded)
+      .map((model) => ({
+        key: `npu-offer:${model.id}`,
+        id: model.model_path,
+        label: model.id,
+        tab: RECOMMENDED_TAB,
+        kind: "npu",
+        section: "npu",
+        npu: model,
+      }));
+    return [...marked, ...npuOffers, ...hub, ...external];
   }, [
     inventory.cachedGguf,
     inventory.cachedModels,
@@ -4122,6 +4128,11 @@ export function ComposerModelPicker({
                     <ParamChip label={paramLabel} />
                   </span>
                 ) : null}
+              </span>
+            ) : null}
+            {row.kind === "npu" && !npuProgress ? (
+              <span className="shrink-0 text-ui-12 text-muted-foreground">
+                {NPU_TAG_TEXT[NPU_CATALOG_TAG]}
               </span>
             ) : null}
             {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (

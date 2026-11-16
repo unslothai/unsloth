@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
 import {
   NPU_CATALOG_TAG,
   NPU_TAG_TEXT,
@@ -83,4 +84,13 @@ test("an unread FastFlowLM or converter, or no architecture, gives no tag", () =
   assert.equal(npuFit({ ...FLM_1_0_12, fastflowlm_known: false }, "qwen3", "x").tag, null);
   assert.equal(npuFit({ ...FLM_1_0_12, converter_known: false }, "qwen3", "x").tag, null);
   assert.equal(npuFit(FLM_1_0_12, null, "x").tag, null);
+});
+
+test("the composer picker and the Hub tag each FastFlowLM catalog row with the same text", () => {
+  for (const path of [
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+    "features/hub/catalog/npu-catalog-list.tsx",
+  ]) {
+    assert.match(readSrc(path), /NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/, path);
+  }
 });
