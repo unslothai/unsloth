@@ -7,6 +7,7 @@ import asyncio
 import base64
 import io
 import json
+import threading
 
 import httpx
 import pytest
@@ -4052,6 +4053,86 @@ def test_gemini_hosted_tools_beside_functions_send_server_side_invocations(
     assert tool_config.get("includeServerSideToolInvocations", False) is expect_flag, body
     if with_functions:
         assert tool_config["functionCallingConfig"] == {"mode": "AUTO"}, body
+
+
+def test_studio_loop_keeps_gemini_code_output_beside_a_signed_preamble(monkeypatch):
+    """The signed preamble's native text replaces the turn's content on replay, so the code run must survive that."""
+    from core.inference import studio_tool_loop as loop_mod
+    from core.inference.external_tool_transport import OAICompatTransport
+    from core.inference.studio_tool_loop import (
+        ToolLoopPolicy,
+        ToolLoopRun,
+        stream_with_studio_tools,
+    )
+
+    first = [
+        {"text": "Computing first.", "thoughtSignature": "SIG-TEXT"},
+        {
+            "executableCode": {"id": "code_a", "language": "PYTHON", "code": "print(2**61 - 1)"},
+            "thoughtSignature": "SIG-CODE",
+        },
+        {
+            "codeExecutionResult": {
+                "id": "code_a",
+                "outcome": "OUTCOME_OK",
+                "output": "2305843009213693951\n",
+            }
+        },
+        {
+            "functionCall": {"id": "call_1", "name": "web_search", "args": {"query": "M61"}},
+            "thoughtSignature": "SIG-CALL",
+        },
+    ]
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        parts = first if len(bodies) == 1 else [{"text": "done"}]
+        return httpx.Response(
+            200, content = _gemini_sse([_event(parts)]), headers = {"content-type": "text/event-stream"}
+        )
+
+    _mock_http(monkeypatch, handler)
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kwargs: "SEARCH-RESULT")
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+
+    async def run():
+        client = _make_gemini_client()
+        transport = OAICompatTransport(
+            client, model = "gemini-3.5-flash", enabled_tools = ["code_execution"], stream = True
+        )
+        async for _ in stream_with_studio_tools(
+            transport,
+            run = ToolLoopRun(messages = [{"role": "user", "content": "go"}], session_id = "s1"),
+            policy = ToolLoopPolicy(
+                tools = _tools(name = "web_search", parameters = {"type": "object"}),
+                max_calls = 5,
+                timeout = 60,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = threading.Event(),
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    assert len(bodies) == 2, bodies
+    assert bodies[1]["toolConfig"]["includeServerSideToolInvocations"] is True, bodies[1]
+    model_parts = [c for c in bodies[1]["contents"] if c["role"] == "model"][-1]["parts"]
+    assert model_parts[0] == {
+        "text": "Computing first.",
+        "thoughtSignature": "SIG-TEXT",
+    }, model_parts
+    replayed_text = "".join(p.get("text", "") for p in model_parts)
+    assert (
+        "print(2**61 - 1)" in replayed_text and "2305843009213693951" in replayed_text
+    ), model_parts
+    assert model_parts[-1]["functionCall"]["id"] == "call_1", model_parts
+    assert model_parts[-1]["thoughtSignature"] == "SIG-CALL", model_parts
 
 
 def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
