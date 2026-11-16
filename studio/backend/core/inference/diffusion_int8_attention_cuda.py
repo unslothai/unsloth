@@ -396,13 +396,14 @@ __device__ __forceinline__ void pv_groups(
 // ks  [BH, n_kpad / 32, 4] K scale of the keys with (key % 8) / 2 == t in a run of 32 keys
 // vs  [BH, n_kpad / BN] V scale of a tile; vg / vc [BH, HD] per-channel gain and centre of V
 // out [B, n_q, H, HD] (strides in elements); out_kind 0 = fp16, 1 = bf16, 2 = fp32
-// rcnt / ridx / rres: the keys whose V a head clipped (unsloth_i8quant_kv), added back in the epilogue
+// rcnt [BH] the keys whose V a head clipped (unsloth_i8quant_kv); rml [BH, n_qpad, 2] = (mref, l) of every row of
+// a head with rcnt > 0, for unsloth_i8resid to add those keys back
 extern "C" __global__ void unsloth_i8attn(
     const s8* __restrict__ q, const s8* __restrict__ k, const s8* __restrict__ vt, const float* __restrict__ qs,
     const float* __restrict__ ks, const float* __restrict__ vs, const float* __restrict__ vg,
     const float* __restrict__ vc, void* __restrict__ out, int n_q, int n_qpad, int n_k, int n_kpad, int n_heads,
     i64 o_stride_b, i64 o_stride_s, i64 o_stride_h, int out_kind, const int* __restrict__ rcnt,
-    const int* __restrict__ ridx, const float* __restrict__ rres, int rstride) {
+    float* __restrict__ rml) {
   extern __shared__ __align__(16) s8 smem[];
   const u32 lane = threadIdx.x & 31u;
   const u32 g = lane >> 2, t = lane & 3u;
@@ -728,46 +729,6 @@ extern "C" __global__ void unsloth_i8attn(
 #endif
   }
 
-  // The keys this head clipped (attention sinks, v_range): each adds its clipped-off V times its exact P, from the
-  // same int8 score as the main loop, in the frame of mref; l already holds its rounded P. Uniform per block.
-  const int nres = rcnt[bh];
-  for (int i = 0; i < nres; ++i) {
-    const int key = ridx[bh * rstride + i];
-    const float ksc = ks[(bh * n_tiles * KB32 + (key >> 5)) * 4 + ((key & 7) >> 1)];
-    const s8* kr = k + (bh * n_kpad + key) * HD + (HD / 4) * t;
-    i32 kw[HD / 16];
-#pragma unroll
-    for (int w = 0; w < HD / 16; ++w) kw[w] = (i32)ld32(kr + 4 * w);
-    const float* rr = rres + ((i64)bh * rstride + i) * HD + 2 * t;
-#pragma unroll
-    for (int qt = 0; qt < NQ; ++qt) {
-      const s8* q0 = q + (bh * n_qpad + rowbase + 16 * qt + g) * HD + (HD / 4) * t;
-      i32 s0 = 0, s1 = 0;
-#pragma unroll
-      for (int w = 0; w < HD / 16; ++w) {
-        s0 = __dp4a((i32)ld32(q0 + 4 * w), kw[w], s0);
-        s1 = __dp4a((i32)ld32(q0 + 8 * HD + 4 * w), kw[w], s1);
-      }
-      s0 += __shfl_xor_sync(0xffffffffu, s0, 1);
-      s1 += __shfl_xor_sync(0xffffffffu, s1, 1);
-      s0 += __shfl_xor_sync(0xffffffffu, s0, 2);
-      s1 += __shfl_xor_sync(0xffffffffu, s1, 2);
-      // |score| < 2^22: the int to float conversion by the MAGIC_F addition, as the main loop's
-      const float f0 = __int_as_float(s0 + MAGIC_I) - MAGIC_F, f1 = __int_as_float(s1 + MAGIC_I) - MAGIC_F;
-      const float e0 = fmaf(f0, fmaxf(sc[qt][0] * ksc, 1e-30f), -mref[qt][0]);
-      const float e1 = fmaf(f1, fmaxf(sc[qt][1] * ksc, 1e-30f), -mref[qt][1]);
-      const float p0 = 255.f * ex2(e0), p1 = 255.f * ex2(e1);  // never packed: no clamp
-#pragma unroll
-      for (int nb = 0; nb < NBD; ++nb) {
-        const float ra = rr[8 * nb], rb = rr[8 * nb + 1];
-        acc[qt][nb][0] = fmaf(p0, ra, acc[qt][nb][0]);
-        acc[qt][nb][1] = fmaf(p0, rb, acc[qt][nb][1]);
-        acc[qt][nb][2] = fmaf(p1, ra, acc[qt][nb][2]);
-        acc[qt][nb][3] = fmaf(p1, rb, acc[qt][nb][3]);
-      }
-    }
-  }
-
   const float* gp = vg + bh * HD + 2 * t;
   const float* cp = vc + bh * HD + 2 * t;
   const i64 base = (bh / n_heads) * o_stride_b + (bh % n_heads) * o_stride_h + 2 * t;
@@ -804,10 +765,23 @@ extern "C" __global__ void unsloth_i8attn(
       }
     }
   }
+
+  // A head that clipped V (attention sinks, v_range): its row maxima and normalisers for unsloth_i8resid, which adds
+  // the clipped-off parts back. Uniform per block; the loop above is the base kernel's, register for register.
+  if (rcnt[bh] > 0 && t == 0) {
+#pragma unroll
+    for (int qt = 0; qt < NQ; ++qt) {
+      float* m = rml + ((i64)bh * n_qpad + rowbase + 16 * qt + g) * 2;
+      m[0] = mref[qt][0];
+      m[1] = l[qt][0];
+      m[16] = mref[qt][1];
+      m[17] = l[qt][1];
+    }
+  }
 }
 """
 
-QUANT_KERNELS = ("unsloth_i8stats_q", "unsloth_i8quant_kv")
+QUANT_KERNELS = ("unsloth_i8stats_q", "unsloth_i8quant_kv", "unsloth_i8resid")
 
 QUANT_SOURCE = r"""
 // The INT8 attention kernel's operands from [B, S, H, D] q / k / v of any float dtype and any strides on the first
@@ -823,7 +797,9 @@ QUANT_SOURCE = r"""
 //   unsloth_i8quant_kv  needs the statistics. V, one block per key tile, the last tile first ((v - centre) / gain
 //                       per channel, one scale per tile, stored channel-major in the key order of the kernel's
 //                       operand registers); then K, KROWS keys per block (centred, rotated, one scale per 32 keys
-//                       and accumulator lane group)
+//                       and accumulator lane group); last the keys a head with an attention sink clipped
+//
+// and unsloth_i8resid, after the attention kernel: those clipped keys added back to the rows of their head.
 //
 // The rotation is the same fixed orthogonal map for Q and K (so Q.K^T is unchanged): a sign per channel, then an
 // unnormalised Walsh-Hadamard transform over every RG channels (16 inside one thread, the rest by warp shuffles).
@@ -1109,12 +1085,12 @@ extern "C" __global__ void unsloth_i8stats_q(
 // set every channel's range and cost every other key its resolution, while they draw well under 1% of the
 // attention. So when the full range of at least half the channels is more than SINK_RATIO times their range without
 // the chunk that holds the head's largest |v| (a sink is far out in most channels: 63-95% of them on FLUX.3 and
-// Z-Image, against at most 9% for heavy-tailed V with no sink), the head uses that robust range (widened by SINK_MARGIN, never past the full range):
-// that chunk's keys are clipped to it in place and the parts clipped off by more than SINK_MIN (in units of the
-// gain) are added back exactly by the attention kernel (unsloth_i8quant_kv's residual job, the epilogue of
-// unsloth_i8attn); each costs the epilogue about a fifth of a key tile, so only the sinks and the few keys near them
-// go there (FLUX.3 / Z-Image: 1-13 keys a head). Any other head keeps the full range, bit for bit. smc / smr get the
-// centre and 1 / gain of channels c < HD; returns whether the head clips.
+// Z-Image, against at most 9% for heavy-tailed V with no sink), the head uses that robust range (widened by
+// SINK_MARGIN, never past the full range): that chunk's keys are clipped to it in place and the parts clipped off by
+// more than SINK_MIN (in units of the gain) are added back exactly after the attention kernel (unsloth_i8quant_kv's
+// residual job lists them, unsloth_i8resid adds them); each costs every query row a dot product, so only the sinks
+// and the few keys near them go there (FLUX.3 / Z-Image: 1-13 keys a head). Any other head keeps the full range,
+// bit for bit. smc / smr get the centre and 1 / gain of channels c < HD; returns whether the head clips.
 #define SINK_RATIO 2.0f
 #define SINK_MARGIN 2.0f
 #define SINK_MIN 0.25f
@@ -1350,6 +1326,76 @@ extern "C" __global__ void unsloth_i8quant_kv(
 #pragma unroll
   for (int i = 0; i < 16; ++i)
     dst[i * (BN / 4)] = q8(x[0][i], s) | (q8(x[1][i], s) << 8) | (q8(x[2][i], s) << 16) | (q8(x[3][i], s) << 24);
+}
+
+#define NTR 256  // threads per block of unsloth_i8resid: a warp per query row
+#define RMAGIC_I 0x4b400000
+#define RMAGIC_F 12582912.0f
+
+// The keys a head clipped (attention sinks, v_range), added back after the attention kernel: each key's exact P,
+// 255 * 2^(score - mref) from the same int8 score as the kernel's (qi . ki, the q scale times the K scale of its
+// lane group) in the frame of the kernel's row maximum mref, times the part of its (v - centre) / gain clipped off,
+// over the kernel's l (which holds the rounded P of the clipped key), times the gain. A head with rcnt 0 returns at
+// once. rml [BH, n_qpad, 2] = (mref, l) per row from the attention kernel; out as the kernel writes it.
+// grid (BH, blocks), NTR threads; warp w of block y takes the rows y * NTR / 32 + w, + gridDim.y * NTR / 32, ...
+extern "C" __global__ void unsloth_i8resid(
+    const s8* __restrict__ qi, const s8* __restrict__ ki, const float* __restrict__ qs, const float* __restrict__ ks,
+    const float* __restrict__ vg, const int* __restrict__ rcnt, const int* __restrict__ ridx,
+    const float* __restrict__ rres, const float* __restrict__ rml, void* __restrict__ out, int n_q, int n_qpad,
+    int n_kpad, int n_heads, int rstride, i64 o_sb, i64 o_ss, i64 o_sh, int out_kind) {
+  const i64 bh = blockIdx.x;
+  const int nres = rcnt[bh];
+  if (nres == 0) return;
+  const u32 lane = threadIdx.x & 31u, warp = threadIdx.x >> 5;
+  constexpr int CPL = HD / 32;  // channels per lane: lane, lane + 32, ...
+  float g[CPL];
+#pragma unroll
+  for (int j = 0; j < CPL; ++j) g[j] = vg[bh * HD + lane + 32 * j];
+  const i64 obase = (bh / n_heads) * o_sb + (bh % n_heads) * o_sh + lane;
+  for (int row = blockIdx.y * (NTR / 32) + warp; row < n_q; row += gridDim.y * (NTR / 32)) {
+    const i64 r = bh * n_qpad + row;
+    // HD / 4 words of the row; lanes past them hold zeros
+    const i32 qw = lane < HD / 4 ? *reinterpret_cast<const i32*>(qi + r * HD + 4 * lane) : 0;
+    const float qsc = qs[r], mref = rml[2 * r], il = 1.f / rml[2 * r + 1];
+    float a[CPL];
+#pragma unroll
+    for (int j = 0; j < CPL; ++j) a[j] = 0.f;
+    for (int i = 0; i < nres; ++i) {
+      const int key = ridx[bh * rstride + i];
+      const i32 kw = lane < HD / 4 ? *reinterpret_cast<const i32*>(ki + (bh * n_kpad + key) * HD + 4 * lane) : 0;
+      i32 sc = __dp4a(qw, kw, 0);
+#pragma unroll
+      for (int m = 16; m > 0; m >>= 1) sc += __shfl_xor_sync(0xffffffffu, sc, m);
+      const float ksc = ks[(bh * (n_kpad / 32) + (key >> 5)) * 4 + ((key & 7) >> 1)];
+      // |score| < 2^22: the int to float conversion by the magic addition, as the kernel's
+      const float f = __int_as_float(sc + RMAGIC_I) - RMAGIC_F;
+      const float e = fmaf(f, fmaxf(qsc * ksc, 1e-30f), -mref);
+      float p;
+      asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(p) : "f"(e));
+      p *= 255.f;
+      const float* rr = rres + (bh * rstride + i) * HD + lane;
+#pragma unroll
+      for (int j = 0; j < CPL; ++j) a[j] = fmaf(p, rr[32 * j], a[j]);
+    }
+#pragma unroll
+    for (int j = 0; j < CPL; ++j) {
+      const i64 e = obase + (i64)row * o_ss + 32 * j;
+      const float y = fmaf(a[j] * il, g[j], load1(out, e, out_kind));
+      if (out_kind == 2) {
+        reinterpret_cast<float*>(out)[e] = y;
+      } else {
+        u16 h;
+        if (out_kind == 1) {
+          u32 u = __float_as_uint(y);
+          u += 0x7fffu + ((u >> 16) & 1u);
+          h = (u16)(u >> 16);
+        } else {
+          asm("cvt.rn.f16.f32 %0, %1;" : "=h"(h) : "f"(y));
+        }
+        reinterpret_cast<u16*>(out)[e] = h;
+      }
+    }
+  }
 }
 """
 

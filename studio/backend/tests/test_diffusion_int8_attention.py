@@ -1413,10 +1413,10 @@ def _sink_case(
 @pytest.mark.parametrize("sinks", [(4097, 4098), (1,), (2, 3)])
 def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
     """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
-    without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back in the
-    epilogue. Its error against fp32 stays within 3x that of the same call without the sinks (at most 2.4x in the
-    fp64 model; 4.5x or more with the range over every key), the kernel matches its torch model, and the heads
-    without sinks keep the full range (no clipped keys)."""
+    without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back after
+    the kernel. Its error against fp32 stays within 4x that of the same call without the sinks (3.1x at most over
+    these cases on T4 / A100 / L4, the kernel equal to its fp64 model; 5.5x or more with the range over every key),
+    the kernel matches its torch model, and the heads without sinks keep the full range (no clipped keys)."""
     shape = (1, 4128, 4, head_dim)
     dtype = _card_dtype()
     config = _cuda_config(head_dim)
@@ -1430,7 +1430,7 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
         return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
 
     sink_heads, other = list(range(0, 4, 2)), list(range(1, 4, 2))
-    assert err(out, ref, sink_heads) < 3.0 * err(plain_out, plain, sink_heads), (
+    assert err(out, ref, sink_heads) < 4.0 * err(plain_out, plain, sink_heads), (
         err(out, ref, sink_heads),
         err(plain_out, plain, sink_heads),
     )
@@ -1450,7 +1450,7 @@ def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
 @needs_kernel
 @pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
 def test_a_call_signature_is_planned_once(head_dim):
-    """Two quantiser launches and the kernel, with their grids and arguments worked out on the first call of a
+    """Two quantiser launches, the kernel and the residual launch, with their grids and arguments worked out on the first call of a
     signature only; packed views and separate tensors are two signatures with one answer, and the query rows are
     padded to the kernel's block, no further."""
     shape = (2, 333, 3, head_dim)

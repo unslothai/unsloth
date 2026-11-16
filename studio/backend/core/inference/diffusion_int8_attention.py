@@ -20,8 +20,9 @@ How the values are quantised (ideas from the cited papers, written from scratch 
 * V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
   key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
   tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
-  adds the far-out parts back exactly in the epilogue, so the sink no longer costs every other key its
-  resolution (CUDA kernel; the Triton kernel keeps the range over every key).
+  adds the far-out parts back exactly in a launch after the kernel (the kernel's main loop is unchanged), so the
+  sink no longer costs every other key its resolution (CUDA kernel; the Triton kernel keeps the range over every
+  key).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -456,6 +457,8 @@ def _raw_stream(index: int) -> int:
 # A call's launch arithmetic (padded lengths, operand layout, grids, every argument that is not a pointer), keyed
 # by everything it depends on: a short call is mostly this glue, so it is done once per call signature.
 _PLAN_LIMIT = 512
+RESID_THREADS = 256  # NTR of the quantiser source
+RESID_BLOCKS = 128
 GRID_LIMIT = 65535  # blocks along y in one launch
 
 
@@ -534,6 +537,7 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         ("rcnt", (BH,)),
         ("ridx", (BH, vrows)),
         ("rres", (BH, vrows, D)),
+        ("rml", (BH, n_qpad, 2)),
     ):
         layout[name] = (at, shape)
         at += math.prod(shape)
@@ -553,6 +557,7 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
                 "rcnt",
                 "ridx",
                 "rres",
+                "rml",
             )
         }
     )
@@ -578,7 +583,12 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         "bytes": f32_at + 4 * at,
         "shape": (B, Sq, Sk, H, D),
         "pads": (n_qpad, n_kpad),
-        "kernels": (kernels["unsloth_i8stats_q"], kernels["unsloth_i8quant_kv"], fn),
+        "kernels": (
+            kernels["unsloth_i8stats_q"],
+            kernels["unsloth_i8quant_kv"],
+            fn,
+            kernels["unsloth_i8resid"],
+        ),
         "shared": shared,
         "stats_grids": grids(stats_jobs),
         "stats_threads": stats_threads,
@@ -605,7 +615,10 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         "attn_grid": (n_qpad // (16 * nq * wpc), BH),
         "attn_threads": 32 * wpc,
         "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
-        "rstride": vrows,
+        # the residual launch: a warp per row, at most RESID_BLOCKS blocks per head (a head without clipped keys
+        # returns at once)
+        "resid_grid": (BH, max(1, min(RESID_BLOCKS, -(-Sq // (RESID_THREADS // 32 * 4))))),
+        "resid_tail": (Sq, n_qpad, n_kpad, H, vrows, *out_stride, _OUT_KIND[str(v.dtype)]),
         "out_shape": (B, Sq, H, D),
     }
     if len(plans) >= _PLAN_LIMIT:
@@ -629,7 +642,7 @@ def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], ind
 def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: int) -> None:
     qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
     off = plan["off"]
-    stats_q, quant_kv, _ = plan["kernels"]
+    stats_q, quant_kv = plan["kernels"][:2]
     kc, vpart, vsink = base + off["kc"], base + off["vpart"], base + off["vsink"]
     args = (qp, kp, vp, kc, vpart, vsink, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
     for grid, job in plan["stats_grids"]:
@@ -669,9 +682,23 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
             out_ptr,
         )
         + plan["attn_tail"]
-        + (base + off["rcnt"], base + off["ridx"], base + off["rres"], plan["rstride"])
+        + (base + off["rcnt"], base + off["rml"])
     )
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
+    # the keys a head clipped (attention sinks), added back to its rows
+    args = (
+        base + off["qi"],
+        base + off["ki"],
+        base + off["qs"],
+        base + off["ks"],
+        base + off["vg"],
+        base + off["rcnt"],
+        base + off["ridx"],
+        base + off["rres"],
+        base + off["rml"],
+        out_ptr,
+    ) + plan["resid_tail"]
+    plan["kernels"][3].launch(plan["resid_grid"], RESID_THREADS, args, 0, stream)
 
 
 def quantise(
