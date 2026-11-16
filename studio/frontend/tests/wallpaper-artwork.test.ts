@@ -183,3 +183,11 @@ test("adjust previews the whole wallpaper area scaled down, so any sizing and wi
   assert.match(dialog, /dragPosition\(from\.x, dx \/ scale, area\.w, drawn\.w/);
   assert.match(dialog, /\{ x: at\.x \/ scale, y: at\.y \/ scale \}/);
 });
+
+test("adjust: arrow keys move the image the way they point, like a drag", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  assert.match(
+    dialog,
+    /\["ArrowLeft", \[-step, 0\]\],\s*\["ArrowRight", \[step, 0\]\],\s*\["ArrowUp", \[0, -step\]\],\s*\["ArrowDown", \[0, step\]\],/,
+  );
+});

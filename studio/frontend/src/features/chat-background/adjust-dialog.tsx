@@ -276,11 +276,12 @@ export function WallpaperAdjustDialog({
           }}
           onKeyDown={(event) => {
             const step = event.shiftKey ? NUDGE * 3 : NUDGE;
+            // The image moves the way the arrow points, as a drag moves it with the pointer.
             const delta = new Map([
-              ["ArrowLeft", [step, 0]],
-              ["ArrowRight", [-step, 0]],
-              ["ArrowUp", [0, step]],
-              ["ArrowDown", [0, -step]],
+              ["ArrowLeft", [-step, 0]],
+              ["ArrowRight", [step, 0]],
+              ["ArrowUp", [0, -step]],
+              ["ArrowDown", [0, step]],
             ]).get(event.key);
             if (!delta) {
               return;
