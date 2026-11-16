@@ -56,6 +56,9 @@ def run_rank(rank, port, queue, cases):
                     accelerator = accelerator, args = types.SimpleNamespace()
                 )
                 defaults.install_unsloth_ddp_comm_defaults(trainer)
+                import torch._dynamo
+
+                torch._dynamo.config.optimize_ddp = True  # torch's default
                 ddp = accelerator.prepare_model(build(rank, peft))
                 x = torch.tensor([[1, 2, 3]])
                 ddp(x).sum().backward()
@@ -63,6 +66,7 @@ def run_rank(rank, port, queue, cases):
                     frozen = float(ddp.module[0].weight.mean()),
                     trainable = float(ddp.module[1].weight.mean()),
                     grad = ddp.module[1].weight.grad.tolist(),
+                    optimize_ddp = torch._dynamo.config.optimize_ddp,
                 )
             finally:
                 for k, v in saved.items():

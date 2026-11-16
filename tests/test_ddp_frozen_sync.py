@@ -3,7 +3,11 @@
 """DDP's start broadcast flattens every parameter into a bucket, a second copy of the largest tensor: Gemma4 E2B's
 frozen 4.4 GiB per-layer embedding ran a 2xT4 LoRA run out of memory in DistributedDataParallel.__init__. A LoRA
 model's frozen weights are identical on every rank (one checkpoint) and get no gradient, so DDP skips them;
-trainable weights are still broadcast and averaged."""
+trainable weights are still broadcast and averaged.
+
+Dynamo's DDPOptimizer splits what it compiles during a DDP forward at bucket boundaries; Unsloth's compiled
+layer functions then save different tensors in a non-reentrant checkpoint recompute (run in backward, unsplit)
+than in the forward: CheckpointError on Gemma4 E2B under DDP. The DDP defaults turn the split off."""
 
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ CASES = [
     ("peft", True, {}),
     ("peft_sync_frozen", True, {"UNSLOTH_DDP_SYNC_FROZEN": "1"}),
     ("full", False, {}),
+    ("graph_split", True, {"UNSLOTH_DDP_GRAPH_SPLIT": "1"}),
 ]
 
 
@@ -58,3 +63,10 @@ def test_kill_switch_and_full_finetuning_keep_the_broadcast(ranks):
     for case in ("peft_sync_frozen", "full"):
         assert ranks[1][case]["frozen"] == 0.0
         assert ranks[1][case]["trainable"] == 0.0
+
+
+def test_dynamo_does_not_split_graphs_at_ddp_buckets(ranks):
+    for rank in (0, 1):
+        assert ranks[rank]["peft"]["optimize_ddp"] is False
+        assert ranks[rank]["full"]["optimize_ddp"] is False
+        assert ranks[rank]["graph_split"]["optimize_ddp"] is True

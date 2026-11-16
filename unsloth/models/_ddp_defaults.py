@@ -434,6 +434,29 @@ def _exclude_frozen_from_ddp(model):
     return len(added)
 
 
+def _no_dynamo_ddp_graph_split():
+    """Dynamo's DDPOptimizer splits every graph it compiles while a DDP forward is active at gradient bucket
+    boundaries. Unsloth compiles functions inside the layers, not the DDP model, and a non-reentrant checkpoint
+    recompute runs them again in backward, outside that forward, unsplit: it saves different tensors than the
+    forward did and raises CheckpointError (Gemma4 E2B LoRA under DDP). Gradients still reach DDP's buckets
+    per parameter. UNSLOTH_DDP_GRAPH_SPLIT=1 keeps the split."""
+    if os.environ.get("UNSLOTH_DDP_GRAPH_SPLIT", "0") == "1":
+        return False
+    try:
+        import torch._dynamo
+    except Exception:
+        return False
+    config = torch._dynamo.config
+    if getattr(config, "optimize_ddp", False) in (False, "no_optimization"):
+        return False
+    config.optimize_ddp = False
+    _note(
+        "graph_split",
+        "Unsloth: torch.compile does not split graphs at DDP buckets (gradient checkpointing).",
+    )
+    return True
+
+
 def _all_reduce_tower_grads(params, group = None):
     """Average tower gradients across ranks like DDP(find_unused_parameters = True): a weight no rank used
     keeps ``grad = None``; one used on some rank is averaged with zeros from the others."""
@@ -513,6 +536,7 @@ def _prepare_ddp_handler(accelerator, model):
     if not handler.find_unused_parameters:
         _exclude_towers_from_ddp(model)
     _exclude_frozen_from_ddp(model)
+    _no_dynamo_ddp_graph_split()
     changed = False
     # Full finetuning only: gradients become bucket views, one copy instead of two.
     if (
