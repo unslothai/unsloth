@@ -76,10 +76,21 @@ export function WallpaperAdjustDialog({
   );
   const pinch = useRef<number | null>(null);
   const url = useMemo(() => URL.createObjectURL(value.blob), [value.blob]);
-  const area = useMemo(
-    () => (open ? pageArea(fade) : { w: 1600, h: 900 }),
-    [open, fade],
-  );
+  const [area, setArea] = useState(() => pageArea(fade));
+  // Follows the window while open (a resize or a phone rotation), as the wallpaper itself does.
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const read = () =>
+      setArea((a) => {
+        const next = pageArea(fade);
+        return a.w === next.w && a.h === next.h ? a : next;
+      });
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, [open, fade]);
   const aspect = area.w / area.h;
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);

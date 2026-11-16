@@ -191,3 +191,9 @@ test("adjust: arrow keys move the image the way they point, like a drag", () => 
     /\["ArrowLeft", \[-step, 0\]\],\s*\["ArrowRight", \[step, 0\]\],\s*\["ArrowUp", \[0, -step\]\],\s*\["ArrowDown", \[0, step\]\],/,
   );
 });
+
+test("adjust: the page area follows a resize or rotation while the dialog is open", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  assert.match(dialog, /window\.addEventListener\("resize", read\);/);
+  assert.match(dialog, /const next = pageArea\(fade\);/);
+});
