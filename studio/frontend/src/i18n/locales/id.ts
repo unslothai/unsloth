@@ -1463,6 +1463,10 @@ export const id = {
       tabHidden: "Tersembunyi",
       lastVisited: "Terakhir dikunjungi",
     },
+    navGroups: {
+      connections: "Koneksi",
+      dataAccess: "Data & akses",
+    },
     tabs: {
       sandbox: "Keamanan",
       accounts: "Akun",

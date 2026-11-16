@@ -1410,6 +1410,10 @@ export const sv = {
       tabHidden: "Dold",
       lastVisited: "Senast besökt",
     },
+    navGroups: {
+      connections: "Anslutningar",
+      dataAccess: "Data & åtkomst",
+    },
     tabs: {
       sandbox: "Säkerhet",
       accounts: "Konton",

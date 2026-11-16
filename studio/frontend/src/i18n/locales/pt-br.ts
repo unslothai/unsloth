@@ -1337,6 +1337,10 @@ export const ptBR = {
       tabHidden: "Oculta",
       lastVisited: "Última visitada",
     },
+    navGroups: {
+      connections: "Conexões",
+      dataAccess: "Dados e acesso",
+    },
     tabs: {
       sandbox: "Segurança",
       accounts: "Contas",

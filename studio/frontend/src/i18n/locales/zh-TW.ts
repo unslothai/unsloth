@@ -1396,6 +1396,10 @@ export const zhTW = {
       tabHidden: "已隱藏",
       lastVisited: "上次造訪",
     },
+    navGroups: {
+      connections: "連線",
+      dataAccess: "資料與存取",
+    },
     tabs: {
       sandbox: "安全性",
       accounts: "帳號",

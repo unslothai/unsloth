@@ -1468,6 +1468,10 @@ export const cs = {
       tabHidden: "Skryté",
       lastVisited: "Naposledy navštívené",
     },
+    navGroups: {
+      connections: "Připojení",
+      dataAccess: "Data a přístup",
+    },
     tabs: {
       sandbox: "Zabezpečení",
       accounts: "Účty",

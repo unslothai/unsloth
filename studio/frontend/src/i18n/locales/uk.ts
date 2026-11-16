@@ -1473,6 +1473,10 @@ export const uk = {
       tabHidden: "Приховано",
       lastVisited: "Останній перегляд",
     },
+    navGroups: {
+      connections: "Підключення",
+      dataAccess: "Дані та доступ",
+    },
     tabs: {
       sandbox: "Безпека",
       accounts: "Облікові записи",

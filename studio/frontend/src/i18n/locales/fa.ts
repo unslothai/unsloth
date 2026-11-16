@@ -1456,6 +1456,10 @@ export const fa = {
       tabHidden: "پنهان",
       lastVisited: "آخرین بازدید",
     },
+    navGroups: {
+      connections: "اتصال‌ها",
+      dataAccess: "داده‌ها و دسترسی",
+    },
     tabs: {
       sandbox: "امنیت",
       accounts: "حساب‌ها",

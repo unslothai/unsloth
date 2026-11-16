@@ -1384,6 +1384,10 @@ export const he = {
       tabHidden: "מוסתרת",
       lastVisited: "ביקור אחרון",
     },
+    navGroups: {
+      connections: "חיבורים",
+      dataAccess: "נתונים וגישה",
+    },
     tabs: {
       sandbox: "אבטחה",
       accounts: "חשבונות",

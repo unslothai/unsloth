@@ -1332,6 +1332,10 @@ export const zhCN = {
       tabHidden: "隐藏",
       lastVisited: "上次访问",
     },
+    navGroups: {
+      connections: "连接",
+      dataAccess: "数据与访问",
+    },
     tabs: {
       sandbox: "安全",
       accounts: "账户",

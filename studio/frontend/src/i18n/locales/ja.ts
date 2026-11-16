@@ -1336,6 +1336,10 @@ export const ja = {
       tabHidden: "非表示",
       lastVisited: "前回開いたタブ",
     },
+    navGroups: {
+      connections: "接続",
+      dataAccess: "データとアクセス",
+    },
     tabs: {
       sandbox: "セキュリティ",
       accounts: "アカウント",

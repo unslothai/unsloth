@@ -1343,6 +1343,10 @@ export const en = {
       tabHidden: "Hidden",
       lastVisited: "Last visited",
     },
+    navGroups: {
+      connections: "Connections",
+      dataAccess: "Data & access",
+    },
     tabs: {
       sandbox: "Security",
       accounts: "Accounts",

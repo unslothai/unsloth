@@ -1334,6 +1334,10 @@ export const ko = {
       tabHidden: "숨김",
       lastVisited: "마지막으로 본 탭",
     },
+    navGroups: {
+      connections: "연결",
+      dataAccess: "데이터 및 액세스",
+    },
     tabs: {
       sandbox: "보안",
       accounts: "계정",

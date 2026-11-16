@@ -1338,6 +1338,10 @@ export const es = {
       tabHidden: "Oculta",
       lastVisited: "Última visitada",
     },
+    navGroups: {
+      connections: "Conexiones",
+      dataAccess: "Datos y acceso",
+    },
     tabs: {
       sandbox: "Seguridad",
       accounts: "Cuentas",

@@ -1338,6 +1338,10 @@ export const hi = {
       tabHidden: "छिपा हुआ",
       lastVisited: "पिछली बार देखा गया",
     },
+    navGroups: {
+      connections: "कनेक्शन",
+      dataAccess: "डेटा और एक्सेस",
+    },
     tabs: {
       sandbox: "सुरक्षा",
       accounts: "खाते",
