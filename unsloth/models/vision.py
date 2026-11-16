@@ -313,6 +313,7 @@ from .loader_utils import (
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
+    quantize_moe_experts_if_requested,
     _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -2604,6 +2605,51 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
+def unsloth_nested_fast_generate(self, *args, **kwargs):
+    """Per-step sub-model generate() (CSM depth decoder): replays a decode graph kept across frames.
+    Relies on the parent's inference mode/autocast; outside a parent call (or with a caller cache) it is stock."""
+    if (
+        not torch.is_inference_mode_enabled()
+        or kwargs.get("past_key_values") is not None
+        or "cache_implementation" in kwargs
+        or kwargs.get("generation_config") is not None
+        # FlashAttention builds no mask for unpadded rows, so a static cache's empty slots would be attended.
+        or _uses_flash_attention_for_generation(self.config)
+    ):
+        return self._old_generate(*args, **kwargs)
+    input_ids = args[0] if args else kwargs.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        return self._old_generate(*args, **kwargs)
+    static = dict(kwargs, cache_implementation = "static")
+    # As the parent: a static cache would otherwise auto-compile the forward (transformers' compile_config).
+    static.setdefault("compile_config", _compile_config)
+    with _decode_graphs.generate_scope():
+        if _generic_decode_graphs.plan(self, args, static, input_ids) != "graph":
+            # Graphs off (kill switch, ROCm, short call): stock call; static eager is 13% slower (T4, csm-1b).
+            with _decode_graphs.plan_scope("eager"):
+                return self._old_generate(*args, **kwargs)
+        scope = _GraphDecodeSteps(self)
+        with scope, _decode_graphs.plan_scope("graph"):
+            out = self._old_generate(*args, **static)
+            scope.keep = _generic_decode_graphs.keepable(self, static, out)
+        return out
+
+
+def _patch_nested_generate(model):
+    """CSM: the depth decoder's per-frame generate() through unsloth_nested_fast_generate."""
+    depth = getattr(model, "depth_decoder", None)
+    if (
+        depth is None
+        or not hasattr(depth, "generate")
+        or not hasattr(depth, "_prepare_static_cache")
+    ):
+        return
+    if getattr(depth.generate, "__name__", "") == "unsloth_nested_fast_generate":
+        return
+    depth._old_generate = depth.generate
+    depth.generate = types.MethodType(unsloth_nested_fast_generate, depth)
+
+
 # Offline helpers live in loader_utils.py, the shared canonical source.
 from .loader_utils import (
     _get_effective_local_files_only,
@@ -3899,6 +3945,19 @@ def _offload_activation_hooks(owner = None):
 _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
+def _router_aux_loss_on(model):
+    """MoE aux loss on: reentrant GC's no_grad pass would leave it without a gradient."""
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    if text is None or not hasattr(text, "output_router_logits"):
+        return False
+    try:
+        coef = float(getattr(text, "router_aux_loss_coef", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        coef = 0.0
+    return bool(getattr(text, "output_router_logits", False)) or coef > 0.0
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -3968,6 +4027,26 @@ class FastBaseModel:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
                 "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
+            )
+        # The same load modes FastLanguageModel refuses: the host tail is rebuilt as dense or bnb 4-bit layers.
+        if _offload_layers and load_in_8bit:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers, "supports 16-bit and 4-bit loads, not load_in_8bit."
+            )
+        if _offload_layers and _quantization_config_requested is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a quantization_config; pass load_in_4bit = True instead.",
+            )
+        if _offload_layers and kwargs.get("state_dict") is not None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "does not take a state_dict; save it as a safetensors checkpoint and load that.",
+            )
+        if _offload_layers and (kwargs.get("gguf_file") or kwargs.get("use_safetensors") is False):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs a safetensors checkpoint; it does not support gguf_file or use_safetensors = False.",
             )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
@@ -4906,6 +4985,7 @@ class FastBaseModel:
                         "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
                     )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                quantize_moe_experts_if_requested(model, full_finetuning = full_finetuning)
                 if full_finetuning:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():
@@ -5465,6 +5545,7 @@ class FastBaseModel:
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            _patch_nested_generate(model)
         model._unsloth_trust_remote_code = trust_remote_code
         # Export's trusted config re-read pins to this commit, not a moved branch head.
         model._unsloth_trust_remote_code_commit = (
@@ -6102,7 +6183,10 @@ class FastBaseModel:
         use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
-        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES) or (
+            # Gemma 3n / 4 keep reentrant checkpointing (AOT backward strides, below).
+            _router_aux_loss_on(model) and not _gc_model_type.startswith(("gemma3n", "gemma4"))
+        )
         if _force_non_reentrant:
             use_reentrant = False
         model._unsloth_vlm_gc_non_reentrant = bool(

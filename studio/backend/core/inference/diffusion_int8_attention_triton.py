@@ -46,6 +46,23 @@ try:
 except Exception:  # noqa: BLE001 -- no Triton: the module imports, nothing here runs
     triton = None
 
+
+def _rocm_build() -> bool:
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+        return bool(is_rocm_torch(torch))
+    except Exception:  # noqa: BLE001 -- read as an NVIDIA build: sizes stay out of the compile key
+        return False
+
+
+# Sequence lengths stay out of the attention kernel's compile key except on ROCm, where the % 16 facts are worth 3%
+# at 75k tokens on gfx1151 and a run keeps one resolution.
+_ATTN_NO_SPECIALIZE = (
+    ["n_heads"] if triton is not None and _rocm_build() else ["sq", "sk", "n_heads"]
+)
+
 if triton is not None:
 
     @triton.jit
@@ -634,7 +651,7 @@ if triton is not None:
         m_i = m_new
         return acc, l_i, m_i
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _ATTN_NO_SPECIALIZE)
     def attn_kernel(
         q_ptr,
         qs_ptr,
@@ -1011,10 +1028,8 @@ def _quantise(plan: dict, q: Any, k: Any, v: Any) -> dict:
     if not plan["fused"]:
         _quantise_unfused(kk, plan, q, k, v, out, kc)
         return out
-    kk.prep[plan["prep_grid"]](
-        q, k, v, qi, qs, kc, vc, vg, vh, *plan["prep_args"], **plan["prep_meta"]
-    )
-    kk.kv[plan["kv_grid"]](k, kc, ki, ks, v, vc, vg, vi, vs, *plan["kv_args"], **plan["kv_meta"])
+    _launch(kk.prep, plan, "prep", (q, k, v, qi, qs, kc, vc, vg, vh))
+    _launch(kk.kv, plan, "kv", (k, kc, ki, ks, v, vc, vg, vi, vs))
     return out
 
 
@@ -1077,6 +1092,108 @@ def _quantise_unfused(kk: Any, plan: dict, q: Any, k: Any, v: Any, out: dict, kc
         )
 
 
+FAST_LAUNCH_ENV = "UNSLOTH_DIFFUSION_INT8_TRITON_FAST_LAUNCH"
+_FAST_LAUNCH: dict = {"ok": None}
+
+
+def _fast_launch_ok() -> bool:
+    if _FAST_LAUNCH["ok"] is None:
+        import os
+        _FAST_LAUNCH["ok"] = os.environ.get(FAST_LAUNCH_ENV, "1").strip() != "0"
+    return bool(_FAST_LAUNCH["ok"])
+
+
+def _launch_hooks() -> tuple:
+    knobs = getattr(triton, "knobs", None)
+    rt = getattr(knobs, "runtime", None) if knobs is not None else None
+    if rt is not None and hasattr(rt, "launch_enter_hook"):
+        return rt.launch_enter_hook, rt.launch_exit_hook
+    from triton.compiler.compiler import CompiledKernel
+
+    return CompiledKernel.launch_enter_hook, CompiledKernel.launch_exit_hook
+
+
+def _launcher(
+    kernel: Any, compiled: Any, tensors: tuple, scalars: tuple, meta: dict
+) -> Optional[tuple]:
+    """(compiled kernel, every argument in parameter order with the tensors' positions left open) for the launch
+    JITFunction.run makes, or None when this Triton does not expose it (the call keeps kernel[grid](...))."""
+    try:
+        if compiled is None or not all(
+            hasattr(compiled, x) for x in ("run", "function", "packed_metadata")
+        ):
+            return None
+        given = iter((*tensors, *scalars))
+        template, slots = [], []
+        for i, param in enumerate(kernel.params):
+            if param.is_constexpr:
+                template.append(meta[param.name] if param.name in meta else param.default)
+            else:
+                value = next(given)
+                if i < len(tensors):
+                    # an open slot, not the tensor: the plan outlives the call and must not pin its buffers
+                    slots.append(i)
+                    value = None
+                template.append(value)
+        if next(given, None) is not None or slots != list(range(len(tensors))):
+            return None
+        return compiled, template
+    except Exception:  # noqa: BLE001 -- an unexpected Triton layout keeps the regular launch
+        return None
+
+
+def _launch(kernel: Any, plan: dict, name: str, tensors: tuple) -> None:
+    """``kernel[grid](*tensors, *scalars, **meta)`` of the plan. The first call per device goes through Triton's
+    launch (compile or cache lookup, argument specialisation); later calls on that device hand the same arguments
+    straight to the compiled kernel's launcher, as JITFunction.run does after its lookup, so a short call does not
+    pay the per-argument specialisation again. Taken only while every tensor is 16-byte aligned, as at the first
+    call (the alignment is part of what was compiled); any failure falls back to the regular launch for good."""
+    grid, scalars, meta = plan[name + "_grid"], plan[name + "_args"], plan[name + "_meta"]
+    # the interpreter (TRITON_INTERPRET) runs kernels in Python: nothing compiled to hand arguments to
+    if _fast_launch_ok() and isinstance(kernel, triton.runtime.jit.JITFunction):
+        from triton.runtime.driver import driver
+
+        # keyed by the operands' card; operands on another card take the regular launch
+        dev = driver.active.get_current_device()
+        fast = plan.setdefault("fast", {}).get((name, dev))
+        if fast and tensors[0].get_device() == dev and all(t.data_ptr() % 16 == 0 for t in tensors):
+            compiled, template = fast
+            args = list(template)
+            args[: len(tensors)] = tensors
+            try:
+                stream = driver.active.get_current_stream(dev)
+                enter, leave = _launch_hooks()
+                metadata = (
+                    compiled.launch_metadata(grid, stream, *args)
+                    if hasattr(compiled, "launch_metadata")
+                    else None
+                )
+                compiled.run(
+                    grid[0],
+                    grid[1],
+                    grid[2] if len(grid) > 2 else 1,
+                    stream,
+                    compiled.function,
+                    compiled.packed_metadata,
+                    metadata,
+                    enter,
+                    leave,
+                    *args,
+                )
+                return
+            except Exception:  # noqa: BLE001 -- this Triton's launcher wants something else: regular launches
+                _FAST_LAUNCH["ok"] = False
+        compiled = kernel[grid](*tensors, *scalars, **meta)
+        if (
+            fast is None
+            and tensors[0].get_device() == dev
+            and all(t.data_ptr() % 16 == 0 for t in tensors)
+        ):
+            plan["fast"][(name, dev)] = _launcher(kernel, compiled, tensors, scalars, meta) or False
+        return
+    kernel[grid](*tensors, *scalars, **meta)
+
+
 def quantise(
     q: Any,
     k: Any,
@@ -1106,18 +1223,21 @@ def _attend(p: dict) -> Any:
     mode = plan["mode"]
     vv = v if mode == 0 else p["vh"] if mode in (1, 3) else p["vi"]
     dummy = p["qs"]
-    kk.attn[plan["attn_grid"]](
-        p["qi"],
-        p["qs"],
-        p["ki"],
-        p["ks"],
-        vv,
-        p.get("vs", dummy),
-        p.get("vc", dummy),
-        p.get("vg", dummy),
-        out,
-        *plan["attn_args"],
-        **plan["attn_meta"],
+    _launch(
+        kk.attn,
+        plan,
+        "attn",
+        (
+            p["qi"],
+            p["qs"],
+            p["ki"],
+            p["ks"],
+            vv,
+            p.get("vs", dummy),
+            p.get("vc", dummy),
+            p.get("vg", dummy),
+            out,
+        ),
     )
     return out
 
