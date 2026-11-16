@@ -64,7 +64,8 @@ def _domain_match(host: str, domain: str) -> bool:
 
 def _path_match(path: str, cookie_path: str) -> bool:
     return path == cookie_path or (
-        path.startswith(cookie_path) and (cookie_path.endswith("/") or path[len(cookie_path)] == "/")
+        path.startswith(cookie_path)
+        and (cookie_path.endswith("/") or path[len(cookie_path)] == "/")
     )
 
 
@@ -89,7 +90,12 @@ class _Jar(http.cookiejar.CookieJar):
             return
         super().set_cookie(cookie)
 
-    def clear(self, domain = None, path = None, name = None):
+    def clear(
+        self,
+        domain = None,
+        path = None,
+        name = None,
+    ):
         if self.insecure and name is not None and self._shadows_secure(domain, path, name):
             return
         super().clear(domain, path, name)

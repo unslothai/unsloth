@@ -240,7 +240,9 @@ def test_a_script_cookie_set_over_https_stays_off_http():
     assert ("token=/", "|secret") in cookies.page_cookies("user", "https://app.example.com/")
     # Nor one at a deeper path, which would be sent ahead of it.
     cookies.set_page_cookie("user", "http://app.example.com/", "token=/app", "|forged")
-    assert cookies.cookie_header("user", "https://app.example.com/app/x") == "token=secret; theme=dark"
+    assert (
+        cookies.cookie_header("user", "https://app.example.com/app/x") == "token=secret; theme=dark"
+    )
 
 
 def test_an_http_response_leaves_a_secure_cookie_alone():
@@ -273,7 +275,9 @@ def test_secure_and_prefixed_cookies_need_https_and_their_prefix_rules():
     ):
         cookies.store_cookies("user", https, _headers(value))
     assert cookies.cookie_header("user", https) is None
-    cookies.store_cookies("user", https, _headers("__Secure-f=1; Secure", "__Host-g=1; Secure; Path=/"))
+    cookies.store_cookies(
+        "user", https, _headers("__Secure-f=1; Secure", "__Host-g=1; Secure; Path=/")
+    )
     assert cookies.cookie_header("user", https) == "__Secure-f=1; __Host-g=1"
 
 
