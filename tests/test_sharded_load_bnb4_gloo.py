@@ -50,6 +50,7 @@ def make_checkpoint(
     nested = True,
     dtype = torch.float32,
     device = "cpu",
+    quant_storage = None,
 ):
     """A tiny random model quantized by transformers (NF4) and saved pre-quantized in several files."""
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
@@ -68,6 +69,7 @@ def make_checkpoint(
             bnb_4bit_quant_type = "nf4",
             bnb_4bit_use_double_quant = nested,
             bnb_4bit_compute_dtype = dtype,
+            **({"bnb_4bit_quant_storage": quant_storage} if quant_storage is not None else {}),
         ),
         device_map = device,
         dtype = dtype,
@@ -459,11 +461,15 @@ def _spawn(
 _CKPTS = {}
 
 
-def _checkpoint(arch, nested = True):
-    key = (arch, nested)
+def _checkpoint(
+    arch,
+    nested = True,
+    quant_storage = None,
+):
+    key = (arch, nested, quant_storage)
     if key not in _CKPTS:
         directory = tempfile.mkdtemp(prefix = f"bnb4_{arch}_")
-        _CKPTS[key] = make_checkpoint(arch, directory, nested)
+        _CKPTS[key] = make_checkpoint(arch, directory, nested, quant_storage = quant_storage)
     return _CKPTS[key]
 
 
@@ -504,9 +510,14 @@ def test_tensor_parallel_sharded_loading_reads_its_4bit_slices(arch, nested):
     _check_bytes(results, 2)
 
 
-@pytest.mark.parametrize("fit, storage", [(False, None), (True, None), (False, "float16")])
-def test_fsdp2_sharded_loading_reads_its_4bit_byte_chunks(fit, storage):
-    results = _spawn("fsdp2", 2, ckpt = _checkpoint("llama"), fit = fit, storage = storage)
+@pytest.mark.parametrize(
+    "fit, storage, saved",
+    [(False, None, None), (True, None, None), (False, "float16", None), (False, None, "float16")],
+)
+def test_fsdp2_sharded_loading_reads_its_4bit_byte_chunks(fit, storage, saved):
+    """saved: the checkpoint itself stores the 4-bit bytes as that float dtype (bnb_4bit_quant_storage)."""
+    ckpt = _checkpoint("llama", quant_storage = getattr(torch, saved) if saved else None)
+    results = _spawn("fsdp2", 2, ckpt = ckpt, fit = fit, storage = storage)
     for rank, res in enumerate(results):
         assert res["models"] == 1
         assert res["chunks4"] > 0, rank

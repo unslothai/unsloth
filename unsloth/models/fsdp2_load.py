@@ -119,7 +119,9 @@ def _materialize(model, name, kwargs, mesh, plan, device):
                 return None  # read whole: fully_shard cuts it as from a full load
             start, stop = rank * rows // world, (rank + 1) * rows // world
             new = reader.quant.rows(key, start, stop, module, device)
-            shape, packed = (rows, 1), True
+            # Packed metadata counts bytes: a float quant storage holds itemsize bytes per stored row.
+            shape, packed = (rows * itemsize, 1), True
+            start, stop = start * itemsize, stop * itemsize
         else:
             rows = old.shape[0]
             start, stop = _chunk_rows(rows, world, rank)
