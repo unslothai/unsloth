@@ -88,7 +88,9 @@ def _geometry(config: dict) -> Optional[dict]:
 def _entries(listing: dict):
     for family, sizes in (listing.get("models") or {}).items():
         for size, entry in (sizes or {}).items():
-            if not isinstance(entry, dict) or _PLATFORM not in (entry.get("supported_platforms") or ()):
+            if not isinstance(entry, dict) or _PLATFORM not in (
+                entry.get("supported_platforms") or ()
+            ):
                 continue
             # A DFlash checkpoint's config.json describes its drafter, not the model.
             if "dflash" in family or _SKIPPED_LABELS.intersection(entry.get("label") or ()):
@@ -127,7 +129,12 @@ def flm_shapes(
         checkpoint, _, entry = item
         if checkpoint in known:
             return checkpoint, known[checkpoint]
-        local = flm_model_path / str(listing.get("model_path") or "") / str(entry.get("name")) / "config.json"
+        local = (
+            flm_model_path
+            / str(listing.get("model_path") or "")
+            / str(entry.get("name"))
+            / "config.json"
+        )
         try:
             config = json.loads(local.read_text(encoding = "utf-8"))
         except (OSError, ValueError):
@@ -186,8 +193,10 @@ def flm_shapes(
 
 def _literal_dict(tree: ast.Module, name: str) -> Optional[ast.Dict]:
     for node in tree.body:
-        target = node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1 else (
-            node.target if isinstance(node, ast.AnnAssign) else None
+        target = (
+            node.targets[0]
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            else (node.target if isinstance(node, ast.AnnAssign) else None)
         )
         if isinstance(target, ast.Name) and target.id == name and isinstance(node.value, ast.Dict):
             return node.value
@@ -231,7 +240,11 @@ def _qwen35_geometry(package: Path, members: set[str]) -> list[list[int]]:
     return sizes
 
 
-def converter_support(root: Path, installer, install: bool = True) -> Optional[dict]:
+def converter_support(
+    root: Path,
+    installer,
+    install: bool = True,
+) -> Optional[dict]:
     """What the pinned converters accept, read from their installed source; installs them first
     (small, hash-checked) when missing. None when they cannot be read."""
     try:
@@ -251,6 +264,7 @@ def converter_support(root: Path, installer, install: bool = True) -> Optional[d
     except Exception as exc:  # noqa: BLE001 -- an unreadable converter reads as unknown, never an error
         logger.warning("Could not read the Q4NX converter's architectures: %s", exc)
         return None
+
     # Each architecture goes to one converter (converter_for_architecture); it matches
     # general.architecture exactly first, then general.basename by prefix.
     def routed(names: dict[str, list[str]], converter: str) -> set[str]:
@@ -350,7 +364,7 @@ def runnable_shapes() -> Optional[dict[str, dict[tuple[int, int, int], str]]]:
         return None
     table: dict[str, dict[tuple[int, int, int], str]] = {}
     for row in compat["shapes"]:
-        table.setdefault(row["architecture"], {})[(row["layers"], row["hidden"], row["experts"])] = (
-            row["names"][0]
-        )
+        table.setdefault(row["architecture"], {})[
+            (row["layers"], row["hidden"], row["experts"])
+        ] = row["names"][0]
     return table

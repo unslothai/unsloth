@@ -633,7 +633,9 @@ def _fastflowlm_shapes(monkeypatch, tmp_path):
     (flm.parent / "model_list.json").write_bytes((_COMPAT / "flm" / "model_list.json").read_bytes())
     configs = json.loads((_COMPAT / "hf_configs.json").read_text())
     shapes = npu_compat.flm_shapes(
-        flm, tmp_path / "flm-models", tmp_path / "flm-cache.json",
+        flm,
+        tmp_path / "flm-models",
+        tmp_path / "flm-cache.json",
         lambda url: configs.get(url.split("/FastFlowLM/")[1].split("/")[0]),
     )
     compat = npu_compat.build_compat(shapes, None)

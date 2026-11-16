@@ -74,7 +74,9 @@ def test_shapes_come_from_each_catalog_models_config(flm, tmp_path):
 def test_a_downloaded_config_is_read_first_and_fetches_are_cached_per_listing(flm, tmp_path):
     local = tmp_path / "models" / "models" / "LFM3-1.7B-NPU2" / "config.json"
     local.parent.mkdir(parents = True)
-    local.write_text(json.dumps({"model_type": "lfm3", "num_hidden_layers": 16, "hidden_size": 1024}))
+    local.write_text(
+        json.dumps({"model_type": "lfm3", "num_hidden_layers": 16, "hidden_size": 1024})
+    )
     calls: list[str] = []
     assert ("lfm3", 16, 1024, 0) in _by_key(_shapes(flm, tmp_path, calls))
     assert not any("LFM3" in url for url in calls)
@@ -121,7 +123,11 @@ class _Installer:
         name = pins["commit"].removesuffix("-commit")
         return _FIXTURES / name / "convert.py" if name in self.installed else None
 
-    def install(self, root, name = "q4nx"):
+    def install(
+        self,
+        root,
+        name = "q4nx",
+    ):
         self.installs.append(name)
         self.installed.add(name)
         return _FIXTURES / name / "convert.py"
@@ -131,11 +137,30 @@ def test_converter_architectures_are_parsed_from_its_source():
     support = nc.converter_support(Path("unused"), _Installer(installed = True))
     # Each architecture from the converter it is routed to; qwen35 by the q4k geometry table.
     assert support["architectures"] == sorted(
-        {"gemma-4", "gemma4", "gpt-oss", "lfm2", "llama", "qwen2.5-vl", "qwen3", "qwen3-vl",
-         "qwen3.5-0.8b", "qwen35-0.8b", "qwen3vl", "qwen35", "qwen35moe"}
+        {
+            "gemma-4",
+            "gemma4",
+            "gpt-oss",
+            "lfm2",
+            "llama",
+            "qwen2.5-vl",
+            "qwen3",
+            "qwen3-vl",
+            "qwen3.5-0.8b",
+            "qwen35-0.8b",
+            "qwen3vl",
+            "qwen35",
+            "qwen35moe",
+        }
     )
     assert "lfm3" not in support["architectures"]
-    assert support["basenames"] == ["gemma-4", "qwen2.5-vl", "qwen3-vl", "qwen3.5-0.8b", "qwen35-0.8b"]
+    assert support["basenames"] == [
+        "gemma-4",
+        "qwen2.5-vl",
+        "qwen3-vl",
+        "qwen3.5-0.8b",
+        "qwen35-0.8b",
+    ]
     assert support["qwen35_shapes"] == [[24, 1024], [32, 4096]]
     assert support["commits"] == {"q4nx": "q4nx-commit", "q4k": "q4k-commit"}
 
