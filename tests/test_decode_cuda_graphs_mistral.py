@@ -75,6 +75,9 @@ def _no_eager(runtime):
 
 def test_mistral_decode_step_takes_the_graph_path_by_default(runtime):
     runtime.setattr(G, "_DEFAULT_OK", True)
+    runtime.setattr(
+        G, "_STUDIO_DEFAULT_OK", True
+    )  # native Windows keeps the scope default off; test the scope itself
     calls = _spy(runtime)
     _no_eager(runtime)
     model = _tiny_mistral()
@@ -88,6 +91,9 @@ def test_mistral_decode_step_takes_the_graph_path_by_default(runtime):
 
 def test_mistral_kill_switch_and_loss_steps_stay_eager(runtime):
     runtime.setattr(G, "_DEFAULT_OK", True)
+    runtime.setattr(
+        G, "_STUDIO_DEFAULT_OK", True
+    )  # native Windows keeps the scope default off; test the scope itself
     calls = _spy(runtime)
     eager = _no_eager(runtime)
     model = _tiny_mistral()
