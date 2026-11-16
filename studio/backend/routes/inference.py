@@ -8768,6 +8768,7 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         },
         "requested_n_ubatch": model_info.get("n_ubatch"),
         "requested_n_batch": model_info.get("n_batch"),
+        "requested_cache_ram": model_info.get("cache_ram"),
     }
 
 
@@ -16110,9 +16111,12 @@ def _mlx_load_estimate(
         return "not_gguf", None
     if getattr(config, "is_lora", False):
         return "unsizable", None
-    from core.inference.mlx_memory import mlx_dropping_vision
+    from core.inference.mlx_memory import mlx_dropping_vision, mlx_prompt_cache_chosen
 
-    with mlx_dropping_vision(config, request.disable_vision):
+    with (
+        mlx_dropping_vision(config, request.disable_vision),
+        mlx_prompt_cache_chosen(request.cache_ram),
+    ):
         return _priced_mlx_load_estimate(request, config, model_identifier)
 
 
@@ -16204,13 +16208,15 @@ def _mlx_chat_need(
         if estimate is None or estimate.offloaded:
             return None
         from core.inference.mlx_inference import mlx_memory_budget
+        from core.inference.mlx_memory import mlx_prompt_cache_chosen
 
         reserve = 0
         if estimate.retains_history:
-            without, within = (
-                mlx_memory_budget(retains_history = False),
-                mlx_memory_budget(retains_history = True),
-            )
+            with mlx_prompt_cache_chosen(getattr(request, "cache_ram", None)):
+                without, within = (
+                    mlx_memory_budget(retains_history = False),
+                    mlx_memory_budget(retains_history = True),
+                )
             reserve = max(0, (without or 0) - (within or 0))
             if estimate.cache_room is not None:
                 reserve = min(reserve, estimate.cache_room)
@@ -18349,6 +18355,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         and entry.get("reasoning_budget_message", "") == request.reasoning_budget_message
         and entry.get("n_ubatch") == request.n_ubatch
         and entry.get("n_batch") == request.n_batch
+        # MLX has no unlimited prompt cache: -1 loads with the default, as blank does.
+        and entry.get("cache_ram") == (request.cache_ram if (request.cache_ram or 0) >= 0 else None)
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -20873,6 +20881,7 @@ async def _load_model_impl(
                 reasoning_budget_message = request.reasoning_budget_message,
                 mlx_prefill_step = request.n_ubatch,
                 mlx_prefill_batch = request.n_batch,
+                mlx_prompt_cache_mib = request.cache_ram,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,

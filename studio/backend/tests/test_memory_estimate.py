@@ -1018,16 +1018,21 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsizable"
         assert resp.total_bytes == 0
 
-    def test_vision_off_prices_a_vision_load_without_its_vision_weights(self, monkeypatch):
+    def test_an_mlx_estimate_is_priced_with_the_vision_switch_and_prompt_cache(self, monkeypatch):
         import core.inference.mlx_memory as mlx_memory
 
         drops = []
-        stub = lambda *a, **kw: drops.append(mlx_memory._DROPS_VISION.get())
+        stub = lambda *a, **kw: drops.append(
+            (mlx_memory._DROPS_VISION.get(), mlx_memory._PROMPT_CACHE_MIB.get())
+        )
         monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", stub)
         for vision, audio, off in ((1, None, 1), (1, None, 0), (1, "audio_vlm", 1), (0, None, 1)):
             self._mlx_target(monkeypatch, "/models/thing", is_vision = vision, audio_type = audio)
-            _estimate(model_path = "org/model", max_seq_length = 4096, disable_vision = off)
-            assert drops.pop() is bool(vision and off and not audio)
+            mib = 256 if off else None  # the prompt cache it is priced with, too
+            _estimate(
+                model_path = "org/model", max_seq_length = 4096, disable_vision = off, cache_ram = mib
+            )
+            assert drops.pop() == (bool(vision and off and not audio), mib)
 
     def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
         self._mlx_target(monkeypatch, "/models/thing")

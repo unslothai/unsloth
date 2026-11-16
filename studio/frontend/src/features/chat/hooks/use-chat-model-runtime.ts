@@ -12,6 +12,7 @@ import { llamaServerLoadFields } from "../lib/load-request";
 import {
   type ServerTuningValues,
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
@@ -2736,7 +2737,9 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)
                 ? committedServerTuningState(loadServerTuning)
-                : clearedServerTuningState();
+                : (loadResponse.is_mlx ?? false)
+                  ? committedMlxServerTuningState(loadServerTuning)
+                  : clearedServerTuningState();
             // Keep the user's pin so an Auto load stays Auto; MLX pins the same way.
             const keepCustomCtx = resolveExplicitCtxPin(
               loadResponse.is_gguf || targetIsMlx ? explicitCtxPin : null,

@@ -343,7 +343,8 @@ export function applyActiveModelStatusToStore(
   });
   const cacheRamSeed = resolveBatchSizeSeed({
     incoming: status.requested_cache_ram,
-    isGguf: status.is_gguf ?? true,
+    // MLX sizes its prompt cache from it.
+    isGguf: batchesEchoed,
     previous: { value: prevState.cacheRam, loaded: prevState.loadedCacheRam },
     seedLoadParams,
     modelChanged: slotsModelChanged,

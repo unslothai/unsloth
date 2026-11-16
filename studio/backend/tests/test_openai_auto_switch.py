@@ -8605,8 +8605,8 @@ def test_parallel_slots_are_stored_and_reach_either_backend():
     assert gguf["n_parallel"] == 8
     safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
     assert safetensors["n_parallel"] == 8
-    # MLX reads both: the micro-batch as its prefill step, the batch as its cap on a batched prefill.
-    for flag in ("n_batch", "n_ubatch"):
+    # MLX reads these too: its prefill step, its batched-prefill cap and its prompt cache size.
+    for flag in ("n_batch", "n_ubatch", "cache_ram"):
         stored = settings.normalize_model_override({flag: 512})
         assert settings.model_override_load_kwargs(stored, is_gguf = False)[flag] == 512
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)

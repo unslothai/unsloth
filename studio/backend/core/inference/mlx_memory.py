@@ -414,6 +414,21 @@ def mlx_dropping_vision(config, disable_vision: bool):
         _DROPS_VISION.reset(token)
 
 
+# The prompt cache, in MiB, the load was asked for; None leaves the default share of memory.
+_PROMPT_CACHE_MIB: contextvars.ContextVar = contextvars.ContextVar(
+    "mlx_prompt_cache_mib", default = None
+)
+
+
+@contextlib.contextmanager
+def mlx_prompt_cache_chosen(mib: Optional[int]):
+    token = _PROMPT_CACHE_MIB.set(mib if mib is not None and mib >= 0 else None)
+    try:
+        yield
+    finally:
+        _PROMPT_CACHE_MIB.reset(token)
+
+
 def _unread_vision(model) -> set:
     """Detach and name the modules a vision-dropping load never reads; none on an older unsloth_zoo."""
     if not _DROPS_VISION.get():
@@ -1539,6 +1554,7 @@ def _size_load(
             drafter and _checkpoint_fingerprint(drafter[0]),
             offload,
             _DROPS_VISION.get(),
+            _PROMPT_CACHE_MIB.get(),
         )
     except Exception:
         return _size_load_uncached(

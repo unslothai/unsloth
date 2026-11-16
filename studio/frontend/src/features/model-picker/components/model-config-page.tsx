@@ -1324,6 +1324,11 @@ const MLX_BATCH_HINT =
   "Leave blank to read every waiting reply at once. Lower values hold less " +
   "memory at once; below the micro-batch size, replies are read one at a time.";
 
+const MLX_CACHE_RAM_HINT =
+  "Memory in MiB kept for reusing earlier prompts, so a returning conversation " +
+  "is not read again. Leave blank for the default (15% of the memory the GPU may " +
+  "use); 0 turns it off. It comes out of the memory the model and its context can use.";
+
 const MLX_MICRO_BATCH_HINT =
   "Prompt tokens each prefill step reads. Leave blank for the default (2048). " +
   "Larger values read long prompts faster but use more memory; when experts " +
@@ -1336,12 +1341,16 @@ function BatchCountRow({
   ariaLabel,
   value,
   onChange,
+  min = N_BATCH_MIN,
+  max = N_BATCH_MAX,
 }: {
   label: string;
   hint: string;
   ariaLabel: string;
   value: number | null | undefined;
   onChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
 }) {
   return (
     <div className={ROW_CLASS}>
@@ -1351,8 +1360,8 @@ function BatchCountRow({
       </div>
       <input
         type="number"
-        min={N_BATCH_MIN}
-        max={N_BATCH_MAX}
+        min={min}
+        max={max}
         step={1}
         value={value ?? ""}
         placeholder="auto"
@@ -1364,7 +1373,7 @@ function BatchCountRow({
           }
           const parsed = Number.parseInt(raw, 10);
           if (Number.isFinite(parsed)) {
-            onChange(Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)));
+            onChange(Math.max(min, Math.min(max, parsed)));
           }
         }}
         aria-label={ariaLabel}
@@ -1905,6 +1914,17 @@ function MlxAdvancedSettings({
           ariaLabel="Prompt micro-batch size"
           value={config.nUbatch}
           onChange={(nUbatch) => update({ nUbatch })}
+        />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Cache RAM"
+          hint={MLX_CACHE_RAM_HINT}
+          ariaLabel="Prompt cache size in MiB"
+          value={config.cacheRam}
+          onChange={(cacheRam) => update({ cacheRam })}
+          min={0}
+          max={CACHE_RAM_MAX}
         />
       )}
       {servedByMlx && (
@@ -3612,6 +3632,7 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
+          cacheRam: targetIsMlx ? (runtimeConfig.cacheRam ?? null) : null,
           // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
           // (read as Auto) while the selector shows the global fallback, so a global Off row
           // charged an 11 GB DSpark sidecar.

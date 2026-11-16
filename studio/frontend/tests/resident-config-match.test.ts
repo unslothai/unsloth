@@ -673,6 +673,7 @@ test("MLX-only load settings are judged on an MLX resident, not on a transformer
     [{ reasoningBudgetMessage: "Done." }, { requested_reasoning_budget_message: "Done." }],
     [{ nUbatch: 512 }, { requested_n_ubatch: 512 }],
     [{ nBatch: 512 }, { requested_n_batch: 512 }],
+    [{ cacheRam: 0 }, { requested_cache_ram: 0 }],
   ] as [object, object][]) {
     const config = { ...BLANK, ...chosen };
     const resident = { ...mlx, ...running };
@@ -682,6 +683,8 @@ test("MLX-only load settings are judged on an MLX resident, not on a transformer
     );
     assert.equal(matches({ ...mlx, is_mlx: false }, config), true);
   }
+  // MLX has no unlimited prompt cache and loads -1 as the default.
+  assert.equal(matches(mlx, { ...BLANK, cacheRam: -1 }), true);
 });
 
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {

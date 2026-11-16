@@ -352,8 +352,13 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+    agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
+      // MLX has no unlimited prompt cache: it loads -1 as the default.
+      ((s.is_mlx === true && (c.cacheRam ?? 0) < 0 ? null : c.cacheRam) ?? null) ===
+        (s.requested_cache_ram ?? null),
   },
   {
     // Status echoes the effective budget, so env-shaped servers read as a reload (safe side).

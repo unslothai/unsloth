@@ -5709,6 +5709,7 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         def from_pretrained(name, **kwargs):
             attempts.append(kwargs["text_only"])
             model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            model.priced_cache_mib = mlx_memory._PROMPT_CACHE_MIB.get()
             if kwargs.get("drop_vision_weights") and mlx_memory._DROPS_VISION.get():
                 model._unsloth_vision_freed = 5 * (kwargs["text_only"] is False)
             if reads_images:
@@ -5775,9 +5776,12 @@ def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_p
         # Where the load read the tower anyway (mlx-lm builds it), it is freed after.
         freed = backend.models["org/vision"]["vision_weights_freed"]
         assert freed == ((7 if text_only else 5) if off else 0)
-    backend.load_model(plain, prefill_step = 512)
+    backend.load_model(plain, prefill_step = 512, prompt_cache_mib = 0)
     assert (backend._prefill_step, backend._grid_step()) == (512, 512)
     assert backend.models["org/vision"]["n_ubatch"] == 512
+    # The load is priced and served with the chosen prompt cache.
+    assert backend._model.priced_cache_mib == backend.models["org/vision"]["cache_ram"] == 0
+    assert backend._prompt_cache_bytes() == 0
 
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
@@ -12956,12 +12960,29 @@ def test_a_chosen_micro_batch_caps_at_the_offload_chunk_and_a_change_reloads():
     assert mlx_inference._prefill_choice(256, 128) == (128, 128)
     assert mlx_inference._prefill_choice(256, 512) == (256, None)
 
-    for key in ("n_ubatch", "n_batch"):
+    for key in ("n_ubatch", "n_batch", "cache_ram"):
         entry = {"mlx_kv_quant_requested": "auto", key: 512}
         be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
         assert _mlx_runtime_settings_match(be, req(**{key: 512}))
         assert not _mlx_runtime_settings_match(be, req())
         assert _unsloth_serving_fields(entry)[f"requested_{key}"] == 512
+    # MLX has no unlimited prompt cache: -1 is the default, as blank is.
+    be.models["m"]["cache_ram"] = None
+    assert _mlx_runtime_settings_match(be, req(cache_ram = -1))
+
+
+def test_a_chosen_prompt_cache_size_replaces_the_default_share(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_memory import mlx_prompt_cache_chosen
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "7")
+    for mib, expected in ((None, 7), (-1, 7), (0, 0), (512, 512 << 20)):
+        with mlx_prompt_cache_chosen(mib):
+            assert mlx_inference._prompt_cache_max_bytes(10.0) == expected
+    # A cache that takes the whole budget leaves nothing to fit, rather than an unpriced load.
+    if pytest.importorskip("mlx.core").metal.is_available():
+        with mlx_prompt_cache_chosen(1 << 30):
+            assert mlx_inference.mlx_memory_budget() == 0
 
 
 def test_a_chosen_batch_size_caps_the_replies_one_batched_prefill_takes():

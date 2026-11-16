@@ -298,6 +298,7 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "reasoning_budget_message",
     "n_ubatch",
     "n_batch",
+    "cache_ram",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -2263,6 +2264,7 @@ class InferenceOrchestrator:
         reasoning_budget_message: str = "",
         mlx_prefill_step: Optional[int] = None,
         mlx_prefill_batch: Optional[int] = None,
+        mlx_prompt_cache_mib: Optional[int] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
@@ -2349,6 +2351,7 @@ class InferenceOrchestrator:
                 "reasoning_budget_message": reasoning_budget_message,
                 "mlx_prefill_step": mlx_prefill_step,
                 "mlx_prefill_batch": mlx_prefill_batch,
+                "mlx_prompt_cache_mib": mlx_prompt_cache_mib,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }

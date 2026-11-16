@@ -2188,8 +2188,8 @@ def _release_vision_weights(model) -> int:
     return release_vision_weights(model)
 
 
-def _priced_with_vision_dropped(load_model):
-    """A load's offload plan and context fit price it as Vision off leaves it."""
+def _priced_as_chosen(load_model):
+    """A load's offload plan and context fit price it with its Vision switch and prompt cache size."""
 
     @functools.wraps(load_model)
     def priced(
@@ -2197,11 +2197,19 @@ def _priced_with_vision_dropped(load_model):
         config,
         *args,
         disable_vision = False,
+        prompt_cache_mib = None,
         **kwargs,
     ):
-        from core.inference.mlx_memory import mlx_dropping_vision
-        with mlx_dropping_vision(config, disable_vision):
-            return load_model(self, config, *args, disable_vision = disable_vision, **kwargs)
+        from core.inference.mlx_memory import mlx_dropping_vision, mlx_prompt_cache_chosen
+        with mlx_dropping_vision(config, disable_vision), mlx_prompt_cache_chosen(prompt_cache_mib):
+            return load_model(
+                self,
+                config,
+                *args,
+                disable_vision = disable_vision,
+                prompt_cache_mib = prompt_cache_mib,
+                **kwargs,
+            )
 
     return priced
 
@@ -3352,7 +3360,8 @@ def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
     budget = int(recommended * MLX_MEMORY_LIMIT_FRACTION)
     if retains_history:
         budget -= _prompt_cache_max_bytes(recommended / 1e9)
-    return budget if budget > 0 else None
+    # A prompt cache that takes all of it leaves nothing that fits, not an unpriced load.
+    return max(budget, 0)
 
 
 def _snapshot_dir(model, model_name: str) -> Optional[str]:
@@ -3738,7 +3747,12 @@ def _mlx_prompt_cache_api():
     return LRUPromptCache, make_prompt_cache, can_trim_prompt_cache, trim_prompt_cache
 
 
-def _prompt_cache_max_bytes(recommended_gb = None):
+def _prompt_cache_max_bytes(recommended_gb = None, chosen_mib = None):
+    from core.inference.mlx_memory import _PROMPT_CACHE_MIB
+
+    chosen = _PROMPT_CACHE_MIB.get() if chosen_mib is None else chosen_mib
+    if chosen is not None:
+        return chosen * 1024**2
     override = os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES")
     if override:
         try:
@@ -5400,6 +5414,7 @@ class MLXInferenceBackend:
         self._speculative_draft = None
         self._prefill_step = None
         self._prefill_grid = None
+        self._prompt_cache_mib = None
         self._prefill_batch = None
         self._prefill_layer_step = None
         self._reasoning_budget = -1
@@ -5459,7 +5474,10 @@ class MLXInferenceBackend:
         return self._prompt_cache_history
 
     def _prompt_cache_bytes(self):
-        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        max_bytes = _prompt_cache_max_bytes(
+            self._memory_limits_applied.get("recommended_gb"),
+            getattr(self, "_prompt_cache_mib", None),
+        )
         room = getattr(self, "_prompt_cache_room", None)
         return max_bytes if room is None else min(max_bytes, room)
 
@@ -6157,7 +6175,7 @@ class MLXInferenceBackend:
             logger.info("MLX context limited to %d tokens per request, not by the cache", budget)
         return quant, None, (None if confirmed is None else False), budget
 
-    @_priced_with_vision_dropped
+    @_priced_as_chosen
     def load_model(
         self,
         config,
@@ -6184,6 +6202,7 @@ class MLXInferenceBackend:
         reasoning_budget_message = "",
         prefill_step = None,
         prefill_batch = None,
+        prompt_cache_mib = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -6373,6 +6392,9 @@ class MLXInferenceBackend:
 
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
+        self._prompt_cache_mib = (
+            prompt_cache_mib if prompt_cache_mib is not None and prompt_cache_mib >= 0 else None
+        )
         self._clear_prompt_cache()
         model = None
         try:
@@ -6749,6 +6771,7 @@ class MLXInferenceBackend:
             "reasoning_budget_message": self._reasoning_budget_message,
             "n_ubatch": chosen_step,
             "n_batch": self._prefill_batch,
+            "cache_ram": self._prompt_cache_mib,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -6963,6 +6986,7 @@ class MLXInferenceBackend:
         self._prefill_grid = None
         self._prefill_batch = None
         self._prefill_layer_step = None
+        self._prompt_cache_mib = None
         self._reasoning_budget = -1
         self._model = None
         self._tokenizer = None

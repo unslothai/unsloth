@@ -833,6 +833,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["reasoning_budget_message"] = config.get("reasoning_budget_message", "")
                 load_kwargs["prefill_step"] = config.get("mlx_prefill_step")
                 load_kwargs["prefill_batch"] = config.get("mlx_prefill_batch")
+                load_kwargs["prompt_cache_mib"] = config.get("mlx_prompt_cache_mib")
             from utils.security.file_security import escaping_weight_references
 
             # Right before the load: the folder may have been edited since the route checked it.
@@ -950,6 +951,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "reasoning_budget_message",
                         "n_ubatch",
                         "n_batch",
+                        "cache_ram",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",

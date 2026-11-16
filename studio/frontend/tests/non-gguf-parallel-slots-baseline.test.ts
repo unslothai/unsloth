@@ -91,15 +91,15 @@ test("the baseline follows a width the server changed underneath this tab", () =
   assert.equal(useChatRuntimeStore.getState().loadedNParallel, 4);
 });
 
-test("an MLX status seeds both batch sizes it echoes; a transformers one does not", () => {
+test("an MLX status seeds both batch sizes and the prompt cache it echoes; a transformers one does not", () => {
   for (const isMlx of [true, false]) {
-    const unseeded = { nBatch: null, nUbatch: null, loadedNBatch: null, loadedNUbatch: null };
+    const unseeded = { nBatch: null, nUbatch: null, loadedNBatch: null, loadedNUbatch: null, cacheRam: null, loadedCacheRam: null };
     useChatRuntimeStore.setState({ modelLoading: false, ...unseeded });
     applyActiveModelStatusToStore(
-      { ...(statusFor(1) as object), is_mlx: isMlx, requested_n_batch: 1024, requested_n_ubatch: 256 } as never,
+      { ...(statusFor(1) as object), is_mlx: isMlx, requested_n_batch: 1024, requested_n_ubatch: 256, requested_cache_ram: 0 } as never,
       { previousCheckpoint: MODEL },
     );
     const s = useChatRuntimeStore.getState();
-    assert.deepEqual([s.nBatch, s.nUbatch, s.loadedNBatch, s.loadedNUbatch], isMlx ? [1024, 256, 1024, 256] : [null, null, null, null]);
+    assert.deepEqual([s.nBatch, s.nUbatch, s.cacheRam, s.loadedNBatch, s.loadedNUbatch, s.loadedCacheRam], isMlx ? [1024, 256, 0, 1024, 256, 0] : [null, null, null, null, null, null]);
   }
 });

@@ -13,6 +13,7 @@ import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import { llamaServerLoadFields } from "./lib/load-request";
 import {
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -2174,7 +2175,9 @@ export function SharedComposer({
           loadedNUbatch: committedNUbatch,
           ...(targetIsGguf && !(resp.is_diffusion ?? false)
             ? committedServerTuningState(ownConfig)
-            : clearedServerTuningState()),
+            : targetIsMlx
+              ? committedMlxServerTuningState(ownConfig)
+              : clearedServerTuningState()),
           // The status applier is held off during the load, so record this pane's args now.
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
