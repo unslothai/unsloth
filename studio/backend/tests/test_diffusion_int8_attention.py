@@ -1510,8 +1510,9 @@ def test_a_plan_keeps_the_sink_path_only_where_its_first_calls_clipped(with_sink
 
 @needs_kernel
 def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch):
-    """A plan with attention sinks races the sink path against torch's attention on its deciding call's own inputs;
-    where the path loses, that call and the next ones run torch's attention."""
+    """A plan with attention sinks races the sink path against torch's attention on its deciding call's own inputs
+    (the guarded op's path, _cuda_attention); where the path loses, that call and the next ones run torch's
+    attention."""
     races = []
     monkeypatch.setattr(
         I, "_sink_race", lambda plan, q, k, v, scale, index: races.append(q.shape) or False
@@ -1519,18 +1520,17 @@ def test_a_plan_whose_sink_path_loses_its_race_runs_torch_attention(monkeypatch)
     shape = (1, 700, 4, 128)
     config = _cuda_config(128)
     q, k, v = _sink_case(shape, _card_dtype(), (1,), seed = 3)
+    index = torch.cuda.current_device()
     I._plans().clear()
     for _ in range(I.SINK_DECIDE_AT):
-        I.int8_attention(q, k, v, config = config)
+        I._cuda_attention(q, k, v, config, None, index)
     (plan,) = I._plans().values()
     assert plan["sinks"] is None and races == []
-    out = I.int8_attention(q, k, v, config = config)
+    out = I._cuda_attention(q, k, v, config, None, index)
     assert plan["sinks"] == "native" and races == [shape]
     assert torch.equal(out, I.native_attention(q, k, v))
-    assert (
-        torch.equal(I.int8_attention(q, k, v, config = config), I.native_attention(q, k, v))
-        and len(races) == 1
-    )
+    assert torch.equal(I._cuda_attention(q, k, v, config, None, index), I.native_attention(q, k, v))
+    assert len(races) == 1
 
 
 @needs_kernel

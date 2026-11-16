@@ -467,9 +467,11 @@ _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
 # The first SINK_LEARN_CALLS calls of a launch plan report whether a head clipped V (an attention sink); from its
-# SINK_DECIDE_AT-th call on a plan none of them did runs the kernels without the sink path (_choose_path).
-SINK_LEARN_CALLS = 64
-SINK_DECIDE_AT = 128
+# SINK_DECIDE_AT-th call on a plan none of them did runs the kernels without the sink path (_choose_path). Both come
+# before a denoiser's forward is recorded as a CUDA graph (three eager warm-up forwards: a graph replays without
+# calling in here, so a plan undecided by then keeps the sink path in the graph).
+SINK_LEARN_CALLS = 32
+SINK_DECIDE_AT = 48
 _RACE = (
     threading.local()
 )  # .path: the path _median_ms's timed calls take on this thread (None outside it)
@@ -753,7 +755,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
         seen = False
         for event, host in plan["checks"]:
-            event.synchronize()  # long done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
+            event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
             seen = seen or bool(host.any())
         plan["checks"] = []
         plan["sinks"] = seen if not seen or race is None or race() else "native"
@@ -855,9 +857,10 @@ def quantise(
 def _cuda_attention(
     q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int
 ) -> Any:
-    """``attend(quantise(q, k, v, config, scale))`` in one pass: one plan lookup, one stream lookup, no operand
-    views. The scratch buffer and any aligned copies are freed on return; the caching allocator hands their memory
-    out again only in stream order, after the launches that read it."""
+    """``attend(quantise(q, k, v, config, scale))`` in one pass, on the path the plan takes (_choose_path, with the
+    sink race): one plan lookup, one stream lookup, no operand views. The scratch buffer and any aligned copies are
+    freed on return; the caching allocator hands their memory out again only in stream order, after the launches that
+    read it."""
     import torch
 
     plan, q, k, v = _find_plan(q, k, v, config, scale, index)
