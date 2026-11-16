@@ -49,11 +49,11 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     consent: "Allow editing scenes, scripts and project files and running your project in Godot. Results may be sent to your model provider. Cancelling may not undo changes.",
     link: { label: "Get Godot MCP Native", url: "https://github.com/yurineko73/Godot-MCP-Native" },
     steps: [
-      <>In Godot 4, open the {strong("AssetLib")} tab, search {strong("Godot MCP Native")}, then download and install it.</>,
+      <>In Godot 4, open the {strong("AssetLib")} tab ({strong("Asset Store")} in Godot 4.7), search {strong("Godot MCP Native")}, then download and install it.</>,
       <>Enable it in {strong("Project → Project Settings → Plugins")}.</>,
-      <>In the {strong("MCP")} dock, keep the transport on {strong("HTTP")} and start the server if it is not running.</>,
+      <>Open the {strong("MCP")} tab at the top of the editor, keep the transport on {strong("HTTP")} and click {strong("Start Server")}. Tick {strong("Auto Start")} to start it with the editor next time.</>,
     ],
-    portHint: "Match the HTTP port in the MCP dock.",
+    portHint: "Match the Port in Godot's MCP tab.",
     more: true,
   },
   figma: {
