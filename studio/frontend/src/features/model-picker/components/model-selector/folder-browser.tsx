@@ -21,10 +21,8 @@ import {
   createBrowseFolder,
 } from "@/features/chat";
 import { useT } from "@/i18n";
-import {
-  ChevronRightStandardIcon,
-  ChevronUpStandardIcon,
-} from "@/lib/chevron-icons";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon, FolderAddIcon } from "@/lib/folder-icons";
 import {
@@ -213,6 +211,11 @@ export function FolderBrowser({
     [data, query, typedPath],
   );
   const activeIndex = Math.min(active, Math.max(visible.length - 1, 0));
+  const {
+    attach: attachList,
+    onScroll: onListScroll,
+    className: listFadeClass,
+  } = useScrollFades();
   const optionId = (index: number) => `${listId}-option-${index}`;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: optionId only depends on listId
@@ -302,10 +305,11 @@ export function FolderBrowser({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 border-t border-border">
+        {/* Fixed height on the row, so the list fills whatever the sidebar leaves. */}
+        <div className="flex h-[calc(23rem*var(--ui-space-scale,1))] min-h-0 border-t border-border">
           <nav
             aria-label="Places"
-            className="hidden h-[calc(23rem*var(--ui-space-scale,1))] w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2 sm:flex"
+            className="hidden w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2 sm:flex"
             data-testid="folder-browser-places"
           >
             <div className="flex flex-col gap-0.5">
@@ -355,24 +359,8 @@ export function FolderBrowser({
             )}
           </nav>
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex h-11 items-center gap-1 px-3">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="shrink-0 rounded-full"
-                disabled={!data?.parent || loading}
-                aria-label="Up one folder"
-                title="Up one folder"
-                onClick={() => navigate(data?.parent ?? undefined, showHidden)}
-              >
-                <HugeiconsIcon
-                  icon={ChevronUpStandardIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </Button>
               <div
                 className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-ui-13 text-muted-foreground"
                 data-testid="folder-browser-crumbs"
@@ -523,149 +511,159 @@ export function FolderBrowser({
               </div>
             </div>
 
-            <div className="h-[calc(15rem*var(--ui-space-scale,1))] overflow-y-auto border-t border-border px-2 py-1.5">
-              {error && (
-                <div
-                  role="alert"
-                  className="px-2.5 py-2 text-ui-13 text-destructive"
-                  data-testid="folder-browser-error"
-                >
-                  {error}
-                </div>
+            <div
+              ref={attachList}
+              onScroll={onListScroll}
+              className={cn(
+                "model-list-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-2 py-1.5",
+                listFadeClass,
               )}
-              {newName !== null && (
-                <form
-                  className="mb-1 flex items-center gap-2 rounded-lg bg-muted/60 px-2.5 py-1"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void createFolder();
-                  }}
-                >
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                  <input
-                    ref={nameRef}
-                    type="text"
-                    aria-label="New folder name"
-                    autoComplete="off"
-                    spellCheck={false}
-                    maxLength={255}
-                    value={newName}
-                    disabled={creating}
-                    onChange={(event) => setNewName(event.target.value)}
-                    placeholder="Folder name"
-                    className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                    data-testid="folder-browser-new-name"
-                  />
-                  <Button
-                    type="submit"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 rounded-full px-2.5 text-ui-13"
-                    disabled={creating || !newName.trim()}
-                  >
-                    {creating ? "Creating…" : "Create"}
-                  </Button>
-                </form>
-              )}
-              {!data && loading && (
-                <div className="flex items-center gap-2 px-2.5 py-2">
-                  <Spinner className="size-3 text-muted-foreground" />
-                  <span className="text-ui-13 text-muted-foreground">
-                    {t("common.loading")}
-                  </span>
-                </div>
-              )}
-              {data && (
-                <div
-                  className={cn(
-                    "transition-opacity duration-150",
-                    loading && "pointer-events-none opacity-50",
-                  )}
-                >
-                  {visible.length === 0 &&
-                    (!showModelHints ||
-                      !(
-                        data.model_files_here && data.model_files_here > 0
-                      )) && (
-                      <div className="px-2.5 py-6 text-center text-ui-13 text-muted-foreground">
-                        {data.entries.length === 0
-                          ? "No folders in here."
-                          : `No folder matches "${query.trim()}".`}
-                      </div>
-                    )}
-                  {showModelHints &&
-                    data.model_files_here !== undefined &&
-                    data.model_files_here > 0 && (
-                      <div className="px-2.5 py-1.5 text-ui-12 text-muted-foreground">
-                        {data.model_files_here} model file
-                        {data.model_files_here === 1 ? "" : "s"} in this folder.
-                        Click "{confirmLabel}" to scan it.
-                      </div>
-                    )}
-                  {data.truncated === true && (
-                    <div className="px-2.5 py-1.5 text-ui-12 text-muted-foreground/80">
-                      Showing the first {data.entries.length} folders. Type a
-                      path to go straight to one.
-                    </div>
-                  )}
+            >
+              {/* One child, so the fade hook's ResizeObserver sees every content change. */}
+              <div>
+                {error && (
                   <div
-                    id={listId}
-                    role="listbox"
-                    aria-label="Folders"
-                    tabIndex={-1}
+                    role="alert"
+                    className="px-2.5 py-2 text-ui-13 text-destructive"
+                    data-testid="folder-browser-error"
                   >
-                    {visible.map((e, index) => (
-                      <button
-                        type="button"
-                        role="option"
-                        id={optionId(index)}
-                        aria-selected={index === activeIndex}
-                        tabIndex={-1}
-                        key={e.name}
-                        onClick={() => openEntry(e.name)}
-                        onMouseMove={() => {
-                          if (index !== activeIndex) setActive(index);
-                        }}
-                        className={cn(
-                          "group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors",
-                          index === activeIndex && "bg-muted text-foreground",
-                          e.hidden && "text-muted-foreground",
-                        )}
-                      >
-                        <HugeiconsIcon
-                          icon={Folder02Icon}
-                          strokeWidth={1.75}
-                          className={cn(
-                            "size-4 shrink-0",
-                            e.has_models
-                              ? "text-foreground"
-                              : "text-muted-foreground",
-                          )}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {e.name}
-                        </span>
-                        {showModelHints && e.has_models && (
-                          <span className="shrink-0 rounded-full border border-border px-1.5 py-0 text-ui-10 text-muted-foreground">
-                            Models
-                          </span>
-                        )}
-                        <HugeiconsIcon
-                          icon={ChevronRightStandardIcon}
-                          className={cn(
-                            "size-3.5 shrink-0 text-muted-foreground/70",
-                            index !== activeIndex && "invisible",
-                          )}
-                        />
-                      </button>
-                    ))}
+                    {error}
                   </div>
-                </div>
-              )}
+                )}
+                {newName !== null && (
+                  <form
+                    className="mb-1 flex items-center gap-2 rounded-lg bg-muted/60 px-2.5 py-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void createFolder();
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={FolderAddIcon}
+                      strokeWidth={1.75}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                    <input
+                      ref={nameRef}
+                      type="text"
+                      aria-label="New folder name"
+                      autoComplete="off"
+                      spellCheck={false}
+                      maxLength={255}
+                      value={newName}
+                      disabled={creating}
+                      onChange={(event) => setNewName(event.target.value)}
+                      placeholder="Folder name"
+                      className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                      data-testid="folder-browser-new-name"
+                    />
+                    <Button
+                      type="submit"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 rounded-full px-2.5 text-ui-13"
+                      disabled={creating || !newName.trim()}
+                    >
+                      {creating ? "Creating…" : "Create"}
+                    </Button>
+                  </form>
+                )}
+                {!data && loading && (
+                  <div className="flex items-center gap-2 px-2.5 py-2">
+                    <Spinner className="size-3 text-muted-foreground" />
+                    <span className="text-ui-13 text-muted-foreground">
+                      {t("common.loading")}
+                    </span>
+                  </div>
+                )}
+                {data && (
+                  <div
+                    className={cn(
+                      "transition-opacity duration-150",
+                      loading && "pointer-events-none opacity-50",
+                    )}
+                  >
+                    {visible.length === 0 &&
+                      (!showModelHints ||
+                        !(
+                          data.model_files_here && data.model_files_here > 0
+                        )) && (
+                        <div className="px-2.5 py-6 text-center text-ui-13 text-muted-foreground">
+                          {data.entries.length === 0
+                            ? "No folders in here."
+                            : `No folder matches "${query.trim()}".`}
+                        </div>
+                      )}
+                    {showModelHints &&
+                      data.model_files_here !== undefined &&
+                      data.model_files_here > 0 && (
+                        <div className="px-2.5 py-1.5 text-ui-12 text-muted-foreground">
+                          {data.model_files_here} model file
+                          {data.model_files_here === 1 ? "" : "s"} in this
+                          folder. Click "{confirmLabel}" to scan it.
+                        </div>
+                      )}
+                    {data.truncated === true && (
+                      <div className="px-2.5 py-1.5 text-ui-12 text-muted-foreground/80">
+                        Showing the first {data.entries.length} folders. Type a
+                        path to go straight to one.
+                      </div>
+                    )}
+                    <div
+                      id={listId}
+                      role="listbox"
+                      aria-label="Folders"
+                      tabIndex={-1}
+                    >
+                      {visible.map((e, index) => (
+                        <button
+                          type="button"
+                          role="option"
+                          id={optionId(index)}
+                          aria-selected={index === activeIndex}
+                          tabIndex={-1}
+                          key={e.name}
+                          onClick={() => openEntry(e.name)}
+                          onMouseMove={() => {
+                            if (index !== activeIndex) setActive(index);
+                          }}
+                          className={cn(
+                            "group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors",
+                            index === activeIndex && "bg-muted text-foreground",
+                            e.hidden && "text-muted-foreground",
+                          )}
+                        >
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            strokeWidth={1.75}
+                            className={cn(
+                              "size-4 shrink-0",
+                              e.has_models
+                                ? "text-foreground"
+                                : "text-muted-foreground",
+                            )}
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {e.name}
+                          </span>
+                          {showModelHints && e.has_models && (
+                            <span className="shrink-0 rounded-full border border-border px-1.5 py-0 text-ui-10 text-muted-foreground">
+                              Models
+                            </span>
+                          )}
+                          <HugeiconsIcon
+                            icon={ChevronRightStandardIcon}
+                            className={cn(
+                              "size-3.5 shrink-0 text-muted-foreground/70",
+                              index !== activeIndex && "invisible",
+                            )}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
