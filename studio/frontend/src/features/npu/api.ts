@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
-import { npuSearchText } from "./display-name";
+import { npuLocalLabel, npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -187,11 +187,7 @@ export function npuResumeLabel(model: NpuModel): string | null {
 }
 
 export function npuRowLabel(model: NpuModel): string {
-  if (!model.local) return model.id;
-  const parts = model.local.folder.split("/").filter(Boolean);
-  const last = parts.pop();
-  // A GGUF export with Q4NX on writes into <save folder>/npu-q4nx: name it by the save folder.
-  return (last === "npu-q4nx" ? parts.pop() : last) || model.id;
+  return (model.local && npuLocalLabel(model.local.folder)) || model.id;
 }
 
 export function npuRowDetails(model: NpuModel): string[] {

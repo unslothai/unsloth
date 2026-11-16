@@ -99,7 +99,6 @@ import {
   npuDisplayName,
   npuDownloadLabel,
   npuRowDetails,
-  npuRowLabel,
   npuRowsFor,
   npuRowTooltip,
   useNpuCatalog,
@@ -7695,7 +7694,7 @@ export function HubModelPicker({
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
     const reconnecting = model.id in npuCatalog.reconnecting;
-    const name = model.local ? npuRowLabel(model) : npuDisplayName(model);
+    const name = npuDisplayName(model);
     const phase = npuCatalog.phases[model.id];
     const details = npuRowDetails(model);
     const problem = model.local?.problem ?? null;
