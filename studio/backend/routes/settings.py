@@ -2700,9 +2700,15 @@ def update_openai_auto_switch(
     )
 
 
+from utils.model_aliases import ModelAliasLoadConfig
+
+
 class ModelAliasEntry(BaseModel):
     name: str
     model: str
+    load_config: Optional[ModelAliasLoadConfig] = Field(
+        None, exclude_if = lambda value: value is None
+    )
 
 
 class ModelAliasesPayload(BaseModel):

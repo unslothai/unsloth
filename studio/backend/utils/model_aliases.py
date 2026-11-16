@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
+MODEL_ALIAS_CONFIG_SCOPE_KEY = "unsloth.model_alias_load_config"
 MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -30,7 +33,48 @@ _ALIAS_ROUTES = frozenset(
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
 
-def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
+
+class ModelAliasLoadConfig(BaseModel):
+    """Explicit GGUF launch controls; never arbitrary loader arguments."""
+
+    model_config = ConfigDict(extra = "forbid")
+    max_seq_length: StrictInt = Field(ge = 1, le = 1048576)
+    cache_type_kv: str
+    speculative_type: Literal["auto", "off", "ngram"]
+
+    @field_validator("cache_type_kv")
+    @classmethod
+    def supported_cache_type(cls, value: str) -> str:
+        from utils.openai_auto_switch_settings import VALID_KV_CACHE_DTYPES
+
+        if value not in VALID_KV_CACHE_DTYPES:
+            raise ValueError("Unsupported KV cache type")
+        return value
+
+
+def request_alias_load_config(scope: Any, model: Optional[str]) -> dict:
+    """Read only middleware-owned metadata for this exact rewritten target."""
+    entry = scope.get(MODEL_ALIAS_CONFIG_SCOPE_KEY) if isinstance(scope, dict) else None
+    if not entry or entry["model"] != model:
+        return {}
+    return dict(entry["load_config"])
+
+
+def alias_config_matches(backend: Any, config: dict) -> bool:
+    """Auto may select another algorithm: compare the caller's original launch intent."""
+    if not config:
+        return True
+    intent = getattr(backend, "last_load_intent", None)
+    return intent is not None and all(
+        getattr(intent, field, None) == config[key]
+        for key, field in (
+            ("max_seq_length", "n_ctx"),
+            ("cache_type_kv", "cache_type_kv"),
+            ("speculative_type", "speculative_type"),
+        )
+    )
+
+def normalize_model_aliases(raw: Any) -> list[dict[str, Any]]:
     """Validated ``[{"name", "model"}]``; raises ValueError naming the first bad entry."""
     if raw is None:
         return []
@@ -38,7 +82,7 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         raise ValueError("Model aliases must be a list.")
     if len(raw) > MAX_MODEL_ALIASES:
         raise ValueError(f"At most {MAX_MODEL_ALIASES} model aliases are allowed.")
-    aliases: list[dict[str, str]] = []
+    aliases: list[dict[str, Any]] = []
     seen: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
@@ -58,7 +102,10 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         if name.lower() in seen:
             raise ValueError(f"Alias '{name}' is defined twice.")
         seen.add(name.lower())
-        aliases.append({"name": name, "model": model})
+        alias = {"name": name, "model": model}
+        if entry.get("load_config") is not None:
+            alias["load_config"] = ModelAliasLoadConfig.model_validate(entry["load_config"]).model_dump()
+        aliases.append(alias)
     # One hop only: a target naming another alias would be served as a literal model id.
     for alias in aliases:
         if alias["model"].lower() in seen:
@@ -66,10 +113,10 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
     return aliases
 
 
-_normalized: tuple[Any, list[dict[str, str]]] = (None, [])
+_normalized: tuple[Any, list[dict[str, Any]]] = (None, [])
 
 
-def get_model_aliases() -> list[dict[str, str]]:
+def get_model_aliases() -> list[dict[str, Any]]:
     global _normalized
     from utils.openai_auto_switch_settings import _cached_setting
 
@@ -85,7 +132,7 @@ def get_model_aliases() -> list[dict[str, str]]:
     return _normalized[1]
 
 
-def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, str]]:
+def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, Any]]:
     """Replace the whole alias list; the same input always stores the same value. ``model_ids``
     are real ids an alias may not reuse: the rewrite would silently serve other weights."""
     from storage.studio_db import upsert_app_settings
@@ -204,6 +251,15 @@ class ModelAliasMiddleware:
         body = b"".join(chunks)
         rewritten = _rewrite_alias_body(body, aliases)
         if rewritten is not None:
+            name = json.loads(body)["model"].strip().lower()
+            configured = next(
+                (entry for entry in get_model_aliases() if entry["name"].lower() == name), None
+            )
+            if configured and configured.get("load_config"):
+                scope[MODEL_ALIAS_CONFIG_SCOPE_KEY] = {
+                    "model": configured["model"],
+                    "load_config": dict(configured["load_config"]),
+                }
             body = rewritten
             headers = [(k, v) for k, v in scope.get("headers", []) if k != b"content-length"]
             headers.append((b"content-length", str(len(body)).encode("ascii")))
