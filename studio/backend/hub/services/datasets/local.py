@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -530,9 +531,8 @@ async def upload_dataset_response(
         stored_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    return UploadDatasetResponse(
-        filename = filename, stored_path = str(_reuse_identical_upload(stored_path))
-    )
+    reused_path = await asyncio.to_thread(_reuse_identical_upload, stored_path)
+    return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
 
 
 def _file_digest(path: Path) -> str:
@@ -543,7 +543,15 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+_REUSE_LOCK = threading.Lock()
+
+
 def _reuse_identical_upload(stored_path: Path) -> Path:
+    with _REUSE_LOCK:
+        return _reuse_identical_upload_locked(stored_path)
+
+
+def _reuse_identical_upload_locked(stored_path: Path) -> Path:
     suffix = stored_path.name.split("_", 1)[-1]
     try:
         size = stored_path.stat().st_size
