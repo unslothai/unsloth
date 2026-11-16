@@ -412,3 +412,46 @@ def test_a_cache_only_load_resolves_hub_adapters_without_the_network(monkeypatch
     assert out == (("wan-lora", str(snapshot / "my_lora.safetensors"), 1.0),)
     assert snapshots == [("someone/wan-lora", True)]
     assert downloads == [("someone/wan-lora", "my_lora.safetensors", True)]
+
+
+@pytest.mark.parametrize("local_files_only", [False, True])
+def test_a_hub_adapter_s_companion_config_sets_its_scale(monkeypatch, tmp_path, local_files_only):
+    """A Hub PEFT adapter whose lora_alpha lives only in adapter_config.json: the resolver fetches that config beside
+    the weights (same revision, cache-only when asked), so rank 4 / alpha 8 bakes at scale 2, not 1."""
+    import huggingface_hub
+
+    from core.inference import diffusion_lora
+
+    torch.manual_seed(0)
+    module = _WanLike().to(torch.bfloat16)
+    snap = tmp_path / "hub" / "models--someone--wan-lora" / "snapshots" / "abc123"
+    weights = snap / "sub" / "w.safetensors"
+    factors = _write_adapter(weights, module, "blocks", _WAN_LEAVES, alpha = 8, metadata = False)
+    fetched = []
+
+    def fake_download(repo_id, filename, **kwargs):
+        fetched.append((repo_id, filename, kwargs.get("revision"), kwargs.get("local_files_only")))
+        target = snap / filename
+        target.write_text(json.dumps({"r": RANK, "lora_alpha": 8, "use_rslora": False}))
+        return str(target)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **k: [
+            diffusion_lora.ResolvedLora(
+                "someone/wan-lora", "wan-lora", str(weights), "safetensors", 1.0
+            )
+        ],
+    )
+    out = video_lora.resolve(
+        [("someone/wan-lora", 1.0)],
+        family = "wan2.2-ti2v-5b",
+        hf_token = None,
+        local_files_only = local_files_only,
+    )
+    assert fetched == [("someone/wan-lora", "sub/adapter_config.json", "abc123", local_files_only)]
+    base = {k: v.clone() for k, v in module.state_dict().items()}
+    video_lora.bake_into_module_(module, [(out[0][1], 1.0)])
+    _assert_baked(module, base, factors, scale = 8 / RANK)

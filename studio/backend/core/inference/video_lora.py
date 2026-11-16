@@ -178,8 +178,50 @@ def resolve(
             n += 1
             name = f"{r.alias}_{n}"
         seen.add(name)
+        _fetch_hub_adapter_config(r.path, hf_token, local_files_only)
         out.append((name, r.path, r.weight))
     return tuple(out)
+
+
+def _hub_cache_location(path: str) -> Optional[tuple[str, str, str, str]]:
+    """``(cache_dir, repo_id, revision, file in repo)`` for a file inside a Hugging Face cache snapshot, else None."""
+    parts = Path(str(path)).parts
+    for i, part in enumerate(parts):
+        if part.startswith("models--") and len(parts) > i + 3 and parts[i + 1] == "snapshots":
+            owner_name = part[len("models--") :].split("--", 1)
+            if len(owner_name) != 2:
+                return None
+            return (
+                str(Path(*parts[:i])),
+                "/".join(owner_name),
+                parts[i + 2],
+                "/".join(parts[i + 3 :]),
+            )
+    return None
+
+
+def _fetch_hub_adapter_config(path: str, hf_token: Optional[str], local_files_only: bool) -> None:
+    """A Hub PEFT adapter may keep lora_alpha / rsLoRA only in adapter_config.json beside the weights; the resolver
+    downloads the weights alone, so fetch the config too (same revision, cache-only when asked). Absent: no-op."""
+    if Path(str(path)).with_name("adapter_config.json").is_file():
+        return
+    where = _hub_cache_location(path)
+    if where is None:
+        return
+    cache_dir, repo_id, revision, filename = where
+    folder = filename.rsplit("/", 1)[0] + "/" if "/" in filename else ""
+    try:
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(
+            repo_id,
+            folder + "adapter_config.json",
+            revision = revision,
+            token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+    except Exception:  # noqa: BLE001 - no config in the repo (or offline): the file's own metadata decides
+        pass
 
 
 def _file_metadata(path: str) -> dict:
