@@ -9,6 +9,11 @@ blocks into the front half of their input). Same math as the fused decode. NVIDI
 
 Every decode on cards measured no slower (T4, L4); elsewhere (A100 4% slower) only decodes the fused path would not
 fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA card.
+
+``full_map_decode`` runs the same strip decode where the VAE would otherwise tile (speed mode off, no Triton, ROCm,
+MPS, CPU, a failed fused install, low free memory): the three Triton primitives fall back to torch ops, so every device
+decodes with whole-map GroupNorm stats. Tiles cut from a large FLUX.2 latent take their own stats and shift colour
+(2048 px: 25.6 dB vs the untiled decode). ``UNSLOTH_FLUX_VAE_FULL_MAP=0`` keeps the tiles.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from typing import Any, Optional
 from . import diffusion_vae_fused as fused
 
 STRIPS_ENV = "UNSLOTH_FLUX_VAE_STRIPS"
+FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
 STRIP_VAES = frozenset({"AutoencoderKLFlux2"})
 # Elements of the larger of a strip's input and output (None: by card). sm80+ (L4 / A100) decode fastest at 2^24
 # (32 MiB of bf16); Turing's implicit-GEMM convs lose 5-10% on strips that short, so sm75 takes 2^26.
@@ -44,6 +50,14 @@ def strip_elems(device: Any) -> int:
 
 def strips_disabled() -> bool:
     return os.environ.get(STRIPS_ENV, "").strip().lower() in fused._FALSE
+
+
+def full_map_disabled() -> bool:
+    return os.environ.get(FULL_MAP_ENV, "").strip().lower() in fused._FALSE
+
+
+def _portable() -> bool:
+    return bool(getattr(_LOCAL, "portable", False))
 
 
 def strips_forced() -> bool:
@@ -222,7 +236,40 @@ def _stats(
     norm: Any,
     in_bias: Any = None,
 ) -> tuple:
+    if _portable():
+        return _stats_torch(x, norm, in_bias)
     return fused.group_norm_stats(x.unsqueeze(2), norm, in_bias)
+
+
+def _group_rows(x: Any, a: int, b: int, g: int, in_bias: Any) -> Any:
+    """fp32 rows [a, b) of ``x + in_bias`` as (G, C/G, rows, W)."""
+    seg = x.narrow(2, a, b - a).float()
+    if in_bias is not None:
+        seg = seg + in_bias.float().view(1, -1, 1, 1)
+    _, c, n, w = seg.shape
+    return seg.reshape(g, c // g, n, w)
+
+
+def _stats_torch(
+    x: Any,
+    norm: Any,
+    in_bias: Any = None,
+) -> tuple:
+    """fp32 per-group ``(mean, rstd)`` over the whole map in row strips; fp32 on device (no fp64 on XPU/MPS, no host sync)."""
+    torch = fused._torch()
+    _, c, h, w = x.shape
+    g = int(norm.num_groups)
+    count = float(c // g) * h * w
+    total = torch.zeros(g, dtype = torch.float32, device = x.device)
+    for a, b in _strips(h, x.numel()):
+        total += _group_rows(x, a, b, g, in_bias).sum(dim = (1, 2, 3))
+    mean = total / count
+    sq = torch.zeros_like(total)
+    for a, b in _strips(h, x.numel()):
+        d = _group_rows(x, a, b, g, in_bias) - mean.view(g, 1, 1, 1)
+        sq += (d * d).sum(dim = (1, 2, 3))
+    rstd = torch.rsqrt(sq / count + float(norm.eps))
+    return mean, rstd
 
 
 def _padded_rows(c: int, rows: int, top: int, bottom: int, w: int, like: Any) -> tuple:
@@ -246,6 +293,8 @@ def _norm_rows(
 ) -> Any:
     """silu(group_norm(x + in_bias)) of rows [a, b) plus a one-row halo (zeros past the image edge), with the
     global ``stats``: what a padding-1 3x3 conv reads for output rows [a, b)."""
+    if _portable():
+        return _norm_rows_torch(x, a, b, norm, stats, in_bias)
     k = fused._kernels()
     _, c, h, w = x.shape
     lo, hi = max(0, a - 1), min(h, b + 1)
@@ -266,6 +315,28 @@ def _norm_rows(
             num_warps = 4,
         )  # fmt: skip
     return buf.permute(0, 3, 1, 2)
+
+
+def _norm_rows_torch(
+    x: Any,
+    a: int,
+    b: int,
+    norm: Any,
+    stats: tuple,
+    in_bias: Any = None,
+) -> Any:
+    """``_norm_rows`` in torch ops: fp32 normalise, affine and SiLU, one rounding to the map's dtype."""
+    import torch.nn.functional as F
+
+    _, c, h, w = x.shape
+    lo, hi = max(0, a - 1), min(h, b + 1)
+    g = int(norm.num_groups)
+    y = (_group_rows(x, lo, hi, g, in_bias) - stats[0].view(g, 1, 1, 1)) * stats[1].view(g, 1, 1, 1)
+    y = y.reshape(1, c, hi - lo, w) * norm.weight.float().view(
+        1, -1, 1, 1
+    ) + norm.bias.float().view(1, -1, 1, 1)
+    y = F.silu(y).to(x.dtype)
+    return F.pad(y, (0, 0, int(a == 0), int(b == h)))
 
 
 def _conv_rows(padded: Any, conv: Any, bias: bool) -> Any:
@@ -306,6 +377,14 @@ def _add_rows(
     res: Any = None,
 ) -> None:
     """dst = (res + y + bias) / scale (``res`` defaults to ``dst``), fp32 sum, one rounding; row strips."""
+    if _portable():
+        v = (dst if res is None else res).float() + y.float()
+        if bias is not None:
+            v = v + bias.float().view(1, -1, 1, 1)
+        if float(scale) != 1.0:
+            v = v * (1.0 / float(scale))
+        dst.copy_(v)
+        return
     k = _residual_kernel()
     res = dst if res is None else res
     _, c, n, w = dst.shape
@@ -444,6 +523,113 @@ def _decode_one(decoder: Any, z: Any) -> Any:
             _conv_rows(_norm_rows(h, a, b, decoder.conv_norm_out, stats), conv, True)
         )
     return out
+
+
+def _kernels_ok(decoder: Any, z: Any) -> bool:
+    return (
+        bool(z.is_cuda)
+        and fused.runtime_ok()
+        and _residual_kernel() is not None
+        and _call_ok(decoder, z)
+    )
+
+
+def full_map_ok(vae: Any) -> bool:
+    """Whether ``full_map_decode`` reproduces this VAE's untiled decode (the strip-shaped FLUX.2 decoder)."""
+    decoder = getattr(vae, "decoder", None)
+    return (
+        vae is not None
+        and type(vae).__name__ in STRIP_VAES
+        and decoder is not None
+        and not full_map_disabled()
+        and decoder_ok(decoder)
+    )
+
+
+def _full_map_run(decoder: Any, z: Any, portable: bool) -> Any:
+    torch = fused._torch()
+    prev = getattr(_LOCAL, "portable", False)
+    _LOCAL.portable = portable
+    try:
+        # The mid block attends over every latent: where no fused SDPA takes head dim 512 (ROCm, MPS), Studio's
+        # chunked mode bounds the score matrix, else the math path holds all of it (65,536 tokens at 2048 px: 8 GiB per bf16 copy).
+        with torch.no_grad(), _attention_bound():
+            out = None
+            for i in range(z.shape[0]):
+                one = _decode_one(decoder, z[i : i + 1])
+                if z.shape[0] == 1:
+                    return one
+                if out is None:
+                    out = torch.empty(
+                        (z.shape[0], *one.shape[1:]), dtype = one.dtype, device = one.device
+                    )
+                out[i : i + 1].copy_(one)
+                del one
+            return out
+    finally:
+        _LOCAL.portable = prev
+
+
+def full_map_decode(vae: Any, z: Any) -> Any:
+    """Untiled decode of a (B, C, H, W) latent with whole-map GroupNorm, in bounded row strips."""
+    decoder = vae.decoder
+    dtype = decoder.conv_in.weight.dtype
+    if getattr(vae, "post_quant_conv", None) is not None:
+        z = vae.post_quant_conv(z.to(vae.post_quant_conv.weight.dtype))
+    z = z.to(dtype)
+    # A strip decode that already failed on this decoder (same kernels) or fails here: the torch ops, not the tiles.
+    kernels = _kernels_ok(decoder, z) and not decoder.__dict__.get(
+        "_unsloth_vae_strips_failed", False
+    )
+    try:
+        out = _full_map_run(decoder, z, portable = not kernels)
+    except Exception as exc:  # noqa: BLE001
+        if not kernels or fused._is_oom(exc):
+            raise
+        decoder._unsloth_vae_strips_failed = True
+        out = None
+    if out is None:
+        out = _full_map_run(decoder, z, portable = True)
+    vae._unsloth_vae_full_map_calls = vae.__dict__.get("_unsloth_vae_full_map_calls", 0) + 1
+    return out
+
+
+def _attention_bound() -> Any:
+    """Studio's chunked VAE attention mode (exact; engages only on SDPA calls no fused kernel takes)."""
+    import contextlib
+
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+    except Exception:  # noqa: BLE001
+        return contextlib.nullcontext()
+    if chunked.chunking_disabled():
+        return contextlib.nullcontext()
+    return chunked.chunked_attention_mode(chunked.score_budget_bytes(_score_budget_mb()))
+
+
+def _score_budget_mb() -> int:
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+        return chunked.DEFAULT_SCORE_BUDGET_MB
+    except Exception:  # noqa: BLE001
+        return 1024
+
+
+def full_map_decode_mib(vae: Any, z: Any) -> float:
+    """Peak MiB of ``full_map_decode``: strip slope over the frame + fp32 strip temporaries + chunked attention scores."""
+    slope = DECODE_STRIPS_MIB_PER_LATENT
+    elem = vae.decoder.conv_in.weight.element_size()
+    strip = (strip_elems(z.device) if z.is_cuda else (STRIP_ELEMS or 1 << 24)) * 4
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+        scores = chunked.score_budget_bytes(_score_budget_mb()) / 2**20
+    except Exception:  # noqa: BLE001
+        scores = 1024.0
+    return slope * (elem / 2) * int(z.shape[-2]) * int(z.shape[-1]) + 8 * strip / 2**20 + scores
+
+
+# 16-bit peak MiB per latent of the strip decode (diffusion_vae_tiling.DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS).
+DECODE_STRIPS_MIB_PER_LATENT = 0.048
 
 
 def largest_pass_elems(decoder: Any, height: int, width: int) -> int:
