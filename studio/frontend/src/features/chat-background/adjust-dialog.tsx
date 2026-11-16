@@ -75,6 +75,10 @@ export function WallpaperAdjustDialog({
     null,
   );
   const pinch = useRef<number | null>(null);
+  // Touch pinch for browsers without WebKit gesture events: every pointer down, and the spread and
+  // zoom when the second finger landed.
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const touchPinch = useRef<{ dist: number; zoom: number } | null>(null);
   const url = useMemo(() => URL.createObjectURL(value.blob), [value.blob]);
   const [area, setArea] = useState(() => pageArea(fade));
   // Follows the window while open (a resize or a phone rotation), as the wallpaper itself does.
@@ -149,6 +153,27 @@ export function WallpaperAdjustDialog({
           y: dragPosition(from.y, dy / scale, area.h, drawn.h, from.zoom / 100),
         }
       : from;
+  // A lifted finger ends a pinch; the one still down carries on dragging from where things are.
+  const release = (event: { pointerId: number }) => {
+    pointers.current.delete(event.pointerId);
+    if (pointers.current.size < 2) {
+      touchPinch.current = null;
+    }
+    const rest = [...pointers.current.entries()][0];
+    if (rest && drag.current?.id !== rest[0]) {
+      drag.current = {
+        id: rest[0],
+        x: rest[1].x,
+        y: rest[1].y,
+        from: draftRef.current,
+      };
+      return;
+    }
+    if (!rest) {
+      drag.current = null;
+      setDragging(false);
+    }
+  };
   const zoomRef = useRef(zoomTo);
   zoomRef.current = zoomTo;
   const draftRef = useRef(draft);
@@ -254,6 +279,19 @@ export function WallpaperAdjustDialog({
             window.getSelection()?.removeAllRanges();
             event.currentTarget.focus({ preventScroll: true });
             event.currentTarget.setPointerCapture(event.pointerId);
+            pointers.current.set(event.pointerId, {
+              x: event.clientX,
+              y: event.clientY,
+            });
+            if (pointers.current.size === 2) {
+              const [a, b] = [...pointers.current.values()];
+              drag.current = null;
+              touchPinch.current = {
+                dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+                zoom: draftRef.current.zoom,
+              };
+              return;
+            }
             drag.current = {
               id: event.pointerId,
               x: event.clientX,
@@ -265,6 +303,25 @@ export function WallpaperAdjustDialog({
           // Selection starts from mousedown's default, which a cancelled pointerdown does not stop everywhere.
           onMouseDown={(event) => event.preventDefault()}
           onPointerMove={(event) => {
+            if (pointers.current.has(event.pointerId)) {
+              pointers.current.set(event.pointerId, {
+                x: event.clientX,
+                y: event.clientY,
+              });
+            }
+            const spread = touchPinch.current;
+            if (spread && pointers.current.size >= 2) {
+              const [a, b] = [...pointers.current.values()];
+              const rect = event.currentTarget.getBoundingClientRect();
+              zoomTo(
+                (spread.zoom * Math.hypot(a.x - b.x, a.y - b.y)) / spread.dist,
+                {
+                  x: (a.x + b.x) / 2 - rect.left,
+                  y: (a.y + b.y) / 2 - rect.top,
+                },
+              );
+              return;
+            }
             const start = drag.current;
             if (!start || start.id !== event.pointerId) {
               return;
@@ -277,14 +334,8 @@ export function WallpaperAdjustDialog({
               ),
             );
           }}
-          onPointerUp={() => {
-            drag.current = null;
-            setDragging(false);
-          }}
-          onPointerCancel={() => {
-            drag.current = null;
-            setDragging(false);
-          }}
+          onPointerUp={release}
+          onPointerCancel={release}
           onKeyDown={(event) => {
             const step = event.shiftKey ? NUDGE * 3 : NUDGE;
             // The image moves the way the arrow points, as a drag moves it with the pointer.

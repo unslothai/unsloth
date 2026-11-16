@@ -197,3 +197,18 @@ test("adjust: the page area follows a resize or rotation while the dialog is ope
   assert.match(dialog, /window\.addEventListener\("resize", read\);/);
   assert.match(dialog, /const next = pageArea\(fade\);/);
 });
+
+test("adjust: a two-finger touch pinch zooms where WebKit gesture events do not exist", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  // The second finger starts a pinch from the current zoom and spread; moves zoom around the midpoint.
+  assert.match(
+    dialog,
+    /if \(pointers\.current\.size === 2\) \{[\s\S]*?touchPinch\.current = \{\s*dist: Math\.hypot\(a\.x - b\.x, a\.y - b\.y\) \|\| 1,\s*zoom: draftRef\.current\.zoom,/,
+  );
+  assert.match(
+    dialog,
+    /\(spread\.zoom \* Math\.hypot\(a\.x - b\.x, a\.y - b\.y\)\) \/ spread\.dist/,
+  );
+  // Lifting one finger hands the drag to the other instead of jumping.
+  assert.match(dialog, /onPointerUp=\{release\}\s*onPointerCancel=\{release\}/);
+});
