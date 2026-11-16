@@ -42,6 +42,7 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
+from utils.download_speed_limit import DOWNLOAD_SPEED_LIMIT_ENV, speed_limit_bytes_per_second
 from hub.utils.resumable_partials import (
     LAST_STOCK_RESUMABLE_VERSION,
     _hub_version,
@@ -84,6 +85,70 @@ def _lift_http_ceiling_on_modelscope() -> None:
 
     if active_source() == MODELSCOPE:
         constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
+
+
+class _Pacer:
+    def __init__(self, bytes_per_second: float):
+        self._rate = bytes_per_second
+        self._lock = threading.Lock()
+        self._ready_at = time.monotonic()
+
+    def wait(self, nbytes: int) -> None:
+        with self._lock:
+            now = time.monotonic()
+            # A quarter second of credit, so sleep overshoot (15ms on Windows) does not erode the rate.
+            self._ready_at = max(self._ready_at, now - 0.25) + nbytes / self._rate
+            delay = self._ready_at - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+def _paced_stream(inner, pacer: _Pacer):
+    # iter_raw demands its own library's SyncByteStream: httpx on hub 1.x, httpx2 on 2.x.
+    base = sys.modules[type(inner).__module__.partition(".")[0]].SyncByteStream
+
+    class _PacedStream(base):
+        def __iter__(self):
+            for chunk in inner:
+                pacer.wait(len(chunk))
+                yield chunk
+
+        def close(self) -> None:
+            inner.close()
+
+    return _PacedStream()
+
+
+def _install_speed_limit() -> None:
+    bytes_per_second = speed_limit_bytes_per_second(os.environ.get(DOWNLOAD_SPEED_LIMIT_ENV))
+    if not bytes_per_second:
+        return
+    try:
+        from huggingface_hub import constants, set_client_factory
+        from huggingface_hub.utils._http import default_client_factory
+    except ImportError:
+        print(
+            "download speed limit needs huggingface_hub 1.x; downloading at full speed",
+            file = sys.stderr,
+        )
+        return
+
+    pacer = _Pacer(bytes_per_second)
+    # http_get writes (and progress reads) per DOWNLOAD_CHUNK_SIZE: 10 MB stalls the bar for minutes at a low limit.
+    constants.DOWNLOAD_CHUNK_SIZE = max(
+        64 * 1024, min(constants.DOWNLOAD_CHUNK_SIZE, int(bytes_per_second // 2))
+    )
+
+    def pace(response) -> None:
+        response.stream = _paced_stream(response.stream, pacer)
+
+    def paced_client():
+        client = default_client_factory()
+        hooks = client.event_hooks
+        client.event_hooks = {"request": hooks["request"], "response": [*hooks["response"], pace]}
+        return client
+
+    set_client_factory(paced_client)
 
 
 def _install_signal_handlers() -> None:
@@ -1009,6 +1074,7 @@ def _download_gguf_variant(
     hf_token: str | None,
     mode: str,
     tqdm_class: type | None = None,
+    engram_precision: str | None = None,
 ) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -1030,6 +1096,15 @@ def _download_gguf_variant(
                 file = sys.stderr,
             )
             sys.exit(1)
+        if engram_precision:
+            if plan.engram_table(engram_precision) is None:
+                print(
+                    f"{repo_id} publishes no {engram_precision} Engram table",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+            # The standalone table in place of the quant's own table shard.
+            plan = plan.with_engram(engram_precision)
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         main_blob_hashes = plan.main_hashes
@@ -1049,6 +1124,18 @@ def _download_gguf_variant(
             print(
                 f"Metadata unavailable and no manifest to resume GGUF "
                 f"variant '{variant}' for {repo_id}",
+                file = sys.stderr,
+            )
+            sys.exit(1)
+        from core.inference.engram_tables import engram_table_precision
+
+        recorded = {engram_table_precision(f.path) for f in manifest.expected_files} - {None}
+        if {p.upper() for p in recorded} != (
+            {engram_precision.upper()} if engram_precision else set()
+        ):
+            print(
+                f"Metadata unavailable and the existing manifest for GGUF variant '{variant}' of "
+                f"{repo_id} fetches a different Engram table; retry when metadata is available.",
                 file = sys.stderr,
             )
             sys.exit(1)
@@ -1396,6 +1483,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
     parser.add_argument("--variant", default = None)
+    parser.add_argument("--engram", default = None)
     parser.add_argument("--dataset", action = "store_true")
     parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
     parser.add_argument("--parent-pid", type = int, default = None)
@@ -1424,6 +1512,7 @@ def main() -> None:
 
     hf_token = os.environ.get("HF_TOKEN") or None
     _lift_http_ceiling_on_modelscope()
+    _install_speed_limit()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")
@@ -1437,7 +1526,14 @@ def main() -> None:
                 args.repo_id, args.variant, scoped_files, hf_token, args.transport, progress
             )
         elif args.variant:
-            _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport, progress)
+            _download_gguf_variant(
+                args.repo_id,
+                args.variant,
+                hf_token,
+                args.transport,
+                progress,
+                engram_precision = args.engram,
+            )
         else:
             _download_snapshot(args.repo_id, hf_token, args.transport, progress)
         sys.exit(0)

@@ -275,9 +275,8 @@ def test_a_deferred_lambda_body_is_not_read(monkeypatch):
 
 
 def test_an_alias_added_inside_the_builder_is_read(monkeypatch):
-    """`build_mappers` is called at import, so its body runs. The aliases that cannot
-    be derived from the source table live in there, and the installed builder cannot
-    know one a newer mapper.py adds."""
+    """build_mappers is called at import, so its body runs: aliases not derivable from the source
+    table live there, and the installed builder cannot know ones a newer mapper.py adds."""
     lines = REAL_MAPPER.splitlines(True)
     for index, line in enumerate(lines):
         if line.startswith("def build_mappers("):

@@ -218,9 +218,8 @@ SDXL_BASE = [
 
 
 def test_an_fp32_stored_pipeline_is_not_priced_at_its_download_size(monkeypatch):
-    """SDXL is the one U-Net family, so its denoiser sits in ``unet/`` and lands in the
-    companion bucket rather than the denoiser one. Both factors therefore have to halve, or
-    a 6.5 GB bf16 pipeline prices as 12.9 GB and is refused on every 16 GB pool."""
+    """SDXL's U-Net lands in the companion bucket, so both factors must halve or a 6.5 GB bf16
+    pipeline prices as 12.9 GB and is refused on every 16 GB pool."""
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
 
     declared = sum(size for _name, size in SDXL_BASE)

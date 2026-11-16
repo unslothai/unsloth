@@ -10,6 +10,8 @@ const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector:
 const GLASS_SIDEBAR = [
 	'html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"]',
 	'html[data-glass="macos"] [data-slot="sidebar-inner"]',
+	// Transparent: the sidebar is its own colour at the glass strength, so see-through too.
+	'html[data-glass-clear] [data-slot="sidebar-inner"]',
 ];
 
 test("the sidebar footer fade paints nothing over a glass sidebar", () => {

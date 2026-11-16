@@ -1,8 +1,5 @@
-// Adapted from LibreChat's latex.ts
-// https://github.com/danny-avila/LibreChat/blob/main/client/src/utils/latex.ts
-//
-// Converts `\[...\]` / `\(...\)` to the dollar forms remark-math tokenizes, then escapes currency
-// dollars so singleDollarTextMath does not read them as math.
+// Adapted from LibreChat's latex.ts; converts TeX bracket delimiters to the dollar forms
+// remark-math tokenizes, then escapes currency dollars so singleDollarTextMath skips them.
 
 import { parseMarkdownIntoBlocks } from "./parse-markdown-blocks.ts";
 import {

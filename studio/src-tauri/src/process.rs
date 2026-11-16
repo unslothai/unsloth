@@ -49,6 +49,7 @@ fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
         apply_scrubbed_appimage_library_path(cmd);
+        restore_host_accessibility(cmd);
 
         if let Some(path) = appdir_entries_demoted("PATH") {
             cmd.env("PATH", path);
@@ -97,12 +98,26 @@ fn appdir_entries_demoted(name: &str) -> Option<std::ffi::OsString> {
     std::env::join_paths(host.into_iter().chain(bundled)).ok()
 }
 
+// Set by the AppRun when it, not the operator, turned the bundled atk-bridge off (#15260); host
+// programs get their bridge back, an operator's NO_AT_BRIDGE still reaches them.
+#[cfg(target_os = "linux")]
+const APPIMAGE_AT_BRIDGE_MARKER: &str = "UNSLOTH_APPIMAGE_NO_AT_BRIDGE";
+
+#[cfg(target_os = "linux")]
+fn restore_host_accessibility(cmd: &mut Command) {
+    if std::env::var_os(APPIMAGE_AT_BRIDGE_MARKER).is_some() {
+        cmd.env_remove("NO_AT_BRIDGE");
+    }
+    cmd.env_remove(APPIMAGE_AT_BRIDGE_MARKER);
+}
+
 #[cfg(target_os = "linux")]
 fn scrub_appimage_launcher_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_none() {
         return;
     }
     apply_scrubbed_appimage_library_path(cmd);
+    restore_host_accessibility(cmd);
     if let Some(path) = appdir_entries_demoted("PATH") {
         cmd.env("PATH", path);
     }
@@ -155,6 +170,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        restore_host_accessibility(cmd.as_std_mut());
         cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
@@ -194,6 +210,56 @@ mod appimage_environment_tests {
     fn env_contains_name(env: &str, name: &str) -> bool {
         let prefix = format!("{name}=");
         env.lines().any(|line| line.starts_with(&prefix))
+    }
+
+    #[test]
+    fn children_get_back_the_atk_bridge_only_the_apprun_turned_off() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "NO_AT_BRIDGE", APPIMAGE_AT_BRIDGE_MARKER]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        let run = |cmd: &mut Command| {
+            String::from_utf8(cmd.output().expect("run child").stdout).unwrap()
+        };
+        let launches: [fn(&dyn Fn(&mut Command) -> String) -> String; 3] = [
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_launcher_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = Command::new("/usr/bin/env");
+                scrub_appimage_python_env(&mut cmd);
+                run(&mut cmd)
+            },
+            |run| {
+                let mut cmd = tokio::process::Command::new("/usr/bin/env");
+                scrub_appimage_python_env_tokio(&mut cmd);
+                run(cmd.as_std_mut())
+            },
+        ];
+
+        std::env::set_var("NO_AT_BRIDGE", "1");
+        std::env::set_var(APPIMAGE_AT_BRIDGE_MARKER, "1");
+        for launch in launches {
+            let env = launch(&run);
+            assert!(!env_contains_name(&env, "NO_AT_BRIDGE"), "{env}");
+            assert!(!env_contains_name(&env, APPIMAGE_AT_BRIDGE_MARKER), "{env}");
+        }
+
+        std::env::remove_var(APPIMAGE_AT_BRIDGE_MARKER);
+        for launch in launches {
+            let env = launch(&run);
+            assert!(env.lines().any(|line| line == "NO_AT_BRIDGE=1"), "{env}");
+        }
+
+        for (key, value) in old {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]

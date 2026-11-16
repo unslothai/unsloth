@@ -224,9 +224,8 @@ def test_kill_switch_charges_nothing(tmp_path, monkeypatch, krea2, kind):
 def test_a_file_that_fits_only_stored_loads_with_fp8_storage_and_is_refused_widened(
     tmp_path, monkeypatch, krea2, kind
 ):
-    """fp8 storage keeps the codes memory-mapped, so the up-front estimate prices them at their stored bytes (plus
-    the fp32 row scales): free RAM between the stored and the widened need loads with storage, and is refused when
-    UNSLOTH_DIFFUSION_FP8_STORAGE=0 makes the load widen."""
+    """fp8 storage stays memory-mapped and is priced at stored bytes plus fp32 row scales; with
+    UNSLOTH_DIFFUSION_FP8_STORAGE=0 the load widens and is refused."""
     path, _ = _write(tmp_path, kind)
     keep = krea2._keep_in_fp32_modules
     # Price in bytes, no reserve: the tiny model's needs are a few KB apart.
@@ -310,8 +309,7 @@ def test_big_host_loads_what_the_fp8_storage_rule_widens(tmp_path, monkeypatch, 
 def test_big_host_keeps_the_proportional_reserve_without_an_fp8_widen_choice(
     tmp_path, monkeypatch, available_gib
 ):
-    """No fp8-storage choice was made (int8 / nvfp4 file, LoRA, kill switch): the same load keeps the 10% reserve of
-    #14510 and is refused, as before the cap."""
+    """Without fp8 storage the load keeps the 10% reserve of issue 14510 and is refused."""
     budget = _budget(tmp_path, monkeypatch, 64 * _GIB, int(available_gib * _GIB))
     assert (
         budget.reserve_mib

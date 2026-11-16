@@ -115,7 +115,8 @@ def fill_fsdp2_mixed_precision(accelerator):
         return policy
     if (
         policy.param_dtype != compute
-        # torch 2.6 stores reduce_dtype None when it equals param_dtype; both reduce in compute.
+        # torch 2.6 stores reduce_dtype None when it equals param_dtype. None reduces in param_dtype up to
+        # torch 2.14 and in the parameter's own dtype from 2.15; both get the explicit float32 below.
         or policy.reduce_dtype not in (None, compute)
         or getattr(policy, "output_dtype", None) not in (None, compute)
     ):
@@ -432,8 +433,7 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         from .fsdp2_qlora import fsdp2_qlora_wrap
 
-        # The 4-bit fallback to uint8 storage first: float-packed weights would count as frozen
-        # 16-bit weights in the dtype unification.
+        # uint8 storage first: float-packed 4-bit weights would count as frozen 16-bit weights.
         with fsdp2_qlora_wrap(model, original) as qlora:
             fill_fsdp2_mixed_precision(accelerator)
             unify_trainable_dtypes(accelerator, model)
@@ -601,8 +601,12 @@ def install_fsdp2_peft_full_state_dict():
     ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+            from .fsdp2_native import frozen_tables_hidden
+
             options = dataclasses.replace(sd_options, ignore_frozen_params = True)
-            return get_model_state_dict(model, options = options)
+            with frozen_tables_hidden(model):  # a frozen lookup table is no adapter weight
+                return get_model_state_dict(model, options = options)
         return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
 
     @functools.wraps(original_set)

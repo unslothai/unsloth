@@ -467,9 +467,8 @@ _PDF_INCOMPLETE_MIN_LETTERS = 200
 
 
 def _markdown_corrupted(text: str) -> bool:
-    """True when pymupdf4llm's glyph reconstruction mangled the text: shaped RTL
-    Presentation Forms or U+FFFD replacements above a small floor/ratio (so a lone
-    legitimate shaped glyph does not force the fallback)."""
+    """True when pymupdf4llm mangled glyphs: shaped RTL forms or U+FFFD above a small floor and
+    ratio, so a lone legitimate shaped glyph does not force the fallback."""
     if not text:
         return False
     threshold = max(_PDF_FALLBACK_MIN_BAD_GLYPHS, _PDF_FALLBACK_BAD_GLYPH_RATIO * len(text))
@@ -669,9 +668,8 @@ def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> l
 
 
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
-    """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
-    i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
-    page count does not line up, so the caller falls back to plain PyMuPDF text."""
+    """Per-page Markdown via pymupdf4llm (index i is page i+1); None when unavailable or misaligned,
+    so the caller falls back to plain PyMuPDF text."""
     try:
         import pymupdf4llm
     except Exception:
@@ -961,9 +959,8 @@ def render_pdf_figure_tiles(
     fullpage: bool = True,
     max_tiles: int = 24,
 ) -> list[ParsedImage]:
-    """Render figure-bearing pages as overlapping high-DPI tiles (plus an optional full
-    page), each a ``ParsedImage`` keyed by page number. Tiling keeps small labels legible
-    and covers every sub-figure without exact region detection. Any failure yields []."""
+    """Renders figure pages as overlapping high-DPI tiles (plus an optional full page), each a
+    ParsedImage keyed by page number; any failure yields []."""
     wanted = [int(n) for n in page_numbers]
     if not wanted:
         return []
@@ -1721,6 +1718,7 @@ def _docx_mark_notes(document):
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -1740,6 +1738,27 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
+    # No BOM: NULs dominating one side of the byte pairs mean ASCII-heavy UTF-16.
+    if len(data) >= 8:
+        pairs = even_nulls = odd_nulls = 0
+        for i in range(0, min(len(data), 1024) - 1, 2):
+            if data[i : i + 2] == b"\0\0":
+                break
+            pairs += 1
+            if data[i] == 0:
+                even_nulls += 1
+            elif data[i + 1] == 0:
+                odd_nulls += 1
+        codec = None
+        if even_nulls >= 4 and odd_nulls * 10 <= even_nulls and 2 * even_nulls > pairs:
+            codec = "utf-16-be"
+        elif odd_nulls >= 4 and even_nulls * 10 <= odd_nulls and 2 * odd_nulls > pairs:
+            codec = "utf-16-le"
+        if codec is not None:
+            decoded = data.decode(codec, errors = "replace")
+            # Real text has no C0/C1 controls; NUL-shaped binaries fall through to the binary guard.
+            if _CONTROL_CHARS.search(decoded) is None:
+                return decoded
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:

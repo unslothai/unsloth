@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from urllib.parse import urlparse
 
 _TRUST_FORWARDED_ENV = "UNSLOTH_STUDIO_TRUST_FORWARDED"
@@ -71,7 +72,7 @@ def client_ip(request) -> str:
             cf = _normalize_addr(request.headers.get("cf-connecting-ip"))
             if cf:
                 return cf
-        if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+        if names_a_forwarded_client(request):
             return f"relayed:{peer}"
     return peer or "_unknown"
 
@@ -154,16 +155,76 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
     return host == "localhost" or _is_loopback_ip(host)
 
 
+_PROXY_HOSTS_ENV = "UNSLOTH_STUDIO_PROXY_HOSTS"
+_DNS_NAME = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)*")
+
+
+def _authority_hostname(value: str | None) -> str | None:
+    host = (value or "").strip().lower()
+    if "://" in host:  # tolerate a pasted URL in the setting
+        host = host.split("://", 1)[1].split("/", 1)[0]
+    if host.count(":") == 1:
+        host, port = host.split(":", 1)
+        if not port.isdigit():
+            return None
+    host = host.rstrip(".")
+    # Names only: a wildcard would admit any rebound name.
+    if host == "localhost" or not _DNS_NAME.fullmatch(host):
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return None
+
+
+def trusted_proxy_hosts() -> frozenset[str]:
+    raw = os.environ.get(_PROXY_HOSTS_ENV, "")
+    names = (_authority_hostname(entry) for entry in raw.replace(",", " ").split())
+    return frozenset(name for name in names if name)
+
+
+def request_via_trusted_proxy(scope) -> bool:
+    """Local reverse proxy for an allowlisted name. Host must be loopback or allowlisted: a DNS-rebound page
+    sends its own name as Host, so it cannot borrow the allowlist via X-Forwarded-Host."""
+    allowed = trusted_proxy_hosts()
+    if not allowed or not isinstance(scope, dict):
+        return False
+    server = scope.get("server")
+    client = scope.get("client")
+    if not server or not client or not _is_loopback_ip(server[0]):
+        return False
+    # UNSLOTH_STUDIO_TRUST_FORWARDED makes uvicorn replace the loopback peer with X-Forwarded-For.
+    if not _is_loopback_ip(client[0]) and not trust_forwarded_headers():
+        return False
+    host_values = []
+    forwarded_hosts = []
+    for name, value in scope.get("headers") or ():
+        if name == b"host":
+            host_values.append(value.decode("latin-1"))
+        elif name == b"x-forwarded-host":
+            forwarded_hosts.extend(p for p in value.decode("latin-1").split(",") if p.strip())
+    if len(host_values) != 1:
+        return False
+    host_allowed = _authority_hostname(host_values[0]) in allowed
+    if not host_allowed and not _host_header_is_loopback(host_values[0]):
+        return False
+    if any(_authority_hostname(part) not in allowed for part in forwarded_hosts):
+        return False
+    return host_allowed or bool(forwarded_hosts)
+
+
 # Hop headers a proxy adds without naming the client (Apache's X-Forwarded-Server, an nginx block that
 # only sets X-Forwarded-Proto). Kept apart because Colab's tolerated-header check walks the tuple above.
 _PROXY_HOP_HEADERS = ("via", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-server")
 
 
+_RELAY_HEADERS = frozenset(_PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS)
+
+
 def names_a_forwarded_client(request) -> bool:
     """Whether a proxy or tunnel marked this request as relayed."""
-    return any(
-        request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS
-    )
+    return not _RELAY_HEADERS.isdisjoint(k.lower() for k in request.headers.keys())
 
 
 def is_direct_local_request(request) -> bool:
@@ -171,6 +232,6 @@ def is_direct_local_request(request) -> bool:
     client = request.client
     if client is None or not _is_loopback_ip(client.host):
         return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+    if names_a_forwarded_client(request):
         return False
     return _host_header_is_loopback(request.headers.get("host"))

@@ -9,10 +9,38 @@ import {
   createSettingsSearchIndex,
   renderedSearchEntries,
 } from "../src/features/settings/settings-search.ts";
+import { OWNER_ONLY_SETTINGS_TABS } from "../src/features/settings/settings-tab-visibility.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
 const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
+
+test("composer searches route to Chat, with no stale Appearance results", () => {
+  const keys = [
+    "composerSettings.title",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.shareDraft",
+    "composerSettings.plainText",
+    "composerSettings.richPaste",
+    "settings.chat.pastedTextThreshold",
+    "composerSettings.showContext",
+    "settings.appearance.custom.chatWidth.label",
+    "settings.chat.composerPosition",
+    "chatBackground.outline",
+    "settings.appearance.custom.sentAttachments.label",
+  ];
+  for (const desktop of [false, true]) {
+    const index = createSettingsSearchIndex({ desktop, closeToTray: desktop, menuBarIcon: false });
+    for (const key of keys) {
+      const tabs = Object.entries(index).flatMap(([tab, entries]) =>
+        entries.filter((entry) => entry === key).map(() => tab),
+      );
+      assert.deepEqual(tabs, ["chat"], `${key} has exactly one destination`);
+    }
+    assert.ok(!index.appearance.includes("settings.appearance.composer.title"));
+  }
+});
 
 test("desktop update searches route to General", () => {
   const index = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
@@ -136,20 +164,14 @@ test("the endpoint rows are searchable only while Hugging Face serves, as they r
 
 const MCP_ENTRY = "settings.apiKeys.mcp.title";
 
-test("agent access (MCP) is found by the protocol and the agents' names, by the owner only", () => {
+test("agent access (MCP) is found at the end of Agents, and on API for the owner, by the protocol and the agents' names", () => {
   const index = createSettingsSearchIndex({
     desktop: false,
     closeToTray: false,
     menuBarIcon: false,
   });
-  assert.ok(index["api-keys"].includes(MCP_ENTRY));
-  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
-  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
-  const haystack =
-    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
-  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
-    assert.ok(haystack.includes(term), `search matches "${term}"`);
-  }
+  assert.equal(index.agents.at(-1), MCP_ENTRY);
+  assert.ok(OWNER_ONLY_SETTINGS_TABS.has("agents"));
   assert.ok(
     renderedSearchEntries(index, "api-keys", "huggingface", true).includes(
       MCP_ENTRY,
@@ -160,6 +182,13 @@ test("agent access (MCP) is found by the protocol and the agents' names, by the 
       MCP_ENTRY,
     ),
   );
+  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
+  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
+  const haystack =
+    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
+  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
 });
 
 const TOOL_RESULT_LIMIT_ENTRY = "settings.chat.toolResultLimit";

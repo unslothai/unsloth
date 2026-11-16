@@ -14,6 +14,7 @@ import type {
   PendingAttachment,
 } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { micClipRecording } from "./adapters/mic-clip-state";
 import { externalModelLabel } from "./lib/external-model-label";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
@@ -59,6 +60,11 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
         "Send or remove the staged audio clip before attaching more audio.";
       toast.error(stagedReason, { id: AUDIO_ADD_TOAST_ID });
       throw new Error(stagedReason);
+    }
+    if (micClipRecording()) {
+      const recordingReason = "Stop the recording before attaching more audio.";
+      toast.error(recordingReason, { id: AUDIO_ADD_TOAST_ID });
+      throw new Error(recordingReason);
     }
     let totalSize = 0;
     for (const size of this.attachmentSizes.values()) totalSize += size;

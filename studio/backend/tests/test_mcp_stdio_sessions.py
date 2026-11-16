@@ -894,8 +894,7 @@ def test_dead_http_session_recovers(monkeypatch, fake_clients):
 
 
 def test_live_idle_http_session_survives_the_recheck(monkeypatch, fake_clients):
-    """The recheck costs one tools/list; a server that answers keeps its session
-    and its state, otherwise the idle probe would defeat the whole PR."""
+    """The recheck is one tools/list; a live HTTP session that answers keeps its state."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-2"

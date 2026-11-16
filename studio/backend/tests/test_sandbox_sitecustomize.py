@@ -571,3 +571,19 @@ def test_host_packages_pep420_portion_joins_the_namespace_path(tmp_path):
         " sorted(i.name for i in pkgutil.iter_modules(chatns.__path__)))\n",
     )
     assert "NS chat-data ['host', 'packages'] ['chat_mod', 'host_mod']" in out, out
+
+
+def test_a_raw_connect_to_a_name_resolving_to_a_metadata_host_is_refused(monkeypatch):
+    import socket
+
+    mod = _load_shim()
+    answer = {"alias.test": "169.254.169.254", "plain.test": "93.184.215.14"}
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *a, **k: [(socket.AF_INET, 1, 6, "", (answer[host], 0))],
+    )
+    with pytest.raises(PermissionError, match = "cloud-metadata host"):
+        mod._metadata_connect_hook("socket.connect", (None, ("alias.test", 80)))
+    assert mod._metadata_connect_hook("socket.connect", (None, ("plain.test", 80))) is None
+    assert mod._metadata_connect_hook("socket.connect", (None, ("127.0.0.1", 80))) is None

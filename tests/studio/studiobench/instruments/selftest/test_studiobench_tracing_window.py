@@ -116,8 +116,7 @@ def test_the_first_window_is_still_traced_and_only_loses_the_cross_check():
 
 
 def test_no_tracing_session_is_left_running_in_the_browser():
-    """The leak itself. A capture nothing holds is a capture nothing can stop, and it keeps
-    recording underneath every measurement taken after it."""
+    """An unheld capture cannot be stopped and keeps recording under later measurements."""
 
     cdp = _Cdp(metrics_fail = True)
     inst = _instrument(cdp)

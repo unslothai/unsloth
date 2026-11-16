@@ -21,6 +21,10 @@ interface Stored {
 }
 
 interface UnseenState extends Stored {
+  /** This tab's first opening, retained only until the saved messages finish loading. */
+  pendingReadAloudThreadId: string | null;
+  openThread: (threadId: string | null, readAloud: boolean) => void;
+  takeReadAloud: (threadId: string) => boolean;
   markFinished: (runs: { taskId: string; threadId: string | null }[], onPage: boolean) => void;
   clearTask: (taskId: string) => void;
   clearThread: (threadId: string) => void;
@@ -77,6 +81,23 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
   };
   return {
     ...(typeof window === "undefined" ? NOTHING_UNSEEN : load()),
+    pendingReadAloudThreadId: null,
+    openThread: (threadId, readAloud) => {
+      const current = stored() ?? get();
+      const pending = get().pendingReadAloudThreadId;
+      set({
+        pendingReadAloudThreadId:
+          threadId && readAloud && (current.threads.includes(threadId) || pending === threadId)
+            ? threadId
+            : null,
+      });
+      if (threadId) get().clearThread(threadId);
+    },
+    takeReadAloud: (threadId) => {
+      if (get().pendingReadAloudThreadId !== threadId) return false;
+      set({ pendingReadAloudThreadId: null });
+      return true;
+    },
     markFinished: (runs, onPage) =>
       change((current) => {
         const tasks = { ...current.tasks };
@@ -104,10 +125,10 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
-    useUnseenScheduledRuns.setState(NOTHING_UNSEEN);
+    useUnseenScheduledRuns.setState({ ...NOTHING_UNSEEN, pendingReadAloudThreadId: null });
   });
   window.addEventListener(AUTH_SESSION_STORED_EVENT, () => {
-    useUnseenScheduledRuns.setState(load());
+    useUnseenScheduledRuns.setState({ ...load(), pendingReadAloudThreadId: null });
   });
   window.addEventListener("storage", (event) => {
     if (event.key?.startsWith(UNSEEN_KEY_PREFIX) && event.key === storageKey()) {

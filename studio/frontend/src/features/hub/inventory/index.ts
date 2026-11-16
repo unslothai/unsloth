@@ -33,6 +33,7 @@ export {
   type BaseModelSource,
   type CompanionAssetInfo,
   type DeleteImpact,
+  type EngramTableDetail,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type LocalDatasetInfo,

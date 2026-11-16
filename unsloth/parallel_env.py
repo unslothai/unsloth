@@ -278,6 +278,27 @@ def apply_parallel_env(environ = None):
     return spec
 
 
+def bind_local_cuda_device(environ = None):
+    """Make cuda:LOCAL_RANK current on a torchrun rank before anything touches CUDA: otherwise the first
+    CUDA call during import opens a context on cuda:0 in every rank (~0.8 GB each on a B200, all on GPU 0)."""
+    environ = os.environ if environ is None else environ
+    try:
+        world = int(environ.get("WORLD_SIZE", "1") or "1")
+        local = int(environ["LOCAL_RANK"])
+    except (KeyError, ValueError):
+        return None
+    if world <= 1 or local <= 0 or environ.get("UNSLOTH_FORCE_CPU", "0") == "1":
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available() or local >= torch.cuda.device_count():
+            return None
+        torch.cuda.set_device(local)
+    except Exception:
+        return None
+    return local
+
+
 def env_cp_size(environ = None):
     """UNSLOTH_CP_SIZE (1 when unset); ValueError on a non-positive / non-integer value."""
     environ = os.environ if environ is None else environ

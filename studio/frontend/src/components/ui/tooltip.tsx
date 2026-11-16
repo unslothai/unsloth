@@ -90,12 +90,15 @@ function getServerModalBlock(): boolean {
 
 function TooltipProvider({
   delayDuration = 0,
+  // Off, so neighbouring icons switch labels at once; link tooltips pass `false` to stay hoverable.
+  disableHoverableContent = true,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
     <TooltipPrimitive.Provider
       data-slot="tooltip-provider"
       delayDuration={delayDuration}
+      disableHoverableContent={disableHoverableContent}
       {...props}
     />
   );
@@ -133,10 +136,9 @@ function Tooltip({
     setClickOpen((prev) => !prev);
   }, []);
 
-  // Drop what is open when a modal takes over, so closing the dialog does not
-  // bring the tooltip back on its own. Owners of a controlled tooltip are told,
-  // since their state (a `hovered` flag) never sees the pointerleave either.
-  // Latch only a tooltip its owner held open: one already shut never sends another false.
+  // Closes an open tooltip when a modal takes over so it does not reappear on dialog close;
+  // controlled owners are told since they never see pointerleave, and only a tooltip its owner held
+  // open is latched, so a shut one never sends another false
   const controlledOpenRef = useRef(controlledOpen);
   controlledOpenRef.current = controlledOpen;
   useEffect(() => {

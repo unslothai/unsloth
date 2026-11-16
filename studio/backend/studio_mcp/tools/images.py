@@ -29,8 +29,6 @@ from studio_mcp.media import (
 from studio_mcp.outputs import ImageItem, ImageResult
 from studio_mcp.tools import WRITES, integer, number, opt_text, present, route_json
 
-LOAD_IMAGE_HINT = "Load an image model with load_model(kind='image') first."
-NOT_LOADED = "No diffusion model is loaded"
 # The route takes 128 MiB of base64 across every image in one request.
 MAX_REQUEST_IMAGE_BYTES = 128 * 1024 * 1024 * 3 // 4
 
@@ -87,7 +85,6 @@ async def run_generation(
         "/api/inference/images/generate",
         caller = caller,
         json_body = body,
-        hint_if = (NOT_LOADED, {409: LOAD_IMAGE_HINT}),
     )
     payload = await loading.with_progress(ctx, generate, _progress_poll(caller))
     rows = payload.get("images") if isinstance(payload, dict) else None
@@ -200,7 +197,7 @@ async def generate_image(
     ] = None,
     ctx: Optional[Context] = None,
 ) -> ToolResult:
-    """Generate or edit images with the image model loaded in Unsloth Studio (load_model(kind="image") first).
+    """Generate or edit images with the image model loaded in Unsloth Studio (<<load_model: load_model(kind="image") first | the user loads one on the Image page>>).
     Each image is saved to the Unsloth Studio Images gallery and returned with its id and URL; images up to 1.5 MiB come back inline, larger ones as a 1024 px preview plus a link.
     Width and height are pixels in multiples of studio_status image.dimension_multiple; left out, the size is 1024x1024 (an edit matches init_image).
     Left out, steps and guidance come from the loaded model's defaults (studio_status image.generation_defaults).

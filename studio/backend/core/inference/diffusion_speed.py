@@ -192,6 +192,17 @@ def snapshot_backend_flags() -> Optional[dict]:
     return state
 
 
+def release_rocm_tunableop(pipe: Any) -> None:
+    """Unload: drop this pipe's TunableOp claim (process-global, so not in snapshot_backend_flags)."""
+    mod = sys.modules.get(f"{__package__}.diffusion_rocm_tunableop")
+    if mod is None or pipe is None:
+        return
+    try:
+        mod.release(pipe)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def restore_backend_flags(state: Optional[dict]) -> None:
     """Restore the flags captured by ``snapshot_backend_flags``. No-op on None. Each flag is
     restored independently so one failure can't leak the others."""
@@ -350,10 +361,9 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
-    sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
-    ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install
-    counts as eligible, a recorded failure does not."""
+    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
+    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
+    unprobed counts eligible, a recorded failure does not."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -474,6 +484,34 @@ def _fp16_compile_capable(target: Any) -> bool:
         return False
 
 
+# 1 keeps the step graph over an eager denoiser whose native int8 W8A8 linears run compiled outside a capture.
+STEP_GRAPH_NATIVE_W8A8_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8"
+STEP_GRAPH_EAGER_W8A8_REASON = (
+    "the uncompiled denoiser's native int8 linears run as compiled functions, which a captured step would replace "
+    "with their slower eager kernels"
+)
+
+
+def step_graph_bakes_eager_w8a8(pipe: Any) -> bool:
+    """Whether a step CUDA graph over this (uncompiled) denoiser would capture its native int8 W8A8 linears as eager
+    kernels: the compiled W8A8 function never runs inside a capture (diffusion_native_quant._forward_fused). On a T4,
+    FLUX.3 Klein int8 at Speed default rendered 42.5 s per image with the graph and 34 s without (speed off, same
+    pixels): the step is compute-bound there, so the unfused rotate / quantise kernels cost more than graph replay
+    saves. ``UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8=1`` keeps the graph. Never raises."""
+    if (os.environ.get(STEP_GRAPH_NATIVE_W8A8_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    try:
+        from .diffusion_native_quant import fused_w8a8_serves  # noqa: PLC0415 - heavy import, load time only
+        return any(fused_w8a8_serves(dit) for dit in _denoiser_dits(pipe))
+    except Exception:  # noqa: BLE001 - unknown keeps the graph
+        return False
+
+
 def apply_speed_optims(
     pipe: Any,
     target: Any,
@@ -516,12 +554,28 @@ def apply_speed_optims(
             _warn(logger, "vae attention chunks", exc)
     # Stability, not speed, so also before the `off` return.
     _enable_miopen_immediate(logger)
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from . import diffusion_rocm_tunableop as rocm_tunableop
+            if mode == SPEED_OFF:
+                rocm_tunableop.uninstall(pipe)
+            else:
+                rocm_tunableop.install_for_pipe(pipe, getattr(target, "device", None), logger)
+        except Exception as exc:  # noqa: BLE001 - keep torch's default GEMM pick
+            _warn(logger, "rocm tunableop", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
+        # Bit-identical, so "off" keeps it: torchao's eager int8 Linear is ~3x a bf16 one on sm_120.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
         return applied
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         _pin_compile_defaults()
+        if is_gguf:
+            _prepare_lowbit_iq_tables(pipe, target)
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -632,6 +686,13 @@ def apply_speed_optims(
         except Exception:  # noqa: BLE001
             pass
 
+    if not applied["compiled"] and on_cuda:
+        # Keyed only when engaged, so a load with no int8 Linear reports what it did before.
+        if _install_eager_int8_gemm(
+            pipe, logger, offload_active = offload_active, denoiser_offloaded = denoiser_offloaded
+        ):
+            applied["int8_gemm_eager"] = True
+
     if mode in (SPEED_DEFAULT, SPEED_MAX) and on_cuda and tf32_enabled():
         applied["tf32"] = _enable_tf32(logger)
     if mode == SPEED_MAX:
@@ -657,6 +718,14 @@ def apply_speed_optims(
                 logger = logger,
                 offloaded = after_placement,
             )
+            # fp16 cards only: measured there (T4, and the sm120 fp16 path); bf16 loads keep the graph unchanged.
+            if (
+                ok
+                and not applied["compiled"]
+                and _is_float16(getattr(target, "dtype", None))
+                and step_graph_bakes_eager_w8a8(pipe)
+            ):
+                ok, reason = False, STEP_GRAPH_EAGER_W8A8_REASON
             if ok and after_placement:
                 # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
                 ok, reason = False, "armed after placement"
@@ -682,6 +751,93 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _install_eager_int8_gemm(
+    pipe: Any,
+    logger: Any = None,
+    *,
+    offload_active: bool,
+    denoiser_offloaded: Optional[bool],
+) -> bool:
+    """``install_eager`` on every uncompiled, non-moved denoiser; True when any engaged."""
+    if pipe is None:
+        return False
+    moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+    if moved:
+        return False
+    try:
+        from .diffusion_int8_gemm import candidates, install_eager
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        # a dense denoiser never imports the kernels
+        if bool(getattr(transformer, "_unsloth_int8_gemm", 0)) or not candidates(transformer):
+            continue
+        try:
+            n = install_eager(transformer, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "int8 eager gemm", exc)
+    return engaged
+
+
+def install_streamed_eager_int8_gemm(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """After placement: ``install_streamed_eager`` on every uncompiled int8 denoiser the pinned prefetcher streams
+    (it copies into the same parameters, so the call-time device check sees each onload); True when any engaged."""
+    if pipe is None or device is None:
+        return False
+    try:
+        from .diffusion_cfg_batch import compiled_denoiser
+        from .diffusion_int8_gemm import candidates, install_streamed_eager
+        from .diffusion_offload_prefetch import module_prefetcher
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "streamed int8 eager gemm", exc)
+        return False
+    engaged = False
+    for transformer in _denoiser_dits(pipe):
+        if (
+            bool(getattr(transformer, "_unsloth_int8_gemm", 0))
+            or module_prefetcher(transformer) is None
+            # a compiled block would trace the swapped forward (not the eager routes)
+            or compiled_denoiser(transformer) is not None
+            or not candidates(transformer)
+        ):
+            continue
+        try:
+            n = install_streamed_eager(transformer, device, logger)
+            if n:
+                transformer._unsloth_int8_gemm = n
+                engaged = True
+        except Exception as exc:  # noqa: BLE001 - optimisation only, torchao's path stays
+            _warn(logger, "streamed int8 eager gemm", exc)
+    return engaged
+
+
+def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
+    """Low-bit IQ lookup tables on the execution device before compile, so a compiled block reads a device constant."""
+    device = getattr(target, "torch_device", None)
+    if not isinstance(device, str) or not device:
+        return
+    try:
+        from .diffusion_gguf_lowbit import prepare_lowbit_iq_tables
+
+        modules = list(_denoiser_dits(pipe))
+        unet = _denoiser_unet(pipe)
+        if unet is not None:
+            modules.append(unet)
+        if modules:
+            prepare_lowbit_iq_tables(device, *modules)
+    except Exception:  # noqa: BLE001 - optimisation only: the lookup still builds traceably
+        pass
 
 
 def _onload_device(target: Any) -> Optional[str]:
@@ -1004,9 +1160,8 @@ def fused_qkv_added_bytes(pipe: Any) -> int:
         return 0
     try:
         import torch
-        from .diffusion_native_quant import is_native_quantised
 
-        if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if _quantised_projections(pipe) or _layerwise_cast_projections(pipe):
             return 0
         if unfused_projections_will_drop(unet):
             return 0  # the fused weights replace the projections they were built from
@@ -1059,10 +1214,10 @@ def _denoiser_dits(pipe: Any) -> list:
 def int8_gemm_live(pipe: Any, optims: Any) -> list:
     """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
     optims = list(optims or ())
-    if "int8_gemm" in optims and not any(
-        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
-    ):
-        optims.remove("int8_gemm")
+    live = any(bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe))
+    for key in ("int8_gemm", "int8_gemm_eager", "int8_gemm_streamed"):
+        if key in optims and not live:
+            optims.remove(key)
     return optims
 
 
@@ -1202,6 +1357,7 @@ def _compile_repeated_blocks(
     try:
         from . import diffusion_aot_cache
         diffusion_aot_cache.install(logger)
+        diffusion_aot_cache.pin_autotune_key(logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
@@ -1264,8 +1420,17 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
-        # sharing, which reads the swap's leftovers).
+        # Native W8A8 ConvRot Linears (offloaded int8 DiTs read as native Linears): probe the fused rotation + act quant
+        # on the card the denoiser computes on, before the compile traces them.
+        try:
+            from .diffusion_native_w8a8_cuda import install as install_native_rotq
+            moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+            transformer._unsloth_native_rotq = install_native_rotq(
+                transformer, logger, device = onload_device if moved else None
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "native int8 rotation + act quant", exc)
+        # Patches run after the int8 GEMM swap; ConvRot sharing reads the swap's leftovers.
         _install_compile_patches(
             "pre_compile",
             transformer,
@@ -1720,10 +1885,14 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
-
-    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE. Never on
+    Windows ROCm: a compiled decode skips the eager routing (diffusion_vae_attn_chunked) that keeps the VAE's head-512
+    attention off the fused kernels that miscompute it there."""
     if _fused_vae_planned(pipe):
+        return False
+    from .diffusion_vae_attn_chunked import windows_rocm
+
+    if windows_rocm():
         return False
     if _denoiser_unet(pipe) is not None:
         return True
@@ -2049,15 +2218,74 @@ def _enable_fp16_accumulation(
         return False
 
 
-def _fuse_qkv(pipe: Any, logger: Any) -> bool:
-    from .diffusion_native_quant import is_native_quantised
+def _quantised_projections(pipe: Any) -> bool:
+    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears, whose ``.weight`` is a dense
+    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    from .diffusion_grouped_int8 import is_grouped_linear
+    from .diffusion_native_quant import is_native_linear
+    from .diffusion_packed_block import is_packed_block_linear
 
-    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
-    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+    # the pipe-level fuse reaches any U-Net, not only the whole-compile ones
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            if any(
+                is_native_linear(m) or is_packed_block_linear(m) or is_grouped_linear(m)
+                for m in model.modules()
+            ):
+                return True
+        except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
+            continue
+    return False
+
+
+def _layerwise_cast_projections(pipe: Any) -> bool:
+    """Whether a denoiser Linear carries diffusers' layerwise-casting hook (weights stored in one dtype, cast per call,
+    e.g. a memory-mapped small-host denoiser): a fused ``to_qkv`` is a plain Linear without that hook."""
+    import torch
+
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            for m in model.modules():
+                reg = getattr(m, "_diffusers_hook", None)
+                if (
+                    isinstance(m, torch.nn.Linear)
+                    and reg is not None
+                    and reg.get_hook("layerwise_casting") is not None
+                ):
+                    return True
+        except Exception:  # noqa: BLE001 - unreadable: treat as not cast
+            continue
+    return False
+
+
+def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    # Fusing reads each projection's .weight, which a quantised layer dequantises: a dense to_qkv beside its buffers.
+    if _quantised_projections(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
+        return False
+    if _layerwise_cast_projections(pipe):
         if logger is not None:
             logger.info(
-                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
+                "diffusion.speed: fuse_qkv skipped (layerwise-cast projections stay unfused)"
             )
+        return False
+    from . import diffusion_lora_quant_merge as lora_quant_merge
+    from .diffusion_manual_cast import manual_cast_info
+
+    # A fused to_qkv is a plain Linear at the stored dtype, which a manual-cast (float32) forward cannot feed.
+    if any(manual_cast_info(m) for m in _denoiser_dits(pipe)):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (manual-cast weights stay unfused)")
+        return False
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
+    if lora_quant_merge.merged(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
         return False
     # Prefer pipe-level fuse (covers every component); else fuse each DiT so dual-DiT families fuse both.
     fn = getattr(pipe, "fuse_qkv_projections", None)

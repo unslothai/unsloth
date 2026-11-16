@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
 from core.inference import diffusion_int8_fused as fused
@@ -148,8 +150,7 @@ def test_int_mm_no_graph_break_after_offloaded_install(monkeypatch):
 
 
 def test_int_mm_no_graph_break_after_finalize_early_return(monkeypatch):
-    """_finalize on weights that are on no CUDA card (group offload, CPU) returns early; the GEMM home it resolves
-    must be cached before that return."""
+    """_finalize returns early off CUDA (group offload, CPU), so cache the GEMM home first."""
     model = torch.nn.Linear(2, 3)
     assert fused.resident_cuda_device(model) is None
     assert _intmm_graph_breaks(monkeypatch, lambda: fused._finalize(model)) == 0
@@ -1094,3 +1095,44 @@ def test_int8_linear_leaves_an_installed_int8_gemm_forward_alone(monkeypatch):
     lin.__dict__[g8._MARK] = object()  # what diffusion_int8_gemm.install leaves on a swapped Linear
     lin.forward = lambda x: "int8_gemm forward"
     assert fused.int8_linear(lin, torch.randn(32, 8)) == "int8_gemm forward"
+
+
+def test_fused_mlps_and_v2_linears_quantize_through_the_probed_kernel():
+    """The three fused MLP forwards and diffusion_int8_gemm's v2 Linears use the probed one-pass act quant (bit
+    identical to torchao's where it engages), not torchao's own quant."""
+    import ast
+    import inspect
+
+    from core.inference import diffusion_int8_gemm as g8
+
+    for fn in (
+        fused._ff_forward,
+        fused._flux_single_forward,
+        fused._swiglu_forward,
+        g8._act_quant_v2,
+    ):
+        calls = {
+            n.func.id
+            for n in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(fn))))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        assert "_act_quant" not in calls, fn.__name__
+        assert "_mlp_act_quant" in calls, fn.__name__
+
+
+def test_mlp_act_quant_kill_switch(monkeypatch):
+    monkeypatch.setattr(fused, "_fast_act_quant", lambda x, w: "fast")
+    monkeypatch.setattr(fused, "_act_quant", lambda x, w: "torchao")
+    monkeypatch.delenv(fused.MLP_FAST_ACT_QUANT_ENV, raising = False)
+    monkeypatch.setenv(
+        fused.INT8_FUSED_ENV, "0"
+    )  # install returns right after reading the switches
+    fused.install(None)
+    assert fused._mlp_act_quant(None, None) == "fast"
+    monkeypatch.setenv(fused.MLP_FAST_ACT_QUANT_ENV, "0")
+    fused.install(None)
+    assert fused._mlp_act_quant(None, None) == "torchao"
+    monkeypatch.delenv(fused.MLP_FAST_ACT_QUANT_ENV)
+    monkeypatch.delenv(fused.INT8_FUSED_ENV)
+    fused.install(None)
+    assert fused._MLP_FAST_ACTQ is True

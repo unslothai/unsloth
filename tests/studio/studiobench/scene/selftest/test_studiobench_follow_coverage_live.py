@@ -121,9 +121,8 @@ def test_the_sampler_scores_a_pinned_stream(page):
 
 
 def test_returning_to_the_end_reattaches_so_the_rest_of_the_stream_is_still_scored(page):
-    """THE DEFECT. A deliberate scroll used to detach the sampler permanently, so every sample for
-    the remainder of the stream -- and for every later stream in the cell -- was scored against the
-    second half of the contract and contributed nothing to the verdict."""
+    """Returning to the end must reattach the sampler; a deliberate scroll must not detach it for
+    good, or later samples go unscored."""
     _start_at_bottom(page)
     _settle(page)
     before = _read(page)["running_samples"]
@@ -191,8 +190,7 @@ def test_the_coverage_travels_with_the_verdict(page):
     )
 
 
-# The film's gesture never ends at the bottom, so re-attachment comes from a new run the user
-# started, not from resume().
+# The gesture never ends at the bottom; re-attach comes from a new user run, not resume().
 
 
 def _end_run(page) -> None:

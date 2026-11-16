@@ -425,8 +425,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
 
             # demux both streams together so the muxer sees them interleaved rather than buffering every video packet
             for packet in src.demux(*([in_v] + ([in_a] if out_a is not None else []))):
-                if packet.dts is None:
-                    continue
                 if packet.stream is in_v:
                     for frame in packet.decode():
                         for out_packet in out_v.encode(frame.reformat(format = "yuv420p")):
@@ -857,9 +855,7 @@ def set_flags(
 
 
 def move(video_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
-    """Move an active video to just after ``after_id`` (None = front) and return its record.
-
-    None if the id is not an owned, active video. Raises KeyError if ``after_id`` is not on the shelf."""
+    """Moves an active video after after_id (None: front); KeyError if after_id is off the shelf."""
     with gallery_flags.exclusive(gallery_dir()):
         if owned_video_path(video_id) is None:
             return None

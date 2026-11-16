@@ -31,8 +31,7 @@ class CallFrame:
 
     @property
     def key(self) -> tuple[str, str, int, int]:
-        """Keyed on script id and source position, not name, which is often empty or collides when
-        minified."""
+        """Keyed by script id and position: names are often empty or collide once minified."""
         return (self.function_name, self.script_id, self.line, self.column)
 
     @property
@@ -79,16 +78,14 @@ class CpuProfile:
         return self.start_time - self.declared_start_time
 
     def stack_for_sample_trace_id(self, sample_trace_id: int | str) -> list[CallFrame]:
-        """Exact stack of a tagged event via sampleTraceId, with none of the sampling error of short
-        windows."""
+        """Exact stack of a sampleTraceId-tagged event: no sampling error of short windows."""
         node = self.trace_ids.get(str(sample_trace_id))
         if node is None:
             return []
         return self.stack(node)
 
     def stack(self, node_id: int) -> list[CallFrame]:
-        """Stops at a repeated node: a corrupt trace can hold a cyclic parent chain that hangs the
-        analysis."""
+        """Stops at a repeated node; a corrupt trace's cyclic parent chain would hang it."""
         out: list[CallFrame] = []
         seen: set[int] = set()
         cur: int | None = node_id
@@ -151,8 +148,7 @@ class CpuProfile:
         return None
 
     def assert_deltas_match_wall(self, tolerance: float = DELTA_WALL_TOLERANCE) -> dict[str, Any]:
-        """Deltas must sum to the profiled wall span; if not, every self time is off by an unknown
-        factor."""
+        """Deltas must sum to the wall span, or every self time is off by an unknown factor."""
         if not self.samples:
             raise CellFailure("cpuprofile_empty", "profile contained no samples")
         delta_sum = sum(s.delta for s in self.samples)
