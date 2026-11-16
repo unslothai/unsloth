@@ -2097,7 +2097,9 @@ def _fetch(
     if jar is not None:
         final_url = meta.get("url") or at["url"]
         store_cookies(jar, final_url, meta.get("headers"))
-        meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(jar, final_url)
+        meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
+            jar, final_url
+        )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
@@ -2460,7 +2462,9 @@ def _page_request(
         "cookies": [],
     }
     if subject is not None:
-        answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(subject, request.page)
+        answer["cookiesVersion"], answer["cookies"], answer["siteCookies"] = site_cookie_state(
+            subject, request.page
+        )
     return answer
 
 
