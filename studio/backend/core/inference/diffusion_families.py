@@ -739,6 +739,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
+        # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/flux-3-image-klein-base",),
+        deploy_base_repos = (
+            ("black-forest-labs/flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein"),
+        ),
     ),
     DiffusionFamily(
         name = "flux.3-klein",
