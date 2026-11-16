@@ -1506,6 +1506,20 @@ def _packed_block_mask(cu_seqlens, total, sliding_window, is_causal, device):
     return mask[None, None]
 
 
+def _downcast_fp32_qkv(Q, K, V):
+    """Flash kernels take fp16 / bf16 only: the autocast dtype, else a non-fp32 input's dtype, then clamp."""
+    if torch.is_autocast_enabled():
+        try:
+            dtype = torch.get_autocast_dtype("cuda")
+        except (AttributeError, TypeError):
+            dtype = torch.get_autocast_gpu_dtype()
+    else:
+        dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+    return Q.to(dtype), K.to(dtype), V.to(dtype)
+
+
 def _prepared_packed_attention(config, context, Q, K, V):
     """Attention for a row prepared by prepare_packed_block, traced inside the compiled block."""
     bsz, n_heads, q_len, head_dim = Q.shape
@@ -1518,6 +1532,9 @@ def _prepared_packed_attention(config, context, Q, K, V):
     scale = sdpa_kwargs.get("scale")
     if scale is None:
         scale = (config.flash_varlen_kwargs or {}).get("softmax_scale")
+    # DoRA's fp32 q/k/v (#1013): downcast as the unprepared flash path does, not a dense T x T mask.
+    if Q.is_cuda and torch.float32 in (Q.dtype, K.dtype, V.dtype):
+        Q, K, V = _downcast_fp32_qkv(Q, K, V)
     if (
         context.is_causal
         and context.attention_mask is None
@@ -1715,19 +1732,7 @@ def _run_attention(
         K.dtype,
         V.dtype,
     ):
-        # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
-        if torch.is_autocast_enabled():
-            try:
-                downcast_dtype = torch.get_autocast_dtype("cuda")
-            except (AttributeError, TypeError):
-                downcast_dtype = torch.get_autocast_gpu_dtype()
-        else:
-            downcast_dtype = next(
-                (d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None
-            )
-        if downcast_dtype not in (torch.float16, torch.bfloat16):
-            downcast_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        Q, K, V = Q.to(downcast_dtype), K.to(downcast_dtype), V.to(downcast_dtype)
+        Q, K, V = _downcast_fp32_qkv(Q, K, V)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
