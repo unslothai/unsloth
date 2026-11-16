@@ -43,8 +43,13 @@ import { Textarea } from "@/components/ui/textarea";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
 import { chatLocalModelOptions, useChatRuntimeStore } from "@/features/chat";
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
+import {
+  isExternalModelId,
+  parseExternalModelId,
+} from "@/features/chat/external-providers";
 import { useDeviceInventorySources } from "@/features/hub";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
@@ -67,6 +72,7 @@ import {
   Cancel01Icon,
   ClipboardPasteIcon,
   Message01Icon,
+  RemoveCircleIcon,
   Upload01Icon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
@@ -74,6 +80,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -422,7 +429,39 @@ function ModelMenu({
   downloaded: Downloaded;
 }) {
   const t = useT();
+  const busy = useTranslateStore((state) => state.phase !== null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // What the server holds: the chip names a model, and offers Eject, only while it is in memory.
+  const [loaded, setLoaded] = useState<string[]>([]);
+  const refreshLoaded = useCallback(() => {
+    getInferenceStatus()
+      .then((status) => setLoaded(status.loaded ?? []))
+      .catch(() => undefined);
+  }, []);
+  // On arrival, when a run ends (its model is now loaded), and when the menu opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `busy` is the trigger, not an input.
+  useEffect(refreshLoaded, [refreshLoaded, busy]);
+  const localModel =
+    value === CUSTOM_TRANSLATE_MODEL
+      ? custom && !isExternalModelId(custom.id)
+        ? custom.id
+        : null
+      : (dedicatedTranslateModel(value)?.repo ?? null);
+  const ejectable =
+    localModel !== null && loaded.some((id) => modelIdsMatch(id, localModel));
+  // A model this page loads is named only while loaded, as the model picker's chip does.
+  const named = localModel === null || ejectable;
+  const eject = async () => {
+    if (!localModel) return;
+    try {
+      await unloadModel({ model_path: localModel });
+      setLoaded([]);
+      // Typing must not load it straight back.
+      useTranslateStore.setState({ readyModels: [] });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
   const openPickerOnClose = useRef(false);
   const label =
     value === CUSTOM_TRANSLATE_MODEL
@@ -470,7 +509,11 @@ function ModelMenu({
         }}
         onPick={pick}
       />
-      <DropdownMenu>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (open) refreshLoaded();
+        }}
+      >
         {/* The model picker's own chip, so the two read as one control across pages. */}
         <DropdownMenuTrigger asChild={true}>
           <button
@@ -479,8 +522,13 @@ function ModelMenu({
             title={t("translate.model.label")}
             className="unsloth-thinking-pill composer-model-chip max-w-56"
           >
-            <span className="unsloth-thinking-label composer-model-chip-name truncate">
-              {label}
+            <span
+              className={cn(
+                "unsloth-thinking-label composer-model-chip-name truncate",
+                !named && "text-muted-foreground",
+              )}
+            >
+              {named ? label : t("translate.model.label")}
             </span>
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
@@ -559,6 +607,16 @@ function ModelMenu({
             )}
           </DropdownMenuRadioGroup>
           <DropdownMenuSeparator />
+          {ejectable && (
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={busy}
+              onSelect={() => void eject()}
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} />
+              {t("settings.general.rag.ejectModel")}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onSelect={() => {
               openPickerOnClose.current = true;
