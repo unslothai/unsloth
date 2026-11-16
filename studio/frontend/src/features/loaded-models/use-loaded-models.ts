@@ -35,7 +35,7 @@ const ALL_SOURCES: LoadedModelSource[] = [
 
 // A TTS load takes the chat slot and the chat unload releases it.
 function sourceForRuntime(runtime: ModelRuntime): LoadedModelSource {
-  return runtime === "tts" ? "chat" : runtime;
+  return runtime === "tts" || runtime === "translate" ? "chat" : runtime;
 }
 
 export type UseLoadedModels = {
