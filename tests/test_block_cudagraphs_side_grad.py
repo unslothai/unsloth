@@ -12,6 +12,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_block_cudagraphs_auto as auto  # noqa: E402
+from real_accelerator import has_real_cuda  # noqa: E402
 
 bc = auto.bc
 
@@ -76,7 +77,7 @@ class SideGradCrossAttentionDecoderLayer(torch.nn.Module):
     forward = _forward
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
 @pytest.mark.parametrize("checkpoint", [False, True], ids = ["plain", "reentrant_checkpoint"])
 def test_forced_graphs_train_like_eager_with_a_grad_side_input(monkeypatch, checkpoint):
     from torch.utils.checkpoint import checkpoint as ckpt
