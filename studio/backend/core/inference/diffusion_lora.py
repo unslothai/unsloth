@@ -836,8 +836,7 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
-# Pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights). diffusers'
-# HunyuanImagePipeline has none, so an adapter would pass the gate and fail mid-generate with an AttributeError.
+# Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
 _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 
 

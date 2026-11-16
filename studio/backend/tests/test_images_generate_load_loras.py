@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""POST /images/generate (and every internal caller of the same run: chat generate_image tool, queue, XY) keeps the
-LoRAs a load baked in when ``loras`` is omitted; ``[]`` renders without any. The engine reads a missing selection as
-"none", which on an int8 / fp8 bake zeroes the adapters, so the route resolves an omitted list first. No GPU."""
+"""Omitted ``loras`` on /images/generate (and its tool / queue / XY callers) keeps the load's adapters; ``[]`` none."""
 
 from __future__ import annotations
 
@@ -100,7 +98,6 @@ def test_a_load_without_adapters_keeps_the_old_call(client, monkeypatch):  # noq
 
 
 def test_the_chat_generate_image_tool_keeps_the_baked_set(baked):
-    """The tool builds a request with no loras and runs the same core as the route."""
     from core.inference.generate_image_tool import _build_request
     from routes.inference import _generate_diffusion_image_core
 
@@ -111,7 +108,7 @@ def test_the_chat_generate_image_tool_keeps_the_baked_set(baked):
 
 
 def test_an_xy_cell_with_every_weight_at_0_renders_without_the_baked_set(baked):
-    """XY cells run the same core; a cell whose only adapter is swept to 0 must stay adapter-free."""
+    """A cell whose only adapter is swept to 0 must stay adapter-free."""
     from core.inference import diffusion_xy
     from models.inference import DiffusionGenerateRequest
     from routes.inference import _generate_diffusion_image_core
@@ -130,9 +127,7 @@ def test_an_xy_cell_with_every_weight_at_0_renders_without_the_baked_set(baked):
 
 
 def test_a_compiled_dense_load_omitting_loras_renders_without_its_named_set(client, monkeypatch):  # noqa: F811
-    """Speed Auto compiles a dense load on an adapter-free run (the user turned its LoRA off), after which the status
-    reports supports_lora false: the Images page hides LoRA and omits the field, so its named set must not come back
-    and be refused."""
+    """supports_lora false after Speed Auto compiled it: the named set must not come back and be refused."""
 
     class _Compiled(_BakedLoad):
         def status(self):
@@ -149,8 +144,7 @@ def test_a_compiled_dense_load_omitting_loras_renders_without_its_named_set(clie
 
 
 def test_a_load_swapped_in_before_the_slot_retries_with_its_own_set(client, monkeypatch):  # noqa: F811
-    """The omitted list resolved to none on a plain load; a baked load finishes before the generation slot. The run
-    must be refused as replaced and retried against the new load's set, not admitted with loras=None."""
+    """Resolved to none, then a baked load lands before the slot: refuse as replaced and retry with its set."""
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
     class _Swapping(_BakedLoad):
@@ -163,7 +157,6 @@ def test_a_load_swapped_in_before_the_slot_retries_with_its_own_set(client, monk
 
         def generate(self, **kwargs):
             if self.repo == "x/plain":
-                # The swap lands between the status read and the slot.
                 self.repo, self._baked = "x/baked", list(BAKED)
             loaded = load_identity(self.repo, None, "z-image")
             expected = kwargs.get("expected_load")
@@ -179,8 +172,7 @@ def test_a_load_swapped_in_before_the_slot_retries_with_its_own_set(client, monk
 
 
 def test_a_same_model_reload_with_other_adapters_retries_with_its_own_set(client, monkeypatch):  # noqa: F811
-    """Same repo, base and family, reloaded with a baked LoRA before the slot: the identity pin alone still matches,
-    so the adapter signature must refuse it and the retry must render with the new load's set."""
+    """The identity pin still matches, so the adapter signature must refuse it and retry with the new set."""
     from core.inference.diffusion_families import (
         DiffusionModelReplacedError,
         load_identity,
@@ -214,8 +206,7 @@ def test_a_same_model_reload_with_other_adapters_retries_with_its_own_set(client
 
 
 def test_the_diffusers_backend_checks_the_adapter_pin_in_its_slot():
-    """The route only sends the adapter pin to an engine that takes it; the diffusers backend must, and must compare
-    it inside the generation slot next to the load identity."""
+    """The diffusers backend takes the adapter pin and compares it inside the generation slot."""
     import inspect
 
     from core.inference.diffusion import DiffusionBackend

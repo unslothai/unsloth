@@ -1303,8 +1303,7 @@ def test_hunyuanimage_21_is_gated_off_for_lora():
         )
 
 
-# Families the loop cannot check through ``getattr(diffusers, pipeline_class)``, each with why. Anything else whose
-# class is missing fails, so a renamed or dropped diffusers pipeline cannot pass unchecked.
+# Families not checkable via ``getattr(diffusers, pipeline_class)``; any other missing class fails.
 _LORA_LOADER_CHECK_EXCEPTIONS = {
     "flux.3-klein-base": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
     "flux.3-klein": "modular pipeline in diffusers 0.42+ only; its loader is asserted when the class imports",
