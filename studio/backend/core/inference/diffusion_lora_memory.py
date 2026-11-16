@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a LoRA set attached at load adds to the denoiser's working memory, so the load can keep placing from the
-base build's measured peak instead of discarding it.
-
-The adapter tensors are parameters of the denoiser, so the loaded sizes the planner reads already count them. What
-no measured row covers is the unfused PEFT forward: every adapted layer runs ``base(x) + B(A(x)) * scale``, and while
-the sum forms, ``B(A(x))`` and its scaled copy sit beside the base output (two ``tokens x out_features`` tensors,
-plus the ``tokens x rank`` input of B). Only one layer runs at a time, so the extra is the widest layer's, per
-guidance branch and image. Anything else (fused or merged layers, DoRA, LoKR slots, non-LoRA PEFT tuners) is not
-priced: such a load keeps the flat placement it had before. ``UNSLOTH_DIFFUSION_LORA_MEASURED=0`` restores that for
-every LoRA load."""
+"""Extra working memory of a LoRA set attached at load, so placement keeps the base build's measured peak.
+Adapter weights are already in the loaded sizes; only the unfused PEFT forward is added: the widest layer's
+``B(A(x))`` plus its scaled copy (2 x out_features + rank per token), per guidance branch and image. Merged, DoRA,
+LoKR and non-LoRA tuners are unpriced and keep the flat placement; ``UNSLOTH_DIFFUSION_LORA_MEASURED=0`` disables."""
 
 from __future__ import annotations
 
@@ -23,12 +17,9 @@ from typing import Any, Optional
 LORA_MEASURED_ENV = "UNSLOTH_DIFFUSION_LORA_MEASURED"
 PRICED_ATTR = "_unsloth_lora_priced"
 _DENOISERS = ("transformer", "transformer_2", "unconditional_transformer", "unet")
-# DiT families patchify an 8x (or coarser) latent 2x2: at most one image token per 16x16 pixels; the text sequence
-# joins it in joint-attention blocks (FLUX: 512 tokens, Qwen-Image: up to 1024). A pipeline whose own
-# ``max_sequence_length`` default is longer (Ideogram-4 2048, MOSS 4096, FLUX.3 8192) is priced at that default.
+# DiT: one image token per 16x16 pixels plus joint text tokens (longer pipeline max_sequence_length wins)
 _DIT_PIXELS_PER_TOKEN = 16 * 16
 _DIT_TEXT_TOKENS = 1024
-# U-Net conv / attention layers run on the 8x latent itself.
 _UNET_PIXELS_PER_TOKEN = 8 * 8
 _ROUND_MIB = 64
 _DEFAULT_SIDE = 1024
@@ -36,9 +27,7 @@ _DEFAULT_SIDE = 1024
 
 @dataclass(frozen = True)
 class LoraPricing:
-    """The LoRA set a load priced: ``signature`` (adapter names + files, not their weights), the widest adapted
-    layer's extra bytes per token for one branch, whether the denoiser is a U-Net, the guidance branches, and the
-    extra MiB at the default 1024x1024 single image (the amount the placement reserved)."""
+    """``mib`` is the reserve at the default 1024x1024 single image."""
 
     signature: tuple
     bytes_per_token: int
@@ -58,7 +47,6 @@ def enabled() -> bool:
 
 
 def lora_signature(pipe: Any) -> tuple:
-    """Names and files of the attached adapters, weights excluded (a weight change keeps every tensor shape)."""
     return tuple(
         sorted(
             (str(entry[0]), str(entry[1])) for entry in getattr(pipe, "_unsloth_loras", ()) or ()
@@ -79,8 +67,7 @@ def _element_bytes(*tensors: Any) -> int:
 
 
 def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[int]:
-    """Largest ``(2 * out_features + rank) * element bytes`` over the unfused LoRA layers of ``module``; 0 when it has
-    none; None when an adapted layer is anything this module cannot price."""
+    """0 without LoRA layers; None when any adapted layer is unpriceable."""
     try:
         from peft.tuners.tuners_utils import BaseTunerLayer
     except Exception:  # noqa: BLE001 - no PEFT: no adapter layers
@@ -94,7 +81,7 @@ def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[i
                 return None  # another PEFT tuner (LoKr, LoHa, ...): unpriced
             continue
         if getattr(layer, "merged", False):
-            return None  # folded into the base weight: the loaded sizes describe another build
+            return None
         active = [a for a in (getattr(layer, "active_adapters", None) or ()) if a in lora_a]
         if not active:
             continue
@@ -120,8 +107,6 @@ def _widest_layer_bytes_per_token(module: Any, compute_bytes: int) -> Optional[i
 
 
 def _text_window(pipe: Any) -> int:
-    """Text tokens a DiT joint block may carry: the pipeline's ``max_sequence_length`` default when longer than
-    the 1024 floor."""
     try:
         param = inspect.signature(type(pipe).__call__).parameters.get("max_sequence_length")
         default = getattr(param, "default", None)
@@ -174,8 +159,7 @@ def price_attached_loras(
     cfg: bool,
     compute_bytes: Optional[int] = None,
 ) -> Optional[LoraPricing]:
-    """Price the LoRA set attached to ``pipe``'s denoiser(s) at load and record it on the pipe; None (nothing
-    recorded) when disabled, nothing is attached, or any adapted layer cannot be priced."""
+    """Price and record the attached LoRA set; None (nothing recorded) when it cannot be priced."""
     if not enabled() or not getattr(pipe, "_unsloth_loras", None):
         return None
     try:
@@ -199,7 +183,7 @@ def price_attached_loras(
             if per > widest:
                 widest, unet = per, name == "unet"
         if not found or widest <= 0:
-            return None  # adapters named but no unfused LoRA layer: merged elsewhere, unpriced
+            return None
         branches = 2 if cfg else 1
         text_tokens = _text_window(pipe)
         pricing = LoraPricing(
@@ -217,7 +201,6 @@ def price_attached_loras(
 
 
 def priced(pipe: Any) -> Optional[LoraPricing]:
-    """The load's pricing while the attached set is still the one priced, else None."""
     pricing = getattr(pipe, PRICED_ATTR, None)
     if not isinstance(pricing, LoraPricing):
         return None
@@ -227,7 +210,6 @@ def priced(pipe: Any) -> Optional[LoraPricing]:
 
 
 def load_reserve_mib(pipe: Any) -> int:
-    """MiB the load-time placement reserves for the attached LoRA set (0 without a priced set)."""
     pricing = priced(pipe)
     return int(pricing.mib) if pricing is not None else 0
 
@@ -239,7 +221,6 @@ def request_extra_mib(
     height: Optional[int],
     batch_size: int = 1,
 ) -> int:
-    """MiB a request's LoRA forward needs beyond what the load reserved for it (larger canvas or batch)."""
     pricing = priced(pipe)
     if pricing is None:
         return 0

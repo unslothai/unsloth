@@ -1051,7 +1051,6 @@ def refine_plan_for_multigpu(
     )
     headroom = int(measured_headroom or flat_headroom or 0)
     if measured_headroom:
-        # a LoRA set priced at load runs its own forward beside the measured peak (diffusion_lora_memory)
         headroom += int(plan.estimates.get("lora_activation_mib") or 0)
     if plan.estimates.get("measured_omits_references"):
         # A split has no resident groups to stream back, so a reference request needs the flat headroom.

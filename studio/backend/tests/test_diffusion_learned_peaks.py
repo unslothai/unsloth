@@ -1867,7 +1867,6 @@ def test_render_with_lora_adapters_is_not_probed(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    # an unpriceable set still names no build; a priced one reads the base rows plus its forward (never records)
     assert 'peak_model = "unknown"' in src and "price_attached_loras(" in src
 
 

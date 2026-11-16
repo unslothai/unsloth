@@ -374,14 +374,13 @@ def _stored_weight(module: Any) -> tuple[Any, bool]:
 
 
 def _adapter_path(name: str) -> bool:
-    """A PEFT LoRA adapter submodule (``lora_A`` / ``lora_B`` / ``lora_embedding_*`` / ``lora_magnitude_vector``)."""
     return any(part.startswith("lora_") for part in str(name).split("."))
 
 
 def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
-    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises. ``skip_adapters``: leave
-    out PEFT LoRA adapter modules (the base build's descriptor; a tree without adapters is unchanged)."""
+    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises. ``skip_adapters``: the
+    base build's descriptor."""
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415

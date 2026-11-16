@@ -3,11 +3,8 @@
 
 """A LoRA set attached at load keeps the base build's measured rows and adds its own forward; CPU only.
 
-On two T4s a FLUX.2 klein-base 4B load with a LoRA named its build ``model:unknown``, so the learned peak this machine
-recorded for the same build was skipped and the placement fell back to the smaller static seed: the text encoder went
-to cuda:1 and the CFG replica was declined (63.7 vs 35 s/img). The adapter tensors are already in the loaded sizes;
-the unfused PEFT forward (two ``tokens x out_features`` tensors per branch at the widest layer) is priced on top.
-Merged, DoRA and LoKR sets are not priced and keep the old placement."""
+Regression: on two T4s a FLUX.2 klein LoRA load keyed ``model:unknown``, skipped the learned peak and lost the CFG
+replica (63.7 vs 35 s/img)."""
 
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ import core.inference.diffusion_measured_peaks as mp  # noqa: E402
 import core.inference.diffusion_memory as dm  # noqa: E402
 import core.inference.diffusion_multigpu as mg  # noqa: E402
 
-try:  # absent before the fix: the behavioural tests below still collect and fail on placement, not on import
+try:
     import core.inference.diffusion_lora_memory as lm  # noqa: E402
 except ImportError:  # pragma: no cover - base tree
     lm = None
@@ -105,14 +102,12 @@ def two_t4(monkeypatch, tmp_path):
     monkeypatch.setattr(mg, "models_kept_loaded", lambda: False)
     monkeypatch.setattr(lsp, "engine_available", lambda: True)
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda _: True)
-    # an int8 torchao DiT: the key carries the quant graph digest (graph_variant over the denoiser's modules)
     monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda _: dict(F2KB_LOADED))
     monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
     mp._cache.update(path = None, mtime = None, data = None)
     cards = [Card(0, 15095, 289), Card(1, 15095, 289)]
     Host(cards).install(monkeypatch)
-    # the peak a render of the same build without adapters recorded on this machine
     mp.record(
         family = "flux.2-klein",
         quant = _load_key(_pipe(adapters = 0)),
@@ -125,8 +120,7 @@ def two_t4(monkeypatch, tmp_path):
 
 
 def _load_rule_source() -> str:
-    """The statements of this tree's diffusion.py load that turn the model identity into the learned-peak key's
-    ``model`` part once adapters are attached (between ``_peak_model_identity(...)`` and the next ``try:``)."""
+    """diffusion.py's load statements from ``_peak_model_identity(...)`` to the next ``try:``."""
     import textwrap
 
     lines = Path(diffusion.__file__).read_text(encoding = "utf-8").splitlines()
@@ -189,16 +183,13 @@ def test_pricing_counts_the_widest_unfused_layer_per_branch():
     assert pricing.bytes_per_token == (2 * WIDE + 16) * 2
     assert pricing.mib == 1088
     assert lm.price_attached_loras(_pipe(), cfg = False, compute_bytes = 2).mib == 576
-    # a second adapter or a higher rank barely moves it: the width dominates
     assert lm.price_attached_loras(_pipe(adapters = 2), cfg = True, compute_bytes = 2).mib == 1088
-    # fp32 compute doubles it
     assert lm.price_attached_loras(_pipe(), cfg = True, compute_bytes = 4).mib == 2176
 
 
 @needs_lm
 @pytest.mark.parametrize("window, mib", [(512, 1088), (2048, 1344), (8192, 2624)])
 def test_pricing_covers_the_pipelines_text_window(window, mib):
-    # FLUX.3 encodes up to 8192 text tokens and Ideogram-4 2048: the joint blocks carry them beside the image
     class _LongText(_Pipe):
         def __call__(
             self,
@@ -212,7 +203,6 @@ def test_pricing_covers_the_pipelines_text_window(window, mib):
     pricing = lm.price_attached_loras(pipe, cfg = True, compute_bytes = 2)
     assert pricing.text_tokens == max(1024, window)
     assert pricing.mib == mib
-    # the request guard prices the same window: the default canvas needs nothing beyond the load's reserve
     assert lm.request_extra_mib(pipe, width = 1024, height = 1024) == 0
     assert lm.request_extra_mib(pipe, width = 2048, height = 2048) > 0
 
@@ -234,8 +224,7 @@ def test_unpriceable_sets_keep_the_unknown_build(monkeypatch):
 
 @pytest.mark.parametrize("adapter_dtype", [torch.float16, torch.float32])
 def test_lora_load_builds_the_key_the_plain_render_recorded(two_t4, adapter_dtype):
-    """The learned-peak key a LoRA load reads is the one a render of the same build without adapters recorded: the
-    model part names the build (not ``unknown``) and the quant digest leaves the adapter modules out."""
+    """A LoRA load reads the plain build's learned-peak key (named model, adapter-free quant digest)."""
     plain = _pipe(adapters = 0)
     lora = _pipe()
     for layer in (lora.transformer.wide, lora.transformer.narrow):
@@ -253,7 +242,6 @@ def test_lora_load_builds_the_key_the_plain_render_recorded(two_t4, adapter_dtyp
         )
         == LEARNED_PEAK
     )
-    # unchanged without adapters: the digest of a plain tree is what it always was
     from core.inference.diffusion_compile_cache import graph_variant
 
     assert graph_variant(plain.transformer, skip_adapters = True) == graph_variant(plain.transformer)
@@ -264,7 +252,6 @@ def test_lora_load_reads_the_measured_row_and_frees_the_replica_card(two_t4):
     refined_plain, plain = _place(two_t4, without)
     with_lora = _pipe()
     refined, placed = _place(two_t4, with_lora)
-    # the row the plain build recorded, not the smaller static seed the unknown build fell back to
     assert (
         refined.estimates["measured_runtime_headroom_mib"]
         == refined_plain.estimates["measured_runtime_headroom_mib"]
@@ -277,11 +264,9 @@ def test_lora_load_reads_the_measured_row_and_frees_the_replica_card(two_t4):
     # nothing moves to cuda:1, so the CFG replica can take it, as without the adapters
     assert placed.secondary_components is None and placed.layer_split is None
     assert plain.secondary_components is None and plain.layer_split is None
-    # the LoRA forward is held beside the peak: less of the encoder stays resident, never more
     assert int(refined.resident_text_encoder_mib or 0) <= int(
         refined_plain.resident_text_encoder_mib or 0
     )
-    # the whole DiT is pinned under the planner's own rule with the LoRA forward counted in
     assert refined.resident_transformer_mib == F2KB_LOADED["transformer"][0]
     assert refined.resident_text_encoder_mib is None
     assert dm._resident_dit_fits(
@@ -310,7 +295,6 @@ def test_non_lora_placement_is_byte_identical_with_the_switch_off(two_t4, monkey
 
 
 def _reserved(pipe, headroom: int):
-    # placed from the learned row (index 5) at the 1024^2 bucket
     pipe._unsloth_measured_reserve = (
         headroom,
         "flux.2-klein",
@@ -336,7 +320,6 @@ def test_request_guard_keeps_the_measured_sizing_for_a_priced_set():
     big_plain = dm.measured_request_extra_mib(plain, width = 2048, height = 2048)
     big = dm.measured_request_extra_mib(pipe, width = 2048, height = 2048)
     assert big - big_plain == lm.request_extra_mib(pipe, width = 2048, height = 2048) > 0
-    # a different adapter set than the one priced: the flat estimate, as before
     pipe._unsloth_loras = (("other", "/loras/other.safetensors", 1.0),)
     flat = dm.estimate_image_runtime_mib(
         width = 1024, height = 1024, batch_size = 1, family = "flux.2-klein"

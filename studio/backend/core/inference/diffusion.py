@@ -11478,9 +11478,7 @@ class DiffusionBackend:
                         )
                         is None
                     ):
-                        # adapters baked in at load that cannot be priced: a build the key cannot name. Priced ones
-                        # read the base build's measured rows plus their own forward (diffusion_lora_memory); their
-                        # renders still record nothing (_live_peak_identity)
+                        # unpriceable adapters: a build the key cannot name; priced ones' renders still record nothing
                         peak_model = "unknown"
                     try:
                         # the phase-table seed holds only where it was measured; unpriced references size flat

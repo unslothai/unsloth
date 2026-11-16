@@ -4039,7 +4039,6 @@ def denoiser_quant_label(pipe: Any) -> str:
         from .diffusion_compile_cache import _adapter_path
 
         for dit in dits:
-            # LoRA adapter tensors are not the build's format: a LoRA load keys like the build it adapts
             for name, param in dit.named_parameters():
                 if _adapter_path(name):
                     continue
@@ -4847,7 +4846,7 @@ def _refine_plan_from_loaded_weights(
         dit = sum(m for m, r in sizes.values() if r == "dit")
         encoders = sum(m for m, r in sizes.values() if r == "text_encoder")
         other = sum(m for m, r in sizes.values() if r == "other")
-        # an attached LoRA set's own forward (diffusion_lora_memory), held beside every phase's measured peak; 0 without
+        # a priced LoRA set's forward sits beside every phase's measured peak
         from .diffusion_lora_memory import load_reserve_mib as lora_load_reserve_mib
 
         lora_mib = lora_load_reserve_mib(pipe)
@@ -6482,9 +6481,7 @@ def measured_request_extra_mib(
     reference_pixels: int = 0,
     quadratic_attention: bool = False,
 ) -> int:
-    """MiB a request needs beyond what the measured placement reserved; see ``_measured_request_extra_mib``. A LoRA set
-    priced at load (diffusion_lora_memory) keeps the measured sizing and adds what the request's own LoRA forward
-    needs past the load's reservation (a larger canvas or batch)."""
+    """MiB a request needs beyond what the measured placement reserved; plus a priced LoRA forward past its load reserve."""
     extra = _measured_request_extra_mib(
         pipe,
         width = width,
