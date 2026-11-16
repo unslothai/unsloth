@@ -1034,6 +1034,7 @@ export const en = {
       videoChecking: "Checking this machine for video support...",
       more: "More",
       customizeSidebar: "Customize sidebar",
+      customizeProfileMenu: "Customize profile menu",
       // Rendered uppercase in a pill.
       newBadge: "New",
       export: "Export",

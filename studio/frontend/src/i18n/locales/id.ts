@@ -1131,6 +1131,7 @@ export const id = {
       videoChecking: "Memeriksa dukungan video di mesin ini...",
       more: "Lainnya",
       customizeSidebar: "Sesuaikan bilah sisi",
+      customizeProfileMenu: "Sesuaikan menu profil",
       newBadge: "Baru",
       export: "Ekspor",
       recents: "Terbaru",

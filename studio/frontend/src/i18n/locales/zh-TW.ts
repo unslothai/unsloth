@@ -1077,6 +1077,7 @@ export const zhTW = {
       videoChecking: "正在檢查這台電腦是否支援影片...",
       more: "更多",
       customizeSidebar: "自訂側邊欄",
+      customizeProfileMenu: "自訂個人檔案選單",
       newBadge: "新",
       export: "匯出",
       recents: "最近項目",
