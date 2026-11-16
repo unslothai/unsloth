@@ -33,6 +33,7 @@ from core.inference.openai_responses_shared import (
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
+from core.inference.http_stream import aiter_sse_lines
 from models.providers import (
     normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
@@ -2360,7 +2361,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 try:
                     while True:
                         try:
@@ -2455,7 +2456,7 @@ class ExternalProviderClient:
                         )
                         return
                     # Manual __anext__ loop, not async for, avoids Python 3.13 + httpcore 1.0.x GeneratorExit interaction.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     try:
                         while True:
                             try:
@@ -2559,7 +2560,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 # Latch final usage; a big prompt_tokens is evidence the server injected search results into context.
                 last_usage: Optional[dict[str, Any]] = None
                 annotation_shapes: set[str] = set()
@@ -3325,7 +3326,7 @@ class ExternalProviderClient:
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 thinking_open = False
                 client_tool_indices: dict[int, int] = {}
                 # Held until message_stop so an errored or cut-off stream never executes a partial call.
@@ -5099,7 +5100,7 @@ class ExternalProviderClient:
                     web_search_tool_started = True
 
                 # __anext__ loop as in stream_chat_completion (Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 final_finish_reason: Optional[str] = None
                 bare_json = ""
                 stream_error: Optional[str] = None
@@ -6389,7 +6390,7 @@ class ExternalProviderClient:
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion; see it for GeneratorExit/aclose ordering.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False

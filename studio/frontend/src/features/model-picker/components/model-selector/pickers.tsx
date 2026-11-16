@@ -2510,7 +2510,8 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
         <span className={ROW_ACTIONS_CLASS}>
           <ModelRowMenu
             ariaLabel={`More options for ${name}`}
-            onReveal={() => revealLocalModel(m.path, m.id)}
+            // The local reveal route lists no hf_cache rows.
+            onReveal={m.source === "hf_cache" ? undefined : () => revealLocalModel(m.path, m.id)}
             items={
               expander.diffusionLoad || !canUseDefaultChatModel(m)
                 ? undefined
@@ -3833,6 +3834,7 @@ function sortLocalModels(
 }
 
 function localModelIsGguf(m: LocalModelInfo): boolean {
+  if (m.source === "hf_cache") return m.model_format === "gguf";
   return (
     m.model_format === "gguf" ||
     isGgufRepo(m.id) ||
@@ -4356,7 +4358,10 @@ export function HubModelPicker({
     [pickerInventory.localModels],
   );
   const localDirModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "models_dir" || m.source === "hf_cache",
+      ),
     [pickerInventory.localModels],
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
