@@ -108,3 +108,22 @@ def test_the_chat_generate_image_tool_keeps_the_baked_set(baked):
     assert request.loras is None
     asyncio.run(_generate_diffusion_image_core(request))
     assert baked.backend.seen == [[("tarot-lora", 0.8)]]
+
+
+def test_an_xy_cell_with_every_weight_at_0_renders_without_the_baked_set(baked):
+    """XY cells run the same core; a cell whose only adapter is swept to 0 must stay adapter-free."""
+    from core.inference import diffusion_xy
+    from models.inference import DiffusionGenerateRequest
+    from routes.inference import _generate_diffusion_image_core
+
+    plan = diffusion_xy.expand(
+        DiffusionGenerateRequest(
+            prompt = "trtcrd a sloth",
+            seed = 7,
+            loras = [{"id": "tarot-lora", "weight": 0.8}],
+            xy = {"x": {"field": "lora_weight", "index": 0, "values": [0.8, 0]}},
+        )
+    )
+    for cell in plan.cells:
+        asyncio.run(_generate_diffusion_image_core(cell.request))
+    assert baked.backend.seen == [[("tarot-lora", 0.8)], None]
