@@ -1885,8 +1885,14 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
+    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE. Never on
+    Windows ROCm: a compiled decode skips the eager routing (diffusion_vae_attn_chunked) that keeps the VAE's head-512
+    attention off the fused kernels that miscompute it there."""
     if _fused_vae_planned(pipe):
+        return False
+    from .diffusion_vae_attn_chunked import windows_rocm
+
+    if windows_rocm():
         return False
     if _denoiser_unet(pipe) is not None:
         return True

@@ -192,6 +192,15 @@ _CACHE_VERSION = "1"
 _LATENT_CACHE_VERSION = "2"
 
 
+def _latent_cache_salt() -> str:
+    """Windows ROCm keys apart: latents encoded there before its VAE attention was routed to exact math are wrong."""
+    try:
+        from core.inference.diffusion_vae_attn_chunked import windows_rocm
+        return "w" if windows_rocm() else ""
+    except Exception:  # noqa: BLE001 -- unknown keeps the shared key
+        return ""
+
+
 def _file_content_hash(path: str) -> str:
     """return a truncated sha256; renames preserve cache entries while edits invalidate them."""
     h = hashlib.sha256()
@@ -306,7 +315,7 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
+            f"lat_v{_LATENT_CACHE_VERSION}{_latent_cache_salt()}_{self.family}_{geom}_"
             f"{_file_content_hash(image_path)}_{var}"
         )
 
