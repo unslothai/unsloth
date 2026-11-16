@@ -7315,6 +7315,11 @@ def _tp_collective_save(method):
     return decorate
 
 
+def _fsdp2_world():
+    import torch.distributed as dist
+    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
+
 def _plain_data_parallel_push(model, method, fn, args, kwargs):
     """Plain DDP Hub upload: identical weights on every rank, so rank 0 alone uploads (FSDP saves gather)."""
     import torch.distributed as dist
@@ -9210,8 +9215,8 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
-    if self.__dict__.get("_unsloth_tp_world_save"):
-        from .models.tp_replica import tp_world_save
+    if self.__dict__.get("_unsloth_tp_world_save") or _fsdp2_world() > 1:
+        from .models.tp_replica import tp_world_push, tp_world_save
 
         push_kwargs = dict(kwargs)
         repo_id = push_kwargs.pop("repo_id", save_directory)
@@ -9223,7 +9228,7 @@ def unsloth_tokenizer_save_pretrained(
             save_directory,
         )
         if push_to_hub:
-            self.push_to_hub(repo_id, **push_kwargs)
+            tp_world_push("tokenizer.push_to_hub", lambda: self.push_to_hub(repo_id, **push_kwargs))
         return result
     return _unsloth_tokenizer_save_pretrained(
         self, save_directory, legacy_format, filename_prefix, push_to_hub, **kwargs
