@@ -539,6 +539,10 @@ def _packed_rows_verdict(model, model_config):
     unknown = type(target).__module__.split(".")[0] not in _KNOWN_MODEL_PACKAGES
     if not (mrope or unknown):
         return None
+    # Verified per-document families; a backbone probe would also skip the hybrid varlen wrapper.
+    model_type = str(getattr(model_config, "model_type", "") or "").removesuffix("_text")
+    if not unknown and model_type in _PROCESSOR_TEXT_PACKING_MROPE_MODELS:
+        return None
     cached = getattr(target, "_unsloth_packed_rows_verdict", None)
     if cached is not None:
         return cached

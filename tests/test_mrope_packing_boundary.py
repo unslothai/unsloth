@@ -237,6 +237,23 @@ def test_probe_ignores_functional_attention_dropout():
     assert all(module.attention_dropout == 0.5 for module in attention)
 
 
+def test_verified_hybrid_mrope_families_are_not_probed(monkeypatch):
+    import unsloth.models.rl as rl
+
+    if getattr(transformers, "Qwen3_5Config", None) is None:
+        pytest.skip("transformers without qwen3_5")
+    torch.manual_seed(0)
+    rope = {"rope_type": "default", "mrope_section": [2, 3, 3], "mrope_interleaved": True}
+    text = dict(
+        TEXT, head_dim = 16, layer_types = ["linear_attention", "full_attention"], rope_parameters = rope
+    )
+    config = transformers.Qwen3_5Config(text_config = text, vision_config = dict(VISION))
+    model = transformers.Qwen3_5ForConditionalGeneration(config).float()
+    monkeypatch.setattr(rl, "_packing_honored", lambda *a, **k: pytest.fail("probed"))
+    assert trainer_module._uses_multimodal_rope(config)
+    assert trainer_module._packed_rows_verdict(model, config) is None
+
+
 def test_probe_runs_once_and_not_when_packing_is_off(monkeypatch):
     import unsloth.models.rl as rl
 
