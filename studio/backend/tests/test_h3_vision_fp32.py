@@ -166,6 +166,11 @@ def test_float32_tower_matches_a_float32_copy_of_the_bf16_weights():
     assert torch.allclose(merged.float(), want_merged, rtol = 3e-2, atol = 3e-2)
     assert len(deepstack) == len(want_deepstack) == 1
     for a, b in zip(deepstack, want_deepstack):
+        # transformers >= 5.18 (huggingface/transformers#49177) splits each deepstack layer per image, like
+        # pooler_output; the tower itself still returns one tensor per layer
+        if isinstance(a, (tuple, list)):
+            assert all(t.dtype is torch.bfloat16 for t in a)
+            a = torch.cat(list(a))
         assert a.dtype is torch.bfloat16 and a.shape == b.shape
 
 
