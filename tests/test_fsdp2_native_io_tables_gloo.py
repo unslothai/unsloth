@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 keeps large frozen, untied input / output embeddings out of the root unit.
-
-The root never reshards after forward, so on a sharded layout it held the gathered embed_tokens and
-lm_head for the whole step, plus a same-size all-gather buffer while gathering (Qwen3.8-27B 4-bit on a
-15 GiB T4: a 4.83 GiB root gather that OOMs on the first forward). Replicated, they are never gathered."""
+"""Native FSDP2 keeps large frozen, untied input / output embeddings out of the root unit (which never
+reshards, so its gather of both OOMed a T4 on Qwen3.8-27B 4-bit)."""
 
 import multiprocessing
 import os
@@ -54,7 +51,7 @@ def _model(tied = False):
 
 
 def _group_bytes(module):
-    """Unsharded bytes of `module`'s FSDP2 parameter group (what one all-gather of it allocates)."""
+    """Unsharded bytes of `module`'s FSDP2 parameter group."""
     state = module._get_fsdp_state()
     group = getattr(state, "_fsdp_param_group", None)
     total = 0
@@ -275,8 +272,7 @@ def test_sliced_chunk_gather_is_exact():
 
 
 def test_io_tables_stay_in_the_root_when_the_gather_casts_them():
-    # A float32-stored model sharded with a bfloat16 gather: replicating the tables would skip the root unit's
-    # cast and feed bfloat16 hidden states into a float32 lm_head. They stay in the root, as on main.
+    # Replicating would skip the root's cast and feed bfloat16 hidden states into a float32 lm_head.
     for r in _run("1", "bfloat16"):
         assert r["sharded"] == {"embed": True, "head": True}, r
         assert r["logits_dtype"] == "torch.bfloat16" and r["finite"], r

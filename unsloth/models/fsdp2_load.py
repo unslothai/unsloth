@@ -459,9 +459,8 @@ def _full_from_chunks(
     dtype,
     device = None,
 ):
-    """All-gather the dim-0 chunks back into the full tensor (exactly the checkpoint's), written slice by slice
-    into one output on `device` (default: the chunk's). Holds the output plus a few MiB per rank, not the
-    padded chunk, every rank's copy and their concatenation (5x the chunk: a 2.4 GiB lm_head OOMed a T4)."""
+    """All-gather dim-0 chunks into one full tensor on `device`, slice by slice (a whole-chunk gather held 5x
+    the chunk and OOMed a T4)."""
     import torch.distributed as dist
 
     if info.get("packed"):
@@ -501,9 +500,7 @@ def gather_replicated(
     also = (),
     device = None,
 ):
-    """Chunks whose parameter stays replicated (outside FSDP2) are gathered whole (onto `device`, default the
-    chunk's), and swapped in `replicated` and the sets in `also`. Collective over `mesh`; every rank reaches it
-    with the same set (the layout and dtype decisions are agreed)."""
+    """Gather replicated (non-FSDP2) chunks whole onto `device`. Collective: every rank passes the same set."""
     if not pending:
         return 0
     keep = {id(p) for p in replicated}

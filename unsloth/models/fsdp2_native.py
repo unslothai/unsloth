@@ -98,12 +98,8 @@ class FSDP2Config:
     # parameters get their own unit (Gemma4 / Gemma3n `embed_tokens_per_layer`: ~40% of an E-model would sit
     # gathered in the root for the whole step). 0 disables.
     split_large_root_embeddings: float = 0.05
-    # Frozen, untied input / output embeddings outside every unit whose bytes are at least this fraction of
-    # the device stay whole on every rank instead of in the root unit (env UNSLOTH_FSDP2_REPLICATE_IO_TABLES
-    # = 1 / 0 forces it on / off). The root never reshards after forward, so its gather of both tables is
-    # held for the whole step (Qwen3.8-27B: 4.8 GiB, plus a same-size copy-out buffer, on a 15 GiB T4).
-    # On a CUDA mesh the input table then serves its lookups from CPU memory (env
-    # UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps it on the GPU). 0 disables.
+    # Frozen, untied embed / head tables >= this device fraction stay replicated, out of the never-resharding
+    # root (UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 / 0 forces; UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps embed on GPU).
     replicate_io_tables: float = 0.15
     # Wrap `generate` so it runs inside native_fsdp2_unsharded (Unsloth's decode loops read layer weights
     # without calling the blocks; PeftModel.generate skips the root's hooks). Collective: every rank generates.
@@ -1419,13 +1415,8 @@ def _frozen_root_io_tables(
     fraction,
     param_dtype = None,
 ):
-    """[input embedding, output embedding] to keep whole on every rank instead of in the root unit, or [].
-
-    Both must be outside every unit, frozen, untied (the fused CE reads lm_head.weight directly, so a tied
-    table serves both and stays in the root) and together hold >= `fraction` of the device's bytes.
-    UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 skips the size rule, 0 disables. The root unit keeps its gather
-    for the whole step (reshard_after_forward False) and allocates the all-gather output plus the unsharded
-    copy, so a replicated table always needs less than its share of the root's peak."""
+    """[embed, head] to replicate instead of keeping in the root unit, or []. Both must be outside every
+    unit, frozen, untied (fused CE reads lm_head.weight, so a tied table stays) and >= `fraction` of device."""
     from .fsdp2_perf import _env_tristate
 
     forced = _env_tristate("UNSLOTH_FSDP2_REPLICATE_IO_TABLES")
@@ -1443,9 +1434,7 @@ def _frozen_root_io_tables(
     if any(_is_quantized_param(p) or not _floating(p) for group in params for p in group):
         return []
     if param_dtype is not None and any(p.dtype != param_dtype for group in params for p in group):
-        # The root unit gathers them in param_dtype (MixedPrecisionPolicy), so the embeddings output and the
-        # head read that dtype; kept whole they would compute in their storage dtype instead (a float32 head
-        # under a bfloat16 gather gets bfloat16 hidden states and fails). Only an uncast table moves.
+        # Replicated they would skip the root's param_dtype cast (float32 head gets bfloat16 hidden states).
         return []
     inside = set()
     for u in units:
@@ -1453,8 +1442,7 @@ def _frozen_root_io_tables(
     if (ids[0] | ids[1]) & inside:
         return []
     if param_dtype is None and _fsdp2_checks_frozen_dtypes():
-        # torch < 2.8 with a gather as stored: a root of mixed floating dtypes is upcast to float32 whole
-        # (_unify_dtypes), tables included, so they compute in float32 there; keep that.
+        # torch < 2.8 upcasts a mixed-dtype root to float32 (_unify_dtypes), tables included; keep that.
         rest = {
             p.dtype
             for p in model.parameters()
@@ -1477,7 +1465,7 @@ def _frozen_root_io_tables(
 
 
 def _serve_lookups_from_cpu(module):
-    """Keep an embedding module on CPU: ids go to its device, the lookup comes back to the ids' device."""
+    """Keep an embedding module on CPU, returning lookups to the ids' device."""
     if getattr(module, "_unsloth_fsdp2_cpu_lookup", False):
         return module
     module.to("cpu")
@@ -1495,8 +1483,7 @@ def _serve_lookups_from_cpu(module):
 
 
 def _offload_lookup_table(model, module):
-    """Unsloth's offload_embedding path (compile-safe hooks, Trainer moves keep it on the host) when the
-    package is importable, else the plain CPU lookup."""
+    """Unsloth's offload_embedding path when importable, else the plain CPU lookup."""
     try:
         from .vision import offload_input_embedding
     except Exception:
@@ -1629,7 +1616,7 @@ def _io_tables_agreed(
     flag,
     mesh = None,
 ):
-    """`flag` AND-reduced over the ranks of `mesh` (a decision of its own, outside the layout agreement)."""
+    """`flag` AND-reduced over the ranks of `mesh`."""
     from .fsdp2_save import mesh_all_reduce
 
     t = torch.tensor([1 if flag else 0], dtype = torch.int32, device = device)
@@ -2039,8 +2026,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         user_ignored = config.ignored_params if isinstance(config.ignored_params, set) else set()
         on_cpu = set()
         for m in cpu_tables:
-            # A sharded load's chunks are gathered straight into host memory, before any table is gathered
-            # on the GPU; a full load's table moves there.
+            # Gather to host before any GPU gather.
             own = set(m.parameters())
             gather_replicated(
                 model,
@@ -2054,9 +2040,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             on_cpu.update(id(p) for p in m.parameters())
         gather_replicated(model, pending, replicated, mesh, also = (ignored, user_ignored))
         for m in cpu_tables:
-            _offload_lookup_table(
-                model, m
-            )  # once the output head is real: lookups return to its device
+            _offload_lookup_table(model, m)
         if replicated:
             if not _supports_ignored_params(fully_shard):
                 raise RuntimeError(
@@ -2086,19 +2070,15 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         )
         finish_shard(model, pending)
         for m in cpu_tables:
-            m.to(
-                "cpu"
-            )  # fully_shard(root) moves the buffers of every module it manages (Gemma's embed_scale)
+            m.to("cpu")  # fully_shard(root) moved its buffers (Gemma's embed_scale)
         if (
             io_tables
             and device.type == "cuda"
             and _env_tristate("UNSLOTH_FSDP2_UNSHARD_ASYNC_OP") is not False
             and hasattr(model, "_set_unshard_async_op")
         ):
-            # Memory-tight sharded layout: implicit prefetch all-gathers into FSDP2's own stream, whose
-            # caching-allocator pool cannot reuse what the compute stream frees (a T4 OOMed on a 264 MiB
-            # block gather with 2.56 GiB cached and free). Gather on the current stream instead and keep
-            # the overlap with explicit one-ahead prefetch.
+            # FSDP2's own all-gather stream pool cannot reuse compute-stream frees (OOMed a T4): gather on the
+            # current stream and keep overlap via explicit one-ahead prefetch.
             model._set_unshard_async_op(True)
             if (
                 len(wrapped) > 1
