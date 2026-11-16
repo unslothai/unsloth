@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """S3 dataset download to a local temp dir; boto3 is optional and installed on first S3 load if
-missing; audio paths in JSON/JSONL/CSV manifests rewritten to local; parquet paths must already
-resolve; credentials never logged or persisted"""
+missing; audio paths in JSON/JSONL/CSV/Parquet manifests rewritten to local; credentials never
+logged or persisted"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ _IGNORED_METADATA_FILENAMES = {
     "schema.json",
     "state.json",
 }
-_REWRITABLE_MANIFEST_EXTENSIONS = (".json", ".jsonl", ".csv")
+_REWRITABLE_MANIFEST_EXTENSIONS = (".json", ".jsonl", ".csv", ".parquet")
 
 
 class S3DownloadCancelled(RuntimeError):
@@ -258,6 +258,8 @@ def _rewrite_audio_references(
 
         if manifest_path.lower().endswith(".csv"):
             _rewrite_csv_manifest(manifest_path, resolve)
+        elif manifest_path.lower().endswith(".parquet"):
+            _rewrite_parquet_manifest(manifest_path, resolve)
         else:
             _rewrite_json_manifest(manifest_path, resolve)
 
@@ -323,6 +325,42 @@ def _rewrite_csv_manifest(manifest_path: str, resolve) -> None:
         return
     with open(manifest_path, "w", encoding = "utf-8", newline = "") as f:
         csv.writer(f).writerows(rows)
+
+
+def _rewrite_parquet_manifest(manifest_path: str, resolve) -> None:
+    """Keep the Arrow/HF schema and bound memory to one batch; replace only a completed rewrite."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    changed = False
+
+    def replacement(value):
+        nonlocal changed
+        result = resolve(value)
+        if result is not None and result != value:
+            changed = True
+        return result
+
+    fd, staged = tempfile.mkstemp(
+        prefix = ".unsloth_s3_", suffix = ".parquet", dir = os.path.dirname(manifest_path)
+    )
+    os.close(fd)
+    try:
+        with pq.ParquetFile(manifest_path) as source:
+            schema = source.schema_arrow
+            with pq.ParquetWriter(staged, schema) as writer:
+                for batch in source.iter_batches(batch_size = 1024):
+                    rows = batch.to_pylist()
+                    for row in rows:
+                        _rewrite_row(row, replacement)
+                    writer.write_table(pa.Table.from_pylist(rows, schema = schema))
+        if changed:
+            os.replace(staged, manifest_path)
+    finally:
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
 
 
 def prepare_s3_dataset_download(
