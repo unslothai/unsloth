@@ -51400,15 +51400,21 @@ async def _generate_diffusion_image_run(
             # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
             if status is None:
                 status = await asyncio.to_thread(backend.status)
-            pairs = _load_lora_defaults(status) if status.get("loaded") else []
+            loaded = bool(status.get("loaded"))
+            pairs = _load_lora_defaults(status) if loaded else []
             if pairs:
                 request = request.model_copy(
                     update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
                 )
-                if expected_load is None:
-                    expected_load = load_identity(
+            if expected_load is None:
+                # Pinned even when it resolved to none: a load swapped in before the slot retries with its own set.
+                expected_load = (
+                    load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
                     )
+                    if loaded
+                    else load_identity(None, None, None)
+                )
         if txt2img_size_omitted:
             if status is None:
                 status = probe.pop("status", None) if attempt == 0 else None

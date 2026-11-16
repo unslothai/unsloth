@@ -146,3 +146,33 @@ def test_a_compiled_dense_load_omitting_loras_renders_without_its_named_set(clie
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     assert _gen(client).status_code == 200
     assert backend.seen == [None]
+
+
+def test_a_load_swapped_in_before_the_slot_retries_with_its_own_set(client, monkeypatch):  # noqa: F811
+    """The omitted list resolved to none on a plain load; a baked load finishes before the generation slot. The run
+    must be refused as replaced and retried against the new load's set, not admitted with loras=None."""
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
+
+    class _Swapping(_BakedLoad):
+        def __init__(self):
+            super().__init__(baked = [])
+            self.repo = "x/plain"
+
+        def status(self):
+            return {**super().status(), "repo_id": self.repo}
+
+        def generate(self, **kwargs):
+            if self.repo == "x/plain":
+                # The swap lands between the status read and the slot.
+                self.repo, self._baked = "x/baked", list(BAKED)
+            loaded = load_identity(self.repo, None, "z-image")
+            expected = kwargs.get("expected_load")
+            if expected is not None and expected != loaded:
+                raise DiffusionModelReplacedError(expected, loaded)
+            return super().generate(**kwargs)
+
+    backend = _Swapping()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = _gen(client, steps = 8, guidance = 1.0, width = 1024, height = 1024)
+    assert resp.status_code == 200, resp.text
+    assert backend.seen == [[("tarot-lora", 0.8)]]
