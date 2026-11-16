@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 
+import { isImageToolName } from "../src/features/chat/api/mcp-images.ts";
 import { readSrc } from "./helpers/kit.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
@@ -40,7 +41,7 @@ function insideContent(node: ts.Node): boolean {
   return false;
 }
 
-test("the view_image picture renders outside the collapsible pane", () => {
+test("the tool picture renders outside the collapsible pane", () => {
   const impl = findDeclaration("ToolFallbackImpl");
   const images: ts.Node[] = [];
   (function visit(node: ts.Node) {
@@ -52,10 +53,13 @@ test("the view_image picture renders outside the collapsible pane", () => {
   assert.equal(insideContent(images[0]), false);
 });
 
-test("only a finished view_image result moves out of the pane", () => {
+test("only a view_image or MCP image result moves out of the pane", () => {
   const picture = findDeclaration("picture").initializer?.getText(source) ?? "";
   assert.match(picture, /!isCancelled/);
-  assert.match(picture, /toolName === "view_image"/);
+  assert.match(picture, /isImageToolName\(toolName\)/);
+  assert.ok(isImageToolName("mcp__unity__manage_camera"));
+  assert.ok(isImageToolName("view_image"));
+  assert.equal(isImageToolName("terminal"), false);
   assert.match(picture, /isMcpImageResult\(shown\)/);
 });
 
