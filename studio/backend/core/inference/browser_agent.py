@@ -577,7 +577,17 @@ _FILE_SUFFIXES = (
     ".tsx",
     ".css",
     ".xml",
+    ".ts",
+    ".mjs",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".log",
+    ".jsonl",
+    ".tsv",
 )
+# Also top-level domains (Paraguay, Moldova, ...): a file only when the workspace has one by that name.
+_AMBIGUOUS_SUFFIXES = (".py", ".md", ".sh", ".rs")
 
 
 def workspace_path_of(raw: Any) -> Optional[str]:
@@ -599,6 +609,20 @@ def workspace_path_of(raw: Any) -> Optional[str]:
     # A dotless first segment is never a site the browser opens, so `out/page.html` is a folder.
     folder = len(parts) == 2 and parts[1] and not re.search(r"[.:]", first) and first != "localhost"
     return path if folder or first.endswith(_FILE_SUFFIXES) else None
+
+
+def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[str]:
+    """A bare `notes.md` or `out/run.py` that is a file in the workspace, else None (a site)."""
+    from .tools import _get_workdir
+
+    path = re.split(r"[?#]", target, maxsplit = 1)[0]
+    first = re.split(r"[/\\]", path, maxsplit = 1)[0].lower()
+    if not first.endswith(_AMBIGUOUS_SUFFIXES) and not path.lower().endswith(_AMBIGUOUS_SUFFIXES):
+        return None
+    if "://" in path or path.startswith("//"):
+        return None
+    workdir = os.path.realpath(_get_workdir(session_id))
+    return path if os.path.isfile(os.path.join(workdir, path)) else None
 
 
 def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
@@ -692,7 +716,7 @@ def _validated_request(
         if target.lower() in ("back", "forward", "reload"):
             return {"op": target.lower()}
         if len(target) <= _MAX_URL_CHARS:
-            path = workspace_path_of(target)
+            path = workspace_path_of(target) or _workspace_file_named(target, session_id)
             if path is not None:
                 return _workspace_file_request(path, session_id)
         return {"op": "navigate", "url": normalize_navigation_url(target, website_policy)}

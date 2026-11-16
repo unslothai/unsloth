@@ -768,3 +768,16 @@ def test_status_badge_names_a_workspace_file():
     from core.inference.tool_loop_controller import status_for_tool
     assert status_for_tool("browser_navigate", {"url": "./out/draw.html"}) == "Opening: draw.html"
     assert status_for_tool("browser_navigate", {"url": "file:///w/x.svg"}) == "Opening: x.svg"
+
+
+def test_a_code_file_named_like_a_domain_opens_only_when_the_workspace_has_it(workspace):
+    (workspace / "script.py").write_text("print(1)")
+    (workspace / "notes.md").write_text("# hi")
+    assert _request("browser_navigate", {"url": "script.py"})["path"] == "script.py"
+    assert _request("browser_navigate", {"url": "notes.md"})["content_type"] == "text/markdown"
+    with pytest.raises(ValueError, match = "no file app.ts in the workspace"):
+        _request("browser_navigate", {"url": "app.ts"})
+    assert _request("browser_navigate", {"url": "example.py"}) == {
+        "op": "navigate",
+        "url": "https://example.py",
+    }

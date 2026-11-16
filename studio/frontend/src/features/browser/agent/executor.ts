@@ -1284,6 +1284,12 @@ async function observeFile(tab: BrowserTab, entry: FileEntry, context: Run, note
   return { ok: true, file: entry.name, text: answer.text, note: [note, answer.note, source].filter(Boolean).join(" ") || undefined };
 }
 
+async function sameBytes(blob: Blob | undefined, bytes: Uint8Array): Promise<boolean> {
+  if (!blob || blob.size !== bytes.length) return false;
+  const shown = new Uint8Array(await blob.arrayBuffer());
+  return shown.every((byte, index) => byte === bytes[index]);
+}
+
 /** A file the model wrote in its tool workspace, sent by the server, shown as a file tab: an HTML
  *  page runs in the same sandboxed preview as one made in chat. */
 async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<Result> {
@@ -1299,12 +1305,12 @@ async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<R
   const key = `workspace:${action.sessionId}:${action.path ?? name}`;
   useBrowserStore.getState().openFile({ blob: new Blob([bytes], { type: contentType }), name, contentType, key });
   const opened = () => useBrowserStore.getState().tabs.find((tab) => tab.chat === context.session.chat && tab.openKey === `file:${key}`);
-  // Reopening a changed file swaps its bytes in a beat later.
+  // Reopening a changed file swaps its bytes in a beat later, so wait for these bytes, not the old ones.
   const started = Date.now();
   let tab = opened();
   while (tab && Date.now() - started < 2_000) {
     const entry = currentEntry(tab);
-    if (entry.kind === "file" && browserFile(entry.fileId)?.size === bytes.length) break;
+    if (entry.kind === "file" && (await sameBytes(browserFile(entry.fileId), bytes))) break;
     await sleep(100);
     tab = opened();
   }

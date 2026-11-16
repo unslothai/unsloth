@@ -258,6 +258,11 @@ test("a workspace file the server sends opens as a file tab, its preview is read
   assert.equal(useBrowserStore.getState().tabs.length, tabs);
   assert.equal(await shownText(), "<canvas id=x></canvas>");
 
+  // Same length, other bytes: the reopen must not read the old file.
+  const same = await act("open_file", { ...fields, data: b64("<canvas id=y></canvas>") });
+  assert.equal(same.ok, true, same.error);
+  assert.equal(await shownText(), "<canvas id=y></canvas>");
+
   const broken = await act("open_file", { ...fields, data: "%%%" });
   assert.equal(broken.ok, false);
 });
