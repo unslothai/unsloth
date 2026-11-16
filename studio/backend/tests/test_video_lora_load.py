@@ -1,0 +1,317 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Load-time LoRA bake for the video backend (VideoLoadRequest.loras). CPU only: tiny torch modules carry the
+module paths the Studio DiT trainer adapts on LTX-2 and Wan2.2-TI2V-5B, and the adapter files use the key layout
+their pipelines' save_lora_weights writes (``transformer.<module>.lora_A.weight``)."""
+
+from __future__ import annotations
+
+import json
+import types
+from pathlib import Path
+
+import pytest
+import torch
+from pydantic import ValidationError
+from safetensors.torch import save_file
+
+from core.inference import diffusion_lora, video_lora
+from core.inference.video_families import detect_video_family
+
+RANK = 4
+
+
+class _Attn(torch.nn.Module):
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.to_q = torch.nn.Linear(dim, dim)
+        self.to_k = torch.nn.Linear(dim, dim)
+        self.to_v = torch.nn.Linear(dim, dim)
+        self.to_out = torch.nn.ModuleList([torch.nn.Linear(dim, dim), torch.nn.Dropout(0.0)])
+
+
+class _Proj(torch.nn.Module):
+    def __init__(self, dim: int, hidden: int) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(dim, hidden)
+
+
+class _FFN(torch.nn.Module):
+    def __init__(self, dim: int, hidden: int) -> None:
+        super().__init__()
+        self.net = torch.nn.ModuleList(
+            [_Proj(dim, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, dim)]
+        )
+
+
+class _Block(torch.nn.Module):
+    def __init__(self, dim: int, hidden: int) -> None:
+        super().__init__()
+        self.attn1 = _Attn(dim)
+        self.attn2 = _Attn(dim)
+        self.ffn = _FFN(dim, hidden)
+
+
+class _WanLike(torch.nn.Module):
+    """WanTransformer3DModel paths: ``blocks.N.attn1.to_q`` ... ``blocks.N.ffn.net.2``."""
+
+    def __init__(
+        self,
+        dim: int = 16,
+        hidden: int = 32,
+        layers: int = 2,
+    ) -> None:
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_Block(dim, hidden) for _ in range(layers)])
+
+
+class _LtxLike(torch.nn.Module):
+    """LTX2VideoTransformer3DModel paths: ``transformer_blocks.N.attn1.to_q`` ..."""
+
+    def __init__(
+        self,
+        dim: int = 16,
+        hidden: int = 32,
+        layers: int = 2,
+    ) -> None:
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList([_Block(dim, hidden) for _ in range(layers)])
+
+
+# The trainer's _WAN_TARGETS / _LTX2_TARGETS (core/training/diffusion_dit_trainer.py), as peft expands them.
+_WAN_LEAVES = (
+    "attn1.to_q",
+    "attn1.to_k",
+    "attn1.to_v",
+    "attn1.to_out.0",
+    "attn2.to_q",
+    "attn2.to_k",
+    "attn2.to_v",
+    "attn2.to_out.0",
+    "ffn.net.0.proj",
+    "ffn.net.2",
+)
+_LTX_LEAVES = (
+    "attn1.to_q",
+    "attn1.to_k",
+    "attn1.to_v",
+    "attn1.to_out.0",
+    "attn2.to_q",
+    "attn2.to_k",
+    "attn2.to_v",
+    "attn2.to_out.0",
+)
+
+
+def _write_adapter(
+    path: Path, module: torch.nn.Module, prefix: str, leaves, *, alpha: float, metadata: bool
+):
+    """A diffusers-format adapter for ``module``; returns ``{module path: (A, B)}``."""
+    gen = torch.Generator().manual_seed(0)
+    params = dict(module.named_parameters())
+    state, factors = {}, {}
+    for n in range(len(getattr(module, prefix))):
+        for leaf in leaves:
+            name = f"{prefix}.{n}.{leaf}"
+            out_f, in_f = params[f"{name}.weight"].shape
+            a = torch.randn(RANK, in_f, generator = gen) * 0.1
+            b = torch.randn(out_f, RANK, generator = gen) * 0.1
+            state[f"transformer.{name}.lora_A.weight"] = a.to(torch.bfloat16)
+            state[f"transformer.{name}.lora_B.weight"] = b.to(torch.bfloat16)
+            factors[name] = (a.to(torch.bfloat16).float(), b.to(torch.bfloat16).float())
+    meta = {"format": "pt"}
+    if metadata:
+        meta["lora_adapter_metadata"] = json.dumps(
+            {
+                "transformer.r": RANK,
+                "transformer.lora_alpha": alpha,
+                "transformer.use_rslora": False,
+            }
+        )
+    path.parent.mkdir(parents = True, exist_ok = True)
+    save_file(state, str(path), metadata = meta)
+    return factors
+
+
+def _assert_baked(module, base, factors, scale):
+    for name, p in module.named_parameters():
+        mod = name[: -len(".weight")]
+        if name.endswith(".weight") and mod in factors:
+            a, b = factors[mod]
+            want = (base[name].float() + scale * (b @ a)).to(torch.bfloat16)
+            assert torch.allclose(p.float(), want.float(), atol = 1e-2), name
+            assert not torch.equal(p, base[name]), name
+        else:
+            assert torch.equal(p, base[name]), name
+
+
+def test_video_load_request_takes_loras_and_defaults_to_none():
+    from models.inference import VideoLoadRequest
+
+    plain = VideoLoadRequest(model_path = "Lightricks/LTX-2")
+    assert plain.loras is None
+    req = VideoLoadRequest(model_path = "Lightricks/LTX-2", loras = [{"id": "my-ltx", "weight": 1}])
+    assert [(s.id, s.weight) for s in req.loras] == [("my-ltx", 1.0)]
+    with pytest.raises(ValidationError):
+        VideoLoadRequest(
+            model_path = "Lightricks/LTX-2", loras = [{"id": "a"}, {"id": "a", "weight": 0.5}]
+        )
+    with pytest.raises(ValidationError):
+        VideoLoadRequest(model_path = "Lightricks/LTX-2", loras = [{"id": "a", "weight": 3}])
+
+
+def test_status_and_gallery_models_report_baked_loras():
+    from models.inference import GalleryVideo, VideoStatusResponse
+
+    assert "baked_loras" in VideoStatusResponse.model_fields
+    assert "baked_lora_specs" in VideoStatusResponse.model_fields
+    assert GalleryVideo.model_fields["baked_loras"].default_factory() == []
+
+
+def test_wan_adapter_bakes_into_the_transformer(tmp_path):
+    torch.manual_seed(0)
+    module = _WanLike().to(torch.bfloat16)
+    base = {k: v.clone() for k, v in module.state_dict().items()}
+    path = tmp_path / "wan.safetensors"
+    # Wan's saver passes the adapter metadata, so alpha / r comes from the file itself.
+    factors = _write_adapter(path, module, "blocks", _WAN_LEAVES, alpha = 8, metadata = True)
+    merged = video_lora.bake_into_module_(module, [(str(path), 0.5)])
+    assert merged == len(factors) == 2 * len(_WAN_LEAVES)
+    _assert_baked(module, base, factors, scale = 0.5 * 8 / RANK)
+
+
+def test_ltx2_adapter_takes_alpha_from_the_studio_sidecar(tmp_path):
+    torch.manual_seed(0)
+    module = _LtxLike().to(torch.bfloat16)
+    base = {k: v.clone() for k, v in module.state_dict().items()}
+    path = tmp_path / "ltx.safetensors"
+    # LTX2Pipeline.save_lora_weights stores no adapter metadata; the catalog sidecar holds rank and alpha.
+    factors = _write_adapter(
+        path, module, "transformer_blocks", _LTX_LEAVES, alpha = 8, metadata = False
+    )
+    path.with_suffix(".json").write_text(
+        json.dumps({"lora_rank": RANK, "lora_alpha": 8}), encoding = "utf-8"
+    )
+    params_before = {n: id(p) for n, p in module.named_parameters()}
+    video_lora.bake_into_module_(module, [(str(path), 1.0)])
+    _assert_baked(module, base, factors, scale = 8 / RANK)
+    # In place: compile / offload hooks installed later see the same Parameter objects.
+    assert {n: id(p) for n, p in module.named_parameters()} == params_before
+
+
+def test_an_adapter_for_another_model_changes_nothing(tmp_path):
+    torch.manual_seed(0)
+    wan = _WanLike().to(torch.bfloat16)
+    ltx = _LtxLike().to(torch.bfloat16)
+    path = tmp_path / "wan.safetensors"
+    _write_adapter(path, wan, "blocks", _WAN_LEAVES, alpha = RANK, metadata = True)
+    base = {k: v.clone() for k, v in ltx.state_dict().items()}
+    with pytest.raises(ValueError, match = "does not have"):
+        video_lora.bake_into_module_(ltx, [(str(path), 1.0)])
+    assert all(torch.equal(v, base[k]) for k, v in ltx.state_dict().items())
+
+
+def test_a_quantized_layer_is_refused_not_half_baked(tmp_path):
+    module = _WanLike().to(torch.bfloat16)
+    path = tmp_path / "wan.safetensors"
+    _write_adapter(path, module, "blocks", _WAN_LEAVES, alpha = RANK, metadata = True)
+    module.blocks[1].ffn.net[2].weight.data = (
+        module.blocks[1].ffn.net[2].weight.data.to(torch.float8_e4m3fn)
+    )
+    base = {k: v.clone() for k, v in module.state_dict().items()}
+    with pytest.raises(ValueError, match = "dense float"):
+        video_lora.bake_into_module_(module, [(str(path), 1.0)])
+    assert all(torch.equal(v.float(), base[k].float()) for k, v in module.state_dict().items())
+
+
+@pytest.fixture
+def catalog(tmp_path, monkeypatch):
+    root = tmp_path / "loras" / "diffusion"
+    root.mkdir(parents = True)
+    monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: root)
+
+    def add(stem: str, family: str) -> Path:
+        path = root / f"{stem}.safetensors"
+        save_file(
+            {"transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(RANK, 16)}, str(path)
+        )
+        path.with_suffix(".json").write_text(
+            json.dumps(
+                {"families": [family], "source": "studio-trained", "kind": "diffusion-lora"}
+            ),
+            encoding = "utf-8",
+        )
+        return path
+
+    return add
+
+
+def test_a_lora_for_another_family_is_refused(catalog):
+    catalog("my-wan", "wan2.2-ti2v-5b")
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = "not the loaded 'ltx-2'"):
+        video_lora.check_families([("my-wan", 1.0)], "ltx-2")
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = "not the loaded 'ltx-2'"):
+        video_lora.resolve([("my-wan", 1.0)], family = "ltx-2", hf_token = None)
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = "unknown LoRA"):
+        video_lora.check_families([("no-such-adapter", 1.0)], "ltx-2")
+
+
+def test_a_lora_for_the_loaded_family_resolves_through_the_catalog(catalog):
+    path = catalog("my-wan", "wan2.2-ti2v-5b")
+    video_lora.check_families([("my-wan", 1.0)], "wan2.2-ti2v-5b")
+    resolved = video_lora.resolve(
+        [("my-wan", 0.75), ("ignored", 0.0)], family = "wan2.2-ti2v-5b", hf_token = None
+    )
+    assert resolved == (("my-wan", str(path), 0.75),)
+
+
+def test_load_refusal_by_family_and_path():
+    ltx2 = detect_video_family("", override = "ltx-2")
+    wan = detect_video_family("", override = "wan2.2-ti2v-5b")
+    h3 = detect_video_family("", override = "minimax-h3")
+    assert ltx2 is not None and wan is not None and h3 is not None
+    for fam in (ltx2, wan):
+        assert video_lora.load_refusal(fam, "pipeline", None) is None
+        assert video_lora.load_refusal(fam, "pipeline", "int8") is None
+        assert "GGUF" in video_lora.load_refusal(fam, "gguf", None)
+        assert "single-file" in video_lora.load_refusal(fam, "single_file", None)
+        assert video_lora.dense_transformer_quant(fam, None, [("x", 1.0)]) is None
+    # MiniMax-H3: unset precision would seed the hosted quantized denoiser, so a LoRA load pins the released one.
+    assert video_lora.load_refusal(h3, "pipeline", None) is None
+    assert video_lora.load_refusal(h3, "pipeline", "none") is None
+    assert "bfloat16" in video_lora.load_refusal(h3, "pipeline", "int8")
+    assert video_lora.dense_transformer_quant(h3, None, [("x", 1.0)]) == "none"
+    assert video_lora.dense_transformer_quant(h3, None, None) is None
+    assert video_lora.dense_transformer_quant(h3, None, [("x", 0.0)]) is None
+    moe = types.SimpleNamespace(name = "wan2.2-t2v-a14b", label = "Wan2.2 A14B", is_moe = True)
+    assert "two-expert" in video_lora.load_refusal(moe, "pipeline", None)
+
+
+def test_backend_bake_records_the_adapters_for_status(tmp_path):
+    from core.inference.video import VideoBackend
+
+    module = _WanLike().to(torch.bfloat16)
+    path = tmp_path / "wan.safetensors"
+    _write_adapter(path, module, "blocks", _WAN_LEAVES, alpha = RANK, metadata = True)
+    pipe = types.SimpleNamespace(transformer = module)
+    fam = detect_video_family("", override = "wan2.2-ti2v-5b")
+    merged = VideoBackend._bake_video_loras(
+        pipe,
+        (("my-wan", str(path), 1.0),),
+        [{"id": "my-wan", "weight": 1.0}],
+        fam = fam,
+        target = types.SimpleNamespace(device = "cpu"),
+    )
+    assert merged == 2 * len(_WAN_LEAVES)
+    assert video_lora.baked_lora_names(pipe) == ["my-wan"]
+    assert video_lora.baked_lora_specs(pipe) == [{"id": "my-wan", "weight": 1.0}]
+    # A plain load never marks its pipeline.
+    assert video_lora.baked_lora_names(types.SimpleNamespace(transformer = module)) == []
+    assert video_lora.baked_lora_specs(None) == []
+
+
+def test_unloaded_status_reports_no_baked_loras():
+    from core.inference.video import VideoBackend
+    status = VideoBackend().status()
+    assert status["baked_loras"] == [] and status["baked_lora_specs"] == []
