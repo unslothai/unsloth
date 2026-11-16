@@ -19,11 +19,19 @@ import pytest
 torch = pytest.importorskip("torch")
 peft = pytest.importorskip("peft")
 
+import core.inference.diffusion as diffusion  # noqa: E402
 import core.inference.diffusion_layer_split_plan as lsp  # noqa: E402
-import core.inference.diffusion_lora_memory as lm  # noqa: E402
 import core.inference.diffusion_measured_peaks as mp  # noqa: E402
 import core.inference.diffusion_memory as dm  # noqa: E402
 import core.inference.diffusion_multigpu as mg  # noqa: E402
+
+try:  # absent before the fix: the behavioural tests below still collect and fail on placement, not on import
+    import core.inference.diffusion_lora_memory as lm  # noqa: E402
+except ImportError:  # pragma: no cover - base tree
+    lm = None
+
+needs_lm = pytest.mark.skipif(lm is None, reason = "diffusion_lora_memory is not in this tree")
+LORA_MEASURED_ENV = "UNSLOTH_DIFFUSION_LORA_MEASURED"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_diffusion_auto_placement import Card, Host, _Pipe  # noqa: E402
@@ -89,7 +97,7 @@ def two_t4(monkeypatch, tmp_path):
         mg.MULTIGPU_ENV,
         mg.CFG_PARALLEL_ENV,
         "CUDA_VISIBLE_DEVICES",
-        lm.LORA_MEASURED_ENV,
+        LORA_MEASURED_ENV,
         *ENVS,
     ):
         monkeypatch.delenv(var, raising = False)
@@ -97,6 +105,8 @@ def two_t4(monkeypatch, tmp_path):
     monkeypatch.setattr(mg, "models_kept_loaded", lambda: False)
     monkeypatch.setattr(lsp, "engine_available", lambda: True)
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda _: True)
+    # an int8 torchao DiT: the key carries the quant graph digest (graph_variant over the denoiser's modules)
+    monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda _: dict(F2KB_LOADED))
     monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
     mp._cache.update(path = None, mtime = None, data = None)
@@ -105,7 +115,7 @@ def two_t4(monkeypatch, tmp_path):
     # the peak a render of the same build without adapters recorded on this machine
     mp.record(
         family = "flux.2-klein",
-        quant = dm.learned_peak_label(_pipe(adapters = 0), model = "m", **LABELS),
+        quant = _load_key(_pipe(adapters = 0)),
         speed_mode = "default",
         width = 1024,
         height = 1024,
@@ -114,13 +124,45 @@ def two_t4(monkeypatch, tmp_path):
     return cards
 
 
-def _load_label(pipe) -> str:
-    """diffusion.py's load rule: a set that cannot be priced names no build."""
-    if getattr(pipe, "_unsloth_loras", None) and (
-        lm.price_attached_loras(pipe, cfg = True, compute_bytes = 2) is None
-    ):
-        return "unknown"
-    return "m"
+def _load_rule_source() -> str:
+    """The statements of this tree's diffusion.py load that turn the model identity into the learned-peak key's
+    ``model`` part once adapters are attached (between ``_peak_model_identity(...)`` and the next ``try:``)."""
+    import textwrap
+
+    lines = Path(diffusion.__file__).read_text(encoding = "utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if "peak_model = _peak_model_identity(" in line)
+    i = start
+    while lines[i].strip() != ")":
+        i += 1
+    end = next(j for j in range(i + 1, len(lines)) if lines[j].strip() == "try:")
+    return textwrap.dedent("\n".join(lines[i + 1 : end]))
+
+
+class _Fam:
+    name = "flux.2-klein"
+    uses_negative_prompt = True
+
+
+class _Target:
+    dtype = torch.float16
+    backend = "cuda"
+    vendor = "nvidia"
+
+
+def _load_model(pipe) -> str:
+    """Run the tree's own load rule on ``pipe`` (base: any adapter names no build; head: unpriceable sets only)."""
+    scope = {
+        "pipe": pipe,
+        "fam": _Fam(),
+        "target": _Target(),
+        "peak_model": "black-forest-labs/FLUX.2-klein-base-4B",
+    }
+    exec(_load_rule_source(), vars(diffusion), scope)  # noqa: S102 - the tree's own source
+    return scope["peak_model"]
+
+
+def _load_key(pipe) -> str:
+    return dm.learned_peak_label(pipe, model = _load_model(pipe), **LABELS)
 
 
 def _place(cards, pipe):
@@ -132,12 +174,13 @@ def _place(cards, pipe):
         total_mib = cards[0].total_mib,
     )
     refined = dm.refine_plan_from_loaded_weights(
-        pipe, flat, family = "flux.2-klein", speed_mode = "default", model = _load_label(pipe), **LABELS
+        pipe, flat, family = "flux.2-klein", speed_mode = "default", model = _load_model(pipe), **LABELS
     )
     with mg.selection_scope(mg.MultiGpuSelection(0, (1,), automatic = False)):
         return refined, mg.refine_plan_for_multigpu(pipe, refined)
 
 
+@needs_lm
 def test_pricing_counts_the_widest_unfused_layer_per_branch():
     pipe = _pipe()
     pricing = lm.price_attached_loras(pipe, cfg = True, compute_bytes = 2)
@@ -152,6 +195,7 @@ def test_pricing_counts_the_widest_unfused_layer_per_branch():
     assert lm.price_attached_loras(_pipe(), cfg = True, compute_bytes = 4).mib == 2176
 
 
+@needs_lm
 def test_unpriceable_sets_keep_the_unknown_build(monkeypatch):
     assert lm.price_attached_loras(_pipe(dora = True), cfg = True) is None
     merged = _pipe()
@@ -162,8 +206,35 @@ def test_unpriceable_sets_keep_the_unknown_build(monkeypatch):
     monkeypatch.setattr("core.inference.diffusion_lora_files.kron_names", lambda pipe: ("kron",))
     assert lm.price_attached_loras(_pipe(), cfg = True) is None
     monkeypatch.undo()
-    monkeypatch.setenv(lm.LORA_MEASURED_ENV, "0")
+    monkeypatch.setenv(LORA_MEASURED_ENV, "0")
     assert lm.price_attached_loras(_pipe(), cfg = True) is None
+
+
+@pytest.mark.parametrize("adapter_dtype", [torch.float16, torch.float32])
+def test_lora_load_builds_the_key_the_plain_render_recorded(two_t4, adapter_dtype):
+    """The learned-peak key a LoRA load reads is the one a render of the same build without adapters recorded: the
+    model part names the build (not ``unknown``) and the quant digest leaves the adapter modules out."""
+    plain = _pipe(adapters = 0)
+    lora = _pipe()
+    for layer in (lora.transformer.wide, lora.transformer.narrow):
+        layer.lora_A["style0"].to(adapter_dtype)
+        layer.lora_B["style0"].to(adapter_dtype)
+    assert _load_model(lora) == _load_model(plain) != "unknown"
+    assert _load_key(lora) == _load_key(plain)
+    assert (
+        mp.lookup(
+            family = "flux.2-klein",
+            quant = _load_key(lora),
+            speed_mode = "default",
+            width = 1024,
+            height = 1024,
+        )
+        == LEARNED_PEAK
+    )
+    # unchanged without adapters: the digest of a plain tree is what it always was
+    from core.inference.diffusion_compile_cache import graph_variant
+
+    assert graph_variant(plain.transformer, skip_adapters = True) == graph_variant(plain.transformer)
 
 
 def test_lora_load_reads_the_measured_row_and_frees_the_replica_card(two_t4):
@@ -202,15 +273,16 @@ def test_lora_load_reads_the_measured_row_and_frees_the_replica_card(two_t4):
 
 def test_unpriced_lora_load_is_unchanged(two_t4):
     dora = _pipe(dora = True)
-    assert _load_label(dora) == "unknown"
+    assert _load_model(dora) == "unknown"
     refined, _placed = _place(two_t4, dora)
     assert "lora_activation_mib" not in refined.estimates
     assert refined.estimates.get("measured_runtime_headroom_mib") != LEARNED_PEAK
 
 
+@needs_lm
 def test_non_lora_placement_is_byte_identical_with_the_switch_off(two_t4, monkeypatch):
     on_refined, on = _place(two_t4, _pipe(adapters = 0))
-    monkeypatch.setenv(lm.LORA_MEASURED_ENV, "0")
+    monkeypatch.setenv(LORA_MEASURED_ENV, "0")
     off_refined, off = _place(two_t4, _pipe(adapters = 0))
     assert on_refined == off_refined and on == off
 
@@ -231,6 +303,7 @@ def _reserved(pipe, headroom: int):
     return pipe
 
 
+@needs_lm
 def test_request_guard_keeps_the_measured_sizing_for_a_priced_set():
     plain = _reserved(_pipe(adapters = 0), 6400)
     expected = dm.measured_request_extra_mib(plain, width = 1024, height = 1024)
@@ -257,6 +330,7 @@ def test_unpriced_runtime_lora_keeps_the_flat_guard():
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == max(0, flat - 6400)
 
 
+@needs_lm
 def test_load_prices_the_set_before_naming_the_build():
     src = (Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     at = src.index("price_attached_loras(\n")

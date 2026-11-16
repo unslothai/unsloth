@@ -4036,8 +4036,13 @@ def denoiser_quant_label(pipe: Any) -> str:
         if classes:
             return "torchao:" + "+".join(sorted(classes)) + _quant_variant_tag(dits)
         dtypes: set[str] = set()
+        from .diffusion_compile_cache import _adapter_path
+
         for dit in dits:
-            for param in dit.parameters():
+            # LoRA adapter tensors are not the build's format: a LoRA load keys like the build it adapts
+            for name, param in dit.named_parameters():
+                if _adapter_path(name):
+                    continue
                 if type(param).__name__ == "GGUFParameter":
                     return "gguf"
                 if param.dtype in (torch.int8, torch.uint8):
@@ -4064,7 +4069,7 @@ def _quant_variant_tag(dits: list) -> str:
 
         from .diffusion_compile_cache import graph_variant
 
-        variants = [graph_variant(dit) for dit in dits]
+        variants = [graph_variant(dit, skip_adapters = True) for dit in dits]
         if any(isinstance(v.get("weights"), str) for v in variants):
             return "#unknown"
         blob = json.dumps(variants, sort_keys = True, default = str)

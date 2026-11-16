@@ -2291,7 +2291,7 @@ def test_torchao_variants_of_one_weight_class_do_not_share_a_label(monkeypatch):
     monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
     pipe = types.SimpleNamespace(transformer = torch.nn.Linear(4, 4))
     variant = {"weights": {"Linear/Int8Tensor": 1}}
-    monkeypatch.setattr(cc, "graph_variant", lambda dit: variant)
+    monkeypatch.setattr(cc, "graph_variant", lambda dit, **kw: variant)
     plain = dm.denoiser_quant_label(pipe)
     assert plain.startswith("torchao:Int8Tensor#")
     variant = {"weights": {"Linear/Int8Tensor/convrot256": 1}}
