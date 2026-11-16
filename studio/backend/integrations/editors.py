@@ -39,7 +39,7 @@ EDITORS = {
         8080,
         "No Unity Editor is connected. Open Window > MCP for Unity in your project and start the server.",
     ),
-    # Epic's Unreal MCP plugin (UE 5.8+, on by default, no auth). A project folder switches to ChiR24's EngineWire token.
+    # Epic's Unreal MCP plugin (UE 5.8+, no auth). A project folder switches to ChiR24's EngineWire token.
     "unreal": Editor(
         "Unreal Engine",
         8000,

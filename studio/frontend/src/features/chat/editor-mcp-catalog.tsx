@@ -39,7 +39,7 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     consent: "Allow changing levels, assets and Blueprints and running editor commands in Unreal Editor. Results may be sent to your model provider. Cancelling may not undo changes.",
     link: { label: "Unreal MCP docs", url: "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor" },
     steps: [
-      <>Use Unreal Engine 5.8 or newer. In {strong("Edit → Plugins")}, keep {strong("Unreal MCP")} and {strong("All Toolsets")} on (on by default) and restart the editor if you changed them.</>,
+      <>Use Unreal Engine 5.8 or newer. In {strong("Edit → Plugins")}, turn on {strong("Unreal MCP")} and {strong("All Toolsets")}, then restart the editor.</>,
       <>Its server starts with the editor on port 8000. Using the community {strong("EngineWire")} plugin instead? Set port 3000 and your project folder in Advanced settings.</>,
     ],
     portHint: "Match the Server Port Number in Editor Preferences → Model Context Protocol.",
