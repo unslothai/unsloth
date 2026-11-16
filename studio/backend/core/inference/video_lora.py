@@ -179,25 +179,35 @@ def resolve(
             name = f"{r.alias}_{n}"
         seen.add(name)
         _fetch_hub_adapter_config(r.path, hf_token, local_files_only)
-        if _is_dora(r.path):
+        unsupported = _unbakeable_feature(r.path)
+        if unsupported:
             raise diffusion_lora.LoraSelectionError(
-                f"'{r.id}' is a DoRA adapter; video loads bake plain LoRA deltas only, so it would merge wrong. "
-                "Use a plain LoRA adapter."
+                f"'{r.id}' is a {unsupported} adapter; video loads bake plain LoRA deltas into the weights only, so it "
+                "would merge wrong. Use a plain LoRA adapter."
             )
         out.append((name, r.path, r.weight))
     return tuple(out)
 
 
-def _is_dora(path: str) -> bool:
-    """DoRA rescales each weight by a learned magnitude a plain ``scale * B @ A`` bake cannot reproduce."""
-    if _file_metadata(path).get("use_dora"):
-        return True
+def _unbakeable_feature(path: str) -> Optional[str]:
+    """What a plain ``scale * B @ A`` weight bake cannot reproduce: DoRA's learned per-weight magnitude, or a trained
+    lora_B bias (PEFT lora_bias). None for a plain adapter."""
+    meta = _file_metadata(path)
+    if meta.get("use_dora"):
+        return "DoRA"
+    if meta.get("lora_bias"):
+        return "LoRA-bias"
     try:
         from safetensors import safe_open
         with safe_open(str(path), framework = "pt", device = "cpu") as f:
-            return any("lora_magnitude_vector" in k or k.endswith(".dora_scale") for k in f.keys())
+            keys = list(f.keys())
     except Exception:  # noqa: BLE001 - unreadable here fails later with its own error
-        return False
+        return None
+    if any("lora_magnitude_vector" in k or k.endswith(".dora_scale") for k in keys):
+        return "DoRA"
+    if any(k.endswith((".lora_B.bias", ".lora_B.default.bias", ".lora_up.bias")) for k in keys):
+        return "LoRA-bias"
+    return None
 
 
 def _hub_cache_location(path: str) -> Optional[tuple[str, str, str, str]]:

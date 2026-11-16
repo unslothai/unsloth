@@ -487,3 +487,34 @@ def test_a_dora_adapter_is_refused_before_anything_is_baked(monkeypatch, tmp_pat
     )
     with pytest.raises(diffusion_lora.LoraSelectionError, match = "DoRA"):
         video_lora.resolve([("me/dora", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None)
+
+
+@pytest.mark.parametrize("how", ["config", "bias_key"])
+def test_a_lora_bias_adapter_is_refused_before_anything_is_baked(monkeypatch, tmp_path, how):
+    """A trained lora_B bias is not part of a weight bake: refuse it at resolution instead of dropping it silently."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion_lora
+
+    path = tmp_path / "biased" / "w.safetensors"
+    path.parent.mkdir()
+    state = {
+        "transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 8),
+        "transformer.blocks.0.attn1.to_q.lora_B.weight": torch.zeros(8, 4),
+    }
+    if how == "bias_key":
+        state["transformer.blocks.0.attn1.to_q.lora_B.bias"] = torch.ones(8)
+    else:
+        (path.parent / "adapter_config.json").write_text(
+            json.dumps({"r": 4, "lora_alpha": 4, "lora_bias": True})
+        )
+    save_file(state, str(path))
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **k: [
+            diffusion_lora.ResolvedLora("me/biased", "biased", str(path), "safetensors", 1.0)
+        ],
+    )
+    with pytest.raises(diffusion_lora.LoraSelectionError, match = "LoRA-bias"):
+        video_lora.resolve([("me/biased", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None)
