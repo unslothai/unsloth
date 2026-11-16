@@ -4561,6 +4561,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     install_torchao_windows_rocm_stub()
 
+    # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
+    from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
+
+    install_windows_rocm_wide_head_sdpa_guard(logger)
+
     # Single-GPU never inits the process group, but transformers/trl import these torch.distributed attrs anyway.
     _td_stubs = {
         "is_initialized": lambda: False,

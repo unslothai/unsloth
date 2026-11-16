@@ -13625,11 +13625,16 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     return chosen[:1] + [by_name[name] for name in order]
 
 
+def _runs_local_mcp(server: dict) -> bool:
+    """A local command, or a managed editor whose loopback tools run code here: both follow the stdio gate."""
+    return is_stdio(server["url"]) or server.get("builtin_id") in mcp_servers_db.MANAGED_MCP_IDS
+
+
 def _cached_mcp_catalog() -> list[dict]:
     """Every model-visible MCP tool spec already cached for this account's enabled servers."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     specs: list[dict] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
@@ -13863,7 +13868,8 @@ def _mcp_tool_search(arguments) -> str:
 
 
 def _mcp_tool_prefix(server: dict) -> str:
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    builtin_id = server.get("builtin_id")
+    server_key = builtin_id if builtin_id in mcp_servers_db.MANAGED_MCP_IDS else server["id"]
     return f"{MCP_TOOL_PREFIX}{server_key}__"
 
 
@@ -14078,7 +14084,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     """Reads only cached MCP schemas so a background count never probes servers; complete is False for an uncached server not in cool-off; callers must decline."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
 
     listed: list[tuple[dict, list[dict], list[dict]]] = []
     complete = True
@@ -14101,7 +14107,7 @@ async def get_enabled_mcp_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     if not servers:
         return []
 
@@ -14187,7 +14193,7 @@ async def mcp_search_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     found = []
     for server in servers:
         for tool in get_cached_tools(server["id"]) or ():
@@ -14437,7 +14443,7 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
-        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+        if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)

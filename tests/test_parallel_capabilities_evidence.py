@@ -655,3 +655,17 @@ def test_qwen3_moe_qlora_pp_keeps_its_refusal_with_the_micro_batch_evidence():
     with pytest.raises(NotImplementedError, match = "UNSLOTH_PP_MICROBATCHES=1") as e:
         caps.check(query)
     assert "qwen3_moe x qlora x aux on x pp" in str(e.value)
+
+
+def test_gemma4_moe_lora_under_pp_follows_its_gloo_evidence():
+    kw = dict(trainer = "sft", family = "gemma4", moe = True, mode = "lora", pp = 2, pp_schedule = "1f1b")
+    for extra in (
+        {},
+        {"multimodal": True},
+    ):  # the Trainer path trains a multimodal checkpoint on text
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "gemma4_moe" in cell.parity, (extra, cell)
+        caps.check(query)
+    for extra in ({"expert_lora": True}, {"router_aux_loss": True}):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra

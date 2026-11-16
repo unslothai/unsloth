@@ -269,7 +269,9 @@ def _parity_worker(
         grad = torch.zeros_like(param) if param.grad is None else param.grad.clone()
         dist.all_reduce(grad)
         want = reference.get(name, torch.zeros_like(param))
-        torch.testing.assert_close(grad, want, rtol = 1e-4, atol = 1e-6, msg = name)
+        torch.testing.assert_close(
+            grad, want, rtol = 1e-4, atol = 1e-6, msg = lambda report, name = name: f"{name}: {report}"
+        )
         worst = max(worst, float((grad - want).abs().max()))
     if rank == 0 and out_dir:
         with open(
@@ -387,7 +389,9 @@ def _fullgraph_packed_worker(rank, world, kind, implementation, out_dir):
         grad = torch.zeros_like(param) if param.grad is None else param.grad.clone()
         dist.all_reduce(grad)
         want = reference.get(name, torch.zeros_like(param))
-        torch.testing.assert_close(grad, want, rtol = 1e-4, atol = 1e-6, msg = name)
+        torch.testing.assert_close(
+            grad, want, rtol = 1e-4, atol = 1e-6, msg = lambda report, name = name: f"{name}: {report}"
+        )
 
 
 # Qwen3's decoder layer traces whole in one process (Gemma3's does not: its own forward breaks the graph).

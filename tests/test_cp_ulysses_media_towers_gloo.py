@@ -65,7 +65,10 @@ def _model():
     torch.manual_seed(0)
     model = Gemma4ForConditionalGeneration(config)
     model.config.text_config._attn_implementation = "sdpa"
-    return model.float().train()
+    # float64: the check is about routing, not precision. In float32 the layer 0 q/k_proj gradients (backprop through
+    # every layer, summed in a different order across the shard seam) landed at 0.6x the tolerance here and 1.3x on
+    # some CI runners' CPU kernels; float64 leaves them about 100x under it with the same tolerance.
+    return model.double().train()
 
 
 def test_towers_do_not_decide_the_route():
@@ -106,7 +109,10 @@ def _worker(rank, world, out_dir):
         want = reference.get(name, torch.zeros_like(param))
         # Scale-relative atol: tied / per-layer embedding rows sum many tokens' float32 contributions.
         atol = 1e-5 * max(1.0, float(want.abs().max()))
-        torch.testing.assert_close(grad, want, rtol = 1e-4, atol = atol, msg = name)
+        # Keep torch's mismatch report (count, greatest abs / rel difference): a bare name hides how far off it is.
+        torch.testing.assert_close(
+            grad, want, rtol = 1e-4, atol = atol, msg = lambda report, name = name: f"{name}: {report}"
+        )
         checked += 1
     assert checked > 10
     if rank == 0:
