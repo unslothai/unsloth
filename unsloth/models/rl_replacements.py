@@ -246,8 +246,7 @@ RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
 
 
 def gkd_trainer_text_tokenizer(call_args, extra_args):
-    # GKD is text only and TRL reads tokenizer attributes (pad_token_id, backend_tokenizer) off processing_class,
-    # but multimodal checkpoints (Qwen3.5 / 3.6, Gemma 3 / 4, ...) load with a processor: pass its tokenizer.
+    # GKD is text only and TRL reads tokenizer attributes off processing_class: pass a processor's tokenizer.
     if "processing_class" not in call_args:
         return ""
     return (
