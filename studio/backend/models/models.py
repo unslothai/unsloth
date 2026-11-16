@@ -409,7 +409,6 @@ class BrowseEntry(BaseModel):
 
 
 class BrowsePlace(BaseModel):
-
     path: str
     label: str
     kind: str = Field(

@@ -334,7 +334,6 @@ class ChatProject(BaseModel):
 
 
 class ChatProjectWorkingFolder(BaseModel):
-
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
     native_path_lease: Optional[str] = Field(default = None, alias = "nativePathLease", min_length = 1)
     server_path: Optional[str] = Field(
