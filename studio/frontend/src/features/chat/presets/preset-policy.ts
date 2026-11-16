@@ -47,6 +47,51 @@ export function getPresetSource(name: string): ChatPresetSource {
   return name === "Default" ? "builtin-default" : "custom";
 }
 
+/** The values a loaded model's recommendation (and the Qwen thinking table) can set. */
+export const RECOMMENDED_SAMPLING_KEYS = [
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "presencePenalty",
+  "maxTokens",
+] as const satisfies readonly (keyof InferenceParams)[];
+
+export type RecommendedSamplingKey = (typeof RECOMMENDED_SAMPLING_KEYS)[number];
+
+export function isRecommendedSamplingKey(
+  key: string,
+): key is RecommendedSamplingKey {
+  return (RECOMMENDED_SAMPLING_KEYS as readonly string[]).includes(key);
+}
+
+/** The recommended keys the active pick keeps instead of taking the loaded model's values: a custom
+ *  preset keeps them all, Default none, and an edited Default only the ones the user moved. */
+export function heldRecommendedKeys(
+  presetSource: ChatPresetSource,
+  presetEditedKeys: readonly RecommendedSamplingKey[],
+): ReadonlySet<RecommendedSamplingKey> {
+  if (presetSource === "builtin-default") return new Set();
+  if (presetSource === "custom") return new Set(RECOMMENDED_SAMPLING_KEYS);
+  return new Set(presetEditedKeys);
+}
+
+/** `values` without the keys the active pick holds; null when nothing is left to apply. */
+export function recommendedValuesForPick<T extends Partial<InferenceParams>>(
+  values: T | null,
+  presetSource: ChatPresetSource,
+  presetEditedKeys: readonly RecommendedSamplingKey[],
+): Partial<T> | null {
+  if (values === null) return null;
+  const held = heldRecommendedKeys(presetSource, presetEditedKeys);
+  const kept = Object.fromEntries(
+    Object.entries(values).filter(
+      ([key]) => !(isRecommendedSamplingKey(key) && held.has(key)),
+    ),
+  ) as Partial<T>;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 export function getUniquePresetName(
   baseName: string,
   usedNames: Set<string>,
@@ -285,12 +330,15 @@ export function mergeBackendRecommendedInference({
   response,
   modelId,
   presetSource,
+  presetEditedKeys,
   loadedContextLength,
 }: {
   current: InferenceParams;
   response: BackendInferenceEnvelope;
   modelId: string;
   presetSource: ChatPresetSource;
+  /** The store's `presetEditedKeys`: under an edited Default, the keys kept over the recommendation. */
+  presetEditedKeys: readonly RecommendedSamplingKey[];
   /** The constructor's reading, not the raw field, which may echo the request. */
   loadedContextLength: number | null;
 }): InferenceParams {
@@ -304,16 +352,11 @@ export function mergeBackendRecommendedInference({
         : current.trustRemoteCode,
   };
 
-  if (presetSource !== "builtin-default") {
-    return next;
-  }
-
   const defaultMaxTokens = localMaxTokensCeiling(
     loadedContextLength,
     unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens),
   );
-  return {
-    ...next,
+  const recommended: Pick<InferenceParams, RecommendedSamplingKey> = {
     maxTokens: defaultMaxTokens,
     temperature:
       toFiniteNumber(inference?.temperature) ??
@@ -324,6 +367,10 @@ export function mergeBackendRecommendedInference({
     presencePenalty:
       toFiniteNumber(inference?.presence_penalty) ??
       defaultInferenceParams.presencePenalty,
+  };
+  return {
+    ...next,
+    ...recommendedValuesForPick(recommended, presetSource, presetEditedKeys),
   };
 }
 

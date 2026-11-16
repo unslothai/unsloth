@@ -20,6 +20,7 @@ const { useChatRuntimeStore } = await import(
 const {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   replayMaxTokensCap,
 } = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveQwenThinkingParams } = await import(
@@ -56,6 +57,7 @@ const commitPaneLoad = new Function(
   "mergeBackendRecommendedInference",
   "loadedContextForParams",
   "resolveQwenThinkingParams",
+  "recommendedValuesForPick",
   `let upgradeUnloadedActive; ${composer.slice(start, end)}`,
 );
 
@@ -78,6 +80,7 @@ function pickerLoad(model: string): void {
       response: response(model),
       modelId: model,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: CONTEXT,
     }),
     { fromModelDefaults: true, maxTokensCap: CONTEXT },
@@ -97,6 +100,7 @@ function compareLoad(model: string, gguf = true): void {
     mergeBackendRecommendedInference,
     loadedContextForParams,
     resolveQwenThinkingParams,
+    recommendedValuesForPick,
   );
 }
 

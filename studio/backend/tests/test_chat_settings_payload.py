@@ -139,6 +139,24 @@ def test_max_tool_calls_off_survives_the_payload():
     assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
 
 
+def test_preset_edited_keys_round_trip_and_replace():
+    payload = ChatSettingsPayload.model_validate(
+        {"activePresetSource": "modified", "presetEditedKeys": ["temperature", "minP"]}
+    )
+    assert payload.model_dump(exclude_unset = True) == {
+        "activePresetSource": "modified",
+        "presetEditedKeys": ["temperature", "minP"],
+    }
+    # A list replaces, so picking a preset clears the keys an earlier edit kept.
+    merged = _deep_merge_settings({"presetEditedKeys": ["temperature"]}, {"presetEditedKeys": []})
+    assert merged["presetEditedKeys"] == []
+
+
+def test_preset_edited_keys_rejects_a_key_the_recommendation_does_not_set():
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"presetEditedKeys": ["systemPrompt"]})
+
+
 @pytest.mark.parametrize(
     "payload",
     [

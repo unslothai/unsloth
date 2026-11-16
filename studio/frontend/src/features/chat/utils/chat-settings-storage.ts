@@ -17,9 +17,11 @@ import {
   defaultInferenceParams,
   getPresetOwnedConfigKey,
   getUniquePresetName,
+  isRecommendedSamplingKey,
   normalizeCustomPresets,
   type ChatPresetSource,
   type Preset,
+  type RecommendedSamplingKey,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
@@ -236,6 +238,20 @@ function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
     : undefined;
 }
 
+function sanitizePresetEditedKeys(
+  value: unknown,
+): RecommendedSamplingKey[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return [
+    ...new Set(
+      value.filter(
+        (key): key is RecommendedSamplingKey =>
+          typeof key === "string" && isRecommendedSamplingKey(key),
+      ),
+    ),
+  ];
+}
+
 function sanitizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return typeof value === "string" && REASONING_EFFORTS.has(value)
     ? (value as ReasoningEffort)
@@ -285,6 +301,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
+  const presetEditedKeys = sanitizePresetEditedKeys(value.presetEditedKeys);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
   const autoTitle = sanitizeBool(value.autoTitle);
   const preserveThinking = sanitizeBool(value.preserveThinking);
@@ -321,6 +338,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.activePreset = value.activePreset.trim();
   }
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  if (presetEditedKeys) settings.presetEditedKeys = presetEditedKeys;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
@@ -403,6 +421,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
+    settings.presetEditedKeys === undefined &&
     settings.autoTitle === undefined &&
     settings.reasoningEffort === undefined &&
     settings.preserveThinking === undefined &&

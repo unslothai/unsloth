@@ -60,6 +60,8 @@ import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
   type ChatPresetSource,
   type Preset,
+  type RecommendedSamplingKey,
+  RECOMMENDED_SAMPLING_KEYS,
   getPresetOwnedParams,
   getPresetSource,
 } from "../presets/preset-policy";
@@ -2512,6 +2514,9 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
+  /** Under an edited Default, the recommended keys the user moved; every other key still follows
+   *  the loaded model. Empty for any other source. */
+  presetEditedKeys: RecommendedSamplingKey[];
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
   loraInventorySettled: boolean;
@@ -2795,7 +2800,11 @@ type ChatRuntimeStore = {
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
-  setActivePresetSource: (source: ChatPresetSource) => void;
+  /** `editedKey`: the recommended key a hand edit moved, so only it outlasts a model switch. */
+  setActivePresetSource: (
+    source: ChatPresetSource,
+    editedKey?: RecommendedSamplingKey,
+  ) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (
@@ -3331,6 +3340,22 @@ function persistPresetDefaults(params: InferenceParams): void {
   }
 }
 
+/** The recommended keys an edited Default keeps after this source change. An edited custom preset
+ *  keeps them all, as the preset did; any other source keeps none. */
+function nextPresetEditedKeys(
+  state: ChatRuntimeStore,
+  source: ChatPresetSource,
+  editedKey: RecommendedSamplingKey | undefined,
+): RecommendedSamplingKey[] {
+  if (source !== "modified") return [];
+  if (getPresetSource(state.activePreset) === "custom") {
+    return [...RECOMMENDED_SAMPLING_KEYS];
+  }
+  const kept =
+    state.activePresetSource === "modified" ? state.presetEditedKeys : [];
+  return editedKey && !kept.includes(editedKey) ? [...kept, editedKey] : kept;
+}
+
 /** A model reaching the screen under a custom preset shows that preset's values, so its later edits
  *  file only themselves; reaching it under Default or the user's own edits ends that. */
 function notePresetOnLoad(
@@ -3443,13 +3468,13 @@ function getHydratedPresetState(
 ): Partial<
   Pick<
     ChatRuntimeStore,
-    "customPresets" | "activePreset" | "activePresetSource"
+    "customPresets" | "activePreset" | "activePresetSource" | "presetEditedKeys"
   >
 > {
   const nextState: Partial<
     Pick<
       ChatRuntimeStore,
-      "customPresets" | "activePreset" | "activePresetSource"
+      "customPresets" | "activePreset" | "activePresetSource" | "presetEditedKeys"
     >
   > = {};
   if (customPresetsMutationVersion === versions.customPresets) {
@@ -3462,6 +3487,11 @@ function getHydratedPresetState(
     const activePreset = nextState.activePreset ?? state.activePreset;
     nextState.activePresetSource =
       settings.activePresetSource ?? getPresetSource(activePreset);
+    // A `modified` saved before the list existed kept every key, so it still does.
+    nextState.presetEditedKeys =
+      nextState.activePresetSource === "modified"
+        ? (settings.presetEditedKeys ?? [...RECOMMENDED_SAMPLING_KEYS])
+        : [];
   }
   // A model resident before hydration loaded under the placeholder source, so restoring a custom
   // preset here is its load under that preset.
@@ -4341,6 +4371,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   customPresets: [],
   activePreset: "Default",
   activePresetSource: getPresetSource("Default"),
+  presetEditedKeys: [],
   models: [],
   loras: [],
   loraInventorySettled: false,
@@ -4862,15 +4893,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveSettingsPatch({ activePreset });
       return { activePreset };
     }),
-  setActivePresetSource: (activePresetSource) => {
+  setActivePresetSource: (activePresetSource, editedKey) => {
     let returnedToBuiltInDefault = false;
     set((state) => {
       returnedToBuiltInDefault =
         activePresetSource === "builtin-default" &&
         state.activePresetSource !== "builtin-default";
       activePresetSourceMutationVersion += 1;
-      saveSettingsPatch({ activePresetSource });
-      return { activePresetSource };
+      const presetEditedKeys = nextPresetEditedKeys(
+        state,
+        activePresetSource,
+        editedKey,
+      );
+      saveSettingsPatch({ activePresetSource, presetEditedKeys });
+      return { activePresetSource, presetEditedKeys };
     });
     if (returnedToBuiltInDefault) {
       // Defer a microtask so the final slider edit lands before the migration inspects it.

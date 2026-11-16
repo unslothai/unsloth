@@ -209,6 +209,7 @@ import {
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -2043,14 +2044,16 @@ export function SharedComposer({
         );
         const paneState = useChatRuntimeStore.getState();
         const paneParams = paneState.params;
-        const paneQwenParams =
-          resp.supports_reasoning &&
-          paneState.activePresetSource === "builtin-default"
-            ? resolveQwenThinkingParams(
+        const paneQwenParams = resp.supports_reasoning
+          ? recommendedValuesForPick(
+              resolveQwenThinkingParams(
                 resp.model,
                 (resp.reasoning_always_on ?? false) || paneState.reasoningEnabled,
-              )
-            : null;
+              ),
+              paneState.activePresetSource,
+              paneState.presetEditedKeys,
+            )
+          : null;
         store.setParams(
           {
             ...mergeBackendRecommendedInference({
@@ -2058,6 +2061,7 @@ export function SharedComposer({
               response: resp,
               modelId: resp.model,
               presetSource: paneState.activePresetSource,
+              presetEditedKeys: paneState.presetEditedKeys,
               loadedContextLength: loadedContextFields(resp).loadedContextLength,
             }),
             ...paneQwenParams,
