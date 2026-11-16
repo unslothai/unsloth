@@ -876,8 +876,7 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
-# Native DeepSeek-V4.1 (no router aux loss): stages through its pipeline_stage_forward, cut where no group state
-# crosses, engram tables on the owning stage only, mHC streams carried; fp32 vs one process.
+# Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
 )

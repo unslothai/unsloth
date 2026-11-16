@@ -676,7 +676,7 @@ def test_gemma4_moe_lora_under_pp_follows_its_gloo_evidence():
 def test_deepseek_v41_lora_under_pp_follows_its_gloo_evidence(memory, expert_lora):
     import re
 
-    # The docs run on 2 GPUs: the release config keeps a vision_config, the attention is windowed and eager.
+    # Release config keeps a vision_config; attention is windowed and eager.
     kw = dict(
         trainer = "sft",
         family = "deepseek_v41",
