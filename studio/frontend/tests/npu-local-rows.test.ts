@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type * as NpuApi from "../src/features/npu/api.ts";
+import * as displayName from "../src/features/npu/display-name.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -15,6 +16,7 @@ const api = loadWithStubs<typeof NpuApi>(
     "@/features/auth/api": { authFetch: async () => new Response(null) },
     "@/lib/format-fastapi-error": formatFastApiError,
     "@/lib/sse-json-events": sseJsonEvents,
+    "./display-name": displayName,
   },
 );
 
@@ -67,6 +69,14 @@ test("catalog rows keep their id and details", () => {
   assert.equal(api.npuRowLabel(catalog), "qwen3-0.6b-FLM");
   assert.deepEqual(api.npuRowDetails(catalog), ["NPU", "660 MB"]);
   assert.equal(api.npuRowTooltip(catalog), null);
+});
+
+test("a row too large for the NPU memory window keeps its warning", () => {
+  assert.deepEqual(api.npuRowDetails({ ...catalog, fits_memory: false }), [
+    "NPU",
+    "660 MB",
+    "May not fit NPU memory",
+  ]);
 });
 
 test("a conversion saved outside the exports folder shows its full path", () => {
