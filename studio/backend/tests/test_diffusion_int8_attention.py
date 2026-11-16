@@ -1518,6 +1518,33 @@ def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
         assert I._choose_path(plan) == (path, None) and plan["calls"] == 7
 
 
+def test_the_races_time_the_path_of_a_plan_without_sinks(monkeypatch):
+    """The races time on probe inputs (no attention sinks): inside _median_ms every kernel call takes the path a plan
+    without sinks runs and counts toward no decision, so the routing of the families without sinks is what it was;
+    outside it the plan decides again."""
+
+    class Event:
+        def __init__(self, **_):
+            pass
+
+        def record(self):
+            pass
+
+        def synchronize(self):
+            pass
+
+        def elapsed_time(self, other):
+            return 1.0
+
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    plan = {"calls": 0, "sinks": None, "checks": []}
+    seen = []
+    I._median_ms({"int8": lambda: seen.append(I._choose_path(plan))})
+    assert seen and set(seen) == {(False, None)} and plan["calls"] == 0
+    assert I._choose_path(plan) == (True, 0) and plan["calls"] == 1
+
+
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
 def test_without_sinks_the_kernels_have_no_sink_path():
     """SINKS compiles the attention-sink path in (two more attention-kernel parameters, the robust V range, the

@@ -469,6 +469,9 @@ RESID_BLOCKS = 128
 # SINK_DECIDE_AT-th call on a plan none of them did runs the kernels without the sink path (_choose_path).
 SINK_LEARN_CALLS = 64
 SINK_DECIDE_AT = 128
+_RACE = (
+    threading.local()
+)  # .path: the path _median_ms's timed calls take on this thread (None outside it)
 GRID_LIMIT = 65535  # blocks along y in one launch
 
 
@@ -730,6 +733,9 @@ def _choose_path(plan: dict) -> tuple:
     same paths. Called on the device of the plan; a CUDA graph capture keeps what the plan has decided."""
     import torch
 
+    forced = getattr(_RACE, "path", None)
+    if forced is not None:
+        return forced, None
     if torch.cuda.is_current_stream_capturing():
         return plan["sinks"] is not False, None
     n = plan["calls"]
@@ -1123,21 +1129,27 @@ def accuracy(got: Any, ref: Any) -> dict:
 
 
 def _median_ms(fns: dict, rounds: int = 5) -> dict:
-    """Median milliseconds per callable, timed with CUDA events in interleaved rounds after two warm calls each."""
+    """Median milliseconds per callable, timed with CUDA events in interleaved rounds after two warm calls each. The
+    races time on probe inputs, which have no attention sinks: the kernel calls in here take the path a plan without
+    sinks runs (_choose_path), and count toward no plan's decision."""
     import torch
 
-    for fn in fns.values():
-        fn()
-        fn()
-    times: dict = {name: [] for name in fns}
-    for _ in range(rounds):
-        for name, fn in fns.items():
-            a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
-            a.record()
+    _RACE.path = False
+    try:
+        for fn in fns.values():
             fn()
-            b.record()
-            b.synchronize()
-            times[name].append(a.elapsed_time(b))
+            fn()
+        times: dict = {name: [] for name in fns}
+        for _ in range(rounds):
+            for name, fn in fns.items():
+                a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+                a.record()
+                fn()
+                b.record()
+                b.synchronize()
+                times[name].append(a.elapsed_time(b))
+    finally:
+        _RACE.path = None
     return {name: sorted(ts)[len(ts) // 2] for name, ts in times.items()}
 
 
