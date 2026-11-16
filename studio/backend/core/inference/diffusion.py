@@ -7403,6 +7403,9 @@ class DiffusionBackend:
             if allow_device_probe
             else None
         )
+        if h3_image and _has_active_lora(load_kwargs.get("loras")):
+            # LoRAs merge into the dense DiT before quantization, so the load streams the released shards.
+            pipeline_planned = None
         dit_prequant = (
             self._dit_prequant_plan_source(
                 fam,
@@ -8728,6 +8731,7 @@ class DiffusionBackend:
                         text_encoder_quant = text_encoder_quant_requested,
                         text_encoder_quant_explicit = bool(text_encoder_quant_requested),
                         load_token = _load_token,
+                        loras = loras,
                     )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
@@ -11982,8 +11986,10 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str],
         load_token: Optional[int],
         text_encoder_quant_explicit: bool = False,
+        loras: Any = None,
     ) -> dict[str, Any]:
-        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted)."""
+        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted).
+        LoRAs named in the load are merged into the DiT weights before quantization (``diffusion_minimax_h3_image``)."""
         from .diffusion_minimax_h3_image import (
             PLACE_RESIDENT,
             PLACE_SEQUENTIAL,
@@ -11993,8 +11999,16 @@ class DiffusionBackend:
 
         # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
         te_scheme = h3_image_te_scheme(text_encoder_quant)
+        baked: tuple = ()
+        if _has_active_lora(loras):
+            baked = self._resolve_lora_set(
+                [(i, w) for (i, w) in loras if w != 0],
+                family = getattr(fam, "name", None),
+                hf_token = hf_token,
+            )
         pipe = load_minimax_h3_image_pipeline(
             fetch_base,
+            loras = [(path, weight) for _name, path, weight in baked],
             dtype = target.dtype,
             device = target.device,
             transformer_quant = transformer_quant,
@@ -12004,6 +12018,13 @@ class DiffusionBackend:
             local_files_only = local_files_only,
             check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
         )
+        if baked:
+            pipe._unsloth_loras = baked
+            pipe._unsloth_loras_baked = True
+            logger.info(
+                "diffusion.lora_bake: %d adapter(s) merged into the MiniMax-H3-Image DiT",
+                len(baked),
+            )
         report = pipe._unsloth_h3_report
         plan = report.plan
         prompt_cache.install(
@@ -14304,6 +14325,9 @@ class DiffusionBackend:
         current = getattr(pipe, "_unsloth_loras", ())
         specs = [(i, w) for (i, w) in (loras or []) if w != 0]
 
+        if getattr(getattr(state, "family", None), "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            self._check_h3_image_loras(state, specs, current, cancel)
+            return
         if specs:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
@@ -14396,6 +14420,30 @@ class DiffusionBackend:
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+
+    def _check_h3_image_loras(
+        self, state: Any, specs: list, current: tuple, cancel: threading.Event
+    ) -> None:
+        """MiniMax-H3-Image merges its adapters into the DiT weights at load (before quantization), so a render
+        runs exactly the set the load named; any other selection or weight is a reload, refused here as a 400."""
+        if not specs and not current:
+            return
+        desired = (
+            self._resolve_lora_set(
+                specs,
+                family = getattr(state.family, "name", None),
+                hf_token = state.hf_token,
+                cancel = cancel,
+            )
+            if specs
+            else ()
+        )
+        if tuple(desired) == tuple(current):
+            return
+        raise ValueError(
+            "MiniMax-H3-Image merges LoRA adapters into its weights when the model loads, so the LoRA selection "
+            "and weights are fixed for this load. Load the model again with the new LoRA selection."
+        )
 
     def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
         """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused."""

@@ -850,6 +850,8 @@ function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
+// Merges LoRA adapters into its weights at load, so a selection change is always a reload.
+const H3_IMAGE_FAMILY = "minimax-h3-image";
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -2434,7 +2436,8 @@ export function ImagesPage({
     if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
     checkedBuildForBake.current = residentBuildKey;
     const engaged = status?.resolved?.transformer_quant?.value;
-    if (engaged !== "int8" && engaged !== "fp8") return;
+    // MiniMax-H3-Image merges adapters into its weights at load at every precision.
+    if (engaged !== "int8" && engaged !== "fp8" && status?.family !== H3_IMAGE_FAMILY) return;
     if (bakedLorasOnLoad.current || loras.length === 0) return;
     setLoras([]);
     toast.info("LoRA selection cleared", {

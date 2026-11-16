@@ -706,6 +706,12 @@ def lora_unavailable_reason(
     if engine == "sd_cpp":
         if any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS):
             return None
+        if fam == "minimax-h3-image":
+            # sd-cli has no key mapping for this DiT's adapters; the diffusers engine merges them at load.
+            return (
+                f"The native sd.cpp engine cannot apply LoRAs to {name}. LoRAs need the diffusers engine: load "
+                "MiniMaxAI/MiniMax-H3-Image (not a GGUF) with the LoRA selected."
+            )
         return f"The native sd.cpp engine cannot apply LoRAs to {name}."
     if not diffusers_lora_family_supported(fam):
         return f"LoRAs are not supported for {name} yet: its pipeline has no LoRA loader."
