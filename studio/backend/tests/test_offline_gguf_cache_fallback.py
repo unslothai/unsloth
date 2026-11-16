@@ -218,6 +218,45 @@ class TestGgufVariantFileResolution:
 
         assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
 
+    @pytest.mark.parametrize(
+        "variant, sibling",
+        [
+            ("Q6_K", "Qwen3-8B-UD-Q6_K_XL.gguf"),
+            ("Q6_K", "Qwen_Qwen3-8B-Q6_K_L.gguf"),
+            ("Q2_K", "Qwen3-8B-Q2_K_L.gguf"),
+            ("Q2_K", "Qwen3-8B-UD-Q2_K_XL.gguf"),
+            ("Q4_K_M", "Qwen3-8B-UD-Q4_K_M.gguf"),
+        ],
+    )
+    def test_bare_quant_does_not_match_longer_sibling_quant(self, variant, sibling):
+        assert _gguf_files_for_variant([sibling], variant) == []
+        assert _gguf_files_for_variant([sibling, f"Qwen3-8B-{variant}.gguf"], variant) == [
+            f"Qwen3-8B-{variant}.gguf"
+        ]
+
+    def test_non_quant_variant_keeps_loose_match(self):
+        files = [
+            "Llama-3.2-1B-Instruct-Q4_K_M-00001-of-00002.gguf",
+            "Llama-3.2-1B-Instruct-Q4_K_M-00002-of-00002.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "00002-of-00002") == [files[1]]
+        assert _gguf_files_for_variant(["Llama-IQ4_XS-3.57bpw.gguf"], "IQ4_XS") == [
+            "Llama-IQ4_XS-3.57bpw.gguf"
+        ]
+
+    def test_cached_sibling_quant_is_not_reused_for_bare_quant(self, monkeypatch, hf_cache):
+        from core.inference.llama_cpp import cached_gguf_for_load
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        repo = "unsloth/Qwen3-0.6B-GGUF"
+        snap = _build_cache(hf_cache, repo, {"Qwen3-0.6B-UD-Q6_K_XL.gguf": 4})
+
+        assert cached_gguf_for_load(repo, "Q6_K") is None
+        assert cached_gguf_for_load(repo, "UD-Q6_K_XL") == str(
+            snap / "Qwen3-0.6B-UD-Q6_K_XL.gguf"
+        )
+
     def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
         from utils.models.model_config import list_gguf_variants
 
