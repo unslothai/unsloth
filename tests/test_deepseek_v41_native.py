@@ -1458,6 +1458,8 @@ def test_opt_in_fast_lora_matches_peft_on_the_plain_projections(monkeypatch):
         monkeypatch.setattr(
             dsv41, "_fast_lora_parameters", fast_lora.get_lora_parameters, raising = False
         )
+        for name in ("_has_multiple_active_adapters", "_has_activation_fake_quantizer"):
+            monkeypatch.setattr(dsv41, name, getattr(fast_lora, name), raising = False)
         model = get_peft_model(
             _tiny_model(),
             LoraConfig(
@@ -1485,6 +1487,21 @@ def test_opt_in_fast_lora_matches_peft_on_the_plain_projections(monkeypatch):
     for name in g0:
         torch.testing.assert_close(g1[name], g0[name], rtol = 1e-5, atol = 1e-6, msg = name)
     assert run(True, dropout = 0.1)[2] == 0  # a dropout module: PEFT's forward
+
+    # Two active adapters: PEFT's forward sums both instead of LoRA_W raising.
+    run(True)
+    model = get_peft_model(
+        _tiny_model(),
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False),
+    )
+    model.add_adapter(
+        "second", LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False)
+    )
+    model.base_model.set_adapter(["default", "second"])
+    dsv41.DSV41_STATS["fast_lora"] = 0
+    ids = torch.randint(0, 512, (2, 12), generator = torch.Generator().manual_seed(0))
+    assert torch.isfinite(model(input_ids = ids, labels = ids).loss)
+    assert dsv41.DSV41_STATS["fast_lora"] == 0
 
 
 def test_generation_projects_only_the_last_position():

@@ -135,6 +135,10 @@ if _FAST_LORA:
         from unsloth.kernels.fast_lora import _apply as _fast_lora_apply
         from unsloth.kernels.fast_lora import _lora_dropout_and_bias as _fast_lora_extras
         from unsloth.kernels.fast_lora import get_lora_parameters as _fast_lora_parameters
+        from unsloth.kernels.fast_lora import (
+            _has_activation_fake_quantizer,
+            _has_multiple_active_adapters,
+        )
     except Exception:
         _LoRA_W = None
 
@@ -146,6 +150,9 @@ def lora_linear(proj, x):
     express), the compressor (zoo's pooled-LoRA patch reads the weights itself), nor the routed experts (3-D
     grouped weights)."""
     if not _FAST_LORA or _LoRA_W is None or not hasattr(proj, "lora_A"):
+        return proj(x)
+    # Several active adapters or QAT activation / forward-only fake quantization: PEFT's forward handles them.
+    if _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj):
         return proj(x)
     extras = _fast_lora_extras((proj,), x)
     if extras is None or extras[0] is not None or extras[1][0] is not None:
