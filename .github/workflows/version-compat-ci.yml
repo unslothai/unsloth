@@ -340,6 +340,7 @@ jobs:
             tests/version_compat/test_orpo_cpo_long_rows.py \
             tests/version_compat/test_grpo_vllm_top_k_from_fast_inference.py \
             tests/version_compat/test_trl_experimental_trainers_patched.py \
+            tests/version_compat/test_sft_assistant_only_loss_vision_routing.py \
             -v --tb=short
       # TRL main is schedule/dispatch only so a bleeding-edge break does not red every PR.
       - name: Fake-run vs TRL main (scheduled / dispatch only)
@@ -368,6 +369,7 @@ jobs:
             tests/version_compat/test_orpo_cpo_long_rows.py \
             tests/version_compat/test_grpo_vllm_top_k_from_fast_inference.py \
             tests/version_compat/test_trl_experimental_trainers_patched.py \
+            tests/version_compat/test_sft_assistant_only_loss_vision_routing.py \
             -v --tb=short
 
       - name: Save the pip cache

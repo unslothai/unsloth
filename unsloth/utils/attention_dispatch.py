@@ -1762,6 +1762,13 @@ def _run_attention(
         V.dtype,
     ):
         Q, K, V = _downcast_fp32_qkv(Q, K, V)
+    # Ring on half-precision inputs (also fp32 downcast above): flash / cuDNN only, never the ringed efficient kernel.
+    ring_kernels = contextlib.nullcontext()
+    if ring and Q.dtype in (torch.float16, torch.bfloat16):
+        from ..context_parallel import _ring_sdpa_backends
+        backends = _ring_sdpa_backends()
+        if backends is not None:
+            ring_kernels = _sdpa_kernel(backends)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
@@ -2014,7 +2021,8 @@ def _run_attention(
 
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
-            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(Q, K, V, **kwargs)
+            with ring_kernels:
+                out = (_rerouted_sdpa if xformers_rerouted else sdpa)(Q, K, V, **kwargs)
             out = out.transpose(1, 2)
             return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
@@ -2030,12 +2038,13 @@ def _run_attention(
             K_mod = K_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V_mod = V_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
 
-        out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
-            Q.contiguous(),
-            K_mod.contiguous(),
-            V_mod.contiguous(),
-            **kwargs,
-        )
+        with ring_kernels:
+            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
+                Q.contiguous(),
+                K_mod.contiguous(),
+                V_mod.contiguous(),
+                **kwargs,
+            )
         out = out.transpose(1, 2).contiguous()
         return out if cp_out_dtype is None else out.to(cp_out_dtype)
 

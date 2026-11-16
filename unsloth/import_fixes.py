@@ -2517,6 +2517,24 @@ def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
         masking_utils.create_block_mask = builder
 
 
+def _keyword_arguments(signature, args, kwargs):
+    """`args` + `kwargs` as keywords alone, or None when they do not bind (or need *args)."""
+    try:
+        bound = signature.bind(*args, **kwargs)
+    except TypeError:
+        return None
+    keywords = {}
+    for name, value in bound.arguments.items():
+        kind = signature.parameters[name].kind
+        if kind is inspect.Parameter.VAR_KEYWORD:
+            keywords.update(value)
+        elif kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_ONLY):
+            return None
+        else:
+            keywords[name] = value
+    return keywords
+
+
 def fix_transformers_flex_mask_graph_breaks():
     """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
     of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
@@ -2554,38 +2572,24 @@ def fix_transformers_flex_mask_graph_breaks():
         if not _flex_mask_reads_padding_values(masking_utils, current):
             return
         original = current
-        try:
-            signature = inspect.signature(original)
-        except (TypeError, ValueError):
-            signature = None
-        var_keyword = next(
-            (
-                name
-                for name, p in (signature.parameters.items() if signature is not None else ())
-                if p.kind is inspect.Parameter.VAR_KEYWORD
-            ),
-            None,
-        )
+        signature = inspect.signature(original)
 
         @functools.wraps(original)
         def flex_attention_mask(*args, **kwargs):
-            if not _is_dynamo_compiling():
-                return original(*args, **kwargs)
-            # A wrapper installed over this one (unsloth-zoo's padding keeper) re-binds and passes the
-            # mask arguments positionally, so read them by name from the signature, not from kwargs.
             if args:
-                if signature is None:
+                # A wrapper above may forward by position (unsloth_zoo's binds and passes bound.args).
+                keywords = _keyword_arguments(signature, args, kwargs)
+                if keywords is None:
                     return original(*args, **kwargs)
-                try:
-                    bound = signature.bind(*args, **kwargs)
-                except TypeError:
-                    return original(*args, **kwargs)
-                arguments = dict(bound.arguments)
-                kwargs = dict(arguments.pop(var_keyword, None) or {}) if var_keyword else {}
-                kwargs.update(arguments)
+                args, kwargs = (), keywords
             attention_mask = kwargs.get("attention_mask")
-            if attention_mask is None or "kv_length" not in kwargs:
-                return original(**kwargs)
+            if (
+                args
+                or attention_mask is None
+                or "kv_length" not in kwargs
+                or not _is_dynamo_compiling()
+            ):
+                return original(*args, **kwargs)
             padding_mask = masking_utils.prepare_padding_mask(
                 attention_mask, kwargs["kv_length"], kwargs.get("kv_offset", 0)
             )
@@ -8530,6 +8534,155 @@ def fix_rocm_windows_fused_sdpa():
         f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
         "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
+
+
+# Shared with Studio's studio/backend/core/_rocm_windows_sdpa.py: whichever installs first wins.
+_ROCM_WINDOWS_WIDE_HEAD_FLAG = "_unsloth_windows_rocm_wide_head_guard"
+ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM = 256
+# Device types the guard pins; ROCm GPUs are "cuda" in torch. Tests add "cpu" to compile on CPU.
+_ROCM_WINDOWS_WIDE_HEAD_DEVICE_TYPES = ("cuda",)
+
+
+def _is_windows_rocm_torch():
+    """Windows host whose torch is a ROCm build (torch.version.hip, or only a +rocm version tag)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import torch
+    except Exception:
+        return False
+    if getattr(getattr(torch, "version", None), "hip", None):
+        return True
+    return "rocm" in str(getattr(torch, "__version__", "")).lower()
+
+
+def _sdpa_has_flag(fn, flag):
+    """``flag`` on ``fn`` or anything it wraps (later SDPA wrappers keep ``__wrapped__``)."""
+    for _ in range(32):
+        if fn is None:
+            return False
+        if getattr(fn, flag, False):
+            return True
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
+def _sdpa_head_too_wide(query, value):
+    """Shape and device reads only: a compiled graph specializes on them, no graph break."""
+    import torch
+    return (
+        isinstance(query, torch.Tensor)
+        and query.device.type in _ROCM_WINDOWS_WIDE_HEAD_DEVICE_TYPES
+        and max(
+            query.shape[-1], value.shape[-1] if isinstance(value, torch.Tensor) else 0
+        ) > ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM
+    )  # fmt: skip
+
+
+_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+
+
+# Backend flags are process-wide: the first wide-head call in flight saves them and pins math, the last restores them,
+# so an overlapping call (another thread) never sees the fused kernels back early nor saves the math-only state.
+_ROCM_WINDOWS_WIDE_HEAD_HELD = [0, None]  # calls in flight, the backends saved by the first
+_ROCM_WINDOWS_WIDE_HEAD_LOCK = threading.Lock()
+
+
+def _rocm_windows_math_on():
+    from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
+    with _ROCM_WINDOWS_WIDE_HEAD_LOCK:
+        if _ROCM_WINDOWS_WIDE_HEAD_HELD[0] == 0:
+            _ROCM_WINDOWS_WIDE_HEAD_HELD[1] = _cur_sdpa_kernel_backends()
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
+        _ROCM_WINDOWS_WIDE_HEAD_HELD[0] += 1
+
+
+def _rocm_windows_math_off():
+    from torch.nn.attention import _sdpa_kernel
+    with _ROCM_WINDOWS_WIDE_HEAD_LOCK:
+        _ROCM_WINDOWS_WIDE_HEAD_HELD[0] -= 1
+        if _ROCM_WINDOWS_WIDE_HEAD_HELD[0] == 0:
+            _sdpa_kernel(_ROCM_WINDOWS_WIDE_HEAD_HELD[1])
+            _ROCM_WINDOWS_WIDE_HEAD_HELD[1] = None
+
+
+def _sdpa_math_only(token, query, key, value, *args, **kwargs):
+    """allow_in_graph so the restore uses run-time backends; inlined it would restore trace-time ones."""
+    _rocm_windows_math_on()
+    try:
+        return _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _rocm_windows_math_off()
+
+
+def rocm_windows_wide_head_sdpa(sdpa):
+    """``sdpa`` with heads wider than 256 pinned to math; already guarded -> ``sdpa`` itself."""
+    if _sdpa_has_flag(sdpa, _ROCM_WINDOWS_WIDE_HEAD_FLAG):
+        return sdpa
+    import torch
+    import torch._dynamo
+    from torch.overrides import handle_torch_function, has_torch_function
+
+    torch._dynamo.allow_in_graph(_sdpa_math_only)
+    token = (
+        f"sdpa_{len(_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    )
+    _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token] = sdpa
+
+    @functools.wraps(sdpa)
+    def scaled_dot_product_attention(query, key, value, *args, **kwargs):
+        # Modes see func = this wrapper (is F.sdpa), so F-based matchers still match; tensor subclasses
+        # go to torch's builtin below, as nested jagged tensors only match that.
+        if (
+            not torch.compiler.is_compiling()
+            and torch._C._is_torch_function_mode_enabled()
+            and has_torch_function((query, key, value))
+        ):
+            return handle_torch_function(
+                scaled_dot_product_attention,
+                (query, key, value),
+                query,
+                key,
+                value,
+                *args,
+                **kwargs,
+            )
+        if _sdpa_head_too_wide(query, value):
+            return _sdpa_math_only(token, query, key, value, *args, **kwargs)
+        return sdpa(query, key, value, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = sdpa
+    setattr(scaled_dot_product_attention, _ROCM_WINDOWS_WIDE_HEAD_FLAG, True)
+    return scaled_dot_product_attention
+
+
+def fix_rocm_windows_wide_head_sdpa():
+    """Windows ROCm: run SDPA with a head wider than 256 on the math backend.
+
+    torch 2.11.0+rocm7.14.0 on gfx1151 runs head dim 512 through flash/efficient kernels and gets it
+    wrong; Linux ROCm refuses them. Not probe-gated: corruption depends on seq len, mask and GQA, so
+    one probe shape can pass. UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA=1 opts out. True if installed.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA", "0") == "1":
+        return False
+    if not _is_windows_rocm_torch():
+        return False
+    try:
+        import torch.nn.functional as F
+        current = F.scaled_dot_product_attention
+        guarded = rocm_windows_wide_head_sdpa(current)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm wide-head SDPA fix ({e})")
+        return False
+    if guarded is current:
+        return True
+    F.scaled_dot_product_attention = guarded
+    logger.info(
+        "Unsloth: Windows ROCm: attention heads wider than "
+        f"{ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM} run on the SDPA math backend"
+    )
+    return True
 
 
 def patch_openspiel_env_async():
