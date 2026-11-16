@@ -6285,8 +6285,7 @@ _MICRO_MEAN_LOSS_CHECKED = {}
 
 
 def _warn_micro_mean_loss(trainer, batch_samples):
-    # A head that returns its own CrossEntropyLoss mean cannot take num_items_in_batch, so Trainer averages the
-    # micro-batch means: every micro-batch weighs the same whatever its token count. Say so once per model class.
+    # A head returning its own mean ignores num_items_in_batch, so GA averages micro-batch means: warn once per class.
     model = getattr(trainer, "model", None)
     if (
         model is None
