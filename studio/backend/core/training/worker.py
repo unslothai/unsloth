@@ -2785,7 +2785,9 @@ def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
     return Path(str(resolve_dataset_path(str(dataset_file))))
 
 
-def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
+def _resolve_mlx_local_dataset_files(
+    file_paths: list, splits: tuple[str, ...] = ("train",)
+) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import dataset_files_in_dir
 
@@ -2794,7 +2796,7 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
-            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             continue
 
         all_files.append(str(file_path_obj))
@@ -3274,14 +3276,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
     config["_dataset_loaded_from_exact_snapshot"] = False
 
-    def _load_local(file_paths):
+    def _load_local(file_paths, splits = ("train",)):
         from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
             saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
             if saved is not None:
                 return saved
-        all_files = _resolve_mlx_local_dataset_files(file_paths)
+        all_files = _resolve_mlx_local_dataset_files(file_paths, splits)
         if not all_files:
             raise ValueError("No local dataset files found")
         from utils.datasets.cells import csv_as_text_kwargs
@@ -3330,7 +3332,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     eval_enabled = evaluation_enabled(config.get("eval_steps"))
     if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
-        eval_dataset = _load_local(config["local_eval_datasets"])
+        from utils.paths import EVAL_SPLITS
+        eval_dataset = _load_local(config["local_eval_datasets"], EVAL_SPLITS)
 
     if _is_stop_requested():
         _send("complete", output_dir = None, status_message = "Training cancelled")
