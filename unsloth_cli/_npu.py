@@ -80,6 +80,7 @@ def npu_display_name(model: dict) -> str:
 def fetch_npu_models(request: Callable[..., object]) -> tuple[dict, list[dict]]:
     """(status, catalog) from the Studio behind request; NpuCliError when the NPU can't list."""
     import http.client
+
     try:
         status = _read_json(_call(request, "GET", "/api/npu/status", 60))
         problem = npu_status_problem(status)

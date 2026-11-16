@@ -295,7 +295,13 @@ _CATALOG = [
 ]
 
 
-def _list(monkeypatch, *, server = "http://127.0.0.1:8888", studio = None, local = None):
+def _list(
+    monkeypatch,
+    *,
+    server = "http://127.0.0.1:8888",
+    studio = None,
+    local = None,
+):
     import unsloth_cli._inference as inference
     from unsloth_cli import app
     from unsloth_cli.commands import npu as npu_cmd
@@ -304,7 +310,13 @@ def _list(monkeypatch, *, server = "http://127.0.0.1:8888", studio = None, local
         def __init__(self, *_args):
             pass
 
-        def _request(self, method, path, payload, timeout = None):
+        def _request(
+            self,
+            method,
+            path,
+            payload,
+            timeout = None,
+        ):
             return studio(method, path, payload, timeout)
 
     def _no_local():
@@ -347,8 +359,14 @@ def test_list_shows_hf_names_download_and_fit_states(monkeypatch):
     lines = result.output.splitlines()
     assert lines[0] == "Memory the NPU can map on this PC: 30.0 GB"
     rows = {line.split()[1]: line for line in lines if "-FLM" in line and "chat" not in line}
-    assert rows["qwen3-0.6b-FLM"].split() == ["Qwen3-0.6B-NPU2", "qwen3-0.6b-FLM", "0.7", "GB",
-                                              "yes", "yes"]
+    assert rows["qwen3-0.6b-FLM"].split() == [
+        "Qwen3-0.6B-NPU2",
+        "qwen3-0.6b-FLM",
+        "0.7",
+        "GB",
+        "yes",
+        "yes",
+    ]
     assert "gpt-oss-120b-NPU2" in rows["gpt-oss-120b-FLM"]
     assert "partly (12%)" in rows["gpt-oss-120b-FLM"]
     assert rows["gpt-oss-120b-FLM"].endswith("no, needs 63.0 GB")
@@ -363,16 +381,27 @@ def test_list_shows_hf_names_download_and_fit_states(monkeypatch):
     [
         ({"supported": False, "hardware": {"present": False}}, "No AMD Ryzen AI NPU was found"),
         (
-            {"supported": False, "hardware": {"present": True, "family": "XDNA2", "enabled": False}},
+            {
+                "supported": False,
+                "hardware": {"present": True, "family": "XDNA2", "enabled": False},
+            },
             "UNSLOTH_STUDIO_ENABLE_NPU=1",
         ),
         (
             {"supported": False, "hardware": {"present": True, "family": "XDNA", "name": "NPU1"}},
             "NPU1 is not supported",
         ),
-        ({"supported": True, "ready": False, "runtime_installed": False}, "FastFlowLM isn't installed"),
         (
-            {"supported": True, "ready": False, "runtime_installed": True, "error": "driver too old"},
+            {"supported": True, "ready": False, "runtime_installed": False},
+            "FastFlowLM isn't installed",
+        ),
+        (
+            {
+                "supported": True,
+                "ready": False,
+                "runtime_installed": True,
+                "error": "driver too old",
+            },
             "installed but not enabled: driver too old",
         ),
     ],
@@ -396,7 +425,9 @@ def test_list_without_studio_reports_a_missing_npu_from_local_status(monkeypatch
 
 def test_list_without_studio_reports_a_missing_runtime(monkeypatch):
     result = _list(
-        monkeypatch, server = None, local = {"supported": True, "ready": False, "runtime_installed": False}
+        monkeypatch,
+        server = None,
+        local = {"supported": True, "ready": False, "runtime_installed": False},
     )
     assert result.exit_code == 1
     assert "FastFlowLM isn't installed" in result.output
