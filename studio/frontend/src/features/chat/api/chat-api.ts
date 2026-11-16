@@ -134,7 +134,7 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "The model ran out of room to answer: thinking used what the context window " +
     "had left after the prompt, before any answer was written. Raising Max " +
     "Tokens cannot create room the window does not have -- increase the " +
-    "Context Length in Model settings, or disable thinking, then retry.",
+    "Context in Model settings, or disable thinking, then retry.",
   // No Studio setting controls a connected model's window.
   context_window:
     "The conversation filled the model's context window before an answer was " +

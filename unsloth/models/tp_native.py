@@ -80,6 +80,10 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
+# A child of an attention region that reads only the block input (identical on every tp rank) and returns
+# something every head uses alike, e.g. Qwen4Exp's QSA indexer (index_qk_proj + norms -> a block mask):
+# kept whole on every rank; trainable parameters (an opted-in adapter) get their gradients summed over tp.
+INPUT_REPLICATED = "replicated_block_input"
 # A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
 # the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
 KV_REPLICATED = "kv_replicated"
@@ -101,6 +105,7 @@ _STYLES = {
 # Outside the decoder regions (embeddings, lm_head, final norm): replicated in v1.
 _REPLICATED_STYLES = {
     "embedding_rowwise",
+    "embedding_colwise",  # transformers 5.22+ (Qwen4Exp PLE n-gram table): replicated like any embedding
     "gather",
     "sequence_parallel",
     "all_reduce",
@@ -120,6 +125,7 @@ _MOE_STYLES = {
 _MLA_STYLES = {"mla_kv_a_proj"}
 
 _ATTN_NAMES = ("self_attn", "attention", "attn", "self_attention")
+_ATTN_INPUT_SIDE = ("indexer",)
 _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
 _FUSED_QKV = ("qkv_proj",)  # [q, k, v] along the output dim (Phi3)
@@ -138,6 +144,16 @@ _HEAD_NORMS = (
     "key_layernorm",
 )
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
+# Multi-head latent attention proper: per-head keys / values expanded from a shared latent (kv_b_proj).
+_MLA_KV_NAMES = ("kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
+# Latent-query MQA (DeepSeek-V4.1): query heads, sinks and whole o_a_proj groups shard; the single key / value
+# head and everything else reads the block input, so it is replicated (gradients summed over tp).
+_LATENT_MQA_REPLICATED = ("q_a_proj", "q_a_norm", "kv_proj", "kv_norm", "compressor", "indexer")
+_LATENT_MQA_COL = ("q_b_proj", "o_a_proj")
+_LATENT_MQA_ROW = ("o_b_proj",)
+_HEAD_PARAMS = (
+    "sinks",
+)  # per-head parameters owned by the attention module itself (shard with the heads)
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
 _GLOBAL_WIDTH_READS = re.compile(
@@ -181,10 +197,19 @@ class _Region:
     kind: str  # "attention" / "mlp"
     projs: list
     norms: list  # per-head norms inside the region: replicated, gradients summed over tp
+    replicated: list = dataclasses.field(
+        default_factory = list
+    )  # INPUT_REPLICATED children, kept whole
     heads: int = 0
     kv_heads: int = 0
     head_dim: int = 0
     kv_replicated: bool = False  # num_key_value_heads < tp: k / v projections replicated
+    head_params: list = dataclasses.field(
+        default_factory = list
+    )  # names of per-head parameters of the region module itself (attention sinks): sharded by heads
+    latent: bool = (
+        False  # latent-query MQA (DeepSeek-V4.1): one replicated key / value head, grouped output
+    )
 
 
 @dataclasses.dataclass
@@ -244,8 +269,8 @@ def _style_for(path, compiled):
 
 
 def _weight(module):
-    base = module._modules.get("base_layer", module)
-    return base._parameters.get("weight", getattr(base, "weight", None)), base
+    base = getattr(module, "_modules", {}).get("base_layer", module)
+    return getattr(base, "_parameters", {}).get("weight", getattr(base, "weight", None)), base
 
 
 def _has_params(module):
@@ -341,6 +366,18 @@ def _is_moe_block(module):
     return False
 
 
+def _is_latent_mqa(module, text = None):
+    """An attention module with a latent query and one key / value head (DeepSeek-V4.1), no MLA key / value
+    expansion: tensor parallel by query heads and output groups."""
+    names = set(module._modules)
+    if not {"q_a_proj", "q_b_proj", "kv_proj"} <= names or names & set(_MLA_KV_NAMES):
+        return False
+    if text is not None and (getattr(text, "kv_lora_rank", None) or 0):
+        return False
+    kv_heads = getattr(text, "num_key_value_heads", 1) if text is not None else 1
+    return kv_heads in (None, 1)
+
+
 def _refuse_mla(model, layers):
     text = _text_config(model)
     if getattr(text, "kv_lora_rank", None):
@@ -348,15 +385,34 @@ def _refuse_mla(model, layers):
             "Unsloth: tensor parallelism v1 does not support multi-head latent attention (MLA, kv_lora_rank "
             f"= {text.kv_lora_rank}). Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
         )
+    latent = [
+        name + "."
+        for name, module in layers.named_modules()
+        if name.rsplit(".", 1)[-1] in _ATTN_NAMES and _is_latent_mqa(module, text)
+    ]
     for name, module in layers.named_modules():
-        if name.rsplit(".", 1)[-1] in _MLA_NAMES:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
-            )
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in _MLA_NAMES:
+            continue
+        if leaf not in _MLA_KV_NAMES and any(name.startswith(prefix) for prefix in latent):
+            continue  # a latent query (or an indexer's query) inside a latent-query MQA attention
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
+        )
 
 
-def _classify(region_path, name, child, kind, compiled):
+def _classify(
+    region_path,
+    name,
+    child,
+    kind,
+    compiled,
+    latent = False,
+):
     """(style, parts kind) for one child of an attention / MLP region, from the plan or its name."""
+    if latent and name in _LATENT_MQA_REPLICATED:
+        # Reads the block input (identical on every tp rank); its output feeds every local head alike.
+        return INPUT_REPLICATED, None
     key, style = _style_for(f"{region_path}.{name}", compiled) if compiled else (None, None)
     if style is not None:
         if style in _MOE_STYLES:
@@ -386,6 +442,10 @@ def _classify(region_path, name, child, kind, compiled):
             return COLWISE, "packed:plan"
         return style, "plan"
     if kind == "attention":
+        if latent and name in _LATENT_MQA_COL:
+            return COLWISE, None
+        if latent and name in _LATENT_MQA_ROW:
+            return ROWWISE, None
         if name in _Q + _K + _V:
             return COLWISE, None
         if name in _FUSED_QKV:
@@ -394,6 +454,8 @@ def _classify(region_path, name, child, kind, compiled):
             return ROWWISE, None
         if name in _HEAD_NORMS:
             return HEAD_NORM, None
+        if name in _ATTN_INPUT_SIDE:
+            return INPUT_REPLICATED, None
     else:
         if name in _MLP_COL:
             return COLWISE, None
@@ -442,6 +504,10 @@ def _attention_sizes(module, projs, text):
     if q is not None and k is not None:
         heads = _logical_shape(*_weight(q.module))[0] // head_dim
         kv_heads = _logical_shape(*_weight(k.module))[0] // head_dim
+        if heads_cfg and heads == 2 * heads_cfg and kv_heads == kv_cfg:
+            # Gated attention (Qwen3-Next / Qwen3.5 / Qwen4Exp): q_proj emits [q, gate] per head, 2 * head_dim
+            # contiguous per head, so a column split on head boundaries keeps both halves on the same rank.
+            heads = heads_cfg
     else:
         heads, kv_heads = heads_cfg, kv_cfg
     return heads, kv_heads, head_dim
@@ -527,8 +593,19 @@ def derive_tp_plan(
 
 
 def _region(path, module, kind, compiled, text, tp):
-    projs, norms = [], []
+    projs, norms, replicated, head_params = [], [], [], []
+    latent = kind == "attention" and _is_latent_mqa(module, text)
     for name, param in module.named_parameters(recurse = False):
+        key, style = _style_for(f"{path}.{name}", compiled) if compiled else (None, None)
+        # By heads only when the plan says so, or for a latent-query MQA's own sinks: another attention's direct
+        # parameter has no known layout and stays refused.
+        per_head = kind == "attention" and (
+            (style is not None and _STYLES.get(style) == COLWISE)
+            or (style is None and latent and name in _HEAD_PARAMS)
+        )
+        if per_head and param.ndim == 1:
+            head_params.append(name)  # sizes checked once the head count is known
+            continue
         raise ValueError(
             f"Unsloth: tensor parallelism cannot shard '{path}': it owns the parameter '{name}' directly "
             "(not inside a projection), which v1 has no rule for."
@@ -536,7 +613,7 @@ def _region(path, module, kind, compiled, text, tp):
     for name, child in module.named_children():
         if not _has_params(child):
             continue
-        style, packing = _classify(path, name, child, kind, compiled)
+        style, packing = _classify(path, name, child, kind, compiled, latent = latent)
         if style is None:
             raise ValueError(
                 f"Unsloth: tensor parallelism has no rule for '{path}.{name}' ({type(child).__name__}); "
@@ -545,6 +622,9 @@ def _region(path, module, kind, compiled, text, tp):
             )
         if style in (HEAD_NORM, ELEMENTWISE):
             norms.append((name, child))
+            continue
+        if style == INPUT_REPLICATED:
+            replicated.append((name, child))
             continue
         weight, _ = _weight(child)
         if weight is None or getattr(weight, "ndim", 0) != 2:
@@ -560,15 +640,33 @@ def _region(path, module, kind, compiled, text, tp):
             f"Unsloth: '{path}' needs column and row sharded projections for tensor parallelism; found "
             f"{[(p.name, p.style) for p in projs]}."
         )
-    region = _Region(path, module, kind, projs, norms)
+    region = _Region(
+        path,
+        module,
+        kind,
+        projs,
+        norms,
+        replicated = replicated,
+        head_params = head_params,
+        latent = latent,
+    )
     if kind == "attention":
         heads, kv_heads, head_dim = _attention_sizes(module, projs, text)
         region.heads, region.kv_heads, region.head_dim = heads, kv_heads, head_dim
         _check_divisible("num_attention_heads", heads, tp, path)
-        if kv_heads < tp:
+        if latent:
+            _check_latent_mqa(region, path, tp)
+        elif kv_heads < tp:
             _replicate_kv_heads(region, path, tp)
         else:
             _check_divisible("num_key_value_heads", kv_heads, tp, path)
+        for name in head_params:
+            numel = module._parameters[name].numel()
+            if numel % heads:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' has {numel} entries, not a multiple of the {heads} heads; tensor "
+                    "parallelism v1 shards a module's own parameters by heads only."
+                )
         for name, norm in norms:
             weight = norm._parameters.get("weight")
             numel = (
@@ -603,6 +701,9 @@ def _region(path, module, kind, compiled, text, tp):
                     f"{q + 2 * kv}; its layout is unknown to tensor parallelism v1."
                 )
             proj.parts = (q, kv, kv)
+        elif proj.parts == "grouped":
+            proj.parts = (out_features,)
+            _weight(proj.module)[1].__dict__["_unsloth_tp_grouped"] = True
         elif proj.parts == "packed":
             if out_features % 2:
                 raise ValueError(f"Unsloth: packed '{path}.{proj.name}' has an odd output size.")
@@ -613,6 +714,31 @@ def _region(path, module, kind, compiled, text, tp):
             what = "intermediate_size" if kind == "mlp" else f"{proj.name} out_features"
             _check_divisible(what, size, tp, path)
     return region
+
+
+def _check_latent_mqa(region, path, tp):
+    """Latent-query MQA: the single key / value head is replicated (already an INPUT_REPLICATED child); the
+    query heads split evenly and the grouped o_a_proj keeps whole groups per rank (rank r: groups r * G / tp ..),
+    which are exactly the groups of its query heads because a group is a run of consecutive heads."""
+    by_name = {p.name: p for p in region.projs}
+    q = by_name.get("q_b_proj")
+    if q is None or _logical_shape(*_weight(q.module))[0] != region.heads * region.head_dim:
+        raise ValueError(
+            f"Unsloth: latent-query attention '{path}' needs q_b_proj with num_attention_heads * head_dim = "
+            f"{region.heads * region.head_dim} outputs."
+        )
+    o_a = by_name.get("o_a_proj")
+    if o_a is not None:
+        groups = getattr(_weight(o_a.module)[1], "n_groups", None)
+        if not isinstance(groups, int) or groups < 1:
+            raise ValueError(f"Unsloth: '{path}.o_a_proj' is not a grouped linear (no n_groups).")
+        _check_divisible("o_groups", groups, tp, path)
+        if region.heads % groups:
+            raise ValueError(
+                f"Unsloth: '{path}': {region.heads} heads do not split into {groups} output groups."
+            )
+        o_a.parts = "grouped"
+    region.kv_replicated = True
 
 
 def _replicate_kv_heads(region, path, tp):
@@ -1427,6 +1553,11 @@ def _lora_dropout(self, adapter, x):
     if state is not None:
         state.bypass += 1
     try:
+        if _weight(self)[1].__dict__.get("_unsloth_tp_grouped"):
+            # A grouped linear's input [..., G / tp, in_g] holds only this rank's groups: its slice of the mask
+            # one process draws for [..., G, in_g].
+            rank, tp = self._unsloth_tp_coord
+            return _apply_mask(x, _full_mask(x.shape, x.dim() - 2, rank, tp, p, x), p)
         if self._unsloth_tp_style in (
             COLWISE,
             KV_REPLICATED,
@@ -1458,9 +1589,21 @@ def _input_name(module):
     return "hidden_states"
 
 
+def _head_param_views(module, install):
+    """Per-head parameters of the region module itself (attention sinks) are DTensors sharded by heads; while
+    the region runs, the forward reads `self.<name>` as this rank's local heads (an instance attribute shadows
+    the Parameter; its gradient flows back into the DTensor shard)."""
+    for name in module.__dict__.get("_unsloth_tp_head_params", ()):
+        module.__dict__.pop(name, None)
+        if install:
+            module.__dict__[name] = _local(module._parameters[name])
+
+
 def _region_pre_hook(module, args, kwargs):
     if module.__dict__.get("_unsloth_tp_gathered"):
+        _head_param_views(module, install = False)
         return None  # tp_replica: whole weights in place, the region runs as on one GPU
+    _head_param_views(module, install = True)
     group = module._unsloth_tp_group
     for name in (module.__dict__.get("_unsloth_tp_input", "hidden_states"), "hidden_states"):
         if isinstance(kwargs.get(name), torch.Tensor):
@@ -1485,6 +1628,7 @@ def _region_finish(module, y):
 
 
 def _region_post_hook(module, args, output):
+    _head_param_views(module, install = False)
     if module.__dict__.get("_unsloth_tp_gathered"):
         return None
     if isinstance(output, torch.Tensor):
@@ -1521,6 +1665,8 @@ def _tp_projection_compute(self, x):
         if bias is not None:
             bias = bias.narrow(0, *rows)
     input_dtype = x.dtype
+    if base.__dict__.get("_unsloth_tp_grouped"):
+        return _tp_grouped_compute(self, base, x, W, bias)
     if _is_params4bit(W):
         import bitsandbytes as bnb
 
@@ -1545,6 +1691,42 @@ def _tp_projection_compute(self, x):
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
+    return out
+
+
+def _tp_grouped_compute(self, base, x, W, bias):
+    """A block-diagonal grouped linear (DeepSeek-V4.1 o_a_proj, input [..., G, in_g]) sharded by whole groups:
+    this rank holds G / tp groups (weight rows) and receives exactly those groups of the input. Unsloth's grouped
+    LoRA keeps lora_A shared by every group (replicated) and lora_B per group (sharded with the weight)."""
+    if _is_params4bit(W):
+        raise RuntimeError(
+            "Unsloth: tensor parallelism does not shard a 4-bit grouped linear; keep o_a_proj in 16-bit "
+            "(llm_int8_skip_modules)."
+        )
+    groups = x.shape[-2]
+    in_g = W.shape[-1]
+    out = torch.einsum("...gi,goi->...go", x, W.view(groups, -1, in_g).to(x.dtype))
+    if bias is not None:
+        out = out + bias.view(groups, -1).to(out.dtype)
+    lora_A = self._modules.get("lora_A")
+    if lora_A is None or getattr(self, "disable_adapters", True) or getattr(self, "merged", False):
+        return out
+    if not getattr(self, "_unsloth_grouped_lora", False):
+        raise RuntimeError(
+            "Unsloth: LoRA on a grouped linear needs Unsloth's grouped LoRA layer "
+            "(unsloth.models.grouped_linear_lora.register_grouped_linear_lora before get_peft_model)."
+        )
+    for adapter in _active_adapter(self) or ():
+        if adapter not in lora_A:
+            continue
+        A = _local(lora_A[adapter].weight)
+        B = _local(self.lora_B[adapter].weight)
+        scaling = self.scaling[adapter]
+        x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
+        x_lora = _lora_dropout(self, adapter, x_lora)
+        low_rank = F.linear(x_lora, A)
+        delta = torch.einsum("...gr,gor->...go", low_rank, B.view(groups, -1, B.shape[-1]))
+        out = out + (delta * scaling).to(out.dtype)
     return out
 
 
@@ -1758,6 +1940,9 @@ def apply_tensor_parallel(
     """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
+    from .fsdp2_save import install_dcp_frozen_table_state_dict
+
+    install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
     config = config or TPConfig()
     if plan is None:
         plan = config.plan
@@ -1833,7 +2018,13 @@ def apply_tensor_parallel(
         )
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
-        for _, norm in region.norms:
+        for name in region.head_params:
+            param = region.module._parameters[name]
+            _set_dtensor(
+                region.module, name, param, tp_mesh, "shard", (param.numel(),), 0, rank, tp
+            )
+        region.module.__dict__["_unsloth_tp_head_params"] = tuple(region.head_params)
+        for _, norm in [*region.norms, *region.replicated]:
             for p in norm.parameters():
                 if p.requires_grad and id(p) not in hooked_norms:
                     hooked_norms.add(id(p))
@@ -2097,7 +2288,7 @@ def check_tp_dp_composition(model, dp_mesh):
         (m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None
     )
     for region in plan.regions if plan is not None else ():
-        for name, norm in region.norms:
+        for name, norm in [*region.norms, *region.replicated]:
             if any(p.requires_grad for p in norm.parameters()):
                 # Their tp sum is a hook on the Parameter, and FSDP2 replaces the Parameter objects.
                 raise ValueError(
@@ -2313,6 +2504,9 @@ def save_tp_adapter(model, save_directory, **kwargs):
             f"mesh has {mesh.size()} of {dist.get_world_size()} ranks (data parallel > 1 is outside v1). "
             "Gather with tp_full_state_dict and write from one rank yourself."
         )
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # the adapter gets frozen_tables.json when the model has frozen tables
     state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)

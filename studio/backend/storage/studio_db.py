@@ -871,7 +871,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             reasoning_effort TEXT,
             allow_model_load INTEGER NOT NULL DEFAULT 0,
             archive_successful INTEGER NOT NULL DEFAULT 0,
-            project_id TEXT
+            project_id TEXT,
+            web_search INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -896,6 +897,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
     if "project_id" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
+    if "web_search" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )

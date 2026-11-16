@@ -1210,7 +1210,11 @@ def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     dtype = get_parameter_dtype(transformer.context_embedder)
-    return transformer.token_refiner(transformer.context_embedder(encoder_hidden_states.to(dtype)))
+    refined = transformer.token_refiner(
+        transformer.context_embedder(encoder_hidden_states.to(dtype))
+    )
+    # A float32-computing path (fp16 cards) hands the block stack its storage dtype.
+    return refined.to(dtype)
 
 
 def _h3_image_forward(
@@ -1233,7 +1237,13 @@ def _h3_image_forward(
     ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
     of ``pdd_proj_out[pdd_step_index]``)."""
     stock = type(self).forward
-    if text_embeds is None and output_indices is None and head is None:
+    # The fp16 contract (float32 conditioning) needs refined_text's dtype hand-off, which the stock forward lacks.
+    if (
+        text_embeds is None
+        and output_indices is None
+        and head is None
+        and not self.__dict__.get(FP16_CONTRACT_ATTR)
+    ):
         return stock(
             self,
             hidden_states = hidden_states,
@@ -2422,16 +2432,22 @@ def qwen3vl_hidden_state(
         kwargs["mm_token_type_ids"] = torch.tensor(
             processor.create_mm_token_type_ids([token_ids]), dtype = torch.long, device = device
         )
-    te_dtype = _module_dtype(text_encoder)
+    from .h3_vision_fp32 import h3_vision_float32, vision_pixel_dtype
+
+    # pixels stay float32 for the float32 vision tower (UNSLOTH_H3_VISION_FP32=0: the conditioner dtype)
+    pixel_dtype = vision_pixel_dtype(_module_dtype(text_encoder))
     for name, value in (vision_inputs or {}).items():
-        kwargs[name] = value.to(device, te_dtype) if name.startswith("pixel_") else value.to(device)
+        kwargs[name] = (
+            value.to(device, pixel_dtype) if name.startswith("pixel_") else value.to(device)
+        )
     # hidden_states[layer] is the output of decoder layer ``layer - 1``: captured by a hook instead of keeping every
     # layer's states (~10 GB with 16 references), and the layers past it are cut for the call.
     language_model = getattr(model, "language_model", None)
     layers = getattr(language_model, "layers", None)
     if layers is None or len(layers) < layer:
         kwargs["output_hidden_states"] = True
-        return model(**kwargs).hidden_states[layer]
+        with h3_vision_float32(model):
+            return model(**kwargs).hidden_states[layer]
     captured: dict = {}
 
     def _capture(_module: Any, _args: Any, output: Any) -> None:
@@ -2440,7 +2456,8 @@ def qwen3vl_hidden_state(
 
     handle = layers[layer - 1].register_forward_hook(_capture)
     try:
-        model(**kwargs)
+        with h3_vision_float32(model):
+            model(**kwargs)
     except _ReadLayerReached:
         pass
     finally:
@@ -2923,7 +2940,13 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
     from .diffusion_quant_pad import is_quantized_linear
 
     if os.environ.get(QUANT_CONDITIONING_ENV, "").strip() == "1":
-        return 0
+        if dtype is not torch.float16:
+            return 0
+        # fp16 cards (sm75): the conditioning stream outgrows float16, and only the dense path computes it in float32
+        logger.warning(
+            "diffusion.minimax_h3_image: %s=1 ignored on a float16 load; the text-conditioning path stays dense",
+            QUANT_CONDITIONING_ENV,
+        )
     dtype = dtype or torch.bfloat16
     count = 0
     for name, module in transformer.named_modules():
@@ -2938,6 +2961,272 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
         module.weight = torch.nn.Parameter(dense.to(dtype), requires_grad = False)
         count += 1
     return count
+
+
+def follow_compute_dtype(transformer: Any, dtype: Any) -> int:
+    """A hosted file stores what it does not quantize as released: float32 (``proj_in``, the timestep embedder, the
+    PDD heads, the curve AdaLN projections) or bfloat16 (every norm, the conditioning biases, the curve AdaLN output).
+    The bfloat16 part is the block stack's precision, so it follows ``dtype`` as ``_cast`` does for the dense release;
+    left at bfloat16 on an fp16 card (sm75) it meets fp16 activations (a dtype error in ``context_embedder``, the
+    blocks promoted to float32 after the first norm). float32 tensors and quantized weights are untouched. Returns the
+    number of tensors cast."""
+    import torch
+
+    count = 0
+    for module in transformer.modules():
+        for key, param in list(module.named_parameters(recurse = False)):
+            if (
+                not param.is_floating_point()
+                or param.dtype in (dtype, torch.float32)
+                or hasattr(param, "__tensor_flatten__")
+            ):
+                continue
+            setattr(module, key, torch.nn.Parameter(param.detach().to(dtype), requires_grad = False))
+            count += 1
+        out = getattr(module, "_unsloth_adaln_out_dtype", None)
+        if out is not None and out not in (dtype, torch.float32):
+            module._unsloth_adaln_out_dtype = dtype
+            count += 1
+    return count
+
+
+def _float32_linear_forward(self: Any, x: Any) -> Any:
+    """The Linear (ConvRot or plain) in float32 from its half storage: the weight is upcast per call, never held."""
+    import torch
+    import torch.nn.functional as F
+
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    x = x.float()
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = torch.float32), group
+        )
+    bias = self.bias
+    out = F.linear(x, self.weight.float(), None if bias is None else bias.float())
+    # q / k / v come out of a norm: bounded, so attention keeps the storage dtype every backend takes
+    return out.to(self.weight.dtype) if getattr(self, "_unsloth_storage_out", False) else out
+
+
+_ATTENTION_INPUTS = (".attn.to_q", ".attn.to_k", ".attn.to_v")
+
+
+FP16_CONTRACT_ATTR = "_unsloth_h3_fp16_contract"
+
+
+def conditioning_computes_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75). The conditioning stream outgrows float16: on a real prompt the Qwen3-VL rows peak near
+    15k and ``context_embedder`` writes values past 65504 into the refiner's residual stream, so the refined text is
+    inf / NaN and the render black. bf16 has the range, float16 does not; the path runs once per render, so it
+    computes in float32 from its float16 storage (each dense Linear upcasts its weight per call, the norms that read
+    the stream hold float32) and ``refined_text`` hands the block stack its float16 copy. Attention itself (q / k / v
+    out of a norm, so bounded) stays float16, which every attention backend takes. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    transformer.__dict__[FP16_CONTRACT_ATTR] = True
+    count = 0
+    for name, module in transformer.named_modules():
+        if not name.startswith(CONDITIONING_PREFIXES):
+            continue
+        if isinstance(module, torch.nn.Linear):
+            if hasattr(module.weight, "__tensor_flatten__"):
+                continue  # still quantized (UNSLOTH_H3_IMAGE_QUANT_CONDITIONING=1): its own kernel's dtype
+            module.forward = types.MethodType(_float32_linear_forward, module)
+            module._unsloth_storage_out = name.endswith(_ATTENTION_INPUTS)
+            count += 1
+            continue
+        if ".attn." in name:
+            continue  # norm_q / norm_k: read the float16 q / k
+        for key, param in list(module.named_parameters(recurse = False)):
+            if param.is_floating_point() and param.dtype is not torch.float32:
+                setattr(
+                    module, key, torch.nn.Parameter(param.detach().float(), requires_grad = False)
+                )
+    return count
+
+
+def _int8_rescaled(self: Any, y: Any) -> Any:
+    """The output scales ``stream_runs_rescaled`` folds into this Linear, in place on a fresh output (float32 when
+    called from the epilogue)."""
+    out_scale = getattr(self, "_unsloth_out_scale", None)
+    if out_scale is not None:
+        y.mul_(out_scale)
+    value_scale = getattr(self, "_unsloth_value_half_scale", None)
+    if value_scale is not None:
+        y[..., : y.shape[-1] // 2] *= value_scale
+    return y
+
+
+def _int8_float32_epilogue_forward(self: Any, x: Any) -> Any:
+    """torchao's dynamic-int8 Int8Tensor linear, op for op, with the rescale kept in float32. torchao casts
+    ``int32 acc * x_scale`` to the activation dtype before the weight scale: that product is the unscaled int8 sum,
+    past 65504 in float16 on the H3 blocks, so attention reads inf. Anything it does not know (static activation
+    scales, a torchao without these helpers, a non-float16 input) runs the class forward."""
+    import torch
+
+    weight = self.weight
+    kwargs = getattr(weight, "act_quant_kwargs", None)
+    quantize = scaled_matmul = None
+    if (
+        x.dtype is torch.float16
+        and kwargs is not None
+        and type(weight).__name__ == "Int8Tensor"
+        and getattr(weight, "act_pre_scale", None) is None
+        and getattr(weight, "act_quant_scale", None) is None
+        and getattr(weight, "act_quant_zero_point", None) is None
+    ):
+        try:
+            from torchao.kernel import int_scaled_matmul as scaled_matmul
+            from torchao.quantization.quantize_.common import (
+                _choose_quant_func_and_quantize_tensor as quantize,
+            )
+        except Exception:  # noqa: BLE001 - torchao without them: its own forward
+            quantize = None
+    if quantize is None:
+        return _int8_rescaled(self, type(self).forward(self, x))
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    q = quantize(x, kwargs)
+    codes = q.qdata.reshape(-1, q.qdata.shape[-1])
+    x_scale = q.scale.reshape(-1, 1).float()
+    y = scaled_matmul(codes, weight.qdata.contiguous().t(), x_scale)
+    zero_point = getattr(q, "zero_point", None)
+    if zero_point is not None:
+        # an asymmetric activation's correction (all zeros for the symmetric int8 the hosted files declare)
+        y = y - (zero_point.reshape(-1, 1).float() * x_scale) * weight.qdata.sum(dim = -1).float()
+    y = y * weight.scale.flatten().float()
+    if self.bias is not None:
+        y = y + self.bias.float()
+    y = _int8_rescaled(self, y)
+    return y.reshape(*x.shape[:-1], y.shape[-1]).to(x.dtype)
+
+
+def int8_blocks_rescale_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75): every int8 block Linear keeps its torchao GEMM but rescales in float32, as Studio's own
+    torchao-free int8 linear does on these cards. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    count = 0
+    for name, module in transformer.named_modules():
+        if (
+            name.startswith("transformer_blocks.")
+            and isinstance(module, torch.nn.Linear)
+            and type(module.weight).__name__ == "Int8Tensor"
+            and "forward" not in module.__dict__
+        ):
+            module.forward = types.MethodType(_int8_float32_epilogue_forward, module)
+            count += 1
+    return count
+
+
+# fp16 cards run the residual stream at 1/4096: a T4 render reaches ~3.3e7 in blocks 39-49, past float16's 65504.
+FP16_STREAM_SCALE = 4096.0
+# and the SwiGLU product at 1/256 (block 39 reaches ~3.6e5).
+FP16_MLP_SCALE = 256.0
+_STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2.inner")
+_MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")
+
+
+def _dense_float32_rescaled_forward(self: Any, x: Any) -> Any:
+    """A plain float16 Linear computed in float32 with ``_int8_rescaled``'s output scales, so a dense (non-int8) DiT
+    gets the same stream and SwiGLU ranges as the int8 epilogue."""
+    import torch.nn.functional as F
+
+    bias = None if self.bias is None else self.bias.float()
+    return _int8_rescaled(self, F.linear(x.float(), self.weight.float(), bias)).to(x.dtype)
+
+
+def _dense_fp16_linear(module: Any) -> bool:
+    import torch
+    weight = getattr(module, "weight", None)
+    return (
+        type(module) is torch.nn.Linear
+        and "forward" not in module.__dict__
+        and type(weight) is torch.nn.Parameter
+        and weight.dtype is torch.float16
+    )
+
+
+def _int8_epilogue(module: Any) -> bool:
+    forward = module.__dict__.get("forward")
+    return getattr(forward, "__func__", None) in (
+        _int8_float32_epilogue_forward,
+        _dense_float32_rescaled_forward,
+    )
+
+
+def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
+    """fp16 runs only (sm75): the stream enters and is written at 1/scale (folded into the writers' float32 epilogue)
+    and every norm reading it is scale invariant (eps / scale^2), so the result is exact up to rounding. Returns the
+    writers rescaled; 0 on a layout it does not know."""
+    inv = 1.0 / float(scale)
+    blocks = list(getattr(transformer, "transformer_blocks", None) or ())
+    norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)
+    norms = [norm_out] + [getattr(b, n, None) for b in blocks for n in ("norm1", "norm2")]
+    if transformer.__dict__.get("_unsloth_stream_scale") or not blocks:
+        return 0
+    if not all(isinstance(getattr(n, "eps", None), float) for n in norms):
+        return 0
+    writers = [
+        m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_STREAM_WRITERS)
+        and not hasattr(m, "inner")
+    ]
+    if len(writers) != 2 * len(blocks):
+        return 0
+
+    def _scaled(module: Any, args: Any, output: Any) -> Any:
+        return output * inv
+
+    mlp_in = {
+        name.split(".ff.")[0]: m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_MLP_INPUTS)
+        and not hasattr(m, "inner")
+    }
+    for module in list(writers) + list(mlp_in.values()):
+        if not _int8_epilogue(module) and _dense_fp16_linear(module):
+            module.forward = types.MethodType(_dense_float32_rescaled_forward, module)
+    for name, module in transformer.named_modules():
+        if module not in writers:
+            continue
+        if not _int8_epilogue(module):
+            module.register_forward_hook(_scaled)
+            continue
+        scale_out = inv
+        value = mlp_in.get(name.split(".ff.")[0]) if ".ff." in name else None
+        if value is not None and _int8_epilogue(value):
+            # the SwiGLU product is linear in its value half: scale it there, undo it in the projection out
+            value._unsloth_value_half_scale = 1.0 / FP16_MLP_SCALE
+            scale_out = inv * FP16_MLP_SCALE
+        module._unsloth_out_scale = scale_out
+    transformer.proj_in.register_forward_hook(_scaled)
+    transformer.token_refiner.register_forward_hook(_scaled)
+    for norm in norms:
+        norm.eps = norm.eps * inv * inv
+    transformer._unsloth_stream_scale = float(scale)
+    return len(writers)
 
 
 def hosted_prequant_available(
@@ -3106,6 +3395,167 @@ def apply_checkpoint_inv_freq(model: Any, checkpoint: Any) -> str:
     return "checkpoint"
 
 
+# Key prefixes a LoRA file may carry before the diffusers module path (diffusers single file, PEFT, kohya-style).
+_LORA_PREFIXES = ("transformer.", "base_model.model.", "diffusion_model.", "model.diffusion_model.")
+_LORA_A_SUFFIXES = (".lora_A.weight", ".lora_A.default.weight", ".lora_down.weight")
+_LORA_B_SUFFIXES = (".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight")
+
+
+def _lora_metadata(path: str) -> dict:
+    """The adapter config a LoRA file carries: diffusers' ``lora_adapter_metadata`` (``transformer.`` keys stripped),
+    else a PEFT ``adapter_config.json`` beside it, else ``{}``."""
+    try:
+        from safetensors import safe_open
+        with safe_open(str(path), framework = "pt", device = "cpu") as f:
+            raw = (f.metadata() or {}).get("lora_adapter_metadata")
+        if raw:
+            meta = json.loads(raw)
+            return {
+                k.split(".", 1)[1] if k.startswith("transformer.") else k: v
+                for k, v in meta.items()
+            }
+    except Exception:  # noqa: BLE001 - unreadable metadata: alpha = r
+        pass
+    sidecar = Path(str(path)).with_name("adapter_config.json")
+    if sidecar.is_file():
+        try:
+            return dict(json.loads(sidecar.read_text(encoding = "utf-8")))
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _pattern_value(patterns: Any, module: str, default: Any) -> Any:
+    import re
+    for key, value in (patterns or {}).items():
+        if module == key or module.endswith("." + key) or re.fullmatch(key, module):
+            return value
+    return default
+
+
+def read_lora_deltas(loras: Sequence[tuple], into: Optional[dict] = None) -> dict:
+    """``{diffusers module path: [(A, B, scale * weight), ...]}`` for ``[(path, weight), ...]`` LoRA files in the
+    diffusers / PEFT layout (``<module>.lora_A.weight`` + ``lora_B``, or ``lora_down`` / ``lora_up`` + ``.alpha``).
+    The scale is ``lora_alpha / r`` from the file's adapter config (``/ sqrt(r)`` under rsLoRA), else ``alpha / r``
+    from an ``.alpha`` key, else 1 (alpha = r, as diffusers reads a file without either)."""
+    from safetensors.torch import load_file
+
+    out = into if into is not None else {}
+    for path, weight in loras:
+        if not float(weight):
+            continue
+        state = load_file(str(path))
+        meta = _lora_metadata(str(path))
+        parts: dict = {}
+        for key, tensor in state.items():
+            name = key
+            for prefix in _LORA_PREFIXES:
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            for slot, suffixes in (
+                ("a", _LORA_A_SUFFIXES),
+                ("b", _LORA_B_SUFFIXES),
+                ("alpha", (".alpha",)),
+            ):
+                hit = next((sfx for sfx in suffixes if name.endswith(sfx)), None)
+                if hit is not None:
+                    parts.setdefault(name[: -len(hit)], {})[slot] = tensor
+                    break
+        if not parts:
+            raise ValueError(f"{Path(str(path)).name} holds no LoRA weights this loader recognises")
+        for module, slots in parts.items():
+            if "a" not in slots or "b" not in slots:
+                raise ValueError(
+                    f"{Path(str(path)).name}: {module} has only one of its LoRA factors"
+                )
+            a, b = slots["a"].float(), slots["b"].float()
+            r = int(a.shape[0])
+            rank = int(_pattern_value(meta.get("rank_pattern"), module, meta.get("r", r)) or r)
+            if "alpha" in slots:
+                alpha = float(slots["alpha"].float().reshape(-1)[0])
+            else:
+                alpha = float(
+                    _pattern_value(meta.get("alpha_pattern"), module, meta.get("lora_alpha", rank))
+                    or rank
+                )
+            scale = alpha / (math.sqrt(rank) if meta.get("use_rslora") else rank)
+            out.setdefault(module, []).append((a, b, scale * float(weight)))
+    return out
+
+
+_NATIVE_LORA_PREFIXES = (
+    "blocks.",
+    "token_refiner.blocks.",
+    "final_layer.",
+    "video_patch_proj",
+    "condition_proj",
+)
+
+
+def native_lora_deltas(deltas: dict, heads: int, head_dim: int) -> dict:
+    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit LoRAs, ostris' training
+    adapter: ``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) moved onto the diffusers modules, as the checkpoint
+    converter moves the weights: a fused per-head-interleaved qkv B is reordered and split into ``to_q`` / ``to_k`` /
+    ``to_v`` sharing A, and fc1's ``[gate; value]`` B rows become ``ff.net.0.proj``'s ``[value; gate]``. Diffusers
+    names pass through unchanged."""
+    import torch
+
+    out: dict = {}
+    for module, terms in deltas.items():
+        if not module.startswith(_NATIVE_LORA_PREFIXES):
+            out.setdefault(module, []).extend(terms)
+            continue
+        if module.endswith(".attn.qkv_proj"):
+            prefix = native_transformer_key(module + ".weight")[: -len("qkv_proj.weight")]
+            for a, b, scale in terms:
+                q, k, v = reorder_interleaved_qkv(b, heads, head_dim).split(heads * head_dim, dim = 0)
+                for leaf, part in (("to_q", q), ("to_k", k), ("to_v", v)):
+                    out.setdefault(prefix + leaf, []).append((a, part.contiguous(), scale))
+            continue
+        name = native_transformer_key(module + ".weight")
+        if name is None:
+            raise ValueError(f"LoRA layer {module} names a weight the image DiT does not have")
+        target = name[: -len(".weight")]
+        if module.endswith(".mlp.fc1"):
+            target = target.replace(".mlp.fc1", ".ff.net.0.proj")
+            terms = [(a, torch.cat(b.chunk(2, dim = 0)[::-1]).contiguous(), sc) for a, b, sc in terms]
+        out.setdefault(target, []).extend(terms)
+    return out
+
+
+def merge_lora_deltas_(
+    state: dict,
+    deltas: dict,
+    *,
+    device: Any = None,
+) -> set:
+    """Add ``scale * B @ A`` (float32, on ``device``) to every ``<module>.weight`` of ``state`` a delta names, cast back
+    to the weight's dtype; returns the merged module paths. Runs on the dense weights before any quantization."""
+    import torch
+
+    merged = set()
+    for key in list(state):
+        if not key.endswith(".weight"):
+            continue
+        module = key[: -len(".weight")]
+        terms = deltas.get(module)
+        if not terms:
+            continue
+        weight = state[key]
+        dev = torch.device(device) if device is not None else weight.device
+        w = weight.to(dev, torch.float32)
+        for a, b, scale in terms:
+            if tuple(b.shape[:1]) + tuple(a.shape[1:]) != tuple(w.shape):
+                raise ValueError(
+                    f"LoRA for {module} is {tuple(b.shape[:1]) + tuple(a.shape[1:])}, the layer is {tuple(w.shape)}"
+                )
+            w.addmm_(b.to(dev, torch.float32), a.to(dev, torch.float32), alpha = float(scale))
+        state[key] = w.to(weight.dtype).to(weight.device)
+        merged.add(module)
+    return merged
+
+
 def load_h3_image_transformer(
     root: Path,
     *,
@@ -3115,14 +3565,22 @@ def load_h3_image_transformer(
     keep_on_device: bool,
     table: bool = True,
     check_cancelled: Optional[Callable[[], None]] = None,
+    lora_deltas: Optional[dict] = None,
 ) -> tuple[Any, dict]:
     """The DiT from the native ``transformer/`` + ``pdd_fused_heads.safetensors`` (or a converted
-    ``transformer_diffusers/``), one block at a time: convert, table the AdaLN, quantize on ``device``, then park on
-    the host unless ``keep_on_device``. Host peak = the finished blocks + one dense block."""
+    ``transformer_diffusers/``), one block at a time: convert, merge any LoRA (``lora_deltas``, from
+    ``read_lora_deltas``) into the dense weights, table the AdaLN, quantize on ``device``, then park on the host unless
+    ``keep_on_device``. Host peak = the finished blocks + one dense block."""
     import torch
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
+    merged_loras: set = set()
+
+    def merge(state: dict) -> None:
+        if lora_deltas:
+            merged_loras.update(merge_lora_deltas_(state, lora_deltas, device = device))
+
     native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
@@ -3134,6 +3592,8 @@ def load_h3_image_transformer(
     else:
         config = {k: v for k, v in raw_config.items() if not k.startswith("_")}
     heads, head_dim = int(config["num_attention_heads"]), int(config["attention_head_dim"])
+    if lora_deltas:
+        lora_deltas = native_lora_deltas(lora_deltas, heads, head_dim)
     grid = table_timesteps() if table else None
     curve = adaln_curve_plan(grid) if grid is not None else None
     model = build_transformer_skeleton(config, table_grid = None)
@@ -3154,6 +3614,7 @@ def load_h3_image_transformer(
             )
             for name, t in pairs:
                 out[name] = _cast(t, name, dtype)
+        merge(out)
         return out
 
     try:
@@ -3182,6 +3643,7 @@ def load_h3_image_transformer(
                 pdd = {k: f.get_tensor(k) for k in f.keys()}
             for name, t in split_pdd_heads(pdd, int(config["num_pdd_heads"])).items():
                 top[name] = t.to(torch.float32)
+        merge(top)
         blocks = model.transformer_blocks
         model.transformer_blocks = torch.nn.ModuleList()
         _assign(model, top, where = "transformer (top level)")
@@ -3226,6 +3688,13 @@ def load_h3_image_transformer(
                 if name != "transformer_blocks":
                     child.to(target if keep_on_device else "cpu")
         stats["bytes_read"] = reader.bytes_read
+        if lora_deltas:
+            missing = sorted(set(lora_deltas) - merged_loras)
+            if missing:
+                raise ValueError(
+                    f"LoRA layers name no Linear of this MiniMax-H3-Image transformer: {missing[:5]}"
+                )
+            stats["lora_merged_layers"] = len(merged_loras)
     finally:
         reader.close()
     return model, stats
@@ -3893,8 +4362,13 @@ def load_minimax_h3_image_pipeline(
     transformer: Any = None,
     plan_width: int = 2048,
     plan_height: int = 2048,
+    loras: Sequence[tuple] = (),
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
+
+    ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
+    placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
+    pre-quantized files are already quantized) and a different selection is a reload.
 
     ``transformer_quant``: None/"auto" (int8, then fp8, then bf16), "int8", "fp8", "bf16". ``text_encoder_quant``:
     "int8" (Studio's hosted ConvRot conditioner) or None (bf16). ``text_encoder`` / ``transformer`` hand in prebuilt
@@ -3962,7 +4436,18 @@ def load_minimax_h3_image_pipeline(
         "; ".join(plan.reasons),
     )
     stats: dict = {"layout": "supplied", "quantized_linears": 0, "bytes_read": 0}
-    if transformer is None and scheme in QUANT_SCHEMES and not os.path.isdir(str(repo_id)):
+    # Any selection (a weight-0 one included) loads the release DiT, so weights 0 and 1 run the same base weights.
+    lora_deltas = read_lora_deltas(list(loras)) if loras else None
+    if loras and transformer is not None:
+        raise ValueError(
+            "MiniMax-H3-Image merges LoRAs while it loads the DiT; a supplied transformer cannot take them"
+        )
+    if (
+        transformer is None
+        and scheme in QUANT_SCHEMES
+        and not os.path.isdir(str(repo_id))
+        and not loras
+    ):
         transformer = load_hosted_prequant_transformer(
             scheme,
             base = repo_id,
@@ -3977,6 +4462,7 @@ def load_minimax_h3_image_pipeline(
             for block in transformer.transformer_blocks:
                 wrap_row_multiple(block, QUANT_LINEAR_SUFFIXES)
             densified = densify_conditioning_path(transformer, dtype)
+            follow_compute_dtype(transformer, dtype)
             logger.info(
                 "diffusion.minimax_h3_image: hosted DiT, text-conditioning path kept dense (%d Linears)",
                 densified,
@@ -3997,8 +4483,13 @@ def load_minimax_h3_image_pipeline(
             keep_on_device = plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT),
             table = table,
             check_cancelled = check,
+            lora_deltas = lora_deltas,
         )
     check()
+    if dtype is torch.float16:
+        conditioning_computes_in_float32(transformer)
+        int8_blocks_rescale_in_float32(transformer)
+        stream_runs_rescaled(transformer)
     install_h3_image_forward(transformer)
     install_pdd_head_bank(transformer)
     vae = load_h3_image_vae(root)
@@ -4162,6 +4653,7 @@ def load_minimax_h3_image_pipeline(
         speed_levers = speed_levers,
     )
     pipe._unsloth_h3_report = report
+    pipe._unsloth_h3_lora_layers = int(stats.get("lora_merged_layers", 0))
     try:
         transformer._unsloth_runtime_quant = scheme
     except Exception:  # noqa: BLE001 - marker only
