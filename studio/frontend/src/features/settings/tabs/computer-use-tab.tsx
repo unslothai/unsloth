@@ -11,6 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -131,9 +132,14 @@ export function ComputerUseTab() {
   return (
     <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 data-settings-label={t("computerUse.settings.title")} className="text-xl font-semibold font-heading">
-          {t("computerUse.settings.title")}
-        </h1>
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 data-settings-label={t("computerUse.settings.title")} className="text-xl font-semibold font-heading">
+            {t("computerUse.settings.title")}
+          </h1>
+          <Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">
+            {t("shell.beta")}
+          </Badge>
+        </div>
         <p data-settings-label={t("computerUse.settings.description")} className="text-xs text-muted-foreground">
           {t("computerUse.settings.description")}
         </p>
