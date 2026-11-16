@@ -565,10 +565,19 @@ def _optimizer_window(trainer):
     return getattr(getattr(trainer, "state", None), "global_step", None)
 
 
+def _in_media_tower(name: str) -> bool:
+    # CP only takes text batches: vision / audio encoders (Gemma 4's towers name theirs self_attn too) never run.
+    return not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+
+
 def _attention_modules(model) -> list:
     if not hasattr(model, "named_modules"):
         return []
-    return [module for name, module in model.named_modules() if name.endswith("self_attn")]
+    return [
+        module
+        for name, module in model.named_modules()
+        if name.endswith("self_attn") and not _in_media_tower(name)
+    ]
 
 
 def _uses_unsloth_attention(model, rl = False) -> bool:
@@ -709,10 +718,14 @@ class ContextParallelManager:
                     wrap_ulysses_mixer_forward(module, get_cp_manager)
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
-            for module in model.modules() if generic else ():
+            for name, module in model.named_modules() if generic else ():
+                if _in_media_tower(name):
+                    continue
                 if _seq_len_rope(module) and not getattr(module, "_unsloth_cp_full_rope", False):
                     _rope_over_full_positions(module)
             for name, module in model.named_modules():
+                if _in_media_tower(name):
+                    continue
                 if (
                     name.endswith("self_attn")
                     and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
@@ -728,7 +741,7 @@ class ContextParallelManager:
                         module, module.config._attn_implementation, get_cp_manager
                     )
         for name, module in list(model.named_modules()):
-            if not name.endswith("self_attn"):
+            if not name.endswith("self_attn") or _in_media_tower(name):
                 continue
             if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
