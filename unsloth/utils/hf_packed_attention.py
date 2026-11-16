@@ -235,9 +235,8 @@ _LH_MODULE = "unsloth.kernels.large_head_attention"
 
 
 def _large_head_takes(query, key, value, dropout, window, kwargs) -> bool:
-    """Head dim 512 without a window (Gemma-4 global layers): the large head kernel, which reads the
-    kv heads in place, takes packed rows as one causal interval per document. Shape and cached
-    verdict reads only, so also safe while tracing."""
+    """Head dim 512, no window (Gemma-4 global): large head kernel, one causal interval per document.
+    Shape and cached reads only, so safe while tracing."""
     lh = sys.modules.get(_LH_MODULE)
     return (
         lh is not None
@@ -597,8 +596,7 @@ def _sdpa_packed_varlen(
     window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
     if window is not _NO_WINDOW:
         if head_dim > 256:
-            # Past every flash kernel (Gemma-4 global layers are 512): the large head kernel, else
-            # the efficient kernel, per segment.
+            # Past every flash kernel: large head kernel, else efficient per segment.
             large_head = _large_head_takes(query, key, value, dropout, window, kwargs)
             efficient = large_head or _efficient_varlen_takes(query, window)
         elif not _sdpa_requested(query, key):
@@ -930,8 +928,7 @@ _BLOCK_PREP = {}
 
 
 def _head_counts(attention, config):
-    """(heads, kv heads) of this layer. Per-layer configs (Gemma-4 unified: one kv head on global
-    layers) raise on the global kv count, which used to drop every packed block to the stock forward."""
+    """(heads, kv heads) per layer: Gemma-4 unified raises on the global kv count."""
     n_heads = getattr(config, "num_attention_heads", None)
     groups = getattr(attention, "num_key_value_groups", None)
     if (

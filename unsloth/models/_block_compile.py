@@ -1493,7 +1493,6 @@ _IN_BLOCK = [0]
 # block is inlined into a user's torch.compile, which may be fullgraph=True. Read by unsloth_zoo.
 _IN_COMPILED_REGION = [False]
 _PACKED_MODULE = "unsloth.utils.hf_packed_attention"
-# prepare_packed_block: FastLanguageModel packed rows with device cu_seqlens (unsloth/utils/packing.py).
 _DISPATCH_MODULE = "unsloth.utils.attention_dispatch"
 _PACKED_BLOCK_KWARG = "_unsloth_packed_varlen"
 _NO_PACKED = [False]
@@ -1912,7 +1911,7 @@ def _wrap(
             or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         )
         if not stock and unsloth_forward and kwargs.get("packed_seq_lengths") is not None:
-            # Host-read packed lengths become device cu_seqlens; without a traceable varlen kernel the row stays stock.
+            # Packed lengths -> device cu_seqlens; no traceable varlen kernel keeps the stock forward.
             prepare = getattr(sys.modules.get(_DISPATCH_MODULE), "prepare_packed_block", None)
             prepared = None if tracing or prepare is None else prepare(self, hidden_states, kwargs)
             if prepared is None:

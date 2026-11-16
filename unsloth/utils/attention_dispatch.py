@@ -1360,7 +1360,6 @@ def is_context_parallel_attention(forward, rl = False) -> bool:
     return isinstance(mark, dict) and (not rl or mark["rl"])
 
 
-# compiled: decoder-block calls prepared for a compiled block; eager: packed calls left to the stock forward.
 PACKED_BLOCK_STATS = {"compiled": 0, "eager": 0}
 _PACKED_BLOCK_PREP = [None]
 
@@ -1417,8 +1416,7 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
         or hidden_states.dtype not in (torch.float16, torch.bfloat16)
         # UNSLOTH_TORCH_VARLEN=0 turns torch's varlen kernels off; the graph would run one anyway.
         or os.environ.get("UNSLOTH_TORCH_VARLEN", "1").lower() in ("0", "false", "no", "off")
-        # Training-time attention dropout: the graph's flash path takes none, and the dense-mask
-        # fallback is quadratic over the whole row; eager keeps its segmented kernels.
+        # Dropout: the graph's flash path takes none and the mask fallback is quadratic.
         or (layer.training and float(getattr(attention, "attention_dropout", 0.0) or 0.0) > 0.0)
     ):
         return False
@@ -1431,8 +1429,7 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
     )
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return False
-    # Whatever eager would pick (flash-attn, xformers or torch varlen), the graph runs torch's bundled
-    # flash varlen: the same FA2 kernel family, exact over the same documents (probed below).
+    # The graph always runs torch's bundled FA2 varlen, exact over the same documents (probed below).
     if head_dim > 256:
         return False
     window = getattr(config, "sliding_window", None)
@@ -1445,10 +1442,8 @@ def _packed_block_kernel(layer, hidden_states) -> bool:
 
 
 def prepare_packed_block(layer, hidden_states, kwargs):
-    """Eager, before _block_compile runs a FastLanguageModel decoder block on a packed row: kwargs
-    whose packed_seq_lengths become device cu_seqlens (pad tail covered) and a tensor of length
-    max_seqlen, both dynamic, so attention reads nothing from the host and one graph serves every
-    layout. None keeps the stock forward."""
+    """Kwargs with packed_seq_lengths as dynamic device cu_seqlens + max_seqlen carrier, so one
+    graph serves every layout; None keeps the stock forward."""
     seq_lengths = kwargs.get("packed_seq_lengths")
     if (
         not isinstance(seq_lengths, Tensor)
@@ -1540,7 +1535,6 @@ def _prepared_packed_attention(config, context, Q, K, V):
             if scale is None:
                 scale = head_dim**-0.5
             return _flash_varlen(Q, K, V, cu_seqlens, max_seqlen, scale, sliding_window)
-    # Exact fallback: SDPA over the row's block-diagonal mask, built on the device.
     mask = _packed_block_mask(cu_seqlens, q_len, sliding_window, context.is_causal, Q.device)
     if K.shape[1] != n_heads:
         K = K.repeat_interleave(n_heads // K.shape[1], dim = 1)
