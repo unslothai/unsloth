@@ -2257,10 +2257,16 @@ def _detect_windows_gfx_arch() -> str | None:
     if _wmi_answered:
         return None
     _registry_names = _windows_amd_gpu_names_from_registry()
-    _registry_tokens = [
-        _arch for _name in _registry_names if (_arch := _gfx_arch_from_gpu_name(_name)) is not None
-    ]
-    _registry_pick = _dedup_pick(_registry_tokens, warn = False)
+    if not _registry_names:
+        return None
+    _registry_tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _registry_names) if _a]
+    # Mask indexes the adapter list, as in the WMI path; borrow another adapter's arch only unpinned.
+    if _visible_devices_pinned():
+        _registry_pick = _gfx_arch_from_gpu_name(
+            _registry_names[_pick_visible_index(len(_registry_names), warn = False)]
+        )
+    else:
+        _registry_pick = _dedup_pick(_registry_tokens, warn = False)
     if _registry_pick:
         _safe_print(f"   gfx arch inferred from GPU registry: {_registry_pick}")
         return _registry_pick

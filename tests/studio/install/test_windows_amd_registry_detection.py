@@ -86,7 +86,14 @@ def _windows_host(
     monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
     monkeypatch.setattr(stack.os.path, "isfile", lambda _path: False)
     monkeypatch.setattr(stack, "_safe_print", lambda *_args, **_kwargs: None)
-    for var in ("UNSLOTH_ROCM_GFX_ARCH", "HIP_PATH", "ROCM_PATH", "HIP_VISIBLE_DEVICES"):
+    for var in (
+        "UNSLOTH_ROCM_GFX_ARCH",
+        "HIP_PATH",
+        "ROCM_PATH",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
         monkeypatch.delenv(var, raising = False)
 
     class _Wmi:
@@ -116,3 +123,14 @@ def test_wmi_named_rx_6700s_gets_its_own_device_pack(monkeypatch):
     gfx = stack._detect_windows_gfx_arch()
     assert gfx == "gfx1032"
     assert stack._windows_multiarch_torch_pkg_specs(gfx)[0].startswith("torch[device-gfx1032]==")
+
+
+def test_a_pinned_unmapped_igpu_is_not_swapped_for_the_dgpu(monkeypatch):
+    igpu = {"MatchingDeviceId": "PCI\\VEN_1002&DEV_1681", "DriverDesc": "AMD Radeon(TM) Graphics"}
+    _windows_host(monkeypatch, {"0000": igpu, "0001": _RX_6700S}, wmi_returncode = 1)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert stack._detect_windows_gfx_arch() is None
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert stack._detect_windows_gfx_arch() == "gfx1032"
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES")
+    assert stack._detect_windows_gfx_arch() == "gfx1032"
