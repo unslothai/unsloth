@@ -36,13 +36,16 @@ function draftOf(value: ChatBackgroundValue): Draft {
   return { x: x / 100, y: y / 100, zoom: value.zoom };
 }
 
-/** The page area the wallpaper paints, so the preview frames what the page will show. */
-function pageAspect(fade: boolean): number {
-  const w = window.innerWidth;
+/**
+ * The page area the wallpaper paints, in CSS px. The preview renders this whole area and scales it
+ * down, so every sizing (Original included) and any window shape frames what the page will show.
+ */
+function pageArea(fade: boolean): { w: number; h: number } {
+  const w = Math.max(1, window.innerWidth);
   const h = fade
     ? Math.min(window.innerHeight * 0.72, 760)
     : window.innerHeight;
-  return Math.min(3, Math.max(1, w / Math.max(1, h)));
+  return { w, h: Math.max(1, h) };
 }
 
 /**
@@ -73,10 +76,11 @@ export function WallpaperAdjustDialog({
   );
   const pinch = useRef<number | null>(null);
   const url = useMemo(() => URL.createObjectURL(value.blob), [value.blob]);
-  const aspect = useMemo(
-    () => (open ? pageAspect(fade) : 16 / 9),
+  const area = useMemo(
+    () => (open ? pageArea(fade) : { w: 1600, h: 900 }),
     [open, fade],
   );
+  const aspect = area.w / area.h;
 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-seed only on open; the stored value changes under an open draft only by Apply.
@@ -103,31 +107,35 @@ export function WallpaperAdjustDialog({
     return () => observer.disconnect();
   }, [preview]);
 
-  // The drawn size before zoom, in preview px: imageBox ignores position for size.
-  const drawn =
-    box && natural
-      ? imageBox(box.w, box.h, natural.w, natural.h, value.sizing, "50% 50%")
-      : null;
+  // Preview px per page px; geometry runs in page px, where Apply's values live.
+  const scale = box ? box.w / area.w : 1;
+  // The drawn size before zoom, in page px: imageBox ignores position for size.
+  const drawn = natural
+    ? imageBox(area.w, area.h, natural.w, natural.h, value.sizing, "50% 50%")
+    : null;
   const zoomTo = (next: number, at?: { x: number; y: number }) => {
     setDraft((d) => {
       const zoom = Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next)));
-      if (!(box && drawn) || zoom === d.zoom) {
+      if (!drawn || zoom === d.zoom) {
         return { ...d, zoom };
       }
-      const point = at ?? { x: box.w / 2, y: box.h / 2 };
+      const point = at
+        ? { x: at.x / scale, y: at.y / scale }
+        : { x: area.w / 2, y: area.h / 2 };
       return {
         zoom,
-        x: zoomPosition(d.x, point.x, box.w, drawn.w, d.zoom / 100, zoom / 100),
-        y: zoomPosition(d.y, point.y, box.h, drawn.h, d.zoom / 100, zoom / 100),
+        x: zoomPosition(d.x, point.x, area.w, drawn.w, d.zoom / 100, zoom / 100),
+        y: zoomPosition(d.y, point.y, area.h, drawn.h, d.zoom / 100, zoom / 100),
       };
     });
   };
+  // dx, dy in preview px.
   const moveBy = (from: Draft, dx: number, dy: number): Draft =>
-    box && drawn
+    drawn
       ? {
           ...from,
-          x: dragPosition(from.x, dx, box.w, drawn.w, from.zoom / 100),
-          y: dragPosition(from.y, dy, box.h, drawn.h, from.zoom / 100),
+          x: dragPosition(from.x, dx / scale, area.w, drawn.w, from.zoom / 100),
+          y: dragPosition(from.y, dy / scale, area.h, drawn.h, from.zoom / 100),
         }
       : from;
   const zoomRef = useRef(zoomTo);
@@ -190,7 +198,7 @@ export function WallpaperAdjustDialog({
     onOpenChange(false);
   };
   const position = `${draft.x * 100}% ${draft.y * 100}%`;
-  const ready = Boolean(natural);
+  const ready = Boolean(natural && box);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -221,6 +229,7 @@ export function WallpaperAdjustDialog({
           style={
             {
               aspectRatio: String(aspect),
+              // 300px tall at most, so a portrait window gives a narrow preview, not a square one.
               width: `min(100%, calc(300px * ${aspect} * var(--ui-space-scale, 1)))`,
             } as CSSProperties
           }
@@ -280,14 +289,24 @@ export function WallpaperAdjustDialog({
             setDraft((d) => moveBy(d, delta[0], delta[1]));
           }}
         >
-          <WallpaperArtwork
-            url={url}
-            sizing={value.sizing}
-            position={position}
-            zoom={draft.zoom}
-            blur={0}
-            bakeable={false}
-          />
+          <div
+            aria-hidden="true"
+            className="absolute top-0 left-0 origin-top-left"
+            style={{
+              width: area.w,
+              height: area.h,
+              transform: `scale(${scale})`,
+            }}
+          >
+            <WallpaperArtwork
+              url={url}
+              sizing={value.sizing}
+              position={position}
+              zoom={draft.zoom}
+              blur={0}
+              bakeable={false}
+            />
+          </div>
           {dragging && (
             <div
               aria-hidden="true"

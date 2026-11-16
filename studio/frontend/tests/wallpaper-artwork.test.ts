@@ -153,7 +153,10 @@ test("adjust: framing lives in a dialog, not the sizing menu or a zoom slider", 
 test("adjust: one-word buttons and no text selection", () => {
   const controls = readSrc("features/chat-background/controls.tsx");
   assert.doesNotMatch(controls, /CropIcon|Cancel01Icon/);
-	assert.match(controls, /\{!value && \(\s*<HugeiconsIcon\s+icon=\{Upload01Icon\}/);
+  assert.match(
+    controls,
+    /\{!value && \(\s*<HugeiconsIcon\s+icon=\{Upload01Icon\}/,
+  );
   const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
   assert.match(
     dialog,
@@ -164,4 +167,19 @@ test("adjust: one-word buttons and no text selection", () => {
     /onMouseDown=\{\(event\) => event\.preventDefault\(\)\}/,
   );
   assert.match(dialog, /touch-none select-none/);
+});
+
+test("adjust previews the whole wallpaper area scaled down, so any sizing and window shape match", () => {
+  const dialog = readSrc("features/chat-background/adjust-dialog.tsx");
+  // No square floor: a portrait window keeps its own aspect.
+  assert.doesNotMatch(dialog, /Math\.max\(1, w \/ Math\.max\(1, h\)\)/);
+  assert.match(dialog, /const aspect = area\.w \/ area\.h;/);
+  // The artwork renders at page size and is scaled, so Original size is not shown at natural px.
+  assert.match(
+    dialog,
+    /width: area\.w,\s*height: area\.h,\s*transform: `scale\(\$\{scale\}\)`/,
+  );
+  // Geometry runs in page px: pointer deltas and zoom anchors divide by the preview scale.
+  assert.match(dialog, /dragPosition\(from\.x, dx \/ scale, area\.w, drawn\.w/);
+  assert.match(dialog, /\{ x: at\.x \/ scale, y: at\.y \/ scale \}/);
 });
