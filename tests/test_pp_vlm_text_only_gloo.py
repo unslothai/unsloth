@@ -113,8 +113,15 @@ def _case_parity(
     model = tiny.build(arch, layers)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))
     config = ppn.PPConfig(text_only = True, keep_replica = keep_replica)
+    import gc
+    import weakref
+
+    before = {n: weakref.ref(m) for n, m in ppn._unwrap(model).named_modules()}
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2, config = config)
     towers = _towers_left(model)
+    gc.collect()
+    stubs = [n for n, m in ppn._unwrap(model).named_modules() if type(m).__name__ == "_PPTowerStub"]
+    towers_alive = [n for n in stubs if n in before and before[n]() is not None]
     tower_params_in_stage = [
         n for n, _ in model.named_parameters() if "tower" in n or ".visual." in n
     ]
@@ -133,6 +140,7 @@ def _case_parity(
         "tower_params_in_stage": tower_params_in_stage,
         "media_error": media_error,
         "kept": len(pp._kept or ()),
+        "towers_alive": towers_alive,
     }
     if rank == 0:
         out["saved_ref"] = load_file(os.path.join(tmp, "ref", "adapter_model.safetensors"))
@@ -288,6 +296,7 @@ def test_pp2_text_only_matches_one_process(arch):
         assert not res["tower_params_in_stage"], res["tower_params_in_stage"][:4]
         assert "not dropped" in res["media_error"], res["media_error"]
         assert res["kept"] == 0
+        assert not res["towers_alive"], res["towers_alive"]  # dropped towers free their memory
     assert results[0]["bounds"][0][0] == 0 and results[1]["bounds"][-1][1] == 4
 
 
@@ -297,6 +306,7 @@ def test_pp2_text_only_keep_replica_keeps_towers_on_the_cpu():
     check_saved(results)
     for res in results:
         assert res["kept"] >= 2  # the towers besides the other stage's modules
+        assert res["towers_alive"]
         keys, want = res["replica_keys"]
         assert keys == want and any("vision_tower" in k for k in keys)
         assert res["replica_diff"] < 1e-4, res[
