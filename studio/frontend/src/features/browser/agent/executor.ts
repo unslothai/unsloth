@@ -545,7 +545,6 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-/** `onAlways`: the prompt offers Always allow and this saves it, for a question no chat keeps. */
 async function pass(gate: Gate, context: Run, remember = true, onAlways?: () => void): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
