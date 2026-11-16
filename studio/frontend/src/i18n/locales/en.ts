@@ -4917,7 +4917,6 @@ export const en = {
       cutOff: "The translation was cut off before it finished.",
       filtered: "The provider's content filter stopped the translation.",
       exportFailed: "Could not export the history.",
-      retry: "Try again",
     },
   },
   scheduledTasks: {

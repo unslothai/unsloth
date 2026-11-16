@@ -5264,7 +5264,6 @@ export const cs = {
       cutOff: "Překlad byl přerušen před dokončením.",
       filtered: "Překlad zastavil filtr obsahu poskytovatele.",
       exportFailed: "Historii se nepodařilo exportovat.",
-      retry: "Zkusit znovu",
     },
   },
   scheduledTasks: {

@@ -4970,7 +4970,6 @@ export const es = {
       cutOff: "La traducción se ha cortado antes de terminar.",
       filtered: "El filtro de contenido del proveedor ha detenido la traducción.",
       exportFailed: "No se ha podido exportar el historial.",
-      retry: "Reintentar",
     },
   },
   scheduledTasks: {

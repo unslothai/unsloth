@@ -327,7 +327,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
 
   restore: (entry) => {
     get().stop();
-    const { prefs } = get();
     if (findTranslateLanguage(entry.target)) get().setTarget(entry.target);
     get().setPrefs({
       from:

@@ -4848,7 +4848,6 @@ export const ja = {
       cutOff: "翻訳が完了前に途中で切れました。",
       filtered: "プロバイダーのコンテンツフィルターにより翻訳が停止されました。",
       exportFailed: "履歴をエクスポートできませんでした。",
-      retry: "再試行",
     },
   },
   scheduledTasks: {

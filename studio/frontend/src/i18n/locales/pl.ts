@@ -5288,7 +5288,6 @@ export const pl = {
       cutOff: "Tłumaczenie zostało przerwane przed ukończeniem.",
       filtered: "Filtr treści dostawcy zatrzymał tłumaczenie.",
       exportFailed: "Nie udało się wyeksportować historii.",
-      retry: "Spróbuj ponownie",
     },
   },
   scheduledTasks: {

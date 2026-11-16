@@ -4897,7 +4897,6 @@ export const ar = {
       cutOff: "انقطعت الترجمة قبل اكتمالها.",
       filtered: "أوقف فلتر المحتوى لدى المزوّد الترجمة.",
       exportFailed: "تعذّر تصدير السجل.",
-      retry: "إعادة المحاولة",
     },
   },
   scheduledTasks: {

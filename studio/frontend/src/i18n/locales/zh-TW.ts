@@ -4971,7 +4971,6 @@ export const zhTW = {
       cutOff: "翻譯在完成前中斷。",
       filtered: "供應商的內容過濾器中止了翻譯。",
       exportFailed: "無法匯出記錄。",
-      retry: "重試",
     },
   },
   scheduledTasks: {

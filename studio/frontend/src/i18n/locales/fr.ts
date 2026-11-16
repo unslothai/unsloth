@@ -4981,7 +4981,6 @@ export const fr = {
       cutOff: "La traduction a été interrompue avant la fin.",
       filtered: "Le filtre de contenu du fournisseur a bloqué la traduction.",
       exportFailed: "Impossible d'exporter l'historique.",
-      retry: "Réessayer",
     },
   },
   scheduledTasks: {

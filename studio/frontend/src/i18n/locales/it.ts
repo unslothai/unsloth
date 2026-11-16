@@ -4966,7 +4966,6 @@ export const it = {
       cutOff: "La traduzione è stata interrotta prima della fine.",
       filtered: "Il filtro dei contenuti del provider ha bloccato la traduzione.",
       exportFailed: "Impossibile esportare la cronologia.",
-      retry: "Riprova",
     },
   },
   scheduledTasks: {

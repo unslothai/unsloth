@@ -4979,7 +4979,6 @@ export const he = {
       cutOff: "התרגום נקטע לפני שהסתיים.",
       filtered: "מסנן התוכן של הספק עצר את התרגום.",
       exportFailed: "לא ניתן לייצא את ההיסטוריה.",
-      retry: "נסה שוב",
     },
   },
   scheduledTasks: {

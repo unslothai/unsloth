@@ -4971,7 +4971,6 @@ export const de = {
       cutOff: "Die Übersetzung wurde vorzeitig abgebrochen.",
       filtered: "Der Inhaltsfilter des Anbieters hat die Übersetzung gestoppt.",
       exportFailed: "Der Verlauf konnte nicht exportiert werden.",
-      retry: "Erneut versuchen",
     },
   },
   scheduledTasks: {

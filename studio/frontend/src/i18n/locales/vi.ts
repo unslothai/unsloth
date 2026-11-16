@@ -5235,7 +5235,6 @@ export const vi = {
       cutOff: "Bản dịch bị cắt trước khi hoàn tất.",
       filtered: "Bộ lọc nội dung của nhà cung cấp đã dừng bản dịch.",
       exportFailed: "Không thể xuất lịch sử.",
-      retry: "Thử lại",
     },
   },
   scheduledTasks: {

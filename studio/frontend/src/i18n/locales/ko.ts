@@ -4888,7 +4888,6 @@ export const ko = {
       cutOff: "번역이 완료되기 전에 중단되었습니다.",
       filtered: "제공자의 콘텐츠 필터가 번역을 중단했습니다.",
       exportFailed: "기록을 내보낼 수 없습니다.",
-      retry: "다시 시도",
     },
   },
   scheduledTasks: {

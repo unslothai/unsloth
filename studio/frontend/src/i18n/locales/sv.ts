@@ -5112,7 +5112,6 @@ export const sv = {
       cutOff: "Översättningen avbröts innan den blev klar.",
       filtered: "Leverantörens innehållsfilter stoppade översättningen.",
       exportFailed: "Det gick inte att exportera historiken.",
-      retry: "Försök igen",
     },
   },
   scheduledTasks: {

@@ -4926,7 +4926,6 @@ export const ptBR = {
       cutOff: "A tradução foi interrompida antes de terminar.",
       filtered: "O filtro de conteúdo do provedor interrompeu a tradução.",
       exportFailed: "Não foi possível exportar o histórico.",
-      retry: "Tentar novamente",
     },
   },
   scheduledTasks: {

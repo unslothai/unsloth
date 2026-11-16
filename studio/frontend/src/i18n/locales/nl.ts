@@ -5287,7 +5287,6 @@ export const nl = {
       cutOff: "De vertaling is afgebroken voordat ze klaar was.",
       filtered: "Het inhoudsfilter van de provider heeft de vertaling gestopt.",
       exportFailed: "De geschiedenis kon niet worden geëxporteerd.",
-      retry: "Opnieuw proberen",
     },
   },
   scheduledTasks: {

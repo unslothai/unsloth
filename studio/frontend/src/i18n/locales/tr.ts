@@ -5237,7 +5237,6 @@ export const tr = {
       cutOff: "Çeviri tamamlanmadan kesildi.",
       filtered: "Sağlayıcının içerik filtresi çeviriyi durdurdu.",
       exportFailed: "Geçmiş dışa aktarılamadı.",
-      retry: "Yeniden dene",
     },
   },
   scheduledTasks: {

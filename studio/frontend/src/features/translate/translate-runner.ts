@@ -260,14 +260,15 @@ export function translateModelName(requestModel: string): string {
 
 type Request = Parameters<typeof streamChatCompletions>[0];
 
-/** The request without its messages. A chat model reuses the title request's provider routing and sampling gates. */
+/** The request, its messages filled in per passage. A chat model reuses the title request's provider routing and sampling gates. */
 async function baseRequest(
   dedicated: DedicatedTranslateModel | null,
   requestModel: string,
-): Promise<Omit<Request, "messages">> {
+): Promise<Request> {
   if (dedicated) {
     return {
       model: requestModel,
+      messages: [],
       stream: true,
       max_tokens: TRANSLATE_MAX_TOKENS,
       ...dedicated.sampling,
@@ -277,10 +278,9 @@ async function baseRequest(
   }
   const base = await buildTitleRequest(requestModel, "", "");
   if (!base) throw new TranslateRunError("unavailable");
-  const { messages: _messages, ...rest } = base;
   // A provider's own minimum can sit above this cap.
   return {
-    ...rest,
+    ...base,
     max_tokens: Math.max(base.max_tokens, TRANSLATE_MAX_TOKENS),
   };
 }

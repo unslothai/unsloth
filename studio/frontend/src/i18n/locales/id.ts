@@ -5240,7 +5240,6 @@ export const id = {
       cutOff: "Terjemahan terpotong sebelum selesai.",
       filtered: "Filter konten penyedia menghentikan terjemahan.",
       exportFailed: "Riwayat tidak dapat diekspor.",
-      retry: "Coba lagi",
     },
   },
   scheduledTasks: {

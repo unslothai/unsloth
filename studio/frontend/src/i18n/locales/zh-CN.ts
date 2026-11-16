@@ -4799,7 +4799,6 @@ export const zhCN = {
       cutOff: "翻译在完成前被截断。",
       filtered: "提供商的内容过滤器中止了翻译。",
       exportFailed: "无法导出历史记录。",
-      retry: "重试",
     },
   },
   scheduledTasks: {
