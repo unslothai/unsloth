@@ -114,6 +114,7 @@ export interface VideoStatus {
   // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
   baked_loras?: string[];
   baked_lora_specs?: LoraSpecInput[];
+  lora_refusal?: string | null;
 }
 
 export interface VideoGenerateProgress {

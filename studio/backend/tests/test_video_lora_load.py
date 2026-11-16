@@ -166,6 +166,7 @@ def test_status_and_gallery_models_report_baked_loras():
 
     assert "baked_loras" in VideoStatusResponse.model_fields
     assert "baked_lora_specs" in VideoStatusResponse.model_fields
+    assert VideoStatusResponse.model_fields["lora_refusal"].default is None
     assert GalleryVideo.model_fields["baked_loras"].default_factory() == []
 
 
@@ -313,5 +314,21 @@ def test_backend_bake_records_the_adapters_for_status(tmp_path):
 
 def test_unloaded_status_reports_no_baked_loras():
     from core.inference.video import VideoBackend
+
     status = VideoBackend().status()
     assert status["baked_loras"] == [] and status["baked_lora_specs"] == []
+    assert status["lora_refusal"] is None
+
+
+def test_download_plan_refuses_a_lora_pick_the_load_would_refuse(monkeypatch):
+    from core.inference import video as video_mod
+
+    moe = types.SimpleNamespace(name = "wan2.2-t2v-a14b", label = "Wan2.2 A14B", is_moe = True)
+    monkeypatch.setattr(video_mod, "_detect_load_family", lambda *a, **k: moe)
+    monkeypatch.setattr(video_mod, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    with pytest.raises(ValueError, match = "two-expert"):
+        video_mod.VideoBackend().download_plan(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            loras = [{"id": "a", "weight": 1}],
+        )

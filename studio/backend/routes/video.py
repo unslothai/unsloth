@@ -256,6 +256,8 @@ async def video_download_plan(
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             allow_device_probe = not training,
+            # A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+            loras = request.loras,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:

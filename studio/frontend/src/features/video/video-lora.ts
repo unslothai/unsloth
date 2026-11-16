@@ -50,9 +50,10 @@ export function videoLoraReloadNeeded(
   return specKey(videoLoraSpecs(selection)) !== specKey(bakedVideoLoraSpecs(status));
 }
 
-/** Only a full diffusers pipeline load has a dense denoiser to bake into; GGUF and single-file picks refuse. */
+/** Only a full diffusers pipeline load has a dense denoiser to bake into; GGUF and single-file picks and
+ * two-expert families refuse (`lora_refusal`). */
 export function videoLoraCapable(status: VideoStatus | null | undefined): boolean {
-  return Boolean(status?.loaded && status.model_kind === "pipeline");
+  return Boolean(status?.loaded && status.model_kind === "pipeline" && !status.lora_refusal);
 }
 
 /** The catalog id of a trained adapter: its file stem, as the LoRA scan keys a local file. */

@@ -93,6 +93,9 @@ test("only a full pipeline load offers LoRAs; an older backend reads as none bak
   assert.equal(videoLoraCapable(status({ model_kind: "gguf" })), false);
   assert.equal(videoLoraCapable(status({ model_kind: "single_file" })), false);
   assert.equal(videoLoraCapable(status({ loaded: false })), false);
+  // A two-expert family refuses LoRAs at load, so the picker stays hidden.
+  assert.equal(videoLoraCapable(status({ lora_refusal: "LoRAs are not supported for the two-expert Wan2.2 A14B yet" })), false);
+  assert.equal(videoLoraCapable(status({ lora_refusal: null })), true);
   assert.deepEqual(bakedVideoLoraSpecs(status({})), []);
   assert.deepEqual(bakedVideoLoraSpecs(status({ loaded: false, baked_lora_specs: [{ id: "a", weight: 1 }] })), []);
 });
@@ -114,6 +117,12 @@ test("the video load and Reapply carry the selection; GGUF and single-file loads
   assert.match(
     load.slice(0, 1500),
     /\.\.\.\(opts\.kind === "pipeline" && videoLoraSpecs\(opts\.loras\) \? \{ loras: videoLoraSpecs\(opts\.loras\) \} : \{\}\),/,
+  );
+  // The hub pick's download plan sees the same selection, so a LoRA load never stages a hosted quantized denoiser.
+  const plan = page.slice(page.indexOf("const plan = await getVideoDownloadPlan({\n          model_path: opts.displayRepoId ?? repoId,"));
+  assert.match(
+    plan.slice(0, 1400),
+    /\.\.\.\(opts\.kind === "pipeline" && videoLoraSpecs\(opts\.loras\) \? \{ loras: videoLoraSpecs\(opts\.loras\) \} : \{\}\),\n        \}\);/,
   );
   const reapply = page.slice(page.indexOf("const handleReapply = useCallback("));
   assert.match(

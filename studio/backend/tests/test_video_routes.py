@@ -2193,3 +2193,28 @@ def test_load_refuses_loras_on_a_gguf_pick(client, monkeypatch, tmp_path):
     assert resp.status_code == 400
     assert "GGUF" in resp.json()["detail"]
     assert backend.last_load_kwargs == {}
+
+
+def test_video_download_plan_forwards_the_lora_selection(client, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "loras": [{"id": "my-ltx", "weight": 1}],
+        },
+    )
+    assert resp.status_code == 200
+    assert [dict(s) if isinstance(s, dict) else s.model_dump() for s in seen["loras"]] == [
+        {"id": "my-ltx", "weight": 1.0}
+    ]

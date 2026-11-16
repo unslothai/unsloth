@@ -3191,6 +3191,8 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
           // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
           allow_oversized_load: advanced.allow_oversized_load,
+          // A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
         });
         // Superseded; report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {

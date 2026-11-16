@@ -8242,6 +8242,11 @@ class VideoStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none",
     )
+    lora_refusal: Optional[str] = Field(
+        None,
+        description = "Why a reload of this model with VideoLoadRequest.loras would be refused (GGUF or "
+        "single-file checkpoint, two-expert family); null when it can bake LoRAs or nothing is loaded",
+    )
     text_encoder_quant: Optional[str] = Field(
         None,
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
