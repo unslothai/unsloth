@@ -235,7 +235,8 @@ class ModelAliasMiddleware:
         ):
             await self.app(scope, receive, send)
             return
-        aliases = model_alias_map()
+        entries = get_model_aliases()
+        aliases = {entry["name"].lower(): entry["model"] for entry in entries}
         if not aliases:
             await self.app(scope, receive, send)
             return
@@ -253,7 +254,7 @@ class ModelAliasMiddleware:
         if rewritten is not None:
             name = json.loads(body)["model"].strip().lower()
             configured = next(
-                (entry for entry in get_model_aliases() if entry["name"].lower() == name), None
+                (entry for entry in entries if entry["name"].lower() == name), None
             )
             if configured and configured.get("load_config"):
                 scope[MODEL_ALIAS_CONFIG_SCOPE_KEY] = {

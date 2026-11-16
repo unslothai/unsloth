@@ -430,3 +430,13 @@ def test_alias_config_compares_requested_launch_intent():
                     replace(intent, speculative_type = "off"), None):
         backend.last_load_intent = changed
         assert not aliases_mod.alias_config_matches(backend, config)
+
+
+def test_configured_alias_uses_one_settings_snapshot(monkeypatch):
+    # An alias edit during body receipt cannot detach configuration from the rewritten target.
+    before = [{"name": "long", "model": "org/before", "load_config": _CONFIG}]
+    snapshots = iter([before, [{"name": "long", "model": "org/after"}]])
+    monkeypatch.setattr(aliases_mod, "get_model_aliases", lambda: next(snapshots))
+    seen = _run_middleware(b'{"model":"long"}')
+    assert json.loads(seen["body"])["model"] == "org/before"
+    assert aliases_mod.request_alias_load_config(seen["scope"], "org/before") == _CONFIG
