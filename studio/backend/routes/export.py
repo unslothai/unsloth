@@ -688,6 +688,13 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
+        if request.npu_q4nx and output_path:
+            from core.inference.npu_local_models import EXPORT_SUBFOLDER, hidden_in_exports
+
+            # The conversion sits in <save>/npu-q4nx; the NPU picker finds it there once the save
+            # folder is registered, which _export_details does only outside exports.
+            if hidden_in_exports(Path(output_path) / EXPORT_SUBFOLDER):
+                await asyncio.to_thread(_try_register_external_export, Path(output_path))
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
