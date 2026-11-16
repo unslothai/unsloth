@@ -157,6 +157,8 @@ function splitLongLine(line: string, limit: number): TranslateChunk[] {
       const space = rest.lastIndexOf(" ", limit);
       cut = space > limit / 2 ? space + 1 : limit;
     }
+    // Never between the two halves of a surrogate pair: each half alone is a broken character.
+    if (cut > 1 && /[\uD800-\uDBFF]/.test(rest[cut - 1])) cut -= 1;
     const piece = rest.slice(0, cut);
     const text = piece.trimEnd();
     pieces.push({ text, after: piece.slice(text.length) });

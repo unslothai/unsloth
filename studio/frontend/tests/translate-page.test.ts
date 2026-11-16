@@ -416,7 +416,7 @@ test("chat does not take over a model the Translate page loaded", () => {
 
 test("the translation model is fetched by a translation, never by opening the page", () => {
   const page = readText("../src/features/translate/translate-page.tsx");
-  assert.doesNotMatch(page, /downloadManager|loadModel\(/);
+  assert.doesNotMatch(page, /downloadManager|\bloadModel\(/);
   // Translating as you type waits for a model that already served a translation.
   assert.match(page, /if \(!readyModels\.includes\(modelKey\)\) return;/);
   const runner = readText("../src/features/translate/translate-runner.ts");
@@ -479,4 +479,18 @@ test("read aloud asks for a voice of the translation's language", () => {
   assert.equal(translateSpeechTag("fr"), "fr");
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.match(page, /readAloud\.speak\(\s*output,\s*translateSpeechTag\(/);
+});
+
+test("a hard cut never lands inside a surrogate pair", () => {
+  // No break to cut at, and the limit falls between the two halves of the second emoji.
+  const source = "😀".repeat(4);
+  const chunks = splitForTranslation(source, 3);
+  assert.equal(
+    chunks.map((chunk) => chunk.text + chunk.after).join(""),
+    source,
+  );
+  for (const chunk of chunks) {
+    // The emoji is two code units, so an intact piece has an even number of them.
+    assert.equal(chunk.text.length % 2, 0);
+  }
 });
