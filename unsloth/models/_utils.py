@@ -5605,8 +5605,12 @@ def refresh_moved_layer_devices(layers, block_swap = None):
     such as {"": 1} to cuda:0) keeps the per-layer device published at load, so decode moved activations
     back to the old card ("cuda:1 and cuda:0"). Checks the first and last layer once per decode step and
     republishes every layer only when a weight sits on another index of the published device type; block
-    swap and offload park weights on CPU or meta by design, so those are left alone."""
-    if block_swap is not None or len(layers) == 0:
+    swap and offload park weights on CPU or meta by design, so those are left alone. A swapper that
+    keeps every weight on the device (native FSDP2's per-block gather during generate,
+    `keeps_weights_on_device`) still gets the repair."""
+    if len(layers) == 0:
+        return
+    if block_swap is not None and not getattr(block_swap, "keeps_weights_on_device", False):
         return
     for layer in (layers[0], layers[-1]):
         published = getattr(layer, "__dict__", {}).get("_per_layer_device")

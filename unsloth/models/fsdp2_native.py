@@ -2319,9 +2319,11 @@ def _generate_streams_blocks(model):
 class _GenerateBlockStream:
     """Stands in as `layers._unsloth_block_swap` during generate: the decode loops call enter(i) /
     leave(i) around block i, which read its weights without calling it, so the block is gathered there
-    and resharded right after. No block lives on the host (`indices` is empty)."""
+    and resharded right after. No block lives on the host (`indices` is empty), so the decode loops
+    still repair stale per-layer devices (refresh_moved_layer_devices) under it."""
 
     indices = ()
+    keeps_weights_on_device = True
 
     def __init__(self, units):
         self.units = units  # {block index: FSDP unit}
