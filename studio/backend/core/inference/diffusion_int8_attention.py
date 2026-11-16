@@ -22,7 +22,8 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
   adds the far-out parts back exactly in a launch after the kernel, so the sink no longer costs every other key its
   resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
-  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did.
+  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
+  with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -730,20 +731,23 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
     plan["kernels"][3].launch(plan["resid_grid"], RESID_THREADS, args, 0, stream)
 
 
-def _choose_path(plan: dict) -> tuple:
-    """(sinks, call index): whether this call of ``plan`` takes the attention-sink path. Every call does until the
-    plan's SINK_DECIDE_AT-th; from then on only the calls of a plan one of whose first SINK_LEARN_CALLS calls had a
-    head that clipped V (an attention sink). The others run the kernels without the sink path, instruction for
-    instruction the ones from before it, with no residual launch: a head without sinks gets the same bits either
-    way, and one that would still clip takes the full range, as before. The same calls in the same order take the
-    same paths. Called on the device of the plan; a CUDA graph capture keeps what the plan has decided."""
+def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
+    """(path, call index) for this call of ``plan``: True the attention-sink path, False the kernels without it, or
+    "native" torch's attention. Every call takes the sink path until the plan's SINK_DECIDE_AT-th; from then on a
+    plan none of whose first SINK_LEARN_CALLS calls had a head that clipped V (an attention sink) runs the kernels
+    without the path, instruction for instruction the ones from before it, with no residual launch (a head without
+    sinks gets the same bits either way; one that would still clip takes the full range, as before). A plan with
+    sinks keeps the path where ``race`` (timed on the deciding call's own inputs) finds it still faster than torch's
+    attention by RACE_MARGIN, and runs torch's attention otherwise (no race: it keeps the path). The races and the
+    early calls aside, the same calls in the same order take the same paths. Called on the device of the plan; a CUDA
+    graph capture keeps what the plan has decided."""
     import torch
 
     forced = getattr(_RACE, "path", None)
     if forced is not None:
         return forced, None
     if torch.cuda.is_current_stream_capturing():
-        return plan["sinks"] is not False, None
+        return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
     plan["calls"] = n + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
@@ -752,8 +756,43 @@ def _choose_path(plan: dict) -> tuple:
             event.synchronize()  # long done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
             seen = seen or bool(host.any())
         plan["checks"] = []
-        plan["sinks"] = seen
-    return plan["sinks"] is not False, n
+        plan["sinks"] = seen if not seen or race is None or race() else "native"
+    return (True if plan["sinks"] is None else plan["sinks"]), n
+
+
+def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int) -> bool:
+    """Whether the attention-sink path beats torch's attention by RACE_MARGIN on this call (timed like the card race,
+    interleaved, median), for a plan whose first calls clipped; the verdict is logged."""
+    import torch
+
+    stream = _raw_stream(index)
+
+    def sinks() -> Any:
+        i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = q.device)
+        out = torch.empty(plan["out_shape"], dtype = v.dtype, device = q.device)
+        _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, True)
+        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, True)
+        return out
+
+    try:
+
+        def torch_attention() -> Any:
+            return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
+
+        ms = _median_ms({"incumbent": torch_attention, "int8": sinks})
+    except torch.OutOfMemoryError:
+        return False
+    won = ms["int8"] < RACE_MARGIN * ms["incumbent"]
+    _log().info(
+        "diffusion.int8_attention: attention sinks in %s keys x %s heads, sink path %.4f ms vs torch %.4f ms: %s",
+        plan["shape"][2],
+        plan["shape"][3],
+        ms["int8"],
+        ms["incumbent"],
+        "kept" if won else "torch's attention from here on",
+    )
+    plan["sink_race"] = {name: round(value, 4) for name, value in ms.items()}
+    return won
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
@@ -772,8 +811,10 @@ def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
 
 
 def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
-    """The quantiser launches of one call on the current device and stream; whether it took the sink path."""
-    sinks, n = _choose_path(plan)
+    """The quantiser launches of one call on the current device and stream (``quantise``: no race, a plan with sinks
+    keeps the path); whether it took the sink path."""
+    path, n = _choose_path(plan)
+    sinks = path is not False
     _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(plan["index"]), sinks)
     if sinks:
         _check_sinks(plan, i8, n)
@@ -820,17 +861,29 @@ def _cuda_attention(
     import torch
 
     plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    if torch.cuda.current_device() == index:
+        return _attention_on_device(plan, q, k, v, scale, index)
+    with torch.cuda.device(index):
+        return _attention_on_device(plan, q, k, v, scale, index)
+
+
+def _attention_on_device(
+    plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int
+) -> Any:
+    """One call of ``plan`` on the current device and stream, on the path it takes (_choose_path)."""
+    import torch
+
+    path, n = _choose_path(plan, race = lambda: _sink_race(plan, q, k, v, scale, index))
+    if path == "native":
+        return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
     dev = q.device
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
     out = torch.empty(plan["out_shape"], dtype = v.dtype, device = dev)
-    base = i8.data_ptr()
-    if torch.cuda.current_device() == index:
-        sinks = _quantise_on_device(plan, q, k, v, i8)
-        _launch_attention(plan, base, out.data_ptr(), _raw_stream(index), sinks)
-    else:
-        with torch.cuda.device(index):
-            sinks = _quantise_on_device(plan, q, k, v, i8)
-            _launch_attention(plan, base, out.data_ptr(), _raw_stream(index), sinks)
+    stream = _raw_stream(index)
+    _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, path)
+    if path:
+        _check_sinks(plan, i8, n)
+    _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, path)
     return out
 
 
@@ -978,12 +1031,20 @@ def int8_attention(
     return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale)
 
 
-def native_attention(q: Any, k: Any, v: Any) -> Any:
+def native_attention(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
     """torch's attention on the same ``[B, S, H, D]`` views."""
     import torch.nn.functional as F
 
     out = F.scaled_dot_product_attention(
-        q.to(v.dtype).permute(0, 2, 1, 3), k.to(v.dtype).permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
+        q.to(v.dtype).permute(0, 2, 1, 3),
+        k.to(v.dtype).permute(0, 2, 1, 3),
+        v.permute(0, 2, 1, 3),
+        scale = scale,
     )
     return out.permute(0, 2, 1, 3)
 
