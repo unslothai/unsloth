@@ -234,8 +234,45 @@ def _default_packing_dataset(dataset, config, formatting_func) -> bool:
     if formatting_func is not None:
         return True
     columns = set(dataset.column_names or ())
+    # Already packed: TRL's packer keeps input_ids only, so the stored documents would merge into one.
+    if columns & {"seq_lengths", "position_ids"}:
+        return False
     field = getattr(config, "dataset_text_field", None) or "text"
     return bool(columns & {"input_ids", field, "messages"}) or {"prompt", "completion"} <= columns
+
+
+_RESPONSES_ONLY_PACKED_ROWS = []
+
+
+def _responses_only_masks_packed_rows() -> bool:
+    """train_on_responses_only runs after the trainer packed its dataset. A masker reading a packed row as one
+    conversation trains the next document's system prompt and, with last_response_only, drops every earlier
+    answer, so default packing waits for one that masks each document (unsloth-zoo #2543)."""
+    if _RESPONSES_ONLY_PACKED_ROWS:
+        return _RESPONSES_ONLY_PACKED_ROWS[0]
+    ok = False
+    try:
+        from unsloth_zoo.dataset_utils import train_on_responses_only
+
+        class _Tokenizer:
+            def __call__(self, text, **kwargs):
+                return SimpleNamespace(input_ids = {"<u>": [1], "<a>": [2]}.get(text, [7]))
+
+        masker = train_on_responses_only(
+            None,
+            "<u>",
+            "<a>",
+            tokenizer = _Tokenizer(),
+            return_function = True,
+            last_response_only = True,
+        )
+        doc = [9, 1, 5, 2, 6]  # system, user, question, assistant, answer
+        labels = masker({"input_ids": [doc + doc], "seq_lengths": [[5, 5]]})["labels"][0]
+        ok = [int(t) for t in labels if int(t) != -100] == [6, 6]
+    except Exception:
+        ok = False
+    _RESPONSES_ONLY_PACKED_ROWS.append(ok)
+    return ok
 
 
 def _pipeline_parallel_env_requested() -> bool:
@@ -2101,7 +2138,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 formatting_func = bound.arguments.get("formatting_func")
             except Exception:
                 formatting_func = kwargs.get("formatting_func")
-            if _default_packing_dataset(train_dataset, config_arg, formatting_func):
+            if (
+                _default_packing_dataset(train_dataset, config_arg, formatting_func)
+                and _responses_only_masks_packed_rows()
+            ):
                 setattr(config_arg, "packing", True)
                 if hasattr(config_arg, "eval_packing") and config_arg.eval_packing is None:
                     setattr(config_arg, "eval_packing", False)
