@@ -37,6 +37,10 @@ stack = _load_stack_module()
         ("AMD Radeon RX 6700 XT", "gfx1031"),
         ("AMD Radeon RX 6800M", "gfx1031"),
         ("AMD Radeon RX 6800 XT", "gfx1030"),
+        ("AMD Radeon RX 6750 GRE 10GB", "gfx1032"),
+        # TheRock: gfx1153 is "AMD Radeon 820M iGPU"; AMD ships a Windows device pack for it.
+        ("AMD Radeon 820M Graphics", "gfx1153"),
+        ("AMD Ryzen AI 5 330 w/ Radeon 820M", "gfx1153"),
     ],
 )
 def test_wmi_name_gets_its_own_device_pack(monkeypatch, wmi_name, expected):

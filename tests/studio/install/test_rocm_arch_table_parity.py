@@ -300,6 +300,19 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 6800S": "gfx1032",
     "AMD Radeon RX 6650 XT": "gfx1032",
     "AMD Radeon RX 6600M": "gfx1032",
+    # One name, two dies: libdrm amdgpu.ids 73DF (Navi 22) vs 73FF (Navi 23).
+    "AMD Radeon RX 6750 GRE 12GB": "gfx1031",
+    "AMD Radeon RX 6750 GRE 10GB": "gfx1032",
+    "AMD Radeon 6550S": "gfx1034",
+    "AMD Radeon Pro V620": "gfx1030",
+    # Navi 33 / 44 / 48 names from libdrm amdgpu.ids (7499, 7590, 7551).
+    "AMD Radeon RX 7400": "gfx1102",
+    "AMD Radeon RX 7300": "gfx1102",
+    "AMD Radeon Pro W7400": "gfx1102",
+    "AMD Radeon RX 9050": "gfx1200",
+    "AMD Radeon AI Pro R9600D": "gfx1201",
+    # amd.com: Zen 5 + RDNA 3.5 with 16 CUs is Strix Point, not Phoenix.
+    "AMD Ryzen Z2 Extreme": "gfx1150",
 }
 
 
@@ -407,6 +420,14 @@ class TestGpuNameArchParity:
             assert (
                 arch == expected_arch
             ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
+
+    @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
+    def test_rdna2_igpus_stay_unmapped(self, gpu_name):
+        """No copy may route these APUs to ROCm torch by name: RDNA 2 iGPU training is unmeasured
+        and gfx1033 computes wrong answers (studio/ROCM_RDNA2_APU.md)."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,
