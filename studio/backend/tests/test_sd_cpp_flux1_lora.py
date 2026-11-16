@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1 LoRAs on sd.cpp: staged split pieces and the sd-server conditioning-cache env.
-
-A Studio-trained FLUX.1 adapter (diffusers / PEFT keys) targets single-block to_q/to_k/to_v but not
-proj_mlp. sd.cpp maps those onto pieces 0..3 of the fused ``single_blocks.N.linear1`` weight, and its
-at_runtime LoRA path (every quantized GGUF) drops the whole target when the pieces do not cover the
-fused output dim. The staged copy completes the split with zero pieces, so the merged delta is equal.
-"""
+"""FLUX.1 LoRAs on sd.cpp: staged split pieces and the sd-server conditioning-cache env."""
 
 from __future__ import annotations
 
@@ -96,8 +90,7 @@ def _studio_flux1_lora(rng):
     return t
 
 
-# sd.cpp (name_conversion.cpp, convert_diffusers_dit_to_original_flux): diffusers module -> fused BFL
-# target and piece index.
+# sd.cpp convert_diffusers_dit_to_original_flux: diffusers module -> (fused target, piece).
 def _sdcpp_target(key):
     parts = key.split(".")
     assert parts[0] == "transformer"
@@ -127,9 +120,7 @@ _MODEL_OUT_DIM = {
 
 
 def _sdcpp_at_runtime_deltas(tensors, alpha = ALPHA):
-    """Mirror of sd.cpp's LoraModel::get_out_diff walk: pieces 0, 1, 2, ... until the first missing
-    one, each scaled by alpha / rank, concatenated on the output dim; a target whose concatenated
-    output dim differs from the model weight is skipped. Returns {target: delta W} that sd.cpp applies."""
+    """Mirror of sd.cpp's LoraModel::get_out_diff: walk pieces to the first gap; skip size mismatches."""
     by_target = {}
     for key in tensors:
         if not key.endswith(".lora_A.weight"):
@@ -188,21 +179,17 @@ def test_flux1_staged_lora_applies_every_target_on_sdcpp(tmp_path):
     metadata, staged = _read_safetensors(out[0].path)
     assert metadata == {"format": "pt"}
 
-    # Every original tensor is carried byte for byte.
     for key, value in original.items():
         assert np.array_equal(staged[key], value.astype(np.float32)), key
 
     applied = _sdcpp_at_runtime_deltas(staged)
     expected = _expected_deltas({k: v.astype(np.float32) for k, v in original.items()})
-    # Every fused target the adapter touches is applied (the original file loses the single blocks) ...
     assert set(applied) == set(expected)
-    # ... and the applied delta equals the adapter's own merged delta, zero on the proj_mlp rows.
     for target, delta in expected.items():
         np.testing.assert_allclose(applied[target], delta, rtol = 1e-5, atol = 1e-6)
         if ".linear1" in target:
             assert not applied[target][3 * HIDDEN :].any()
 
-    # The original file is left alone.
     _, again = _read_safetensors(src)
     assert set(again) == set(original)
 
@@ -239,7 +226,6 @@ def test_flux1_missing_split_pieces_completes_partial_groups_only():
             "shape": [16, 4],
             "data_offsets": [384, 512],
         },
-        # A non-split target alone adds nothing.
         "transformer.transformer_blocks.1.attn.to_out.0.lora_A.weight": {
             "dtype": "F32",
             "shape": [4, 16],
@@ -294,7 +280,7 @@ def test_flux1_complete_or_unparseable_files_link_as_is(tmp_path):
     assert not list((tmp_path / "stage2").glob("*.partial"))
 
 
-# --- sd-server env: SD_COND_CACHE_STRICT when a CLIP-L encoder is loaded ---------------------------
+# --- sd-server env: SD_COND_CACHE_STRICT ---
 
 
 class _Popen:
@@ -383,7 +369,6 @@ def test_sd_server_with_clip_l_runs_strict_conditioning_cache(monkeypatch):
         t5xxl = "/m/t5xxl.safetensors",
     )
     assert _start_env(monkeypatch, files).get("SD_COND_CACHE_STRICT") == "1"
-    # An explicit caller value still wins.
     env = _start_env(monkeypatch, files, env = {"SD_COND_CACHE_STRICT": "0"})
     assert env["SD_COND_CACHE_STRICT"] == "0"
 

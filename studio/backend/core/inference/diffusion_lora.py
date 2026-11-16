@@ -582,13 +582,9 @@ def resolve_specs(
     return out
 
 
-# sd.cpp maps diffusers FLUX.1 projections onto the fused BFL weights as numbered pieces: double-block
-# to_q/to_k/to_v -> img_attn.qkv (.weight, .weight.1, .weight.2), add_q/k/v_proj -> txt_attn.qkv, and
-# single-block to_q/to_k/to_v/proj_mlp -> linear1 (pieces 0..3). Its LoRA loader walks the pieces from 0
-# and stops at the first missing one, and at_runtime mode (every quantized GGUF) drops the whole fused
-# target when the pieces do not cover its output dim. A PEFT adapter that targets only to_q/to_k/to_v
-# (no proj_mlp) therefore loses every single-block update on a quantized FLUX.1. The staged copy adds
-# rank-1 all-zero pairs for the missing pieces: the merged delta is unchanged, the split is complete.
+# sd.cpp maps FLUX.1 q/k/v(/proj_mlp) onto fused weights as numbered pieces, stops at the first missing
+# piece, and on quantized GGUFs drops a fused target its pieces do not cover. Staging adds rank-1 zero
+# pairs for missing pieces so e.g. a to_q/to_k/to_v-only adapter keeps its single-block updates.
 _FLUX1_SPLIT_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
 _FLUX1_SPLIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v")),
@@ -621,11 +617,7 @@ def _read_safetensors_header(path: str) -> tuple[int, dict]:
 
 
 def flux1_missing_split_pieces(header: dict) -> dict[str, tuple[str, list[int]]]:
-    """New tensors (name -> (dtype, shape)) that complete every partially-targeted FLUX.1 fused split.
-
-    Only diffusers / PEFT names (optionally ``transformer.``-prefixed) are considered; a block group that is
-    untouched, or already complete, adds nothing. Missing pieces are rank-1 zero ``lora_A`` / ``lora_B`` pairs.
-    """
+    """New zero tensors (name -> (dtype, shape)) completing every partially-targeted FLUX.1 fused split."""
     present: dict[tuple[str, str], dict[str, dict]] = {}
     kinds: dict[str, str] = {}
     for name, info in header.items():
@@ -661,11 +653,7 @@ def flux1_missing_split_pieces(header: dict) -> dict[str, tuple[str, list[int]]]
 
 
 def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
-    """Write ``src`` plus the zero pieces from :func:`flux1_missing_split_pieces` to ``dst``.
-
-    Returns False (nothing written) when the file needs no change or cannot be parsed as safetensors. The
-    original tensors are byte-copied at their original offsets, so every existing value is unchanged.
-    """
+    """Write ``src`` plus missing zero split pieces to ``dst``; False (nothing written) if unneeded or unreadable."""
     try:
         header_len, header = _read_safetensors_header(src)
         extra = flux1_missing_split_pieces(header)
@@ -678,7 +666,6 @@ def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
             offsets = info.get("data_offsets") or [0, 0]
             data_end = max(data_end, int(offsets[1]))
     except (OSError, ValueError, TypeError, IndexError, KeyError):
-        # A header this cannot read is linked as is: sd.cpp then reports or skips it, as for every other file.
         return False
     new_header = dict(header)
     cursor = data_end
@@ -738,8 +725,7 @@ def materialize_native_dir(
     ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
     each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
     LoRA cache is never listed and a request naming it is rejected.
-    ``family``: a FLUX.1 diffusers adapter with an incomplete fused split is staged as a completed copy
-    (see :func:`write_flux1_split_complete_copy`); every other file is linked as is.
+    ``family``: FLUX.1 adapters with an incomplete fused split are staged as a completed copy.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
