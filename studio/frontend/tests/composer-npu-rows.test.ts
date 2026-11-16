@@ -95,3 +95,26 @@ test("the composer's NPU rows take the Hub's names and order and load by the -FL
   assert.equal(npuPickerRows(backend, false)[0].sizeBytes, undefined);
   assert.deepEqual(npuPickerRows(null, false), []);
 });
+
+test("On Device's Recent sort keeps never-loaded NPU rows in the Hub's order", () => {
+  const rows = npuPickerRows(backend, true);
+  const recent = pickerModel
+    .sortDeviceRows(rows, "recent", () => 0)
+    .map((row) => row.label);
+  assert.deepEqual(
+    recent,
+    rows.map((row) => row.label),
+  );
+  assert.deepEqual(
+    pickerModel.sortDeviceRows(rows, "name", () => 0).map((row) => row.label),
+    ["Gemma3-4B-IT-NPU2", "Qwen3.5-9B-NPU2", "Qwen3.8-27B-NPU2"],
+  );
+  // A load still moves a model to the top.
+  const loaded = rows[2].id;
+  assert.equal(
+    pickerModel.sortDeviceRows(rows, "recent", (row) =>
+      row.id === loaded ? 1 : 0,
+    )[0].id,
+    loaded,
+  );
+});

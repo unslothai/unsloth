@@ -14,7 +14,7 @@ export function npuPickerRows(
 ): NpuPickerRow[] {
   return npuRowsFor(models, { onDevice, query: "" })
     .filter((model) => model.downloaded === onDevice)
-    .map((model) => ({
+    .map((model, rank) => ({
       key: `${onDevice ? "npu" : "npu-offer"}:${model.id}`,
       id: model.model_path,
       label: npuDisplayName(model),
@@ -22,6 +22,7 @@ export function npuPickerRows(
       kind: "npu",
       section: "npu",
       npu: model,
+      rank,
       sizeBytes:
         onDevice && model.size_gb != null ? model.size_gb * 1e9 : undefined,
     }));
