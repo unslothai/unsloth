@@ -1839,7 +1839,7 @@ html.force-reduced-motion [data-radix-popper-content-wrapper] {
 
 /* Same loader exceptions as the OS-level media block below: freezing
    spinners removes the only signal that work is in flight. */
-html.force-reduced-motion .animate-spin {
+html.force-reduced-motion :is(.animate-spin, svg.animate-spin > *) {
 	animation-duration: 1.5s !important;
 	animation-iteration-count: infinite !important;
 }
@@ -1871,6 +1871,18 @@ html.dark.render-linux:not(.no-font-smoothing):not([data-chat-font]):not([data-u
 	font-weight: 350;
 	/* The lighter instance has narrower advances; reduce dark-mode wrap drift. */
 	letter-spacing: 0.023em;
+}
+
+/* WebKitGTK's compositor wobbles a rotating <svg> by a pixel or more when it sits off the device pixel grid;
+   turn its contents instead (Spinner does this with SMIL). Not on WebKitGTK before 2.40, which leaves
+   these icons still. */
+html.tauri.render-linux svg.animate-spin {
+	animation: none;
+}
+html.tauri.render-linux svg.animate-spin > * {
+	animation: spin 1s linear infinite;
+	transform-box: view-box;
+	transform-origin: center;
 }
 
 /* WebKitGTK repaints the whole view per keystroke; this blurred shadow made each repaint ~150 ms (#15221). */
@@ -6070,7 +6082,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		transition-property: none !important;
 	}
 
-	html:not(.force-motion) .animate-spin {
+	html:not(.force-motion) :is(.animate-spin, svg.animate-spin > *) {
 		animation-duration: 1.5s !important;
 		animation-iteration-count: infinite !important;
 	}
