@@ -102,16 +102,30 @@ def test_cookies_stay_with_their_site_scheme_and_account(monkeypatch):
         [],
         [
             ("Set-Cookie", "sid=abc; Secure"),
-            ("Set-Cookie", "wide=1; Domain=example.com"),
+            ("Set-Cookie", "wide=1; Domain=app.example.com"),
+            ("Set-Cookie", "parent=1; Domain=example.com"),
             ("Set-Cookie", "tld=1; Domain=com"),
         ],
     )
     _load("https://app.example.com/")
-    assert cookies.cookie_header("user", "https://app.example.com/x") == "sid=abc; wide=1"
-    assert cookies.cookie_header("user", "http://app.example.com/x") == "wide=1"
-    assert cookies.cookie_header("user", "https://www.example.com/") == "wide=1"
+    assert cookies.cookie_header("user", "https://app.example.com/x") == "sid=abc; parent=1; tld=1; wide=1"
+    assert cookies.cookie_header("user", "http://app.example.com/x") == "parent=1; tld=1; wide=1"
+    # A Domain wider than the host (no public suffix list here) stays on the host.
+    assert cookies.cookie_header("user", "https://api.app.example.com/") == "wide=1"
+    assert cookies.cookie_header("user", "https://www.example.com/") is None
     assert cookies.cookie_header("user", "https://example.org/") is None
     assert cookies.cookie_header("other", "https://app.example.com/x") is None
+
+
+def test_host_only_and_public_suffix_cookies_never_reach_another_site():
+    cookies.store_cookies("user", "https://example.com/", [("Set-Cookie", "sid=1; Path=/")])
+    assert cookies.cookie_header("user", "https://evil.example.com/") is None
+    assert cookies.page_cookies("user", "https://evil.example.com/") == []
+    assert cookies.cookie_header("user", "https://example.com/") == "sid=1"
+    cookies.store_cookies(
+        "user", "https://attacker.co.uk/", [("Set-Cookie", "sid=evil; Domain=co.uk; Path=/")]
+    )
+    assert cookies.cookie_header("user", "https://bank.co.uk/") is None
 
 
 def test_a_site_signing_out_and_clear_browsing_data_both_forget(monkeypatch):
@@ -194,6 +208,20 @@ def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):
         ("csrf=/", "|t"),
     ]
     assert cookies.cookie_header("user", "https://app.example.com/") == "sid=abc; hop=1; csrf=t"
+
+    # credentials: "omit" sends none and keeps none.
+    sent = _site(monkeypatch, [], [("Set-Cookie", "anon=1; Path=/")], body = b"{}")
+    browser_mod._page_request(
+        browser_mod.BrowserPageRequest(
+            page = "https://app.example.com/dash",
+            url = "https://app.example.com/api/public",
+            credentials = "omit",
+        ),
+        threading.Event(),
+        "user",
+    )
+    assert sent == [("https://app.example.com/api/public", None)]
+    assert "anon" not in cookies.cookie_header("user", "https://app.example.com/")
 
 
 def test_the_store_is_bounded():

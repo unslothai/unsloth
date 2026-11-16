@@ -28,11 +28,23 @@ _lock = threading.Lock()
 _jars: "OrderedDict[str, http.cookiejar.CookieJar]" = OrderedDict()
 
 
+class _Policy(http.cookiejar.DefaultCookiePolicy):
+    def set_ok(self, cookie, request):
+        # With no public suffix list here, a parent Domain (co.uk, github.io) can't be told from the
+        # site's own, so it stays host-only; one that isn't a parent is refused below (RFC 6265 5.3).
+        req_host, erhn = http.cookiejar.eff_request_host(request)
+        if cookie.domain_specified and req_host.endswith("." + cookie.domain.lstrip(".")):
+            cookie.domain, cookie.domain_specified, cookie.domain_initial_dot = erhn, False, False
+        return super().set_ok(cookie, request)
+
+
 def _jar(subject: str) -> http.cookiejar.CookieJar:
     with _lock:
         jar = _jars.get(subject)
         if jar is None:
-            jar = _jars[subject] = http.cookiejar.CookieJar()
+            # Host-only cookies go back to the exact host that set them, never its subdomains.
+            policy = _Policy(strict_ns_domain = http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain)
+            jar = _jars[subject] = http.cookiejar.CookieJar(policy)
             while len(_jars) > _MAX_ACCOUNTS:
                 _jars.popitem(last = False)
         _jars.move_to_end(subject)

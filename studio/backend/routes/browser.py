@@ -2176,6 +2176,8 @@ class BrowserPageRequest(BaseModel):
     redirect: Literal["follow", "error", "manual"] = "follow"
     # Fetch's integrity metadata; a body that doesn't match is a network error.
     integrity: str = Field(default = "", max_length = 4096)
+    # Fetch's credentials mode: "omit" sends no cookies and keeps none it is answered with.
+    credentials: Literal["omit", "same-origin", "include"] = "same-origin"
 
 
 def _origin(url: str) -> Optional[tuple[str, str, int]]:
@@ -2283,6 +2285,7 @@ def _page_request(
     # CORS-safelisted headers go on (Range, never Authorization), since the rest would need a preflight
     # this can't make; and the request is a CORS one carrying Origin: the page's, or "null" once a hop
     # went from one other origin to another (Fetch's redirect-taint).
+    jar = None if request.credentials == "omit" else subject
     hops = {
         "same_origin": True,
         "stopped": False,
@@ -2298,8 +2301,8 @@ def _page_request(
 
     def on_redirect(url: str, hop_method: str, has_body: bool, headers) -> Optional[str]:
         # Fetch's default credentials mode: cookies go to, and are kept from, the page's origin only.
-        if subject is not None and hops["same_origin"]:
-            store_cookies(subject, hops["url"], headers)
+        if jar is not None and hops["same_origin"]:
+            store_cookies(jar, hops["url"], headers)
         hops["url"] = url
         if request.redirect != "follow":
             hops["stopped"] = True
@@ -2343,8 +2346,8 @@ def _page_request(
             }
             # The default referrer policy sends another site only the page's origin.
             own_headers["Referer"] = serialized_origin + "/"
-        elif subject is not None:
-            cookies = cookie_header(subject, hops["url"])
+        elif jar is not None:
+            cookies = cookie_header(jar, hops["url"])
             if cookies:
                 own_headers = {**own_headers, "Cookie": cookies}
         return {**_studio_headers(current_host), **own_headers}
@@ -2365,8 +2368,8 @@ def _page_request(
         on_redirect = on_redirect,
         proxy_hostname = True,
     )
-    if subject is not None and hops["same_origin"]:
-        store_cookies(subject, meta.get("url") or hops["url"], meta.get("headers"))
+    if jar is not None and hops["same_origin"]:
+        store_cookies(jar, meta.get("url") or hops["url"], meta.get("headers"))
     # "manual" gets an opaque redirect: no status, headers or body reach the page.
     if hops["stopped"] and request.redirect == "manual":
         return {
