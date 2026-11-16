@@ -868,7 +868,6 @@ def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[
 def mupdf_document_text(path: str) -> str:
     """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
     import pymupdf
-
     with PYMUPDF_LOCK:
         with pymupdf.open(path) as doc:
             # A tall page keeps paragraphs from splitting at page breaks.

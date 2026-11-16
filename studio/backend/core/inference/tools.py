@@ -16778,7 +16778,6 @@ def _fetch_url_raw(
                 # PyMuPDF is not thread-safe; share the RAG parsers lock so web
                 # fetch and linked-folder ingest cannot run MuPDF concurrently (#17981).
                 from ..rag.parsers import PYMUPDF_LOCK
-
                 queued_at = time.monotonic()
                 with PYMUPDF_LOCK:
                     # Time queued behind another read's PDF is not spent on this read.

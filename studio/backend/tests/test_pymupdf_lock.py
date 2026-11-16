@@ -19,7 +19,11 @@ class PyMuPdfLockTests(unittest.TestCase):
         max_active = 0
         counter = threading.Lock()
 
-        def fake_unlocked(source, want_images, max_pages = None):
+        def fake_unlocked(
+            source,
+            want_images,
+            max_pages = None,
+        ):
             nonlocal active, max_active
             with counter:
                 active += 1
