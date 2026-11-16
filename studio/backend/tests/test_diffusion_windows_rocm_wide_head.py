@@ -229,3 +229,27 @@ def test_dit_trainer_guards_the_preview_vae_a_warm_cache_loads(monkeypatch, tmp_
             None,
         )
     assert guarded and all(v is vae for v in guarded)
+
+
+@pytest.mark.parametrize("half_math_env, fp32_math", [("", 0), ("0", 1)])
+def test_a_rejected_half_head_honours_the_half_math_switch(monkeypatch, half_math_env, fp32_math):
+    # UNSLOTH_VAE_ATTN_HALF_MATH=0 promises the fp32 upcast; a rejected Windows ROCm head must keep that promise
+    # instead of falling back to the default dispatch (broken there) or to half-precision math.
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, half_math_env)
+    monkeypatch.setattr(C, "fused_sdpa_available", lambda q, k, v: False)
+    monkeypatch.setattr(C, "_windows_rocm_untrusted_head", lambda q, torch: True)
+    # CPU tensors are never a half-math call: stand in for the cuda + ROCm part of the check.
+    monkeypatch.setattr(
+        C, "_half_math_call", lambda q: q.dtype == torch.bfloat16 and C.half_math_enabled()
+    )
+    calls = []
+    real = C.fp32_math_sdpa
+    monkeypatch.setattr(C, "fp32_math_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 64, 512).to(torch.bfloat16) for _ in range(3))
+    with C.chunked_attention_mode(budget = 1 << 30):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    assert len(calls) == fp32_math
+    assert out.dtype == torch.bfloat16
+    ref = torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float())
+    torch.testing.assert_close(out.float(), ref, atol = 2e-2, rtol = 2e-2)
