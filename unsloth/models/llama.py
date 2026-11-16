@@ -3480,8 +3480,7 @@ def _gate_pre_patch_to_unsloth_models(snapshot):
 def _gated_method(cls, name, fast, original):
     from ._block_compile import _checkpointing, _is_hf_checkpoint_wrapper
 
-    # transformers >= 5.23 checkpoints layers in a wrapper on the class forward, which only checkpoints
-    # while it is type(self).forward: replacing it dropped checkpointing for fast and stock layers alike.
+    # transformers >= 5.23 checkpoints only while its wrapper is type(self).forward; replacing it dropped checkpointing.
     checkpoint = name == "forward" and _is_hf_checkpoint_wrapper(original)
     if checkpoint:
         original = original.__wrapped__
@@ -3516,7 +3515,6 @@ def running_forward(module, name = "forward"):
     if getattr(method, "_unsloth_gated", False):
         if not getattr(module, "_unsloth_fast_path", False):
             return None
-        # Through the checkpoint wrapper (transformers >= 5.23) to the gate, then to the fast forward.
         while getattr(method, "_unsloth_gated", False):
             method = getattr(method, "__wrapped__", None)
         return method
