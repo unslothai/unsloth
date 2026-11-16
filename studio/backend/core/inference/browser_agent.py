@@ -586,8 +586,6 @@ _FILE_SUFFIXES = (
     ".jsonl",
     ".tsv",
 )
-# Also top-level domains (Paraguay, Moldova, ...): a file only when the workspace has one by that name.
-_AMBIGUOUS_SUFFIXES = (".py", ".md", ".sh", ".rs")
 
 
 def workspace_path_of(raw: Any) -> Optional[str]:
@@ -612,16 +610,18 @@ def workspace_path_of(raw: Any) -> Optional[str]:
 
 
 def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[str]:
-    """A bare `notes.md` or `out/run.py` that is a file in the workspace, else None (a site)."""
+    """A bare name such as `run.py`, `notes.md` or `main.go` that is a file in the workspace, else
+    None (a site). Many suffixes are also top-level domains, so the file has to exist."""
     from .tools import _get_workdir
 
     path = re.split(r"[?#]", target, maxsplit = 1)[0]
-    first = re.split(r"[/\\]", path, maxsplit = 1)[0].lower()
-    if not first.endswith(_AMBIGUOUS_SUFFIXES) and not path.lower().endswith(_AMBIGUOUS_SUFFIXES):
+    first = re.split(r"[/\\]", path, maxsplit = 1)[0]
+    if not path or "://" in path or path.startswith("//") or ":" in first:
         return None
-    if "://" in path or path.startswith("//"):
+    try:
+        workdir = os.path.realpath(_get_workdir(session_id))
+    except Exception:
         return None
-    workdir = os.path.realpath(_get_workdir(session_id))
     return path if os.path.isfile(os.path.join(workdir, path)) else None
 
 
