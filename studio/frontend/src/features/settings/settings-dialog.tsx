@@ -354,6 +354,7 @@ export const SETTINGS_NAV_GROUPS: {
       "chat",
       "voice",
       "browser",
+      "computer-use",
       "keyboard-shortcuts",
     ],
   },
