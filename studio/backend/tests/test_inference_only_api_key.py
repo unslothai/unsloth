@@ -65,7 +65,6 @@ def test_a_full_key_keeps_every_route(method, path):
 def test_an_inference_key_chats_but_never_loads(method, path):
     response = _app().request(method, path, headers = _key("inference"))
     assert response.status_code == 200, response.text
-    # So auto-switch cannot load or download a model for it either.
     assert response.json()["policy"] == "never"
 
 
@@ -133,7 +132,6 @@ def test_the_create_route_stores_and_lists_the_access():
         for k in client.get("/api/auth/api-keys", headers = ui).json()["api_keys"]
     }
     assert listed["lan"] == "inference" and listed["plain"] == "full"
-    # An inference key cannot mint a key, full or otherwise.
     child = client.post(
         "/api/auth/api-keys",
         json = {"name": "child"},
@@ -198,7 +196,6 @@ def test_the_access_can_be_changed_after_the_key_is_shown():
     assert narrowed.status_code == 200 and narrowed.json()["access"] == "inference"
     assert _app().post("/api/inference/load", headers = remote).status_code == 403
     assert _app().post("/v1/chat/completions", headers = remote).status_code == 200
-    # The narrowed key cannot widen itself.
     assert (
         client.patch(
             f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = remote
@@ -209,7 +206,6 @@ def test_the_access_can_be_changed_after_the_key_is_shown():
     widened = client.patch(f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = ui)
     assert widened.json()["access"] == "full"
     assert _app().post("/api/inference/load", headers = remote).status_code == 200
-    # Idempotent, and an unknown value is refused before it reaches storage.
     assert (
         client.patch(
             f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = ui

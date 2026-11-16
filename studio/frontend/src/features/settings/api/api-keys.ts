@@ -46,7 +46,6 @@ export async function createApiKey(
   const res = await authFetch("/api/auth/api-keys", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Sent only when narrowed, so a full key is the same request an older server accepts.
     body: JSON.stringify({
       name,
       expires_in_days: expiresInDays,
