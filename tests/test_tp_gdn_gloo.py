@@ -285,7 +285,8 @@ def _case_parity(
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))["tp"]
     ids, labels = batch()
-    ref = _train(build(arch, four_bit = four_bit), ids, labels)
+    ref_model = build(arch, four_bit = four_bit)
+    ref = _train(ref_model, ids, labels)
     model = build(arch, four_bit = four_bit)
     whole_conv = {
         n: p.detach().clone() for n, p in model.named_parameters() if n.endswith("conv1d.weight")
@@ -296,6 +297,12 @@ def _case_parity(
     state = tpn.tp_full_state_dict(model)
     conv_equal = all(torch.equal(state[n], p) for n, p in whole_conv.items())
     tp = _train(model, ids, labels, full = tpn._full)
+    # generate gathers a whole replica (tp_replica): the global head counts and conv1d channels come back.
+    kw = dict(input_ids = ids[:1, :5], max_new_tokens = 4, do_sample = False, pad_token_id = 0)
+    # Train mode (no dropout here): bitsandbytes repacks 4-bit weights for its CPU inference kernel in eval
+    # mode, which needs out_features to be a multiple of its block (in_proj_b / in_proj_a have 4 rows).
+    with torch.no_grad():
+        generated = (ref_model.generate(**kw), model.generate(**kw))
     # Fault injection: rank r keeps contiguous rows of the fused [q, k, v] (Qwen3.5) / treats the per key head
     # groups of in_proj_qkvz as [q, k, v, z] blocks (Qwen3-Next): heads mismatched across q, k, v and conv1d.
     original = tpn._gdn_parts
@@ -326,6 +333,7 @@ def _case_parity(
         "sharded": _sharded_projections(model),
         "bytes": (local, whole),
         "conv_equal": conv_equal,
+        "generated": generated,
     }
 
 
@@ -400,9 +408,10 @@ def _check(results, arch, four_bit):
         local, whole = res["bytes"]
         # Everything but the per-head gated norm weight (head_v_dim floats, replicated) is split in two.
         assert local < 0.55 * whole, (local, whole)
-        assert res[
-            "conv_equal"
-        ]  # tp_full_state_dict puts the conv1d channels back in [q, k, v] order
+        # tp_full_state_dict puts the conv1d channels back in [q, k, v] order.
+        assert res["conv_equal"]
+        # generate on a whole replica: the global head counts and conv1d channels are back.
+        assert torch.equal(*res["generated"]), res["generated"]
         ref, tp = res["ref"], res["tp"]
         assert tp["losses"] == pytest.approx(ref["losses"], abs = 1e-5, rel = 0), (
             rank,

@@ -850,11 +850,8 @@ def _gdn_parts(module, layout):
     (r + 1) * Hk / tp - 1 and exactly the value heads that read them (value head j reads key head j // (Hv / Hk))."""
     k = module.num_k_heads * module.head_k_dim
     v = module.num_v_heads * module.head_v_dim
-    conv = (
-        k,
-        k,
-        v,
-    )  # conv1d runs over [q, k, v] of every head (also after Qwen3-Next's regrouping)
+    # conv1d runs over [q, k, v] of every head (also after Qwen3-Next's regrouping).
+    conv = (k, k, v)
     if layout == "split":
         heads = (module.num_v_heads,)
         return {
