@@ -396,11 +396,13 @@ __device__ __forceinline__ void pv_groups(
 // ks  [BH, n_kpad / 32, 4] K scale of the keys with (key % 8) / 2 == t in a run of 32 keys
 // vs  [BH, n_kpad / BN] V scale of a tile; vg / vc [BH, HD] per-channel gain and centre of V
 // out [B, n_q, H, HD] (strides in elements); out_kind 0 = fp16, 1 = bf16, 2 = fp32
+// rcnt / ridx / rres: the keys whose V a head clipped (unsloth_i8quant_kv), added back in the epilogue
 extern "C" __global__ void unsloth_i8attn(
     const s8* __restrict__ q, const s8* __restrict__ k, const s8* __restrict__ vt, const float* __restrict__ qs,
     const float* __restrict__ ks, const float* __restrict__ vs, const float* __restrict__ vg,
     const float* __restrict__ vc, void* __restrict__ out, int n_q, int n_qpad, int n_k, int n_kpad, int n_heads,
-    i64 o_stride_b, i64 o_stride_s, i64 o_stride_h, int out_kind) {
+    i64 o_stride_b, i64 o_stride_s, i64 o_stride_h, int out_kind, const int* __restrict__ rcnt,
+    const int* __restrict__ ridx, const float* __restrict__ rres, int rstride) {
   extern __shared__ __align__(16) s8 smem[];
   const u32 lane = threadIdx.x & 31u;
   const u32 g = lane >> 2, t = lane & 3u;
@@ -726,6 +728,46 @@ extern "C" __global__ void unsloth_i8attn(
 #endif
   }
 
+  // The keys this head clipped (attention sinks, v_range): each adds its clipped-off V times its exact P, from the
+  // same int8 score as the main loop, in the frame of mref; l already holds its rounded P. Uniform per block.
+  const int nres = rcnt[bh];
+  for (int i = 0; i < nres; ++i) {
+    const int key = ridx[bh * rstride + i];
+    const float ksc = ks[(bh * n_tiles * KB32 + (key >> 5)) * 4 + ((key & 7) >> 1)];
+    const s8* kr = k + (bh * n_kpad + key) * HD + (HD / 4) * t;
+    i32 kw[HD / 16];
+#pragma unroll
+    for (int w = 0; w < HD / 16; ++w) kw[w] = (i32)ld32(kr + 4 * w);
+    const float* rr = rres + ((i64)bh * rstride + i) * HD + 2 * t;
+#pragma unroll
+    for (int qt = 0; qt < NQ; ++qt) {
+      const s8* q0 = q + (bh * n_qpad + rowbase + 16 * qt + g) * HD + (HD / 4) * t;
+      i32 s0 = 0, s1 = 0;
+#pragma unroll
+      for (int w = 0; w < HD / 16; ++w) {
+        s0 = __dp4a((i32)ld32(q0 + 4 * w), kw[w], s0);
+        s1 = __dp4a((i32)ld32(q0 + 8 * HD + 4 * w), kw[w], s1);
+      }
+      s0 += __shfl_xor_sync(0xffffffffu, s0, 1);
+      s1 += __shfl_xor_sync(0xffffffffu, s1, 1);
+      s0 += __shfl_xor_sync(0xffffffffu, s0, 2);
+      s1 += __shfl_xor_sync(0xffffffffu, s1, 2);
+      // |score| < 2^22: the int to float conversion by the MAGIC_F addition, as the main loop's
+      const float f0 = __int_as_float(s0 + MAGIC_I) - MAGIC_F, f1 = __int_as_float(s1 + MAGIC_I) - MAGIC_F;
+      const float e0 = fmaf(f0, fmaxf(sc[qt][0] * ksc, 1e-30f), -mref[qt][0]);
+      const float e1 = fmaf(f1, fmaxf(sc[qt][1] * ksc, 1e-30f), -mref[qt][1]);
+      const float p0 = 255.f * ex2(e0), p1 = 255.f * ex2(e1);  // never packed: no clamp
+#pragma unroll
+      for (int nb = 0; nb < NBD; ++nb) {
+        const float ra = rr[8 * nb], rb = rr[8 * nb + 1];
+        acc[qt][nb][0] = fmaf(p0, ra, acc[qt][nb][0]);
+        acc[qt][nb][1] = fmaf(p0, rb, acc[qt][nb][1]);
+        acc[qt][nb][2] = fmaf(p1, ra, acc[qt][nb][2]);
+        acc[qt][nb][3] = fmaf(p1, rb, acc[qt][nb][3]);
+      }
+    }
+  }
+
   const float* gp = vg + bh * HD + 2 * t;
   const float* cp = vc + bh * HD + 2 * t;
   const i64 base = (bh / n_heads) * o_stride_b + (bh % n_heads) * o_stride_h + 2 * t;
@@ -777,7 +819,7 @@ QUANT_SOURCE = r"""
 //
 //   unsloth_i8stats_q   Q, QROWS rows per block (rotated, one scale per row); the K mean over every kstep-th key
 //                       (one block per head, a fixed summation order); last the V minimum / maximum per channel
-//                       over every vstep-th key, in nvc row chunks
+//                       over every vstep-th key, in nvc row chunks, and each chunk's largest |v| with its key
 //   unsloth_i8quant_kv  needs the statistics. V, one block per key tile, the last tile first ((v - centre) / gain
 //                       per channel, one scale per tile, stored channel-major in the key order of the kernel's
 //                       operand registers); then K, KROWS keys per block (centred, rotated, one scale per 32 keys
@@ -922,16 +964,19 @@ __device__ __forceinline__ void store16(s8* dst, const float* x, float s) {
 // kc    [BH, HD] the K mean over the keys 0, kstep, 2 * kstep, ...
 // vpart [BH, nvc, 2, HD] per row chunk of vrows keys (a multiple of vstep): the minimum and the maximum of every
 //       channel of V over the chunk's keys r0, r0 + vstep, ...
+// vsink [BH, nvc, 2] per chunk: the largest |v| of any channel over those keys, and its key (as a float)
 // qi    [BH, n_qpad, HD] int8 rotated q (zeros past n_q); qs [BH, n_qpad] the row maximum over 127, times mul
 // grid (BH, jobs): job = job0 + y of qblocks + 1 + nvc, qblocks = (n_qpad + QROWS - 1) / QROWS (job0: a grid holds
 // 65535 jobs, a longer call takes several launches). Job < qblocks holds QROWS rows of Q (thread: row, 16
 // channels), job qblocks is the K mean, the others are the V chunks; NTS threads.
 extern "C" __global__ void unsloth_i8stats_q(
     const void* __restrict__ q, const void* __restrict__ k, const void* __restrict__ v, float* __restrict__ kc,
-    float* __restrict__ vpart, s8* __restrict__ qi, float* __restrict__ qs, int n_q, int n_qpad, int n_k,
+    float* __restrict__ vpart, float* __restrict__ vsink, s8* __restrict__ qi, float* __restrict__ qs, int n_q,
+    int n_qpad, int n_k,
     int n_heads, int nvc, int vrows, int vstep, int kstep, i64 q_sb, i64 q_ss, i64 q_sh, i64 k_sb, i64 k_ss,
     i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, float mul, int q_kind, int k_kind, int v_kind, int job0) {
   __shared__ float sm[NWS][2][HD];
+  __shared__ float smk[NWS][2];
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   const u32 slot = tid / TPR, g16 = tid % TPR;
   const i64 bh = blockIdx.x;
@@ -958,6 +1003,7 @@ extern "C" __global__ void unsloth_i8stats_q(
   const int chunk = job - qblocks - 1;  // of V; -1: the K mean
   const bool mean = chunk < 0;
   float lo[16], hi[16];  // the K mean block: lo holds the sums
+  float amx = -1.f, akey = 0.f;  // a V chunk: the largest |v| this thread read, and its key
   if (mean) {
 #pragma unroll
     for (int i = 0; i < 16; ++i) lo[i] = hi[i] = 0.f;
@@ -985,10 +1031,16 @@ extern "C" __global__ void unsloth_i8stats_q(
     for (i64 r = r0 + (i64)slot * vstep; r < r1; r += (i64)SLOTS * vstep) {
       float x[16];
       load16(v, base + r * v_ss, v_kind, x);
+      float a = 0.f;
 #pragma unroll
       for (int i = 0; i < 16; ++i) {
         lo[i] = fminf(lo[i], x[i]);
         hi[i] = fmaxf(hi[i], x[i]);
+        a = fmaxf(a, fabsf(x[i]));
+      }
+      if (a > amx) {  // keys rise with r: the first key of the largest value is kept
+        amx = a;
+        akey = (float)r;
       }
     }
 #pragma unroll
@@ -998,6 +1050,18 @@ extern "C" __global__ void unsloth_i8stats_q(
         lo[i] = fminf(lo[i], __shfl_xor_sync(0xffffffffu, lo[i], s));
         hi[i] = fmaxf(hi[i], __shfl_xor_sync(0xffffffffu, hi[i], s));
       }
+    }
+#pragma unroll
+    for (int s = 1; s < 32; s <<= 1) {
+      const float oa = __shfl_xor_sync(0xffffffffu, amx, s), ok = __shfl_xor_sync(0xffffffffu, akey, s);
+      if (oa > amx || (oa == amx && ok < akey)) {
+        amx = oa;
+        akey = ok;
+      }
+    }
+    if (lane == 0) {
+      smk[warp][0] = amx;
+      smk[warp][1] = akey;
     }
   }
   if (lane < TPR) {
@@ -1027,11 +1091,88 @@ extern "C" __global__ void unsloth_i8stats_q(
       o[HD] = c;
     }
   }
+  if (!mean && tid == 0) {
+    float a = smk[0][0], key = smk[0][1];
+    for (int w = 1; w < NWS; ++w) {
+      if (smk[w][0] > a || (smk[w][0] == a && smk[w][1] < key)) {
+        a = smk[w][0];
+        key = smk[w][1];
+      }
+    }
+    vsink[(bh * nvc + chunk) * 2] = a;
+    vsink[(bh * nvc + chunk) * 2 + 1] = key;
+  }
+}
+
+// The V range a head quantises with, computed alike by every V-tile block and the residual job. A few keys far from
+// the rest in most channels (attention sinks: the first text tokens of a joint sequence, 60-85x the median key norm)
+// set every channel's range and cost every other key its resolution, while they draw well under 1% of the
+// attention. So when the full range of some channel is more than SINK_RATIO times its range without the chunk that
+// holds the head's largest |v|, the head uses that robust range (widened by SINK_MARGIN, never past the full range):
+// that chunk's keys are clipped to it in place and the parts clipped off are added back exactly by the attention
+// kernel (unsloth_i8quant_kv's residual job, the epilogue of unsloth_i8attn). Any other head keeps the full range,
+// bit for bit. smc / smr get the centre and 1 / gain of channels c < HD; returns whether the head clips.
+#define SINK_RATIO 8.0f
+#define SINK_MARGIN 1.5f
+__device__ bool v_range(const float* __restrict__ vpart, const float* __restrict__ vsink, i64 bh, int nvc,
+                        int vstep, float* smc, float* smr, float (*smx)[HD], float* smw, int* sc_out, u32 tid,
+                        u32 nt) {
+  int sc = 0;
+  float best = -1.f;
+  for (int j = 0; j < nvc; ++j) {
+    const float a = vsink[(bh * nvc + j) * 2];
+    if (a > best) {
+      best = a;
+      sc = j;
+    }
+  }
+  float ratio = 0.f;
+  for (u32 c = tid; c < HD; c += nt) {
+    float lo = 3.0e38f, hi = -3.0e38f, lor = 3.0e38f, hir = -3.0e38f;
+    const float* part = vpart + bh * nvc * 2 * HD + c;
+    for (int j = 0; j < nvc; ++j) {
+      const float a = part[(2 * j) * HD], b = part[(2 * j + 1) * HD];
+      lo = fminf(lo, a);
+      hi = fmaxf(hi, b);
+      if (j != sc) {
+        lor = fminf(lor, a);
+        hir = fmaxf(hir, b);
+      }
+    }
+    smc[c] = lo;
+    smr[c] = hi;
+    smx[0][c] = lor;
+    smx[1][c] = hir;
+    ratio = fmaxf(ratio, (hi - lo) / fmaxf(hir - lor, 1e-30f));
+  }
+#pragma unroll
+  for (int s = 1; s < 32; s <<= 1) ratio = fmaxf(ratio, __shfl_xor_sync(0xffffffffu, ratio, s));
+  if ((tid & 31u) == 0) smw[tid >> 5] = ratio;
+  __syncthreads();
+  float r = 0.f;
+  for (u32 w = 0; w < nt / 32; ++w) r = fmaxf(r, smw[w]);
+  const bool clip = nvc > 1 && vstep == 1 && r > SINK_RATIO;
+  for (u32 c = tid; c < HD; c += nt) {
+    const float lo = smc[c], hi = smr[c];
+    float centre = 0.5f * (hi + lo), gain = fmaxf(0.5f * (hi - lo), 1e-12f);
+    if (clip) {
+      centre = 0.5f * (smx[1][c] + smx[0][c]);
+      gain = fmaxf(fminf(SINK_MARGIN * 0.5f * (smx[1][c] - smx[0][c]), 0.5f * (hi - lo)), 1e-12f);
+    }
+    smc[c] = centre;
+    smr[c] = 1.f / gain;
+    smx[0][c] = gain;
+  }
+  __syncthreads();
+  *sc_out = sc;
+  return clip;
 }
 
 // vt [BH, n_kpad / BN, HD, BN] int8 ((v - centre) / gain over the tile scale, zeros past n_k) in the key order of
 // the kernel's operand registers; vs [BH, n_kpad / BN] the tile scales; vc / vg [BH, HD] centre and gain, merged from
-// vpart by every V block (HD threads) and written by tile 0.
+// vpart by every V block (HD threads) and written by tile 0 (v_range: a head with an attention sink clips one chunk).
+// rcnt [BH] / ridx [BH, rstride] / rres [BH, rstride, HD]: the keys a head clipped, in key order, and the parts of
+// their (v - centre) / gain clipped off (the residual job, the last one of the grid).
 // ki [BH, n_kpad, HD] int8 rotated (k - kc) (zeros past n_k); ks [BH, n_kpad / 32, 4] = the maximum over the keys
 // of a run of 32 with the same (key % 8) / 2, over 127
 // grid (BH, jobs): job = job0 + y of n_kpad / BN + n_kpad / KROWS, NTKV threads. Job < n_kpad / BN is a V tile,
@@ -1040,16 +1181,70 @@ extern "C" __global__ void unsloth_i8stats_q(
 // of K: thread (key, 16 channels).
 extern "C" __global__ void unsloth_i8quant_kv(
     const void* __restrict__ k, const void* __restrict__ v, const float* __restrict__ kc,
-    const float* __restrict__ vpart, s8* __restrict__ ki, float* __restrict__ ks, s8* __restrict__ vt,
-    float* __restrict__ vs, float* __restrict__ vc, float* __restrict__ vg, int n_k, int n_kpad, int n_heads,
-    int nvc, i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, int k_kind, int v_kind, int job0) {
+    const float* __restrict__ vpart, const float* __restrict__ vsink, s8* __restrict__ ki, float* __restrict__ ks,
+    s8* __restrict__ vt, float* __restrict__ vs, float* __restrict__ vc, float* __restrict__ vg, int* __restrict__ rcnt,
+    int* __restrict__ ridx, float* __restrict__ rres, int n_k, int n_kpad, int n_heads, int nvc, int vrows, int vstep,
+    i64 k_sb, i64 k_ss, i64 k_sh, i64 v_sb, i64 v_ss, i64 v_sh, int k_kind, int v_kind, int job0) {
   __shared__ __align__(16) float smc[HD], smr[HD];
+  __shared__ float smx[2][HD];
+  __shared__ float smw[NTKV / 32];
+  __shared__ int smf[KROWS + 1];
   __shared__ float sm[KROWS + KROWS / 8 > NTV / 32 + 1 ? KROWS + KROWS / 8 : NTV / 32 + 1];
   const u32 tid = threadIdx.x, lane = tid & 31u, warp = tid >> 5;
   const i64 tiles = n_kpad / BN;
   const i64 bh = blockIdx.x;
   const i64 b = bh / n_heads, h = bh % n_heads;
   const i64 job = (i64)job0 + blockIdx.y;
+  if (job == tiles + n_kpad / KROWS) {
+    // the residual job: the keys of the clipped chunk that left the range, compacted in key order
+    int sc = 0;
+    if (!v_range(vpart, vsink, bh, nvc, vstep, smc, smr, smx, smw, &sc, tid, NTKV)) {
+      if (tid == 0) rcnt[bh] = 0;
+      return;
+    }
+    const u32 rin = tid / TPR, g16 = tid % TPR;
+    const i64 r0 = (i64)sc * vrows, r1 = min(r0 + (i64)vrows, (i64)n_k);
+    int found = 0;
+    for (i64 first = r0; first < r1; first += KROWS) {
+      const i64 key = first + rin;
+      float x[16];
+      bool out = false;
+      if (key < r1) {
+        load16(v, b * v_sb + h * v_sh + key * v_ss + 16 * g16, v_kind, x);
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+          const float y = (x[i] - smc[16 * g16 + i]) * smr[16 * g16 + i];
+          x[i] = y - fminf(fmaxf(y, -1.f), 1.f);
+          out |= x[i] != 0.f;
+        }
+      }
+#pragma unroll
+      for (int s = 1; s < TPR; s <<= 1) out |= __shfl_xor_sync(0xffffffffu, (int)out, s) != 0;
+      if (g16 == 0) smf[rin] = out;
+      __syncthreads();
+      if (tid == 0) {
+        int n = found;
+        for (u32 i = 0; i < KROWS; ++i) {
+          const int f = smf[i];
+          smf[i] = f ? n : -1;
+          n += f;
+        }
+        smf[KROWS] = n;
+      }
+      __syncthreads();
+      const int at = smf[rin];
+      if (at >= 0) {
+        float* o = rres + ((i64)bh * vrows + at) * HD + 16 * g16;
+#pragma unroll
+        for (int i = 0; i < 16; ++i) o[i] = x[i];
+        if (g16 == 0) ridx[bh * vrows + at] = (int)key;
+      }
+      found = smf[KROWS];
+      __syncthreads();
+    }
+    if (tid == 0) rcnt[bh] = found;
+    return;
+  }
   if (job >= tiles) {
     const u32 rin = tid / TPR, g16 = tid % TPR;
     const i64 run = job - tiles;
@@ -1090,22 +1285,14 @@ extern "C" __global__ void unsloth_i8quant_kv(
   if (tid >= NTV) return;
   const u32 g16 = tid / (BN / 4), kq = tid % (BN / 4);
   const i64 tile = tiles - 1 - job;  // the keys the statistics read last come first
-  for (u32 c = tid; c < HD; c += NTV) {
-    float lo = 3.0e38f, hi = -3.0e38f;
-    const float* part = vpart + bh * nvc * 2 * HD + c;
-    for (int j = 0; j < nvc; ++j) {
-      lo = fminf(lo, part[(2 * j) * HD]);
-      hi = fmaxf(hi, part[(2 * j + 1) * HD]);
-    }
-    const float centre = 0.5f * (hi + lo), gain = fmaxf(0.5f * (hi - lo), 1e-12f);
-    smc[c] = centre;
-    smr[c] = 1.f / gain;
-    if (tile == 0) {
-      vc[bh * HD + c] = centre;
-      vg[bh * HD + c] = gain;
+  int sc = 0;
+  const bool clip = v_range(vpart, vsink, bh, nvc, vstep, smc, smr, smx, smw, &sc, tid, NTV);
+  if (tile == 0) {
+    for (u32 c = tid; c < HD; c += NTV) {
+      vc[bh * HD + c] = smc[c];
+      vg[bh * HD + c] = smx[0][c];
     }
   }
-  __syncthreads();
   float cen[16], rg[16];
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
@@ -1131,6 +1318,7 @@ extern "C" __global__ void unsloth_i8quant_kv(
 #pragma unroll
       for (int i = 0; i < 16; ++i) {
         x[r][i] = (x[r][i] - cen[i]) * rg[i];
+        if (clip) x[r][i] = fminf(fmaxf(x[r][i], -1.f), 1.f);
         amax = fmaxf(amax, fabsf(x[r][i]));
       }
     } else {

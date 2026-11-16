@@ -103,12 +103,19 @@ def reference_quantise(
         return t.permute(0, 2, 1, 3).reshape(BH, t.shape[1], D).double()
 
     kh, vh = heads_first(k), heads_first(v)
+    clip = torch.zeros(BH, dtype = torch.bool, device = q.device)
     if kc is None:
-        kstep, vstep, _, _ = I.stats_plan(Sk)
+        kstep, vstep, nvc, vrows = I.stats_plan(Sk)
         kc = kh[:, ::kstep].mean(1)
-        lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
-        vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
+        vc, vg, clip = reference_v_range(vh, vstep, nvc, vrows)
+    else:
+        clip = (
+            ((vh - vc.double()[:, None, :]).abs() > vg.double()[:, None, :] * (1 + 1e-4))
+            .flatten(1)
+            .any(1)
+        )
     kc, vc, vg = kc.double(), vc.double(), vg.double()
+    rcnt, ridx, rres = reference_residuals(vh, vc, vg, clip)
     qr = rotate_ref(heads_first(q))
     qa = qr.abs().amax(-1).clamp_min(1e-20)
     n_kpad = (Sk + bn - 1) // bn * bn
@@ -116,9 +123,9 @@ def reference_quantise(
     # one K scale per run of 32 keys and accumulator lane group ((key % 8) // 2)
     ka = kr.abs().amax(-1).view(BH, n_kpad // 32, 4, 4, 2).amax((2, 4)).clamp_min(1e-20)
     per_key = ka[:, :, None, :, None].expand(-1, -1, 4, -1, 2).reshape(BH, n_kpad)
-    vr = F.pad((vh - vc[:, None, :]) / vg[:, None, :], (0, 0, 0, n_kpad - Sk)).view(
-        BH, n_kpad // bn, bn, D
-    )
+    xr = (vh - vc[:, None, :]) / vg[:, None, :]
+    xr = torch.where(clip[:, None, None], xr.clamp(-1, 1), xr)
+    vr = F.pad(xr, (0, 0, 0, n_kpad - Sk)).view(BH, n_kpad // bn, bn, D)
     va = vr.abs().amax((2, 3)).clamp_min(1e-20)
     vt = torch.round(vr * (127.0 / va[:, :, None, None]))[
         :, :, key_of_position(bn, q.device)
@@ -133,10 +140,57 @@ def reference_quantise(
         "vs": (va / 127.0).float(),
         "vc": vc.float(),
         "vg": vg.float(),
+        "rcnt": rcnt,
+        "ridx": ridx,
+        "rres": rres,
         "shape": (B, Sq, Sk, H, D),
         "dtype": v.dtype,
         "config": config,
     }
+
+
+def reference_v_range(vh, vstep, nvc, vrows):
+    """(centre, gain, clip) per head in fp64, as the quantisers' v_range: the full range of every channel, or, where
+    some channel's full range is more than SINK_RATIO times its range without the stats chunk that holds the head's
+    largest |v| (an attention sink), that robust range widened by SINK_MARGIN (at most the full range), clipped."""
+    BH, Sk, D = vh.shape
+    lo, hi = vh[:, ::vstep].amin(1), vh[:, ::vstep].amax(1)
+    vc, vg = 0.5 * (hi + lo), (0.5 * (hi - lo)).clamp_min(1e-12)
+    pad = nvc * vrows - Sk
+    live = (torch.arange(nvc * vrows, device = vh.device) < Sk).view(1, nvc, vrows, 1)
+    chunks = F.pad(vh, (0, 0, 0, pad)).view(BH, nvc, vrows, D)
+    cmax = torch.where(live, chunks, torch.full_like(chunks, -1e300)).amax(2)
+    cmin = torch.where(live, chunks, torch.full_like(chunks, 1e300)).amin(2)
+    sink = (
+        torch.where(live, chunks.abs(), torch.full_like(chunks, -1.0)).amax((2, 3)).argmax(1)
+    )  # first max
+    keep = torch.ones(BH, nvc, dtype = torch.bool, device = vh.device)
+    keep[torch.arange(BH), sink] = False
+    hir = torch.where(keep[:, :, None], cmax, torch.full_like(cmax, -1e300)).amax(1)
+    lor = torch.where(keep[:, :, None], cmin, torch.full_like(cmin, 1e300)).amin(1)
+    ratio = ((hi - lo) / (hir - lor).clamp_min(1e-30)).amax(-1)
+    clip = (ratio > 8.0) & (nvc > 1) & (vstep == 1)
+    rc = 0.5 * (hir + lor)
+    rg = torch.minimum(1.5 * 0.5 * (hir - lor), 0.5 * (hi - lo)).clamp_min(1e-12)
+    return torch.where(clip[:, None], rc, vc), torch.where(clip[:, None], rg, vg), clip
+
+
+def reference_residuals(vh, vc, vg, clip):
+    """(rcnt, ridx, rres) of the residual job: per clipping head, the keys whose (v - centre) / gain leaves [-1, 1],
+    in key order, and the part clipped off."""
+    BH, Sk, D = vh.shape
+    x = (vh - vc[:, None, :]) / vg[:, None, :]
+    res = x - x.clamp(-1, 1)
+    out = (res != 0).any(-1) & clip[:, None]
+    rcnt = out.sum(1)
+    n = max(1, int(rcnt.max()))
+    ridx = torch.zeros(BH, n, dtype = torch.long, device = vh.device)
+    rres = torch.zeros(BH, n, D, dtype = torch.float64, device = vh.device)
+    for bh in range(BH):
+        keys = torch.nonzero(out[bh]).flatten()
+        ridx[bh, : len(keys)] = keys
+        rres[bh, : len(keys)] = res[bh, keys]
+    return rcnt, ridx, rres
 
 
 def emulate(p):
@@ -166,6 +220,14 @@ def emulate(p):
     denom = (probs.sum(-1, keepdim = True) * weight).sum(2)
     pv = torch.einsum("bqtn,btnd->bqtd", probs, v_int)
     num = (pv * weight * p["vs"].double()[:, None, :, None]).sum(2)
+    # the keys a head clipped: their clipped-off part times their exact P, in the frame of the first tile's maximum
+    flat = s.reshape(BH, Sq, n_kpad).double()
+    for bh in range(BH):
+        n = int(p["rcnt"][bh])
+        if n:
+            keys_ = p["ridx"][bh, :n].long()
+            pr = torch.exp2(flat[bh][:, keys_] - tile_max[bh, :, 0].double() + 7.99435343685886)
+            num[bh] += pr @ p["rres"][bh, :n].double()
     out = num / denom * p["vg"].double()[:, None, :] + p["vc"].double()[:, None, :]
     return out.view(B, H, Sq, D).permute(0, 2, 1, 3).float()
 
@@ -675,6 +737,31 @@ def test_the_method_stays_close_to_fp32_attention(shape, bn):
     assert torch.equal(rot @ rot.T, float(min(I.ROT_GROUP, shape[-1])) * eye)
     acc = I.accuracy(emulate(p), I.reference_attention(q, k, v))
     assert acc["cos"] > 0.9995 and acc["rel_l1"] < 0.03, acc
+
+
+@pytest.mark.parametrize("sinks", [(1,), (1030, 1031)])
+def test_the_method_keeps_v_resolved_past_attention_sinks(sinks):
+    """A V key 60x out in most channels (an attention sink: the first text tokens of a joint sequence) draws almost no
+    attention but set every channel's range, so every other key lost its resolution: the method's error against
+    fp32 was several times that of the same call without it. Now the head clips the sink's stats chunk to the range
+    of the others and adds the clipped-off part back exactly: the error stays at the sink-free level."""
+    shape = (1, 1100, 2, 128)
+    q, k, v = I.probe_inputs("cpu", torch.float32, *shape[1:])
+    plain = reference_quantise(q, k, v, {"bn": 128, "wpc": 1, "nq": 1, "stages": 1})
+    base = (emulate(plain) - I.reference_attention(q, k, v)).norm() / I.reference_attention(
+        q, k, v
+    ).norm()
+    v = v.clone()
+    for key in sinks:
+        v[:, key, :, 16::2] += 60 * v[:, :, :, 16::2].std()
+    p = reference_quantise(q, k, v, {"bn": 128, "wpc": 1, "nq": 1, "stages": 1})
+    for bh in range(2):
+        n = int(p["rcnt"][bh])
+        keys = p["ridx"][bh, :n].tolist()
+        assert set(sinks) <= set(keys) and keys == sorted(keys)
+    ref = I.reference_attention(q, k, v)
+    err = (emulate(p) - ref).norm() / ref.norm()
+    assert err < 1.5 * base, (float(err), float(base))
 
 
 def test_statistics_cover_every_key():
@@ -1296,6 +1383,62 @@ def test_kernel_matches_its_torch_model(shape, dtype, config, strided):
     rel = ((out.float() - want).abs().mean() / want.abs().mean()).item()
     assert rel < (2e-3 if dtype == torch.float32 else 4e-3), rel
     assert torch.equal(I.int8_attention(q, k, v, config = config), out)
+
+
+def _sink_case(
+    shape,
+    dtype,
+    sinks,
+    seed = 0,
+):
+    """q / k / v of ``_case`` with attention sinks in V: the keys ``sinks`` 60x out in most channels (the first text
+    tokens of a joint sequence carry such values) on every other head."""
+    q, k, v = _case(shape, dtype, seed = seed)
+    g = torch.Generator(device = "cuda").manual_seed(seed + 1)
+    v = v.clone()
+    H, D = shape[2], shape[3]
+    for key in sinks:
+        bump = torch.randn(shape[0], 1, H, D, generator = g, device = "cuda").sign() * 60
+        bump[:, :, 1::2] = 0
+        bump[..., : D // 8] = 0
+        v[:, key : key + 1] += bump.to(dtype)
+    return q, k, v
+
+
+@needs_kernel
+@pytest.mark.parametrize("head_dim", I.HEAD_DIMS)
+@pytest.mark.parametrize("sinks", [(4097, 4098), (1,), (2, 3)])
+def test_attention_sinks_keep_the_rest_of_v_resolved(head_dim, sinks):
+    """A few V keys 60x out in most channels set the per-channel range of every key: a head with them takes the range
+    without the stats chunk of its largest |v|, clips that chunk in place and adds the clipped-off parts back in the
+    epilogue. Its error against fp32 stays at the level of the same call without the sinks (it was several times
+    that), the kernel matches its torch model, and the heads without sinks keep the full range (no clipped keys)."""
+    shape = (1, 4128, 4, head_dim)
+    dtype = _card_dtype()
+    config = _cuda_config(head_dim)
+    q, k, v = _sink_case(shape, dtype, sinks, seed = 11)
+    p = I.quantise(q, k, v, config)
+    counts = p["rcnt"].tolist()
+    assert all(c > 0 for c in counts[::2]) and all(c == 0 for c in counts[1::2]), counts
+    keys = {int(x) for x in p["ridx"][0, : counts[0]].tolist()}
+    assert set(sinks) <= keys and keys == set(sorted(keys)), keys
+    out = I.attend(p)
+    want = emulate(p)
+    rel = ((out.float() - want).abs().mean() / want.abs().mean()).item()
+    assert rel < 4e-3, rel
+    ref = I.reference_attention(q, k, v)
+    plain = I.reference_attention(*_case(shape, dtype, seed = 11))
+    plain_out = I.int8_attention(*_case(shape, dtype, seed = 11), config = config)
+
+    def err(x, r, heads):
+        return float((x.float()[:, :, heads] - r[:, :, heads]).norm() / r[:, :, heads].norm())
+
+    sink_heads, other = list(range(0, 4, 2)), list(range(1, 4, 2))
+    assert err(out, ref, sink_heads) < 1.5 * err(plain_out, plain, sink_heads), (
+        err(out, ref, sink_heads),
+        err(plain_out, plain, sink_heads),
+    )
+    assert err(out, ref, other) < 1.5 * err(plain_out, plain, other)
 
 
 @needs_kernel

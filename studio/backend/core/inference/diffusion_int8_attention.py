@@ -18,7 +18,10 @@ How the values are quantised (ideas from the cited papers, written from scratch 
 * The probabilities are 8-bit integers too, rescaled per key tile so every tile uses the full range, and the softmax
   denominator is summed over the rounded values (INT-FlashAttention, arXiv 2409.16997).
 * V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
-  key tile.
+  key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
+  tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
+  adds the clipped-off parts back exactly in the epilogue, so the sink no longer costs every other key its
+  resolution (CUDA kernel; the Triton kernel keeps the range over every key).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -377,6 +380,8 @@ class Operands(dict):
             offset, shape = plan["layout"][key]
             base = self["i8"] if key in ("qi", "ki", "vt") else self["f32"]
             view = base[offset : offset + math.prod(shape)].view(shape)
+            if key in ("rcnt", "ridx"):
+                view = view.view(torch.int32)
         self[key] = view
         return view
 
@@ -525,6 +530,10 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         ("vc", (BH, D)),
         ("vg", (BH, D)),
         ("vpart", (BH, nvc, 2, D)),
+        ("vsink", (BH, nvc, 2)),
+        ("rcnt", (BH,)),
+        ("ridx", (BH, vrows)),
+        ("rres", (BH, vrows, D)),
     ):
         layout[name] = (at, shape)
         at += math.prod(shape)
@@ -532,7 +541,19 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     off.update(
         {
             name: f32_at + 4 * layout[name][0]
-            for name in ("qs", "ks", "kc", "vs", "vc", "vg", "vpart")
+            for name in (
+                "qs",
+                "ks",
+                "kc",
+                "vs",
+                "vc",
+                "vg",
+                "vpart",
+                "vsink",
+                "rcnt",
+                "ridx",
+                "rres",
+            )
         }
     )
     q_kind, k_kind, v_kind = (_OUT_KIND[str(x.dtype)] for x in (q, k, v))
@@ -540,7 +561,8 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     stats_threads = 256  # NTS of the quantiser source
     stats_jobs = -(-n_qpad // (stats_threads // (D // 16))) + 1 + nvc
     kv_threads = max(bn * D // 64, 2 * D)  # NTKV: a V tile, or runs of 32 keys
-    kv_jobs = tiles + n_kpad // (kv_threads // (D // 16))
+    # V tiles, K runs, then the residual job (the keys a head with an attention sink clipped)
+    kv_jobs = tiles + n_kpad // (kv_threads // (D // 16)) + 1
     out_stride = (Sq * H * D, H * D, D)
 
     def grids(jobs: int) -> tuple:
@@ -579,10 +601,11 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         ),
         "kv_grids": grids(kv_jobs),
         "kv_threads": kv_threads,
-        "kv_tail": (Sk, n_kpad, H, nvc, *kst[:3], *vst[:3], k_kind, v_kind),
+        "kv_tail": (Sk, n_kpad, H, nvc, vrows, vstep, *kst[:3], *vst[:3], k_kind, v_kind),
         "attn_grid": (n_qpad // (16 * nq * wpc), BH),
         "attn_threads": 32 * wpc,
         "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
+        "rstride": vrows,
         "out_shape": (B, Sq, H, D),
     }
     if len(plans) >= _PLAN_LIMIT:
@@ -607,8 +630,8 @@ def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: in
     qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
     off = plan["off"]
     stats_q, quant_kv, _ = plan["kernels"]
-    kc, vpart = base + off["kc"], base + off["vpart"]
-    args = (qp, kp, vp, kc, vpart, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
+    kc, vpart, vsink = base + off["kc"], base + off["vpart"], base + off["vsink"]
+    args = (qp, kp, vp, kc, vpart, vsink, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
     for grid, job in plan["stats_grids"]:
         stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
     args = (
@@ -616,12 +639,16 @@ def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: in
         vp,
         kc,
         vpart,
+        vsink,
         base + off["ki"],
         base + off["ks"],
         base + off["vt"],
         base + off["vs"],
         base + off["vc"],
         base + off["vg"],
+        base + off["rcnt"],
+        base + off["ridx"],
+        base + off["rres"],
     ) + plan["kv_tail"]
     for grid, job in plan["kv_grids"]:
         quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
@@ -630,16 +657,20 @@ def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: in
 def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
     off = plan["off"]
     args = (
-        base + off["qi"],
-        base + off["ki"],
-        base + off["vt"],
-        base + off["qs"],
-        base + off["ks"],
-        base + off["vs"],
-        base + off["vg"],
-        base + off["vc"],
-        out_ptr,
-    ) + plan["attn_tail"]
+        (
+            base + off["qi"],
+            base + off["ki"],
+            base + off["vt"],
+            base + off["qs"],
+            base + off["ks"],
+            base + off["vs"],
+            base + off["vg"],
+            base + off["vc"],
+            out_ptr,
+        )
+        + plan["attn_tail"]
+        + (base + off["rcnt"], base + off["ridx"], base + off["rres"], plan["rstride"])
+    )
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
 
 
