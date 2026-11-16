@@ -7,7 +7,12 @@ per document, compiled and eager, instead of masked SDPA / the efficient kernel 
 import pytest
 
 torch = pytest.importorskip("torch")
-if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:
+# ROCm reports gfx capabilities >= 8, but the large head kernel and the traceable varlen path are CUDA only.
+if (
+    not torch.cuda.is_available()
+    or torch.version.hip is not None
+    or torch.cuda.get_device_capability()[0] < 8
+):
     pytest.skip("needs CUDA sm80+", allow_module_level = True)
 hf = pytest.importorskip("unsloth.utils.hf_packed_attention")
 lh = pytest.importorskip("unsloth.kernels.large_head_attention")

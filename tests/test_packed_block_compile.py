@@ -186,8 +186,9 @@ def test_prepared_attention_is_block_diagonal_and_compiles_once(window):
 @pytest.mark.parametrize("window", [None, 5])
 def test_prepared_attention_runs_flash_varlen_in_one_graph_on_cuda(window):
     """sm80+: aten's flash varlen inside the graph (not the dense-mask fallback), no recompile."""
-    if torch.cuda.get_device_capability()[0] < 8:
-        pytest.skip("flash varlen needs sm80+")
+    if torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 8:
+        # ROCm reports gfx capabilities >= 8 but has no traceable varlen kernel: packed rows stay uncompiled there.
+        pytest.skip("flash varlen needs CUDA sm80+")
     graphs, calls = [], []
 
     def backend(gm, example_inputs):
