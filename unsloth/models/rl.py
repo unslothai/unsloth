@@ -3247,10 +3247,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = (
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
+        )
+        if trainer_file == "sft_trainer":
+            # assistant_only_loss on a vision run -> Unsloth's train_on_responses_only, on every transformers version.
+            data_collator_check += (
+                "from unsloth.trainer import _route_vision_assistant_only_loss\n"
+                "data_collator = _route_vision_assistant_only_loss(args, data_collator, model, __tokenizer, train_dataset, "
+                "eval_dataset if 'eval_dataset' in locals() else None)\n"
+            )
+        data_collator_check += (
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
-            # A config reused from a vision run: hand the request back to TRL.
-            "    if getattr(args, '_unsloth_assistant_only_loss', False): args.assistant_only_loss = True\n"
             "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
@@ -3264,24 +3271,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "        )\n"
             "else:\n"
-            # The vision collator builds its own labels and never reads assistant_only_loss: mask with the chat template's
-            # markers (as train_on_responses_only auto-detects them), or refuse rather than train on every token.
-            "    if getattr(args, 'assistant_only_loss', False) or getattr(args, '_unsloth_assistant_only_loss', False):\n"
-            "        if not getattr(data_collator, 'train_on_responses_only', None):\n"
-            "            from unsloth_zoo.dataset_utils import train_on_responses_only as _unsloth_tro\n"
-            "            try:\n"
-            "                data_collator.train_on_responses_only = _unsloth_tro(None, tokenizer = __tokenizer, return_function = True)\n"
-            "            except Exception as _unsloth_e:\n"
-            "                raise ValueError(\n"
-            "                    'Unsloth: assistant_only_loss=True with UnslothVisionDataCollator needs the user and assistant markers, '\n"
-            "                    'which could not be read from the chat template (' + str(_unsloth_e) + '). Use UnslothVisionDataCollator('\n"
-            "                    'model, tokenizer, train_on_responses_only=True, instruction_part=..., response_part=...) instead.'\n"
-            "                )\n"
-            # The collator masks now; TRL never applies the flag to a custom collator, and below transformers 5.18 it
-            # refuses it for vision datasets.
-            "        args.assistant_only_loss = False\n"
-            # Remember the request so a trainer reusing this config still masks.
-            "        args._unsloth_assistant_only_loss = True\n"
             "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"
             "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"
             "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"

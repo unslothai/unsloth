@@ -484,6 +484,81 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
+def _route_vision_assistant_only_loss(
+    args,
+    data_collator,
+    model,
+    processing_class,
+    train_dataset,
+    eval_dataset = None,
+):
+    """SFT `assistant_only_loss = True` on a vision run masks with Unsloth's train_on_responses_only.
+
+    TRL refuses vision assistant-only loss below transformers 5.18 and above it relies on processor
+    assistant masks; UnslothVisionDataCollator never read the flag. Called before TRL's __init__:
+    returns the collator to use and turns the flag off so TRL neither refuses nor masks again.
+    When the chat template's markers cannot be detected, nothing changes and TRL behaves as before.
+    Text runs are left to unsloth_zoo's dataset preparation."""
+    requested = getattr(args, "assistant_only_loss", False) or getattr(
+        args, "_unsloth_assistant_only_loss", False
+    )
+    if not requested:
+        return data_collator
+    user_collator = data_collator
+    if not isinstance(user_collator, _UnslothVisionDataCollatorBase):
+        is_vision = (
+            user_collator is None
+            and hasattr(processing_class, "image_processor")
+            and not isinstance(model, str)
+            and (_is_vision_dataset(train_dataset) or _is_vision_eval_dataset(eval_dataset))
+        )
+        if not is_vision:
+            # Text run (or a foreign collator): keep the flag for unsloth_zoo / TRL, even when an
+            # earlier vision trainer built on these args turned it off.
+            args.assistant_only_loss = True
+            return user_collator
+    # A collator that already masks (user built, or routed by an earlier trainer) is not masked twice.
+    if not getattr(user_collator, "train_on_responses_only", None):
+        from unsloth_zoo.dataset_utils import get_chat_template_parts, train_on_responses_only
+
+        processor = getattr(user_collator, "processor", None) or processing_class
+        inner = getattr(processor, "tokenizer", processor)
+        preset = hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part")
+        try:
+            if preset:
+                parts = (inner._unsloth_input_part, inner._unsloth_output_part)
+            else:
+                parts = get_chat_template_parts(processor)
+            masker = train_on_responses_only(
+                None,
+                tokenizer = processor,
+                return_function = True,
+                **({} if preset else dict(instruction_part = parts[0], response_part = parts[1])),
+            )
+        except Exception as e:
+            # Same cases TRL cannot mask either (no template, no user / assistant exchange,
+            # unstable marker tokens): change nothing and let TRL behave as it always has.
+            args.assistant_only_loss = True
+            print(
+                "Unsloth: assistant_only_loss = True could not auto-detect the chat template's "
+                f"user / assistant markers ({e}), so it is left to TRL. To mask with Unsloth, pass "
+                "UnslothVisionDataCollator(model, tokenizer, train_on_responses_only = True, "
+                "instruction_part = ..., response_part = ...) as data_collator."
+            )
+            return user_collator
+        data_collator = user_collator
+        if data_collator is None:
+            data_collator = UnslothVisionDataCollator(model, processing_class)
+        data_collator.train_on_responses_only = masker
+        print(
+            "Unsloth: assistant_only_loss = True -> using Unsloth's train_on_responses_only "
+            f"(instruction_part = {parts[0]!r}, response_part = {parts[1]!r})"
+        )
+    args._unsloth_assistant_only_loss = True
+    args.assistant_only_loss = False
+    return data_collator
+
+
 _MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
     {
         "audio",
