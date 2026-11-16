@@ -8,7 +8,8 @@ transformers' Trainer passes ``find_unused_parameters=True`` to DDP whenever the
 gradient checkpointing that crashes on the first backward ("marked as ready twice"): the checkpointed
 forward runs without grad, DDP marks every LoRA weight unused, then the recompute marks them again.
 transformers already picks False for a ``PreTrainedModel`` under checkpointing; this does the same for a
-plain LoRA adapter on a dense text model, where every trainable parameter gets a gradient each step.
+plain LoRA adapter on a dense text model, where every trainable parameter gets a gradient each step,
+including continued pretraining's trainable embed_tokens / lm_head copies (modules_to_save).
 Without checkpointing True works (and tolerates an adapter a step never runs), so it is left alone.
 
 Conversely a fully finetuned VLM gets False from transformers, and a text-only batch leaves its
@@ -18,6 +19,8 @@ after each synced backward instead.
 """
 
 import os
+
+import torch
 
 __all__ = [
     "unsloth_default_ddp_find_unused_parameters",
@@ -158,14 +161,13 @@ def _lora_uses_every_trainable_param(model):
     base = getattr(model, "get_base_model", lambda: None)()
     # A classifier head in modules_to_save runs on every forward.
     classifier = type(base).__name__.endswith("ForSequenceClassification")
+    # modules_to_save that run on every forward: a classifier head, or the token embedding / output head
+    # (continued pretraining trains embed_tokens and lm_head this way, outside the checkpointed layers).
+    always_run = set(_CLASSIFIER_HEADS) if classifier else set()
+    always_run |= _embedding_leaf_names(base)
     for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
         value = getattr(cfg, attr, None)
-        if (
-            attr == "modules_to_save"
-            and classifier
-            and value
-            and set(value) <= set(_CLASSIFIER_HEADS)
-        ):
+        if attr == "modules_to_save" and value and set(value) <= always_run:
             continue
         if value:
             return False
@@ -178,26 +180,75 @@ def _lora_uses_every_trainable_param(model):
     if _config_may_skip(config):
         return False
     # The output head under any name (output, output_layer, embed_out): fused losses read its weight.
-    try:
-        head = base.get_output_embeddings()
-        head_params = {id(p) for p in head.parameters()} if head is not None else set()
-    except Exception:
-        head_params = set()
+    head_params = _module_param_ids(base, "get_output_embeddings")
+    embedding_copies = _modules_to_save_copy_ids(
+        base, ("get_input_embeddings", "get_output_embeddings")
+    )
     n_trainable = 0
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         n_trainable += 1
+        if id(param) in embedding_copies:
+            continue
         if id(param) in head_params:
             return False
         if not any(m in name for m in _LORA_PARAM_MARKERS) and not (
-            classifier and ".modules_to_save." in name
+            classifier
+            and ".modules_to_save." in name
+            and any(f".{h}.modules_to_save." in f".{name}" for h in _CLASSIFIER_HEADS)
         ):
             return False
         lowered = name.lower()
         if any(m in lowered for m in _SKIPPABLE_NAME_MARKERS):
             return False
     return n_trainable > 0
+
+
+def _module_param_ids(base, getter):
+    try:
+        module = getattr(base, getter)()
+        return {id(p) for p in module.parameters()} if module is not None else set()
+    except Exception:
+        return set()
+
+
+def _embedding_leaf_names(base):
+    """Leaf names (embed_tokens, lm_head, wte, ...) of the input / output embeddings."""
+    targets = []
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            module = getattr(base, getter)()
+        except Exception:
+            module = None
+        if module is not None:
+            targets.append(module)
+    names = set()
+    if not targets:
+        return names
+    try:
+        for name, module in base.named_modules():
+            if name and any(module is t for t in targets):
+                names.add(name.rsplit(".", 1)[-1])
+    except Exception:
+        pass
+    return names
+
+
+def _modules_to_save_copy_ids(base, getters):
+    """Parameters of PEFT's trainable modules_to_save copies of the input / output embeddings."""
+    ids = set()
+    for getter in getters:
+        try:
+            module = getattr(base, getter)()
+        except Exception:
+            continue
+        copies = getattr(module, "modules_to_save", None)
+        if module is None or not isinstance(copies, torch.nn.ModuleDict):
+            continue
+        for copy in copies.values():
+            ids.update(id(p) for p in copy.parameters())
+    return ids
 
 
 # Towers a text-only batch never runs.
@@ -311,7 +362,8 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
     checkpointing when the user left it None.
 
     Kept at None (transformers' True) for anything a step may skip: MoE / expert LoRA, vision or audio
-    towers, MTP heads, lm_head / embedding adapters, modules_to_save, several adapters, non-LoRA PEFT.
+    towers, MTP heads, lm_head / embedding LoRA adapters, modules_to_save other than a classifier head or
+    the embed_tokens / lm_head copies, several adapters, non-LoRA PEFT.
     False too for a LoRA on Gemma 4, which checkpoints reentrantly (True crashes there).
     Set to True for a VLM with a trainable tower under non-reentrant checkpointing. Returns the value now on ``args``.
     """
