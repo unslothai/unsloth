@@ -132,6 +132,12 @@ test("rows only draw the columns when the setting is on", () => {
   assert.match(picker, /\{sizeMeta && row\.kind !== "external" \? \(\s*<RowSizeColumns/);
   // Off: Discover keeps its param chip exactly as before; on, the column carries it instead.
   assert.match(picker, /\{paramLabel && !sizeMeta \? \(/);
+  // Discover reserves the size column only when some listed row can fill it (GGUF search rows never do).
+  assert.match(picker, /sizeSlot=\{row\.kind !== "hub" \|\| hubHasSizes\}/);
+  assert.match(
+    picker,
+    /recommended\.some\(\s*\(m\) => !m\.isGguf && \(hubEstimates\.get\(m\.id\.toLowerCase\(\)\) \?\? 0\) > 0/,
+  );
   // A favorite quant row sizes that quant, not the whole repo.
   assert.match(
     picker,

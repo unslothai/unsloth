@@ -942,10 +942,12 @@ function ParamChip({ label }: { label: string }) {
 function RowSizeColumns({
   params,
   size,
+  sizeSlot,
   dimmed,
 }: {
   params: string | null;
   size: string | null;
+  sizeSlot: boolean;
   dimmed: boolean;
 }) {
   return (
@@ -956,9 +958,11 @@ function RowSizeColumns({
       <span className="flex w-[4.4em] shrink-0 justify-end text-ui-10">
         {params ? <ParamChip label={params} /> : null}
       </span>
-      <span className="w-[5.2em] shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums">
-        {size}
-      </span>
+      {sizeSlot ? (
+        <span className="w-[5.2em] shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums">
+          {size}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -1896,6 +1900,14 @@ export function ComposerModelPicker({
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
   }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
+  // As the header picker: Discover gives sizes a column only when a listed row can fill it.
+  const hubHasSizes = useMemo(
+    () =>
+      recommended.some(
+        (m) => !m.isGguf && (hubEstimates.get(m.id.toLowerCase()) ?? 0) > 0,
+      ),
+    [recommended, hubEstimates],
+  );
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -4059,6 +4071,7 @@ export function ComposerModelPicker({
           paramLabel,
           sizeMeta?.params,
           sizeMeta?.size,
+          hubHasSizes,
         ]}
         render={() => (
           <div
@@ -4192,6 +4205,7 @@ export function ComposerModelPicker({
                 params={sizeMeta.params}
                 // An NPU offer already prints its size.
                 size={npuOffer || npuProgress ? null : sizeMeta.size}
+                sizeSlot={row.kind !== "hub" || hubHasSizes}
                 dimmed={dimmed}
               />
             ) : null}
