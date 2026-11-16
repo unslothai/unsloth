@@ -332,15 +332,17 @@ def _consented(row) -> bool:
     return bool(json.loads(row.get("builtin_config_json") or "{}").get("consent")) if row else False
 
 
-@router.post("/builtins/{builtin_id}/test", response_model = McpServerProbeResult)
+# {editor}, not {builtin_id}: these are owner-only integration slots, not per-account objects.
+@router.post("/builtins/{editor}/test", response_model = McpServerProbeResult)
 @serialize_mcp_server_mutation
 async def test_editor(
-    builtin_id: str,
+    editor: str,
     payload: EditorTest,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
 ):
+    builtin_id = editor
     _editor_or_404(builtin_id)
     _require_managed_access(via_api_key, no_credential, executes = True)
     row = _builtin_row(builtin_id)
@@ -356,15 +358,16 @@ async def test_editor(
     return await editors.probe(builtin_id, settings, on_tools = on_tools)
 
 
-@router.put("/builtins/{builtin_id}", response_model = McpBuiltinResponse)
+@router.put("/builtins/{editor}", response_model = McpBuiltinResponse)
 @serialize_mcp_server_mutation
 async def setup_editor(
-    builtin_id: str,
+    editor: str,
     payload: EditorSetup,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
 ):
+    builtin_id = editor
     _editor_or_404(builtin_id)
     _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
     old = _builtin_row(builtin_id)
