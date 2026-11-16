@@ -141,7 +141,6 @@ def _rocm_device_is_integrated(device: str) -> bool:
     """True for a ROCm APU (e.g. Radeon 780M) sharing host RAM; never raises."""
     try:
         from .host_pinning import device_is_integrated
-
         return bool(device_is_integrated(device))
     except Exception:  # noqa: BLE001
         return False
@@ -162,10 +161,7 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 "(they can hang the GPU); using MATH. %s=1 re-enables fused probing.",
                 ROCM_FUSED_SDPA_ALLOW_ENV,
             )
-        if (
-            not _SDPA_PROBE_READ_ONLY.get()
-            and str(dtype) in ("torch.float16", "torch.bfloat16")
-        ):
+        if not _SDPA_PROBE_READ_ONLY.get() and str(dtype) in ("torch.float16", "torch.bfloat16"):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
