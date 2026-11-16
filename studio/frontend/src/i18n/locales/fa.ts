@@ -1125,6 +1125,7 @@ export const fa = {
       videoChecking: "در حال بررسی پشتیبانی این دستگاه از ویدیو...",
       more: "بیشتر",
       customizeSidebar: "سفارشی‌سازی نوار کناری",
+      customizeProfileMenu: "سفارشی‌سازی منوی نمایه",
       newBadge: "جدید",
       export: "خروجی گرفتن",
       recents: "اخیر",

@@ -1144,6 +1144,7 @@ export const nl = {
       videoChecking: "Deze computer controleren op ondersteuning voor video...",
       more: "Meer",
       customizeSidebar: "Zijbalk aanpassen",
+      customizeProfileMenu: "Profielmenu aanpassen",
       newBadge: "Nieuw",
       export: "Exporteren",
       recents: "Recent",

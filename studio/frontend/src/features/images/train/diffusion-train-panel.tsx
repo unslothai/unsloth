@@ -133,6 +133,8 @@ type FamilyPreset = {
     rank: number;
     lr: number;
     resolution: number;
+    // A family's recommended run length (MiniMax-H3-Image overfits a style quickly); absent = the panel's 500.
+    steps?: number;
     // Both or neither: a warmup count is inert under "constant".
     lrScheduler?: LrScheduler;
     lrWarmupSteps?: number;
@@ -320,6 +322,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         // No preset fallback: a reported family owns its ramp outright.
         ...lrSchedulePreset(r.defaults),
       },
@@ -345,6 +348,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
@@ -421,6 +425,7 @@ export function DiffusionTrainPanel({
   onDeploy?: (args: {
     baseRepo: string;
     family: string;
+    families?: string[];
     catalogPath: string;
     trigger: string;
   }) => void;
@@ -446,9 +451,11 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net with mixed_precision; every other family is a DiT using base_precision.
   const isDiT = familyName !== "sdxl";
   const isH3 = familyName === "minimax-h3";
-  const supportsCfgDropout = isDiT && !isH3;
+  // MiniMax-H3-Image trains on its 6 distilled sampler steps: no shift and no CFG dropout (guidance-distilled).
+  const isH3Image = familyName === "minimax-h3-image";
+  const supportsCfgDropout = isDiT && !isH3 && !isH3Image;
   // H3 shifts its video and audio schedules separately and applies a number to video only: no shared control.
-  const supportsFlowShift = isDiT && !isH3;
+  const supportsFlowShift = isDiT && !isH3 && !isH3Image;
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -674,6 +681,7 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+      setSteps(family.defaults.steps ?? 500);
     }
     // Reset with the family, or a DiT's warmup leaks into SDXL.
     if (!lrScheduleDirty.current) {
@@ -719,7 +727,7 @@ export function DiffusionTrainPanel({
       baseChoice: effectiveBase,
       customBase,
       durationUnit: "steps",
-      steps: 500,
+      steps: family?.defaults.steps ?? 500,
       epochs: 10,
       learningRate: family?.defaults.lr ?? 0.0001,
       rank: family?.defaults.rank ?? 16,
@@ -1461,6 +1469,11 @@ export function DiffusionTrainPanel({
     },
     [info?.families],
   );
+  const loraFamiliesFor = useCallback(
+    (famName: string): string[] =>
+      info?.families?.find((f) => f.name === famName)?.lora_families ?? [famName],
+    [info?.families],
+  );
   // The images loader refuses video bases, so their adapters get no Deploy to Create.
   const isVideoFamily = useCallback(
     (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
@@ -1486,10 +1499,20 @@ export function DiffusionTrainPanel({
     onDeploy?.({
       baseRepo: deployBaseFor(trainedBase, famName),
       family: famName,
+      families: loraFamiliesFor(famName),
       catalogPath: status.catalog_path,
       trigger: instancePrompt.trim(),
     });
-  }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
+  }, [
+    status,
+    effectiveBase,
+    customBase,
+    family,
+    instancePrompt,
+    onDeploy,
+    deployBaseFor,
+    loraFamiliesFor,
+  ]);
 
   // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
   const keepFamilyDefaults = () => {};
@@ -1716,7 +1739,7 @@ export function DiffusionTrainPanel({
             </Select>
           </div>
         )}
-        {!isH3 && (
+        {!isH3 && !isH3Image && (
           <div className={fieldClass}>
             <FieldLabel hint="Mirrors images left-right at random for extra variety. Leave off for text, logos or subjects with one-sided features (a side parting, a scar); try on for styles and symmetric subjects.">
               Random flip
@@ -2310,6 +2333,7 @@ export function DiffusionTrainPanel({
                       onDeploy?.({
                         baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
+                        families: loraFamiliesFor(viewRun.family || ""),
                         catalogPath: viewRun.catalog_path || "",
                         trigger: viewRun.instance_prompt || "",
                       })

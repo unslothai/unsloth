@@ -1066,6 +1066,7 @@ export const he = {
       videoChecking: "בודק תמיכה בווידאו במכשיר זה...",
       more: "עוד",
       customizeSidebar: "התאמת סרגל הצד",
+      customizeProfileMenu: "התאמה אישית של תפריט הפרופיל",
       newBadge: "חדש",
       export: "ייצוא",
       recents: "אחרונים",

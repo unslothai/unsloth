@@ -186,7 +186,7 @@ test("its size presets are the 4 MP and 16 MP tables, all inside the backend's l
     assert.ok(p.width * p.height >= 2048 * 2048 * 0.98, p.label);
   }
   assert.equal(presets.filter((p) => p.label.endsWith("16 MP")).length, 8);
-  assert.match(familyPresetsCopy("minimax-h3-image").hint, /at least 4 MP/);
+  assert.match(familyPresetsCopy("minimax-h3-image").hint, /4 to 20 MP/);
   assert.deepEqual(
     familyPresetsWithin("flux.3-klein", limits),
     presetsWithin(limits),

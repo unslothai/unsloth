@@ -159,6 +159,7 @@ import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
 import contextvars
+import collections.abc
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -6280,14 +6281,54 @@ def _head_counts_unshifted_labels(model):
     return counts_unshifted_labels(head)
 
 
+_MICRO_MEAN_LOSS_CHECKED = {}
+
+
+def _warn_micro_mean_loss(trainer, batch_samples):
+    # A head returning its own mean ignores num_items_in_batch, so GA averages micro-batch means: warn once per class.
+    model = getattr(trainer, "model", None)
+    if (
+        model is None
+        or len(batch_samples) < 2
+        or getattr(trainer, "model_accepts_loss_kwargs", True)
+        or getattr(trainer, "compute_loss_func", None) is not None
+        or not isinstance(batch_samples[0], collections.abc.Mapping)
+        or getattr(batch_samples[0].get("labels"), "ndim", None) is None
+    ):
+        return
+    head = _loss_head(model)
+    key = type(model if head is None else head)
+    if key in _MICRO_MEAN_LOSS_CHECKED:
+        return
+    if head is not None and _forward_consumes_num_items_in_batch(head) is False:
+        own_mean = head
+    else:
+        own_mean = _forward_ignores_num_items_in_batch(model)
+    _MICRO_MEAN_LOSS_CHECKED[key] = own_mean is not None
+    if own_mean is None:
+        return
+    logger.warning(
+        f"Unsloth: {type(own_mean).__name__}.forward returns its own mean loss and cannot take "
+        "num_items_in_batch, so with gradient accumulation each micro-batch is weighted equally, not by "
+        "its token count (as in transformers' Trainer). For exact token weighting raise "
+        "per_device_train_batch_size and lower gradient_accumulation_steps."
+    )
+
+
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
         if _head_counts_unshifted_labels(getattr(self, "model", None)):
-            return _unsloth_get_batch_samples(self, *args, **kwargs)
-        if _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        elif _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
-        return _unsloth_get_batch_samples(self, *args, **kwargs)
+        else:
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        try:
+            _warn_micro_mean_loss(self, result[0] if isinstance(result, tuple) else result)
+        except Exception:
+            pass
+        return result
 
     _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
     return _unsloth_get_batch_samples_dispatch
@@ -6904,6 +6945,69 @@ def _tensor_parallel_trainer_pre(model):
         return False
     from .tp_native import tp_trainer_setup
     return tp_trainer_setup(model, phase = "pre")
+
+
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
+    tp = _is_unsloth_tensor_parallel(model)
+    if not tp:
+        try:
+            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
+        except ValueError:
+            tp = False
+    if not tp:
+        return False
+    nonzero, device = 0, torch.device("cpu")
+    params = dict(model.named_parameters(remove_duplicate = False))
+    with torch.no_grad():
+        for name, param in params.items():
+            local = param.to_local() if hasattr(param, "to_local") else param
+            is_lora = any(
+                k in name for k in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
+            )
+            if (
+                (name.endswith(".default") or ".default." in name)
+                and param.requires_grad
+                and not is_lora
+                and (".modules_to_save." not in name)
+            ):
+                # DoRA magnitudes, trainable token rows, ...: equivalence unchecked.
+                nonzero += 1
+                continue
+            if ".modules_to_save.default." in name:
+                # A trained saved module differs from the original the disabled-adapter reference runs.
+                original = params.get(
+                    name.replace(".modules_to_save.default.", ".original_module.")
+                )
+                if original is None:
+                    nonzero += 1
+                    continue
+                original = original.to_local() if hasattr(original, "to_local") else original
+                device = local.device
+                nonzero += int(not torch.equal(local, original.to(local.device)))
+                continue
+            # PEFT zero-inits linear lora_B but embedding lora_embedding_A.
+            if not (name.endswith(".default") or ".default." in name) or not (
+                "lora_B" in name or "lora_embedding_A" in name
+            ):
+                continue
+            device = local.device
+            nonzero += int(torch.count_nonzero(local).item())
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        # Every rank holds a different shard: agree, so no rank raises while another moves on.
+        flag = torch.tensor([float(nonzero)], device = device)
+        dist.all_reduce(flag)
+        nonzero = int(flag.item())
+    if nonzero:
+        raise ValueError(
+            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
+            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
+        )
+    return True
 
 
 def _refuse_model_parallel_export(model, method):

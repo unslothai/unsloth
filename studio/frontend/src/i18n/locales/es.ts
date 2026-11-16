@@ -1032,6 +1032,7 @@ export const es = {
       videoChecking: "Comprobando si este equipo admite vídeo...",
       more: "Más",
       customizeSidebar: "Personalizar la barra lateral",
+      customizeProfileMenu: "Personalizar menú de perfil",
       newBadge: "Nuevo",
       export: "Exportar",
       recents: "Recientes",

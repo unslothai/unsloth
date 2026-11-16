@@ -92,6 +92,16 @@ class _WindowAttributes(ctypes.Structure):
     ]
 
 
+def _program(command: str) -> str:
+    """The program an Exec line starts ("eog" for "env A=1 /usr/bin/eog %U"), as models name apps."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ""
+    words = [word for word in words if word != "env" and "=" not in word]
+    return os.path.basename(words[0]).casefold() if words else ""
+
+
 class LinuxBackend(Backend):
     name = "linux"
     shortcut_modifier = "ctrl"
@@ -624,8 +634,10 @@ class LinuxBackend(Backend):
             folded = shown.casefold()
             if folded == wanted or stem.casefold() == wanted:
                 rank = 0
+            elif wanted in (stem.casefold().rsplit(".", 1)[-1], _program(command)):
+                rank = 1
             elif wanted in folded:
-                rank = 1 + len(folded)
+                rank = 2 + len(folded)
             else:
                 continue
             if best is None or rank < best[0]:
