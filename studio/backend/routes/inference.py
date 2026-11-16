@@ -53600,6 +53600,21 @@ async def openai_image_generations(
         )
 
 
+def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tuple[str, float]]:
+    """The request's adapters; omitted means the ones the load baked in, so a deployed LoRA is never dropped silently."""
+    if body.loras is not None:
+        return [(spec.id, float(spec.weight)) for spec in body.loras]
+    pairs = []
+    for spec in status.get("baked_lora_specs") or ():
+        try:
+            lora_id, weight = str(spec["id"]), float(spec["weight"])
+        except Exception:  # noqa: BLE001 - a malformed status row names no adapter
+            continue
+        if lora_id and weight:
+            pairs.append((lora_id, weight))
+    return pairs
+
+
 def _image_generation_defaults(status: dict) -> tuple[int, float]:
     """Steps and guidance for the loaded image model: the diffusers recipe when the status reports one, else the family table (sd.cpp and MLX report none). It reads checkpoint headers, so call it off the event loop."""
     from core.inference.diffusion_content import content_variant_hint
@@ -53626,6 +53641,7 @@ async def _batched_openai_images(
     steps: int,
     guidance: float,
     expected_load: Any,
+    loras: Optional[list[tuple[str, float]]] = None,
 ) -> Optional[dict]:
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
@@ -53679,6 +53695,7 @@ async def _batched_openai_images(
                     seeds = seeds,
                     batch_size = len(seeds),
                     expected_load = expected_load,
+                    **({"loras": loras} if loras else {}),
                 )
             except Exception as exc:
                 # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
@@ -53694,6 +53711,7 @@ async def _batched_openai_images(
         steps,
         guidance,
         body.negative_prompt or None,
+        tuple(loras or ()),
     )
 
     def cancelled(exc: BaseException) -> bool:
@@ -53783,11 +53801,12 @@ async def _generate_openai_images(
         expected_load = load_identity(
             status.get("repo_id"), status.get("base_repo"), status.get("family")
         )
+        loras = _openai_image_loras(body, status)
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await _batched_openai_images(
-                    backend, status, body, width, height, steps, guidance, expected_load
+                    backend, status, body, width, height, steps, guidance, expected_load, loras
                 )
                 if result is None:
                     result = await _image_generate_in_thread(
@@ -53801,6 +53820,8 @@ async def _generate_openai_images(
                         seed = body.seed,
                         batch_size = body.n,
                         expected_load = expected_load,
+                        # Only when set, so engines without the parameter keep their call shape.
+                        **({"loras": loras} if loras else {}),
                     )
             break
         except DiffusionModelReplacedError:
@@ -53864,6 +53885,8 @@ async def _generate_openai_images(
         "transformer_cache": result.get("transformer_cache"),
         "cpu_offload": result.get("cpu_offload"),
         "baked_loras": list(result.get("baked_loras") or []),
+        # Same id:weight record as /images/generate, so the gallery shows the adapters this render used.
+        "loras": [f"{lora_id}:{weight:g}" for lora_id, weight in loras],
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }

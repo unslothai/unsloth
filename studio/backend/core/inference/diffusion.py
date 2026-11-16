@@ -967,6 +967,30 @@ def _baked_lora_names(pipe: Any) -> list:
     return names
 
 
+# The load request's (discovery id, weight) pairs behind a baked set, so a route without a LoRA field can render with it.
+_BAKED_LORA_SPECS_ATTR = "_unsloth_baked_lora_specs"
+
+
+def _record_baked_lora_specs(pipe: Any, loras: Any) -> None:
+    specs = []
+    for entry in loras or ():
+        try:
+            lora_id, weight = entry
+            weight = float(weight)
+        except Exception:  # noqa: BLE001 - an unrecognised entry was not baked either
+            continue
+        if lora_id and weight:
+            specs.append((str(lora_id), weight))
+    setattr(pipe, _BAKED_LORA_SPECS_ATTR, tuple(specs))
+
+
+def _baked_lora_specs(pipe: Any) -> list:
+    """The adapters a load baked in, as the ``{id, weight}`` the load requested; [] when none were baked."""
+    if not getattr(pipe, "_unsloth_loras_baked", False):
+        return []
+    return [{"id": i, "weight": w} for (i, w) in getattr(pipe, _BAKED_LORA_SPECS_ATTR, ()) or ()]
+
+
 # Adapters baked into a quantized single file; ``_unsloth_loras_baked`` also stays set after a declined quantize.
 _QUANT_FILE_LORA_BAKE_ATTR = "_unsloth_quant_file_loras_baked"
 # ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
@@ -10788,6 +10812,7 @@ class DiffusionBackend:
                                     )
                                     pipe._unsloth_loras = baked
                                     pipe._unsloth_loras_baked = True
+                                    _record_baked_lora_specs(pipe, loras)
                                     logger.info(
                                         "diffusion.lora_bake: %d adapter(s) attached before the pipeline "
                                         "quantize",
@@ -10950,6 +10975,7 @@ class DiffusionBackend:
                         )
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
+                        _record_baked_lora_specs(pipe, loras)
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
                         # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
                         quant_merged = (
@@ -12440,6 +12466,7 @@ class DiffusionBackend:
             )
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
+            _record_baked_lora_specs(pipe, lora_specs)
             logger.info(
                 "diffusion.lora_bake: %d adapter(s) attached before %s quantize",
                 len(baked),
@@ -16562,6 +16589,7 @@ class DiffusionBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
+            "baked_lora_specs": _baked_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(
