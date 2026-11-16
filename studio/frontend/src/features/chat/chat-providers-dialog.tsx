@@ -2060,8 +2060,11 @@ export function ChatProvidersSettings({
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
                         {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
-                        <SelectGroup>
-                          <SelectLabel>{group.label}</SelectLabel>
+                        <SelectGroup aria-label={group.label}>
+                          {/* As in the gallery, the leading group needs no heading. */}
+                          {group.id === "popular" ? null : (
+                            <SelectLabel>{group.label}</SelectLabel>
+                          )}
                           {group.items.map((item, itemIndex) => (
                             <SelectItem
                               key={item.providerType}
