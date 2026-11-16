@@ -1032,7 +1032,9 @@ def fix_transformers_config_commit_hash():
         config_dict, unused = get_config_dict(cls, pretrained_model_name_or_path, **kwargs)
         if isinstance(config_dict, dict):
             # As 5.17 did: the commit read now, never a stale one saved inside config.json.
-            config_dict["_commit_hash"] = _commit_of(pretrained_model_name_or_path, revision, subfolder)
+            config_dict["_commit_hash"] = _commit_of(
+                pretrained_model_name_or_path, revision, subfolder
+            )
         return config_dict, unused
 
     def patched_from_dict(cls, config_dict, **kwargs):
@@ -2552,17 +2554,38 @@ def fix_transformers_flex_mask_graph_breaks():
         if not _flex_mask_reads_padding_values(masking_utils, current):
             return
         original = current
+        try:
+            signature = inspect.signature(original)
+        except (TypeError, ValueError):
+            signature = None
+        var_keyword = next(
+            (
+                name
+                for name, p in (signature.parameters.items() if signature is not None else ())
+                if p.kind is inspect.Parameter.VAR_KEYWORD
+            ),
+            None,
+        )
 
         @functools.wraps(original)
         def flex_attention_mask(*args, **kwargs):
-            attention_mask = kwargs.get("attention_mask")
-            if (
-                args
-                or attention_mask is None
-                or "kv_length" not in kwargs
-                or not _is_dynamo_compiling()
-            ):
+            if not _is_dynamo_compiling():
                 return original(*args, **kwargs)
+            # A wrapper installed over this one (unsloth-zoo's padding keeper) re-binds and passes the
+            # mask arguments positionally, so read them by name from the signature, not from kwargs.
+            if args:
+                if signature is None:
+                    return original(*args, **kwargs)
+                try:
+                    bound = signature.bind(*args, **kwargs)
+                except TypeError:
+                    return original(*args, **kwargs)
+                arguments = dict(bound.arguments)
+                kwargs = dict(arguments.pop(var_keyword, None) or {}) if var_keyword else {}
+                kwargs.update(arguments)
+            attention_mask = kwargs.get("attention_mask")
+            if attention_mask is None or "kv_length" not in kwargs:
+                return original(**kwargs)
             padding_mask = masking_utils.prepare_padding_mask(
                 attention_mask, kwargs["kv_length"], kwargs.get("kv_offset", 0)
             )
