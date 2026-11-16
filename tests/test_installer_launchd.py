@@ -116,6 +116,19 @@ def test_agent_path_reaches_the_venv_and_homebrew(tmp_path):
     assert str(tmp_path / "home" / ".local" / "bin") in path
 
 
+def test_agent_path_keeps_the_installers_node(tmp_path):
+    nvm_bin = tmp_path / "nvm" / "bin"
+    nvm_bin.mkdir(parents = True)
+    node = nvm_bin / "node"
+    node.write_text("#!/bin/sh\n")
+    node.chmod(0o755)
+    _fake_mac(tmp_path)
+    r = _run_helper(tmp_path, PATH = f"{tmp_path / 'bin'}:{nvm_bin}:/usr/bin:/bin")
+    assert r.returncode == 0, r.stderr
+    path = plistlib.loads(_plist_path(tmp_path).read_bytes())["EnvironmentVariables"]["PATH"]
+    assert path.split(":")[1] == str(nvm_bin)
+
+
 def test_agent_runs_inside_the_studio_home(tmp_path):
     agent = _write_agent(tmp_path)
     home = tmp_path / "home" / ".unsloth" / "studio"

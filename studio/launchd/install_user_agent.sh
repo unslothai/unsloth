@@ -116,6 +116,12 @@ mkdir -p "$_run_home"
 # launchd starts jobs with only /usr/bin:/bin:/usr/sbin:/sbin on PATH.
 _exe_dir="$(dirname "$_UNSLOTH_EXE")"
 _path="$_exe_dir:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# setup.sh keeps a system Node (e.g. nvm) instead of a managed one; Studio finds it on PATH.
+_node="$(command -v node 2>/dev/null || true)"
+case "$_node" in
+    *[[:cntrl:]]*) ;;
+    /*) _path="$_exe_dir:$(dirname "$_node"):${_path#"$_exe_dir:"}" ;;
+esac
 
 # launchd scans the login account's home at login, not a redirected $HOME.
 _account_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
