@@ -722,6 +722,27 @@ def _compiled_auto_model(auto_model):
     return auto_model
 
 
+def _sync_registered_auto_classes(auto_model):
+    """Point registered Auto classes at their module's current class: register() stores the class object, so the
+    compiler's module swap would otherwise be missed."""
+    extra = getattr(getattr(auto_model, "_model_mapping", None), "_extra_content", None)
+    if not isinstance(extra, dict):
+        return
+    for config_class, model_class in list(extra.items()):
+        if not isinstance(model_class, type):
+            continue
+        module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+        current = getattr(module, model_class.__name__, None) if module is not None else None
+        if (
+            isinstance(current, type)
+            and current is not model_class
+            and current.__name__ == model_class.__name__
+            and callable(getattr(current, "from_pretrained", None))
+            and (_built_by_unsloth_compiler(current) or _built_by_unsloth_compiler(model_class))
+        ):
+            extra[config_class] = current
+
+
 def _built_by_unsloth_compiler(cls):
     """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
 
@@ -2870,9 +2891,7 @@ class FastModel(FastBaseModel):
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
             )
         elif "deepseek_v41," in model_types_all or "deepseek_v41_text," in model_types_all:
-            # DeepSeek-V4.1 port: its layers checkpoint non-reentrant, so a compiled region must save the same tensors
-            # in the recompute as in the forward. unsloth_zoo's prepare_compiled_checkpoint makes that hold; an older
-            # unsloth_zoo without it keeps torch.compile off for the model's forward as before.
+            # Non-reentrant checkpointing needs prepare_compiled_checkpoint (newer unsloth_zoo); else keep compile off.
             try:
                 from unsloth_zoo.temporary_patches.deepseek_v41 import prepare_compiled_checkpoint
             except ImportError:
@@ -3412,6 +3431,7 @@ class FastModel(FastBaseModel):
                             is_vlm = False
             else:
                 auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
+        _sync_registered_auto_classes(auto_model)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit

@@ -720,11 +720,10 @@ def tp_world_save(what, write, directory):
     import tempfile
 
     absolute = os.path.abspath(target)
-    parent = os.path.dirname(absolute)
     os.makedirs(absolute, exist_ok = True)
-    private = tempfile.mkdtemp(
-        prefix = f".{os.path.basename(absolute)}.unsloth_tp_rank{_rank()}_", dir = parent
-    )
+    # Staged inside the destination: same filesystem for os.replace (a mounted output dir would raise
+    # EXDEV from a sibling), and no write access to the parent needed.
+    private = tempfile.mkdtemp(prefix = f".unsloth_tp_rank{_rank()}_", dir = absolute)
     try:
         result = write(private)
         for root, _, files in os.walk(private):
