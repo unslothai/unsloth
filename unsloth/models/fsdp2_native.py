@@ -1799,7 +1799,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         else []
     )
     frozen_split = []
-    if extra_units and config.shard_frozen is not True and _supports_ignored_params(fully_shard):
+    if (
+        extra_units
+        and config.shard_frozen is not True
+        and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
+        and _supports_ignored_params(fully_shard)
+    ):
         # A frozen split table (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB) would be all-gathered whole
         # every step: keep it whole on every rank like a frozen lookup table, as on 1 GPU.
         frozen_split = [m for m in extra_units if not any(p.requires_grad for p in m.parameters())]

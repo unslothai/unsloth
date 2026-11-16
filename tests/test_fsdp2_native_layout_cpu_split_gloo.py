@@ -120,6 +120,9 @@ def _worker(rank, world, port, out, case):
             res = _case_split(native, frozen = True)
         elif case == "split_frozen_shard":
             res = _case_split(native, frozen = True, shard_frozen = True)
+        elif case == "split_frozen_env0":
+            os.environ["UNSLOTH_FSDP2_REPLICATE_FROZEN"] = "0"
+            res = _case_split(native, frozen = True)
         else:
             res = _case_cpu_mesh(native)
         out.put((rank, res))
@@ -178,8 +181,9 @@ def test_frozen_split_table_stays_whole_on_every_rank():
         assert r["extra_units"] == 0 and r["replicated"] == 1, (rank, r)
         assert r["table_dtensor"] == "Parameter" and r["table_shape"][0] == 4096, (rank, r)
         assert r["table_dtype"] == "torch.bfloat16", (rank, r)  # its own dtype group: never upcast
-    for rank, r in _run("split_frozen_shard").items():
-        assert r["extra_units"] == 1 and r["table_dtensor"] == "DTensor", (rank, r)
+    for case in ("split_frozen_shard", "split_frozen_env0"):
+        for rank, r in _run(case).items():
+            assert r["extra_units"] == 1 and r["table_dtensor"] == "DTensor", (case, rank, r)
 
 
 def test_cpu_mesh_on_a_cuda_host_plans_the_sharded_layout():
