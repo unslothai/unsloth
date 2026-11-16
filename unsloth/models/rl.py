@@ -3247,6 +3247,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = (
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
+        )
+        if trainer_file == "sft_trainer":
+            # assistant_only_loss on a vision run -> Unsloth's train_on_responses_only, on every transformers version.
+            data_collator_check += (
+                "from unsloth.trainer import _route_vision_assistant_only_loss\n"
+                "data_collator = _route_vision_assistant_only_loss(args, data_collator, model, __tokenizer, train_dataset, "
+                "eval_dataset if 'eval_dataset' in locals() else None)\n"
+            )
+        data_collator_check += (
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
