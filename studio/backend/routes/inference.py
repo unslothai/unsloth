@@ -53623,9 +53623,14 @@ def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tupl
 
 def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
     """The adapters an omitted ``loras`` stands for: the load's baked set, else the set the load named, at
-    their load weights. The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
+    their load weights. The engine reads a missing selection as "none", which on a bake zeroes the adapters.
+    A dense load that can no longer take adapters (Speed Auto compiled it on an adapter-free run) stands for none:
+    its named set would only be refused, and the Images page hides LoRA there and omits the field."""
     pairs = []
-    for spec in status.get("baked_lora_specs") or status.get("load_lora_specs") or ():
+    specs = status.get("baked_lora_specs") or (
+        status.get("load_lora_specs") if status.get("supports_lora", True) else None
+    )
+    for spec in specs or ():
         try:
             lora_id, weight = str(spec["id"]), float(spec["weight"])
         except Exception:  # noqa: BLE001 - a malformed status row names no adapter

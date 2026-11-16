@@ -127,3 +127,22 @@ def test_an_xy_cell_with_every_weight_at_0_renders_without_the_baked_set(baked):
     for cell in plan.cells:
         asyncio.run(_generate_diffusion_image_core(cell.request))
     assert baked.backend.seen == [[("tarot-lora", 0.8)], None]
+
+
+def test_a_compiled_dense_load_omitting_loras_renders_without_its_named_set(client, monkeypatch):  # noqa: F811
+    """Speed Auto compiles a dense load on an adapter-free run (the user turned its LoRA off), after which the status
+    reports supports_lora false: the Images page hides LoRA and omits the field, so its named set must not come back
+    and be refused."""
+
+    class _Compiled(_BakedLoad):
+        def status(self):
+            return {
+                **super().status(),
+                "supports_lora": False,
+                "lora_unavailable_reason": "Speed compiled this model, so LoRAs are off.",
+            }
+
+    backend = _Compiled(baked = [], dense = [{"id": "tarot-lora", "weight": 1.0}])
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    assert _gen(client).status_code == 200
+    assert backend.seen == [None]
