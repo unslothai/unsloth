@@ -5243,6 +5243,7 @@ export const es419 = {
     detectLanguage: "Detectar idioma",
     sourceLanguage: "Traducir de",
     targetLanguage: "Traducir a",
+    recentTargets: "Recientes",
     swap: "Intercambiar idiomas",
     swapNeedsSource: "Elige un idioma de origen para intercambiar",
     searchLanguages: "Buscar idiomas",
@@ -5285,11 +5286,11 @@ export const es419 = {
     },
     model: {
       label: "Modelo de traducción",
-      fast: "Rápido, funciona en cualquier computadora",
-      quality: "La mejor calidad, necesita más memoria",
+      fast: "Rápido",
+      quality: "Mejor calidad",
       chat: "Modelo de chat",
-      chatDescription:
-        "Usa el modelo elegido en Chat, local o de un proveedor conectado. No se descarga nada.",
+      chatDescription: "El modelo elegido en Chat",
+      other: "Otros modelos…",
       downloadSize: "Descarga de {size}",
       downloaded: "Descargado",
     },

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
+import {
+  ComposerModelPickerContext,
+  type ComposerModelPickerSource,
+} from "@/components/assistant-ui/composer-model-picker/context";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -12,9 +17,11 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -35,12 +42,20 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
+import { chatLocalModelOptions, useChatRuntimeStore } from "@/features/chat";
+import { parseExternalModelId } from "@/features/chat/external-providers";
+import { useDeviceInventorySources } from "@/features/hub";
+import type {
+  LoraModelOption,
+  ModelSelectorChangeMeta,
+} from "@/features/model-picker";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ReadAloudIcon } from "@/lib/action-bar-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -52,7 +67,6 @@ import {
   Cancel01Icon,
   ClipboardPasteIcon,
   Message01Icon,
-  SlidersHorizontalIcon,
   Upload01Icon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
@@ -70,21 +84,25 @@ import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
 import { ICON_ACTION, IconAction } from "./icon-action";
-import { useDictation, useReadAloud } from "./use-translate-voice";
 import {
   TRANSLATE_LANGUAGES,
   findTranslateLanguage,
   translateLanguageLabel,
+  translateSpeechTag,
 } from "./languages";
 import {
   CHAT_TRANSLATE_MODEL,
+  CUSTOM_TRANSLATE_MODEL,
+  type CustomTranslateModel,
   DEDICATED_TRANSLATE_MODELS,
   type TranslateModelId,
   dedicatedTranslateModel,
   formatModelBytes,
   isTranslateModelId,
   translateInstruction,
+  translateModelKey,
   translatePromptKind,
+  translatePromptModel,
 } from "./models";
 import {
   type TranslatePhase,
@@ -103,10 +121,11 @@ import {
   TARGET_PLACEHOLDER,
   TRANSLATE_MODES,
   TRANSLATE_TONES,
-  templateOptions,
   type TranslateMode,
   type TranslateTone,
+  templateOptions,
 } from "./translate-text";
+import { useDictation, useReadAloud } from "./use-translate-voice";
 
 const AUTO_TRANSLATE_DELAY_MS = 800;
 const TEXT_FILE_EXTENSIONS =
@@ -125,7 +144,18 @@ const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
 // Fills the window under the title and language row, leaving the run button in view.
-const PANE_HEIGHT = "h-80 md:h-[max(26rem,calc(100dvh-21rem))]";
+const PANE_HEIGHT = "h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
+// The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
+// Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
+const SOURCE_BOX =
+  "overflow-hidden rounded-xl bg-background shadow-[inset_0_0_0_1px_var(--border)] transition-[box-shadow,background-color] focus-within:shadow-[inset_0_0_0_1px_var(--ring)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:shadow-none dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:focus-within:shadow-none";
+// A thin scrollbar keeps a margin beside its thumb; the scroller overhangs the box by that much.
+const EDGE_SCROLL = "hover-scrollbar h-full w-[calc(100%+2px)] max-w-none";
+const SOURCE_TEXT = cn(
+  EDGE_SCROLL,
+  "rounded-none border-0 bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent",
+);
+const STOP_GLYPH = "size-3.5 fill-current";
 
 const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
@@ -282,80 +312,263 @@ function LanguagePicker({
 
 type Downloaded = Partial<Record<TranslateModelId, boolean>>;
 
+const NO_EXTERNAL_MODELS: ComposerModelPickerSource["externalModels"] = [];
+const NO_CONNECTIONS: ComposerModelPickerSource["externalConnections"] = [];
+const ignore = () => undefined;
+
+/**
+ * The model picker's panel without its chip: the Translate menu is the trigger, and the hidden
+ * chip only anchors the panel under it.
+ */
+function OtherModelPicker({
+  open,
+  onOpenChange,
+  selection,
+  onPick,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  selection: { id: string; variant: string | null };
+  onPick: (id: string, meta: ModelSelectorChangeMeta) => void;
+}) {
+  const models = useChatRuntimeStore((s) => s.models);
+  const loras = useChatRuntimeStore((s) => s.loras);
+  const inventory = useDeviceInventorySources(["localModels"]);
+  const refreshLocalModels = inventory.refresh;
+  const localRows = inventory.localModels.rows;
+  const loraModels = useMemo<LoraModelOption[]>(
+    () => [
+      ...loras.map((lora) => ({
+        id: lora.id,
+        name: lora.name,
+        baseModel: lora.baseModel,
+        updatedAt: lora.updatedAt,
+        source: lora.source,
+        exportType: lora.exportType,
+      })),
+      ...chatLocalModelOptions(localRows),
+    ],
+    [loras, localRows],
+  );
+  const source = useMemo<ComposerModelPickerSource>(
+    () => ({
+      models: models.map(({ id, name, description, isGguf }) => ({
+        id,
+        name,
+        description,
+        isGguf,
+      })),
+      loraModels,
+      // A connected provider's model is reached through the Chat model row.
+      externalModels: NO_EXTERNAL_MODELS,
+      externalConnections: NO_CONNECTIONS,
+      connections: false,
+      onPick,
+      // Translate loads and releases its model itself.
+      eject: ignore,
+      ejectAll: ignore,
+      open,
+      onOpenChange,
+      configRequest: null,
+      onConfigRequestAdopted: ignore,
+      onFoldersChange: refreshLocalModels,
+      onModelsChange: refreshLocalModels,
+      deleteDisabled: false,
+      activeModelConfig: null,
+      loadedContextLength: null,
+      loaded: false,
+      selection: {
+        id: selection.id,
+        ggufVariant: selection.variant,
+        loaded: false,
+      },
+    }),
+    [
+      models,
+      loraModels,
+      onPick,
+      open,
+      onOpenChange,
+      refreshLocalModels,
+      selection.id,
+      selection.variant,
+    ],
+  );
+  return (
+    <div className="invisible absolute inset-0 flex justify-end overflow-hidden">
+      <ComposerModelPickerContext.Provider value={source}>
+        <ComposerModelPicker side="bottom" align="end" />
+      </ComposerModelPickerContext.Provider>
+    </div>
+  );
+}
+
+function pickedModelName(id: string): string {
+  const external = parseExternalModelId(id)?.modelId;
+  return external ?? id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+}
+
 function ModelMenu({
   value,
+  custom,
   onChange,
+  onPickCustom,
   downloaded,
 }: {
   value: TranslateModelId;
+  custom: CustomTranslateModel | null;
   onChange: (id: TranslateModelId) => void;
+  onPickCustom: (model: CustomTranslateModel) => void;
   downloaded: Downloaded;
 }) {
   const t = useT();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const openPickerOnClose = useRef(false);
   const label =
-    dedicatedTranslateModel(value)?.label ?? t("translate.model.chat");
+    value === CUSTOM_TRANSLATE_MODEL
+      ? (custom?.name ?? "")
+      : (dedicatedTranslateModel(value)?.label ?? t("translate.model.chat"));
+  const pick = (id: string, meta: ModelSelectorChangeMeta) => {
+    setPickerOpen(false);
+    const variant = meta.ggufVariant ?? null;
+    const builtIn = DEDICATED_TRANSLATE_MODELS.find(
+      (model) =>
+        model.repo.toLowerCase() === id.toLowerCase() &&
+        (variant ?? model.variant).toLowerCase() ===
+          model.variant.toLowerCase(),
+    );
+    if (builtIn) {
+      onChange(builtIn.id);
+      return;
+    }
+    onPickCustom({
+      id,
+      name: pickedModelName(id),
+      variant,
+      sizeBytes: meta.expectedBytes ?? null,
+    });
+  };
+  const customNote = custom
+    ? [custom.variant, formatModelBytes(custom.sizeBytes ?? 0)]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label={t("translate.model.label")}
-          title={t("translate.model.label")}
-          className="max-w-56 text-ui-13 text-muted-foreground"
+    <div className="relative">
+      <OtherModelPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        selection={{
+          id:
+            (value === CUSTOM_TRANSLATE_MODEL
+              ? custom?.id
+              : dedicatedTranslateModel(value)?.repo) ?? "",
+          variant:
+            (value === CUSTOM_TRANSLATE_MODEL
+              ? custom?.variant
+              : dedicatedTranslateModel(value)?.variant) ?? null,
+        }}
+        onPick={pick}
+      />
+      <DropdownMenu>
+        {/* The model picker's own chip, so the two read as one control across pages. */}
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={t("translate.model.label")}
+            title={t("translate.model.label")}
+            className="unsloth-thinking-pill composer-model-chip max-w-56"
+          >
+            <span className="unsloth-thinking-label composer-model-chip-name truncate">
+              {label}
+            </span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="w-80"
+          // Opened once the menu has closed: its returning focus would dismiss the panel.
+          onCloseAutoFocus={(event) => {
+            if (!openPickerOnClose.current) return;
+            openPickerOnClose.current = false;
+            event.preventDefault();
+            setPickerOpen(true);
+          }}
         >
-          <span className="min-w-0 truncate">{label}</span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={2}
-            className="size-4 shrink-0"
-          />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-80">
-        <DropdownMenuLabel>{t("translate.model.label")}</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={value}
-          onValueChange={(next) => isTranslateModelId(next) && onChange(next)}
-        >
-          {DEDICATED_TRANSLATE_MODELS.map((model) => (
+          <DropdownMenuLabel>{t("translate.model.label")}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={value}
+            onValueChange={(next) => isTranslateModelId(next) && onChange(next)}
+          >
+            {DEDICATED_TRANSLATE_MODELS.map((model) => (
+              <DropdownMenuRadioItem
+                key={model.id}
+                value={model.id}
+                className="items-start"
+              >
+                <span className="grid min-w-0 gap-0.5">
+                  <span className="text-ui-13 font-medium text-foreground">
+                    {model.label}
+                  </span>
+                  <span className="text-ui-12 leading-normal text-muted-foreground">
+                    {t(MODEL_NOTE[model.id])}
+                    {" · "}
+                    {downloaded[model.id]
+                      ? t("translate.model.downloaded")
+                      : t("translate.model.downloadSize", {
+                          size: formatModelBytes(model.sizeBytes),
+                        })}
+                  </span>
+                </span>
+              </DropdownMenuRadioItem>
+            ))}
             <DropdownMenuRadioItem
-              key={model.id}
-              value={model.id}
+              value={CHAT_TRANSLATE_MODEL}
               className="items-start"
             >
               <span className="grid min-w-0 gap-0.5">
                 <span className="text-ui-13 font-medium text-foreground">
-                  {model.label}
+                  {t("translate.model.chat")}
                 </span>
                 <span className="text-ui-12 leading-normal text-muted-foreground">
-                  {t(MODEL_NOTE[model.id])}
-                  {" · "}
-                  {downloaded[model.id]
-                    ? t("translate.model.downloaded")
-                    : t("translate.model.downloadSize", {
-                        size: formatModelBytes(model.sizeBytes),
-                      })}
+                  {t("translate.model.chatDescription")}
                 </span>
               </span>
             </DropdownMenuRadioItem>
-          ))}
-          <DropdownMenuRadioItem
-            value={CHAT_TRANSLATE_MODEL}
-            className="items-start"
+            {custom && (
+              <DropdownMenuRadioItem
+                value={CUSTOM_TRANSLATE_MODEL}
+                className="items-start"
+              >
+                <span className="grid min-w-0 gap-0.5">
+                  <span className="truncate text-ui-13 font-medium text-foreground">
+                    {custom.name}
+                  </span>
+                  {customNote && (
+                    <span className="text-ui-12 leading-normal text-muted-foreground">
+                      {customNote}
+                    </span>
+                  )}
+                </span>
+              </DropdownMenuRadioItem>
+            )}
+          </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              openPickerOnClose.current = true;
+            }}
           >
-            <span className="grid min-w-0 gap-0.5">
-              <span className="text-ui-13 font-medium text-foreground">
-                {t("translate.model.chat")}
-              </span>
-              <span className="text-ui-12 leading-normal text-muted-foreground">
-                {t("translate.model.chatDescription")}
-              </span>
-            </span>
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+            {t("translate.model.other")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
@@ -407,7 +620,7 @@ function OptionsPopover() {
           aria-label={t("translate.options.label")}
           className={ICON_ACTION}
         >
-          <HugeiconsIcon icon={SlidersHorizontalIcon} className="size-4" />
+          <HugeiconsIcon icon={Settings01Icon} className="size-4" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80 gap-5">
@@ -580,8 +793,12 @@ export function TranslatePage() {
   const busy = phase !== null;
   const canTranslate = source.trim() !== "";
   const stale = translationIsStale({ result, source, prefs });
+  const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);
-  const modelLabel = dedicated?.label ?? t("translate.model.chat");
+  const modelLabel =
+    prefs.modelId === CUSTOM_TRANSLATE_MODEL
+      ? (prefs.customModel?.name ?? "")
+      : (dedicated?.label ?? t("translate.model.chat"));
 
   // Read again when a run ends: that is when a download has landed.
   useEffect(() => {
@@ -598,7 +815,7 @@ export function TranslatePage() {
 
   useEffect(() => {
     if (!prefs.autoTranslate || busy || !canTranslate) return;
-    if (!readyModels.includes(prefs.modelId)) return;
+    if (!readyModels.includes(modelKey)) return;
     // Only a draft that differs from the last one sent: a stopped or failed run is not retried.
     if (
       attempt &&
@@ -608,7 +825,7 @@ export function TranslatePage() {
       attempt.mode === prefs.mode &&
       attempt.tone === prefs.tone &&
       attempt.custom === customPromptOf(prefs) &&
-      attempt.modelId === prefs.modelId
+      attempt.modelKey === modelKey
     ) {
       return;
     }
@@ -617,7 +834,16 @@ export function TranslatePage() {
       AUTO_TRANSLATE_DELAY_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [prefs, busy, canTranslate, readyModels, attempt, source, translate]);
+  }, [
+    prefs,
+    modelKey,
+    busy,
+    canTranslate,
+    readyModels,
+    attempt,
+    source,
+    translate,
+  ]);
 
   // Follow the stream while it writes past the fold.
   useEffect(() => {
@@ -683,10 +909,11 @@ export function TranslatePage() {
     : "";
   const promptOptions = translatePromptOptions(prefs);
   const promptId = useId();
-  const promptKind = translatePromptKind(prefs.modelId);
+  const promptModel = translatePromptModel(prefs.modelId, prefs.customModel);
+  const promptKind = translatePromptKind(promptModel);
   const customPrompt = customPromptOf(prefs);
   const defaultPrompt = promptOptions
-    ? translateInstruction(prefs.modelId, templateOptions(promptOptions))
+    ? translateInstruction(promptModel, templateOptions(promptOptions))
     : "";
   // Emptied or typed back to the built prompt: no longer an edit.
   const setCustomPrompt = (value: string | null) => {
@@ -742,7 +969,11 @@ export function TranslatePage() {
         <div className="flex items-center gap-1">
           <ModelMenu
             value={prefs.modelId}
+            custom={prefs.customModel}
             onChange={(modelId) => setPrefs({ modelId })}
+            onPickCustom={(customModel) =>
+              setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel })
+            }
             downloaded={downloaded}
           />
           <OptionsPopover />
@@ -772,22 +1003,31 @@ export function TranslatePage() {
             onChange={setTarget}
             label={t("translate.targetLanguage")}
           />
-          {prefs.recentTargets.map((code) => {
-            const language = findTranslateLanguage(code);
-            if (!language) return null;
-            return (
-              <Button
-                key={code}
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="rounded-full text-ui-13 text-muted-foreground max-sm:hidden"
-                onClick={() => setTarget(code)}
-              >
-                {translateLanguageLabel(language, locale)}
-              </Button>
-            );
-          })}
+          {prefs.recentTargets.length > 0 && (
+            <fieldset className="flex items-center gap-1.5 ps-2 max-sm:hidden">
+              <legend className="float-start pe-0.5 text-ui-12 leading-8 text-muted-foreground">
+                {t("translate.recentTargets")}
+              </legend>
+              {prefs.recentTargets.map((code) => {
+                const language = findTranslateLanguage(code);
+                if (!language) return null;
+                const name = translateLanguageLabel(language, locale);
+                return (
+                  <Button
+                    key={code}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    title={`${t("translate.targetLanguage")}: ${name}`}
+                    className="rounded-full text-ui-12 font-normal text-muted-foreground hover:text-foreground"
+                    onClick={() => setTarget(code)}
+                  >
+                    {name}
+                  </Button>
+                );
+              })}
+            </fieldset>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -797,32 +1037,41 @@ export function TranslatePage() {
             aria-label={t("translate.sourceLabel")}
             className="relative flex flex-col gap-1.5"
           >
-            <Textarea
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  (event.metaKey || event.ctrlKey) &&
-                  !busy
-                ) {
-                  event.preventDefault();
-                  void translate();
-                }
-              }}
-              maxLength={TRANSLATE_SOURCE_MAX_CHARS}
-              placeholder={t("translate.sourcePlaceholder")}
-              aria-label={t("translate.sourceLabel")}
-              spellCheck={false}
-              dir="auto"
-              fieldSizing="fixed"
-              className={cn(PANE_HEIGHT, dragging && "border-ring")}
-            />
+            <div
+              className={cn(
+                SOURCE_BOX,
+                PANE_HEIGHT,
+                dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
+              )}
+            >
+              <Textarea
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    (event.metaKey || event.ctrlKey) &&
+                    !busy
+                  ) {
+                    event.preventDefault();
+                    void translate();
+                  }
+                }}
+                maxLength={TRANSLATE_SOURCE_MAX_CHARS}
+                placeholder={t("translate.sourcePlaceholder")}
+                aria-label={t("translate.sourceLabel")}
+                spellCheck={false}
+                dir="auto"
+                fieldSizing="fixed"
+                className={SOURCE_TEXT}
+              />
+            </div>
             <div className="flex items-center">
               {dictation.supported &&
                 (dictation.dictating ? (
                   <IconAction
                     icon={dictation.finalizing ? undefined : StopIcon}
+                    iconClassName={STOP_GLYPH}
                     label={t("translate.stopDictating")}
                     onClick={dictation.stop}
                     className="text-destructive hover:text-destructive"
@@ -881,30 +1130,28 @@ export function TranslatePage() {
             aria-busy={busy}
             className="flex flex-col gap-1.5"
           >
-            <div
-              ref={outputRef}
-              className={cn(
-                PANEL,
-                PANE_HEIGHT,
-                "hover-scrollbar overflow-y-auto px-3.5 py-3",
-              )}
-            >
-              {output !== "" ? (
-                <p
-                  dir="auto"
-                  aria-live="polite"
-                  className={cn(
-                    "whitespace-pre-wrap break-words text-base [overflow-wrap:anywhere] md:text-sm",
-                    stale && "text-muted-foreground",
-                  )}
-                >
-                  {output}
-                </p>
-              ) : (
-                <p className="text-base text-muted-foreground md:text-sm">
-                  {t("translate.outputEmpty")}
-                </p>
-              )}
+            <div className={cn(PANEL, PANE_HEIGHT, "overflow-hidden")}>
+              <div
+                ref={outputRef}
+                className={cn(EDGE_SCROLL, "overflow-y-auto px-3.5 py-3")}
+              >
+                {output !== "" ? (
+                  <p
+                    dir="auto"
+                    aria-live="polite"
+                    className={cn(
+                      "whitespace-pre-wrap break-words text-base [overflow-wrap:anywhere] md:text-sm",
+                      stale && "text-muted-foreground",
+                    )}
+                  >
+                    {output}
+                  </p>
+                ) : (
+                  <p className="text-base text-muted-foreground md:text-sm">
+                    {t("translate.outputEmpty")}
+                  </p>
+                )}
+              </div>
             </div>
             {output !== "" && (
               <div className="flex items-center justify-end">
@@ -935,7 +1182,14 @@ export function TranslatePage() {
                     <IconAction
                       icon={ReadAloudIcon}
                       label={t("translate.readAloud")}
-                      onClick={() => readAloud.speak(output)}
+                      onClick={() =>
+                        readAloud.speak(
+                          output,
+                          translateSpeechTag(
+                            (result ?? attempt)?.target ?? prefs.target,
+                          ),
+                        )
+                      }
                     />
                   ))}
                 <IconAction
@@ -964,7 +1218,10 @@ export function TranslatePage() {
             >
               {busy ? (
                 <>
-                  <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+                  <HugeiconsIcon
+                    icon={StopIcon}
+                    className={cn("mr-2", STOP_GLYPH)}
+                  />
                   {t("translate.stop")}
                 </>
               ) : (

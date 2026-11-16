@@ -24,15 +24,21 @@ import {
 } from "@/features/hub/download-manager/download-manager-controller";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { isTranslationHeldSlot } from "@/lib/translation-models";
 import {
-  CHAT_TRANSLATE_MODEL,
-  type DedicatedTranslateModel,
+  isTranslationHeldSlot,
+  isTranslationOnlyRepo,
+} from "@/lib/translation-models";
+import {
+  CUSTOM_TRANSLATE_MODEL,
+  type CustomTranslateModel,
+  HY_MT2_SAMPLING,
   TRANSLATE_CONTEXT_TOKENS,
   TRANSLATE_MAX_TOKENS,
   type TranslateModelId,
+  type TranslateSampling,
   dedicatedTranslateModel,
   translateMessages,
+  translatePromptModel,
 } from "./models";
 import {
   type TranslatePromptOptions,
@@ -67,6 +73,8 @@ export type TranslateRunOptions = {
   text: string;
   prompt: TranslatePromptOptions;
   modelId: TranslateModelId;
+  /** The model behind the "custom" id. */
+  custom: CustomTranslateModel | null;
   signal: AbortSignal;
   onPhase: (phase: TranslatePhase) => void;
   /** The whole translation so far. */
@@ -101,15 +109,25 @@ function isServing(
   ].some((id) => modelIdsMatch(id, repo));
 }
 
+/** A model this page fetches and loads itself. */
+type LocalModel = {
+  repo: string;
+  /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
+  variant: string | null;
+  sizeBytes: number;
+};
+
 /** Whether the model's file is already on disk; null when the listing could not be read. */
 export async function translateModelDownloaded(
-  model: DedicatedTranslateModel,
+  model: LocalModel,
   signal?: AbortSignal,
 ): Promise<boolean | null> {
+  const quant = model.variant?.toLowerCase();
+  if (!quant) return null;
   try {
     const listing = await listGgufVariants(model.repo, undefined, { signal });
     const variant = listing.variants.find(
-      (entry) => entry.quant?.toLowerCase() === model.variant.toLowerCase(),
+      (entry) => entry.quant?.toLowerCase() === quant,
     );
     return variant
       ? variant.downloaded === true && variant.partial !== true
@@ -121,7 +139,7 @@ export async function translateModelDownloaded(
 
 /** Runs the transfer as a download-manager job, so it also shows in the Hub's download panel. */
 async function downloadModel(
-  model: DedicatedTranslateModel,
+  model: LocalModel & { variant: string },
   hfToken: string | null,
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
@@ -213,8 +231,8 @@ async function downloadModel(
 }
 
 /** Downloads the model if it is missing and loads it if it is not serving. Returns its request id. */
-async function ensureDedicatedModel(
-  model: DedicatedTranslateModel,
+async function ensureLocalModel(
+  model: LocalModel,
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
 ): Promise<string> {
@@ -223,9 +241,10 @@ async function ensureDedicatedModel(
 
   const hfToken = useHfTokenStore.getState().token || null;
   // An unreadable listing is left to the load, which fetches a missing file itself.
-  if ((await translateModelDownloaded(model, signal)) === false) {
+  const { variant } = model;
+  if (variant && (await translateModelDownloaded(model, signal)) === false) {
     signal.throwIfAborted();
-    await downloadModel(model, hfToken, signal, onPhase);
+    await downloadModel({ ...model, variant }, hfToken, signal, onPhase);
   }
   signal.throwIfAborted();
   onPhase({ kind: "loading" });
@@ -271,16 +290,16 @@ type Request = Parameters<typeof streamChatCompletions>[0];
 
 /** The request, its messages filled in per passage. A chat model reuses the title request's provider routing and sampling gates. */
 async function baseRequest(
-  dedicated: DedicatedTranslateModel | null,
+  sampling: TranslateSampling | null,
   requestModel: string,
 ): Promise<Request> {
-  if (dedicated) {
+  if (sampling) {
     return {
       model: requestModel,
       messages: [],
       stream: true,
       max_tokens: TRANSLATE_MAX_TOKENS,
-      ...dedicated.sampling,
+      ...sampling,
       enable_tools: false,
       enable_thinking: false,
     };
@@ -300,10 +319,27 @@ export async function runTranslation(
   const { text, prompt, modelId, signal, onPhase, onOutput } = options;
   onPhase({ kind: "preparing" });
   const dedicated = dedicatedTranslateModel(modelId);
-  const requestModel = dedicated
-    ? await ensureDedicatedModel(dedicated, signal, onPhase)
-    : await chatModel(signal);
-  const base = await baseRequest(dedicated, requestModel);
+  const custom = modelId === CUSTOM_TRANSLATE_MODEL ? options.custom : null;
+  if (modelId === CUSTOM_TRANSLATE_MODEL && !custom)
+    throw new TranslateRunError("unavailable");
+  const local: LocalModel | null =
+    dedicated ??
+    (custom && !isExternalModelId(custom.id)
+      ? {
+          repo: custom.id,
+          variant: custom.variant,
+          sizeBytes: custom.sizeBytes ?? 0,
+        }
+      : null);
+  const requestModel = local
+    ? await ensureLocalModel(local, signal, onPhase)
+    : (custom?.id ?? (await chatModel(signal)));
+  const promptModel = translatePromptModel(modelId, custom);
+  // Any Hy-MT2 quant takes the card's sampling; other models the chat title request's.
+  const sampling =
+    dedicated?.sampling ??
+    (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);
+  const base = await baseRequest(sampling, requestModel);
 
   const chunks = splitForTranslation(text);
   const parts = chunks.filter((chunk) => chunk.text).length;
@@ -323,11 +359,7 @@ export async function runTranslation(
     const stream = streamChatCompletions(
       {
         ...base,
-        messages: translateMessages(
-          dedicated ? modelId : CHAT_TRANSLATE_MODEL,
-          chunk.text,
-          prompt,
-        ),
+        messages: translateMessages(promptModel, chunk.text, prompt),
       },
       signal,
     );
@@ -349,6 +381,6 @@ export async function runTranslation(
   }
   return {
     output,
-    model: dedicated?.label ?? translateModelName(requestModel),
+    model: dedicated?.label ?? custom?.name ?? translateModelName(requestModel),
   };
 }

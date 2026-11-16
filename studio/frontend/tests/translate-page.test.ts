@@ -8,15 +8,20 @@ import {
   TRANSLATE_LANGUAGES,
   suggestedTargetLanguage,
   translateLanguageLabel,
+  translateSpeechTag,
 } from "../src/features/translate/languages.ts";
 import {
   CHAT_TRANSLATE_MODEL,
+  CUSTOM_TRANSLATE_MODEL,
   DEDICATED_TRANSLATE_MODELS,
   DEFAULT_TRANSLATE_MODEL,
   dedicatedTranslateModel,
   isTranslateModelId,
+  parseCustomTranslateModel,
   translateInstruction,
   translateMessages,
+  translateModelKey,
+  translatePromptModel,
 } from "../src/features/translate/models.ts";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
@@ -413,7 +418,7 @@ test("the translation model is fetched by a translation, never by opening the pa
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.doesNotMatch(page, /downloadManager|loadModel\(/);
   // Translating as you type waits for a model that already served a translation.
-  assert.match(page, /if \(!readyModels\.includes\(prefs\.modelId\)\) return;/);
+  assert.match(page, /if \(!readyModels\.includes\(modelKey\)\) return;/);
   const runner = readText("../src/features/translate/translate-runner.ts");
   assert.match(runner, /runtime: "translate"/);
   const loaded = readText("../src/features/loaded-models/use-loaded-models.ts");
@@ -433,4 +438,45 @@ test("a stopped download and the chat model's own slot are honoured", () => {
   const chat = runner.slice(runner.indexOf("async function chatModel"));
   assert.match(chat, /getInferenceStatus\(signal, picked \|\| undefined\)/);
   assert.match(chat, /isTranslationHeldSlot\(status\.active_model, picked\)/);
+});
+
+test("a model from the picker keeps its own identity and takes the right prompt", () => {
+  const gemma = parseCustomTranslateModel({
+    id: "unsloth/gemma-4-E2B-it-GGUF",
+    variant: "Q4_K_M",
+    sizeBytes: 3_000_000_000,
+  });
+  assert.deepEqual(gemma, {
+    id: "unsloth/gemma-4-E2B-it-GGUF",
+    name: "unsloth/gemma-4-E2B-it-GGUF",
+    variant: "Q4_K_M",
+    sizeBytes: 3_000_000_000,
+  });
+  assert.equal(parseCustomTranslateModel({ id: "" }), null);
+  assert.equal(parseCustomTranslateModel(null), null);
+
+  // Another quant of Hy-MT2 still takes Hy-MT2's prompt; any other model a chat model's.
+  const hyMt = { ...gemma, id: "unsloth/Hy-MT2-7B-GGUF", variant: "Q8_0" };
+  assert.equal(translatePromptModel(CUSTOM_TRANSLATE_MODEL, gemma), "chat");
+  assert.equal(
+    translatePromptModel(CUSTOM_TRANSLATE_MODEL, hyMt),
+    DEFAULT_TRANSLATE_MODEL,
+  );
+  assert.equal(translatePromptModel("hy-mt2-7b", gemma), "hy-mt2-7b");
+
+  // Swapping the picked model must read as a different model to the stale check.
+  assert.notEqual(
+    translateModelKey(CUSTOM_TRANSLATE_MODEL, gemma),
+    translateModelKey(CUSTOM_TRANSLATE_MODEL, hyMt),
+  );
+  assert.equal(translateModelKey("hy-mt2-7b", gemma), "hy-mt2-7b");
+});
+
+test("read aloud asks for a voice of the translation's language", () => {
+  assert.equal(translateSpeechTag("zh"), "zh-CN");
+  assert.equal(translateSpeechTag("zh-Hant"), "zh-TW");
+  assert.equal(translateSpeechTag("yue"), "zh-HK");
+  assert.equal(translateSpeechTag("fr"), "fr");
+  const page = readText("../src/features/translate/translate-page.tsx");
+  assert.match(page, /readAloud\.speak\(\s*output,\s*translateSpeechTag\(/);
 });

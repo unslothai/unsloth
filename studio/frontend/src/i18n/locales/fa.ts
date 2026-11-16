@@ -5134,6 +5134,7 @@ export const fa = {
     detectLanguage: "تشخیص زبان",
     sourceLanguage: "ترجمه از",
     targetLanguage: "ترجمه به",
+    recentTargets: "اخیر",
     swap: "جابه‌جایی زبان‌ها",
     swapNeedsSource: "برای جابه‌جایی، زبان مبدأ را انتخاب کنید",
     searchLanguages: "جستجوی زبان‌ها",
@@ -5176,11 +5177,11 @@ export const fa = {
     },
     model: {
       label: "مدل ترجمه",
-      fast: "سریع، روی هر رایانه‌ای اجرا می‌شود",
-      quality: "بهترین کیفیت، به حافظهٔ بیشتری نیاز دارد",
+      fast: "سریع",
+      quality: "بهترین کیفیت",
       chat: "مدل گفتگو",
-      chatDescription:
-        "از مدل انتخاب‌شده در گفتگو استفاده می‌کند، چه محلی باشد چه از یک ارائه‌دهندهٔ متصل. چیزی دانلود نمی‌شود.",
+      chatDescription: "مدل انتخاب‌شده در گفتگو",
+      other: "مدل‌های دیگر…",
       downloadSize: "دانلود {size}",
       downloaded: "دانلود شد",
     },

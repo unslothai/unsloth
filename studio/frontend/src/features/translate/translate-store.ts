@@ -8,11 +8,16 @@ import {
   suggestedTargetLanguage,
 } from "./languages";
 import {
+  CUSTOM_TRANSLATE_MODEL,
+  type CustomTranslateModel,
   DEFAULT_TRANSLATE_MODEL,
   type TranslateModelId,
   type TranslatePromptKind,
   isTranslateModelId,
+  parseCustomTranslateModel,
+  translateModelKey,
   translatePromptKind,
+  translatePromptModel,
 } from "./models";
 import {
   type TranslateHistoryEntry,
@@ -45,6 +50,8 @@ export type TranslatePrefs = {
   target: string;
   recentTargets: string[];
   modelId: TranslateModelId;
+  /** The model behind the "custom" id; kept when another model is selected. */
+  customModel: CustomTranslateModel | null;
   mode: TranslateMode;
   tone: TranslateTone;
   showPrompt: boolean;
@@ -65,7 +72,7 @@ type Result = {
   target: string;
   mode: TranslateMode;
   tone: TranslateTone;
-  modelId: TranslateModelId;
+  modelKey: string;
   custom: string | null;
 };
 
@@ -80,7 +87,7 @@ type TranslateState = {
   /** The last request sent, finished or not. */
   attempt: Result | null;
   /** Models that served a translation this session: translating as you type never starts a download. */
-  readyModels: TranslateModelId[];
+  readyModels: string[];
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
   setTarget: (target: string) => void;
@@ -116,6 +123,7 @@ function loadPrefs(): TranslatePrefs {
   const saved = (readJson(PREFS_KEY) ?? {}) as Partial<TranslatePrefs>;
   const known = (code: unknown): code is string =>
     typeof code === "string" && findTranslateLanguage(code) !== undefined;
+  const customModel = parseCustomTranslateModel(saved.customModel);
   return {
     from: known(saved.from) ? saved.from : AUTO_SOURCE,
     target: known(saved.target)
@@ -126,9 +134,12 @@ function loadPrefs(): TranslatePrefs {
     recentTargets: Array.isArray(saved.recentTargets)
       ? saved.recentTargets.filter(known).slice(0, RECENT_TARGETS)
       : [],
-    modelId: isTranslateModelId(saved.modelId)
-      ? saved.modelId
-      : DEFAULT_TRANSLATE_MODEL,
+    modelId:
+      isTranslateModelId(saved.modelId) &&
+      (saved.modelId !== CUSTOM_TRANSLATE_MODEL || customModel)
+        ? saved.modelId
+        : DEFAULT_TRANSLATE_MODEL,
+    customModel,
     mode: TRANSLATE_MODES.includes(saved.mode as TranslateMode)
       ? (saved.mode as TranslateMode)
       : "automatic",
@@ -169,22 +180,29 @@ function resultOf(source: string, prefs: TranslatePrefs): Result {
     target: prefs.target,
     mode: prefs.mode,
     tone: prefs.tone,
-    modelId: prefs.modelId,
+    modelKey: translateModelKey(prefs.modelId, prefs.customModel),
     custom: customPromptOf(prefs),
   };
 }
 
 export function customPromptOf(
-  prefs: Pick<TranslatePrefs, "modelId" | "customPrompts">,
+  prefs: Pick<TranslatePrefs, "modelId" | "customModel" | "customPrompts">,
 ): string | null {
-  return prefs.customPrompts[translatePromptKind(prefs.modelId)] ?? null;
+  const model = translatePromptModel(prefs.modelId, prefs.customModel);
+  return prefs.customPrompts[translatePromptKind(model)] ?? null;
 }
 
 /** What the prompt needs from the settings; null when the target is not a known language. */
 export function translatePromptOptions(
   prefs: Pick<
     TranslatePrefs,
-    "from" | "target" | "mode" | "tone" | "modelId" | "customPrompts"
+    | "from"
+    | "target"
+    | "mode"
+    | "tone"
+    | "modelId"
+    | "customModel"
+    | "customPrompts"
   >,
 ): TranslatePromptOptions | null {
   const target = findTranslateLanguage(prefs.target);
@@ -285,6 +303,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         text: source,
         prompt,
         modelId: prefs.modelId,
+        custom: prefs.customModel,
         signal: run.signal,
         onPhase: (phase) => current() && set({ phase }),
         onOutput: (text) => current() && set({ output: text }),
@@ -309,9 +328,9 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         output,
         result: request,
         history,
-        readyModels: state.readyModels.includes(prefs.modelId)
+        readyModels: state.readyModels.includes(request.modelKey)
           ? state.readyModels
-          : [...state.readyModels, prefs.modelId],
+          : [...state.readyModels, request.modelKey],
       });
     } catch (error) {
       if (!current()) return;
@@ -397,7 +416,7 @@ export function translationIsStale(
       result.mode !== prefs.mode ||
       result.tone !== prefs.tone ||
       result.custom !== customPromptOf(prefs) ||
-      result.modelId !== prefs.modelId)
+      result.modelKey !== translateModelKey(prefs.modelId, prefs.customModel))
   );
 }
 

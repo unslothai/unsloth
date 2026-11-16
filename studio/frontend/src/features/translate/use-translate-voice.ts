@@ -92,7 +92,7 @@ export function useDictation(onTranscript: (transcript: string) => void) {
 
 type Utterance = ReturnType<StudioSpeechSynthesisAdapter["speak"]>;
 
-/** Reads text aloud with the voice from Voice settings; one reading at a time. */
+/** Reads text aloud with the voice from Voice settings, or a system voice of the text's language; one reading at a time. */
 export function useReadAloud() {
   const enabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const [speaking, setSpeaking] = useState(false);
@@ -106,9 +106,9 @@ export function useReadAloud() {
   }, []);
 
   const speak = useCallback(
-    (text: string) => {
+    (text: string, lang?: string) => {
       stop();
-      const utterance = new StudioSpeechSynthesisAdapter().speak(text);
+      const utterance = new StudioSpeechSynthesisAdapter().speak(text, lang);
       utteranceRef.current = utterance;
       setSpeaking(true);
       utterance.subscribe(() => {
@@ -121,7 +121,12 @@ export function useReadAloud() {
     [stop],
   );
 
-  useEffect(() => () => utteranceRef.current?.cancel(), []);
+  // Chrome lists its voices only after a first request, too late for the first reading.
+  useEffect(() => {
+    if (StudioSpeechSynthesisAdapter.systemVoicesSupported())
+      window.speechSynthesis.getVoices();
+    return () => utteranceRef.current?.cancel();
+  }, []);
 
   return {
     speaking,

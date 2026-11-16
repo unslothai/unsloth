@@ -76,6 +76,19 @@ export function translateLanguageLabel(
   return language.name;
 }
 
+// Where a system voice's locale differs from the language code.
+const SPEECH_TAGS: Record<string, string> = {
+  zh: "zh-CN",
+  "zh-Hant": "zh-TW",
+  yue: "zh-HK",
+  tl: "fil",
+};
+
+/** The BCP 47 tag a read-aloud voice for this language carries. */
+export function translateSpeechTag(code: string): string {
+  return SPEECH_TAGS[code] ?? code;
+}
+
 /** A first-run target: the first browser language the model knows. */
 export function suggestedTargetLanguage(preferred: readonly string[]): string {
   for (const tag of preferred) {

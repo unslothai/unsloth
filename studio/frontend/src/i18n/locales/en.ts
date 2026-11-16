@@ -4833,6 +4833,7 @@ export const en = {
     detectLanguage: "Detect language",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
+    recentTargets: "Recent",
     swap: "Swap languages",
     // Disabled swap button: there is no source language to swap into.
     swapNeedsSource: "Pick a source language to swap",
@@ -4879,10 +4880,11 @@ export const en = {
     },
     model: {
       label: "Translation model",
-      fast: "Fast, runs on any computer",
-      quality: "Best quality, needs more memory",
+      fast: "Fast",
+      quality: "Best quality",
       chat: "Chat model",
-      chatDescription: "Uses the model picked in Chat, local or from a connected provider. Nothing is downloaded.",
+      chatDescription: "The model picked in Chat",
+      other: "Other models…",
       downloadSize: "{size} download",
       downloaded: "Downloaded",
     },

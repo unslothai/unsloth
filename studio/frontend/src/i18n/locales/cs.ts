@@ -5179,6 +5179,7 @@ export const cs = {
     detectLanguage: "Rozpoznat jazyk",
     sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
+    recentTargets: "Nedávné",
     swap: "Prohodit jazyky",
     swapNeedsSource: "Pro prohození vyberte zdrojový jazyk",
     searchLanguages: "Hledat jazyky",
@@ -5221,11 +5222,11 @@ export const cs = {
     },
     model: {
       label: "Překladový model",
-      fast: "Rychlý, běží na každém počítači",
-      quality: "Nejlepší kvalita, vyžaduje více paměti",
+      fast: "Rychlý",
+      quality: "Nejlepší kvalita",
       chat: "Model z chatu",
-      chatDescription:
-        "Použije model vybraný v Chatu, místní nebo od připojeného poskytovatele. Nic se nestahuje.",
+      chatDescription: "Model vybraný v Chatu",
+      other: "Další modely…",
       downloadSize: "Stažení {size}",
       downloaded: "Staženo",
     },

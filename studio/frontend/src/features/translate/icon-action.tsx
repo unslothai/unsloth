@@ -16,6 +16,7 @@ export function IconAction({
   onClick,
   disabled,
   className,
+  iconClassName = "size-4",
   children,
 }: {
   /** Omit to draw `children` instead, for an icon that is not a Hugeicon. */
@@ -24,6 +25,7 @@ export function IconAction({
   onClick: () => void;
   disabled?: boolean;
   className?: string;
+  iconClassName?: string;
   children?: ReactNode;
 }) {
   return (
@@ -37,7 +39,11 @@ export function IconAction({
       onClick={onClick}
       className={cn(ICON_ACTION, className)}
     >
-      {icon ? <HugeiconsIcon icon={icon} className="size-4" /> : children}
+      {icon ? (
+        <HugeiconsIcon icon={icon} className={iconClassName} />
+      ) : (
+        children
+      )}
     </Button>
   );
 }
