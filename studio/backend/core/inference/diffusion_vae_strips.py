@@ -552,7 +552,7 @@ def _full_map_run(decoder: Any, z: Any, portable: bool) -> Any:
     _LOCAL.portable = portable
     try:
         # The mid block attends over every latent: where no fused SDPA takes head dim 512 (ROCm, MPS), Studio's
-        # chunked mode bounds the score matrix, else the math path holds all of it (37.7 GB at 2048 px on gfx1151).
+        # chunked mode bounds the score matrix, else the math path holds all of it (65,536 tokens at 2048 px: 8 GiB per bf16 copy).
         with torch.no_grad(), _attention_bound():
             out = None
             for i in range(z.shape[0]):

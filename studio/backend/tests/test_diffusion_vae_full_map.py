@@ -207,8 +207,8 @@ def test_a_peak_just_over_the_budget_keeps_main_s_tiles_and_says_so_once(monkeyp
 
 
 def test_the_mid_block_attention_is_chunked_where_no_fused_kernel_takes_it(roomy, monkeypatch):
-    """ROCm / MPS: no fused SDPA takes the VAE's head dim, and a whole-map math SDPA would hold every score (37.7 GB
-    at 2048 px on gfx1151). The whole-map decode runs under Studio's chunked mode: chunked, and still exact."""
+    """ROCm / MPS: no fused SDPA takes the VAE's head dim, and a whole-map math SDPA would hold every score (8 GiB per
+    bf16 copy at 2048 px). The whole-map decode runs under Studio's chunked mode: chunked, and still exact."""
     from core.inference import diffusion_vae_attn_chunked as chunked
 
     calls = []
