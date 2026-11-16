@@ -40,8 +40,10 @@ _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights. Left out
 # (name or env switch only): Z-Image-Turbo (rel L2 0.035 vs 0.024) and LTX-2 (audio 0.010 vs 0.008).
+# FLUX.3 runs the kernel in its strided processors (diffusion_int8_attention.install_auto), raced the same way.
 AUTO_DITS = frozenset(
     {
+        "Flux3Transformer2DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
     }

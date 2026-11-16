@@ -1259,6 +1259,7 @@ def install_int8_attention(
     incumbent: Optional[tuple] = None,
     force: bool = False,
     logger: Any = None,
+    floor: Optional[Callable] = None,
 ) -> int:
     """Route strided attention processors to the INT8 kernel. Returns how many now run it.
 
@@ -1266,9 +1267,11 @@ def install_int8_attention(
     ``incumbent`` is ``(name, callable(q, k, v))`` for what those modules run now (default: their native backend).
     The kernel must match fp32 attention on this card; unless ``force`` (or the env switch is ``1``) it must also be
     more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
-    must be faster also under ``force`` (not under the env switch). Never raises."""
+    must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
+    name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
+    dispatch route's races and token floor). Never raises."""
     try:
-        return _install(transformer, device, dtype, modules, incumbent, force, logger)
+        return _install(transformer, device, dtype, modules, incumbent, force, logger, floor)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors stay as they were
         if logger is not None:
             logger.info("diffusion.int8_attention: skipped (%s)", exc)
@@ -1283,6 +1286,7 @@ def _install(
     incumbent: Optional[tuple],
     force: bool,
     logger: Any,
+    floor: Optional[Callable] = None,
 ) -> int:
     import torch
 
@@ -1317,6 +1321,22 @@ def _install(
             if incumbent is not None
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
+        if floor is not None and not force:
+            found, minimum = floor(dev, dtype, int(m.heads), head_dim, fn, name)
+            report[(int(m.heads), head_dim, name)] = found
+            proc._unsloth_int8_impl = found.get("impl")
+            if minimum is None:
+                continue
+            proc._unsloth_int8 = True
+            proc._unsloth_int8_min_tokens = int(minimum)
+            engaged += 1
+            for card in _secondary_cards(index, transformer):
+                if implementation(card, head_dim) is None:
+                    continue
+                report[(card, int(m.heads), head_dim, name)] = verdict(
+                    torch.device("cuda", card), dtype, int(m.heads), head_dim, fn, name, timed = False
+                )
+            continue
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
         # a Triton stand-in races even when requested by name (only the env switch or IMPL=triton skip it)
         stand_in = (
@@ -1364,6 +1384,13 @@ def _install(
                 found.get("ms"),
                 found.get("min_tokens"),
                 f" long_ok={found['long'].get('ok')}" if "long" in found else "",
+                f" long race min_tokens={found['long_min_tokens']}"
+                if "long_min_tokens" in found
+                else (
+                    f" 2048 race min_tokens={found['mid_min_tokens']}"
+                    if "mid_min_tokens" in found
+                    else ""
+                ),
                 " (forced)" if force else "",
             )
         if engaged:
@@ -1410,6 +1437,51 @@ def install_requested(
         pass
     return install_int8_attention(
         transformer, device = device, dtype = dtype, force = True, logger = logger
+    )
+
+
+def install_auto(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+    speed_active: bool = True,
+) -> int:
+    """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
+    ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
+    ``MIN_TOKENS`` floor). Off with speed off (bit-identical), on ROCm, and off CUDA. Returns the count."""
+    import torch
+
+    if mode() != "auto" or not speed_active:
+        return 0
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return 0
+    try:
+        from . import diffusion_int8_attention_dispatch as dispatch
+    except Exception:  # noqa: BLE001
+        return 0
+    if not dispatch.enabled() or type(transformer).__name__ not in dispatch.AUTO_DITS:
+        return 0
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
+    if not device.startswith("cuda") or not torch.cuda.is_available() or _is_rocm():
+        return 0
+    dtype = getattr(target, "dtype", None)
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        index = _device_index(torch.device(device))
+        dtype = (
+            torch.bfloat16 if torch.cuda.get_device_capability(index) >= (8, 0) else torch.float16
+        )
+    try:
+        from .diffusion_flux3_attn import ensure_strided_processors
+        ensure_strided_processors(pipe, target, logger)
+    except Exception:  # noqa: BLE001 -- other families bring their own strided processors
+        pass
+
+    def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
+        return dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
+
+    return install_int8_attention(
+        transformer, device = device, dtype = dtype, logger = logger, floor = floor
     )
 
 

@@ -3560,6 +3560,14 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
     warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
+def _auto_request(requested: Any) -> bool:
+    """Whether a load left the attention pick to Studio (no request, "" or "auto")."""
+    try:
+        return normalize_attention_backend(requested) == ATTN_AUTO
+    except ValueError:
+        return False
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -3572,15 +3580,21 @@ def apply_attention_backend(
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
     ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
-    processors of a native pick to the INT8 kernel, and that name is returned. The DiTs whose processors call
+    processors of a native pick to the INT8 kernel, and that name is returned; with no request and the switch unset,
+    the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
     diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
     wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
     ``speed_active`` is False (speed off stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
-            from .diffusion_int8_attention import BACKEND, install_requested
+            from .diffusion_int8_attention import BACKEND, install_auto, install_requested
             if install_requested(pipe, requested, target, logger = logger):
+                return BACKEND
+            # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
+            if _auto_request(requested) and install_auto(
+                pipe, target, logger = logger, speed_active = speed_active
+            ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8", exc)
