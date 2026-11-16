@@ -20,6 +20,15 @@ import torch.nn.functional as F
 from core.inference import diffusion_int8_attention as I
 from core.inference import diffusion_int8_attention_cuda as K
 
+
+@pytest.fixture(autouse = True)
+def _no_recorded_graph():
+    """A test that fakes a capture leaves no recorded graph behind (it freezes every later plan's decision)."""
+    I._GRAPHED[0] = False
+    yield
+    I._GRAPHED[0] = False
+
+
 # dynamic shared memory one block may ask for, and registers per SM, per capability
 SHARED_LIMIT = {
     (7, 5): 64 * 1024,

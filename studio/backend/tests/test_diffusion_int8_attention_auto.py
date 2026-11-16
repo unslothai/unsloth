@@ -16,6 +16,15 @@ import torch
 from core.inference import diffusion_int8_attention as I
 from core.inference import diffusion_int8_attention_dispatch as D
 
+
+@pytest.fixture(autouse = True)
+def _no_recorded_graph():
+    """A test that fakes a capture leaves no recorded graph behind (it freezes every later plan's decision)."""
+    I._GRAPHED[0] = False
+    yield
+    I._GRAPHED[0] = False
+
+
 _TARGET = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 
 
@@ -679,3 +688,29 @@ def test_a_bucket_decision_applies_only_to_plans_that_also_had_sinks(monkeypatch
     assert decide(again, True, lambda: pytest.fail("known verdict: no race")) is True
     # a sink-free plan of the bucket after the race still runs the kernels without the sink path
     assert decide(plan(730), False, lambda: pytest.fail("no sinks: no race")) is False
+
+
+def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
+    """A CUDA graph that recorded an undecided sink-route plan replays the sink path: from then on a plan with sinks
+    keeps that path without a race (so no route or processor changes under a recorded graph), one without sinks
+    runs the kernels without it (the same bits); a new pipeline races again."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(
+        I, "_drop_routes", lambda plan: pytest.fail("no route change after a capture")
+    )
+    capturing = [True]
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: capturing[0])
+    plan = _fake_plan(mode = I.MODE_RACE)
+    assert I._choose_path(plan, race = lambda: pytest.fail("never in a capture")) == (True, None)
+    capturing[0] = False
+    plan.update(_deciding_plan(I.MODE_RACE))
+    assert I._choose_path(plan, race = lambda: pytest.fail("no race after a capture"))[0] is True
+    clean = _fake_plan(mode = I.MODE_RACE, calls = I.SINK_DECIDE_AT)
+    assert I._choose_path(clean, race = lambda: pytest.fail("no sinks: no race"))[0] is False
+    I.forget_plans()
+    fresh = _deciding_plan(I.MODE_RACE)
+    races = []
+    assert I._choose_path(fresh, race = lambda: races.append(1) or True)[0] is True and races == [1]

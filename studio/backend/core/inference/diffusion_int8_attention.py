@@ -511,6 +511,9 @@ def _decisions() -> dict:
     return found
 
 
+# Set when a CUDA graph records a sink-route call (cleared per pipeline): from then on no plan races or changes a
+# route, since a graph already recorded replays what it recorded; an undecided plan keeps the sink path it recorded.
+_GRAPHED = [False]
 # (card, head dim, raise_floor(tokens)) of the routes a race engaged: a plan on that card and head dim that decides
 # torch's attention raises their token floor past its bucket, so those calls leave the op (and its graph) entirely
 _ROUTES: list = []
@@ -755,6 +758,7 @@ def forget_plans() -> None:
     _plans().clear()
     _decisions().clear()
     _ROUTES.clear()
+    _GRAPHED[0] = False
 
 
 def _find_plan(
@@ -859,6 +863,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
     if plan.get("mode", MODE_RACE) == MODE_MAIN:
         return False, None
     if torch.cuda.is_current_stream_capturing():
+        _GRAPHED[0] = True
         return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
     plan["calls"] = n + 1
@@ -875,7 +880,12 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 key = plan["decision"] + (seen,) if "decision" in plan else None
                 known = _decisions().get(key) if key is not None else None
                 if not seen:
-                    plan["sinks"] = False
+                    plan["sinks"] = (
+                        False  # the same bits as the sink path a graph may have recorded
+                    )
+                elif _GRAPHED[0]:
+                    # after a capture: the path the graph recorded for an undecided plan, no race, no route change
+                    plan["sinks"] = True
                 elif known is not None:
                     plan["sinks"] = known
                 else:
