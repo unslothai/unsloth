@@ -265,3 +265,31 @@ def test_packed_block_kernel_declines_dropout_and_the_varlen_kill_switch(monkeyp
     with sdpa_kernel([SDPBackend.MATH]):
         assert not AD._packed_block_kernel(layer.train(), hidden)
     assert AD._packed_block_kernel(layer.train(), hidden)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_prepare_rechecks_the_flash_policy_and_declines_inference_lengths(monkeypatch):
+    import types
+
+    from unsloth.utils import attention_dispatch as AD
+
+    if torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("flash varlen needs sm80+ CUDA")
+    monkeypatch.setattr(AD, "_packed_varlen_ok_eager", lambda *a, **k: True)
+    config = types.SimpleNamespace(num_attention_heads = 4, num_key_value_heads = 2)
+    layer = torch.nn.Module()
+    layer.self_attn = types.SimpleNamespace(config = config, head_dim = 16, attention_dropout = 0.0)
+    layer.train()
+    hidden = torch.zeros(1, 8, 64, dtype = torch.bfloat16, device = "cuda")
+    lengths = torch.tensor([3, 5], device = "cuda")
+    assert AD.prepare_packed_block(layer, hidden, {"packed_seq_lengths": lengths}) is not None
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with sdpa_kernel(
+        [SDPBackend.MATH]
+    ):  # same lengths tensor: a cache hit must not skip the policy
+        assert AD.prepare_packed_block(layer, hidden, {"packed_seq_lengths": lengths}) is None
+    with torch.inference_mode():
+        frozen = torch.tensor([3, 5], device = "cuda")
+    assert AD.prepare_packed_block(layer, hidden, {"packed_seq_lengths": frozen}) is None
