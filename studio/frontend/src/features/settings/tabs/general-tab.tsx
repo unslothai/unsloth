@@ -185,6 +185,7 @@ const PREFS_KEYS: string[] = [
   // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
   // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
+  "unsloth_chat_picker_orgs",
   "unsloth_models_fit_on_device_only",
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",

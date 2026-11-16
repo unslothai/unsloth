@@ -50,6 +50,7 @@ import {
   type Capability,
   CapabilityGlyph,
   DELETABLE_LOCAL_SOURCES,
+  PROVIDER_LOGOS,
   HubFailureHint,
   TrainIcon,
   TransportConflictDialog,
@@ -1699,6 +1700,7 @@ export function ComposerModelPicker({
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
+  const pickerOrgs = useChatRuntimeStore((s) => s.pickerOrgs);
   const loadFreesResident =
     !keepModelsLoaded &&
     typeof checkpoint === "string" &&
@@ -2314,11 +2316,14 @@ export function ComposerModelPicker({
       entry.ids.add(row.id.toLowerCase());
       byMaker.set(maker.id, entry);
     }
+    // Settings can name the orgs outright; otherwise one with 3+ models on device.
+    const makers = pickerOrgs
+      ? PROVIDER_LOGOS.filter((maker) => pickerOrgs.includes(maker.id))
+      : [...byMaker.values()]
+          .filter(({ ids }) => ids.size >= MAKER_TAB_MIN_MODELS)
+          .map(({ maker }) => maker);
     const out: SourceTab[] = [];
-    for (const { maker, ids } of byMaker.values()) {
-      if (ids.size < MAKER_TAB_MIN_MODELS) {
-        continue;
-      }
+    for (const maker of makers) {
       out.push({
         value: `${MAKER_PREFIX}${maker.id}`,
         label: maker.name,
@@ -2335,7 +2340,7 @@ export function ComposerModelPicker({
       });
     }
     return out;
-  }, [rows]);
+  }, [rows, pickerOrgs]);
 
   const [tabOrder, setTabOrder] = useState(readTabOrder);
   const [draggingTab, setDraggingTab] = useState<string | null>(null);

@@ -178,6 +178,6 @@ export {
 } from "./inventory/inventory-freshness";
 export { withAbort } from "./lib/abort-signals";
 export { OwnerAvatar } from "./catalog/owner-avatar";
-export { resolveOwnerProviderLogo } from "./lib/provider-logos";
+export { PROVIDER_LOGOS, resolveOwnerProviderLogo } from "./lib/provider-logos";
 export { matchesRecommendedBrowse } from "./lib/recommended-browse";
 export { formatParamCount } from "./lib/view-models";

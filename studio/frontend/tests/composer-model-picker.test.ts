@@ -993,7 +993,7 @@ test("the Connected tab lists every connection's models, favorites then newest f
   assert.match(picker, /const MAKER_TAB_MIN_MODELS = 3;/);
   assert.match(
     picker,
-    /entry\.ids\.add\(row\.id\.toLowerCase\(\)\)[\s\S]{0,200}?if \(ids\.size < MAKER_TAB_MIN_MODELS\)/,
+    /entry\.ids\.add\(row\.id\.toLowerCase\(\)\)[\s\S]{0,500}?\.filter\(\(\{ ids \}\) => ids\.size >= MAKER_TAB_MIN_MODELS\)/,
   );
 });
 
@@ -1619,4 +1619,27 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
     picker,
     /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
   );
+});
+
+test("Settings can name the picker's orgs; unset, it suggests them from the device", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const makers = pickerOrgs\s+\? PROVIDER_LOGOS\.filter\(\(maker\) => pickerOrgs\.includes\(maker\.id\)\)/,
+  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(store, /CHAT_PICKER_ORGS_KEY = "unsloth_chat_picker_orgs"/);
+  assert.match(store, /pickerOrgs: loadPickerOrgs\(\),/);
+  // Off by default: no saved list means the picker's own suggestions.
+  assert.match(store, /if \(raw === null\) return null;/);
+  const settings = readSrc("features/settings/tabs/chat-tab.tsx");
+  assert.match(
+    settings,
+    /checked=\{pickerOrgs !== null\}\s+onCheckedChange=\{\(on\) => setPickerOrgs\(on \? \[\] : null\)\}/,
+  );
+  // A settings reset clears it.
+  const general = readSrc("features/settings/tabs/general-tab.tsx");
+  assert.match(general, /"unsloth_chat_picker_orgs",/);
 });
