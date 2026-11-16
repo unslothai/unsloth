@@ -161,6 +161,9 @@ CORE_FACTORIES = {
         "training", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.auth:DELETE:/api-keys/{key_id}": Factory("api-key"),
+    "routes.auth:PATCH:/api-keys/{key_id}": Factory(
+        "api-key", {"access": "inference"}, fragment = "inference"
+    ),
     "routes.mcp_servers:PUT:/{server_id}": Factory(
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
