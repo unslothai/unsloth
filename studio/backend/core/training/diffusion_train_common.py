@@ -70,6 +70,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
         "krea-2",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "minimax-h3",
@@ -89,7 +90,7 @@ AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 # Image families whose latent grid is coarser than the generic multiple-of-8 check.
-_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32}
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {"qwen-image-2.1": 32, "flux.3-klein-base": 16}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -442,6 +443,15 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    # The public FLUX.3 trainers' rank 32 / lr 1e-4. A 500-step tarot sweep (768 px) picked it: rank 16 or lr 2e-4
+    # learned the style as well but moved unrelated prompts more (LPIPS 0.16 / 0.21 / 0.28 against 0.14).
+    "flux.3-klein-base": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Resolution must be a multiple of 32 (LTX-2 VAE spatial compression).
     "ltx-2": {
         "lora_rank": 32,
@@ -505,6 +515,14 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
+    # The Qwen3-VL-4B encoder (8.9 GB bf16) runs once to cache the captions and is freed before the DiT loads; the
+    # nf4 loop then peaks at 6.9 GB (768 px, rank 32, RTX PRO 6000), bf16 at 13.1 GB.
+    "flux.3-klein-base": {
+        "params": "5.6B",
+        "qlora_vram_gb": 12,
+        "gated": False,
+        "note": "Trains on FLUX.3 Klein Base, runs on Klein or Base.",
+    },
     # Run peak (34.8 GB on B200) includes the resident Gemma3-12B conditioner.
     "ltx-2": {
         "params": "19B",
@@ -561,6 +579,7 @@ _DIT_TRAIN_FAMILIES = frozenset(
         "krea-2",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
         "wan2.2-ti2v-5b",
     }
@@ -1085,6 +1104,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
                 # Families with several train/deploy pairs cannot use the scalar above.
                 "deploy_bases": deploy_bases,
+                # Every family the trained adapter loads on (FLUX.3 Klein Base deploys on the distilled family).
+                "lora_families": lora_run_families(name),
                 # Dropped on a dit_block so the hardware reason in vram_note is shown instead.
                 "base_specs": {} if dit_block else base_specs,
             }
@@ -1579,7 +1600,7 @@ UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # Families loaded via ModularPipeline (modular_model_index.json, no model_index.json); the trainer and start route must share this set.
-MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "flux.3-klein-base"})
 
 # MiniMax-H3 canvas multiple: a 16x VAE compression and a 2x patch.
 _H3_CANVAS_MULTIPLE = 32
@@ -2250,6 +2271,23 @@ def _publish_to_lora_catalog(
         return None
 
 
+def lora_run_families(family: Optional[str]) -> list[str]:
+    """The families a LoRA trained on ``family`` loads on: its own, then each family a ``deploy_base_repos`` target
+    belongs to (FLUX.3 Klein Base trains, the distilled FLUX.3 Klein is its own family). Never raises."""
+    name = str(family or "").strip()
+    out = [name]
+    try:
+        from core.inference.diffusion_families import detect_family
+        fam = detect_family("", override = name) if name else None
+        for _training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()) or ():
+            target = detect_family(inference_repo)
+            if target is not None and target.name not in out:
+                out.append(target.name)
+    except Exception:  # noqa: BLE001 -- the trained family alone still gates the adapter correctly
+        pass
+    return out
+
+
 def _write_lora_sidecar(
     sidecar_path: Path,
     cfg: DiffusionLoraConfig,
@@ -2258,7 +2296,7 @@ def _write_lora_sidecar(
     """Records the step reached, not the configured train_steps, so a stopped run is not overstated."""
     meta = {
         "family": cfg.resolved_family,
-        "families": [cfg.resolved_family],
+        "families": lora_run_families(cfg.resolved_family),
         "base_model": cfg.base_model,
         "lora_rank": cfg.lora_rank,
         "lora_alpha": cfg.lora_alpha,

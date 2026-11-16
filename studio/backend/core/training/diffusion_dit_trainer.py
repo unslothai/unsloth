@@ -3,8 +3,8 @@
 
 """Flow-matching LoRA training for the rectified-flow DiT families.
 
-Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Qwen-Image-2.1, Z-Image, Krea 2. Video: LTX-2 and Wan2.2-TI2V-5B (from a
-still-image dataset; see the ``_LTX2_TARGETS`` and ``_WAN_TARGETS`` blocks for what a video family adds).
+Image: FLUX.1-dev, FLUX.2 (dev + Klein), FLUX.3 Klein, Qwen-Image, Qwen-Image-2.1, Z-Image, Krea 2. Video: LTX-2 and
+Wan2.2-TI2V-5B (from a still-image dataset; see the ``_LTX2_TARGETS`` and ``_WAN_TARGETS`` blocks for what a video family adds).
 
 These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing in
 ``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The training math
@@ -46,6 +46,7 @@ from core.training.diffusion_train_common import (
     DiffusionLoraConfig,
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
+    MODULAR_BASE_FAMILIES,
     StopCb,
     enable_diffusion_gradient_checkpointing,
     TrainingPeakMemory,
@@ -183,6 +184,9 @@ class _FamilySpec:
     save_takes_metadata: bool = False
     # (scheduler config, cfg) -> the dynamic-shift mu the "auto" sigma table uses; None pins max_shift.
     training_mu: Optional[Callable[..., Optional[float]]] = None
+    # diffusers ``compute_density_for_timestep_sampling`` scheme for the timestep index: "logit_normal", or "none"
+    # (uniform) where the family's reference trainer draws u uniformly through its shifted table (FLUX.3).
+    timestep_density: str = "logit_normal"
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -249,13 +253,18 @@ def _bell_loss_weights(num_train_timesteps):
     return w * (steps / w.sum())
 
 
-def _sample_timesteps(scheduler, batch_size, device):
-    """Logit-normal density timestep sampling (weighting_scheme='logit_normal'), returning
-    (timesteps, indices) into the scheduler's schedule."""
+def _sample_timesteps(
+    scheduler,
+    batch_size,
+    device,
+    density = "logit_normal",
+):
+    """Density timestep sampling (``density``: diffusers' weighting_scheme, logit-normal by default; "none" is
+    uniform), returning (timesteps, indices) into the scheduler's schedule."""
     from diffusers.training_utils import compute_density_for_timestep_sampling
 
     u = compute_density_for_timestep_sampling(
-        weighting_scheme = "logit_normal",
+        weighting_scheme = density,
         batch_size = batch_size,
         logit_mean = 0.0,
         logit_std = 1.0,
@@ -1590,6 +1599,224 @@ def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# FLUX.3 Klein (5.6B DiT, Qwen3-VL-4B encoder, the FLUX.2 VAE). Diffusers ships it only as modular blocks, so every
+# helper below mirrors one block of Flux3AutoBlocks' text-to-image graph (diffusers 0.42), and the recipe follows the
+# public FLUX.3 trainers (diffusers examples/dreambooth/train_dreambooth_lora_flux3_klein.py, ai-toolkit's flux3
+# arch): train the undistilled base, target noise - latents, u drawn uniformly through the constant 6.93 shift.
+# Attention + MLP linears of every block, the reference trainers' set. Bare suffixes also take mode_blocks.image_cond
+# (the reference-image stream): a text-to-image run never executes it, so those adapters stay zero, as in the
+# references, and the file keeps their layout.
+_FLUX3_TARGETS = (
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "ff.linear_in",
+    "ff.linear_out",
+)
+# Flux3PrepareLatentsStep's image_rope_scale: the image H / W position ids are scaled by it.
+_FLUX3_IMAGE_ROPE_SCALE = 0.5
+# Left dense under nf4, as the inference keep-list (diffusion_families._FLUX3_QUANT_KEEP) leaves them under every
+# transformer-quant scheme. bitsandbytes skips a module whose dotted path contains "<name>.", so the full names.
+_FLUX3_NF4_KEEP = (
+    "early_stream_modulations",
+    "single_stream_modulations",
+    "timestep_embedder",
+    "target_timestep_embedder",
+    "norm_out",
+    "txt_mode_blocks",
+    "context_embedder",
+)
+
+
+def _flux3_load_conditioners(cfg, device, weight_dtype):
+    import torch
+    from core.inference.diffusion_flux3 import (
+        FLUX3_KLEIN_BASE_FAMILY_NAME,
+        load_flux3_pipeline,
+    )
+
+    pipe = load_flux3_pipeline(
+        cfg.base_model,
+        torch.bfloat16,
+        hf_token = cfg.hf_token,
+        family_name = FLUX3_KLEIN_BASE_FAMILY_NAME,
+        with_transformer = False,
+    )
+    # Host until the text encoder is freed, as _load_pipe_without_transformer.
+    pipe.vae.to(dtype = torch.float32)
+    return pipe, pipe.vae
+
+
+def _flux3_nf4_config():
+    cfg = _bnb_4bit_config()
+    cfg.llm_int8_skip_modules = list(_FLUX3_NF4_KEEP)
+    return cfg
+
+
+def _flux3_load_transformer(cfg, device, weight_dtype, base_precision):
+    import torch
+    from diffusers import Flux3Transformer2DModel
+
+    if base_precision == "nf4" and not repo_is_prequantized(cfg.base_model):
+        transformer = Flux3Transformer2DModel.from_pretrained(
+            cfg.base_model,
+            subfolder = "transformer",
+            quantization_config = _flux3_nf4_config(),
+            device_map = {"": device},
+            torch_dtype = torch.bfloat16,
+            token = cfg.hf_token,
+        )
+    else:
+        transformer = _load_dit_transformer(Flux3Transformer2DModel, cfg, device, base_precision)
+    if getattr(transformer.config, "flow_map", False):
+        raise ValueError(
+            f"{cfg.base_model} is the step-distilled FLUX.3 Klein, which cannot be trained. Train on "
+            "black-forest-labs/flux-3-image-klein-base; the adapter also runs on FLUX.3 Klein."
+        )
+    return transformer
+
+
+def _flux3_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            # The facade's encode_prompt is what the text step runs at inference: chat template, the window padded
+            # to a multiple of 80 tokens (the transformer attends to the padding), 8 stacked hidden states.
+            pe = pipe.encode_prompt(prompt = cap, device = device)
+            out.append((pe.cpu(),))
+    return out
+
+
+# The FLUX.2 VAE, patchified 2x2 and batch-norm normalised from the posterior mode (Flux3VaeEncoderStep).
+_flux3_encode_latents = _flux2_encode_latents
+_flux3_encode_latent_stats = _flux2_encode_latent_stats
+
+
+def _flux3_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    # Kept per sample: windows differ in length, and padding one would add tokens the transformer attends to.
+    return ([e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries],)
+
+
+def _flux3_ids(rows, cols, l_coord, rope_scale, device):
+    """(rows * cols, 4) position ids (t, h, w, l) as Flux3PrepareLatentsStep / Flux3TextRoPEInputsStep build them."""
+    import torch
+
+    ids = torch.cartesian_prod(torch.arange(1), torch.arange(rows), torch.arange(cols), l_coord).to(
+        dtype = torch.float32
+    )
+    ids[:, 1:3] = ids[:, 1:3] * rope_scale
+    return ids.to(device)
+
+
+_FLUX3_STATIC: dict[tuple, Any] = {}
+
+
+def _flux3_img_ids(h, w, device):
+    import torch
+
+    key = ("img", h, w, str(device))
+    hit = _FLUX3_STATIC.get(key)
+    if hit is None:
+        hit = _FLUX3_STATIC[key] = _flux3_ids(
+            h, w, torch.tensor([0]), _FLUX3_IMAGE_ROPE_SCALE, device
+        )
+    return hit
+
+
+def _flux3_txt_ids(length, device):
+    import torch
+
+    key = ("txt", length, str(device))
+    hit = _FLUX3_STATIC.get(key)
+    if hit is None:
+        # Text advances along l only, unscaled.
+        hit = _FLUX3_STATIC[key] = _flux3_ids(1, 1, torch.arange(length), 1.0, device)
+    return hit
+
+
+def _flux3_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    import torch
+
+    (pes,) = embeds_batch
+    bsz, c, h, w = noisy.shape
+    # Flux3PrepareLatentsStep's packing: (B, C, h, w) -> (B, h * w, C).
+    packed = noisy.flatten(2).transpose(1, 2)
+    img_ids = _flux3_img_ids(h, w, packed.device)
+    # Flux3LoopDenoiser: the flow timestep in [0, 1]; the transformer puts the text tokens at 0 itself.
+    timestep = timesteps / 1000
+
+    def call(rows, t, pe):
+        return transformer(
+            hidden_states = rows,
+            encoder_hidden_states = pe,
+            timestep = t,
+            img_ids = img_ids,
+            txt_ids = _flux3_txt_ids(int(pe.shape[1]), packed.device),
+            return_dict = False,
+        )[0]
+
+    lengths = [int(pe.shape[1]) for pe in pes]
+    if len(set(lengths)) == 1:
+        pred = call(packed, timestep, pes[0] if bsz == 1 else torch.cat(pes))
+    else:
+        # txt_ids are shared by the batch, so each window length runs as its own call.
+        order, parts = [], []
+        for length in sorted(set(lengths)):
+            idx = [i for i, n in enumerate(lengths) if n == length]
+            sel = torch.tensor(idx, device = packed.device)
+            parts.append(call(packed[sel], timestep[sel], torch.cat([pes[i] for i in idx])))
+            order.extend(idx)
+        inverse = torch.argsort(torch.tensor(order, device = packed.device))
+        pred = torch.cat(parts)[inverse]
+    # Flux3UnpackLatentsStep: (B, h * w, C) -> (B, C, h, w).
+    return pred.reshape(bsz, h, w, pred.shape[-1]).permute(0, 3, 1, 2)
+
+
+def _flux3_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    import inspect
+
+    from diffusers.loaders import Flux3LoraLoaderMixin
+
+    save = Flux3LoraLoaderMixin.save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _flux3_training_scheduler(cfg):
+    """The block graph's own FlowMatchEuler (Flux3SetTimestepsStep: constant shift 6.93, no dynamic shifting); the
+    repos ship no scheduler/, and load_flux3_pipeline builds the inference one the same way."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from core.inference.diffusion_flux3 import FLUX3_BASE_BLOCKS, flux3_blocks
+
+    shipped = flux3_blocks(FLUX3_BASE_BLOCKS).init_pipeline().scheduler
+    return FlowMatchEulerDiscreteScheduler.from_config(shipped.config)
+
+
 # Targets fully qualified: a bare to_q would also match audio and cross-modality attention, so keep audio out of the LoRA targets and the loss.
 _LTX2_TARGETS = (
     "attn1.to_q",
@@ -2093,6 +2320,27 @@ _SPECS: dict[str, _FamilySpec] = {
         save = _flux2_klein_save,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
+    ),
+    "flux.3-klein-base": _FamilySpec(
+        family = "flux.3-klein-base",
+        lora_targets = _FLUX3_TARGETS,
+        # The references train in bf16; FLUX.3 renders black in plain fp16 (diffusion_families).
+        force_bf16 = True,
+        # 5.6B DiT at 11.1 GB bf16; the Qwen3-VL-4B encoder (8.9 GB) is freed before it loads.
+        dense_bf16_gb = 11.1,
+        load_conditioners = _flux3_load_conditioners,
+        load_transformer = _flux3_load_transformer,
+        encode_prompts = _flux3_encode_prompts,
+        encode_latents = _flux3_encode_latents,
+        encode_latent_stats = _flux3_encode_latent_stats,
+        collate = _flux3_collate,
+        forward = _flux3_forward,
+        save = _flux3_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
+        training_scheduler = _flux3_training_scheduler,
+        save_takes_metadata = True,
+        timestep_density = "none",
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
@@ -2604,9 +2852,8 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Qwen-Image-2.1 / Z-Image / Krea 2 / LTX-2 /
-    Wan2.2-TI2V-5B) and
-    export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / FLUX.3 Klein / Qwen-Image / Qwen-Image-2.1 / Z-Image / Krea 2 /
+    LTX-2 / Wan2.2-TI2V-5B) and export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
     ``cfg.save_steps`` interval write such a bundle."""
@@ -2627,6 +2874,7 @@ def run_dit_lora_training(
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
     _FLUX_STATIC.clear()
+    _FLUX3_STATIC.clear()
 
     save_on_stop = True
 
@@ -2655,7 +2903,10 @@ def run_dit_lora_training(
         )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
-    _assert_trusted_base_model(cfg.base_model)
+    # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
+    _assert_trusted_base_model(
+        cfg.base_model, allow_modular = cfg.resolved_family in MODULAR_BASE_FAMILIES
+    )
     # Check the fetched repo: the canonical id would raise for a gated base redirected to its mirror.
     _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
@@ -3170,7 +3421,9 @@ def _train_dit(
                 latents = spec.encode_latents(vae, px).to(weight_dtype)
 
             noise = torch.randn_like(latents)
-            timesteps, t_indices = _sample_timesteps(scheduler, latents.shape[0], device)
+            timesteps, t_indices = _sample_timesteps(
+                scheduler, latents.shape[0], device, spec.timestep_density
+            )
             sigmas = _gather_sigmas(sigma_table, t_indices, device, weight_dtype, latents.ndim)
             if shift_active:
                 # timestep = sigma * num_train_timesteps, gathered in fp32 so bf16 rounding never skews it.
@@ -3336,6 +3589,10 @@ def _make_optimizer(
 
 def _free_text_encoders(pipe) -> None:
     """Frees conditioning modules once embeddings are precomputed, so they do not sit in VRAM."""
+    # A modular facade (FLUX.3) also holds every component in its block graph's pipeline; without dropping it the
+    # 8 GB Qwen3-VL encoder stayed resident through the whole loop. It rebuilds on its next use.
+    if getattr(pipe, "_modular", None) is not None:
+        pipe._modular = None
     for attr in (
         "text_encoder",
         "text_encoder_2",

@@ -142,3 +142,42 @@ test("Deploy to Create bakes the trained adapter into the load", async () => {
   // A load that never starts leaves the previous model resident, so its own selection comes back.
   assert.match(deploy, /if \(!started\) \{\s*pendingDeploy\.current = null;\s*setLoras\(prevLoras\);/);
 });
+
+// What family_train_infos returns for FLUX.3 Klein Base: the adapter deploys on the distilled Klein, a different family.
+const flux3 = {
+  name: "flux.3-klein-base",
+  label: "FLUX.3 Klein Base",
+  default_base: "black-forest-labs/flux-3-image-klein-base",
+  base_repos: ["black-forest-labs/flux-3-image-klein-base"],
+  deploy_bases: {
+    "black-forest-labs/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein",
+    "unsloth/flux-3-image-klein-base-FP8": "unsloth/flux-3-image-klein-FP8",
+  },
+  lora_families: ["flux.3-klein-base", "flux.3-klein"],
+};
+
+test("a FLUX.3 Klein Base adapter deploys on Klein, and a loaded Klein preselects the base", () => {
+  assert.equal(
+    resolveDiffusionDeployBase(flux3, "black-forest-labs/flux-3-image-klein-base"),
+    "black-forest-labs/flux-3-image-klein",
+  );
+  assert.equal(
+    resolveDiffusionDeployBase(flux3, "unsloth/flux-3-image-klein-base-FP8"),
+    "unsloth/flux-3-image-klein-FP8",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(flux3, "black-forest-labs/flux-3-image-klein"),
+    "black-forest-labs/flux-3-image-klein-base",
+  );
+});
+
+// Klein is its own family, so matching the loaded family against the trained one alone dropped the adapter.
+test("Deploy to Create keeps an adapter on every family it was published for", async () => {
+  const panel = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
+  assert.match(panel, /\?\.lora_families \?\? \[famName\]/);
+  assert.equal((panel.match(/families: loraFamiliesFor\(/g) ?? []).length, 2);
+  const page = await readSrcAsync("features/images/images-page.tsx");
+  assert.match(page, /families: args\.families\?\.length \? args\.families : \[args\.family\]/);
+  assert.match(page, /deploy\.families\.includes\(fam\)/);
+  assert.doesNotMatch(page, /deploy\.family === fam/);
+});
