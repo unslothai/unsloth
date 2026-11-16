@@ -280,6 +280,12 @@ class SdCppServer:
                 rng = rng,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
+            if files.clip_l:
+                # A pooled CLIP-L without text_projection (FLUX.1, FLUX.1 Kontext) leaves a null param in the
+                # encoder after its first forward; sd.cpp's LoRA-vs-conditioning-cache check then walks the
+                # encoder params on the next LoRA change and segfaults. Strict cache mode skips that walk
+                # (it only re-encodes the prompt when the LoRA set or size changes).
+                run_env.setdefault("SD_COND_CACHE_STRICT", "1")
             if env:
                 run_env.update(env)
             if _verbose_native_logs():
