@@ -66,6 +66,7 @@ import {
   q4nxIsSplitFile,
   q4nxMemoryWarning,
   q4nxNpuMemory,
+  q4nxFitQuant,
   q4nxPacking,
   q4nxParamsFromName,
   q4nxQuantName,
@@ -584,6 +585,7 @@ export function Q4nxConvertCard({
   const selectedPacking = selectedQuant
     ? q4nxPacking(selectedQuant, selectedArchitecture)
     : null;
+  const selectedFit = q4nxFitQuant(selectedArchitecture);
   const selectedWeights =
     sourceReady && selectedRow ? weightsOf(selectedRow, selectedVariant) : null;
   const selectedMemory = q4nxNpuMemory(selectedWeights, windowGb);
@@ -646,7 +648,11 @@ export function Q4nxConvertCard({
     const packing = q4nxPacking(quant, architecture);
     return packing === "direct" ? null : (
       <span className="ml-1.5 font-sans text-ui-9 font-medium text-muted-foreground">
-        {packing === "requantized" ? "re-quantized" : "direct for Qwen3.5"}
+        {packing === "requantized"
+          ? "re-quantized"
+          : packing === "mismatch"
+            ? "won't convert"
+            : "direct for Qwen3.5"}
       </span>
     );
   };
@@ -877,8 +883,18 @@ export function Q4nxConvertCard({
       {selectedQuant && selectedPacking === "requantized" && (
         <p className="text-xs text-muted-foreground">
           {q4nxQuantName(selectedQuant)} is dequantized and rounded again to
-          4-bit, so it loses some quality. Q4_0 and Q4_1 pack directly, and
-          Q4_K_M does for Qwen3.5.
+          4-bit, so it loses some quality. Q4_K_M packs directly for Qwen3.5,
+          and Q4_0 or Q4_1 does where it matches the model.
+        </p>
+      )}
+      {selectedQuant && selectedPacking === "mismatch" && (
+        <p className="text-xs text-destructive">
+          {q4nxQuantName(selectedQuant)} is packed as is, and this model reads
+          another layout, so the converter refuses it. Pick{" "}
+          {selectedFit && selectedFit !== "q4_k_m"
+            ? `a ${q4nxQuantName(selectedFit)} or Q4_K_M`
+            : "a Q4_K_M"}{" "}
+          file instead.
         </p>
       )}
       {selectedQuant && selectedPacking === "by-architecture" && (
@@ -1015,7 +1031,7 @@ export function Q4nxConvertCard({
       icon={CpuIcon}
       chipTint="var(--chart-1)"
       title="Convert a GGUF to Q4NX (AMD NPU)"
-      description="Convert a Q4_0, Q4_1 or Q4_K_M GGUF to Q4NX. Only supported on AMD NPUs."
+      description="Convert a Q4_K_M GGUF, or a Q4_0 or Q4_1 that matches the model's layout, to Q4NX. Only supported on AMD NPUs."
     >
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-2">

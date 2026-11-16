@@ -8,6 +8,7 @@ import { modelInfo } from "@huggingface/hub";
 import {
   localGgufPath,
   packsDirectly,
+  q4nxFitQuant,
   q4nxPacking,
   Q4NX_INFO_FIELDS,
   q4nxArchFit,
@@ -28,11 +29,18 @@ import {
   sortQ4nxVariants,
 } from "../src/features/export/lib/q4nx-source.ts";
 
-test("Q4_0 and Q4_1 pack directly everywhere; Q4_K_M only where the q4k converter runs", () => {
-  for (const quant of ["Q4_0", "q4_1"]) {
-    assert.equal(packsDirectly(quant), true, quant);
-    assert.equal(packsDirectly(quant, "llama"), true, quant);
-  }
+test("Q4_0 and Q4_1 pack directly only where the model reads that layout; Q4_K_M only where the q4k converter runs", () => {
+  // The architecture is not known yet: the converter refuses a mismatch when it runs.
+  for (const quant of ["Q4_0", "q4_1"]) assert.equal(packsDirectly(quant), true, quant);
+  assert.equal(q4nxPacking("Q4_1", "llama"), "direct");
+  assert.equal(q4nxPacking("Q4_0", "llama"), "mismatch");
+  assert.equal(q4nxPacking("Q4_0", "lfm2"), "direct");
+  assert.equal(q4nxPacking("Q4_1", "qwen2"), "mismatch");
+  // Qwen3.5's configs read Q4_K: Q4_0 and Q4_1 blocks there decode as noise.
+  assert.equal(q4nxPacking("Qwen3.5-4B-Q4_0", "qwen35"), "mismatch");
+  assert.equal(q4nxPacking("Q4_1", "qwen35moe"), "mismatch");
+  assert.equal(q4nxFitQuant("QWEN35"), "q4_k_m");
+  assert.equal(q4nxFitQuant(null), null);
   // q4nx_converter_pins.json sends only qwen35 and qwen35moe to the converter that unpacks Q4_K.
   assert.equal(q4nxPacking("Q4_K_M", "qwen35"), "direct");
   assert.equal(q4nxPacking("Q4_K_M", "QWEN35MOE"), "direct");
@@ -69,6 +77,18 @@ test("the file list keeps every quant but puts the directly packed ones first", 
       "llama",
     ).map((v) => v.quant),
     ["Q4_1", "Q4_K_M", "Q8_0"],
+  );
+  // A Q4_0 or Q4_1 the model can't read sorts after the files that convert.
+  assert.deepEqual(
+    sortQ4nxVariants(
+      [
+        { filename: "m-Q4_0.gguf", quant: "Q4_0" },
+        { filename: "m-Q8_0.gguf", quant: "Q8_0" },
+        { filename: "m-Q4_K_M.gguf", quant: "Q4_K_M" },
+      ],
+      "qwen35",
+    ).map((v) => v.quant),
+    ["Q4_K_M", "Q8_0", "Q4_0"],
   );
 });
 
@@ -382,6 +402,10 @@ test("the export summary describes the conversion: source, file and quant, outpu
     archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF"),
   });
   assert.equal(over.Quant, "Q8_0, re-quantized to 4-bit");
+  assert.equal(
+    rows({ ...picked, quant: "Q4_0", packing: q4nxPacking("Q4_0", "qwen35") }).Quant,
+    "Q4_0, not readable by this model",
+  );
   assert.equal(
     rows({ ...picked, packing: q4nxPacking("Q4_K_M", null) }).Quant,
     "Q4_K_M, packs directly for Qwen3.5 only",
