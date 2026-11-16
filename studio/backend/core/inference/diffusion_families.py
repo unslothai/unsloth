@@ -157,6 +157,8 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Default edit output side (by area); None = the build's tier.
+    edit_output_resolution: Optional[int] = None
     # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
     # (lowercased id substring, shift or None = shipped) for checkpoints whose template differs; first match wins.
@@ -1140,6 +1142,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_output_side = 2752,
         max_output_pixels = 2400 * 1792,
         reference_resolutions = (512, 1024, 2048),
+        # 1024-area edits are over-sharpened and miss the instruction even on upstream bf16; 1536 / 2048 are clean.
+        edit_output_resolution = 2048,
         # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
         # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
         condition_pixel_weight = 0.32,

@@ -276,9 +276,13 @@ import {
   familyPresetsWithin,
   inputImageWord,
   maxAdditionalImages,
+  raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -1935,6 +1939,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -3855,6 +3860,7 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -5132,6 +5138,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -5146,17 +5153,60 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
     }
   }
 
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
   if (limitsKey !== fittedLimits) {
     setFittedLimits(limitsKey);
     const fitted = fitSize(width, height, sizeLimits);
     if (fitted.width !== width) setWidth(fitted.width);
     if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
+    const raised = raiseToEditResolution(
+      fittedWidth,
+      fittedHeight,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
+    });
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
+    }
   }
 
   const [sourceRead, setSourceRead] = useState<{

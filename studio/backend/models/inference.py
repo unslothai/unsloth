@@ -6427,7 +6427,8 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Image-conditioning limits of the loaded model on the active engine: "
         "max_condition_images (total, including the source), alpha, dimension_multiple, "
-        "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
+        "max_output_side, max_output_pixels, reference_resolutions, edit_output_resolution (the output "
+        "size an edit should default to, or null) and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
     engine: Optional[str] = Field(
