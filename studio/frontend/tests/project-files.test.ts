@@ -99,6 +99,22 @@ test("only folders never requested are loaded, the root first", () => {
   assert.deepEqual(pathsToLoad(dirs, new Set(["src", "docs"])), ["docs"]);
 });
 
+test("folders named like Object.prototype keys load and render", () => {
+  const names = ["constructor", "toString", "__proto__"];
+  const dirs: Record<string, DirState> = {
+    "": ready(names.map((name) => ({ name, kind: "dir" as const }))),
+  };
+  const open = new Set(names);
+  assert.deepEqual(pathsToLoad(dirs, open), names);
+  assert.deepEqual(
+    flattenFileTree(dirs, open).map((r) => [r.type, r.path]),
+    names.flatMap((name) => [
+      ["entry", name],
+      ["loading", name],
+    ]),
+  );
+});
+
 test("the tree flattens depth first with status rows under open folders", () => {
   const dirs: Record<string, DirState> = {
     "": ready(

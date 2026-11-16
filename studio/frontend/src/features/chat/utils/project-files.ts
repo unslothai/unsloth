@@ -106,12 +106,20 @@ export function closeSubtree(
   return new Set([...open].filter((p) => p !== path && !p.startsWith(prefix)));
 }
 
+/** Own keys only: folder names such as `constructor` or `__proto__` must not hit Object.prototype. */
+export function dirStateAt(
+  dirs: Readonly<Record<string, DirState>>,
+  path: string,
+): DirState | undefined {
+  return Object.hasOwn(dirs, path) ? dirs[path] : undefined;
+}
+
 /** Open folders whose listing has not been requested yet. */
 export function pathsToLoad(
   dirs: Readonly<Record<string, DirState>>,
   open: ReadonlySet<string>,
 ): string[] {
-  return ["", ...open].filter((path) => !(path in dirs));
+  return ["", ...open].filter((path) => !Object.hasOwn(dirs, path));
 }
 
 /** The visible tree, depth-first, with a status row under each open folder that has no entries to show. */
@@ -121,7 +129,7 @@ export function flattenFileTree(
   path = "",
   depth = 0,
 ): FileTreeRow[] {
-  const state = dirs[path];
+  const state = dirStateAt(dirs, path);
   if (!state || state.status === "loading") {
     return [{ type: "loading", path, depth }];
   }

@@ -40,6 +40,7 @@ import {
   addToChatText,
   changeStatusTone,
   closeSubtree,
+  dirStateAt,
   flattenFileTree,
   formatFileSize,
   pathsToLoad,
@@ -470,7 +471,7 @@ export function ProjectFilesPanel({
         paddingLeft: `calc((${depth} * 1rem + 0.625rem) * var(--ui-space-scale, 1))`,
       };
       if (entry.kind === "dir") {
-        const loading = row.open && dirs[path]?.status === "loading";
+        const loading = row.open && dirStateAt(dirs, path)?.status === "loading";
         return (
           <div key={key} className={ROW_CLASS}>
             <button

@@ -16,7 +16,7 @@ from utils.account_context import OWNER, AccountContext, as_api_caller, run_as
 
 @pytest.fixture
 def local(monkeypatch):
-    monkeypatch.setattr(host_policy, "_auto_enabled", True)
+    monkeypatch.setattr(host_policy, "_local_bind", True)
     monkeypatch.setattr(host_policy, "_remote_connector_active", False)
     monkeypatch.setattr(host_policy, "_lan_connector_active", False)
 
@@ -32,8 +32,10 @@ def test_permitted_only_for_the_owner_on_an_unpublished_loopback_server(local, m
     monkeypatch.setattr(host_policy, "_lan_connector_active", True)
     assert policy.server_folder_pick_permitted() is False
     monkeypatch.setattr(host_policy, "_lan_connector_active", False)
-    # A network bind never auto-enabled the loopback default.
+    # An explicit UNSLOTH_STUDIO_ALLOW_STDIO_MCP leaves the loopback default unset; the bind still decides.
     monkeypatch.setattr(host_policy, "_auto_enabled", False)
+    assert policy.server_folder_pick_permitted() is True
+    monkeypatch.setattr(host_policy, "_local_bind", False)
     assert policy.server_folder_pick_permitted() is False
 
 

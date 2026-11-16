@@ -110,14 +110,14 @@ def api_full_access_refused() -> bool:
 
 def server_folder_pick_permitted() -> bool:
     """Whether the owner may name a project folder by path instead of a Desktop grant. A chosen folder runs
-    tools outside the sandbox, so this holds only where stdio MCP does by default: a loopback bind with no
-    tunnel or LAN listener, where every caller is already on this machine."""
+    tools outside the sandbox, so this holds only on a loopback bind with no tunnel or LAN listener, where
+    every caller is already on this machine. The bind itself decides, not the stdio MCP env override."""
     from utils.account_context import is_owner_context, via_api_key_context
-    from utils.host_policy import loopback_default_active, remote_connector_active
+    from utils.host_policy import serves_this_machine_only
 
     if not is_owner_context() or via_api_key_context():
         return False
-    return loopback_default_active() and not remote_connector_active()
+    return serves_this_machine_only()
 
 
 def _forbid(detail: str) -> HTTPException:
