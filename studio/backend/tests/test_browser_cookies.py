@@ -35,7 +35,12 @@ class _Client:
         return False
 
 
-def _site(monkeypatch, hops, final_headers = (), body = b"<html></html>"):
+def _site(
+    monkeypatch,
+    hops,
+    final_headers = (),
+    body = b"<html></html>",
+):
     """A fake fetcher: ``hops`` are (next url, redirect headers); returns what each hop was sent."""
     sent = []
 
@@ -60,7 +65,11 @@ def _site(monkeypatch, hops, final_headers = (), body = b"<html></html>"):
     return sent
 
 
-def _load(url, subject = "user", **request):
+def _load(
+    url,
+    subject = "user",
+    **request,
+):
     response = asyncio.run(
         browser_mod.browser_fetch(
             browser_mod.BrowserFetchRequest(url = url, **request), _Client(), current_subject = subject
@@ -76,7 +85,10 @@ def test_a_sign_in_that_redirects_stays_signed_in_on_the_next_page(monkeypatch):
     )
     page = _load("https://app.example.com/login", method = "POST", body = "user=a")
     # The redirect's cookie goes with the very next hop, and a script never sees an HttpOnly one.
-    assert sent == [("https://app.example.com/login", None), ("https://app.example.com/home", "sid=abc")]
+    assert sent == [
+        ("https://app.example.com/login", None),
+        ("https://app.example.com/home", "sid=abc"),
+    ]
     assert page["cookies"] == []
 
     sent = _site(monkeypatch, [])
@@ -88,7 +100,11 @@ def test_cookies_stay_with_their_site_scheme_and_account(monkeypatch):
     _site(
         monkeypatch,
         [],
-        [("Set-Cookie", "sid=abc; Secure"), ("Set-Cookie", "wide=1; Domain=example.com"), ("Set-Cookie", "tld=1; Domain=com")],
+        [
+            ("Set-Cookie", "sid=abc; Secure"),
+            ("Set-Cookie", "wide=1; Domain=example.com"),
+            ("Set-Cookie", "tld=1; Domain=com"),
+        ],
     )
     _load("https://app.example.com/")
     assert cookies.cookie_header("user", "https://app.example.com/x") == "sid=abc; wide=1"
@@ -99,8 +115,12 @@ def test_cookies_stay_with_their_site_scheme_and_account(monkeypatch):
 
 
 def test_a_site_signing_out_and_clear_browsing_data_both_forget(monkeypatch):
-    cookies.store_cookies("user", "https://a.example.com/", [("Set-Cookie", "sid=abc"), ("Set-Cookie", "keep=1")])
-    cookies.store_cookies("user", "https://a.example.com/logout", [("Set-Cookie", "sid=; Max-Age=0")])
+    cookies.store_cookies(
+        "user", "https://a.example.com/", [("Set-Cookie", "sid=abc"), ("Set-Cookie", "keep=1")]
+    )
+    cookies.store_cookies(
+        "user", "https://a.example.com/logout", [("Set-Cookie", "sid=; Max-Age=0")]
+    )
     assert cookies.cookie_header("user", "https://a.example.com/") == "keep=1"
     asyncio.run(browser_mod.browser_clear_cookies(current_subject = "user"))
     assert cookies.cookie_header("user", "https://a.example.com/") is None
@@ -118,7 +138,9 @@ def test_the_page_sees_script_readable_cookies_and_its_own_writes_reach_the_site
     def write(key, value):
         asyncio.run(
             browser_mod.browser_page_cookie(
-                browser_mod.BrowserPageCookie(page = "https://app.example.com/", key = key, value = value),
+                browser_mod.BrowserPageCookie(
+                    page = "https://app.example.com/", key = key, value = value
+                ),
                 current_subject = "user",
             )
         )
@@ -128,7 +150,10 @@ def test_the_page_sees_script_readable_cookies_and_its_own_writes_reach_the_site
     # No script can replace an HttpOnly cookie, or smuggle a second one in.
     write("sid=/", "|stolen")
     write("x=/", "|1; Domain=example.com")
-    assert cookies.cookie_header("user", "https://app.example.com/") == "sid=abc; XSRF-TOKEN=tok; theme=dark; soon=1"
+    assert (
+        cookies.cookie_header("user", "https://app.example.com/")
+        == "sid=abc; XSRF-TOKEN=tok; theme=dark; soon=1"
+    )
     write("theme=/", None)
     assert "theme" not in cookies.cookie_header("user", "https://app.example.com/")
     assert cookies.cookie_header("user", "https://www.example.com/") is None
@@ -153,7 +178,10 @@ def test_a_pages_request_carries_cookies_to_its_own_site_only(monkeypatch):
 
     answer = request("https://app.example.com/api/me")
     # Fetch's default credentials mode: nothing goes to, or is kept from, the other site.
-    assert sent == [("https://app.example.com/api/me", "sid=abc"), ("https://cdn.example.net/file", None)]
+    assert sent == [
+        ("https://app.example.com/api/me", "sid=abc"),
+        ("https://cdn.example.net/file", None),
+    ]
     assert cookies.cookie_header("user", "https://cdn.example.net/") == "other=1"
     assert cookies.cookie_header("user", "https://app.example.com/") == "sid=abc; hop=1"
     assert base64.b64decode(answer["body"]) == b"{}"

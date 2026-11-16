@@ -2020,7 +2020,9 @@ def _inline_module_scripts(
 
 
 def _fetch(
-    request: BrowserFetchRequest, cancel_event: threading.Event, subject: Optional[str] = None
+    request: BrowserFetchRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
 ) -> tuple[Optional[str], bytes, str, dict]:
     meta: dict = {}
     # A navigation is first-party at every hop, so each site gets and sets its own cookies.
@@ -2228,7 +2230,9 @@ def _allowed_header(name: str, value: str) -> bool:
 
 
 def _page_request(
-    request: BrowserPageRequest, cancel_event: threading.Event, subject: Optional[str] = None
+    request: BrowserPageRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
 ) -> dict:
     """The page's request, made as its browser would make a same-origin one; every status is the page's."""
     origin = _origin(request.page)
@@ -2418,7 +2422,9 @@ def _page_request(
 
 
 def _fetch_and_build(
-    request: BrowserFetchRequest, cancel_event: threading.Event, subject: Optional[str] = None
+    request: BrowserFetchRequest,
+    cancel_event: threading.Event,
+    subject: Optional[str] = None,
 ) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event, subject)
     return _build_response(request.url, error, body, content_type, meta, cancel_event)
