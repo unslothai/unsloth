@@ -464,16 +464,6 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** Short of room below, a downward panel rides up over the composer, never past the window top. */
-export function pickerDropOffset(
-  triggerBottom: number,
-  panelHeight: number,
-  viewportHeight: number,
-): number {
-  const fits = viewportHeight - PICKER_EDGE - panelHeight - triggerBottom;
-  return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
-}
-
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
 export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(

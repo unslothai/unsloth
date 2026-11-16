@@ -224,7 +224,6 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -3281,31 +3280,6 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
-  const [panel, setPanel] = useState<HTMLDivElement | null>(null);
-  const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const dropsDown = open && openSide === "bottom";
-  useEffect(() => {
-    if (!(dropsDown && panel)) {
-      setDropOffset(PICKER_GAP);
-      return;
-    }
-    const place = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (rect) {
-        setDropOffset(
-          pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
-        );
-      }
-    };
-    place();
-    const observer = new ResizeObserver(place);
-    observer.observe(panel);
-    window.addEventListener("resize", place);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", place);
-    };
-  }, [dropsDown, panel]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -5104,13 +5078,12 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
-        sideOffset={dropsDown ? dropOffset : PICKER_GAP}
+        sideOffset={PICKER_GAP}
         data-composer-model-picker=""
         data-tour="chat-model-selector-popover"
         data-list-last={
@@ -5128,10 +5101,8 @@ export function ComposerModelPicker({
             "h-[calc(420px*var(--ui-space-scale,1))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
-          openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
+          // Shrinks to the room on its side rather than riding over the pill, so the chosen model stays in view.
+          "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {

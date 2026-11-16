@@ -22,7 +22,6 @@ import {
   localSection,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   pinCoversId,
   repoSection,
@@ -660,17 +659,16 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
 });
 
-test("a panel opening down rides up over the composer when the room below is short", () => {
-  // Room below: the usual 8px gap.
-  assert.equal(pickerDropOffset(400, 300, 900), 8);
-  // 100px short: up by that much, over the composer.
-  assert.equal(pickerDropOffset(500, 492, 900), -100);
-  // Taller than the window: pinned 8px from its top.
-  assert.equal(pickerDropOffset(500, 2000, 900), -492);
+test("an open panel shrinks to its side's room and never covers the model pill", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+  assert.match(picker, /sideOffset=\{PICKER_GAP\}/);
+  assert.match(
+    picker,
+    /"max-h-\[min\(calc\(760px\*var\(--ui-space-scale,1\)\),var\(--radix-popover-content-available-height\)\)\]"/,
+  );
+  assert.doesNotMatch(picker, /100dvh-16px/);
 });
 
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
