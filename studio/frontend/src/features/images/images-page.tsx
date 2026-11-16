@@ -5146,21 +5146,35 @@ export function ImagesPage({
     }
   }
 
+  // Fit Width / Height to new size limits first, so the Reference raise below starts from (and records) the fitted size.
+  const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
+  const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
+  if (limitsKey !== fittedLimits) {
+    setFittedLimits(limitsKey);
+    const fitted = fitSize(width, height, sizeLimits);
+    if (fitted.width !== width) setWidth(fitted.width);
+    if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
   // Reference renders at Width / Height; once per load, raise a size below the family's edit resolution
   // (Qwen-Image-2.1 references at the 1024 area come out over-sharpened and miss the prompt).
   // Width / Height are shared with Create, so leaving Reference puts back the size the raise replaced unless it was changed.
   const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
   if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
     const raised = raiseToEditResolution(
-      width,
-      height,
+      fittedWidth,
+      fittedHeight,
       status?.conditioning?.edit_output_resolution,
       sizeLimits,
     );
     setReferenceRaise({
       key: referenceKey,
       raised: raised ?? undefined,
-      from: raised ? { width, height, aspect, portrait } : undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
     });
     if (raised) {
       setWidth(raised.width);
@@ -5179,15 +5193,6 @@ export function ImagesPage({
       setAspect(restore.aspect);
       setPortrait(restore.portrait);
     }
-  }
-
-  const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
-  const [fittedLimits, setFittedLimits] = useState(limitsKey);
-  if (limitsKey !== fittedLimits) {
-    setFittedLimits(limitsKey);
-    const fitted = fitSize(width, height, sizeLimits);
-    if (fitted.width !== width) setWidth(fitted.width);
-    if (fitted.height !== height) setHeight(fitted.height);
   }
 
   const [sourceRead, setSourceRead] = useState<{

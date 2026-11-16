@@ -272,3 +272,16 @@ test("restoreSettings reopens Edit and Reference instead of Create", () => {
   assert.match(src, /usesInit && !initImage/);
   assert.match(src, /is empty\. Add it, or remove that slot\./);
 });
+
+test("the Reference raise starts from the size fitted to the loaded model's limits", () => {
+  // A load that tightens the size multiple: fitting after the raise would overwrite one raised side.
+  const limits = { multiple: 32, maxSide: 4096, maxPixels: 4096 * 4096 };
+  const fitted = fitSize(1040, 768, limits);
+  const raised = raiseToEditResolution(fitted.width, fitted.height, 2048, limits);
+  assert.ok(raised && raised.width > raised.height, "landscape stays landscape");
+  assert.ok(raised.width * raised.height >= 0.9 * 2048 * 2048);
+  const src = readSrc("features/images/images-page.tsx");
+  const fit = src.indexOf("setFittedLimits(limitsKey)");
+  const raise = src.indexOf("raiseToEditResolution(\n      fittedWidth,");
+  assert.ok(fit > 0 && raise > fit, "fit runs before the raise and the raise reads the fitted size");
+});
