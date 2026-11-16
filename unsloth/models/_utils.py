@@ -6922,8 +6922,16 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
     with torch.no_grad():
         for name, param in params.items():
             local = param.to_local() if hasattr(param, "to_local") else param
-            if "trainable_tokens_delta" in name:
-                # PEFT's trainable token rows: equivalence with the disabled adapter is not checked, refuse.
+            is_lora = any(
+                k in name for k in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
+            )
+            if (
+                (name.endswith(".default") or ".default." in name)
+                and param.requires_grad
+                and not is_lora
+                and (".modules_to_save." not in name)
+            ):
+                # Other adapter weights (DoRA magnitudes, trainable token rows, ...): equivalence unchecked, refuse.
                 nonzero += 1
                 continue
             if ".modules_to_save.default." in name:
