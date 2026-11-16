@@ -438,3 +438,29 @@ def test_half_math_gates(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION)
     assert not C._half_math_call(cuda_bf16)
+
+
+@pytest.mark.parametrize("redispatch", [False, True])
+def test_mode_matches_through_an_sdpa_wrapper(rocm, monkeypatch, redispatch):
+    """Something replaced F.scaled_dot_product_attention (Unsloth core's Windows ROCm wide-head guard, a
+    cuDNN workaround): the mode must still chunk, whether the wrapper re-dispatches torch functions
+    (func = the wrapper) or just calls torch's builtin (func = the builtin)."""
+    from torch.overrides import handle_torch_function, has_torch_function
+
+    builtin = torch._C._nn.scaled_dot_product_attention
+
+    def wrapper(query, key, value, *args, **kwargs):
+        if redispatch and has_torch_function((query, key, value)):
+            return handle_torch_function(
+                wrapper, (query, key, value), query, key, value, *args, **kwargs
+            )
+        return builtin(query, key, value, *args, **kwargs)
+
+    monkeypatch.setattr(F, "scaled_dot_product_attention", wrapper)
+    q = torch.randn(1, 1, 512, 32)
+    with _math():
+        ref = builtin(q, q, q)
+        with C.chunked_attention_mode(512 * 512 * 4 // 8) as mode:
+            out = F.scaled_dot_product_attention(q, q, q)
+    assert mode.chunked == 1
+    torch.testing.assert_close(out, ref, atol = 1e-5, rtol = 1e-5)

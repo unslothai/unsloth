@@ -13,12 +13,37 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
 from typing import Any
 
 WIDEST_FUSED_HEAD_DIM = 256
 _GUARD_ATTR = "_unsloth_windows_rocm_wide_head_guard"
 
 logger = logging.getLogger(__name__)
+
+# Backend flags are process-wide: the first wide-head call in flight saves them and pins math, the last restores them,
+# so an overlapping call (another thread) never sees the fused kernels back early nor saves the math-only state.
+_HELD = [0, None]
+_LOCK = threading.Lock()
+
+
+def _math_on() -> None:
+    from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
+    with _LOCK:
+        if _HELD[0] == 0:
+            _HELD[1] = _cur_sdpa_kernel_backends()
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
+        _HELD[0] += 1
+
+
+def _math_off() -> None:
+    from torch.nn.attention import _sdpa_kernel
+    with _LOCK:
+        _HELD[0] -= 1
+        if _HELD[0] == 0:
+            _sdpa_kernel(_HELD[1])
+            _HELD[1] = None
 
 
 def _wide_cuda_head(query: Any) -> bool:
@@ -34,13 +59,15 @@ def guard_sdpa(sdpa: Any) -> Any:
     """``sdpa`` with every call whose head is wider than 256 pinned to the math backend."""
     if getattr(sdpa, _GUARD_ATTR, False):
         return sdpa
-    from torch.nn.attention import SDPBackend, sdpa_kernel
 
     @functools.wraps(sdpa)
     def guarded(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
         if _wide_cuda_head(query):
-            with sdpa_kernel([SDPBackend.MATH]):
+            _math_on()
+            try:
                 return sdpa(query, key, value, *args, **kwargs)
+            finally:
+                _math_off()
         return sdpa(query, key, value, *args, **kwargs)
 
     setattr(guarded, _GUARD_ATTR, True)
