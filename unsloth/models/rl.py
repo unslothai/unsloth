@@ -4193,9 +4193,11 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-# TRL >= 1.0 DPOTrainer (ref_model None + PeftModel) copies ".default." into a new "ref" adapter.
+# TRL >= 1.0 DPOTrainer (ref_model None + PeftModel) copies ".default." into a new "ref" adapter; TRL 1.0 - 1.6
+# pass model.peft_config["default"], 1.7+ a default_config local.
 _DPO_REF_ADAPTER_BLOCK = re.compile(
-    r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*default_config\s*\)[ \t]*\n"
+    r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
+    r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
     r"(?P<body>.*?ref_param\.data\.copy_\(param\.data\)[ \t]*)$",
     flags = re.DOTALL | re.MULTILINE,
 )

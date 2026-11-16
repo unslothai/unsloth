@@ -218,3 +218,61 @@ def test_tp_dpo_fresh_check_sees_embedding_and_saved_modules(monkeypatch, change
     else:
         with pytest.raises(ValueError, match = "tensor parallel"):
             _utils._unsloth_tp_skip_dpo_ref_adapter(model)
+
+
+# DPOTrainer.__init__ "ref" adapter copy as TRL 1.0 - 1.6 (peft_config["default"]) and 1.7+ (default_config) write it.
+_TRL_1_0_REF_COPY = """
+    def __init__(self, model, ref_model = None):
+        if is_peft_available() and is_peft_model(model) and ref_model is None:
+            model.add_adapter("ref", model.peft_config["default"])
+            for name, param in model.named_parameters():
+                if ".default." in name:
+                    ref_name = name.replace(".default.", ".ref.")
+                    ref_param = model.get_parameter(ref_name)
+                    ref_param.data.copy_(param.data)
+        self.done = True
+"""
+_TRL_1_7_REF_COPY = """
+    def __init__(self, model, ref_model = None):
+        if is_peft_available() and is_peft_model(model) and ref_model is None:
+            default_config = model.peft_config["default"]
+            if False:
+                pass
+            else:
+                model.add_adapter("ref", default_config)
+                for name, param in model.named_parameters():
+                    if ".default." in name:
+                        ref_name = name.replace(".default.", ".ref.")
+                        ref_param = model.get_parameter(ref_name)
+                        ref_param.data.copy_(param.data)
+        self.done = True
+"""
+
+
+@pytest.mark.parametrize(
+    "source", [_TRL_1_0_REF_COPY, _TRL_1_7_REF_COPY], ids = ["trl_1_0", "trl_1_7"]
+)
+def test_tp_dpo_ref_copy_guard_matches_every_trl_1_x_spelling(source):
+    import textwrap
+    from types import SimpleNamespace
+
+    from unsloth.models import rl
+
+    guarded = rl._guard_dpo_ref_adapter_for_tp(textwrap.dedent(source))
+    assert guarded.count("_unsloth_tp_skip_dpo_ref_adapter(model)") == 1
+    added = []
+    model = SimpleNamespace(
+        peft_config = {"default": object()}, add_adapter = lambda *a: added.append(a[0])
+    )
+    for skip, expected in ((True, []), (False, ["ref"])):
+        added.clear()
+        scope = {
+            "is_peft_available": lambda: True,
+            "is_peft_model": lambda m: True,
+            "_unsloth_tp_skip_dpo_ref_adapter": lambda m, skip = skip: skip,
+        }
+        exec(guarded, scope)
+        model.named_parameters = lambda: []
+        trainer = SimpleNamespace()
+        scope["__init__"](trainer, model)
+        assert added == expected and trainer.done
