@@ -346,3 +346,53 @@ test("a stale tab's edit does not bring back a key another tab cleared", async (
   assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, ["topK"]);
   settingsHttp.settings = {};
 });
+
+for (const beforeHydration of [false, true]) {
+  test(`a first prompt edit ${beforeHydration ? "before" : "after"} hydration is not read back as an older \`modified\``, async () => {
+    load(QWEN);
+    await settled();
+    settingsHttp.settings = { activePreset: "Default", activePresetSource: "builtin-default" };
+    settingsHttp.puts.length = 0;
+    useChatRuntimeStore.setState({ settingsHydrated: false });
+    if (beforeHydration) settingsHttp.hold();
+    const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+    if (beforeHydration) {
+      saveSystemPrompt("Be terse.");
+      settingsHttp.release?.();
+    }
+    await hydrating;
+    if (!beforeHydration) saveSystemPrompt("Be terse.");
+    await settled();
+    await rehydrate(stored());
+    assert.equal(useChatRuntimeStore.getState().activePresetSource, "modified");
+    assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, []);
+    load(GEMMA);
+    assert.deepEqual(sampling(), OWN[GEMMA]);
+    settingsHttp.settings = {};
+  });
+}
+
+test("spelling out an older `modified` yields to another tab's Default pick", async () => {
+  load(QWEN);
+  await settled();
+  const cleared = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    presetEditedKeys: Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, false])),
+  };
+  settingsHttp.settings = { activePreset: "Default", activePresetSource: "modified" };
+  settingsHttp.puts.length = 0;
+  settingsHttp.beforeConditionalApply = () => {
+    settingsHttp.settings = { ...settingsHttp.settings, ...cleared };
+  };
+  useChatRuntimeStore.setState({ settingsHydrated: false });
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  settingsHttp.settings = { ...settingsHttp.settings, ...cleared };
+  await settled();
+  moveSlider("topK", 5);
+  await settled();
+  await rehydrate(stored());
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, ["topK"]);
+  settingsHttp.beforeConditionalApply = null;
+  settingsHttp.settings = {};
+});
