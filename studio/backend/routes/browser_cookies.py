@@ -78,7 +78,10 @@ def _request(url: str) -> Optional[urllib.request.Request]:
 
 
 def cookie_header(
-    subject: str, url: str, cross_site: bool = False, method: str = "GET"
+    subject: str,
+    url: str,
+    cross_site: bool = False,
+    method: str = "GET",
 ) -> Optional[str]:
     """The Cookie header a browser would send ``url``, or None; ``cross_site`` applies SameSite."""
     request = _request(url)

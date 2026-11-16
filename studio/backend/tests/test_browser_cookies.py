@@ -139,10 +139,14 @@ def test_a_navigation_from_another_site_follows_samesite(monkeypatch):
     assert sent[-1] == ("https://bank.example/", "lax=1; plain=1; none=1")
     # A typed address, and the site's own pages, are same-site; so is the host with a trailing dot.
     _load("https://bank.example/pay", method = "POST", body = "to=me")
-    _load("https://bank.example/pay", method = "POST", body = "to=me", initiator = "https://BANK.example./a")
+    _load(
+        "https://bank.example/pay", method = "POST", body = "to=me", initiator = "https://BANK.example./a"
+    )
     assert sent[-2:] == [("https://bank.example/pay", every)] * 2
     # A subdomain counts as another site here.
-    _load("https://bank.example/pay", method = "POST", body = "x", initiator = "https://www.bank.example/")
+    _load(
+        "https://bank.example/pay", method = "POST", body = "x", initiator = "https://www.bank.example/"
+    )
     assert sent[-1] == ("https://bank.example/pay", "none=1")
 
 
@@ -161,7 +165,9 @@ def test_a_redirect_chain_that_left_the_site_stays_cross_site(monkeypatch):
         ("https://bank.example/pay", None),
     ]
     # A typed address is same-site at every hop, as a browser's own navigation is.
-    sent = _site(monkeypatch, [("https://www.bank.example/", None), ("https://bank.example/", None)])
+    sent = _site(
+        monkeypatch, [("https://www.bank.example/", None), ("https://bank.example/", None)]
+    )
     _load("https://bank.example/")
     assert sent[-1] == ("https://bank.example/", "strict=1")
 

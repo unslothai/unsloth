@@ -2050,9 +2050,7 @@ def _fetch(
     def host_headers(host: str) -> dict:
         headers = dict(_studio_headers(host))
         if subject is not None:
-            cookies = cookie_header(
-                subject, at["url"], cross_site = at["cross"], method = at["method"]
-            )
+            cookies = cookie_header(subject, at["url"], cross_site = at["cross"], method = at["method"])
             if cookies:
                 headers["Cookie"] = cookies
         return headers
