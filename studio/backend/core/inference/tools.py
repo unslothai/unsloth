@@ -287,6 +287,70 @@ _APPROVED_RM_REFUSED = (
     "nor are globs, pipes, xargs, chained commands or $ expansion."
 )
 
+# What the OS sandbox already contains: its PID namespace (Seatbelt: same-sandbox signals) and read-only binds outside
+# the workdir. rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside it.
+_OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
+    {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
+)
+_OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
+_CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
+_CHMOD_OPERAND_UNSAFE = frozenset("*?[]{}$`\\~'\"")
+_SHELL_SEPARATOR_CHARS = frozenset(";&|()")
+_SHELL_COMMAND_PREFIXES = frozenset(
+    {"{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "time"}
+)
+
+
+def _is_plain_chmod(command: str) -> bool:
+    """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
+    if any(marker in command for marker in ("$(", "`", "<(", ">(")):
+        return False
+    try:
+        lexer = shlex.shlex(command.replace("\n", " ; "), posix = True, punctuation_chars = True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    is_separator = lambda token: set(token) <= _SHELL_SEPARATOR_CHARS
+    rest: list[str] = []
+    seen = 0
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        at_start = i == 0 or is_separator(tokens[i - 1]) or tokens[i - 1] in _SHELL_COMMAND_PREFIXES
+        if at_start and "$" in token:
+            return False
+        if not (at_start and (token == "chmod" or token.endswith("/chmod"))):
+            raw = is_separator(token) or token in _SHELL_COMMAND_PREFIXES
+            rest.append(token if raw else shlex.quote(token))
+            i += 1
+            continue
+        end = i + 1
+        while end < len(tokens) and not set(tokens[end]) <= _SHELL_SEPARATOR_CHARS | {"<", ">"}:
+            end += 1
+        args = tokens[i + 1 : end]
+        while args and _CHMOD_OPTION_RE.fullmatch(args[0]):
+            args.pop(0)
+        if len(args) < 2 or not _CHMOD_MODE_RE.fullmatch(args[0]):
+            return False
+        if any(arg.startswith("-") or set(arg) & _CHMOD_OPERAND_UNSAFE for arg in args[1:]):
+            return False
+        seen += 1
+        rest.append("true")
+        i = end
+    # Any chmod the plain form did not account for (xargs, find -exec, $(...)) keeps the block.
+    return seen > 0 and "chmod" not in _find_blocked_commands(" ".join(rest))
+
+
+def _runs_in_os_sandbox(prepared) -> bool:
+    record = getattr(prepared, "execution_record", None)
+    return bool(
+        record is not None
+        and record.os_isolation
+        and getattr(prepared, "backend", None) in _OS_SANDBOX_BACKENDS
+    )
+
 
 def _is_approvable_rm(command: str) -> bool:
     # A trailing newline only ends the command; one inside starts another.
@@ -23561,6 +23625,7 @@ def _bash_exec(
             return _CMD_MULTILINE_REFUSED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
+    contained: set[str] = set()
     if not disable_sandbox:
         if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
@@ -23580,6 +23645,12 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
+        if sys.platform != "win32" and profile not in _CMD_PROFILES and not host_access_approved:
+            # Decided at launch: allowed only if this call really runs inside the OS sandbox.
+            contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
+            if "chmod" in contained and not _is_plain_chmod(command):
+                contained.discard("chmod")
+            blocked -= contained
         if blocked:
             # Capped: the blocked list names what it found in the command, so it can exceed the room left.
             return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
@@ -23671,11 +23742,15 @@ def _bash_exec(
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
+            if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
             _note_tool_execution(prepared.execution_record)
         else:
+            if contained:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec
