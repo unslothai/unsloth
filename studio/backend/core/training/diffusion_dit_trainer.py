@@ -2752,6 +2752,29 @@ def _nf4_compile_supported() -> bool:
         return False
 
 
+def _compile_toolchain_missing() -> Optional[str]:
+    """Why torch.compile cannot build its kernels here, else None. Windows only: inductor resolves its host C++
+    compiler (``CXX``, else ``cl``) when a compiled training graph carries a CPU kernel, and a stock Windows install has
+    none, so the first training step raised "Compiler: cl is not found" past dynamo's suppress_errors and the run died
+    (gfx1151 Windows 11, FLUX.2 klein and FLUX.3 Klein bf16; ``auto`` picks bf16 there). Asks torch's own lookup."""
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+    except Exception:  # noqa: BLE001 -- no inductor to ask: leave the decision to the compile itself
+        return None
+    try:
+        get_cpp_compiler()
+    except Exception as exc:  # noqa: BLE001 -- torch raises RuntimeError("Compiler: cl is not found.")
+        return (
+            f"torch.compile is off for this run: it needs a C++ compiler on Windows ({str(exc).strip()}). "
+            "Training continues eager; install Visual Studio Build Tools (C++ workload) to enable it."
+        )
+    return None
+
+
 def _maybe_compile_transformer(
     transformer,
     cfg,
@@ -2775,6 +2798,10 @@ def _maybe_compile_transformer(
                     f"enable compile for the speedup."
                 ),
             )
+        return False
+    missing = _compile_toolchain_missing()
+    if missing:
+        _emit(on_event, "warning", message = missing)
         return False
     import torch
 
