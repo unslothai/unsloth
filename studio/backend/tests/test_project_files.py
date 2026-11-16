@@ -297,7 +297,6 @@ def test_search_bounds_report_truncation(tmp_path, monkeypatch):
     assert project_files.search_files(str(tmp_path), "f")["truncated"] is False
 
 
-
 def test_search_bounds_hold_inside_one_large_folder(tmp_path, monkeypatch):
     _tree(tmp_path, [f"f{i}.txt" for i in range(40)] + [f"d{i}/x.txt" for i in range(10)])
     monkeypatch.setattr(project_files, "SEARCH_MAX_ENTRIES", 5)
@@ -315,6 +314,7 @@ def test_search_bounds_hold_inside_one_large_folder(tmp_path, monkeypatch):
     # Subfolders past the dir cap are not queued (or probed).
     monkeypatch.setattr(project_files, "SEARCH_MAX_DIRS", 3)
     assert project_files.search_files(str(tmp_path), "x")["truncated"] is True
+
 
 def test_porcelain_parsing_covers_every_status():
     data = b"\0".join(
