@@ -1601,6 +1601,34 @@ def test_the_sink_path_is_decided_by_the_first_calls_of_a_plan(monkeypatch):
         assert I._choose_path(plan) == (path, None) and plan["calls"] == 7
 
 
+def test_a_plan_reads_and_decides_no_sinks_while_another_thread_records(monkeypatch):
+    """Event records and waits are prohibited while another thread records a CUDA graph (thread_local capture): there
+    a call's clipped-key count goes unread and the decision waits for a later call, which makes it."""
+    from core.inference import diffusion_cuda_graph as G
+
+    class Event:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(torch.cuda, "Event", lambda: pytest.fail("no event record while recording"))
+    monkeypatch.setattr(G, "_CAPTURE_DEPTH", 1)
+    plan = {"calls": 0, "sinks": None, "checks": []}
+    I._check_sinks(plan, None, 0)
+    assert plan["checks"] == []
+    plan = {
+        "calls": I.SINK_DECIDE_AT,
+        "sinks": None,
+        "checks": [(Event(), torch.tensor([1], dtype = torch.int32))],
+    }
+    race = lambda: pytest.fail("no race while recording")  # noqa: E731
+    assert I._choose_path(plan, race = race) == (True, I.SINK_DECIDE_AT)
+    assert plan["sinks"] is None and len(plan["checks"]) == 1
+    monkeypatch.setattr(G, "_CAPTURE_DEPTH", 0)
+    assert I._choose_path(plan, race = lambda: False) == ("native", I.SINK_DECIDE_AT + 1)
+    assert plan["sinks"] == "native" and plan["checks"] == []
+
+
 def test_the_races_time_the_path_of_a_plan_without_sinks(monkeypatch):
     """The races time on probe inputs (no attention sinks): inside _median_ms every kernel call takes the path a plan
     without sinks runs and counts toward no decision, so the routing of the families without sinks is what it was;

@@ -753,13 +753,22 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
     n = plan["calls"]
     plan["calls"] = n + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
-        seen = False
-        for event, host in plan["checks"]:
-            event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
-            seen = seen or bool(host.any())
-        plan["checks"] = []
-        plan["sinks"] = seen if not seen or race is None or race() else "native"
+        # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
+        with _outside_capture() as safe:
+            if safe:
+                seen = False
+                for event, host in plan["checks"]:
+                    event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
+                    seen = seen or bool(host.any())
+                plan["checks"] = []
+                plan["sinks"] = seen if not seen or race is None or race() else "native"
     return (True if plan["sinks"] is None else plan["sinks"]), n
+
+
+def _outside_capture() -> Any:
+    """``hold_off_capture`` (True while no other thread records a CUDA graph, which holds captures off meanwhile)."""
+    from .diffusion_cuda_graph import hold_off_capture
+    return hold_off_capture()
 
 
 def _sink_race(plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int) -> bool:
@@ -804,12 +813,16 @@ def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
 
     if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
         return
-    at, (BH,) = plan["off"]["rcnt"], plan["layout"]["rcnt"][1]
-    host = torch.empty(BH, dtype = torch.int32, pin_memory = True)
-    host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
-    event = torch.cuda.Event()
-    event.record()
-    plan["checks"].append((event, host))
+    # an event record is prohibited while another thread records a graph: that call goes unread
+    with _outside_capture() as safe:
+        if not safe:
+            return
+        at, (BH,) = plan["off"]["rcnt"], plan["layout"]["rcnt"][1]
+        host = torch.empty(BH, dtype = torch.int32, pin_memory = True)
+        host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
+        event = torch.cuda.Event()
+        event.record()
+        plan["checks"].append((event, host))
 
 
 def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
