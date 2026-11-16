@@ -49,16 +49,6 @@ def half_math_sdpa(
     return torch.matmul(attn, v)
 
 
-def fp32_math_sdpa(
-    q: Any,
-    k: Any,
-    v: Any,
-    scale: Optional[float] = None,
-) -> Any:
-    """Math SDPA in fp32 (what ROCm's math kernel upcasts a half call to), returned in ``q``'s dtype."""
-    return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
-
-
 def _autocast_dtype(device_type: str) -> Any:
     import torch
     try:
@@ -244,16 +234,6 @@ def _mode_class() -> Any:
                                     self.chunked += 1
                                     return chunked_sdpa(half_math_sdpa, q, k, v, self.budget, scale)
                                 return half_math_sdpa(q, k, v, scale)
-                        if _windows_rocm_untrusted_head(q, torch):
-                            # The stock dispatch would still pick the fused kernels that miscompute this head.
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
-                            with torch.autocast(q.device.type, enabled = False):
-                                if _score_bytes(q, k) > self.budget:
-                                    self.chunked += 1
-                                    return chunked_sdpa(fp32_math_sdpa, q, k, v, self.budget, scale)
-                                return fp32_math_sdpa(q, k, v, scale)
                         if _score_bytes(q, k) > self.budget:
                             self.chunked += 1
                             return chunked_sdpa(func, q, k, v, self.budget, scale)
