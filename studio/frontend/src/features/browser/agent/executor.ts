@@ -1295,6 +1295,8 @@ async function sameBytes(blob: Blob | undefined, bytes: Uint8Array): Promise<boo
 async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<Result> {
   const { name, data } = action;
   if (!name || data === undefined) return { ok: false, error: "the file did not arrive; open it again." };
+  // openFile adds the tab to the chat on screen, which must be the run's.
+  if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));

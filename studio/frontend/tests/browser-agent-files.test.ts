@@ -266,3 +266,19 @@ test("a workspace file the server sends opens as a file tab, its preview is read
   const broken = await act("open_file", { ...fields, data: "%%%" });
   assert.equal(broken.ok, false);
 });
+
+test("a workspace file for a chat that is off screen is refused before any tab opens", async () => {
+  endBrowserAgentRun(RUN);
+  globals.__native = true;
+  globals.__panel = false;
+  try {
+    const tabs = useBrowserStore.getState().tabs.length;
+    const result = await act("open_file", { name: "x.html", path: "x.html", contentType: "text/html", data: Buffer.from("<p>x</p>").toString("base64") });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /only runs while the chat is open here/);
+    assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  } finally {
+    globals.__native = undefined;
+    globals.__panel = undefined;
+  }
+});
