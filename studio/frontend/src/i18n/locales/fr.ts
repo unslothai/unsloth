@@ -3644,6 +3644,8 @@ export const fr = {
       accessInference: "Inférence uniquement",
       accessFullHint: "Peut utiliser toute l'API Unsloth, y compris charger, télécharger et supprimer des modèles",
       accessInferenceHint: "Peut discuter avec les modèles chargés et les lister, mais ne peut pas charger, décharger ou télécharger de modèles ni modifier les paramètres",
+      accessInferenceBadge: "Inférence",
+      accessError: "Impossible de modifier l'accès de cette clé",
       createTokenHint: "Créer un jeton nommé « {name} »",
       defaultTokenName: "Nouveau jeton {n}",
       creating: "Création...",

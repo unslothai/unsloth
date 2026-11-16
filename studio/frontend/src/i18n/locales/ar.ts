@@ -3598,6 +3598,8 @@ export const ar = {
       accessInference: "الاستدلال فقط",
       accessFullHint: "يمكنه استخدام واجهة Unsloth البرمجية كاملة، بما في ذلك تحميل النماذج وتنزيلها وحذفها",
       accessInferenceHint: "يمكنه الدردشة مع النماذج المحمّلة وعرضها، لكنه لا يستطيع تحميل النماذج أو إلغاء تحميلها أو تنزيلها أو تغيير الإعدادات",
+      accessInferenceBadge: "الاستدلال",
+      accessError: "تعذّر تغيير صلاحية هذا المفتاح",
       createTokenHint: "إنشاء توكن باسم \"{name}\"",
       defaultTokenName: "توكن جديد {n}",
       creating: "جارٍ الإنشاء...",

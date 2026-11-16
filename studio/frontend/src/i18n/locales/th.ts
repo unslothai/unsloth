@@ -3631,6 +3631,8 @@ export const th = {
       accessInference: "อนุมานเท่านั้น",
       accessFullHint: "ใช้ Unsloth API ได้ทั้งหมด รวมถึงการโหลด ดาวน์โหลด และลบโมเดล",
       accessInferenceHint: "แชตกับโมเดลที่โหลดไว้และแสดงรายการได้ แต่โหลด ยกเลิกการโหลด หรือดาวน์โหลดโมเดล และเปลี่ยนการตั้งค่าไม่ได้",
+      accessInferenceBadge: "อนุมาน",
+      accessError: "ไม่สามารถเปลี่ยนสิทธิ์ของคีย์นี้ได้",
       createTokenHint: "สร้างโทเค็นชื่อ “{name}”",
       defaultTokenName: "โทเค็นใหม่ {n}",
       creating: "กำลังสร้าง...",

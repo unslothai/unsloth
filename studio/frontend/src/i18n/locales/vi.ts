@@ -3790,6 +3790,8 @@ export const vi = {
       accessInference: "Chỉ suy luận",
       accessFullHint: "Có thể dùng toàn bộ API của Unsloth, bao gồm tải, tải xuống và xóa mô hình",
       accessInferenceHint: "Có thể trò chuyện với các mô hình đã tải và liệt kê chúng, nhưng không thể tải, gỡ tải hoặc tải xuống mô hình hay thay đổi cài đặt",
+      accessInferenceBadge: "Suy luận",
+      accessError: "Không thể thay đổi quyền truy cập của khóa này",
       createTokenHint: "Tạo token có tên “{name}”",
       defaultTokenName: "Token mới {n}",
       creating: "Đang tạo...",

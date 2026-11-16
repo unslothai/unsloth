@@ -3788,6 +3788,8 @@ export const tr = {
       accessInference: "Yalnızca çıkarım",
       accessFullHint: "Modelleri yükleme, indirme ve silme dahil tüm Unsloth API'sini kullanabilir",
       accessInferenceHint: "Yüklü modellerle sohbet edebilir ve onları listeleyebilir, ancak model yükleyemez, kaldıramaz, indiremez veya ayarları değiştiremez",
+      accessInferenceBadge: "Çıkarım",
+      accessError: "Bu anahtarın erişimi değiştirilemedi",
       createTokenHint: "“{name}” adlı bir token oluştur",
       defaultTokenName: "Yeni Token {n}",
       creating: "Oluşturuluyor...",

@@ -14,10 +14,8 @@ import { cn } from "@/lib/utils";
 import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
-import { type ApiKeyAccess, createApiKey } from "../api/api-keys";
+import { type ApiKey, createApiKey } from "../api/api-keys";
 import { apiKeyActionMessage } from "./api-key-action-message";
-
-const ACCESS_OPTIONS: ApiKeyAccess[] = ["full", "inference"];
 
 const EXPIRY_PRESETS = [
   { label: "Never", value: null as number | null },
@@ -43,7 +41,7 @@ export function CreateKeyForm({
   onError,
   existingNames,
 }: {
-  onCreated: (rawKey: string) => void;
+  onCreated: (rawKey: string, apiKey: ApiKey) => void;
   /** null clears an earlier failure */
   onError: (message: string | null) => void;
   existingNames: readonly string[];
@@ -52,7 +50,6 @@ export function CreateKeyForm({
   const pillId = useId();
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState<number | null>(null);
-  const [access, setAccess] = useState<ApiKeyAccess>("full");
   const [loading, setLoading] = useState(false);
   const [prefix, suffix] = t("settings.apiKeys.defaultTokenName").split("{n}");
   const escape = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -71,12 +68,8 @@ export function CreateKeyForm({
     setLoading(true);
     onError(null);
     try {
-      const result = await createApiKey(
-        name.trim() || defaultName,
-        expiry,
-        access,
-      );
-      onCreated(result.key);
+      const result = await createApiKey(name.trim() || defaultName, expiry);
+      onCreated(result.key, result.api_key);
       setName("");
     } catch (cause) {
       onError(apiKeyActionMessage(t("settings.apiKeys.createError"), cause));
@@ -144,38 +137,6 @@ export function CreateKeyForm({
             })}
           </TooltipContent>
         </Tooltip>
-      </div>
-      <div className="hub-tab-toggle inline-flex h-control w-fit items-center rounded-full">
-        {ACCESS_OPTIONS.map((option) => {
-          const active = access === option;
-          return (
-            <Tooltip key={option}>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={() => setAccess(option)}
-                  aria-pressed={active}
-                  className={cn(
-                    "relative inline-flex h-control items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                    active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {active && <SegmentedPill group={`${pillId}-access`} />}
-                  {option === "full"
-                    ? t("settings.apiKeys.accessFull")
-                    : t("settings.apiKeys.accessInference")}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={6}>
-                {option === "full"
-                  ? t("settings.apiKeys.accessFullHint")
-                  : t("settings.apiKeys.accessInferenceHint")}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
       </div>
     </form>
   );

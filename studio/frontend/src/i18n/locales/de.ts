@@ -3644,6 +3644,8 @@ export const de = {
       accessInference: "Nur Inferenz",
       accessFullHint: "Kann die gesamte Unsloth API nutzen, einschließlich Laden, Herunterladen und Löschen von Modellen",
       accessInferenceHint: "Kann mit geladenen Modellen chatten und sie auflisten, aber keine Modelle laden, entladen oder herunterladen und keine Einstellungen ändern",
+      accessInferenceBadge: "Inferenz",
+      accessError: "Zugriff dieses Schlüssels konnte nicht geändert werden",
       createTokenHint: "Token „{name}“ erstellen",
       defaultTokenName: "Neues Token {n}",
       creating: "Wird erstellt...",

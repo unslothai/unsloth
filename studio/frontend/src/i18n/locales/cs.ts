@@ -3808,6 +3808,8 @@ export const cs = {
       accessInference: "Pouze inference",
       accessFullHint: "Může používat celé API Unsloth včetně načítání, stahování a mazání modelů",
       accessInferenceHint: "Může chatovat s načtenými modely a vypsat je, ale nemůže načítat, uvolňovat ani stahovat modely ani měnit nastavení",
+      accessInferenceBadge: "Inference",
+      accessError: "Přístup tohoto klíče se nepodařilo změnit",
       createTokenHint: "Vytvořit token s názvem „{name}“",
       defaultTokenName: "Nový token {n}",
       creating: "Vytváření...",

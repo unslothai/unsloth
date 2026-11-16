@@ -3574,6 +3574,8 @@ export const ja = {
       accessInference: "推論のみ",
       accessFullHint: "モデルの読み込み、ダウンロード、削除を含む Unsloth API 全体を使用できます",
       accessInferenceHint: "読み込み済みモデルとのチャットと一覧表示はできますが、モデルの読み込み、解放、ダウンロードや設定の変更はできません",
+      accessInferenceBadge: "推論",
+      accessError: "このキーのアクセスを変更できませんでした",
       createTokenHint: "「{name}」という名前のトークンを作成",
       defaultTokenName: "新しいトークン {n}",
       creating: "作成中...",

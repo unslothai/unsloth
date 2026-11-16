@@ -3835,6 +3835,8 @@ export const nl = {
       accessInference: "Alleen inferentie",
       accessFullHint: "Kan de volledige Unsloth API gebruiken, inclusief modellen laden, downloaden en verwijderen",
       accessInferenceHint: "Kan chatten met geladen modellen en ze weergeven, maar kan geen modellen laden, ontladen of downloaden en geen instellingen wijzigen",
+      accessInferenceBadge: "Inferentie",
+      accessError: "Kan de toegang van deze sleutel niet wijzigen",
       createTokenHint: "Een token met de naam “{name}” aanmaken",
       defaultTokenName: "Nieuw token {n}",
       creating: "Aanmaken...",

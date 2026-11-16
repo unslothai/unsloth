@@ -3778,6 +3778,8 @@ export const fa = {
       accessInference: "فقط استنتاج",
       accessFullHint: "می‌تواند از کل API ‏Unsloth استفاده کند، از جمله بارگذاری، دانلود و حذف مدل‌ها",
       accessInferenceHint: "می‌تواند با مدل‌های بارگذاری‌شده گفتگو کند و آن‌ها را فهرست کند، اما نمی‌تواند مدل‌ها را بارگذاری، تخلیه یا دانلود کند یا تنظیمات را تغییر دهد",
+      accessInferenceBadge: "استنتاج",
+      accessError: "تغییر دسترسی این کلید ممکن نشد",
       createTokenHint: "ایجاد توکنی با نام «{name}»",
       defaultTokenName: "توکن جدید {n}",
       creating: "در حال ایجاد...",

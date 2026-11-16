@@ -3836,6 +3836,8 @@ export const pl = {
       accessInference: "Tylko inferencja",
       accessFullHint: "Może korzystać z całego API Unsloth, w tym wczytywać, pobierać i usuwać modele",
       accessInferenceHint: "Może rozmawiać z wczytanymi modelami i je wyświetlać, ale nie może wczytywać, zwalniać ani pobierać modeli ani zmieniać ustawień",
+      accessInferenceBadge: "Inferencja",
+      accessError: "Nie udało się zmienić dostępu tego klucza",
       createTokenHint: "Utwórz token o nazwie „{name}”",
       defaultTokenName: "Nowy token {n}",
       creating: "Tworzenie...",

@@ -3680,6 +3680,8 @@ export const he = {
       accessInference: "הסקה בלבד",
       accessFullHint: "יכול להשתמש בכל ה-API של Unsloth, כולל טעינה, הורדה ומחיקה של מודלים",
       accessInferenceHint: "יכול לשוחח עם מודלים טעונים ולהציג אותם, אך אינו יכול לטעון, לפרוק או להוריד מודלים או לשנות הגדרות",
+      accessInferenceBadge: "הסקה",
+      accessError: "לא ניתן לשנות את הגישה של מפתח זה",
       createTokenHint: "יצירת טוקן בשם \"{name}\"",
       defaultTokenName: "טוקן חדש {n}",
       creating: "יוצר...",

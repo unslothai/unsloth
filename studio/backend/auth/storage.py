@@ -1953,6 +1953,39 @@ def revoke_api_key(
         conn.close()
 
 
+def set_api_key_access(
+    username: str,
+    key_id: int,
+    access: str,
+    account_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Change a user key's access; the updated row, or None when no active user key matched."""
+    if access not in (API_KEY_ACCESS_FULL, API_KEY_ACCESS_INFERENCE):
+        raise ValueError(f"unknown API key access {access!r}")
+    stored = None if access == API_KEY_ACCESS_FULL else access
+    conn = get_connection()
+    try:
+        scope, params = _key_scope(username, account_id)
+        # Internal keys are never widened or narrowed from outside their workflow.
+        cursor = conn.execute(
+            f"UPDATE api_keys SET access = ? WHERE id = ? AND is_active = 1 AND is_internal = 0 AND {scope}",
+            (stored, key_id, *params),
+        )
+        if not cursor.rowcount:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE account_api_keys SET access = ? "
+            "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ?)",
+            (stored, key_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
 def revoke_internal_api_key(key_id: int) -> bool:
     """Revoke an internal workflow-minted key without requiring a username. Used by the recipe runner
     to retire its key once the job terminates, shrinking the window a leaked key could be abused."""

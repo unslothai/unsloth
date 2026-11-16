@@ -180,3 +180,60 @@ def test_a_managed_key_restored_from_its_copy_stays_inference_only():
     finally:
         conn.close()
     assert storage.validate_api_key_account(raw, touch = False)[0]["key_access"] == "inference"
+
+
+@pytest.mark.usefixtures("owner_auth")
+def test_the_access_can_be_changed_after_the_key_is_shown():
+    app = FastAPI()
+    app.include_router(auth_routes.router, prefix = "/api/auth")
+    client = TestClient(app)
+    ui = _key()
+    made = client.post("/api/auth/api-keys", json = {"name": "lan"}, headers = ui).json()
+    key_id, remote = made["api_key"]["id"], {"Authorization": f"Bearer {made['key']}"}
+    assert _app().post("/api/inference/load", headers = remote).status_code == 200
+
+    narrowed = client.patch(
+        f"/api/auth/api-keys/{key_id}", json = {"access": "inference"}, headers = ui
+    )
+    assert narrowed.status_code == 200 and narrowed.json()["access"] == "inference"
+    assert _app().post("/api/inference/load", headers = remote).status_code == 403
+    assert _app().post("/v1/chat/completions", headers = remote).status_code == 200
+    # The narrowed key cannot widen itself.
+    assert (
+        client.patch(
+            f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = remote
+        ).status_code
+        == 403
+    )
+
+    widened = client.patch(f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = ui)
+    assert widened.json()["access"] == "full"
+    assert _app().post("/api/inference/load", headers = remote).status_code == 200
+    # Idempotent, and an unknown value is refused before it reaches storage.
+    assert (
+        client.patch(
+            f"/api/auth/api-keys/{key_id}", json = {"access": "full"}, headers = ui
+        ).status_code
+        == 200
+    )
+    assert (
+        client.patch(
+            f"/api/auth/api-keys/{key_id}", json = {"access": "admin"}, headers = ui
+        ).status_code
+        == 422
+    )
+
+
+@pytest.mark.usefixtures("owner_auth")
+def test_internal_and_revoked_keys_keep_their_access():
+    _raw, internal = storage.create_api_key(username = "unsloth", name = "Data recipe", internal = True)
+    assert storage.set_api_key_access("unsloth", internal["id"], "inference") is None
+    _raw, row = storage.create_api_key(username = "unsloth", name = "gone")
+    storage.revoke_api_key("unsloth", row["id"])
+    assert storage.set_api_key_access("unsloth", row["id"], "inference") is None
+    assert storage.set_api_key_access("someone-else", _key_id_of("unsloth"), "inference") is None
+
+
+def _key_id_of(username):
+    _raw, row = storage.create_api_key(username = username, name = "mine")
+    return row["id"]

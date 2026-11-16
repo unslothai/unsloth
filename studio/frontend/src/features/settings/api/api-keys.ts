@@ -57,6 +57,19 @@ export async function createApiKey(
   return res.json();
 }
 
+export async function updateApiKeyAccess(
+  keyId: number,
+  access: ApiKeyAccess,
+): Promise<ApiKey> {
+  const res = await authFetch(`/api/auth/api-keys/${keyId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access }),
+  });
+  if (!res.ok) throw await actionError(res);
+  return res.json();
+}
+
 export async function revokeApiKey(keyId: number): Promise<void> {
   const res = await authFetch(`/api/auth/api-keys/${keyId}`, {
     method: "DELETE",

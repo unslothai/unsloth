@@ -3544,6 +3544,8 @@ export const zhCN = {
       accessInference: "仅推理",
       accessFullHint: "可以使用整个 Unsloth API，包括加载、下载和删除模型",
       accessInferenceHint: "可以与已加载的模型对话并列出它们，但不能加载、卸载或下载模型，也不能更改设置",
+      accessInferenceBadge: "推理",
+      accessError: "无法更改此密钥的访问权限",
       createTokenHint: "创建名为“{name}”的 Token",
       defaultTokenName: "新 token {n}",
       creating: "创建中...",

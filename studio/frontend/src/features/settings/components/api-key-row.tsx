@@ -133,7 +133,7 @@ export function ApiKeyRow({
             className="shrink-0 rounded-full border px-1.5 text-ui-11 text-muted-foreground"
             title={t("settings.apiKeys.accessInferenceHint")}
           >
-            {t("settings.apiKeys.accessInference")}
+            {t("settings.apiKeys.accessInferenceBadge")}
           </span>
         )}
       </div>

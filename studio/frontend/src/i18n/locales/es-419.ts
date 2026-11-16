@@ -3848,6 +3848,8 @@ export const es419 = {
       accessInference: "Solo inferencia",
       accessFullHint: "Puede usar toda la API de Unsloth, incluido cargar, descargar y eliminar modelos",
       accessInferenceHint: "Puede chatear con los modelos cargados y listarlos, pero no puede cargar, descargar ni quitar modelos ni cambiar la configuración",
+      accessInferenceBadge: "Inferencia",
+      accessError: "No se pudo cambiar el acceso de esta clave",
       createTokenHint: 'Crear un token llamado "{name}"',
       defaultTokenName: "Token nuevo {n}",
       creating: "Creando...",

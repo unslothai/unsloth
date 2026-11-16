@@ -3610,6 +3610,8 @@ export const ru = {
       accessInference: "Только инференс",
       accessFullHint: "Может использовать весь API Unsloth, включая загрузку, скачивание и удаление моделей",
       accessInferenceHint: "Может общаться с загруженными моделями и выводить их список, но не может загружать, выгружать или скачивать модели и менять настройки",
+      accessInferenceBadge: "Инференс",
+      accessError: "Не удалось изменить доступ этого ключа",
       createTokenHint: "Создать токен «{name}»",
       defaultTokenName: "Новый токен {n}",
       creating: "Создание...",

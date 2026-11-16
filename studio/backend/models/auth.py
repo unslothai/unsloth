@@ -110,6 +110,10 @@ class CreateApiKeyRequest(BaseModel):
     )
 
 
+class UpdateApiKeyRequest(BaseModel):
+    access: Literal["full", "inference"]
+
+
 class ApiKeyResponse(BaseModel):
     """Public representation of an API key (never contains the raw key)."""
 

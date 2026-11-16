@@ -3790,6 +3790,8 @@ export const id = {
       accessInference: "Hanya inferensi",
       accessFullHint: "Dapat menggunakan seluruh API Unsloth, termasuk memuat, mengunduh, dan menghapus model",
       accessInferenceHint: "Dapat mengobrol dengan model yang dimuat dan melihat daftarnya, tetapi tidak dapat memuat, melepas, atau mengunduh model, atau mengubah pengaturan",
+      accessInferenceBadge: "Inferensi",
+      accessError: "Tidak dapat mengubah akses kunci ini",
       createTokenHint: 'Buat token bernama "{name}"',
       defaultTokenName: "Token Baru {n}",
       creating: "Membuat...",

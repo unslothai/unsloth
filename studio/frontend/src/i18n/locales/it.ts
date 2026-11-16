@@ -3519,6 +3519,8 @@ export const it = {
       accessInference: "Solo inferenza",
       accessFullHint: "Può usare tutta l'API di Unsloth, inclusi caricamento, download ed eliminazione dei modelli",
       accessInferenceHint: "Può chattare con i modelli caricati ed elencarli, ma non può caricare, scaricare dalla memoria o scaricare modelli né modificare le impostazioni",
+      accessInferenceBadge: "Inferenza",
+      accessError: "Impossibile modificare l'accesso di questa chiave",
       createTokenHint: 'Crea un token chiamato "{name}"',
       defaultTokenName: "Nuovo token {n}",
       creating: "Creazione...",
