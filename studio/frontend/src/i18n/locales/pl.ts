@@ -1138,6 +1138,7 @@ export const pl = {
       videoChecking: "Sprawdzanie obsługi wideo na tym komputerze...",
       more: "Więcej",
       customizeSidebar: "Dostosuj pasek boczny",
+      customizeProfileMenu: "Dostosuj menu profilu",
       newBadge: "Nowość",
       export: "Eksport",
       recents: "Ostatnie",

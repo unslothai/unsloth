@@ -1137,6 +1137,7 @@ export const es419 = {
       videoChecking: "Comprobando si esta computadora admite video...",
       more: "Más",
       customizeSidebar: "Personalizar la barra lateral",
+      customizeProfileMenu: "Personalizar menú de perfil",
       newBadge: "Nuevo",
       export: "Exportar",
       recents: "Recientes",

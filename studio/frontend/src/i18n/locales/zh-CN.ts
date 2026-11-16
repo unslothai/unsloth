@@ -1027,6 +1027,7 @@ export const zhCN = {
       videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
+      customizeProfileMenu: "自定义个人资料菜单",
       newBadge: "新",
       export: "导出",
       recents: "最近",

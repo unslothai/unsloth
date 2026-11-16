@@ -1032,6 +1032,7 @@ export const ptBR = {
       videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
+      customizeProfileMenu: "Personalizar menu do perfil",
       newBadge: "Novo",
       export: "Exportar",
       recents: "Recentes",

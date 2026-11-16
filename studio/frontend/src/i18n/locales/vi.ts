@@ -1132,6 +1132,7 @@ export const vi = {
       videoChecking: "Đang kiểm tra khả năng hỗ trợ video của máy này...",
       more: "Thêm",
       customizeSidebar: "Tùy chỉnh thanh bên",
+      customizeProfileMenu: "Tùy chỉnh menu hồ sơ",
       newBadge: "Mới",
       export: "Xuất",
       recents: "Gần đây",

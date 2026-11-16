@@ -1080,6 +1080,7 @@ export const th = {
       videoChecking: "กำลังตรวจสอบว่าเครื่องนี้รองรับวิดีโอหรือไม่...",
       more: "เพิ่มเติม",
       customizeSidebar: "ปรับแต่งแถบด้านข้าง",
+      customizeProfileMenu: "ปรับแต่งเมนูโปรไฟล์",
       newBadge: "ใหม่",
       export: "ส่งออก",
       recents: "ล่าสุด",

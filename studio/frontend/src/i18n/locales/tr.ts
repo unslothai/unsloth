@@ -1127,6 +1127,7 @@ export const tr = {
       videoChecking: "Bu makinenin video desteği denetleniyor...",
       more: "Diğer",
       customizeSidebar: "Kenar çubuğunu özelleştir",
+      customizeProfileMenu: "Profil menüsünü özelleştir",
       newBadge: "Yeni",
       export: "Dışa aktar",
       recents: "Son kullanılanlar",
