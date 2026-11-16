@@ -38,11 +38,8 @@ from . import diffusion_int8_attention as _I8
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
-# DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights (median /
-# max rel L2 vs bf16, teacher-forced). Z-Image-Turbo: 0.022 / 0.048 against 0.024 / 0.073 since the kernel keeps V
-# resolved past attention sinks (0.034 / 0.100 before). Left out (name or env switch only): LTX-2, whose audio
-# stream (0.010 vs 0.008) has no attention sink to fix. FLUX.3 runs the kernel in its strided processors
-# (diffusion_int8_attention.install_auto), raced the same way.
+# DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
+# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix.
 AUTO_DITS = frozenset(
     {
         "Flux3Transformer2DModel",
@@ -51,14 +48,11 @@ AUTO_DITS = frozenset(
         "ZImageTransformer2DModel",
     }
 )
-# DiTs whose INT8 attention also races where speed was left unset and no speed profile follows (an INT8 DiT the offload
-# streams on a T4): the families measured that way (FLUX.3 Klein, Z-Image, Qwen-Image-2.1); the rest of AUTO_DITS (Wan)
-# keep base's behaviour there (no race until a speed profile engages).
+# Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
 )
-# DiTs whose accuracy was measured on the CUDA kernel only (its V range past attention sinks): with the switch unset a
-# Triton stand-in keeps the incumbent for them; a request by name or the env switch still routes it.
+# Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
 AUTO_CUDA_ONLY = frozenset({"Flux3Transformer2DModel", "ZImageTransformer2DModel"})
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
@@ -315,7 +309,6 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
                 _arg(args, kwargs, 1, "key"),
                 _arg(args, kwargs, 2, "value"),
             )
-            # MODE_MAIN (every family but SINK_DITS): the very call main makes
             mode = backend.sinks
             return _I8.int8_attention_call(*qkv, mode) if mode else _I8.int8_attention_call(*qkv)
     return _STATE["original"](*args, **kwargs)

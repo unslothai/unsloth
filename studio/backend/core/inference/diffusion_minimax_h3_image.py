@@ -4034,9 +4034,7 @@ def install_checkpoint_attention(
 _RACE_ROWS = (4096, 300)
 _KERNEL_RACE_IMAGES = (4096, 1024)
 _KERNEL_LARGE_ROWS = 2560
-# Whether the kernel's switch left unset races Studio's INT8 kernel for the DiT blocks. Off: its block race wins by
-# 3-5% at 4096 + 300 rows on L4 / G4 / A100, yet forced end to end at 2048x2048 the renders run 6-13% slower on the
-# same cards, so the blocks keep their backend unless UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL=1 forces the kernel.
+# Off: the block race wins 3-5% (L4 / G4 / A100) but 2048x2048 renders end to end run 6-13% slower.
 KERNEL_AUTO = False
 _RACE_ROUNDS = 7
 ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"

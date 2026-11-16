@@ -62,8 +62,7 @@ def strided_processor_class() -> Any:
             image_rotary_emb: Any = None,
         ) -> Any:
             cudnn = _backend_value(self._attention_backend) == _CUDNN
-            # the projections keep the token count: a call below the INT8 floor (raised where a plan decided torch's
-            # attention) runs the stock call, as the processor did before the kernel was installed
+            # below the INT8 floor: the stock call
             int8 = self._unsloth_int8 and hidden_states.shape[1] >= self._unsloth_int8_min_tokens
             if (
                 attention_mask is not None

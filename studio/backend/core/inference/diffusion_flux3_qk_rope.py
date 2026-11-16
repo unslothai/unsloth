@@ -489,8 +489,7 @@ def _install(pipe: Any, device: Any, logger: Any) -> int:
         proc = getattr(attn, "processor", None)
         stock = getattr(proc, "_unsloth_stock", None)
         if type(stock) is tf3.Flux3AttnProcessor:
-            # an INT8 strided processor keeps the one it replaced, to give back where torch's attention wins: that
-            # one becomes this processor too, as it would have without the kernel
+            # keep the replaced processor to give back where torch wins
             new = cls()
             new._attention_backend = stock._attention_backend
             new._parallel_config = stock._parallel_config

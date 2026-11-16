@@ -416,8 +416,7 @@ def _functions(
     config: dict,
     sinks: bool = False,
 ) -> tuple:
-    """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config, with the
-    attention-sink path (``sinks``) or without it (the kernels as they were before it); compiled on first use."""
+    """(attention kernel, quantiser kernels, shared bytes), with or without the sink path; compiled on first use."""
     config = select_config(
         config, 0
     )  # a config with long overrides names its kernel for short sequences
@@ -466,26 +465,17 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# The first SINK_LEARN_CALLS calls of a launch plan report whether a head clipped V (an attention sink); from its
-# SINK_DECIDE_AT-th call on a plan none of them did runs the kernels without the sink path (_choose_path). Both come
-# before a denoiser's forward is recorded as a CUDA graph (three eager warm-up forwards: a graph replays without
-# calling in here, so a plan undecided by then keeps the sink path in the graph).
+# A plan's first SINK_LEARN_CALLS calls learn whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT.
+# Both must precede CUDA graph capture (3 eager warm-ups): an undecided plan keeps the sink path in the graph.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
-# A plan's race verdict holds for every plan of its shape whose query and key counts fall in the same DECIDE_BUCKET
-# tokens (a new prompt length) and whose own first calls also had sinks: each plan learns whether it has sinks, and a
-# verdict reached with sinks never applies to one without them, nor the reverse; a known verdict skips the race.
+# A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
 DECIDE_BUCKET = 256
-# The sink race keeps the kernels without the sink path only where their error against torch's attention on the
-# deciding call is at most this many times the sink path's (Qwen-Image-2.1: ~1.03, Z-Image-Turbo: ~1.6).
+# Plain path wins only if its error vs torch is <= this x the sink path's (Qwen-Image-2.1 ~1.03, Z-Image-Turbo ~1.6).
 PLAIN_ERROR_SLACK = 1.15
-# What a route's calls run (``mode`` of the op): MODE_MAIN the kernels as they were before the attention-sink path
-# (no learning, no race: every family not measured with it, and the probes); MODE_RACE the sink path with its race
-# against torch's attention (an automatic route of a SINK_DITS family).
-# MODE_KERNELS: a forced request (by name or the env switch) of a SINK_DITS family: the same race between the INT8 paths
-# (PLAIN_ERROR_SLACK, RACE_MARGIN), never torch's attention.
+# MODE_MAIN: no sink path (non-SINK_DITS, probes). MODE_RACE: sink path raced vs torch (auto SINK_DITS route).
+# MODE_KERNELS: forced SINK_DITS request, races only the INT8 paths, never torch.
 MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
-# The families the attention-sink path was measured on (accuracy and speed per card): only their routes run it.
 SINK_DITS = frozenset(
     {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
 )
@@ -504,18 +494,16 @@ def _plans() -> dict:
 
 
 def _decisions() -> dict:
-    """What the plans decided (_choose_path), per decision key (``plan["decision"]``)."""
+    """Sink decisions per ``plan["decision"]`` key."""
     found = _LOADED.get("decisions")
     if found is None:
         found = _LOADED["decisions"] = {}
     return found
 
 
-# Set when a CUDA graph records a sink-route call (cleared per pipeline): from then on no plan races or changes a
-# route, since a graph already recorded replays what it recorded; an undecided plan keeps the sink path it recorded.
+# Set once a CUDA graph records a sink-route call: no later race or route change, the graph replays what it recorded.
 _GRAPHED = [False]
-# (card, head dim, raise_floor(tokens)) of the routes a race engaged: a plan on that card and head dim that decides
-# torch's attention raises their token floor past its bucket, so those calls leave the op (and its graph) entirely
+# (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
 _ROUTES: list = []
 
 
@@ -590,8 +578,7 @@ def _plan(
     index: int,
     mode: int = MODE_MAIN,
 ) -> dict:
-    """The launch plan for ``[B, S, H, D]`` q / k / v with aligned strides (``_aligned``) on device ``index``; a
-    MODE_MAIN plan loads and runs only the kernels without the attention-sink path."""
+    """The launch plan for aligned ``[B, S, H, D]`` q / k / v on device ``index``."""
     from .diffusion_int8_attention_cuda import float_bits
 
     key = _plan_key(q, k, v, config, scale, index, mode)
@@ -616,7 +603,6 @@ def _plan(
     config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     fn0, kernels0, shared = _functions(index, D, config, sinks = False)
-    # MODE_MAIN never runs the sink path: its kernels are not even compiled for it
     fn, kernels = (
         _functions(index, D, config, sinks = True)[:2] if mode != MODE_MAIN else (None, None)
     )
@@ -677,7 +663,6 @@ def _plan(
     stats_threads = 256  # NTS of the quantiser source
     stats_jobs = -(-n_qpad // (stats_threads // (D // 16))) + 1 + nvc
     kv_threads = max(bn * D // 64, 2 * D)  # NTKV: a V tile, or runs of 32 keys
-    # V tiles, K runs, then (the sink path) the residual job: the keys a head with an attention sink clipped
     kv_jobs = tiles + n_kpad // (kv_threads // (D // 16))
     out_stride = (Sq * H * D, H * D, D)
 
@@ -706,7 +691,6 @@ def _plan(
         ),
         "mode": int(mode),
         "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
-        # the sink path, decided by the plan's first calls (_choose_path)
         "calls": 0,
         "sinks": None,
         "decision": decision,
@@ -739,8 +723,6 @@ def _plan(
         "attn_grid": (n_qpad // (16 * nq * wpc), BH),
         "attn_threads": 32 * wpc,
         "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
-        # the residual launch: a warp per row, at most RESID_BLOCKS blocks per head (a head without clipped keys
-        # returns at once)
         "resid_grid": (BH, max(1, min(RESID_BLOCKS, -(-Sq // (RESID_THREADS // 32 * 4))))),
         "resid_tail": (Sq, n_qpad, n_kpad, H, vrows, *out_stride, _OUT_KIND[str(v.dtype)]),
         "out_shape": (B, Sq, H, D),
@@ -752,9 +734,7 @@ def _plan(
 
 
 def forget_plans() -> None:
-    """Drops the launch plans, and with them what their first calls decided about attention sinks (_choose_path)
-    and the routes those decisions raise: a new pipeline's calls decide again, even where they share a plan's shapes
-    with the last one's."""
+    """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
     _plans().clear()
     _decisions().clear()
     _ROUTES.clear()
@@ -829,7 +809,6 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
         return
     args += (base + off["rcnt"], base + off["rml"])
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
-    # the keys a head clipped (attention sinks), added back to its rows
     args = (
         base + off["qi"],
         base + off["ki"],
@@ -898,7 +877,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
 
 
 def _outside_capture() -> Any:
-    """``hold_off_capture`` (True while no other thread records a CUDA graph, which holds captures off meanwhile)."""
+    """``hold_off_capture``: True while no other thread records a CUDA graph."""
     from .diffusion_cuda_graph import hold_off_capture
     return hold_off_capture()
 
@@ -1086,7 +1065,7 @@ def _cuda_attention(
 def _attention_on_device(
     plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int
 ) -> Any:
-    """One call of ``plan`` on the current device and stream, on the path it takes (_choose_path)."""
+    """One call of ``plan`` on the current stream."""
     import torch
 
     path, n = _choose_path(
@@ -1114,8 +1093,7 @@ def kernel_function(
     config: dict,
     sinks: bool = False,
 ) -> Any:
-    """The loaded CUDA kernel for this device and config, with or without the attention-sink path (compiled on first
-    use)."""
+    """The loaded CUDA kernel, with or without the sink path."""
     import torch
     return _functions(_device_index(torch.device(device)), head_dim, config, sinks)[0]
 
@@ -1357,7 +1335,6 @@ def int8_attention_call(
         and not torch.compiler.is_compiling()
         and not _tracing()
     ):
-        # MODE_MAIN: the very call main makes
         return int8_attention_impl(q, k, v, mode) if mode else int8_attention_impl(q, k, v)
     if mode != MODE_MAIN:
         return torch.ops.unsloth_studio.int8_attention_nhd_sinks(q, k, v, int(mode))
