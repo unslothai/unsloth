@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A LoRA forward's price covers PEFT's real forward: adapters in another dtype (input cast + promoted sum) and the
-reference / condition tokens an edit request adds to the denoiser's sequence. CPU only."""
+"""LoRA forward pricing: mismatched adapter dtypes and edit reference tokens. CPU only."""
 
 import types
 import weakref
@@ -125,5 +124,4 @@ def test_reference_images_raise_a_priced_lora_request(monkeypatch):
         pipe, width = 1024, height = 1024, condition_pixels = two_refs, reference_pixels = two_refs
     )
     assert plain == 0
-    # two 1 MP references add 8192 tokens per branch to every adapted layer's forward
     assert with_refs >= 60_000 * 8192 * 2 // (1 << 20) - 64, with_refs

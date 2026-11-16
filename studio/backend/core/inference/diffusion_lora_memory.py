@@ -122,8 +122,7 @@ def _widest_layer_bytes_per_token(
                     mismatch = mismatch or _element_bytes(w) != compute_bytes
         per = (2 * int(out) + rank) * elem
         if mismatch:
-            # x.to(adapter dtype) lives through the adapter loop beside the delta, and result + delta promotes
-            # (fp16 + bf16 -> fp32): the cast copy, the delta and the promoted sum, never below the same-dtype price
+            # dtype mismatch: input cast copy + delta + promoted (fp32) sum stay alive together
             inf = getattr(base, "in_features", None) or getattr(base, "in_channels", None) or 0
             per = max(per, (int(inf) + int(out) + rank) * adapter_elem + int(out) * 4)
         widest = max(widest, per)
