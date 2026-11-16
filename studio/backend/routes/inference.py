@@ -32551,10 +32551,11 @@ async def produce_openai_chat_completions(
     _npu = peek_npu_backend()
     _using_npu = _npu is not None and _npu.is_loaded and routed_slot.get() is None
     # Auto-switching also selects kept slots: budget facts against the serving model.
+    _messages_before_memory = payload.messages
     apply_to_request(
         payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
     )
-    if _pre_parsed is not None:
+    if _pre_parsed is not None and payload.messages is not _messages_before_memory:
         _pre_parsed = _extract_content_parts(payload.messages, keep_tool_images = True)
     if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
