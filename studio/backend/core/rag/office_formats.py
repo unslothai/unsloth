@@ -971,6 +971,8 @@ def _email_parts(part, html_text) -> list[str]:
     """Inline body text in order: every part of a mixed message, one choice per alternative."""
     if part.get_content_disposition() == "attachment":
         return []
+    if part.get_content_type() == "message/rfc822" and part.is_multipart():
+        return [_email_text(message, html_text) for message in part.get_payload()]
     if part.get_content_maintype() == "multipart":
         children = list(part.iter_parts())
         if part.get_content_subtype() != "alternative":
