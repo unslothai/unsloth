@@ -139,7 +139,7 @@ RULES = (
         "cp x tp",
         "context parallel x tensor parallel on hybrid (linear attention) or multimodal models",
         lambda q: q.cp > 1 and q.tp > 1 and (q.hybrid or q.multimodal),
-        "tensor parallel keeps the linear attention layers replicated, and that path is not verified with "
+        "tensor parallel shards the linear attention layers by heads, and that path is not verified with "
         "Ulysses",
         "drop tp (Ulysses cp runs Qwen3-Next / Qwen3.5 hybrids alone or with DDP / FSDP2)",
     ),

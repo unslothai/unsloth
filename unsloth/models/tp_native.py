@@ -126,6 +126,15 @@ _MOE_STYLES = {
 _MLA_STYLES = {"mla_kv_a_proj"}
 
 _ATTN_NAMES = ("self_attn", "attention", "attn", "self_attention")
+# Gated DeltaNet linear attention (Qwen3-Next / Qwen3.5 / Qwen3.5-MoE / Qwen4Exp): per-head recurrent state, so it
+# shards by heads like attention (_linear_attention_region). Any other layout under these names stays replicated.
+_LINEAR_ATTN_NAMES = ("linear_attn",)
+_GDN_SIZES = ("num_k_heads", "num_v_heads", "head_k_dim", "head_v_dim")
+# The sizes a Gated DeltaNet forward reshapes / splits with: set to this rank's local values.
+_GDN_LOCAL_ATTRS = ("num_k_heads", "num_v_heads", "key_dim", "value_dim", "conv_dim")
+_GDN_HEAD_PARAMS = ("A_log", "dt_bias")  # [num_v_heads] each
+# A forward reading the global head counts off the config would reshape to every head.
+_GDN_GLOBAL_READS = re.compile(r"config\.linear_(num_key_heads|num_value_heads)\b")
 _ATTN_INPUT_SIDE = ("indexer",)
 _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
@@ -211,6 +220,9 @@ class _Region:
     latent: bool = (
         False  # latent-query MQA (DeepSeek-V4.1): one replicated key / value head, grouped output
     )
+    # (child module, parameter name, parts) sharded on dim 0 outside any projection (Gated DeltaNet conv1d
+    # channels): DTensors, read as this rank's local slice while the region runs.
+    child_params: list = dataclasses.field(default_factory = list)
 
 
 @dataclasses.dataclass
@@ -219,7 +231,7 @@ class TPPlan:
     regions: list
     source: str  # "user" / "transformers" / "structural"
     replicated_layers: int = (
-        0  # decoder layers with no region (e.g. linear attention): run replicated
+        0  # decoder layers with no region (e.g. short convolutions): run replicated
     )
     # Mixture-of-experts blocks: run replicated (experts not sharded), outputs averaged over tp.
     moe_blocks: list = dataclasses.field(default_factory = list)
@@ -557,7 +569,9 @@ def derive_tp_plan(
             )
             if not _has_params(child):
                 continue
-            if kind != "attention" and _is_moe_block(child):
+            if kind is None and child_name in _LINEAR_ATTN_NAMES and _gdn_layout(child):
+                kind = "linear_attention"
+            if kind not in ("attention", "linear_attention") and _is_moe_block(child):
                 # Replicated: identical input and weights on every tp rank, so identical outputs and grads.
                 if id(child) not in seen:
                     moe.append(child)
@@ -571,6 +585,9 @@ def derive_tp_plan(
             if id(child) in seen:
                 continue  # a block shared by several layers (Zamba2, ALBERT style): sharded once
             seen[id(child)] = path
+            if kind == "linear_attention":
+                regions.append(_linear_attention_region(path, child, compiled, user, tp_size))
+                continue
             regions.append(_region(path, child, kind, compiled, text, tp_size))
         # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
         replicated += found == 0 and "_pp_index" not in layer.__dict__
@@ -808,6 +825,201 @@ def _replicate_kv_heads(region, path, tp):
     for proj in kv:
         proj.style = KV_REPLICATED
     region.kv_replicated = True
+
+
+def _gdn_layout(module):
+    """The input projection layout of a Gated DeltaNet tensor parallelism shards by heads, else None (the layer
+    stays replicated): "split" (in_proj_qkv / _z / _b / _a: Qwen3.5, Qwen3.5-MoE, Qwen4Exp) or "grouped"
+    (in_proj_qkvz / in_proj_ba interleaved per key head: Qwen3-Next)."""
+    names = set(module._modules)
+    if not all(type(getattr(module, n, None)) is int for n in _GDN_SIZES):
+        return None
+    if not {"conv1d", "norm", "out_proj"} <= names:
+        return None
+    if not all(isinstance(module._parameters.get(n), torch.Tensor) for n in _GDN_HEAD_PARAMS):
+        return None
+    if {"in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"} <= names:
+        return "split"
+    if {"in_proj_qkvz", "in_proj_ba"} <= names:
+        return "grouped"
+    return None
+
+
+def _gdn_parts(module, layout):
+    """({input projection: column parts}, conv1d channel parts). Each part is per head with the key heads first
+    in every group, so the rank-th 1 / tp of each part is whole heads: rank r keeps key heads r * Hk / tp ..
+    (r + 1) * Hk / tp - 1 and exactly the value heads that read them (value head j reads key head j // (Hv / Hk))."""
+    k = module.num_k_heads * module.head_k_dim
+    v = module.num_v_heads * module.head_v_dim
+    # conv1d runs over [q, k, v] of every head (also after Qwen3-Next's regrouping).
+    conv = (k, k, v)
+    if layout == "split":
+        heads = (module.num_v_heads,)
+        return {
+            "in_proj_qkv": conv,
+            "in_proj_z": (v,),
+            "in_proj_b": heads,
+            "in_proj_a": heads,
+        }, conv
+    # [q, k, v, z] and [b, a] contiguous per key head (fix_query_key_value_ordering views [..., Hk, -1]): a
+    # contiguous 1 / tp slice is Hk / tp whole key head groups.
+    return {"in_proj_qkvz": (2 * k + 2 * v,), "in_proj_ba": (2 * module.num_v_heads,)}, conv
+
+
+def _check_gdn_source(module, path):
+    source = _region_source(module, path, "it uses this rank's head count")
+    read = _GDN_GLOBAL_READS.search(source)
+    if read:
+        raise ValueError(
+            f"Unsloth: the Gated DeltaNet forward of '{path}' ({type(module).__name__}) reshapes with "
+            f"{read.group(0)}, the global head count; tensor parallelism needs it to follow the local heads."
+        )
+
+
+def _linear_attention_region(path, module, compiled, user, tp):
+    """A Gated DeltaNet sharded by heads: the input projections (and conv1d channels, A_log, dt_bias) column
+    parallel per head, out_proj row parallel, one all-reduce after it. The recurrent state is per value head,
+    the gated norm per head (replicated), so each rank runs the fla / torch kernels on its local heads only."""
+    layout = _gdn_layout(module)
+    hk, hv = module.num_k_heads, module.num_v_heads
+    if hk < 1 or hv % hk:
+        raise ValueError(
+            f"Unsloth: Gated DeltaNet '{path}' has {hv} value heads, not a multiple of its {hk} key heads; "
+            "tensor parallelism cannot group them."
+        )
+    for what, value in (("linear_num_key_heads", hk), ("linear_num_value_heads", hv)):
+        if value % tp:
+            raise ValueError(
+                f"Unsloth: tensor parallel size {tp} does not divide {what} = {value} ({path}): Gated DeltaNet "
+                "linear attention layers shard by heads. Choose a tp size that divides it."
+            )
+    proj_parts, conv_parts = _gdn_parts(module, layout)
+    for name, param in module.named_parameters(recurse = False):
+        if name not in _GDN_HEAD_PARAMS or param.ndim != 1 or param.numel() != hv:
+            raise ValueError(
+                f"Unsloth: tensor parallelism cannot shard the Gated DeltaNet '{path}': its parameter '{name}' "
+                f"{tuple(param.shape)} is not one of {_GDN_HEAD_PARAMS} with one entry per value head ({hv})."
+            )
+    projs, norms, child_params = [], [], []
+    for name, child in module.named_children():
+        if not _has_params(child):
+            continue
+        if name in proj_parts:
+            style = COLWISE
+        elif name == "out_proj":
+            style = ROWWISE
+        elif name == "norm":
+            style = HEAD_NORM
+        elif name == "conv1d":
+            style = "conv"
+        else:
+            raise ValueError(
+                f"Unsloth: tensor parallelism has no rule for '{path}.{name}' ({type(child).__name__}) inside a "
+                "Gated DeltaNet."
+            )
+        key, planned = _style_for(f"{path}.{name}", compiled) if user and compiled else (None, None)
+        if planned is not None and _STYLES.get(planned) != style:
+            raise ValueError(
+                f"Unsloth: '{key}': '{planned}' does not match how tensor parallelism shards a Gated DeltaNet "
+                f"('{name}' is {style}: input projections column parallel by heads, out_proj row parallel)."
+            )
+        if style == HEAD_NORM:
+            numel = sum(p.numel() for p in child.parameters())
+            if numel != module.head_v_dim:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' normalizes {numel} features, not one value head "
+                    f"({module.head_v_dim}); tensor parallelism shards Gated DeltaNet by heads."
+                )
+            norms.append((name, child))
+            continue
+        if style == "conv":
+            weight = child._parameters.get("weight")
+            if (
+                not isinstance(child, nn.Conv1d)
+                or weight is None
+                or list(child._modules)
+                or tuple(weight.shape[:2]) != (sum(conv_parts), 1)
+            ):
+                raise ValueError(
+                    f"Unsloth: tensor parallelism expects a depthwise nn.Conv1d over {sum(conv_parts)} channels at "
+                    f"'{path}.{name}' (got {type(child).__name__}; LoRA on conv1d is not supported)."
+                )
+            child_params.append((child, "weight", conv_parts))
+            if child._parameters.get("bias") is not None:
+                child_params.append((child, "bias", conv_parts))
+            continue
+        weight, _ = _weight(child)
+        if weight is None or getattr(weight, "ndim", 0) != 2:
+            raise ValueError(
+                f"Unsloth: tensor parallelism expects a Linear at '{path}.{name}' (got {type(child).__name__})."
+            )
+        out_features, in_features = _logical_shape(*_weight(child))
+        if style == ROWWISE:
+            if in_features != hv * module.head_v_dim:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' reads {in_features} features, not num_v_heads * head_v_dim = "
+                    f"{hv * module.head_v_dim}."
+                )
+            parts = (out_features,)
+        else:
+            parts = proj_parts[name]
+            if out_features != sum(parts):
+                raise ValueError(
+                    f"Unsloth: Gated DeltaNet '{path}.{name}' has {out_features} outputs, not {sum(parts)}; its "
+                    "head layout is unknown to tensor parallelism."
+                )
+        projs.append(_Proj(name, child, style, parts))
+    missing = (set(proj_parts) | {"out_proj"}) - {p.name for p in projs}
+    if missing or not child_params:
+        raise ValueError(
+            f"Unsloth: Gated DeltaNet '{path}' has no parameters in {sorted(missing) or ['conv1d']}; tensor "
+            "parallelism cannot shard it by heads."
+        )
+    _check_gdn_source(module, path)
+    return _Region(
+        path,
+        module,
+        "linear_attention",
+        projs,
+        norms,
+        heads = hv,
+        kv_heads = hk,
+        head_dim = module.head_v_dim,
+        head_params = list(_GDN_HEAD_PARAMS),
+        child_params = child_params,
+    )
+
+
+def _set_local_linear_heads(module, region, tp):
+    """The sizes the Gated DeltaNet forward splits / reshapes with, local (tp_replica puts them back)."""
+    module.__dict__["_unsloth_tp_saved_attrs"] = {
+        name: module.__dict__.get(name, _MISSING) for name in _GDN_LOCAL_ATTRS
+    }
+    hk, hv = region.kv_heads // tp, region.heads // tp
+    key_dim, value_dim = hk * module.head_k_dim, hv * module.head_v_dim
+    local = {
+        "num_k_heads": hk,
+        "num_v_heads": hv,
+        "key_dim": key_dim,
+        "value_dim": value_dim,
+        "conv_dim": 2 * key_dim + value_dim,
+    }
+    for name, value in local.items():
+        if name in _GDN_SIZES or isinstance(module.__dict__.get(name), int):
+            module.__dict__[name] = value
+    module._unsloth_tp_heads = hv
+    module._unsloth_tp_kv_heads = hk
+    # Without causal_conv1d, transformers 4.57 - 5.16 call self.conv1d(mixed_qkv): the depthwise conv's channel
+    # / group counts must be the local ones too (tp_replica puts them back with the whole weight).
+    channels = local["conv_dim"]
+    for owner, _, _ in region.child_params:
+        if isinstance(owner, nn.Conv1d) and "_unsloth_tp_saved_attrs" not in owner.__dict__:
+            names = ("in_channels", "out_channels", "groups")
+            owner.__dict__["_unsloth_tp_saved_attrs"] = {
+                n: owner.__dict__.get(n, _MISSING) for n in names
+            }
+            for n in names:
+                owner.__dict__[n] = channels
 
 
 def _logical_shape(weight, base):
@@ -1648,6 +1860,10 @@ def _head_param_views(module, install):
         module.__dict__.pop(name, None)
         if install:
             module.__dict__[name] = _local(module._parameters[name])
+    for owner, name in module.__dict__.get("_unsloth_tp_child_params", ()):
+        owner.__dict__.pop(name, None)  # Gated DeltaNet conv1d channels, read as self.conv1d.weight
+        if install:
+            owner.__dict__[name] = _local(owner._parameters[name])
 
 
 def _region_pre_hook(module, args, kwargs):
@@ -2075,6 +2291,12 @@ def apply_tensor_parallel(
                 region.module, name, param, tp_mesh, "shard", (param.numel(),), 0, rank, tp
             )
         region.module.__dict__["_unsloth_tp_head_params"] = tuple(region.head_params)
+        for owner, name, parts in region.child_params:
+            _set_dtensor(owner, name, owner._parameters[name], tp_mesh, "shard", parts, 0, rank, tp)
+        if region.child_params:
+            region.module.__dict__["_unsloth_tp_child_params"] = tuple(
+                (owner, name) for owner, name, _ in region.child_params
+            )
         for _, norm in [*region.norms, *region.replicated]:
             for p in norm.parameters():
                 if p.requires_grad and id(p) not in hooked_norms:
@@ -2087,6 +2309,8 @@ def apply_tensor_parallel(
         module._unsloth_tp_input = _input_name(module)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
+        elif region.kind == "linear_attention":
+            _set_local_linear_heads(module, region, tp)
         module._unsloth_tp_kind = region.kind
         module._unsloth_tp_coord = (rank, tp)
         module._unsloth_tp_local_width = local_width
@@ -2127,6 +2351,7 @@ def apply_tensor_parallel(
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
             f"({tp_plan.source} plan), embeddings / lm_head / norms replicated"
+            + _linear_attention_note(tp_plan)
             + (
                 f", {tp_plan.replicated_layers} layers replicated"
                 if tp_plan.replicated_layers
@@ -2141,6 +2366,11 @@ def apply_tensor_parallel(
             + "."
         )
     return model
+
+
+def _linear_attention_note(tp_plan):
+    count = sum(r.kind == "linear_attention" for r in tp_plan.regions)
+    return f" (of which {count} Gated DeltaNet linear attention, sharded by heads)" if count else ""
 
 
 def _kv_replicated_note(tp_plan):
