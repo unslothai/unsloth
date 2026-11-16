@@ -946,6 +946,22 @@ _KWARGS_KERNELS = {
 _KWARGS_TRACE: list = [None]
 
 
+def _kernels_func_target(fn):
+    """With the `kernels` package installed, transformers' hub functions are `Func` nn.Module
+    instances whose class forward closes over the decorated function (zoo subclasses that class)."""
+    if not isinstance(fn, torch.nn.Module):
+        return None
+    for cls in type(fn).__mro__:
+        forward = vars(cls).get("forward")
+        try:
+            target = inspect.getclosurevars(forward).nonlocals.get("func") if forward else None
+        except (TypeError, ValueError):
+            target = None
+        if callable(target):
+            return target
+    return None
+
+
 def _hub_closure(fn) -> dict:
     """Kernel-hub wrapper closure nonlocals, unwrapping Unsloth's probes and pass-through wrappers; {} if none."""
     for _ in range(8):
@@ -961,6 +977,7 @@ def _hub_closure(fn) -> dict:
             getattr(fn, "_unsloth_varlen_probe_of", None)
             or getattr(fn, "_unsloth_undisabled", None)
             or getattr(fn, "__wrapped__", None)
+            or _kernels_func_target(fn)
         )
     return {}
 
