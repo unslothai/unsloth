@@ -2538,7 +2538,11 @@ function ProjectLanding({
                   </div>
                 }
               >
-                <ProjectFilesPanel projectId={projectId} />
+                {/* Keyed on the effective root: a folder change must drop the old tree and its fetches. */}
+                <ProjectFilesPanel
+                  key={`${currentProject?.workingFolder ?? ""}|${currentProject?.workingFolderStatus ?? ""}`}
+                  projectId={projectId}
+                />
               </Suspense>
             ) : (
               <div className="mt-8 flex flex-col gap-1">

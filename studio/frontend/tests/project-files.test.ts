@@ -160,7 +160,7 @@ test("the Files tab is a third project tab that loads its panel lazily", () => {
   assert.match(page, /useState<"chats" \| "sources" \| "files">/);
   assert.match(page, /onClick=\{\(\) => setProjectTab\("files"\)\}/);
   assert.match(page, /const ProjectFilesPanel = lazy\(/);
-  assert.match(page, /<ProjectFilesPanel projectId=\{projectId\} \/>/);
+  assert.match(page, /<ProjectFilesPanel\n\s*key=\{`\$\{currentProject\?\.workingFolder \?\? \"\"\}\|\$\{currentProject\?\.workingFolderStatus \?\? \"\"\}`\}\n\s*projectId=\{projectId\}\n\s*\/>/);
 });
 
 test("Add to chat stages the path in the project composer through the staged-prompt store", () => {

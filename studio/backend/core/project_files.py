@@ -19,6 +19,8 @@ LIST_MAX_ENTRIES = 500
 LIST_MAX_VISITED = 20000
 SEARCH_MAX_DIRS = 5000
 SEARCH_MAX_FILES = 50000
+# Every directory entry read, files or not: bounds a folder of millions of subfolders or skipped names.
+SEARCH_MAX_ENTRIES = 200000
 SEARCH_BUDGET_SECONDS = 2.0
 SEARCH_MAX_LIMIT = 200
 CHANGES_MAX = 500
@@ -182,6 +184,7 @@ def search_files(
     deadline = clock() + SEARCH_BUDGET_SECONDS
     pending = deque([("", root)])
     dirs_seen = 0
+    entries_seen = 0
     files_seen = 0
     truncated = False
     scored = []
@@ -192,36 +195,44 @@ def search_files(
         rel_dir, abs_dir = pending.popleft()
         dirs_seen += 1
         try:
-            with os.scandir(abs_dir) as listing:
-                children = sorted(listing, key = lambda e: e.name)
+            # Streamed, not sorted: a huge flat folder must hit the bounds before it is all read.
+            listing = os.scandir(abs_dir)
         except OSError:
             continue
-        for entry in children:
-            name = entry.name
-            if name.startswith(".") or _hidden_name(name):
-                continue
-            rel = f"{rel_dir}/{name}" if rel_dir else name
-            try:
-                if entry.is_symlink():
-                    # Never descend a link; a linked file counts only while it stays inside the root.
-                    real = os.path.realpath(entry.path)
-                    if not _within(root, real) or not os.path.isfile(real):
+        with listing:
+            for entry in listing:
+                entries_seen += 1
+                if entries_seen > SEARCH_MAX_ENTRIES or clock() > deadline:
+                    truncated = True
+                    break
+                name = entry.name
+                if name.startswith(".") or _hidden_name(name):
+                    continue
+                rel = f"{rel_dir}/{name}" if rel_dir else name
+                try:
+                    if entry.is_symlink():
+                        # Never descend a link; a linked file counts only while it stays inside the root.
+                        real = os.path.realpath(entry.path)
+                        if not _within(root, real) or not os.path.isfile(real):
+                            continue
+                    elif entry.is_dir(follow_symlinks = False):
+                        # Folders past the dir cap are never walked, so skip their venv probe too.
+                        if dirs_seen + len(pending) >= SEARCH_MAX_DIRS:
+                            truncated = True
+                        elif not _skips_dir(abs_dir, name):
+                            pending.append((rel, entry.path))
                         continue
-                elif entry.is_dir(follow_symlinks = False):
-                    if not _skips_dir(abs_dir, name):
-                        pending.append((rel, entry.path))
+                    elif not entry.is_file(follow_symlinks = False):
+                        continue
+                except OSError:
                     continue
-                elif not entry.is_file(follow_symlinks = False):
-                    continue
-            except OSError:
-                continue
-            files_seen += 1
-            if files_seen > SEARCH_MAX_FILES:
-                truncated = True
-                break
-            rank = match_rank(rel.lower(), query)
-            if rank is not None:
-                scored.append((rank, len(rel), rel.casefold(), rel, name))
+                files_seen += 1
+                if files_seen > SEARCH_MAX_FILES:
+                    truncated = True
+                    break
+                rank = match_rank(rel.lower(), query)
+                if rank is not None:
+                    scored.append((rank, len(rel), rel.casefold(), rel, name))
     best = heapq.nsmallest(limit, scored)
     return {
         "results": [{"path": rel, "name": name} for _, _, _, rel, name in best],
