@@ -3388,15 +3388,17 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     try:
         if quantized is not None:
             reader = _SliceReader(_checkpoint_index(name, kwargs))
-            model = prequantized_skeleton(
+            loaded = prequantized_skeleton(
                 original, cls, name, args, kwargs, kwargs["config"], meta_state_dict(reader)
             )
         else:
             kwargs = dict(kwargs, device_map = "meta")
             with torch.random.fork_rng(devices = []):
-                model = original(cls, name, *args, **kwargs)
+                loaded = original(cls, name, *args, **kwargs)
     finally:
         state["active"] = False
+    # output_loading_info = True returns (model, info); DeepSeek-V4.1 sets it itself to refuse a partial load.
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
     text = _text_config(model)
     if quantized is None and (
         getattr(text, "quantization_config", None)
@@ -3410,7 +3412,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     materialize = state.get("materialize", _materialize_sharded)
     materialize(model, name, kwargs, mesh, state["plan"], device)
     state["models"].append(model)
-    return model
+    return loaded
 
 
 def _world_mesh():

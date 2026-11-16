@@ -2207,3 +2207,51 @@ def test_no_module_attribute_shares_a_def_name():
     defs = set(re.findall(r"\bdef\s+(\w+)", source))
     clashes = sorted(n for n in defs if inspect.ismodule(getattr(dsv41, n, None)))
     assert not clashes, clashes
+
+
+@pytest.mark.parametrize("want_info", [False, True])
+def test_sharded_loading_of_a_released_checkpoint_returns_the_model(
+    tmp_path, monkeypatch, want_info
+):
+    """Tensor parallel / FSDP2 / pipeline sharded loading of a released-layout checkpoint. DeepSeek-V4.1's
+    from_pretrained asks transformers for the loading info to refuse a partial load, so the meta build returns
+    (model, info): the sharded loader must fill the model, not the tuple, and hand the caller what it asked for."""
+    import torch.distributed as dist
+    from safetensors.torch import save_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import tp_native
+
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialized")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    model = (
+        _tiny_model().to(torch.bfloat16).float()
+    )  # bf16-exact: a conversion stacks experts in bf16
+    src = tmp_path / "released"
+    model.config.save_pretrained(src)
+    save_file(_released_state_dict(model), os.path.join(src, "model.safetensors"))
+    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'pg'}", rank = 0, world_size = 1)
+    try:
+        mesh = init_device_mesh("cpu", (1,), mesh_dim_names = ("tp",))["tp"]
+        with tp_native.sharded_loading(mesh) as state:
+            out = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+                src, dtype = torch.float32, output_loading_info = want_info
+            )
+    except ValueError as e:
+        # transformers 5 merges the per-expert tensors at load (a weight conversion): refused cleanly.
+        assert "weight conversion" in str(e), e
+        return
+    finally:
+        dist.destroy_process_group()
+    loaded = out
+    if want_info:
+        assert isinstance(out, tuple) and len(out) == 2
+        loaded, info = out
+        assert not info["missing_keys"] and not info["unexpected_keys"]
+    assert isinstance(loaded, dsv41.DeepseekV41ForCausalLM)
+    assert state["models"] == [loaded]
+    assert loaded._unsloth_tp_load_stats["sharded_numel"] > 0
+    got = loaded.state_dict()
+    for name, value in model.state_dict().items():
+        assert not got[name].is_meta, name
+        assert torch.equal(got[name], value), name
