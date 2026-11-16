@@ -642,8 +642,7 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
     try:
         _fill(weird)
     except OSError:
-        # APFS and other filesystems enforce UTF-8 names (EILSEQ), so there is nothing to test here.
-        pytest.skip("this filesystem refuses filenames that are not UTF-8")
+        pytest.skip("this filesystem refuses non-UTF-8 names (APFS)")
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "StudioHome")
     monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: weird)
     monkeypatch.delenv("UV_CACHE_DIR", raising = False)
