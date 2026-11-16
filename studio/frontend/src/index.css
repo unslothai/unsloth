@@ -6814,6 +6814,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
   mask-image: linear-gradient(#000, transparent);
 }
 .chat-wallpaper-artwork { position: absolute; inset: 0; background-repeat: no-repeat; }
+/* Rule-of-thirds guides while framing. */
+.wallpaper-adjust-guide { background: color-mix(in srgb, #fff 22%, transparent); }
 .chat-wallpaper-image[data-fade="false"] { height: 100%; mask-image: none; }
 .chat-wallpaper-frame[data-entering] { animation: wallpaper-enter 180ms ease-out both; }
 .chat-wallpaper-frame[data-departing] { animation: wallpaper-leave 180ms ease-out both; }
