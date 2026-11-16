@@ -184,8 +184,7 @@ class _FamilySpec:
     save_takes_metadata: bool = False
     # (scheduler config, cfg) -> the dynamic-shift mu the "auto" sigma table uses; None pins max_shift.
     training_mu: Optional[Callable[..., Optional[float]]] = None
-    # diffusers ``compute_density_for_timestep_sampling`` scheme for the timestep index: "logit_normal", or "none"
-    # (uniform) where the family's reference trainer draws u uniformly through its shifted table (FLUX.3).
+    # Timestep density scheme; "none" (uniform) where the reference trainer draws u uniformly (FLUX.3).
     timestep_density: str = "logit_normal"
 
 
@@ -259,8 +258,7 @@ def _sample_timesteps(
     device,
     density = "logit_normal",
 ):
-    """Density timestep sampling (``density``: diffusers' weighting_scheme, logit-normal by default; "none" is
-    uniform), returning (timesteps, indices) into the scheduler's schedule."""
+    """Density timestep sampling; returns (timesteps, indices) into the scheduler's schedule."""
     from diffusers.training_utils import compute_density_for_timestep_sampling
 
     u = compute_density_for_timestep_sampling(
@@ -1599,13 +1597,9 @@ def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# FLUX.3 Klein (5.6B DiT, Qwen3-VL-4B encoder, the FLUX.2 VAE). Diffusers ships it only as modular blocks, so every
-# helper below mirrors one block of Flux3AutoBlocks' text-to-image graph (diffusers 0.42), and the recipe follows the
-# public FLUX.3 trainers (diffusers examples/dreambooth/train_dreambooth_lora_flux3_klein.py, ai-toolkit's flux3
-# arch): train the undistilled base, target noise - latents, u drawn uniformly through the constant 6.93 shift.
-# Attention + MLP linears of every block, the reference trainers' set. Bare suffixes also take mode_blocks.image_cond
-# (the reference-image stream): a text-to-image run never executes it, so those adapters stay zero, as in the
-# references, and the file keeps their layout.
+# FLUX.3 Klein: diffusers ships only modular blocks, so each helper below mirrors one Flux3AutoBlocks text-to-image
+# block (diffusers 0.42). Recipe per train_dreambooth_lora_flux3_klein.py: undistilled base, target noise - latents,
+# u uniform through the constant 6.93 shift. Suffixes also match image_cond (never run in t2i, so stays zero).
 _FLUX3_TARGETS = (
     "to_q",
     "to_k",
@@ -1614,10 +1608,9 @@ _FLUX3_TARGETS = (
     "ff.linear_in",
     "ff.linear_out",
 )
-# Flux3PrepareLatentsStep's image_rope_scale: the image H / W position ids are scaled by it.
+# Flux3PrepareLatentsStep's image_rope_scale on the image H / W ids.
 _FLUX3_IMAGE_ROPE_SCALE = 0.5
-# Left dense under nf4, as the inference keep-list (diffusion_families._FLUX3_QUANT_KEEP) leaves them under every
-# transformer-quant scheme. bitsandbytes skips a module whose dotted path contains "<name>.", so the full names.
+# Dense under nf4 as diffusion_families._FLUX3_QUANT_KEEP; bitsandbytes matches "<name>." so full names.
 _FLUX3_NF4_KEEP = (
     "early_stream_modulations",
     "single_stream_modulations",
@@ -1684,8 +1677,7 @@ def _flux3_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # The facade's encode_prompt is what the text step runs at inference: chat template, the window padded
-            # to a multiple of 80 tokens (the transformer attends to the padding), 8 stacked hidden states.
+            # Same encode_prompt as inference: padding to a multiple of 80 is attended, so it must match.
             pe = pipe.encode_prompt(prompt = cap, device = device)
             out.append((pe.cpu(),))
     return out
@@ -1702,7 +1694,7 @@ def _flux3_collate(
     weight_dtype,
     pad_to = None,
 ):
-    # Kept per sample: windows differ in length, and padding one would add tokens the transformer attends to.
+    # Per sample: padding would add attended tokens.
     return ([e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries],)
 
 
@@ -2324,9 +2316,8 @@ _SPECS: dict[str, _FamilySpec] = {
     "flux.3-klein-base": _FamilySpec(
         family = "flux.3-klein-base",
         lora_targets = _FLUX3_TARGETS,
-        # The references train in bf16; FLUX.3 renders black in plain fp16 (diffusion_families).
+        # FLUX.3 renders black in fp16.
         force_bf16 = True,
-        # 5.6B DiT at 11.1 GB bf16; the Qwen3-VL-4B encoder (8.9 GB) is freed before it loads.
         dense_bf16_gb = 11.1,
         load_conditioners = _flux3_load_conditioners,
         load_transformer = _flux3_load_transformer,
@@ -3589,8 +3580,7 @@ def _make_optimizer(
 
 def _free_text_encoders(pipe) -> None:
     """Frees conditioning modules once embeddings are precomputed, so they do not sit in VRAM."""
-    # A modular facade (FLUX.3) also holds every component in its block graph's pipeline; without dropping it the
-    # 8 GB Qwen3-VL encoder stayed resident through the whole loop. It rebuilds on its next use.
+    # A modular facade (FLUX.3) keeps the encoder alive in its block graph's pipeline; drop it (rebuilds on use).
     if getattr(pipe, "_modular", None) is not None:
         pipe._modular = None
     for attr in (

@@ -448,8 +448,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
-    # The public FLUX.3 trainers' rank 32 / lr 1e-4. A 500-step tarot sweep (768 px) picked it: rank 16 or lr 2e-4
-    # learned the style as well but moved unrelated prompts more (LPIPS 0.16 / 0.21 / 0.28 against 0.14).
+    # Reference rank 32 / lr 1e-4; a sweep found rank 16 or lr 2e-4 drift unrelated prompts more.
     "flux.3-klein-base": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
@@ -531,8 +530,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
-    # The Qwen3-VL-4B encoder (8.9 GB bf16) runs once to cache the captions and is freed before the DiT loads; the
-    # nf4 loop then peaks at 6.9 GB (768 px, rank 32, RTX PRO 6000), bf16 at 13.1 GB.
+    # Encoder freed before the DiT loads: nf4 peaks at 6.9 GB, bf16 13.1 GB (768 px, rank 32).
     "flux.3-klein-base": {
         "params": "5.6B",
         "qlora_vram_gb": 12,
@@ -2373,8 +2371,7 @@ def _publish_to_lora_catalog(
 
 
 def lora_run_families(family: Optional[str]) -> list[str]:
-    """The families a LoRA trained on ``family`` loads on: its own, then each family a ``deploy_base_repos`` target
-    belongs to (FLUX.3 Klein Base trains, the distilled FLUX.3 Klein is its own family). Never raises."""
+    """Families a LoRA trained on ``family`` loads on: its own plus its ``deploy_base_repos`` targets'."""
     name = str(family or "").strip()
     out = [name]
     try:
