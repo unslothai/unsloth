@@ -560,7 +560,9 @@ def full_map_decode(vae: Any, z: Any) -> Any:
     prev = getattr(_LOCAL, "portable", False)
     _LOCAL.portable = not _kernels_ok(decoder, z)
     try:
-        with torch.no_grad():
+        # The mid block attends over every latent: where no fused SDPA takes head dim 512 (ROCm, MPS), Studio's
+        # chunked mode bounds the score matrix, else the math path holds all of it (37.7 GB at 2048 px on gfx1151).
+        with torch.no_grad(), _attention_bound():
             out = None
             for i in range(z.shape[0]):
                 one = _decode_one(decoder, z[i : i + 1])
@@ -579,13 +581,39 @@ def full_map_decode(vae: Any, z: Any) -> Any:
     return out
 
 
+def _attention_bound() -> Any:
+    """Studio's chunked VAE attention mode (exact; engages only on SDPA calls no fused kernel takes)."""
+    import contextlib
+
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+    except Exception:  # noqa: BLE001
+        return contextlib.nullcontext()
+    if chunked.chunking_disabled():
+        return contextlib.nullcontext()
+    return chunked.chunked_attention_mode(chunked.score_budget_bytes(_score_budget_mb()))
+
+
+def _score_budget_mb() -> int:
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+        return chunked.DEFAULT_SCORE_BUDGET_MB
+    except Exception:  # noqa: BLE001
+        return 1024
+
+
 def full_map_decode_mib(vae: Any, z: Any) -> float:
-    """Peak MiB of ``full_map_decode``: the strip slope over the frame (scaled by element size) plus the strip
-    temporaries (the torch fallback holds a few fp32 strips)."""
+    """Peak MiB of ``full_map_decode``: the strip slope over the frame (scaled by element size), the strip
+    temporaries (the torch fallback holds a few fp32 strips) and the chunked mid-block attention's score tile."""
     slope = DECODE_STRIPS_MIB_PER_LATENT
     elem = vae.decoder.conv_in.weight.element_size()
     strip = (strip_elems(z.device) if z.is_cuda else (STRIP_ELEMS or 1 << 24)) * 4
-    return slope * (elem / 2) * int(z.shape[-2]) * int(z.shape[-1]) + 8 * strip / 2**20
+    try:
+        from . import diffusion_vae_attn_chunked as chunked
+        scores = chunked.score_budget_bytes(_score_budget_mb()) / 2**20
+    except Exception:  # noqa: BLE001
+        scores = 1024.0
+    return slope * (elem / 2) * int(z.shape[-2]) * int(z.shape[-1]) + 8 * strip / 2**20 + scores
 
 
 # 16-bit peak MiB per latent of the strip decode (diffusion_vae_tiling.DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS).

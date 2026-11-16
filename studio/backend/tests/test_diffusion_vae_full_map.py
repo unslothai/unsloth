@@ -204,3 +204,26 @@ def test_a_peak_just_over_the_budget_keeps_main_s_tiles_and_says_so_once(monkeyp
     _decode(vae, z, tiled = True)
     assert vae._unsloth_vae_full_map_calls == 2
     assert len([m for lvl, m in log.lines if "decodes the whole map" in m]) == 1
+
+
+def test_the_mid_block_attention_is_chunked_where_no_fused_kernel_takes_it(roomy, monkeypatch):
+    """ROCm / MPS: no fused SDPA takes the VAE's head dim, and a whole-map math SDPA would hold every score (37.7 GB
+    at 2048 px on gfx1151). The whole-map decode runs under Studio's chunked mode: chunked, and still exact."""
+    from core.inference import diffusion_vae_attn_chunked as chunked
+
+    calls = []
+    real = chunked.chunked_sdpa
+    monkeypatch.setattr(chunked, "fused_sdpa_available", lambda q, k, v: False)
+    monkeypatch.setattr(chunked, "score_budget_bytes", lambda default_mb = 0: 64 * 1024)
+    monkeypatch.setattr(chunked, "half_math_enabled", lambda: False, raising = False)
+    monkeypatch.setattr(chunked, "_half_math_call", lambda q: False)
+    monkeypatch.setattr(chunked, "chunked_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: 32 * 32)
+    vae = _flux2()
+    vae.enable_tiling()
+    vt.install(vae)
+    z = _latent()
+    ref = _decode(vae, z, tiled = False)
+    out = _decode(vae, z, tiled = True)
+    assert vae._unsloth_vae_full_map_calls == 1 and calls
+    assert torch.allclose(out, ref, atol = 2e-5, rtol = 0), float((out - ref).abs().max())
