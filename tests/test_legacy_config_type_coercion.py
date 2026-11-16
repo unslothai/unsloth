@@ -174,7 +174,17 @@ def test_values_transformers_accepts_are_not_touched():
     ],
 )
 def test_real_errors_still_raise(kwargs):
+    import dataclasses
     from transformers import LlamaConfig
+
+    ((name, value),) = kwargs.items()
+    field = {f.name: f for f in dataclasses.fields(LlamaConfig)}[name]
+    if isinstance(field.type, str):
+        # transformers 5.18 put `from __future__ import annotations` in configuration_utils, so the base
+        # config's fields (problem_type) carry string annotations that @strict no longer validates.
+        # Transformers accepts the value there; Unsloth must pass it through untouched, not coerce it.
+        assert getattr(LlamaConfig(**kwargs), name) == value
+        return
     with pytest.raises(Exception) as info:
         LlamaConfig(**kwargs)
     assert "Validation" in type(info.value).__name__ or isinstance(
