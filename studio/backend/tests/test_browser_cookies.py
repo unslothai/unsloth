@@ -430,3 +430,56 @@ def test_cookie_snapshots_are_ordered_by_store_changes(monkeypatch):
     assert older[0] == newer[0] and older[1] < newer[1]
     cookies.clear_cookies("user")
     assert cookies.versioned_page_cookies("user", "https://app.example.com/")[0][1] > newer[1]
+
+
+def _write_page_cookie(page, key, value, same_site = None):
+    asyncio.run(
+        browser_mod.browser_page_cookie(
+            browser_mod.BrowserPageCookie(page = page, key = key, value = value, same_site = same_site),
+            current_subject = "user",
+        )
+    )
+
+
+def test_a_script_cookies_samesite_holds_on_cross_site_requests():
+    site = "https://bank.example/"
+    _write_page_cookie(site, "strict=/", "|1", "Strict")
+    _write_page_cookie(site, "lax=/", "|1", "lax")
+    _write_page_cookie(site, "plain=/", "|1")
+    _write_page_cookie(site, "odd=/", "|1", "bogus")
+    _write_page_cookie(site, "none=/", "|1", "NONE")
+    every = "strict=1; lax=1; plain=1; odd=1; none=1"
+    assert cookies.cookie_header("user", site) == every
+    assert cookies.cookie_header("user", site, cross_site = True) == "lax=1; plain=1; odd=1; none=1"
+    assert cookies.cookie_header("user", site, cross_site = True, method = "POST") == "none=1"
+    # The frame's form never carries the attribute, and the page still sees every one.
+    assert [key for key, _ in cookies.page_cookies("user", site)] == [
+        "strict=/", "lax=/", "plain=/", "odd=/", "none=/"
+    ]
+    # SameSite=None needs Secure, which a script cookie over http never has.
+    _write_page_cookie("http://plain.example/", "none=/", "|1", "none")
+    assert cookies.cookie_header("user", "http://plain.example/") is None
+
+
+def test_the_page_and_its_requests_say_whether_the_site_has_cookies(monkeypatch):
+    _site(monkeypatch, [], [], body = b"<html></html>")
+    assert _load("https://app.example.com/")["siteCookies"] is False
+    # HttpOnly: invisible to the page, but its requests must still go through the backend to carry it.
+    cookies.store_cookies("user", "https://app.example.com/", _headers("sid=1; Path=/; HttpOnly"))
+    cookies.store_cookies("user", "https://other.example.com/", _headers("x=1"))
+    assert _load("https://app.example.com/")["siteCookies"] is True
+    assert _load("https://other.example.org/")["siteCookies"] is False
+
+    def request():
+        return browser_mod._page_request(
+            browser_mod.BrowserPageRequest(
+                page = "https://app.example.com/", url = "https://app.example.com/api"
+            ),
+            threading.Event(),
+            "user",
+        )
+
+    _site(monkeypatch, [], [], body = b"{}")
+    assert request()["siteCookies"] is True
+    _site(monkeypatch, [], [("Set-Cookie", "sid=; Path=/; Max-Age=0")], body = b"{}")
+    assert request()["siteCookies"] is False

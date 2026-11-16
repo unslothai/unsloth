@@ -38,6 +38,7 @@ from loggers import get_logger
 from routes.browser_cookies import (
     clear_cookies,
     cookie_header,
+    has_site_cookies,
     set_page_cookie,
     store_cookies,
     versioned_page_cookies,
@@ -203,7 +204,7 @@ _PAGE_STORAGE_JS = r"""
         const kept = (key, value) => key.length + value.length <= 131072;
         // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
         let writes = 0;
-        const sync = (area, key, value) => {
+        const sync = (area, key, value, sameSite) => {
           const seq = ++writes;
           const store = pageStores[area];
           if (key === null) {
@@ -213,6 +214,7 @@ _PAGE_STORAGE_JS = r"""
           post({
             type: "storage", area, key, url: pageUrl, seq,
             value: key !== null && value !== null && kept(key, value) ? value : null,
+            ...(sameSite && { sameSite }),
           });
         };
         const pageStores = {};
@@ -224,9 +226,9 @@ _PAGE_STORAGE_JS = r"""
             acked: new Map(),
             clearedAt: 0,
             clearAcked: 0,
-            set: (key, value) => {
+            set: (key, value, sameSite) => {
               data.set(key, value);
-              sync(area, key, value);
+              sync(area, key, value, sameSite);
             },
             // Always sent: another tab may have written the key since this page loaded.
             remove: (key) => {
@@ -258,6 +260,7 @@ _PAGE_STORAGE_JS = r"""
           else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
             const store = pageStores[data.area];
             if (!store) return;
+            if (data.area === "cookie" && data.value !== null) cfg.siteCookies = true;
             // This page's write or clear of the key is still on its way: its own echo settles the key.
             const pending = (key) =>
               store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
@@ -345,7 +348,7 @@ _PAGE_STORAGE_JS = r"""
           const name = at < 0 ? "" : pair.slice(0, at).trim();
           const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
           if ((!name && !value) || name.length + value.length > 4096) return;
-          let maxAge = null, expires = null, path = null, domain = "";
+          let maxAge = null, expires = null, path = null, domain = "", sameSite = null, secure = false;
           for (const attribute of attributes) {
             const eq = attribute.indexOf("=");
             const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
@@ -354,7 +357,12 @@ _PAGE_STORAGE_JS = r"""
             else if (key === "expires") expires = Date.parse(setting);
             else if (key === "path" && setting.startsWith("/")) path = setting;
             else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+            else if (key === "secure") secure = true;
+            // An unknown value is no SameSite at all, as in a browser.
+            else if (key === "samesite") sameSite = ["strict", "lax", "none"].includes(setting.toLowerCase()) ? setting.toLowerCase() : null;
           }
+          // A browser ignores SameSite=None without Secure, and Secure from an http page (rfc6265bis 5.7).
+          if (sameSite === "none" && (!secure || !/^https:/i.test(pageUrl))) return;
           if (domain) {
             let host = "";
             try { host = new URL(pageUrl).hostname; } catch {}
@@ -364,7 +372,10 @@ _PAGE_STORAGE_JS = r"""
           const id = name + "=" + (path ?? defaultPath(pagePath()));
           const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
           if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
-          else cookies.set(id, (deadline ?? "") + "|" + value);
+          else {
+            cookies.set(id, (deadline ?? "") + "|" + value, sameSite);
+            cfg.siteCookies = true;
+          }
         };
         const liveCookies = () => {
           const path = pagePath();
@@ -1161,7 +1172,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, siteCookies: data.siteCookies === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -2087,6 +2098,7 @@ def _fetch(
         final_url = meta.get("url") or at["url"]
         store_cookies(jar, final_url, meta.get("headers"))
         meta["cookies_version"], meta["cookies"] = versioned_page_cookies(jar, final_url)
+        meta["site_cookies"] = has_site_cookies(jar, final_url)
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
@@ -2149,6 +2161,8 @@ def _build_response(
             "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
             "cookies": meta.get("cookies") or [],
             "cookiesVersion": meta.get("cookies_version"),
+            # The site has cookies, HttpOnly ones too: its own requests go through the backend to carry them.
+            "siteCookies": meta.get("site_cookies") is True,
             "refresh": refresh,
             "html": page,
         }
@@ -2448,6 +2462,7 @@ def _page_request(
     }
     if subject is not None:
         answer["cookiesVersion"], answer["cookies"] = versioned_page_cookies(subject, request.page)
+        answer["siteCookies"] = has_site_cookies(subject, request.page)
     return answer
 
 
@@ -2537,6 +2552,7 @@ class BrowserPageCookie(BaseModel):
     page: str = Field(max_length = 8192)
     key: str = Field(min_length = 2, max_length = 4096)
     value: Optional[str] = Field(default = None, max_length = 8192)
+    same_site: Optional[str] = Field(default = None, max_length = 16)
 
 
 @router.post("/cookie", status_code = 204)
@@ -2544,7 +2560,7 @@ async def browser_page_cookie(
     request: BrowserPageCookie, current_subject: str = Depends(get_current_subject)
 ):
     """A page's ``document.cookie`` write, so the site sees it on the page's next request."""
-    set_page_cookie(current_subject, request.page, request.key, request.value)
+    set_page_cookie(current_subject, request.page, request.key, request.value, request.same_site)
     return Response(status_code = 204)
 
 

@@ -15,6 +15,8 @@ export type BrowserPage =
       ownBase?: boolean;
       /** Its site sent Access-Control-Allow-Origin * or null, so the sandbox reads its requests itself. */
       anyOrigin?: boolean;
+      /** The backend holds cookies for its site, so the page's own requests go through it. */
+      siteCookies?: boolean;
       html: string;
       refresh: { delay: number; url: string } | null;
       cookies?: SiteCookies;
@@ -83,7 +85,7 @@ function afterCookieWrites<T>(work: () => Promise<T>): Promise<T> {
 let cookieWriteCount = 0;
 const cookieWrittenAt = new Map<string, number>();
 
-onPageStorageWrite(({ origin, area, key, value, from }) => {
+onPageStorageWrite(({ origin, area, key, value, from, sameSite }) => {
   // Only a page's own write: the mirror below writes with no `from`.
   if (area !== "cookie" || key === null || !from) return;
   if (cookieWrittenAt.size >= 4096) cookieWrittenAt.clear();
@@ -94,7 +96,7 @@ onPageStorageWrite(({ origin, area, key, value, from }) => {
     await authFetch("/api/browser/cookie", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ page: `${origin}/`, key, value }),
+      body: JSON.stringify({ page: `${origin}/`, key, value, ...(sameSite && { same_site: sameSite }) }),
     }).catch(() => undefined);
   });
 });

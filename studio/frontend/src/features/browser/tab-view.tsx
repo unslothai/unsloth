@@ -432,6 +432,7 @@ function WebPage({
       base={page.base}
       ownBase={page.ownBase === true}
       anyOrigin={page.anyOrigin === true}
+      siteCookies={page.siteCookies === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

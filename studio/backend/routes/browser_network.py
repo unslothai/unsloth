@@ -32,7 +32,7 @@ BROWSER_NETWORK_JS = r"""
         // through the panel to Unsloth's backend (POST /api/browser/request), which makes them as the
         // same-origin requests they are. Requests to other sites stay the browser's. When the page's
         // site answers any origin (cfg.anyOrigin), its writes and XHRs stay the browser's too, streamed
-        // and unbuffered; a fetch GET still falls back to the panel for an API that doesn't.
+        // and unbuffered, until the site has cookies; a fetch GET still falls back to the panel for an API that doesn't.
         const pageOrigin = (() => { try { return cfg.url ? new URL(cfg.url).origin : null; } catch { return null; } })();
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
@@ -52,19 +52,23 @@ BROWSER_NETWORK_JS = r"""
           signal.addEventListener("abort", onAbort);
           replies.set(id, (reply) => {
             settle();
+            if (typeof reply.siteCookies === "boolean") cfg.siteCookies = reply.siteCookies;
             if (reply.ok === true) resolve(reply);
             else reject(new TypeError("Failed to fetch"));
           });
           post({ type: "request", id, ...request });
         });
         const bodiless = (method) => method === "GET" || method === "HEAD";
+        // The panel holds cookies for the site (cfg.siteCookies, kept current by its answers): a
+        // request that may carry them goes there, since the sandbox's own would go without them.
+        const withCookies = (request) => cfg.siteCookies === true && request.credentials !== "omit";
         // A GET or HEAD tries the browser first: where the site already answers the sandbox's origin
         // (an API sending ACAO null or *), streams, long polls and large bodies stay as they were. One
         // the browser can't read goes to the panel, and that address goes there directly from then on.
         const needsRelay = new Set();
         const address = (url) => { const parts = new URL(url); return parts.origin + parts.pathname; };
         const fromBrowser = async (request) => {
-          if (!bodiless(request.method) || needsRelay.has(address(request.url))) return null;
+          if (!bodiless(request.method) || withCookies(request) || needsRelay.has(address(request.url))) return null;
           try { return await nativeFetch(request); }
           catch (error) {
             if (request.signal.aborted) throw error;
@@ -158,7 +162,7 @@ BROWSER_NETWORK_JS = r"""
           if (!ownSite(url)) return nativeFetch(input, init).finally(done);
           let request;
           try { request = new Request(input instanceof Request ? input : url, init); } catch (error) { done(); return Promise.reject(error); }
-          if (cfg.anyOrigin && !bodiless(request.method)) return nativeFetch(request).finally(done);
+          if (cfg.anyOrigin && !bodiless(request.method) && !withCookies(request)) return nativeFetch(request).finally(done);
           return fromBrowser(request).then((response) => response ?? relayFetch(request)).finally(done);
         };
 
@@ -197,7 +201,7 @@ BROWSER_NETWORK_JS = r"""
             super.open(...args);
             const url = args.length > 1 ? resolve(String(args[1])) : null;
             const async = args.length < 3 || Boolean(args[2]);
-            if (async && ownSite(url) && !cfg.anyOrigin) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
+            if (async && ownSite(url) && (!cfg.anyOrigin || cfg.siteCookies === true)) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
           }
           setRequestHeader(name, value) {
             super.setRequestHeader(name, value);
