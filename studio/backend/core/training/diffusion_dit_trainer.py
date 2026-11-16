@@ -2752,6 +2752,17 @@ def _nf4_compile_supported() -> bool:
         return False
 
 
+def _guard_vae_attention(vae) -> int:
+    """ROCm: route the VAE's single-head attention the way inference does (diffusion_vae_attn_chunked), so a head no
+    fused kernel computes correctly runs exact math. Without it Windows ROCm encoded the training latents through a
+    kernel that returns garbage for head dim 512. Returns the number of modules patched; never raises."""
+    try:
+        from core.inference.diffusion_vae_attn_chunked import install
+        return install(vae)
+    except Exception:  # noqa: BLE001 -- stock attention on any failure
+        return 0
+
+
 def _compile_toolchain_missing() -> Optional[str]:
     """Why torch.compile cannot build its kernels here, else None. Windows only: inductor resolves its host C++
     compiler (``CXX``, else ``cl``) when a compiled training graph carries a CPU kernel, and a stock Windows install has
@@ -3097,6 +3108,7 @@ def _train_dit(
             torch.xpu.empty_cache()
         if vae is not None:
             vae.to(device)
+            _guard_vae_attention(vae)
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:

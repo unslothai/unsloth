@@ -80,8 +80,27 @@ def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     return max(1, mb) * 2**20
 
 
+# Widest head the Windows ROCm fused SDPA kernels compute correctly. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151
+# accepts head dim 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative
+# error 19-38 against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental
+# switch; 128 and 256 match math. That wrecked every Windows AMD VAE encode / decode (renders and training latents).
+WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
+
+
+def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+    import sys
+    shape = getattr(q, "shape", None) or ()
+    return (
+        sys.platform == "win32"
+        and is_rocm_torch(torch)
+        and len(shape) > 0
+        and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM
+    )
+
+
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes."""
+    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
+    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
     import torch
 
     device_type = getattr(getattr(q, "device", None), "type", None)
@@ -90,6 +109,8 @@ def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
         return mps_prefill_attention(q, k, v)
     if device_type != "cuda":
         return True
+    if _windows_rocm_untrusted_head(q, torch):
+        return False
     cb = torch.backends.cuda
     try:
         try:
