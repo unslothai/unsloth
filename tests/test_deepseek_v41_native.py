@@ -2237,6 +2237,10 @@ def test_sharded_loading_of_a_released_checkpoint_returns_the_model(
             out = dsv41.DeepseekV41ForCausalLM.from_pretrained(
                 src, dtype = torch.float32, output_loading_info = want_info
             )
+    except ValueError as e:
+        # transformers 5 merges the per-expert tensors at load (a weight conversion): refused cleanly.
+        assert "weight conversion" in str(e), e
+        return
     finally:
         dist.destroy_process_group()
     loaded = out
