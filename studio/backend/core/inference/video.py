@@ -9673,6 +9673,7 @@ class VideoBackend:
                 family = getattr(fam, "name", None),
                 hf_token = hf_token,
                 cancel_event = self._cancel_event if _load_token is not None else None,
+                local_files_only = local_files_only,
             )
         from .video_minimax_h3 import is_h3_native
 
@@ -11224,7 +11225,10 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                if (
+                if baked_loras:
+                    # Quantized from merged weights: never written as a cache of the bare base model.
+                    pass
+                elif (
                     native_cache_spec is not None
                     and native_scheme == engaged[0]
                     and native_cache_spec

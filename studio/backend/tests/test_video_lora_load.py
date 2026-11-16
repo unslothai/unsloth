@@ -332,3 +332,83 @@ def test_download_plan_refuses_a_lora_pick_the_load_would_refuse(monkeypatch):
             model_kind = "pipeline",
             loras = [{"id": "a", "weight": 1}],
         )
+
+
+def test_a_lora_bake_never_writes_the_base_models_quant_cache():
+    """The merged denoiser quantized for a LoRA load must not be saved under the bare base model's cache key, on any
+    of the cache-write branches (native, pinned precision, resident auto), immediate or deferred."""
+    import ast
+    import inspect
+
+    from core.inference import video as video_mod
+
+    tree = ast.parse(inspect.getsource(video_mod))
+    writers = {"_save_runtime_quant_to_cache", "_save_native_quant_to_cache", "_NativeCacheWrites"}
+    guarded = 0
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "baked_loras"
+        ):
+            continue
+        called = {
+            n.func.id
+            for n in ast.walk(ast.Module(body = node.orelse, type_ignores = []))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        if writers <= called:
+            assert not any(isinstance(n, ast.Call) for s in node.body for n in ast.walk(s))
+            guarded += 1
+    assert guarded == 1
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in writers
+    ]
+    # Every writer call sits under that guard's else branch (the definitions themselves are not calls).
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "baked_loras"
+        ):
+            inside = {id(n) for s in node.orelse for n in ast.walk(s)}
+            if writers <= {n.func.id for n in calls if id(n) in inside}:
+                assert all(id(n) in inside for n in calls)
+
+
+def test_a_cache_only_load_resolves_hub_adapters_without_the_network(monkeypatch, tmp_path):
+    """local_files_only reaches the adapter download and the repo file listing, so a cache-only video load never
+    downloads an adapter or asks the Hub which file a bare repo id holds."""
+    import huggingface_hub
+
+    from core.inference import diffusion_lora
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "my_lora.safetensors").write_bytes(b"x")
+    (snapshot / "README.md").write_text("")
+    downloads, snapshots = [], []
+
+    def fake_download(repo_id, filename, token, **kwargs):
+        downloads.append((repo_id, filename, kwargs.get("local_files_only")))
+        return str(snapshot / filename)
+
+    def fake_snapshot(repo_id, **kwargs):
+        snapshots.append((repo_id, kwargs.get("local_files_only")))
+        return str(snapshot)
+
+    def no_listing(*a, **k):
+        raise AssertionError("the Hub file listing must not run for a cache-only load")
+
+    monkeypatch.setattr(diffusion_lora, "hf_hub_download_with_xet_fallback", fake_download)
+    monkeypatch.setattr(diffusion_lora, "_catalog_by_id", lambda: {})
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", no_listing)
+    out = video_lora.resolve(
+        [("someone/wan-lora", 1.0)], family = "wan2.2-ti2v-5b", hf_token = None, local_files_only = True
+    )
+    assert out == (("wan-lora", str(snapshot / "my_lora.safetensors"), 1.0),)
+    assert snapshots == [("someone/wan-lora", True)]
+    assert downloads == [("someone/wan-lora", "my_lora.safetensors", True)]

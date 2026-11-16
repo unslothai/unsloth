@@ -152,8 +152,10 @@ def resolve(
     family: Optional[str],
     hf_token: Optional[str],
     cancel_event: Optional[threading.Event] = None,
+    local_files_only: bool = False,
 ) -> tuple[tuple[str, str, float], ...]:
-    """``(name, path, weight)`` per active spec, resolved and family-gated like the Images load."""
+    """``(name, path, weight)`` per active spec, resolved and family-gated like the Images load; a cache-only load
+    resolves Hub adapters from the cache alone."""
     from core.inference import diffusion_lora
 
     resolved = diffusion_lora.resolve_specs(
@@ -161,6 +163,7 @@ def resolve(
         family = family,
         hf_token = hf_token,
         cancel_event = cancel_event,
+        local_files_only = local_files_only,
     )
     bad = [r.id for r in resolved if r.fmt != "safetensors"]
     if bad:
