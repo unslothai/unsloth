@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""One rank (or the single-process reference) for test_ddp_find_unused_default.py: LoRA plus trainable
-embed_tokens / lm_head (modules_to_save) on a tiny Llama, reentrant gradient checkpointing, plain DDP.
-
-Each process sees the same global batch: under DDP it takes its half, the reference takes all of it,
-so averaged DDP gradients equal the reference gradients. Reports per-step losses and gradient norms."""
+"""One DDP rank (or the single-process reference): LoRA + trainable embed_tokens / lm_head, reentrant
+checkpointing. Each rank takes half the global batch so averaged gradients equal the reference."""
 
 import importlib.util
 import json

@@ -254,17 +254,14 @@ def test_sequence_classification_trainable_embeddings_default_to_false(ddp_env):
     "modules_to_save", [["embed_tokens", "lm_head"], ["lm_head"], ["embed_tokens"]]
 )
 def test_trainable_embeddings_default_to_false(ddp_env, modules_to_save):
-    # Continued pretraining: Unsloth turns target_modules embed_tokens / lm_head into modules_to_save.
-    # True crashed reentrant checkpointing ("Expected to mark a variable ready only once").
+    # Continued pretraining: embed_tokens / lm_head become modules_to_save; True crashed reentrant checkpointing.
     model = _lora(_llama(), modules_to_save = modules_to_save)
     assert any(".modules_to_save." in n and p.requires_grad for n, p in model.named_parameters())
     assert _helper()(_args(), model) is False
 
 
 def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
-    # Two gloo ranks, LoRA + trainable embed_tokens / lm_head, reentrant checkpointing (Unsloth's GPU
-    # path). Before the fix DDP got find_unused_parameters = True and the first backward raised
-    # "Expected to mark a variable ready only once". Losses and gradients must match one process.
+    # Two gloo ranks: before the fix the first backward raised "mark a variable ready only once".
     import json
     import subprocess
     import sys

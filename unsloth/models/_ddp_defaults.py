@@ -159,10 +159,8 @@ def _lora_uses_every_trainable_param(model):
     ):
         return False
     base = getattr(model, "get_base_model", lambda: None)()
-    # A classifier head in modules_to_save runs on every forward.
     classifier = type(base).__name__.endswith("ForSequenceClassification")
-    # modules_to_save that run on every forward: a classifier head, or the token embedding / output head
-    # (continued pretraining trains embed_tokens and lm_head this way, outside the checkpointed layers).
+    # modules_to_save that run every forward: a classifier head, or embed_tokens / lm_head (continued pretraining).
     always_run = set(_CLASSIFIER_HEADS) if classifier else set()
     always_run |= _embedding_leaf_names(base)
     for attr in ("modules_to_save", "target_parameters", "trainable_token_indices"):
