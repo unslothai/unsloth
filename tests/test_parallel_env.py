@@ -921,7 +921,9 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             pp_q = _q(pp = 2, pp_schedule = schedule, router_aux_loss = aux, **moe_q)
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
-    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE only"):
+    with pytest.raises(
+        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+    ):
         caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
         caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))

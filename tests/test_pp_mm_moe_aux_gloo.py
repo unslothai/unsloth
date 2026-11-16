@@ -14,6 +14,7 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+import dataclasses  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -86,6 +87,7 @@ QWEN4EXP = dict(
     mtp_num_hidden_layers = 0,
     max_position_embeddings = 512,
 )
+EXPERTS = ["mlp.gate.weight", "mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
 SEQ = {
     "qwen3_5_moe": 8,
     "qwen4_exp": 80,
@@ -131,8 +133,9 @@ def build(
     config = LoraConfig(
         r = 4,
         lora_alpha = 8,
-        target_modules = r"^(?!.*\.(indexer|visual)\.).*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|out_proj)$",
-        target_parameters = ["mlp.gate.weight"],
+        target_modules = r"^(?!.*\.(indexer|visual)\.).*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|out_proj|"
+        r"gate_proj|up_proj|down_proj)$",
+        target_parameters = EXPERTS if lora == "experts" else None,
         init_lora_weights = False,
         lora_dropout = 0.0,
     )
@@ -202,7 +205,7 @@ def _case_parity(
             build(family, **{**build_kw, "aux": False}), ids, labels, mask, n_mb, 1
         )["grads"]
         out["aux_effect"] = max(
-            float((ref["grads"][n] - g).abs().max()) for n, g in dropped.items() if "mlp.gate" in n
+            float((ref["grads"][n] - g).abs().max()) for n, g in dropped.items()
         )
     model = build(family, **build_kw)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
@@ -329,11 +332,15 @@ def _spawn(
 
 
 CELLS = {
-    "qwen3_5_moe_full_coef1_gpipe": dict(family = "qwen3_5_moe", coef = 1.0),
-    "qwen3_5_moe_lora_coef0.01_1f1b": dict(family = "qwen3_5_moe", lora = True, schedule = "1f1b"),
-    "qwen3_5_moe_full_aux_off_1f1b": dict(family = "qwen3_5_moe", aux = False, schedule = "1f1b"),
-    "qwen4_exp_full_coef1_gpipe": dict(family = "qwen4_exp", coef = 1.0),
-    "qwen4_exp_lora_coef0.01_1f1b": dict(family = "qwen4_exp", lora = True, schedule = "1f1b"),
+    f"{family}_{name}": dict(family = family, **kw)
+    for family in ("qwen3_5_moe", "qwen4_exp")
+    for name, kw in {
+        "full_coef1_gpipe": dict(coef = 1.0),
+        "lora_experts_coef0.01_1f1b": dict(lora = "experts", schedule = "1f1b"),
+        "lora_coef1_gpipe": dict(lora = "linear", coef = 1.0),
+        "lora_experts_aux_off_gpipe": dict(lora = "experts", aux = False),
+        "lora_aux_off_1f1b": dict(lora = "linear", aux = False, schedule = "1f1b"),
+    }.items()
 }
 
 
@@ -358,9 +365,11 @@ def test_pp2_wrapper_moe_aux_matches_gradient_accumulation(cell):
         assert res["worst"] < 1e-4, (cell, res["worst"])
     owned = results[0]["owned"] + results[1]["owned"]
     assert len(owned) == len(set(owned))
-    assert any("mlp.gate" in n for n in results[0]["owned"]) and any(
-        "mlp.gate" in n for n in results[1]["owned"]
+    want = {"linear": ("lora_",), "experts": ("mlp.gate", "mlp.experts")}.get(
+        kwargs.get("lora"), ("mlp.gate",)
     )
+    for res in results:  # both stages own what the cell trains
+        assert all(any(w in n for n in res["owned"]) for w in want), (want, res["owned"][:6])
     if "aux_effect" in results[0] and kwargs.get("coef", 0.01) >= 1.0:
         assert results[0]["aux_effect"] > 1e-3, results[0]["aux_effect"]
 
@@ -381,3 +390,36 @@ def test_wrapper_aux_plan_reads_text_config(family):
     assert moe is not None
     assert (moe.num_experts, moe.top_k, ppn._router_aux_coef(moe)) == (8, 3, 0.25)
     assert moe.config is model.config.get_text_config() and moe.config.output_router_logits
+
+
+def test_registry_rows_follow_this_file():
+    from unsloth import parallel_capabilities as caps
+    for family in ("qwen3_5_moe", "qwen4_exp"):
+        for expert_lora in (False, True):
+            for aux in (False, True):
+                query = caps.Query(
+                    trainer = "sft",
+                    family = family,
+                    hybrid = True,
+                    multimodal = True,
+                    moe = True,
+                    mode = "lora",
+                    expert_lora = expert_lora,
+                    router_aux_loss = aux,
+                    pp = 2,
+                    pp_schedule = "1f1b",
+                )
+                status, cell = caps.cell_status(query)
+                assert status == "supported", (query, cell)
+                case = cell.parity.split("[", 1)[1].rstrip("]")
+                assert (
+                    cell.parity.startswith("tests/test_pp_mm_moe_aux_gloo.py::") and case in CELLS
+                ), cell.parity
+                for extra in (
+                    {"memory": "unsloth_offload"},
+                    {"compile": "block"},
+                    {"mode": "full"},
+                ):
+                    assert (
+                        caps.cell_status(dataclasses.replace(query, **extra))[0] != "supported"
+                    ), extra

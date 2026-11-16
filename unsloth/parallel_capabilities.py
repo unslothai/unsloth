@@ -831,6 +831,7 @@ MOE_FAMILIES = (
     "granitemoehybrid",
     "gemma4",
     "lfm2_moe",
+    "qwen4_exp",
 )
 _MOE_PRECISION = {
     "lora": {"mode": ("lora",), "expert_lora": (False,)},
@@ -875,6 +876,15 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+_MOE_PP_MM = (
+    "tests/test_pp_mm_moe_aux_gloo.py::test_pp2_wrapper_moe_aux_matches_gradient_accumulation"
+)
+_MOE_PP_MM_CASES = {
+    ("lora+experts", True): "lora_experts_coef0.01_1f1b",
+    ("lora", True): "lora_coef1_gpipe",
+    ("lora+experts", False): "lora_experts_aux_off_gpipe",
+    ("lora", False): "lora_aux_off_1f1b",
+}
 # Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
@@ -966,6 +976,13 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    # Qwen3.5-MoE / Qwen4Exp ConditionalGeneration, text only: pp2 vs gradient accumulation in one process.
+    **{
+        (family, precision, aux, "pp"): (f"{_MOE_PP_MM}[{family}_{case}]",) * 2
+        + ("eager: no compiled region",)
+        for family in ("qwen3_5_moe", "qwen4_exp")
+        for (precision, aux), case in _MOE_PP_MM_CASES.items()
+    },
     # Gemma 4 26B-style MoE has no router auxiliary loss: pp2 text-only vs one process (losses, every gradient).
     ("gemma4", "lora", False, "pp"): (
         "tests/test_pp_vlm_text_only_gloo.py::test_pp2_text_only_matches_one_process[gemma4_moe]",
@@ -1046,8 +1063,11 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family not in ("qwen3_moe", "gemma4"):
-            return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
+        if family not in ("qwen3_moe", "gemma4", "qwen3_5_moe", "qwen4_exp"):
+            return (
+                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
+                "only (refused at the split)"
+            )
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
     if precision == "qlora" and mode == "pp" and family == "qwen3_moe" and aux:
