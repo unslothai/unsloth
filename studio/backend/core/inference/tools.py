@@ -15664,10 +15664,6 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
-# PyMuPDF is not thread-safe.
-_WEB_PDF_LOCK = threading.Lock()
-
-
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
@@ -16779,8 +16775,9 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", content_type
             try:
+                from ..rag.parsers import MUPDF_LOCK
                 queued_at = time.monotonic()
-                with _WEB_PDF_LOCK:
+                with MUPDF_LOCK:
                     # Time queued behind another read's PDF is not spent on this read.
                     if deadline is not None:
                         deadline += time.monotonic() - queued_at
