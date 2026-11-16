@@ -103,7 +103,6 @@ test("pinned Run settings rows frost a glass menu instead of painting its fill t
 		css,
 		/html\[data-glass\]\[data-glass-menus\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before \{[^}]*background: none;[^}]*backdrop-filter: blur\(16px\);/,
 	);
-	// Software compositing pauses every blur while the panel scrolls; the frost layers take the menu's solid fill then.
 	assert.match(
 		css,
 		/\[data-glass-motion\] \[data-glass-moving\] \.sticky,\nhtml:is\(\[data-glass\],\[data-glass-clear\]\)\[data-glass-motion\] \[data-glass-moving\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before,/,
