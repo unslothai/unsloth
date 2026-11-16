@@ -4,6 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const created: { engine: string; options: Record<string, unknown> }[] = [];
@@ -98,3 +102,15 @@ for (const engine of ["browser", "model"]) {
     assert.equal(created[0].options.language, undefined);
   });
 }
+
+registerBundlerResolver();
+installLocalStorageFake();
+const { isModelDictationLanguage } = await import(
+  "../src/features/settings/stores/voice-settings-store.ts"
+);
+
+test("the local engine takes a source language only when Whisper knows it", () => {
+  assert.equal(isModelDictationLanguage("small", "es-ES"), true);
+  assert.equal(isModelDictationLanguage("small", "fil"), true);
+  assert.equal(isModelDictationLanguage("small", "ug"), false);
+});

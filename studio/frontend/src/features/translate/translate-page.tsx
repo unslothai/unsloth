@@ -69,7 +69,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { isTranslationOnlyRepo } from "@/lib/translation-models";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft02Icon,
@@ -443,8 +443,10 @@ function ModelMenu({
   // What the server holds: loaded rows, Eject, and the chat model when Chat has no pick yet.
   const [loaded, setLoaded] = useState<string[]>([]);
   const [serverChatModel, setServerChatModel] = useState<string | null>(null);
+  // Asks for the slot serving Chat's pick, as a run does, so the Chat row names what would run.
   const refreshLoaded = useCallback(() => {
-    getInferenceStatus()
+    const local = chatPick && !isExternalModelId(chatPick) ? chatPick : "";
+    getInferenceStatus(undefined, local || undefined)
       .then((status) => {
         setLoaded(status.loaded ?? []);
         const active = status.active_model;
@@ -452,14 +454,14 @@ function ModelMenu({
           active &&
             !status.is_audio &&
             !status.is_diffusion &&
-            !isTranslationOnlyRepo(active)
+            !isTranslationHeldSlot(active, local)
             ? active
             : null,
         );
       })
       .catch(() => undefined);
-  }, []);
-  const chatModelId = chatPick || serverChatModel;
+  }, [chatPick]);
+  const chatModelId = isExternalModelId(chatPick) ? chatPick : serverChatModel;
   const chatPickName = chatModelId
     ? (externalModelLabel(chatModelId) ?? modelDisplayName(chatModelId))
     : null;

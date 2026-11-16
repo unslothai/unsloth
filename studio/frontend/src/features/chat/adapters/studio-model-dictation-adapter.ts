@@ -18,7 +18,7 @@ import {
   type SttDevice,
   applyDictationDictionary,
   isCuratedSttModel,
-  isSttModelLanguageCompatible,
+  isModelDictationLanguage,
   recordRecentDictation,
   resolveModelDictationLanguage,
   sttContextBody,
@@ -552,8 +552,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       ? (this.language ?? settings.dictationLanguage)
       : resolveModelDictationLanguage(
           sessionModel,
-          this.language &&
-            isSttModelLanguageCompatible(sessionModel, this.language)
+          this.language && isModelDictationLanguage(sessionModel, this.language)
             ? this.language
             : settings.dictationLanguage,
         );
