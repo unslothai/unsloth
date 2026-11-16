@@ -98,7 +98,7 @@ def test_first_import_rolls_back_messages_when_checkpoint_fails(source_path):
     rows = _messages()
     assert _texts(rows) == ["first", "second"]
     assert rows[1]["parentId"] == rows[0]["id"]
-    assert _mark() == (2, "")
+    assert _mark() == (2, claude._REVISION)
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == rows
 
@@ -114,7 +114,7 @@ def test_incremental_import_rolls_back_and_preserves_studio_changes(source_path)
     )
     before = _messages()
     assert _texts(before) == ["edited in Studio"]
-    assert _mark() == (2, "")
+    assert _mark() == (2, claude._REVISION)
     _write(source_path, [_turn("user", "u2", "second", parent = "a1", second = 2)], mode = "a")
 
     with (
@@ -124,7 +124,7 @@ def test_incremental_import_rolls_back_and_preserves_studio_changes(source_path)
         run_import(claude.SOURCE)
 
     assert _messages() == before
-    assert _mark() == (2, "")
+    assert _mark() == (2, claude._REVISION)
     _write(source_path, [_turn("user", "u3", "third", parent = "u2", second = 3)], mode = "a")
 
     assert run_import(claude.SOURCE).messages == 2
@@ -133,7 +133,7 @@ def test_incremental_import_rolls_back_and_preserves_studio_changes(source_path)
     assert reply["id"] not in {message["id"] for message in rows}
     assert rows[1]["parentId"] == rows[0]["id"]
     assert rows[2]["parentId"] == rows[1]["id"]
-    assert _mark() == (4, "")
+    assert _mark() == (4, claude._REVISION)
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == rows
 
@@ -142,7 +142,7 @@ def test_checkpoint_only_failure_keeps_existing_import_intact(source_path):
     assert run_import(claude.SOURCE).messages == 1
     before = _messages()
     assert _texts(before) == ["first"]
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)
 
     with (
         _reject_checkpoint(),
@@ -151,16 +151,16 @@ def test_checkpoint_only_failure_keeps_existing_import_intact(source_path):
         run_import(claude.SOURCE)
 
     assert _messages() == before
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == before
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)
 
 
 def test_recreated_chat_drops_its_deleted_incarnations_checkpoint(source_path):
     assert run_import(claude.SOURCE).messages == 1
     studio_db.delete_chat_threads([thread_id_for(claude.SOURCE, "s1")])
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)
 
     with (
         _reject_checkpoint(),
@@ -175,7 +175,7 @@ def test_recreated_chat_drops_its_deleted_incarnations_checkpoint(source_path):
     rows = _messages()
     assert _texts(rows) == ["first", "second"]
     assert rows[1]["parentId"] == rows[0]["id"]
-    assert _mark() == (2, "")
+    assert _mark() == (2, claude._REVISION)
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == rows
 
@@ -185,4 +185,4 @@ def test_empty_existing_chat_keeps_intentional_message_deletions(source_path):
     studio_db.sync_chat_messages(thread_id_for(claude.SOURCE, "s1"), [], prune_missing = True)
     assert run_import(claude.SOURCE).messages == 0
     assert _messages() == []
-    assert _mark() == (1, "")
+    assert _mark() == (1, claude._REVISION)

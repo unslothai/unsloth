@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as filters from "../src/features/hub/lib/model-search-filters.ts";
 import { LruMap } from "../src/features/hub/lib/lru-map.ts";
+import * as searchText from "../src/features/hub/lib/search-text.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import type * as SearchModule from "../src/features/hub/hooks/use-hub-model-search.ts";
 
@@ -87,6 +88,7 @@ function searchHarness(request: typeof fetch) {
       },
       "../lib/model-search-filters": filters,
       "../lib/lru-map": { LruMap },
+      "../lib/search-text": searchText,
       "./use-hub-paginated-search": {
         useHubPaginatedSearch: (
           create: (signal: AbortSignal) => AsyncGenerator<unknown>,

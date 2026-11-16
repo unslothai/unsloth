@@ -158,3 +158,74 @@ def test_encode_mp4_end_to_end_default_is_frame_threaded(monkeypatch):
     monkeypatch.setattr(video_mod, "nvenc_gpu", lambda logger = None: None)
     data = video_mod.VideoBackend._encode_mp4(torch.from_numpy(_clip()), 24, None, None)
     assert b"sliced_threads=0" in data
+
+
+def _bt709_yuv420(rgb):
+    # the reference save's conversion: BT.709 matrix, limited range, 4:2:0 (swscale's own reformat)
+    frame = av.VideoFrame.from_ndarray(rgb, format = "rgb24").reformat(
+        format = "yuv420p", dst_colorspace = 1
+    )
+    return frame.to_ndarray()
+
+
+def test_reference_export_is_crf_18_bt709_and_float_audio(tmp_path, monkeypatch):
+    monkeypatch.delenv(ve.FRAME_THREADS_ENV, raising = False)
+    clip = _clip(frames = 12)
+    t = torch.arange(32000 * 1) / 32000
+    audio = torch.stack(
+        [0.3 * torch.sin(2 * np.pi * 220 * t), 0.2 * torch.sin(2 * np.pi * 330 * t)]
+    )
+    ref, plain = str(tmp_path / "ref.mp4"), str(tmp_path / "plain.mp4")
+    assert ve.encode_x264(torch.from_numpy(clip), 24, ref, audio, 32000, reference = True)
+    assert ve.encode_x264(torch.from_numpy(clip), 24, plain, audio, 32000)
+    assert _x264_options(ref)["crf"].startswith("18.0")
+    assert _x264_options(plain)["crf"].startswith(
+        "23.0"
+    )  # libx264's default, other families keep it
+    with av.open(ref) as container:
+        video = container.streams.video[0]
+        cc = video.codec_context
+        assert (
+            int(cc.color_primaries),
+            int(cc.color_trc),
+            int(cc.colorspace),
+            int(cc.color_range),
+        ) == (1, 13, 1, 1)
+        decoded = [f.to_ndarray() for f in container.decode(video = 0)]
+    # the decoded luma tracks the BT.709 conversion of the source, not swscale's BT.601 default
+    want = np.stack([_bt709_yuv420(f) for f in clip])
+    got = np.stack(decoded)
+    assert got.shape == want.shape
+    assert _psnr(got, want) > 40
+    with av.open(plain) as container:
+        cc = container.streams.video[0].codec_context
+        assert int(cc.colorspace) in (0, 2)  # untagged, as before
+    with av.open(ref) as container:
+        pcm = np.concatenate([f.to_ndarray() for f in container.decode(audio = 0)], axis = 1)
+    n = min(pcm.shape[1], audio.shape[1]) - 2048
+    assert np.abs(pcm[:, 1024 : 1024 + n] - audio.numpy()[:, :n]).max() < 0.05 or pcm.shape[0] == 2
+
+
+def test_reference_frames_keep_the_plain_path_unchanged():
+    rgb = _clip(frames = 1)[0]
+    plain = ve.x264_frame(av, rgb)
+    assert plain.format.name == "rgb24"
+    ref = ve.x264_frame(av, rgb, reference = True)
+    assert ref.format.name == "yuv420p" and int(ref.colorspace) == 1 and int(ref.color_range) == 1
+    assert np.array_equal(ref.to_ndarray(), _bt709_yuv420(rgb))
+    # one reformatter for the whole encode converts the same way (the per-frame call rebuilds swscale each time)
+    shared = ve.x264_reformatter(av, reference = True)
+    assert ve.x264_reformatter(av) is None
+    for frame in _clip(frames = 3):
+        got = ve.x264_frame(av, frame, reference = True, reformatter = shared)
+        assert np.array_equal(got.to_ndarray(), _bt709_yuv420(frame)) and int(got.colorspace) == 1
+
+
+def test_reference_audio_takes_mono_and_channels_last(tmp_path):
+    for wave in (torch.zeros(16000), torch.zeros(16000, 2), torch.zeros(1, 16000)):
+        path = str(tmp_path / "a.mp4")
+        with av.open(path, mode = "w", format = "mp4") as container:
+            stream = eu._prepare_audio_stream(container, 16000)
+            ve.write_reference_audio(container, stream, wave, 16000, av)
+        with av.open(path) as container:
+            assert container.streams.audio[0].codec_context.channels == 2

@@ -164,12 +164,13 @@ def test_manual_cast_leaves_subclassed_linears_alone():
     assert type(m[2]).__name__ == "ManualCastLinear" and m[2].weight.dtype is torch.bfloat16
 
 
-def test_storage_dtype_only_for_cuda_float32_loads(monkeypatch):
+def test_storage_dtype_only_for_cuda_float32_and_float16_loads(monkeypatch):
     cuda = SimpleNamespace(device = "cuda")
     monkeypatch.delenv(mc.MANUAL_CAST_ENV, raising = False)
+    monkeypatch.delenv(f3.HALF_STORAGE_ENV, raising = False)
     assert f3.flux3_storage_dtype(cuda, torch.float32) is torch.bfloat16
-    for dtype in (torch.float16, torch.bfloat16):
-        assert f3.flux3_storage_dtype(cuda, dtype) is None
+    assert f3.flux3_storage_dtype(cuda, torch.float16) is torch.bfloat16
+    assert f3.flux3_storage_dtype(cuda, torch.bfloat16) is None
     for device in ("cpu", "mps", "xpu", None):
         assert f3.flux3_storage_dtype(SimpleNamespace(device = device), torch.float32) is None
     assert f3.flux3_storage_dtype(None, torch.float32) is None
@@ -273,7 +274,9 @@ def test_every_flux3_load_site_passes_the_storage_dtype():
 def test_load_flux3_pipeline_routes_both_components_through_the_cast():
     src = inspect.getsource(f3.load_flux3_pipeline)
     assert src.count("_manual_cast_load(") == 2
-    assert "storage_dtype if transformer_storage else None" in src
+    assert "transformer_load_storage(" in src
+    helper = inspect.getsource(f3.transformer_load_storage)
+    assert "transformer_storage_dtype(storage_dtype, dtype, transformer_storage)" in helper
 
 
 def test_fuse_qkv_skips_a_manual_cast_denoiser():

@@ -1079,6 +1079,7 @@ def test_decode_keeps_a_subclass_adapter(which, bsz, monkeypatch):
         "_has_active_dora_adapter",
         "_has_active_lora_bias",
         "_has_packed_qweight",
+        "_has_qat_linear",
     ):
         monkeypatch.setattr(kernel_utils, name, lambda proj: False)
 
@@ -1136,6 +1137,7 @@ def test_decode_returns_the_strided_out_with_its_strides(tagged, bsz, monkeypatc
         "_has_active_dora_adapter",
         "_has_active_lora_bias",
         "_has_packed_qweight",
+        "_has_qat_linear",
     ):
         monkeypatch.setattr(kernel_utils, name, lambda proj: False)
     B_in = _tag(B) if tagged else B

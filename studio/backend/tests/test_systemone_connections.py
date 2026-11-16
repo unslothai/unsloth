@@ -502,6 +502,120 @@ def test_a_system_one_model_list_explains_what_went_wrong(upstream, reply, detai
         assert detail in listed["detail"]
 
 
+LIQUID_MODELS = {
+    "models": [
+        {
+            "name": "d1",
+            "description": "",
+            "release_date": "2026-09-29",
+            "input_modalities": ["text", "image"],
+        },
+        {
+            "name": "d1.1",
+            "description": "",
+            "release_date": "2026-10-19",
+            "input_modalities": ["text", "image"],
+        },
+        {
+            "name": "d1-ultra",
+            "description": "",
+            "release_date": "2026-10-14",
+            "input_modalities": ["text", "image"],
+        },
+    ]
+}
+# The ModelMetadataList of TypeSafe's published openapi.json, with made-up names.
+TYPESAFE_MODELS = {
+    "models": [
+        {"name": "made-up-alias", "description": "An alias.", "release_date": "2026-01-02"},
+        {"name": "made-up-7.3", "description": "A model.", "release_date": "2026-01-01"},
+    ]
+}
+DECISION_PROVIDERS = [
+    (
+        "typesafe",
+        "https://api.typesafe.ai/v1/models",
+        TYPESAFE_MODELS,
+        ["made-up-alias", "made-up-7.3"],
+    ),
+    (
+        "liquid",
+        "https://api.liquid.ai/decisions/v1/models",
+        LIQUID_MODELS,
+        ["d1", "d1.1", "d1-ultra"],
+    ),
+]
+
+
+@pytest.mark.parametrize("provider_type,models_url,reply,expected", DECISION_PROVIDERS)
+def test_a_decision_provider_lists_the_models_its_own_endpoint_returns(
+    upstream, provider_type, models_url, reply, expected
+):
+    from core.inference.providers import list_available_providers
+
+    row = next(r for r in list_available_providers() if r["provider_type"] == provider_type)
+    assert row["default_models"] == []
+    assert row["model_list_mode"] == "remote"
+
+    upstream.replies[0] = httpx.Response(200, json = reply)
+    listed = _providers_post("/providers/models", {"provider_type": provider_type})
+    assert [model["id"] for model in listed] == expected
+    assert str(upstream.calls[0].url) == models_url
+
+
+@pytest.mark.parametrize("provider_type", ["typesafe", "liquid"])
+def test_a_decision_provider_skips_entries_without_a_usable_name(upstream, provider_type):
+    upstream.replies[0] = httpx.Response(
+        200,
+        json = {
+            "models": [
+                {"description": "No name.", "release_date": "2026-01-01"},
+                {"name": 7, "description": "", "release_date": "2026-01-01"},
+                "made-up-bare-string",
+                {"name": "made-up-kept"},
+            ]
+        },
+    )
+    listed = _providers_post("/providers/models", {"provider_type": provider_type})
+    assert [model["id"] for model in listed] == ["made-up-kept"]
+
+
+def test_a_custom_system_one_server_is_not_read_in_the_native_format(upstream):
+    upstream.replies[0] = httpx.Response(200, json = TYPESAFE_MODELS)
+    listed = _providers_post(
+        "/providers/models",
+        {
+            "provider_type": "custom",
+            "api_type": "systemone",
+            "base_url": "http://localhost:8888/v1",
+        },
+    )
+    assert listed == []
+    assert upstream.calls[0].url.params["output_modalities"] == "decisions"
+
+
+@pytest.mark.parametrize("provider_type", ["typesafe", "liquid"])
+@pytest.mark.parametrize(
+    "reply,detail",
+    [
+        (httpx.Response(403, json = {"detail": "forbidden"}), "refused the API key (HTTP 403)"),
+        (httpx.Response(404, text = "not found"), None),
+        (httpx.Response(200, text = "<html>welcome</html>"), None),
+        (httpx.Response(200, json = {"data": [{"id": "jev-latest"}]}), None),
+        (httpx.Response(200, json = {"models": {"name": "made-up"}}), None),
+    ],
+)
+def test_a_decision_provider_with_no_usable_model_list_names_no_model(
+    upstream, provider_type, reply, detail
+):
+    upstream.replies[0] = reply
+    listed = _providers_post("/providers/models", {"provider_type": provider_type})
+    if detail is None:
+        assert listed == []
+    else:
+        assert detail in listed["detail"]
+
+
 def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
     from routes import inference
 

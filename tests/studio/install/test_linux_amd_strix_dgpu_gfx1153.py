@@ -733,9 +733,9 @@ def test_setup_sh_name_inference_reads_krackan_point_2_first(name, expected):
     [
         ("AMD Radeon 820M", [_K2_LINE], "gfx1153"),
         ("AMD Radeon 820M", None, "gfx1153"),
-        # A covered peer keeps the table's answer, as main: none for 820M, gfx1152 for "Krackan".
-        ("AMD Radeon 820M", [_K2_LINE, _NAVI31_LINE], ""),
-        ("AMD Krackan Point 2", [_K2_LINE, _NAVI31_LINE], "gfx1152"),
+        # A covered peer decides, as install_python_stack._linux_amd_gfx_from_lspci does.
+        ("AMD Radeon 820M", [_K2_LINE, _NAVI31_LINE], "gfx1100"),
+        ("AMD Krackan Point 2", [_K2_LINE, _NAVI31_LINE], "gfx1100"),
         ("AMD Radeon 860M", [_K2_LINE], "gfx1152"),
     ],
 )
@@ -746,7 +746,7 @@ def test_setup_sh_name_inference_keeps_the_covered_peer_guard(mkt, lspci, expect
     start = src.index(
         '        _setup_gfx=$(_setup_supported_gfx_from_name "$_setup_mkt") || _setup_gfx=""'
     )
-    end_marker = '            [ -n "$_setup_k2_peer" ] || _setup_gfx=gfx1153\n        fi\n'
+    end_marker = "_setup_gfx=gfx1153; fi\n        fi\n"
     end = src.index(end_marker, start) + len(end_marker)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

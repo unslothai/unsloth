@@ -60,7 +60,12 @@ def _case(rank, world, tmp):
             return json.load(f).get("model_max_length")
 
     def leftovers():
-        return sorted(n for n in os.listdir(tmp) if ".unsloth_tp_rank" in n)
+        return sorted(
+            os.path.relpath(os.path.join(root, d), tmp)
+            for root, dirs, _ in os.walk(tmp)
+            for d in dirs
+            if ".unsloth_tp_rank" in d
+        )
 
     # 1. one shared directory, every rank at once: complete files on every rank when it returns
     shared = os.path.join(tmp, "shared")

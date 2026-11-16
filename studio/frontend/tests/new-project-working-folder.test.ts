@@ -49,3 +49,19 @@ test("a failed folder save re-enables the picker", () => {
     /disabled=\{busy \|\| \(!!createdProject && !needsReselect\)\}\n\s*needsReselect=\{needsReselect\}/,
   );
 });
+
+test("a rejected browser-picked folder unlocks the picker for another choice", () => {
+  const step = TRY.slice(TRY.indexOf("if (serverFolder) {"));
+  const put = step.indexOf("await setChatProjectWorkingFolderPath(");
+  const reselect = step.indexOf("setNeedsReselect(true)");
+  assert.ok(put > 0 && put < reselect && reselect < step.indexOf("throw pathError;"));
+});
+
+test("a browser folder drop holds Create until its files are staged", async () => {
+  const zone = await readSrcAsync("features/rag/components/project-source-dropzone.tsx");
+  const drop = zone.slice(zone.indexOf("void filesFromDrop("));
+  const staged = drop.indexOf("addFiles(files)");
+  assert.ok(zone.lastIndexOf("addPending(1);", zone.indexOf("void filesFromDrop(")) > 0);
+  assert.ok(staged > 0 && staged < drop.indexOf(".finally(() => addPending(-1))"));
+  assert.match(drop, /claimed !== generation\.current\) return;/);
+});

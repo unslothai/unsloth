@@ -178,6 +178,24 @@ def test_the_ready_probes_bypass_a_container_wide_proxy(tmp_path: Path):
 
 
 @behavioural
+def test_a_tls_studio_is_probed_and_shown_over_https(tmp_path: Path):
+    # The stub answers only the -k HTTPS probe, as an env-TLS Studio would.
+    res = _run(
+        tmp_path,
+        env = {
+            "UNSLOTH_STUDIO_PASSWORD_STATE": "stored",
+            "UNSLOTH_STUDIO_SSL_CERTFILE": "/certs/full.pem",
+            "UNSLOTH_STUDIO_SSL_KEYFILE": "/certs/key.pem",
+        },
+        curl = '[[ "$1" == -skf && "${@: -1}" == https://127.0.0.1:8000/api/health ]] && exit 0\n'
+        '[[ "${@: -1}" == *:8888/* ]] && exit 0\nexit 52\n',
+    )
+    assert res.returncode == 0, res.stderr
+    assert "Unsloth container ready" in res.stdout, res.stdout
+    assert "Unsloth     https://localhost:8000" in res.stdout, res.stdout
+
+
+@behavioural
 def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path):
     bin_dir = tmp_path / "stub-bin"
     log = tmp_path / "curl.log"

@@ -7,7 +7,7 @@ import type { PageResponse } from "../src/features/browser/api.ts";
 import type { PageRequest } from "../src/features/browser/frame-message.ts";
 import { pageRequests } from "../src/features/browser/page-requests.ts";
 
-const request: PageRequest = { url: "https://site.test/api", method: "GET", headers: [], body: null, redirect: "follow", integrity: "" };
+const request: PageRequest = { url: "https://site.test/api", method: "GET", headers: [], body: null, redirect: "follow", integrity: "", credentials: "same-origin" };
 const answer: PageResponse = { status: 200, statusText: "OK", url: "https://site.test/api", headers: [], body: new ArrayBuffer(0) };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 

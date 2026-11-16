@@ -21,6 +21,7 @@ import {
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
+  type SaveChatProjectOptions,
   saveChatThread,
   syncChatMessages,
   updateChatProject,
@@ -958,12 +959,18 @@ export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
   id: string = crypto.randomUUID(),
-  parentId?: string | null,
+  parentIdOrOptions: string | null | SaveChatProjectOptions = null,
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Project name is required.");
   }
+  const options =
+    typeof parentIdOrOptions === "object" && parentIdOrOptions !== null
+      ? parentIdOrOptions
+      : {};
+  const parentId =
+    typeof parentIdOrOptions === "string" ? parentIdOrOptions : null;
   const now = Date.now();
   return saveChatProject({
     id,
@@ -973,7 +980,7 @@ export async function createStoredChatProject(
     archived: false,
     createdAt: now,
     updatedAt: now,
-  }, nativePathLease);
+  }, nativePathLease, options);
 }
 
 export async function updateStoredChatProject(
