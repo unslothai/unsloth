@@ -3008,9 +3008,11 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     state["active"] = True
     try:
         with torch.random.fork_rng(devices = []):
-            model = original(cls, name, *args, **kwargs)
+            loaded = original(cls, name, *args, **kwargs)
     finally:
         state["active"] = False
+    # output_loading_info = True returns (model, info); DeepSeek-V4.1 sets it itself to refuse a partial load.
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
     text = _text_config(model)
     if getattr(text, "quantization_config", None) or getattr(
         model.config, "quantization_config", None
@@ -3022,7 +3024,7 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     materialize = state.get("materialize", _materialize_sharded)
     materialize(model, name, kwargs, mesh, state["plan"], device)
     state["models"].append(model)
-    return model
+    return loaded
 
 
 def _world_mesh():
