@@ -91,3 +91,64 @@ def test_vae_decode_compile_stays_eager_on_windows_rocm(monkeypatch, rocm, platf
     monkeypatch.setattr(S, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}))
     pipe = types.SimpleNamespace(unet = _UNet2DConditionModel(), vae = object())
     assert S._vae_decode_compile_allowed(pipe, "default") is allowed
+
+
+@pytest.mark.parametrize("budget", [2**30, 2**16])
+def test_windows_rocm_fp32_wide_head_never_reaches_the_stock_kernel(monkeypatch, rocm, budget):
+    # fp32 (every trainer VAE, and fp32 inference VAEs) is no half-math call, and Windows ROCm's stock dispatch still
+    # picks the fused kernels that miscompute head 512 in fp32 too: the routed call must compute the math itself.
+    import torch.nn.functional as F
+    from torch.overrides import TorchFunctionMode
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    # CPU tensors answer "fused" before the device check: stand in for the cuda branch's head guard.
+    monkeypatch.setattr(
+        C, "fused_sdpa_available", lambda q, k, v: not C._windows_rocm_untrusted_head(q, torch)
+    )
+    stock = []
+
+    class _Spy(TorchFunctionMode):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            if func is F.scaled_dot_product_attention:
+                stock.append(1)
+            return func(*args, **(kwargs or {}))
+
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 256, 512) for _ in range(3))
+    ref = F.scaled_dot_product_attention(q, k, v)
+    with _Spy():
+        with C.chunked_attention_mode(budget):
+            out = F.scaled_dot_product_attention(q, k, v)
+    assert stock == []
+    assert out.dtype == torch.float32
+    torch.testing.assert_close(out, ref)
+
+
+@pytest.mark.parametrize("half_math_env", ["", "0"])
+def test_a_rejected_fp32_head_runs_explicit_math_not_the_default_dispatch(
+    monkeypatch, half_math_env
+):
+    # The trainer's VAE is fp32, which the half-precision math route skips: a rejected Windows ROCm head must still
+    # leave the default dispatch (which picks the broken fused kernels), also with half math turned off.
+    monkeypatch.setenv(C.VAE_ATTN_HALF_MATH_ENV, half_math_env)
+    monkeypatch.setattr(C, "fused_sdpa_available", lambda q, k, v: False)
+    monkeypatch.setattr(C, "_windows_rocm_untrusted_head", lambda q, torch: True)
+    calls = []
+    real = C.half_math_sdpa
+    monkeypatch.setattr(C, "half_math_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 64, 512) for _ in range(3))
+    ref = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    with C.chunked_attention_mode(budget = 1 << 30):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    assert calls and torch.allclose(out, ref, atol = 1e-5)
+    calls.clear()
+    with C.chunked_attention_mode(budget = 64 * 1024):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    assert calls and torch.allclose(out, ref, atol = 1e-5)
