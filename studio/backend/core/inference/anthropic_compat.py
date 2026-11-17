@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import functools
 import json
 import re
 import uuid
@@ -94,6 +96,15 @@ def _anthropic_block_texts(content: Any) -> list[str]:
     return texts
 
 
+@functools.lru_cache(maxsize = 8)
+def _pdf_document_text(data: str) -> str:
+    from core.inference.tools import _extract_pdf_text
+    try:
+        return _extract_pdf_text(base64.b64decode(data))
+    except Exception:
+        return ""
+
+
 def anthropic_reference_block_text(block: dict) -> str:
     btype = block.get("type")
     source = block.get("source")
@@ -107,6 +118,12 @@ def anthropic_reference_block_text(block: dict) -> str:
             body = [source["data"]]
         elif stype == "content":
             body = _anthropic_block_texts(source.get("content"))
+        elif (
+            stype == "base64"
+            and source.get("media_type") == "application/pdf"
+            and isinstance(source.get("data"), str)
+        ):
+            body = [_pdf_document_text(source["data"]) or DOCUMENT_OMITTED]
         else:
             body = [DOCUMENT_OMITTED]
     else:

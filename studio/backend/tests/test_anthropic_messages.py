@@ -1446,6 +1446,60 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
 
+    @pytest.mark.parametrize("tool_result_images", [True, False])
+    def test_tool_result_pdf_document_reaches_the_model_as_text(self, tool_result_images):
+        import pymupdf
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Invoice total 4242 EUR")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        request = AnthropicMessagesRequest(
+            messages = [
+                {"role": "user", "content": "What is the invoice total in inv.pdf?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file_path": "/work/inv.pdf"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "PDF file read: /work/inv.pdf (597 bytes)",
+                                },
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in request.messages],
+            tool_result_images = tool_result_images,
+        )
+        tool_message = next(m for m in result if m["role"] == "tool")
+        assert "Invoice total 4242 EUR" in tool_message["content"]
+        assert DOCUMENT_OMITTED not in tool_message["content"]
+
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
         request = AnthropicMessagesRequest(
             model = "x",
