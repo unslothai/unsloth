@@ -3772,6 +3772,33 @@ def _small_host_fetch(
     return lambda: download(repo, **pipe_kwargs)
 
 
+def _moss_small_host_fetch(
+    repo: Any, local_dir: Optional[str], local_files_only: bool, token: Any
+) -> Optional[Callable[[], Any]]:
+    """MOSS-Image's components, fetched before the small-host decision as ``_small_host_fetch`` does for diffusers
+    pipelines (the in-tree pipeline class has no Hub ``download``); None offline or with a staged snapshot."""
+    if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
+        return None
+
+    def _fetch() -> Any:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            repo,
+            cache_dir = hub_cache_dir(),
+            token = token,
+            allow_patterns = [
+                "model_index.json",
+                "*/config.json",
+                "*/*.safetensors",
+                "*/*.safetensors.index.json",
+                "scheduler/*",
+                "tokenizer/*",
+            ],
+        )
+
+    return _fetch
+
+
 def _conditioning_cache_hits(pipe: Any) -> int:
     """Encodes served from the in-memory prompt cache or the persistent conditioning cache so far: a render with a
     hit skipped the text-encoder phase, so its peak covers only part of what a new prompt needs."""
@@ -10116,6 +10143,22 @@ class DiffusionBackend:
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
+                                        # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
+                                        # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
+                                        small_host = self._small_host_decision(
+                                            _base_local_dir or fetch_base,
+                                            pipe_kwargs,
+                                            target,
+                                            dtype,
+                                            lora_active = _has_active_lora(loras),
+                                            dense_denoiser = small_host_dense,
+                                            fetch = _moss_small_host_fetch(
+                                                fetch_base,
+                                                _base_local_dir,
+                                                local_files_only,
+                                                hub_token,
+                                            ),
+                                        )
                                         pipe = load_moss_image_pipeline(
                                             _base_local_dir or fetch_base,
                                             dtype,
@@ -10128,6 +10171,9 @@ class DiffusionBackend:
                                             transformer = pipe_kwargs.get("transformer"),
                                             vae = pipe_kwargs.get("vae"),
                                             checkpoint = base,
+                                            storage_dtypes = small_host.storage_dtypes
+                                            if small_host is not None and small_host.engaged
+                                            else None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
