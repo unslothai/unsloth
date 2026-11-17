@@ -810,3 +810,44 @@ def test_inherited_cache_flags_still_apply_when_the_request_leaves_the_cache_uns
     )
     assert not intent.cache_type_kv_set
     assert backend.adopt_load_intent_if_matched(intent) is True
+
+
+@pytest.mark.parametrize("cache_type_kv, reuses", [("q5_1", False), ("q4_0", True)])
+def test_the_resolved_reuse_check_also_drops_inherited_cache_flags(cache_type_kv, reuses):
+    # _load_model_impl checks twice; the second intent comes from the resolved load. Live on main
+    # this one still deduplicated a q5_1 request onto the q4_0 server the first check refused.
+    from types import SimpleNamespace
+    import routes.inference as routes
+
+    flags = ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"]
+    backend = _loaded_backend(
+        _extra_args = list(flags),
+        _requested_extra_args = list(flags),
+        _requested_cache_types = ("q4_0", "q4_0"),
+        _requested_n_parallel = 1,
+    )
+    request = LoadRequest(
+        model_path = "owner/repo",
+        gguf_variant = "Q4_K_M",
+        max_seq_length = 8192,
+        cache_type_kv = cache_type_kv,
+    )
+    config = SimpleNamespace(
+        identifier = "owner/repo",
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+        gguf_verified = None,
+        is_vision = False,
+    )
+    intent = routes._resolve_gguf_load_intent(
+        config,
+        request,
+        native_grant_backed = False,
+        chat_template_override = None,
+        # What _resolve_inherited_extra_args hands it: the inherited list, cache flags stripped.
+        extra_args = [],
+        placement = routes._LoadPlacement(None, None, False, False),
+        n_parallel = 1,
+    )
+    assert intent.extra_args_inherited and intent.cache_type_kv_set
+    assert backend.adopt_load_intent_if_matched(intent) is reuses
