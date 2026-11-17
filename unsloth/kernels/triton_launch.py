@@ -137,8 +137,7 @@ _TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
 
 
 def _version_tag():
-    # Graphs traced through Unsloth code are served from the AOT autograd cache on warm starts:
-    # an Unsloth upgrade starts a fresh cache even where no tagged kernel file changed.
+    # An upgrade must miss the AOT autograd cache even if no tagged kernel file changed.
     try:
         from .._version import __version__
     except Exception:

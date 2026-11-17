@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""gc.freeze setup heap in outermost train() (nested calls no-op), and again after its first step
-(the heap torch.compile left behind); unfreeze on exit unless caller already froze;
-UNSLOTH_GC_FREEZE=0 disables both, UNSLOTH_GC_FREEZE_AFTER_STEP=0 only the second."""
+"""gc.freeze setup heap in outermost train() (nested calls no-op) and after its first step;
+unfreeze on exit unless caller already froze; UNSLOTH_GC_FREEZE=0 / UNSLOTH_GC_FREEZE_AFTER_STEP=0."""
 
 import functools
 import gc
@@ -62,9 +61,7 @@ def _after_step_enabled():
 
 
 def freeze_after_first_step():
-    """Freeze what the first step left alive (compiled graphs, guards, Inductor state): otherwise each
-    automatic full collection rescans it, and a warm start, which builds less of it, sets a lower
-    collection threshold and pays that rescan more often. Only inside a freeze this scope owns."""
+    """Freeze compile state from step 1 so full collections stop rescanning it."""
     with _lock:
         if _depth < 1 or not _owns_freeze or not _after_step_enabled():
             return False

@@ -255,9 +255,8 @@ def test_heap_refrozen_after_first_step(scope):
     t = Trainer()
     assert t.train() == "done"
     first, second, third = t.freeze_counts
-    # What the first step left alive joins the frozen heap once; later steps add nothing.
     assert first >= t.freeze_at_start + 1000
-    # (Frozen objects freed by refcount leave the count, so it may only shrink.)
+    # Refcount frees shrink the frozen count.
     assert third <= second <= first
     assert gc.get_freeze_count() == 0
     assert t.callbacks == []
@@ -275,7 +274,6 @@ def test_after_step_opt_out(scope, monkeypatch):
 
 
 def test_after_step_needs_an_owned_freeze(scope):
-    # Outside train(), or under a caller's own freeze, the helper never freezes.
     assert scope.freeze_after_first_step() is False
     gc.freeze()
     try:

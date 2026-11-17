@@ -122,7 +122,6 @@ def test_init_syncs_after_the_kernel_imports():
 
 
 def test_tag_carries_the_unsloth_version(clean_tag, tmp_path, monkeypatch):
-    # An upgrade must change the cache key even when no tagged kernel file changed.
     launch = _load()
     monkeypatch.setattr(launch, "_version_tag", lambda: "unsloth/version:2099.1.1")
     launch.tag_compile_cache(_kernel(tmp_path))

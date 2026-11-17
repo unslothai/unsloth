@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""A compiled NF4 Linear4bit under grad must be served from the AOT autograd cache on a warm
-start (a traced autograd.Function made AOTAutogradCache bypass the whole graph), match the
-eager _NF4Linear bit for bit, and miss again when a kernel file or the Unsloth version changes."""
+"""Compiled NF4 Linear4bit hits the AOT autograd cache warm, matches eager _NF4Linear, and misses
+after a kernel file or version change."""
 
 import json
 import math
@@ -147,7 +146,6 @@ def test_warm_start_hits_and_invalidates(tmp_path):
     assert warm["aot"].get("autograd_cache_hit", 0) >= 1, warm["aot"]
     assert warm["aot"].get("autograd_cache_miss", 0) == 0, warm["aot"]
 
-    # The same cache after a kernel file edit (its tag hashes the file) and after an upgrade.
     nf4 = _tag(cold["tag"], "unsloth/nf4.py:")
     version = _tag(cold["tag"], "unsloth/version:")
     for old, new in ((nf4, "unsloth/nf4.py:0000000000000000"), (version, "unsloth/version:0.0.0")):
@@ -158,15 +156,13 @@ def test_warm_start_hits_and_invalidates(tmp_path):
 
 
 def test_kill_switch_keeps_the_autograd_function(tmp_path):
-    # UNSLOTH_BNB_NF4_CACHEABLE=0 is the previous behaviour: equal numbers, the graph bypasses.
     old = _child(tmp_path, UNSLOTH_BNB_NF4_CACHEABLE = "0")
     assert old["out_equal"] and old["grad_equal"]
     assert old["aot"].get("autograd_cache_bypass", 0) >= 1, old["aot"]
 
 
 def test_backward_recomputes_the_weight_not_the_matmul(tmp_path):
-    # As _NF4Linear: the dequantized weight is rebuilt in backward, never saved, and the matmul
-    # output a later op needs in backward is saved, not recomputed.
+    # Dequantized weight recomputed, matmul output saved.
     for env in ({}, {"UNSLOTH_BNB_NF4_CACHEABLE": "0"}):
         graph = _child(tmp_path, NF4_TEST_GRAPH = "1", **env)
         assert graph["bw_mm"] == 1, (env, graph)

@@ -41,7 +41,6 @@ def _bf16_traceable():
 
 
 _TRACE_BF16 = _TRACE and _bf16_traceable()
-# UNSLOTH_BNB_NF4_CACHEABLE=0 keeps the traced _NF4Linear (graphs then skip the AOT autograd cache).
 _CACHEABLE = os.environ.get("UNSLOTH_BNB_NF4_CACHEABLE", "1") != "0"
 import torch.utils.checkpoint  # noqa: E402
 
@@ -66,18 +65,14 @@ class _NF4Linear(torch.autograd.Function):
 
 
 def _traced_linear(x, weight, quant_state, bias):
-    """_NF4Linear under torch.compile: a traced autograd.Function makes AOTAutogradCache bypass the
-    whole graph (autograd_function_apply), so every warm start re-traces it. Checkpointing only the
-    dequantize makes backward recompute the weight from the NF4 bytes, as _NF4Linear does, keeps
-    the graph cacheable, and leaves F.linear outside the region so its output is saved as usual
-    (inside it, backward would redo the matmul wherever that output is needed)."""
+    """A traced autograd.Function makes AOTAutogradCache bypass the graph; checkpoint only the
+    dequantize (F.linear inside the region would redo the matmul in backward)."""
     dtype = x.dtype
 
     def dequantize(weight):
         return _U.fast_dequantize(weight, quant_state, dtype = dtype)
 
-    # Looked up at call time: Dynamo turns torch.utils.checkpoint.checkpoint into its checkpoint
-    # region only when it is that exact object, which Unsloth's gradient checkpointing replaces.
+    # Looked up at call time: Unsloth's gradient checkpointing replaces this object.
     W = torch.utils.checkpoint.checkpoint(dequantize, weight, use_reentrant = False)
     return F.linear(x, W, bias)
 
