@@ -230,7 +230,6 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -3288,31 +3287,7 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
-  const [panel, setPanel] = useState<HTMLDivElement | null>(null);
-  const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const dropsDown = open && openSide === "bottom";
-  useEffect(() => {
-    if (!(dropsDown && panel)) {
-      setDropOffset(PICKER_GAP);
-      return;
-    }
-    const place = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (rect) {
-        setDropOffset(
-          pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
-        );
-      }
-    };
-    place();
-    const observer = new ResizeObserver(place);
-    observer.observe(panel);
-    window.addEventListener("resize", place);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", place);
-    };
-  }, [dropsDown, panel]);
+  const [sideOffset, setSideOffset] = useState(PICKER_GAP);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -3325,7 +3300,17 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      setOpenSide(pickerSide(side, rect, window.innerHeight));
+      const nextSide = pickerSide(side, rect, window.innerHeight);
+      setOpenSide(nextSide);
+      // Opening down, clear the chat box's bottom edge rather than the chip's, which sits inside it.
+      const surface = trigger
+        ?.closest(".unsloth-composer-surface")
+        ?.getBoundingClientRect();
+      setSideOffset(
+        nextSide === "bottom" && rect && surface
+          ? PICKER_GAP + Math.max(0, surface.bottom - rect.bottom)
+          : PICKER_GAP,
+      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -5124,13 +5109,12 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
-        sideOffset={dropsDown ? dropOffset : PICKER_GAP}
+        sideOffset={sideOffset}
         data-composer-model-picker=""
         style={{ "--picker-zoom-out": pickerZoomOutState } as CSSProperties}
         data-tour="chat-model-selector-popover"
@@ -5145,13 +5129,15 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) && "h-(--composer-picker-h)",
+          // The list view fits its rows (useAnimatedListHeight glides tab changes); the size is only a cap.
+          configTarget
+            ? "h-(--composer-picker-h)"
+            : isExpanded &&
+                "min-h-[min(calc(240px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
-          openSide === "bottom"
-            ? "max-h-[calc(100dvh-16px)]"
-            : "max-h-(--radix-popover-content-available-height)",
+          // Capped at the room on its own side, as zeron does, so opening down never covers the composer.
+          "max-h-[min(var(--composer-picker-h),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {

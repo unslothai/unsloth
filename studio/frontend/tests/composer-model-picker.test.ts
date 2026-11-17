@@ -22,7 +22,6 @@ import {
   localSection,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   pickerWidth,
   pickerZoomOut,
@@ -646,13 +645,19 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
-test("the open picker is one height on every tab, loaded model or not", () => {
+test("the open picker fits its rows, capped by the window share and the room", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
+  // Only Run settings keeps a fixed height; the list view is a cap plus a floor for empty tabs.
+  assert.match(picker, /configTarget\s+\? "h-\(--composer-picker-h\)"/);
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\(--composer-picker-h\)"/,
+    /isExpanded &&\s+"min-h-\[min\(calc\(240px\*var\(--ui-space-scale,1\)\),var\(--radix-popover-content-available-height\)\)\]"/,
+  );
+  assert.match(
+    picker,
+    /"max-h-\[min\(var\(--composer-picker-h\),var\(--radix-popover-content-available-height\)\)\]"/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -662,17 +667,14 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
 });
 
-test("a panel opening down rides up over the composer when the room below is short", () => {
-  // Room below: the usual 8px gap.
-  assert.equal(pickerDropOffset(400, 300, 900), 8);
-  // 100px short: up by that much, over the composer.
-  assert.equal(pickerDropOffset(500, 492, 900), -100);
-  // Taller than the window: pinned 8px from its top.
-  assert.equal(pickerDropOffset(500, 2000, 900), -492);
+test("the picker stops at the room on its own side instead of covering the composer", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+  assert.match(picker, /sideOffset=\{sideOffset\}/);
+  assert.match(picker, /PICKER_GAP \+ Math\.max\(0, surface\.bottom - rect\.bottom\)/);
+  assert.match(picker, /var\(--radix-popover-content-available-height\)\)\]"/);
+  assert.doesNotMatch(picker, /pickerDropOffset|100dvh-16px/);
 });
 
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
