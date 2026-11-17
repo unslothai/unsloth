@@ -9861,6 +9861,11 @@ class LlamaCppBackend:
         if _metal_device_is_paravirtual():
             if self._tensor_parallel:
                 return False
+        elif intent.gpu_memory_mode == "manual" and intent.gpu_layers <= 0:
+            # load_model drops tensor for a manual split with zero or Auto layers, extras included,
+            # so a saved tensor toggle must not read as a different launch here.
+            if self._tensor_parallel:
+                return False
         elif not _tensor_parallel_matches_loaded(
             extra_args, intent.tensor_parallel, self._tensor_parallel
         ):

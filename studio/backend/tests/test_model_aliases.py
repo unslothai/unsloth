@@ -1006,6 +1006,19 @@ def test_alias_reuse_is_no_match_when_the_resident_unloads_during_resolution(mon
     )
 
 
+@pytest.mark.parametrize("tensor_parallel", [True, False])
+def test_alias_reuse_matches_a_cpu_only_launch_that_dropped_saved_tensor(
+    monkeypatch, tensor_parallel
+):
+    # load_model drops tensor parallelism for a manual zero-layer split: the saved toggle then matches.
+    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = False)
+    saved = {"tensor_parallel": tensor_parallel}
+    assert _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
+    # A GPU split that kept tensor is still not this CPU-only launch.
+    backend = _resident(_gpu_memory_mode = "manual", _gpu_layers = 0, _tensor_parallel = True)
+    assert not _satisfied(monkeypatch, backend, {**_CONFIG, "gpu_layers": 0}, saved = saved)
+
+
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):
     # The loader records the requested mode; Auto running MTP is still Auto.
     backend = _resident(_requested_spec_mode = "auto", _speculative_type = "draft-mtp")
