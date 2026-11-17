@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from functools import partial, wraps
 from typing import Any, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
@@ -51,6 +51,8 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
 _account_oauth_token_stores: dict[str, Any] = {}
+_oauth_refresh_locks: dict[tuple[int, str], threading.Lock] = {}
+_oauth_refresh_locks_guard = threading.Lock()
 
 
 def _managed_mcp_restricted() -> bool:
@@ -590,6 +592,39 @@ def _accept_root_issuer_slash(auth) -> None:
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 
+def _serialize_token_refresh(auth, lock: threading.Lock) -> None:
+    """Each connection builds its own provider, so parallel ones spend one rotating refresh token;
+    the loser 401s into a new registration and a fresh consent prompt (#18164)."""
+    flow = auth.async_auth_flow
+
+    async def async_auth_flow(request):
+        held = False
+        if not auth._initialized or not auth.context.is_token_valid():
+            while not lock.acquire(blocking = False):
+                await asyncio.sleep(0.05)
+            held = True
+        try:
+            if held:
+                # Pick up a token another connection refreshed while this one waited.
+                await auth._initialize()
+            async with aclosing(flow(request)) as gen:
+                response = None
+                while True:
+                    try:
+                        sent = await gen.asend(response)
+                    except StopAsyncIteration:
+                        return
+                    if held and sent is request:
+                        lock.release()
+                        held = False
+                    response = yield sent
+        finally:
+            if held:
+                lock.release()
+
+    auth.async_auth_flow = async_auth_flow
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -597,15 +632,19 @@ def _oauth(
 ):
     from fastmcp.client.auth import OAuth
 
+    store = _oauth_store()
     # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
     auth = OAuth(
         mcp_url = url,
-        token_storage = _oauth_store(),
+        token_storage = store,
         client_id = oauth_client_id,
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
     _accept_root_issuer_slash(auth)
+    with _oauth_refresh_locks_guard:
+        lock = _oauth_refresh_locks.setdefault((id(store), auth.mcp_url), threading.Lock())
+    _serialize_token_refresh(auth, lock)
     return auth
 
 
