@@ -4609,18 +4609,27 @@ def _memory_tool_requested(payload) -> bool:
     return thread_context(getattr(payload, "thread_id", None)) is not None
 
 
-def _effective_enable_tools(payload) -> Optional[bool]:
-    """An explicit enable_tools false beats the launcher default; a CLI policy override outranks it."""
+def _base_enable_tools(payload) -> Optional[bool]:
+    """Tool selection before optional memory tools; the CLI policy outranks request flags."""
     from state.tool_policy import get_tool_policy, get_tool_policy_default
 
     policy = get_tool_policy()
     if policy is not None:
         return policy
-    if _memory_tool_requested(payload):
-        return True
     if payload.enable_tools is None:
         return get_tool_policy_default()
     return payload.enable_tools
+
+
+_MEMORY_LOOP_TOOL_NAMES = ("update_memory", "search_conversation")
+
+
+def _effective_enable_tools(payload) -> Optional[bool]:
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is not False and _memory_tool_requested(payload):
+        return True
+    return _base_enable_tools(payload)
 
 
 async def _materialize_sandbox_attachments(payload) -> None:
@@ -4650,6 +4659,7 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
         get_tool_policy() is None
         and payload.enable_tools is None
         and not getattr(payload, "mcp_enabled", False)
+        and not _memory_tool_requested(payload)
     )
 
 
@@ -4912,6 +4922,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
         enabled = list(selected_names)
     elif getattr(payload, "mcp_enabled", False):
         return True
+    elif _memory_tool_requested(payload) and not _base_enable_tools(payload):
+        if getattr(payload, "deep_research_armed", False):
+            return True
+        enabled = _MEMORY_LOOP_TOOL_NAMES
     else:
         enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
@@ -4967,7 +4981,7 @@ def _confirm_gate_has_no_channel(
         # Bypass suppresses the gate, so no stream is needed; else full-access non-streaming runs 400.
         if getattr(payload, "bypass_permissions", False):
             return False
-        return _confirm_gate_needs_stream(payload)
+        return _confirm_gate_needs_stream(payload, selected_names)
     if ui_events:
         return False
     if _request_states_no_tool_flag(payload):
@@ -4989,7 +5003,7 @@ def _confirm_gate_would_prompt(payload, selected_names = None) -> bool:
 
 def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
     """Launcher default skips streams the gate would stop, else the caller parks in wait_tool_decision."""
-    if not _request_states_no_tool_flag(payload):
+    if not _request_states_no_tool_flag(payload) or _memory_tool_requested(payload):
         return True
     if _request_states_tool_intent(payload):
         return False
@@ -6321,21 +6335,8 @@ async def _select_request_tools(
         if tools_on and _memory_tool_requested(payload)
         else []
     )
-    if memory_tools:
-        from state.tool_policy import get_tool_policy, get_tool_policy_default
-
-        policy = get_tool_policy()
-        base_tools = (
-            policy
-            if policy is not None
-            else (
-                payload.enable_tools
-                if payload.enable_tools is not None
-                else get_tool_policy_default()
-            )
-        )
-        if not base_tools:
-            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    if memory_tools and not _base_enable_tools(payload):
+        tools = [t for t in tools if t["function"]["name"] in _MEMORY_LOOP_TOOL_NAMES]
     tools += memory_tools
     tools = _tools_for_search_images(tools)
     # Before the MCP append: Full access says nothing about how an MCP server runs.

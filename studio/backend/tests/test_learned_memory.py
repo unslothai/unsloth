@@ -281,3 +281,62 @@ def test_offered_memory_scopes_follow_the_chat_without_mutating_other_offers(db)
     assert "editor" not in memory.read("p")["entries"]
     assert memory.read()["entries"]["editor"]["value"] == "Helix"
     assert "stack" not in memory.read()["entries"]
+
+
+@pytest.mark.parametrize("enable_tools", [None, False])
+def test_memory_only_chat_falls_through_without_a_managed_tool_parser(db, monkeypatch, enable_tools):
+    import asyncio
+    from types import SimpleNamespace
+    from routes import inference as inf
+    from routes.managed_engine_chat import managed_tool_chat
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf.api_monitor, "fail", lambda *args: None)
+    payload = ChatCompletionRequest(
+        model = "managed", thread_id = "chat", enable_tools = enable_tools,
+        messages = [{"role": "user", "content": "hello"}],
+    )
+    backend = SimpleNamespace(active_model_name = "managed", models = {"managed": {"supports_tools": False}})
+    request = SimpleNamespace(headers = {})
+    assert asyncio.run(managed_tool_chat(payload, request, backend, [], "", None)) is None
+
+
+def test_memory_replay_keeps_the_tool_loop_without_a_launcher_default(db):
+    from routes import inference as inf
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    payload = ChatCompletionRequest(
+        model = "test", thread_id = "chat", studio_tool_history = True,
+        messages = [*_history("update_memory"), {"role": "user", "content": "Forget that"}],
+    )
+    assert inf._effective_enable_tools(payload)
+    assert not inf._tools_on_by_launcher_default_only(payload)
+    assert inf._launcher_tool_default_applies(payload, False)
+
+
+def test_memory_only_auto_approval_needs_no_stream(db):
+    from routes import inference as inf
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    payload = ChatCompletionRequest(
+        model = "test", thread_id = "chat", enable_tools = False,
+        stream = False, permission_mode = "auto",
+        messages = [{"role": "user", "content": "Remember I prefer Rust"}],
+    )
+    assert not inf._confirm_gate_needs_stream(payload)
+    assert not inf._confirm_gate_has_no_channel(payload, False, ["update_memory"])
+    assert inf._confirm_gate_has_no_channel(payload, False, ["terminal"])
+    payload.enable_tools = True
+    assert inf._confirm_gate_needs_stream(payload)
+    payload.enable_tools = False
+    payload.mcp_enabled = True
+    assert inf._confirm_gate_needs_stream(payload)
+    payload.mcp_enabled = False
+    payload.deep_research_armed = True
+    assert inf._confirm_gate_needs_stream(payload)
+    payload.deep_research_armed = False
+    payload.confirm_tool_calls = True
+    assert inf._confirm_gate_needs_stream(payload)
