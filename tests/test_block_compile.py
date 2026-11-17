@@ -1045,6 +1045,35 @@ def test_gemma4_long_band_routes_to_the_interval_kernel(monkeypatch):
     assert len(kernel) == 1 and len(calls["plain"]) == 3
 
 
+def test_gemma4_long_band_past_int32_keeps_the_plain_route(monkeypatch):
+    # the interval kernel addresses in int32 (large_head_attention._INT32_MAX): longer spans keep masked SDPA
+    M = _load()
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    scans = []
+    calls, _ = _fake_gemma4_router_stack(M, monkeypatch, scans)
+    M._gemma4_router_hook()
+    wrapped = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    _, attn = _sliding_layer(window = 16, head_dim = 32)
+    monkeypatch.setattr(M, "_band_kernel_attention", lambda q, k, v, w, s: "kernel")
+    monkeypatch.setattr(M, "_band_kernel_checked", lambda q: True)
+    import importlib
+
+    lh = importlib.import_module(M._LH_MODULE)
+    q = torch.randn(1, 4, 48, 32, dtype = torch.bfloat16)
+    kv = torch.randn(1, 2, 48, 32, dtype = torch.bfloat16)
+    mask = torch.zeros(1, 1, 48, 48)
+    mask._unsloth_block_long_band = True
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "kernel"
+        monkeypatch.setattr(lh, "_INT32_MAX", q.numel() - 1)
+        assert wrapped(attn, q, kv, kv, mask, scaling = 1.0)[0] == "plain"
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+
+
 def test_kill_switch(monkeypatch):
     M = _load()
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "0")

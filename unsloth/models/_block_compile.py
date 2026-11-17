@@ -1357,6 +1357,7 @@ def _gemma4_router_hook():
                 and query.shape[-1] == key.shape[-1] == value.shape[-1]
                 and query.shape[1] % key.shape[1] == 0
                 and _band_kernel_checked(query)
+                and _band_offsets_fit(query, key, value)
             ):
                 # Longer than the window: masked SDPA computes all S x S scores (and repeats the kv
                 # heads); the interval kernel reads only each row's window (O(S * w)).
@@ -1393,6 +1394,17 @@ def _gemma4_router_hook():
 _LONG_BAND_ATTR = "_unsloth_block_long_band"
 _BAND_KERNEL_ENV = "UNSLOTH_BLOCK_SLIDING_KERNEL"
 _LH_MODULE = "unsloth.kernels.large_head_attention"
+
+
+def _band_offsets_fit(query, key, value):
+    """The interval kernel's int32 address limit, which the large-head router checks on its own path."""
+    lh = sys.modules.get(_LH_MODULE)
+    if lh is None:  # loaded by _band_kernel_checked whenever the kernel can run
+        return True
+    limit = lh._INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > limit:
+        return False
+    return max(lh._row_span(query), lh._row_span(key), lh._row_span(value)) <= limit
 
 
 def _band_kernel_attention(query, key, value, window, scaling):
