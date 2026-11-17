@@ -632,6 +632,9 @@ def read_layout():
                 f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
                 f"{PP_SCHEDULES}."
             )
+        if schedule_auto and microbatches is not None and microbatches < pp:
+            # Every step would fall back to GPipe: resolve it here so sharded loading records the same schedule.
+            schedule = "gpipe"
         if (
             schedule == "1f1b"
             and microbatches is not None

@@ -1672,3 +1672,29 @@ def test_pp_replica_restores_detached_layers_with_the_live_adapter_state():
     assert not any(m.disable_adapters for m in detached.modules() if isinstance(m, BaseTunerLayer))
     assert {n: p.requires_grad for n, p in detached.named_parameters()} == grads
     assert "_apply_adapter_state(module, adapters)" in inspect.getsource(pp_env.gather_replica)
+
+
+@pytest.mark.parametrize(
+    "schedule, microbatches, expect, auto",
+    [
+        (None, None, "1f1b", True),
+        (None, "1", "gpipe", True),
+        (None, "2", "1f1b", True),
+        ("gpipe", "1", "gpipe", False),
+    ],
+)
+def test_default_schedule_resolved_in_the_layout(clean_env, schedule, microbatches, expect, auto):
+    # Sharded loading records layout.schedule; the low-micro-batch GPipe fallback must already be in it.
+    from unsloth import parallel_env as pe
+    from unsloth.models import pp_native
+
+    clean_env.setattr(pp_native, "_check_torch_pipelining", lambda: None)
+    clean_env.setenv("WORLD_SIZE", "2")
+    clean_env.setenv("UNSLOTH_PP_SIZE", "2")
+    if schedule:
+        clean_env.setenv("UNSLOTH_PP_SCHEDULE", schedule)
+    if microbatches:
+        clean_env.setenv("UNSLOTH_PP_MICROBATCHES", microbatches)
+    layout = pe.read_layout()
+    assert layout.schedule == expect
+    assert layout.schedule_auto is auto
