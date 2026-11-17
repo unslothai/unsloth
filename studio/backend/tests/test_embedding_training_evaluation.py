@@ -11,6 +11,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import importlib  # noqa: E402
+import json  # noqa: E402
 import types  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
@@ -232,3 +233,16 @@ def test_embedding_run_too_small_to_hold_out_trains_without_eval(run_embedding):
     assert trainer.get("eval_dataset") is None
     assert "eval_strategy" not in args
     assert any(e["type"] == "warning" and "without evaluation" in e["message"] for e in events)
+
+
+def test_embedding_run_csv_train_with_jsonl_eval_upload(run_embedding, tmp_path):
+    eval_path = tmp_path / "eval.jsonl"
+    eval_rows = [{"sentence1": f"eval q{i}", "sentence2": f"eval a{i}"} for i in range(5)]
+    eval_path.write_text("".join(json.dumps(row) + "\n" for row in eval_rows))
+    trainer, _, _ = run_embedding(
+        local_datasets = [run_embedding.write_csv("train.csv", _pairs("train", 40))],
+        local_eval_datasets = [str(eval_path)],
+        eval_steps = 0.25,
+    )
+
+    assert _rows(trainer["eval_dataset"]) == eval_rows

@@ -6145,6 +6145,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         def _load_local_embedding_dataset(dataset_paths: list[str], splits = ("train",)):
             from utils.paths import dataset_files_in_dir
 
+            csv_text_columns.clear()
             all_files: list[str] = []
             for dataset_file in dataset_paths:
                 file_path = (
