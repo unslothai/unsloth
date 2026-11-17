@@ -893,7 +893,7 @@ class _TabLabelScan(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
-        if self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
+        while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
             self._pop_to(len(self._open) - 1)
         if tag in _VOID_TAGS:
             return

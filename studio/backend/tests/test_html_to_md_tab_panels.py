@@ -106,6 +106,10 @@ _BUTTON_TABS = "".join(
         _LIST_TABS,
         _LIST_TABS.replace("</ul>", "<li>Help</ul>"),
         f"<ul><li hidden>Old tabs<li>{_LINK_TABS}</ul>",  # the next <li> ends the hidden one
+        # the next <li> ends the open <p> and the <li> holding it
+        "<ul>"
+        + "".join(f'<li role="tab" id="t{i}"><p>{label}' for i, label in enumerate(_COMMANDS))
+        + "</ul>",
     ],
 )
 def test_each_panel_is_named_by_its_labelling_tab(tabs):
