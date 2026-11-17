@@ -12,7 +12,6 @@ import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 
 const NON_MODAL = [
-  ["components/assistant-ui/thread.tsx", "thinkEffortAriaLabel({"],
   ["components/app-sidebar.tsx", "aria-label={options.ariaLabel}"],
   ["components/app-sidebar.tsx", 'aria-label="Chat options"'],
   ["components/app-sidebar.tsx", 'aria-label="Project options"'],

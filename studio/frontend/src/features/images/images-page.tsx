@@ -78,6 +78,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { Switch } from "@/components/ui/switch";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
@@ -87,7 +88,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -138,6 +141,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -163,6 +167,7 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
   CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
@@ -178,7 +183,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -225,10 +230,12 @@ import {
 } from "@/lib/resolved-precision";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
-  routedGgufFilename,
+  routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -240,9 +247,10 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
-  fixedStepsFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -269,10 +277,15 @@ import {
   familyPresetsCopy,
   familyPresetsWithin,
   inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
+  raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -328,13 +341,16 @@ import {
   listDiffusionLoras,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
+  withSettledVramBudget,
+  VramBudgetSaveError,
   loadDiffusionModel,
   moveDiffusionQueueJob,
   type ImageQueueJob,
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
-import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { collectGalleryWindow } from "./lib/gallery-window";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
@@ -781,61 +797,64 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a first load in flight.
-function loadToastArgs(
-  p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
+// Merges LoRA adapters into its weights at load, so a selection change is always a reload.
+const H3_IMAGE_FAMILY = "minimax-h3-image";
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1926,6 +1945,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -2040,6 +2060,7 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -2060,6 +2081,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
+  const imageGpuDevices = useGpuDevices(true);
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
@@ -2119,6 +2141,18 @@ export function ImagesPage({
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Set now, not after the render: an in-flight gallery refresh reads it.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2178,7 +2212,7 @@ export function ImagesPage({
     setStopping(false);
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -2190,7 +2224,9 @@ export function ImagesPage({
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad.current at load start.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  const pendingDeploy = useRef<{ loraId: string; family: string; families: string[] } | null>(
+    null,
+  );
   // Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
@@ -2283,11 +2319,17 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
         revert.appliedSteps = recommended.steps;
         revert.appliedGuidance = recommended.guidance;
@@ -2296,20 +2338,22 @@ export function ImagesPage({
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
   );
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<DiffusionLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
   const loadSeq = useRef(0);
   // Settles only after handleLoad finishes, since begin_load refuses a second load while one is live.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // Set when the compensating unload failed, so the cancelled load is STILL running.
   const loadTrackingRestored = useRef(false);
@@ -2364,7 +2408,8 @@ export function ImagesPage({
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
-      if (!deploy.family || deploy.family === fam) {
+      // The adapter runs on every family it was published for (Klein Base trains, Klein deploys).
+      if (!deploy.family || (fam != null && deploy.families.includes(fam))) {
         setLoras([{ id: deploy.loraId, weight: 1 }]);
       } else {
         toast.error(
@@ -2398,7 +2443,8 @@ export function ImagesPage({
     if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
     checkedBuildForBake.current = residentBuildKey;
     const engaged = status?.resolved?.transformer_quant?.value;
-    if (engaged !== "int8" && engaged !== "fp8") return;
+    // MiniMax-H3-Image merges adapters into its weights at load at every precision.
+    if (engaged !== "int8" && engaged !== "fp8" && status?.family !== H3_IMAGE_FAMILY) return;
     if (bakedLorasOnLoad.current || loras.length === 0) return;
     setLoras([]);
     toast.info("LoRA selection cleared", {
@@ -2416,10 +2462,10 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
-  const fixedSteps = !external && status?.loaded === true ? fixedStepsFor(status.family) : null;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
   useEffect(() => {
-    if (fixedSteps !== null && steps !== fixedSteps) setSteps(fixedSteps);
-  }, [fixedSteps, steps]);
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
@@ -2565,6 +2611,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -2653,6 +2700,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2799,22 +2847,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        const result = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          () => galleryCache.selectedId,
+          fresh,
+        );
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2823,26 +2868,31 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
-  // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
+  const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    void (async () => {
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After pending pin PATCHes, or this read could undo a pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
+  // This page stays mounted across routes, so an archive restore needs a resync.
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -3389,6 +3439,8 @@ export function ImagesPage({
   );
 
   const refreshStatus = useCallback(async () => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
@@ -3595,25 +3647,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3635,9 +3687,9 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3656,14 +3708,10 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
 
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) {
-      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
-      stripEpoch.current += 1;
-      void loadGallery();
-    }
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
@@ -3679,6 +3727,16 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -3723,13 +3781,13 @@ export function ImagesPage({
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       let inFlight = false;
       try {
-        const p = await getDiffusionLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getDiffusionLoadProgress());
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
@@ -3748,7 +3806,7 @@ export function ImagesPage({
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
-        const g = await getGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getGenerateProgress);
         if (g.active) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
@@ -3758,6 +3816,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3768,7 +3827,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, loadToast, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -3811,6 +3870,7 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -3973,8 +4033,7 @@ export function ImagesPage({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -4014,8 +4073,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -4082,7 +4141,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, loadToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -4159,7 +4218,7 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: setSelectedId,
+      select: pickImage,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4420,9 +4479,11 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = retiredSnapshot
-          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
-          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = await withSettledVramBudget(() =>
+          retiredSnapshot
+            ? requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+            : requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced),
+        );
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -4475,6 +4536,16 @@ export function ImagesPage({
           return true;
         }
       } catch (error) {
+        // Not a plan failure: the fallback load below would run on the budget the user replaced.
+        if (error instanceof VramBudgetSaveError) {
+          pickToast.dismiss(pickToastId);
+          if (ownRevert && quantRevert.current === ownRevert) {
+            revertPick(ownRevert);
+            quantRevert.current = null;
+          }
+          toast.error(error.message);
+          return true;
+        }
         if (downloadOnly) {
           toast.error("Could not plan the download", {
             description: error instanceof Error ? error.message : "Try selecting the model again.",
@@ -4627,8 +4698,8 @@ export function ImagesPage({
     }
     // `routeSearch` is rebuilt every render, so depend on the two fields.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
-    const routedFilename = routedGgufFilename(routed);
-    const routedLabel = routedGgufLabel(routed);
+    const routedFilename = routedImageFilename(routed);
+    const routedLabel = routedFilename ? null : routedGgufLabel(routed);
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
@@ -4665,7 +4736,7 @@ export function ImagesPage({
         wanted,
         "auto",
         false,
-        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+        pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null),
       );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
@@ -4711,14 +4782,14 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -4945,7 +5016,13 @@ export function ImagesPage({
   );
 
   const handleDeployAdapter = useCallback(
-    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+    (args: {
+      baseRepo: string;
+      family: string;
+      families?: string[];
+      catalogPath: string;
+      trigger: string;
+    }) => {
       if (busy !== null) {
         toast.error("Finish the current model load before deploying the adapter.");
         return;
@@ -4960,16 +5037,28 @@ export function ImagesPage({
       pickGuard.cancel();
       pickToast.dismissAll();
       setExternalModelId(null);
-      pendingDeploy.current = { loraId: stem, family: args.family };
+      pendingDeploy.current = {
+        loraId: stem,
+        family: args.family,
+        families: args.families?.length ? args.families : [args.family],
+      };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
@@ -4977,7 +5066,18 @@ export function ImagesPage({
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      loras,
+      pickGuard,
+      pickToast,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
   const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
   useEffect(() => {
@@ -4990,35 +5090,47 @@ export function ImagesPage({
     if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
   }, [trainingCompletions]);
 
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
+
     pendingRecalledGeneration.current = null;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, compensating unload included, or the older load
-      // keeps running with no toast or cancel control.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+
+    async function unload(): Promise<boolean> {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, compensating unload included, or the older load
+        // keeps running with no toast or cancel control.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Tracking RESTORED means the compensating unload failed and the load is still running.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Tracking RESTORED means the compensating unload failed and the load is still running.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    }
+
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // Not an unconditional clear: a restore may have set "loading" deliberately.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -5035,8 +5147,8 @@ export function ImagesPage({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const buildKey = status?.loaded
     ? [
@@ -5046,6 +5158,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -5060,17 +5173,60 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
     }
   }
 
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
   if (limitsKey !== fittedLimits) {
     setFittedLimits(limitsKey);
     const fitted = fitSize(width, height, sizeLimits);
     if (fitted.width !== width) setWidth(fitted.width);
     if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
+    const raised = raiseToEditResolution(
+      fittedWidth,
+      fittedHeight,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
+    });
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
+    }
   }
 
   const [sourceRead, setSourceRead] = useState<{
@@ -5094,8 +5250,15 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
   const loadedFamily = status?.family ?? null;
   const officialPresets = useMemo(
@@ -5478,7 +5641,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:
@@ -5506,6 +5670,7 @@ export function ImagesPage({
     }
     followingJob.current = null;
     localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5597,7 +5762,7 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
         const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
         // A late reply never replaces the seed of a queued run that finished after it.
@@ -5659,7 +5824,7 @@ export function ImagesPage({
       cancelRequested.current = false;
       // Await on EVERY exit: a run can change status (compile, cancelled native run), so Generate could 409.
       if (isMounted.current) await refreshStatus();
-      setBusy(null);
+      setBusy((prev) => (prev === "generating" ? null : prev));
       setGenDone(null);
       setGenStep(null);
       setStopping(false);
@@ -6064,6 +6229,9 @@ export function ImagesPage({
           ["sage", "SageAttention (INT8)"],
         ]}
       />
+      {!external && imageGpuDevices.length > 0 && (
+        <VramBudgetControl image modelLoading={busy === "loading"} />
+      )}
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
@@ -6262,7 +6430,8 @@ export function ImagesPage({
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                loaded={busy === "unloading" ? false : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
@@ -6290,6 +6459,9 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
@@ -6330,6 +6502,11 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -6813,7 +6990,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
@@ -6889,6 +7066,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6899,6 +7077,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}
@@ -7096,16 +7275,15 @@ export function ImagesPage({
                   <SliderField
                     label="Steps"
                     hint={
-                      fixedSteps !== null
-                        ? `The loaded model is distilled to exactly ${fixedSteps} steps, one output head per step, so the count is fixed.`
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
                         : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                     }
-                    value={fixedSteps ?? steps}
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
-                    disabled={fixedSteps !== null}
                   />
                 </div>
                 <SliderField
@@ -7415,9 +7593,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7597,20 +7775,27 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
                 <GalleryStripTile
                   key={image.id}
                   image={image}
                   src={thumbById[image.id] ?? srcById[image.id]}
-                  selected={image.id === selected?.id}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
                   menuOpen={tileMenuId === image.id}
                   active={active}
                   favorite={isFavorite(`image:${image.id}`)}

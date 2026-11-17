@@ -584,7 +584,9 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
         Y = MultiLoRA_W.apply(X, W, W_quant, A, B, scales, batch.sorted_idx, batch.seg_start)
     else:
         Wd = fast_dequantize(W, W_quant, dtype = X.dtype) if W_quant is not None else W.to(X.dtype)
-        Y = F.linear(X, Wd) + multi_lora_delta(X, A, B, scales, batch)
+        Y = F.linear(X, Wd)
+        # Autocast: base matmul is low precision but the delta promotes to X.dtype.
+        Y = Y + multi_lora_delta(X, A, B, scales, batch).to(Y.dtype)
     if bias is not None:
         Y = Y + bias.to(Y.dtype)
     return Y
@@ -1505,6 +1507,9 @@ def set_multi_lora_batch(
         seg = layer.batch.seg_start
         present = (seg[1:] - seg[:-1]) > 0
         layer.seen = present if layer.seen is None else layer.seen | present
+        if isinstance(layer, MultiLoraExpertParam):
+            # Build groups eagerly: a data-dependent .tolist() inside forward breaks fullgraph.
+            _adapter_groups(layer.batch)
     return next(iter(by_device.values()))
 
 
@@ -1555,6 +1560,69 @@ def adapter_token_counts(
     )
 
 
+# fp32 logits per chunk: a full fp32 copy of B x T logits is several times the bf16 logits and OOMs.
+_CE_CHUNK_ELEMENTS = 1 << 25
+
+
+class _ChunkedTokenCrossEntropy(torch.autograd.Function):
+    """Chunked per-token cross entropy of ``logits[:, :-1]``; saves only logits, labels and per-token fp32
+    max and log-sum-exp (no fp32 logits copy) and backward forms ``softmax - onehot`` from them."""
+
+    @staticmethod
+    def forward(ctx, logits, labels, ignore_index, chunk):
+        B, T1 = labels.shape
+        loss = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        # Max and log-sum-exp kept apart, as log_softmax rounds them: x - (max + lse) loses ulp(max).
+        mx = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        lse = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        for b in range(B):
+            for t in range(0, T1, chunk):
+                e = min(t + chunk, T1)
+                y = labels[b, t:e]
+                valid = y != ignore_index
+                z = logits[b, t:e].float()
+                m = z.amax(1, keepdim = True)
+                z = z - m
+                s = z.exp().sum(1).log()
+                picked = z.gather(1, torch.where(valid, y, 0)[:, None]).squeeze(1)
+                loss[b, t:e] = torch.where(valid, s - picked, 0.0)
+                mx[b, t:e] = m.squeeze(1)
+                # +inf on ignored tokens makes their softmax 0.
+                lse[b, t:e] = torch.where(valid, s, float("inf"))
+        ctx.save_for_backward(logits, labels, mx, lse)
+        ctx.ignore_index, ctx.chunk = ignore_index, chunk
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_loss):
+        logits, labels, mx, lse = ctx.saved_tensors
+        grad = torch.zeros_like(logits)
+        B, T1 = labels.shape
+        for b in range(B):
+            for t in range(0, T1, ctx.chunk):
+                e = min(t + ctx.chunk, T1)
+                y = labels[b, t:e]
+                valid = y != ctx.ignore_index
+                g = torch.where(valid, grad_loss[b, t:e].float(), 0.0)
+                p = (logits[b, t:e].float() - mx[b, t:e, None]).sub_(lse[b, t:e, None]).exp_()
+                p.scatter_add_(1, torch.where(valid, y, 0)[:, None], -torch.ones_like(g)[:, None])
+                grad[b, t:e] = p.mul_(g[:, None])
+        return grad, None, None, None
+
+
+def _token_cross_entropy(logits, shift_labels, ignore_index):
+    if ignore_index == -100 and _use_triton(logits):
+        from .cross_entropy_loss import Fast_CrossEntropyLoss
+
+        # Full rows, no logits[:, :-1] copy: the last position's -100 label gives it zero loss and gradient.
+        B, T, V = logits.shape
+        labels = F.pad(shift_labels, (0, 1), value = -100)
+        loss = Fast_CrossEntropyLoss.apply(logits.reshape(B * T, V), labels.reshape(-1), 0, 0)
+        return loss.view(B, T)[:, :-1]
+    chunk = max(1, _CE_CHUNK_ELEMENTS // max(1, logits.shape[-1]))
+    return _ChunkedTokenCrossEntropy.apply(logits, shift_labels, ignore_index, chunk)
+
+
 def per_adapter_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -1564,21 +1632,23 @@ def per_adapter_loss(
     process_group = None,
     model: Optional[nn.Module] = None,
     num_items_in_batch: Optional[torch.Tensor] = None,
+    grad_scale: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     ``row_adapter_ids``: (B,) or per token (B, T). Pass ``model`` for ``drop_absent_adapter_grads_``, and under
     gradient accumulation ``num_items_in_batch`` = per-adapter ``adapter_token_counts`` summed over the window.
+    ``grad_scale``: per-row (B,) or per-token (B, T) fp32 factor on each logit's gradient (fp16 loss
+    scaling), applied before the gradient is rounded to the logits dtype; values stay unscaled.
     Returns (total, this rank's per-adapter losses).
     """
-    shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
-    token_loss = F.cross_entropy(
-        shift_logits.reshape(-1, shift_logits.shape[-1]),
-        shift_labels.reshape(-1),
-        ignore_index = ignore_index,
-        reduction = "none",
-    ).view(shift_labels.shape)
+    token_loss = _token_cross_entropy(logits, shift_labels.to(logits.device), ignore_index)
+    if grad_scale is not None:
+        scale = grad_scale.to(token_loss)
+        scale = scale[:, :-1] if scale.dim() == 2 else scale[:, None]
+        # Same value, gradient times scale.
+        token_loss = token_loss.detach() + (token_loss - token_loss.detach()) * scale
     valid = (shift_labels != ignore_index).float()
     ids = _label_adapter_ids(row_adapter_ids, labels)
     # Tokens with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.

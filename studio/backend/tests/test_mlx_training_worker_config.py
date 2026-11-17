@@ -842,6 +842,29 @@ def test_mlx_slice_reads_a_stream_lazily():
     assert calls == [("skip", 2), ("take", 3)]
 
 
+@pytest.mark.parametrize("slice_start, slice_end", [(2, 4), (50, None)])
+def test_mlx_slice_clamps_the_end_and_refuses_a_start_past_the_last_row(slice_start, slice_end):
+    from datasets import Dataset
+
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.FunctionDef) and n.name == "_slice"]
+    namespace = {
+        **vars(_worker),
+        "dataset_streaming": False,
+        "slice_start": slice_start,
+        "slice_end": slice_end,
+        "mlx_split_names_rows": False,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<slice>", "exec"), namespace)
+    rows = Dataset.from_list([{"i": i} for i in range(4)])
+
+    if slice_start >= 4:
+        with pytest.raises(ValueError, match = "Train Split Start 50 is past the last row"):
+            namespace["_slice"](rows)
+    else:
+        assert namespace["_slice"](rows)["i"] == [2, 3]
+
+
 def _run_mlx_assignment(target, **names):
     body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
     nodes = [n for n in body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == target]

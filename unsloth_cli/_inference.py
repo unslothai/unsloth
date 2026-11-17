@@ -750,6 +750,47 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
+_SECURITY_BLOCKS = ("malware_blocked", "remote_code_blocked")
+
+
+def _http_error_text(exc: Exception) -> str:
+    # str(HTTPError) is only "HTTP Error <code>: <reason>"; the server's cause is in the body.
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except Exception:
+            detail = None
+        if isinstance(detail, str) and detail:
+            return f"HTTP Error {exc.code}: {detail}"
+    return str(exc)
+
+
+def _exit_if_refused_load(
+    model: str,
+    reason: str,
+    trust_remote_code: bool,
+    error_kind: Optional[str] = None,
+) -> None:
+    if error_kind in _SECURITY_BLOCKS:
+        typer.echo(f"Error: {reason}", err = True)
+        typer.echo(
+            "The repository security scan refused this load; --trust-remote-code never "
+            "overrides it.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+    # transformers and the server both phrase this refusal with the kwarg name.
+    if trust_remote_code or "trust_remote_code" not in reason:
+        return
+    typer.echo(
+        f"Error: {model} needs its own modelling code to load. If you trust this repository, "
+        "rerun with --trust-remote-code (it executes Python from the repo).",
+        err = True,
+    )
+    raise typer.Exit(code = 1)
+
+
 def load_chat_backend(
     model: str,
     *,
@@ -760,6 +801,7 @@ def load_chat_backend(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
     model_config = None,
     fresh_backend: bool = False,
 ):
@@ -805,7 +847,7 @@ def load_chat_backend(
             from core.inference import get_inference_backend
             backend = get_inference_backend()
         try:
-            loaded = backend.load_model(
+            load_kwargs = dict(
                 config = model_config,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -813,7 +855,13 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
+            if trust_remote_code:
+                load_kwargs["trust_remote_code"] = trust_remote_code
+            loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
+            _exit_if_refused_load(
+                model, str(exc), trust_remote_code, getattr(exc, "error_kind", None)
+            )
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -1070,6 +1118,7 @@ class HttpChatBackend:
         speculative_type: Optional[SpeculativeType] = None,
         spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
@@ -1086,6 +1135,8 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
+        if trust_remote_code:
+            payload["trust_remote_code"] = trust_remote_code
         resident_variant = self._resident_gguf_variant(model)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
@@ -1097,7 +1148,9 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
-            typer.echo(f"Model load failed: {exc}", err = True)
+            reason = _http_error_text(exc)
+            _exit_if_refused_load(model, reason, trust_remote_code)
+            typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
@@ -1241,6 +1294,7 @@ def connect_studio_server(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1302,5 +1356,6 @@ def connect_studio_server(
         speculative_type = speculative_type,
         spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
+        trust_remote_code = trust_remote_code,
     )
     return backend

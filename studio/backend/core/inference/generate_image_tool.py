@@ -13,6 +13,8 @@ import shutil
 import time
 from typing import Any, Optional
 
+from .diffusion_conditioning import MAX_REQUEST_SIDE
+
 logger = logging.getLogger(__name__)
 
 GENERATE_IMAGE_TOOL_NAME = "generate_image"
@@ -45,7 +47,7 @@ _POLL_S = 0.25
 _PROMPT_ECHO_CHARS = 300
 _MIN_SIDE = 256
 # DiffusionGenerateRequest's own ceiling.
-_TRANSPORT_MAX_SIDE = 2752
+_TRANSPORT_MAX_SIDE = MAX_REQUEST_SIDE
 
 
 def _size_limits(status: dict) -> tuple[int, int, int, int]:

@@ -59,6 +59,7 @@ from core.training.dataset_bounds import (
     max_train_rows_for_config,
     record_row_bound,
     row_bound_for_resume,
+    slice_dataset_rows,
     world_size_from_env,
 )
 from core.training.resume import _checkpoint_state, session_eta_seconds
@@ -218,6 +219,12 @@ def _worker_hf_token(config: dict):
     return hf_token_arg(
         config.get("hf_token"), allow_ambient_token = config.get("allow_ambient", True)
     )
+
+
+FORCED_16BIT_WARNING = (
+    "4-bit (QLoRA) is not available yet for this new model architecture, so it trains in 16-bit LoRA. "
+    "This uses more VRAM than a 4-bit load."
+)
 
 
 def _effective_training_load_in_4bit(
@@ -941,6 +948,29 @@ def _check_finetune_targets_after_detect(trainer, config: dict) -> None:
     # Mirror get_peft_regex's two guards: one layer family AND one module type.
     if not (vision or language) or not (attention or mlp):
         raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _ignored_selector_warning(trainer, config: dict) -> str | None:
+    """The text branch builds adapters from target_modules alone; say so when a module-type selector is off."""
+    if config.get("training_type", "LoRA/QLoRA") != "LoRA/QLoRA" or not config.get(
+        "use_lora", True
+    ):
+        return None
+    if getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False):
+        return None
+    _, _, attention, mlp = _finetune_selectors(config)
+    if attention and mlp:
+        return None
+    off = [
+        name
+        for name, on in (("finetune_attention_modules", attention), ("finetune_mlp_modules", mlp))
+        if not on
+    ]
+    return (
+        f"{' and '.join(off)} = False only applies to vision models. This text model trains the target modules "
+        f"list ({', '.join(config.get('target_modules') or []) or 'default'}); remove modules from that list "
+        "instead (gate_proj, up_proj and down_proj also cover MoE experts)."
+    )
 
 
 # On CPT, MLX trains these regardless of the layer-family flags.
@@ -2755,7 +2785,9 @@ def _resolve_mlx_local_dataset_path(dataset_file) -> Path:
     return Path(str(resolve_dataset_path(str(dataset_file))))
 
 
-def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
+def _resolve_mlx_local_dataset_files(
+    file_paths: list, splits: tuple[str, ...] = ("train",)
+) -> list[str]:
     """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import dataset_files_in_dir
 
@@ -2764,7 +2796,7 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
         file_path_obj = _resolve_mlx_local_dataset_path(dataset_file)
 
         if file_path_obj.is_dir():
-            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj))
+            all_files.extend(str(p) for p in dataset_files_in_dir(file_path_obj, splits))
             continue
 
         all_files.append(str(file_path_obj))
@@ -3244,14 +3276,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
     config["_dataset_loaded_from_exact_snapshot"] = False
 
-    def _load_local(file_paths):
+    def _load_local(file_paths, splits = ("train",)):
         from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
             saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
             if saved is not None:
                 return saved
-        all_files = _resolve_mlx_local_dataset_files(file_paths)
+        all_files = _resolve_mlx_local_dataset_files(file_paths, splits)
         if not all_files:
             raise ValueError("No local dataset files found")
         from utils.datasets.cells import csv_as_text_kwargs
@@ -3300,7 +3332,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     eval_enabled = evaluation_enabled(config.get("eval_steps"))
     if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
-        eval_dataset = _load_local(config["local_eval_datasets"])
+        from utils.paths import EVAL_SPLITS
+        eval_dataset = _load_local(config["local_eval_datasets"], EVAL_SPLITS)
 
     if _is_stop_requested():
         _send("complete", output_dir = None, status_message = "Training cancelled")
@@ -3509,12 +3542,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if dataset_streaming:
             return _slice_streaming_dataset(ds, slice_start, slice_end)
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(ds) - 1
-            if end < start:
-                return ds.select([])
             # The user named these rows; the bound below defers to that.
-            return ds.select(range(start, min(end + 1, len(ds))))
+            return slice_dataset_rows(ds, slice_start, slice_end)[0]
         if mlx_split_names_rows:
             return ds
         return bound_dataset_rows(
@@ -4532,6 +4561,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     install_torchao_windows_rocm_stub()
 
+    # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
+    from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
+
+    install_windows_rocm_wide_head_sdpa_guard(logger)
+
     # Single-GPU never inits the process group, but transformers/trl import these torch.distributed attrs anyway.
     _td_stubs = {
         "is_initialized": lambda: False,
@@ -5260,6 +5294,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
                     "training load (4-bit is disabled for brand-new architectures)",
                     model_load_name,
+                )
+            if config.get("load_in_4bit_forced_16bit") or (
+                config["load_in_4bit"] and not _train_load_in_4bit
+            ):
+                event_queue.put(
+                    {"type": "warning", "message": FORCED_16BIT_WARNING, "ts": time.time()}
+                )
+            _selector_warning = _ignored_selector_warning(trainer, config)
+            if _selector_warning:
+                event_queue.put(
+                    {"type": "warning", "message": _selector_warning, "ts": time.time()}
                 )
             success = trainer.load_model(
                 on_model_resolved = _report_model_repo,
@@ -6201,9 +6246,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         slice_start = config.get("dataset_slice_start")
         slice_end = config.get("dataset_slice_end")
         if slice_start is not None or slice_end is not None:
-            start = slice_start if slice_start is not None else 0
-            end = slice_end if slice_end is not None else len(dataset)
-            dataset = dataset.select(range(start, min(end + 1, len(dataset))))
+            dataset = slice_dataset_rows(dataset, slice_start, slice_end)[0]
 
         if csv_text_columns:
             kept = dataset.filter(

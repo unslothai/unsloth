@@ -7,6 +7,8 @@ import type { WorkflowId } from "../workflows";
 export interface AdapterDeployRequest {
   baseRepo: string;
   family: string;
+  /** Every family the adapter loads on (FLUX.3 Klein Base deploys on FLUX.3 Klein); absent = `family` only. */
+  families?: string[];
   catalogPath: string;
   trigger: string;
 }
@@ -23,7 +25,7 @@ interface ImageWorkflowState {
   setPageMode: (mode: "create" | "train") => void;
   setSupported: (ids: WorkflowId[] | null) => void;
   setUnifiedEdit: (unifiedEdit: boolean) => void;
-  /** Video's Train tab hands Images its adapters: Video loads none. */
+  /** Video's Train tab hands Images its image-family adapters (video ones deploy on Video). */
   pendingDeploy: AdapterDeployRequest | null;
   requestDeploy: (request: AdapterDeployRequest) => void;
   takeDeploy: () => AdapterDeployRequest | null;

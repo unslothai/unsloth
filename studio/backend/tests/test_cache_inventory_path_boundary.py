@@ -502,6 +502,7 @@ def test_download_progress_hides_the_cache_dir_it_measured(
 _ROUTES_WITHOUT_HOST_PATHS = {
     "remove_scan_folder_endpoint": "status and id only",
     "get_gguf_variants": "filenames and quant labels, no directory",
+    "is_sdxl_checkpoint": "a boolean; repo_id must be a Hub id",
     "download_model": "job id and status",
     "cancel_download_model": "job id and status",
     "get_active_downloads": "repo ids and byte counts",

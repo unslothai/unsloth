@@ -225,12 +225,14 @@ jobs:
 
       # Pass the bootstrap password explicitly: an attached studiobench cannot find the home.
       # 100K is the smallest rung where every action except image_upload runs.
+      # --windowed-arm: the thread mounts only the rows near the reader (thread-window.ts).
       - name: Run a real-path session
         run: |
           python -m tests.studio.studiobench \
             --tier fast --rungs 100K --reps 1 \
             --attach "http://127.0.0.1:${STUDIO_PORT}" \
             --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)" \
+            --windowed-arm base \
             --engine chromium \
             --out outputs/studiobench-ci
 

@@ -491,6 +491,25 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
+def _tool_fields(web_search: bool) -> dict:
+    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+    from state.tool_policy import get_tool_policy
+
+    # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
+    if not web_search or get_tool_policy() is False:
+        # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+        # means every built-in, python and terminal included.
+        return {"tool_choice": "none", "enabled_tools": []}
+    return {
+        "enable_tools": True,
+        "enabled_tools": ["web_search"],
+        "permission_mode": "off",
+        # Studio's search, not a provider's hosted one, as Chat sends it.
+        "run_tools_locally": True,
+        "nudge_tool_calls": False,
+    }
+
+
 def _pins_local_model(model: Optional[str]) -> bool:
     from routes.inference import _connection_model_ref
     return bool(model) and _connection_model_ref(model) is None
@@ -503,7 +522,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task, text only (tools never run unattended)."""
+    """Ask the chat model to do the task; web search is the only tool a run may use."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -592,10 +611,7 @@ async def generate_answer(
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
-                    # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
-                    # means every built-in, python and terminal included.
-                    "tool_choice": "none",
-                    "enabled_tools": [],
+                    **_tool_fields(bool(task.get("webSearch"))),
                     **model_fields,
                     **_reasoning_fields(
                         task.get("reasoningEffort"),

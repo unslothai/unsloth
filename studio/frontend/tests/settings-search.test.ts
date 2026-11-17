@@ -15,6 +15,33 @@ import { en } from "../src/i18n/locales/en.ts";
 const UPDATE_ENTRY = "settings.about.updates";
 const INTERFACE_SCALE_ENTRY = "settings.appearance.custom.interfaceScale.label";
 
+test("composer searches route to Chat, with no stale Appearance results", () => {
+  const keys = [
+    "composerSettings.title",
+    "composerSettings.sendShortcut",
+    "composerSettings.followUp",
+    "composerSettings.shareDraft",
+    "composerSettings.plainText",
+    "composerSettings.richPaste",
+    "settings.chat.pastedTextThreshold",
+    "composerSettings.showContext",
+    "settings.appearance.custom.chatWidth.label",
+    "settings.chat.composerPosition",
+    "chatBackground.outline",
+    "settings.appearance.custom.sentAttachments.label",
+  ];
+  for (const desktop of [false, true]) {
+    const index = createSettingsSearchIndex({ desktop, closeToTray: desktop, menuBarIcon: false });
+    for (const key of keys) {
+      const tabs = Object.entries(index).flatMap(([tab, entries]) =>
+        entries.filter((entry) => entry === key).map(() => tab),
+      );
+      assert.deepEqual(tabs, ["chat"], `${key} has exactly one destination`);
+    }
+    assert.ok(!index.appearance.includes("settings.appearance.composer.title"));
+  }
+});
+
 test("desktop update searches route to General", () => {
   const index = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
 

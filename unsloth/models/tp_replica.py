@@ -402,10 +402,13 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
-        if saved is not None:
-            for key, value in saved.items():
-                replica.set(module, key, value)
+        owners = [module] + [o for o, _, _ in getattr(region, "child_params", ())]
+        for owner in {id(o): o for o in owners}.values():
+            # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
+            saved = owner.__dict__.get("_unsloth_tp_saved_attrs")
+            if saved is not None:
+                for key, value in saved.items():
+                    replica.set(owner, key, value)
         for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
             if key in module.__dict__:
                 replica.set(module, key, tpn._MISSING)
@@ -720,11 +723,10 @@ def tp_world_save(what, write, directory):
     import tempfile
 
     absolute = os.path.abspath(target)
-    parent = os.path.dirname(absolute)
     os.makedirs(absolute, exist_ok = True)
-    private = tempfile.mkdtemp(
-        prefix = f".{os.path.basename(absolute)}.unsloth_tp_rank{_rank()}_", dir = parent
-    )
+    # Staged inside the destination: same filesystem for os.replace (a mounted output dir would raise
+    # EXDEV from a sibling), and no write access to the parent needed.
+    private = tempfile.mkdtemp(prefix = f".unsloth_tp_rank{_rank()}_", dir = absolute)
     try:
         result = write(private)
         for root, _, files in os.walk(private):

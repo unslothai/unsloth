@@ -8,9 +8,12 @@ import inspect
 import logging
 import operator
 import os
+import sys
 import weakref
 
 import torch
+
+from .flash_impl import active_flash_impl
 
 __all__ = ["enable_hf_packed_attention", "HF_PACKED_ATTENTION_STATS"]
 
@@ -26,6 +29,7 @@ HF_PACKED_ATTENTION_STATS = {
     "fallback": 0,
     "mask_checks": 0,
     "efficient": 0,
+    "large_head": 0,
     "compiled": 0,
     "int32_split": 0,
 }
@@ -229,6 +233,38 @@ def _efficient_varlen_takes(query, window) -> bool:
     return choice not in (int(SDPBackend.MATH), -1)
 
 
+_LH_MODULE = "unsloth.kernels.large_head_attention"
+
+
+def _large_head_takes(query, key, value, dropout, window, kwargs) -> bool:
+    """Head dim 512, no window (Gemma-4 global): large head kernel, one causal interval per document.
+    Shape and cached reads only, so safe while tracing."""
+    lh = sys.modules.get(_LH_MODULE)
+    return (
+        lh is not None
+        and window is None
+        and not dropout
+        and kwargs.get("softcap", None) is None
+        and lh._enabled()
+        and lh._shapes_qualify(query, key, value)
+        and not lh._autocast_dtype_differs(query)
+        and not lh._math_sdpa_requested()
+        and lh._SELF_CHECK.get((str(query.device), query.dtype), False) is True
+    )
+
+
+def _large_head_varlen(query, key, value, cu_seqlens, scale):
+    """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D): row r attends its document's start to r."""
+    rows = torch.arange(query.shape[2], device = query.device, dtype = torch.int32)
+    starts = cu_seqlens.to(device = query.device, dtype = torch.int32)
+    lo = starts[(torch.searchsorted(starts, rows, right = True) - 1).clamp_min(0)]
+    return (
+        sys.modules[_LH_MODULE]
+        .large_head_attention(query, key, value, lo[None], rows[None], scale)
+        .contiguous()
+    )
+
+
 class _EfficientVarlenAttention(torch.autograd.Function):
     """(1, T, H, D) Q / K / V over cu_seqlens, causal (and windowed) inside each segment."""
 
@@ -401,10 +437,15 @@ def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     """aten's flash varlen, what torch's varlen_attn runs for these rows, called directly: a native op
     with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
     compiled step) that takes grouped K / V heads as they are."""
+    query, key, value = (x[0].transpose(0, 1) for x in (query, key, value))
+    # torch's FA4 / FA3 impls return a contiguous output and grads where the op's fake kernel follows
+    # the input layout, so a compiled graph fails its stride check: give them contiguous rows.
+    if torch.compiler.is_compiling() and active_flash_impl() is not None:
+        query, key, value = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.ops.aten._flash_attention_forward(
-        query[0].transpose(0, 1),
-        key[0].transpose(0, 1),
-        value[0].transpose(0, 1),
+        query,
+        key,
+        value,
         cu_seqlens,
         cu_seqlens,
         max_seqlen,
@@ -506,11 +547,18 @@ def _sdpa_packed_varlen(
                 int(query.shape[1]),
                 int(key.shape[1]),
                 window,
+                active_flash_impl(),
             )
         ):
             # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
-            return _flash_varlen(query, key, value, *block_varlen, scale, window), None
+            cu_seqlens, max_seqlen = block_varlen
+            if isinstance(max_seqlen, torch.Tensor):
+                max_seqlen = max_seqlen.shape[0]
+            return _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window), None
+        if query.shape[-1] > 256 and _large_head_takes(query, key, value, dropout, window, kwargs):
+            scale = query.shape[-1] ** -0.5 if scaling is None else scaling
+            return _large_head_varlen(query, key, value, block_varlen[0], scale), None
     if (
         IN_COMPILED_BLOCK[0]
         and torch.compiler.is_compiling()
@@ -555,12 +603,12 @@ def _sdpa_packed_varlen(
 
     bsz, n_heads, q_len, head_dim = query.shape
     seq_info = torch_varlen = backend = groups = None
-    efficient = False
+    efficient = large_head = False
     window = _static_window(module, query, key, value, dropout, is_causal, kwargs)
     if window is not _NO_WINDOW:
         if head_dim > 256:
-            # Past every flash kernel (Gemma-4 global layers are 512): the efficient kernel, per segment.
-            efficient = _efficient_varlen_takes(query, window)
+            large_head = _large_head_takes(query, key, value, dropout, window, kwargs)
+            efficient = large_head or _efficient_varlen_takes(query, window)
         elif not _sdpa_requested(query, key):
             torch_varlen = _torch_varlen(query.device)
             # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
@@ -612,6 +660,9 @@ def _sdpa_packed_varlen(
     scale = head_dim**-0.5 if scaling is None else scaling
     n_kv_heads = key.shape[1]
     _, cu_seqlens, max_seqlen = seq_info
+    if large_head:
+        HF_PACKED_ATTENTION_STATS["large_head"] += 1
+        return _large_head_varlen(query, key, value, cu_seqlens, scale), None
     if efficient:
         try:
             out = _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window)
@@ -788,10 +839,19 @@ _leaves_block = _constant_probe(_leaves_block_eager)
 _VARLEN_IN_GRAPH = {}
 
 
-def _varlen_in_graph_eager(device_index, dtype, head_dim, n_heads, n_kv_heads, window):
-    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window)
+def _varlen_in_graph_eager(
+    device_index,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    window,
+    impl = None,
+):
+    # impl: the FA4 / FA3 behind torch's flash op when probed (active_flash_impl); each answers for itself.
+    key = (device_index, dtype, head_dim, n_heads, n_kv_heads, window, impl)
     if key not in _VARLEN_IN_GRAPH:
-        _VARLEN_IN_GRAPH[key] = _varlen_in_graph_probe(*key)
+        _VARLEN_IN_GRAPH[key] = _varlen_in_graph_probe(*key[:-1])
     return _VARLEN_IN_GRAPH[key]
 
 
@@ -836,11 +896,11 @@ _varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
 
 
 def block_varlen_kwargs(layer, hidden_states, kwargs):
-    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen) for its
-    packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
-    read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
-    fall back to SDPA over the dense mask. None keeps that path; _LEAVE_BLOCK runs the eager
-    wrapper."""
+    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen carrier, a
+    tensor as long as the longest document) for its packed row, so attention runs torch's varlen op
+    inside the graph. Building them there needs a host read of the longest segment and the mask check a
+    host sync, which is why the traced wrapper used to fall back to SDPA over the dense mask. None keeps
+    that path; _LEAVE_BLOCK runs the eager wrapper."""
     seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
@@ -886,6 +946,23 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
 _BLOCK_PREP = {}
 
 
+def _head_counts(attention, config):
+    """(heads, kv heads) per layer: Gemma-4 unified raises on the global kv count."""
+    n_heads = getattr(config, "num_attention_heads", None)
+    groups = getattr(attention, "num_key_value_groups", None)
+    if (
+        isinstance(n_heads, int)
+        and isinstance(groups, int)
+        and groups > 0
+        and n_heads % groups == 0
+    ):
+        return n_heads, n_heads // groups
+    try:
+        return n_heads, getattr(config, "num_key_value_heads", None) or n_heads
+    except Exception:
+        return n_heads, None
+
+
 def _block_varlen_prepare(
     layer,
     attention,
@@ -914,8 +991,7 @@ def _block_varlen_prepare(
 
     total = hidden_states.shape[1]
     head_dim = getattr(attention, "head_dim", None)
-    n_heads = getattr(config, "num_attention_heads", None)
-    n_kv_heads = getattr(config, "num_key_value_heads", None) or n_heads
+    n_heads, n_kv_heads = _head_counts(attention, config)
     if not all(isinstance(n, int) for n in (head_dim, n_heads, n_kv_heads)):
         return None
     # SDPA runs in the autocast dtype when autocast casts fp32 activations (_autocast_float32).
@@ -946,8 +1022,13 @@ def _block_varlen_prepare(
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+    # The longest document as a dynamic tensor length (prepare_packed_block's carrier): a Python int
+    # was guarded on, so every new longest document recompiled the block. 2+: a length of 1 would
+    # specialise; an upper bound is still exact for varlen.
+    carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = hidden_states.device)
+    torch._dynamo.maybe_mark_dynamic(carrier, 0)
     HF_PACKED_ATTENTION_STATS["compiled"] += 1
-    return cu_seqlens, int(max_seqlen)
+    return cu_seqlens, carrier
 
 
 def enable_hf_packed_attention() -> bool:

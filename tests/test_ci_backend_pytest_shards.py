@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every backend test file must land in exactly one shard: three letter ranges plus a catch-all shard."""
+"""Every backend test file must land in exactly one shard: letter ranges, the diffusion files, plus a catch-all shard."""
 
 import fnmatch
 from pathlib import Path
@@ -152,6 +152,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
         [
             ("tests/test_apple.py", "a-f"),
             ("tests/test_fig.py", "a-f"),
+            ("tests/test_dog.py", "a-f"),
+            ("tests/test_diffusers_new.py", "a-f"),
+            ("tests/test_diffuse.py", "a-f"),
+            ("tests/test_diffusion_new.py", "diffusion"),
+            ("tests/test_diffusion.py", "diffusion"),
             ("tests/test_grape.py", "g-l"),
             ("tests/test_kiwi.py", "g-l"),
             ("tests/test_lime.py", "g-l"),

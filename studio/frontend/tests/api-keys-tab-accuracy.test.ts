@@ -26,7 +26,7 @@ test("a failed create or revoke keeps the token list and says why", () => {
     KEYS_API,
     /typeof body\.detail === "string" \? body\.detail : ""/,
   );
-  assert.equal(KEYS_API.match(/throw await actionError\(res\)/g)?.length, 2);
+  assert.equal(KEYS_API.match(/throw await actionError\(res\)/g)?.length, 3);
   assert.match(FORM, /onError\(null\);/);
 });
 
