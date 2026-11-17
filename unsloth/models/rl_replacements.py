@@ -1749,10 +1749,8 @@ def _unsloth_grpo_autocast_forced_float32(self):
 
 
 def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
-    """A packed-vs-per-row self-verify failed (max|d| >= 0.7): "kill" packing, "cap" this T, or "skip" (fall back for
-    this batch only). bf16 at large T has single-token outliers of 1-6 nats between two exact paths, so a narrow
-    mismatch on packing that already verified a multi-row batch is skipped once; a broad mismatch (contamination,
-    a LongRoPE boundary) or a second consecutive one keeps the old rule. A passing verify resets the strike."""
+    """Failed packing self-verify -> "kill", "cap" or "skip". bf16 has 1-6 nat single-token outliers, so one narrow
+    mismatch on already verified packing only skips; broad (contamination) or repeated mismatches keep the old rule."""
     strikes_attr = f"_unsloth_seq_packing_{kind}_strikes"
     strikes = int(getattr(model, strikes_attr, 0) or 0)
     verified = int(getattr(model, f"_unsloth_seq_packing_{kind}_verified_T", 0) or 0) > 0
@@ -4940,8 +4938,7 @@ _GRPO_SEQ_PACKING_GRAD_PASS = re.compile(
 
 
 def _patch_grpo_accumulated_loss_seq_packing_kill(source):
-    """Zoo grad packing self-verify: a narrow outlier on verified packing falls back for one batch instead of
-    disabling packing for the run (_unsloth_seq_packing_verify_verdict)."""
+    """Zoo grad self-verify: route failures through _unsloth_seq_packing_verify_verdict."""
     if (
         "_unsloth_seq_packing_grad_ok" not in source
         or "_unsloth_seq_packing_verify_verdict" in source

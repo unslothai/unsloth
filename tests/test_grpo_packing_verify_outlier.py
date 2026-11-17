@@ -61,7 +61,6 @@ def _verified_model(monkeypatch):
     ns, *_ = harness._run_packed_block(model = model)
     assert ns["_pk_use"] is True and ns["_pk_diff"] < 7e-1
     assert model._unsloth_seq_packing_nograd_verified_T == ns["_pk_T"]
-    # Next batches are longer, so they leave the verified envelope and re-verify.
     monkeypatch.undo()
     return model
 
@@ -123,7 +122,6 @@ def test_zoo_grad_verify_rewrite():
     assert "_unsloth_seq_packing_grad_strikes = 0" in patched
     compile(patched, "<patched grpo_accumulated_loss>", "exec")
     assert rl._patch_grpo_accumulated_loss_seq_packing_kill(patched) == patched
-    # Chained into what the generated trainer receives.
     assert any(
         isinstance(item, str)
         and '_unsloth_seq_packing_verify_verdict(unwrapped_model, "grad"' in item
