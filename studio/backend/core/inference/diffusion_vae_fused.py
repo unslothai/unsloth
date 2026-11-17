@@ -6,6 +6,7 @@ never classes; falls back to stock on new exception; UNSLOTH_VAE_FUSED=0 off"""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import threading
@@ -16,6 +17,7 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
+DEVICE_SCOPE_ENV = "UNSLOTH_DIFFUSION_TRITON_DEVICE_SCOPE"
 _FALSE = ("0", "false", "no", "off")
 _MIN_TRITON = (3, 3)
 _MAX_C = 4096
@@ -515,6 +517,23 @@ def _torch():
     return torch
 
 
+_NO_SCOPE = contextlib.nullcontext()
+
+
+def _on_card(t: Any) -> Any:
+    """Triton launches on the current device: a tensor on another card fails the launch."""
+    torch = _torch()
+    if not t.is_cuda or torch.compiler.is_compiling():
+        return _NO_SCOPE
+    index = t.device.index
+    # same card (every single-card render): no device switch, ~1 us instead of ~4 us per launch
+    if index is None or index == torch.cuda.current_device():
+        return _NO_SCOPE
+    if os.environ.get(DEVICE_SCOPE_ENV, "").strip().lower() in _FALSE:
+        return _NO_SCOPE
+    return torch.cuda.device(index)
+
+
 def _stock_in(t: Any) -> Any:
     """A kernel input as the kernel may read it."""
     cls = globals().get("_FusedActCls")
@@ -523,6 +542,39 @@ def _stock_in(t: Any) -> Any:
     if t.__dict__.get("_unsloth_is_stock", False):
         return _plain(t)
     t._unsloth_abort()
+
+
+def group_norm_stats(
+    x5: Any,
+    norm: Any,
+    in_bias: Any = None,
+) -> tuple:
+    """fp32 ``(mean, rstd)`` per (B*T, group) of ``x5 + in_bias`` (a fusable 5-D B,C,T,H,W view; stats per frame)."""
+    torch = _torch()
+    k = _kernels()
+    b, c, t, h, w = x5.shape
+    g = int(norm.num_groups)
+    hw = h * w
+    sb, sc, st, sh, sw = x5.stride()
+    ib = in_bias if in_bias is not None else x5
+    budget = 4096 if x5.element_size() == 4 else 8192
+    block_p = max(1, min(256, budget // c))
+    n_chunks = (hw + block_p - 1) // block_p
+    rows = b * t
+    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x5.device)
+    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x5.device)
+    with _on_card(x5):
+        k.gn_partials[(n_chunks, rows)](
+            x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
+            C = c, G = g, CPG = c // g, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
+        )  # fmt: skip
+    mean = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    rstd = torch.empty(rows * g, dtype = torch.float32, device = x5.device)
+    with _on_card(pn):
+        k.gn_combine[(rows * g,)](
+            pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
+        )
+    return mean, rstd
 
 
 def group_norm_act(
@@ -556,30 +608,18 @@ def group_norm_act(
     hw = h * w
     sb, sc, st, sh, sw = x5.stride()
     ib = in_bias if in_bias is not None else x5
-    budget = 4096 if x5.element_size() == 4 else 8192
-    block_p = max(1, min(256, budget // c))
-    n_chunks = (hw + block_p - 1) // block_p
     rows = b * t
-    pmean, pm2 = torch.empty((2, rows * n_chunks * g), dtype = torch.float32, device = x.device)
-    pn = torch.empty(rows * n_chunks, dtype = torch.float32, device = x.device)
-    k.gn_partials[(n_chunks, rows)](
-        x5, ib, pn, pmean, pm2, t, hw, w, n_chunks, sb, sc, st, sh, sw,
-        C = c, G = g, CPG = cpg, BLOCK_P = block_p, HAS_BIAS = in_bias is not None, num_warps = 4,
-    )  # fmt: skip
-    mean = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    rstd = torch.empty(rows * g, dtype = torch.float32, device = x.device)
-    k.gn_combine[(rows * g,)](
-        pn, pmean, pm2, mean, rstd, n_chunks, g, float(norm.eps), BLOCK = 1024, num_warps = 4
-    )
+    mean, rstd = group_norm_stats(x5, norm, in_bias)
     out = torch.empty((b, t, h, w, c), dtype = x.dtype, device = x.device)
     block_c = min(128, _next_pow2(c))
     block_p2 = max(1, 4096 // block_c)
     grid = ((hw + block_p2 - 1) // block_p2, rows, (c + block_c - 1) // block_c)
-    k.gn_apply[grid](
-        x5, out, mean, rstd, norm.weight, norm.bias, ib, c, t, hw, w, g, sb, sc, st, sh, sw,
-        CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
-        num_warps = 4,
-    )  # fmt: skip
+    with _on_card(x5):
+        k.gn_apply[grid](
+            x5, out, mean, rstd, norm.weight, norm.bias, ib, c, t, hw, w, g, sb, sc, st, sh, sw,
+            CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
+            num_warps = 4,
+        )  # fmt: skip
     if on_kernel is not None and not torch.compiler.is_compiling():
         on_kernel()  # read by the structural calibration: only a completed Triton launch counts
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
@@ -704,14 +744,15 @@ def rms_norm_act(
     block_c = _next_pow2(c)
     block_p = max(1, min(128, 8192 // block_c))
     grid = ((ho * wo + block_p - 1) // block_p, b * to)
-    k.rms_act[grid](
-        x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
-        c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
-        *x.stride(), *cache_t.stride(),
-        NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
-        REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
-        num_warps = 4 if block_c * block_p <= 4096 else 8,
-    )  # fmt: skip
+    with _on_card(x):
+        k.rms_act[grid](
+            x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
+            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
+            *x.stride(), *cache_t.stride(),
+            NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
+            REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
+            num_warps = 4 if block_c * block_p <= 4096 else 8,
+        )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
 
 
@@ -822,7 +863,8 @@ def single_head_attention(q: Any, k: Any, v: Any) -> Any:
         scores = torch.bmm(q[:, i : i + rows], kt, out_dtype = torch.float32)
         r = scores.shape[1]
         probs = torch.empty((b, r, s_pad), dtype = v.dtype, device = v.device)
-        kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
+        with _on_card(scores):
+            kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
         del scores
         torch.bmm(probs, v, out = out[:, i : i + rows])
     return out
@@ -974,12 +1016,13 @@ def add_bias_residual(
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((pixels + block_p - 1) // block_p, (c + block_c - 1) // block_c)
-    k.bias_residual[grid](
-        out, out_bias if out_bias is not None else out, res, res_bias if res_bias is not None else res,
-        pixels, c, t, h * w, w, *r5.stride(), 1.0 / float(scale),
-        HAS_OB = out_bias is not None, HAS_RB = res_bias is not None, SCALE = float(scale) != 1.0,
-        BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(out):
+        k.bias_residual[grid](
+            out, out_bias if out_bias is not None else out, res, res_bias if res_bias is not None else res,
+            pixels, c, t, h * w, w, *r5.stride(), 1.0 / float(scale),
+            HAS_OB = out_bias is not None, HAS_RB = res_bias is not None, SCALE = float(scale) != 1.0,
+            BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out
 
 
@@ -1150,6 +1193,7 @@ def uninstall(vae: Any) -> None:
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
+    vae.__dict__.pop("_unsloth_vae_strips", None)
     for m in vae.modules():
         if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
             m.processor = m.processor.fallback
@@ -1166,6 +1210,7 @@ def uninstall(vae: Any) -> None:
                 pass
             module.__dict__.pop("_unsloth_vae_fused", None)
             module.__dict__.pop("_unsloth_vae_fused_failed", None)
+            module.__dict__.pop("_unsloth_vae_strips_failed", None)
         module.__dict__.pop("prepare_causal_attention_mask", None)
 
 
@@ -1272,10 +1317,11 @@ def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((h_o * w_o + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
-    k.dup_up_add[grid](
-        out, x, c, t_o, h_o, w_o, t_off, rep, *out.stride(), *x.stride(),
-        FT = ft, FS = fs, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(out):
+        k.dup_up_add[grid](
+            out, x, c, t_o, h_o, w_o, t_off, rep, *out.stride(), *x.stride(),
+            FT = ft, FS = fs, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out
 
 
@@ -1290,19 +1336,20 @@ def up_nearest2x(x: Any, interleave: bool) -> Any:
     block_c = min(128, _next_pow2(c))
     block_p = max(1, 4096 // block_c)
     grid = ((4 * h * w + block_p - 1) // block_p, b * t_o, (c + block_c - 1) // block_c)
-    k.up_nearest2x[grid](
-        x,
-        out,
-        c,
-        t_o,
-        h,
-        w,
-        *x.stride(),
-        INTERLEAVE = interleave,
-        BLOCK_P = block_p,
-        BLOCK_C = block_c,
-        num_warps = 4,
-    )
+    with _on_card(x):
+        k.up_nearest2x[grid](
+            x,
+            out,
+            c,
+            t_o,
+            h,
+            w,
+            *x.stride(),
+            INTERLEAVE = interleave,
+            BLOCK_P = block_p,
+            BLOCK_C = block_c,
+            num_warps = 4,
+        )
     return out.permute(0, 3, 1, 2), t_o
 
 
@@ -1798,10 +1845,11 @@ def hv_upsample(up: Any, x: Any) -> Any:
     block_p = max(1, 4096 // block_c)
     grid = ((4 * hh * ww + block_p - 1) // block_p, b * fo, (c + block_c - 1) // block_c)
     bias = conv.conv.bias
-    k.dcae_up_add[grid](
-        h, bias if bias is not None else h, x, out, c, cin, f, hh, ww, fo, rep, *h.stride(), *x.stride(),
-        TEMPORAL = temporal, HAS_HB = bias is not None, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
-    )  # fmt: skip
+    with _on_card(h):
+        k.dcae_up_add[grid](
+            h, bias if bias is not None else h, x, out, c, cin, f, hh, ww, fo, rep, *h.stride(), *x.stride(),
+            TEMPORAL = temporal, HAS_HB = bias is not None, BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4,
+        )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
 
 
@@ -2171,6 +2219,9 @@ def _install(
     name = type(vae).__name__
     if name in ("AutoencoderKL", "AutoencoderKLFlux2"):
         n = install_group_norm_vae(vae, logger, encoder)
+        if n:
+            from . import diffusion_vae_strips  # noqa: PLC0415
+            n += int(diffusion_vae_strips.install(vae, logger))
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
         n = install_wan_vae(vae, logger, encoder)
@@ -2190,10 +2241,9 @@ def _install(
 # one tiny decode); the fused decode must match stock within tolerance or the patch is removed.
 # Kill switch ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
 STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
-# The calibration crop. The trace marks only the norm outputs (cheap at any size), so the crop is sized for the
-# kernels instead: 16 latents keeps every spatial extent a multiple of 16, the same Triton specialisations a full
-# decode uses, so calibrating compiles nothing the real decode would not (an 8-latent crop measured +1.5 to 2 s
-# of extra compiles on a cold Triton cache).
+# Calibration crop sized for the kernels: 16 latents keeps every spatial extent a multiple of 16,
+# the same Triton specialisations a full decode uses; an 8-latent crop added Triton compiles that a
+# full decode would not.
 _PROBE_LATENTS = 16
 _PROBE_FRAMES = 2
 # Calibration verdicts are kept on disk per (class, config, decoder layout, torch, triton, device capability), so a

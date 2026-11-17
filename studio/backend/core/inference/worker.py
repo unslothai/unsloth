@@ -893,6 +893,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "precision_folder",
                         "audio_workflows",
                         "audio_reference_text",
                         "audio_required_inputs",
@@ -1163,18 +1164,17 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
         _handle_generate(backend, cmd, resp_queue, cancel_event)
 
 
-def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+def _decoded_images(backend, encoded) -> list:
     resize = _resize_image
     if _active_model_is_deepseek_ocr(backend):
         from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
         resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
-    image = None
-    image_b64 = cmd.get("image_base64")
-    if image_b64:
-        image = resize(_decode_image(image_b64))
-    images = [
-        resize(_decode_image(encoded)) for encoded in cmd.get("images_base64") or () if encoded
-    ]
+    return [resize(_decode_image(one)) for one in encoded or () if one]
+
+
+def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    image = next(iter(_decoded_images(backend, [cmd.get("image_base64")])), None)
+    images = _decoded_images(backend, cmd.get("images_base64"))
 
     gen_kwargs = {
         "messages": cmd["messages"],
@@ -1374,6 +1374,7 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
             enable_thinking = cmd.get("enable_thinking"),
             reasoning_effort = cmd.get("reasoning_effort"),
             preserve_thinking = cmd.get("preserve_thinking"),
+            images = _decoded_images(backend, cmd.get("images_base64")),
         )
     except Exception as exc:
         _send_response(
@@ -2511,6 +2512,11 @@ def run_inference_process(
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
+
+    # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
+    from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
+
+    install_windows_rocm_wide_head_sdpa_guard(logger)
 
     # Resolve the base once before activation, gates and install; _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json

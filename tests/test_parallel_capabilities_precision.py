@@ -82,10 +82,27 @@ def _float8_full():
     return model
 
 
+def _float8_subclass():
+    # torchao's own conversion (no Unsloth markers), then a renamed Float8Linear subclass.
+    from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+    from torchao.float8.float8_linear import Float8Linear
+
+    model = convert_to_float8_training(_model(), config = Float8LinearConfig(emulate = True))
+    renamed = type("MyFp8Linear", (Float8Linear,), {})
+    swapped = 0
+    for module in model.modules():
+        if type(module) is Float8Linear:
+            module.__class__ = renamed
+            swapped += 1
+    assert swapped
+    return model
+
+
 BUILDERS = {
     "fp8_lora_attached": _fp8_lora_attached,
     "fp8_lora_requested": _fp8_lora_requested,
     "float8_full": _float8_full,
+    "float8_subclass": _float8_subclass,
 }
 LAYOUTS = {
     "cp2": (dict(tp = 1, dp = 1, world = 2, cp = 2), "cp x precision"),

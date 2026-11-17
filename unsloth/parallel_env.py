@@ -24,6 +24,9 @@ mesh["pp"], context parallel mesh["cp"], and data parallel gradients (FSDP2 shar
 flattened (dp, cp) mesh, because context parallel peers hold different tokens of the same rows. The data loader
 splits over dp only. Size-1 axes are left out of the mesh, so they create no process group.
 
+UNSLOTH_PARALLEL=auto (opt-in) picks DDP when the model and its training state fit on every GPU, else native
+FSDP2, once per process at the first from_pretrained (unsloth/parallel_auto.py).
+
 Imports nothing heavy at module level: the flag is translated before transformers / accelerate read it.
 """
 
@@ -118,6 +121,9 @@ def parse_parallel_spec(raw, source = FLAG):
     """'dp=2,tp=2,cp=2,cp_backend=ulysses' -> ParallelSpec; ValueError naming the bad part otherwise."""
     spec = ParallelSpec()
     if raw is None or not str(raw).strip():
+        return spec
+    if str(raw).strip().lower() == "auto":
+        spec["auto"] = True  # DDP or FSDP2 by memory, resolved later (parallel_auto.py)
         return spec
     for part in str(raw).replace(";", ",").split(","):
         part = part.strip()
@@ -274,8 +280,33 @@ def apply_parallel_env(environ = None):
     if raw is None or not str(raw).strip():
         return None
     spec = parse_parallel_spec(raw)
+    if spec.get("auto"):
+        from .parallel_auto import check_auto_env
+        check_auto_env(environ)
+        return spec
     environ.update(translate(spec, environ))
     return spec
+
+
+def bind_local_cuda_device(environ = None):
+    """Make cuda:LOCAL_RANK current on a torchrun rank before anything touches CUDA: otherwise the first
+    CUDA call during import opens a context on cuda:0 in every rank (~0.8 GB each on a B200, all on GPU 0)."""
+    environ = os.environ if environ is None else environ
+    try:
+        world = int(environ.get("WORLD_SIZE", "1") or "1")
+        local = int(environ["LOCAL_RANK"])
+    except (KeyError, ValueError):
+        return None
+    if world <= 1 or local <= 0 or environ.get("UNSLOTH_FORCE_CPU", "0") == "1":
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available() or local >= torch.cuda.device_count():
+            return None
+        torch.cuda.set_device(local)
+    except Exception:
+        return None
+    return local
 
 
 def env_cp_size(environ = None):

@@ -92,6 +92,12 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    codes = lin.__dict__.get("_unsloth_q21_part_codes")
+    if codes is not None:
+        # Native int8 (diffusion_qwenimage21_dense_fused): never read ``.weight``, it dequantises.
+        if q.weight_q is not codes[0] or k.weight_q is not codes[1] or v.weight_q is not codes[2]:
+            return None
+        return lin
     if lin.weight.device != q.weight.device:
         return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
@@ -109,7 +115,9 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         fused = _qkv_intact(attn) if torch.compiler.is_compiling() else None
-        if fused is not None:
+        if fused is not None and "_unsloth_q21_part_codes" in fused.__dict__:
+            query, key, value = fused(hidden_states).chunk(3, dim = -1)
+        elif fused is not None:
             query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
         else:
             qkv = shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))

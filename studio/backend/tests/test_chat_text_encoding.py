@@ -128,8 +128,7 @@ def test_model_config_reads_do_not_rely_on_the_locale_encoding(tmp_path: Path) -
 
 
 def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
-    """A Python child encodes stdout with its locale unless told otherwise, so
-    reading its pipe as utf-8 needs the child told to emit utf-8."""
+    """Python children encode stdout with the locale, so utf8_child_env must force utf-8."""
     from utils.child_stdio import utf8_child_env
 
     payload = "Grüße über Öl → 世界"
@@ -154,8 +153,7 @@ def test_utf8_child_env_round_trips_non_ascii(tmp_path: Path) -> None:
 
 
 def test_python_children_are_told_to_emit_utf8() -> None:
-    """Any child we decode as utf-8 must also be told to write utf-8, or a
-    cp1252 console silently mangles what it prints."""
+    """A child decoded as utf-8 must also write utf-8, or a cp1252 console mangles it."""
     import ast
 
     offenders: list[str] = []

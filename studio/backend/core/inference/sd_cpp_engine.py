@@ -246,8 +246,7 @@ class SdCppCancelled(RuntimeError):
 
 
 def _terminate(proc: "subprocess.Popen") -> None:
-    """Hard-stop an sd-cli process (and children). On POSIX it's a session leader, so kill the
-    whole group; else kill just the process."""
+    """Hard-stop sd-cli and its children: POSIX kills the session group, else just the process."""
     if proc.poll() is not None:
         return
     try:

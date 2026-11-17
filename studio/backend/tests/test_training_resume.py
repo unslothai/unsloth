@@ -110,8 +110,7 @@ def test_can_resume_run_rejects_errored_run_without_checkpoint(monkeypatch):
 
 
 def test_can_resume_run_allows_errored_run_at_final_step(monkeypatch):
-    # A save-time crash records final_step == total_steps; resuming re-runs the
-    # final-save path from the checkpoint.
+    # A save-time crash records final_step == total_steps; resume re-runs the final save.
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
     run = _stopped_run(status = "error", final_step = 10, total_steps = 10)

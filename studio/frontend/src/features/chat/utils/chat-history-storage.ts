@@ -21,6 +21,7 @@ import {
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
+  type SaveChatProjectOptions,
   saveChatThread,
   syncChatMessages,
   updateChatProject,
@@ -981,6 +982,7 @@ export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
   id: string = crypto.randomUUID(),
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -994,7 +996,7 @@ export async function createStoredChatProject(
     archived: false,
     createdAt: now,
     updatedAt: now,
-  }, nativePathLease);
+  }, nativePathLease, options);
 }
 
 export async function updateStoredChatProject(
@@ -1383,29 +1385,21 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
   const [legacyThreads, legacyMessages] = await readLegacyStore<
     [ThreadRecord[], MessageRecord[]]
   >(() => Promise.all([db.threads.toArray(), db.messages.toArray()]), [[], []]);
-  const hasLegacyData =
-    legacyThreads.some((thread) => !isChatThreadDeleted(thread.id)) ||
-    legacyMessages.some((message) => !isChatThreadDeleted(message.threadId));
-  const backend = await buildBackendChatExport().catch((error) => {
-    if (hasLegacyData) {
-      return null;
-    }
-    throw error;
-  });
+  const backend = await buildBackendChatExport();
   const threadsById = new Map<string, unknown>();
   const backendThreadIds = new Set<string>();
   const messagesById = new Map<string, unknown>();
 
-  for (const thread of backend?.threads ?? []) {
+  for (const thread of backend.threads) {
     if (isChatThreadDeleted(thread.id)) continue;
     backendThreadIds.add(thread.id);
     threadsById.set(thread.id, thread);
   }
-  for (const message of backend?.messages ?? []) {
+  for (const message of backend.messages) {
     if (isChatThreadDeleted(message.threadId)) continue;
     messagesById.set(message.id, message);
   }
-  const includeLegacyOnly = backend === null || !isLegacyChatImportDone();
+  const includeLegacyOnly = !isLegacyChatImportDone();
   for (const thread of legacyThreads as ThreadRecord[]) {
     if (
       isChatThreadDeleted(thread.id) ||
@@ -1432,7 +1426,7 @@ export async function buildStoredChatExport(): Promise<ExportedChat> {
     exportedAt: new Date().toISOString(),
     version: 1,
     threadCount: threads.length,
-    projects: backend?.projects ?? [],
+    projects: backend.projects ?? [],
     threads,
     messages,
   };

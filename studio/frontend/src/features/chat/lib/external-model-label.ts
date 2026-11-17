@@ -19,7 +19,12 @@ export function externalModelLabel(
 
 /** Short label for a compare pane id; parses external ids first so they do not show whole. */
 export function compareModelDisplayName(id: string): string {
-  const value = externalModelLabel(id) ?? id;
+  const selection = parseExternalModelId(id);
+  if (selection) {
+    const name = externalModelLabel(id) ?? selection.modelId;
+    if (name !== selection.modelId) return name;
+  }
+  const value = selection?.modelId ?? id;
   const parts = value.split("/");
   return parts[parts.length - 1] || value;
 }

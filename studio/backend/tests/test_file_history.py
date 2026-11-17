@@ -292,6 +292,39 @@ def test_a_folder_swapped_for_a_link_is_never_written_through(chat, tmp_path):
     assert report.errors and (elsewhere / "a.txt").read_text(encoding = "utf-8") == "2\n"
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "uses a symlink")
+def test_a_parent_swapped_for_a_link_mid_write_is_not_written_through(tmp_path, monkeypatch):
+    # Swapped after the parents were checked and before the temp file opens.
+    workdir = tmp_path / "sandbox"
+    (workdir / "a").mkdir(parents = True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    uuid4 = file_history.uuid.uuid4
+
+    def swap_then_uuid():
+        monkeypatch.setattr(file_history.uuid, "uuid4", uuid4)
+        (workdir / "a").rename(workdir / "real")
+        os.symlink(outside, workdir / "a")
+        return uuid4()
+
+    monkeypatch.setattr(file_history.uuid, "uuid4", swap_then_uuid)
+    try:
+        file_history._safe_write(str(workdir), "a/f.txt", b"restored\n", 0o644)
+    except OSError:
+        pass
+    assert os.listdir(outside) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "no dir_fd on Windows")
+def test_the_folder_walk_refuses_a_link_at_any_step(tmp_path):
+    (tmp_path / "real").mkdir()
+    os.symlink(tmp_path / "real", tmp_path / "link")
+    with pytest.raises(OSError):
+        file_history.open_dir_below(str(tmp_path), ["link"], create_dirs = False)
+    with pytest.raises(OSError):
+        file_history.open_dir_below(str(tmp_path / "link"), [], create_dirs = False)
+
+
 def test_deleting_a_chat_that_only_read_files_releases_its_baseline(chat):
     workdir, history = chat
     (workdir / "data.csv").write_text("a,b\n", encoding = "utf-8")

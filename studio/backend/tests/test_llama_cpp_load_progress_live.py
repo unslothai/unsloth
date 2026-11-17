@@ -43,8 +43,7 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Stub only if httpx is not installed: a stub without Response breaks later
-# starlette.testclient imports for the whole session.
+# Stub httpx only if missing: one without Response breaks later starlette.testclient imports.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -140,8 +139,7 @@ def test_live_ready_phase_when_healthy(tmp_path):
 
 
 def test_live_dead_pid_returns_none(tmp_path):
-    """A recently-dead pid may linger in /proc for ms; use a clearly invalid id
-    so the read reliably fails."""
+    """Dead pids can linger in /proc, so use a clearly invalid id that reliably fails."""
     gguf = tmp_path / "m.gguf"
     gguf.touch()
 
@@ -151,8 +149,7 @@ def test_live_dead_pid_returns_none(tmp_path):
 
 
 def test_live_shard_aggregation_counts_real_files(tmp_path):
-    """With 4 real sibling shards on disk, ``bytes_total`` equals their summed
-    size to the byte."""
+    """4 real sibling shards on disk: ``bytes_total`` equals their summed size to the byte."""
     shard_size = 7 * 1024 * 1024
     for i in range(1, 5):
         f = tmp_path / f"model-{i:05d}-of-00004.gguf"
@@ -172,8 +169,7 @@ def test_live_shard_aggregation_counts_real_files(tmp_path):
 
 
 def test_live_repeated_polling_stays_sane(tmp_path):
-    """Sampling the same backend 20 times must not raise or produce non-numeric
-    output, even under normal kernel RSS jitter."""
+    """Repeated sampling must not raise or give non-numeric output despite kernel RSS jitter."""
     gguf = tmp_path / "m.gguf"
     with open(gguf, "wb") as f:
         f.truncate(500 * 1024 * 1024)

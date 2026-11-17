@@ -123,9 +123,7 @@ def _guard(
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize("total_mib", [8 * GIB_MIB, 24 * GIB_MIB, 96 * GIB_MIB])
 def test_a_discrete_card_keeps_loading_what_it_loads_today(monkeypatch, platform, total_mib):
-    """Discrete VRAM has somewhere to offload to, so an oversized pipeline still loads and
-    streams from host RAM. Asserted at three card sizes because the refusal must be keyed
-    on the memory KIND and never on the pipeline being larger than the card."""
+    """Discrete VRAM can stream from host RAM, so refusal must key on memory kind, never pipeline size."""
     snapshot = _classify(
         monkeypatch,
         device = "cuda",
@@ -170,9 +168,8 @@ def test_apple_silicon_is_judged_the_same_way(monkeypatch):
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 def test_a_cpu_only_host_is_left_alone(monkeypatch, platform):
-    """``system_memory`` is deliberately outside the refusal: it has swap, and it is not
-    what gets killed. The pre-download check has to honour the same carve-out the load-time
-    one already makes, or a CPU install starts refusing models it can page through."""
+    """system_memory is exempt because it has swap; the pre-download check must match the load-time
+    carve-out."""
     snapshot = _classify(
         monkeypatch,
         device = "cpu",
@@ -197,8 +194,7 @@ def test_an_intel_gpu_is_left_alone(monkeypatch):
 
 
 def test_a_driver_that_will_not_answer_is_left_alone(monkeypatch):
-    """An uninitialised or absent CUDA runtime yields no totals, which is not evidence
-    that anything is too large."""
+    """Missing CUDA totals are no evidence that anything is too large."""
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setitem(
         sys.modules,
@@ -335,8 +331,7 @@ def test_the_manifest_names_the_components_and_the_revision_it_was_read_at(monke
 def test_a_manifest_that_cannot_be_read_declines_instead_of_raising(
     monkeypatch, tmp_path, payload, siblings, raises
 ):
-    """None here means staging keeps the previous best-effort listing and resident sizing
-    issues no hard verdict, which is the whole fail-open contract."""
+    """None means no hard verdict and the best-effort listing stays: the fail-open contract."""
     _stub_manifest(monkeypatch, tmp_path, payload, raises = raises)
     failures: list = []
     assert (
@@ -408,8 +403,7 @@ def test_suppressing_the_verdict_leaves_the_file_scope_alone(monkeypatch):
 
 
 def test_clearing_the_probe_suppresses_the_verdict_too(monkeypatch):
-    """The training route wants both off: it must not open a second CUDA context, and
-    without a target it cannot resolve precision at all."""
+    """Training skips probe and verdict: no second CUDA context; no target means no precision."""
     calls: list = []
     backend = _plan_probe(monkeypatch, calls)
     plan = backend.download_plan(

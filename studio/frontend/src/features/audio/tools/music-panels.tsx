@@ -75,7 +75,7 @@ export const aceStepMusicalPanel: AudioToolPanel<AceStepMusicalValue> = {
       title="Musical controls"
       hint="Optional. Anything left on Auto is chosen by the model."
     >
-      <div className="grid gap-1.5">
+      <div className="grid gap-2">
         <FieldLabel
           htmlFor="music-bpm-auto"
           className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"

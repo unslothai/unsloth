@@ -88,6 +88,50 @@ export function snapCanvasWithinCap(
   return best;
 }
 
+/** The Default preset's size: the family's default_resolution when it is one of the presets, else the first. */
+export function defaultVideoResolution(
+  defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
+  presets: ReadonlyArray<readonly [number, number]>,
+): [number, number] | null {
+  const wanted = defaults?.default_resolution;
+  if (wanted && presets.some(([w, h]) => w === wanted[0] && h === wanted[1])) {
+    return [wanted[0], wanted[1]];
+  }
+  return presets[0] ? [presets[0][0], presets[0][1]] : null;
+}
+
+/** The size a family declares for its first render (MiniMax-H3: the reference templates' 864x480), when it is
+ *  one of its presets; null for a family that declares none, which keeps the size the page already holds. */
+export function familyFirstRenderResolution(
+  defaults: Pick<VideoGenerationDefaults, "default_resolution"> | null | undefined,
+  presets: ReadonlyArray<readonly [number, number]>,
+): [number, number] | null {
+  const wanted = defaults?.default_resolution;
+  if (!wanted || !presets.some(([w, h]) => w === wanted[0] && h === wanted[1])) return null;
+  return [wanted[0], wanted[1]];
+}
+
+/** Whether staging a keyframe switches the size to "Match source". A family whose keyframes keep the chosen
+ *  canvas (MiniMax-H3, like the reference workflow) leaves the size alone. */
+export function keyframeSelectsMatchSource(
+  defaults: Pick<VideoGenerationDefaults, "keyframe_keeps_canvas"> | null | undefined,
+): boolean {
+  return defaults?.keyframe_keeps_canvas !== true;
+}
+
+/** The width and height a request sends: the chosen size, or for "Match source" nothing (the backend derives it),
+ *  except where an omitted size means the family default canvas, which then needs the matched size itself. */
+export function requestCanvas(
+  sourceSized: boolean,
+  matched: readonly [number, number] | null,
+  chosen: readonly [number, number],
+  keepsCanvas: boolean,
+): { width: number | undefined; height: number | undefined } {
+  if (!sourceSized) return { width: chosen[0], height: chosen[1] };
+  if (keepsCanvas && matched) return { width: matched[0], height: matched[1] };
+  return { width: undefined, height: undefined };
+}
+
 /** Which keyframes the loaded checkpoint takes. Newer backends report each one; an older backend
  *  only has supports_keyframes, which meant MiniMax-H3's first-and/or-last pair. */
 export function keyframeSupport(

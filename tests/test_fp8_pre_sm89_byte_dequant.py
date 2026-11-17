@@ -235,6 +235,18 @@ ROCM_ROUTES = [
 ]
 
 
+def test_hip_bytes_dequant_takes_fp16_once_its_rounding_is_exact(monkeypatch):
+    """fp16 joins bf16 / fp32 on the gfx11 byte decoder only under the integer fp16 rounding."""
+    monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", True)
+    monkeypatch.setattr(fp8, "_rocm_bytes_dequant_arch", lambda device: True)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert fp8._hip_bytes_dequant("cuda", torch.float16)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert not fp8._hip_bytes_dequant("cuda", torch.float16)
+
+
 @needs_cuda
 @pytest.mark.parametrize("arch, triton_version, expected, old", ROCM_ROUTES)
 def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
@@ -247,10 +259,12 @@ def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
     assert (
         route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
     )
-    # fp16 output keeps the old route (the torch loop rounds fp16 differently on gfx1151).
-    assert (
-        route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip) == "torch"
-    )
+    # fp16: byte decoder with the integer rounding (ROCm default), torch loop without it.
+    fp16 = dict(weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert route((11, 5), **fp16) == ragged
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert route((11, 5), **fp16) == "torch"
     assert route((11, 5), weight = w.float().to(torch.float8_e5m2), **hip) == "triton_fp8"
     if hasattr(torch, "float8_e4m3fnuz"):
         fnuz = w.float().nan_to_num(0).clamp(-240, 240).to(torch.float8_e4m3fnuz)
@@ -327,7 +341,8 @@ def test_real_rocm_device_takes_bytes_kernel_bit_exact(pre_sm89, monkeypatch, sh
     )
     out = fp8.weight_dequant(w, s, out_dtype)
     loop_case = m % 128 or n % 128 or fp8._fp8_kernel_unsupported(w)
-    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and out_dtype != torch.float16):
+    exact = out_dtype != torch.float16 or fp8._fp8_exact_f16_round(out_dtype)
+    if not (fp8._rocm_bytes_dequant_arch(w.device) and loop_case and exact):
         assert not calls
         return
     assert calls == [1]

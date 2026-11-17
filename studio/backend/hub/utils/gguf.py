@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from dataclasses import dataclass
@@ -338,10 +339,8 @@ def default_gguf_scope(
     *repo_ids: object,
     key = None,
 ) -> list:
-    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
-
-    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
-    """
+    """Bare repo id defaults: default subdirectory rows, else root rows, else all; every resolver
+    shares this rule so one id names one checkpoint"""
     rows = list(items)
     key_of = key or (lambda item: item)
     subdir = default_gguf_subdir(*repo_ids)
@@ -1338,6 +1337,12 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
+HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "gguf_hub_model_info_sink", default = None
+)
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
@@ -1376,6 +1381,9 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
+    sink = HUB_MODEL_INFO_SINK.get()
+    if sink is not None:
+        sink.append(info)
     has_vision = False
     main_files: list[tuple[str, int]] = []
 

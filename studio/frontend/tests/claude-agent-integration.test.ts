@@ -259,12 +259,12 @@ test("the checklist shows the official install command for the backend's OS", ()
 
 test("Add connection offers Claude Agent with its own setup view and Connect button", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
-  assert.match(dialog, /entry\.provider_type === CLAUDE_AGENT_PROVIDER_TYPE \? \(\s*<ClaudeExperimentalBadge \/>/);
+  assert.match(dialog, /item\.providerType === CLAUDE_AGENT_PROVIDER_TYPE \? \(\s*<ClaudeExperimentalBadge \/>/);
   assert.match(dialog, /\{isClaudeAgent \? \(\s*<ClaudeAgentSetup/);
   assert.match(dialog, /off=\{claudeAgentOff\}/);
   assert.match(dialog, /available_but_off === true/);
   assert.match(dialog, /\{isClaudeAgent \? null : \(<>/);
-  assert.match(dialog, /connectionModelLabel\(provider\.providerType, model, claudeAgentNames\)/);
+  assert.match(dialog, /connectionModelLabel\(providerType, model, claudeAgentNames\)/);
   const setup = readSrc("features/chat/claude-agent-status.tsx");
   assert.match(setup, /updateDeveloperModeSettings\(\{ claudeAgent: true \}\)/);
   assert.match(setup, /disabled=\{step === "forced_off" \|\| turningOn\}/);
@@ -340,7 +340,7 @@ test("saved Claude Agent connections leave the pickers while the registry drops 
   const sync = readSrc("features/chat/sync-external-providers.ts");
   assert.match(
     sync,
-    /config\.is_enabled && connectionTypeListed\(config\.provider_type, registryTypes\)/,
+    /configRows\.filter\(\(config\) =>\s*connectionTypeListed\(config\.provider_type, registryTypes\),?\s*\)/,
   );
 });
 

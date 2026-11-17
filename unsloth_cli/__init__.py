@@ -221,13 +221,9 @@ app = typer.Typer(
 
 
 def _invocation_args(ctx):
-    """The arguments this invocation was given, not the host process's argv.
-
-    A library calling `app(args = [...])` or CliRunner never touches sys.argv, so
-    reading it there would classify somebody else's command line and could move
-    the process out from under the caller's relative paths. The `unsloth` console
-    script never reaches here: it is classified at import, from the real argv.
-    """
+    """The invocation's own args, not sys.argv: a library calling app(args=...) or CliRunner would
+    have someone else's command line classified and could move the process out from under the
+    caller's relative paths; the console script is classified at import from real argv."""
     captured = ctx.meta.get(_ARGV_META_KEY)
     if captured is not None:
         return list(captured)

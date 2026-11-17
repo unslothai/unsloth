@@ -165,6 +165,7 @@ NOT_RUNNING = {"success": True, "message": "No active export to cancel"}
 
 def _cancel_directly(monkeypatch, job_run, answers):
     """Run cancel on the loop the job's task lives on, which a served tool call cannot share."""
+    from studio_mcp import job_kinds
     from studio_mcp.tools import cancel as cancel_module
 
     answer = sequence(*answers)
@@ -179,11 +180,11 @@ def _cancel_directly(monkeypatch, job_run, answers):
         calls.append((method, path, json_body))
         return answer(None, None)
 
-    monkeypatch.setattr(cancel_module, "route_json", route_json)
+    monkeypatch.setattr(job_kinds, "route_json", route_json)
     monkeypatch.setattr(
         cancel_module, "current_caller", lambda: types.SimpleNamespace(account_id = "owner")
     )
-    monkeypatch.setattr(cancel_module, "SETTLE_S", 0.2)
+    monkeypatch.setattr(job_kinds, "SETTLE_S", 0.2)
 
     async def run():
         job = export_jobs.start("owner", "gguf", job_run)

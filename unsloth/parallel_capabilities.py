@@ -139,7 +139,7 @@ RULES = (
         "cp x tp",
         "context parallel x tensor parallel on hybrid (linear attention) or multimodal models",
         lambda q: q.cp > 1 and q.tp > 1 and (q.hybrid or q.multimodal),
-        "tensor parallel keeps the linear attention layers replicated, and that path is not verified with "
+        "tensor parallel shards the linear attention layers by heads, and that path is not verified with "
         "Ulysses",
         "drop tp (Ulysses cp runs Qwen3-Next / Qwen3.5 hybrids alone or with DDP / FSDP2)",
     ),
@@ -655,7 +655,7 @@ _PARITY = _GLOO + "test_cp_x_tp_from_unsloth_parallel_matches_one_process"
 _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
-_MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
+_HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
 # Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
     "trainer": ("sft",),
@@ -694,6 +694,26 @@ CELLS = (
         compile = "eager: no compiled region",
         note = _UNSLOTH_GC
         + "test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process",
+    ),
+    Cell(
+        "hybrid (Gated DeltaNet + attention) cp x native FSDP2 (dp_shard x cp), eager",
+        {
+            **_CP_DP,
+            "family": ("qwen3_5",),
+            "hybrid": (True,),
+            "attention": ("sdpa",),
+            "memory": ("none",),
+            "fsdp2": (True,),
+            "compile": ("eager",),
+            "dp": (2,),
+            "cp": (2,),
+        },
+        parity = _HYBRID_FSDP2_CP,
+        engagement = _HYBRID_FSDP2_CP
+        + " (FSDP2 mesh covers the cp group, seq / cp tokens, Gated DeltaNet and attention Ulysses exchanges, "
+        "UNSLOTH_PARALLEL_STRICT=1)",
+        compile = "eager: no compiled region",
+        note = "cp alone: " + _GLOO + "test_hybrid_qwen3_5_under_cp_matches_one_process",
     ),
     Cell(
         "cp x tp (DDP dp), eager",
@@ -791,8 +811,14 @@ MOE_FAMILIES = (
     "qwen3_moe",
     "qwen3_5_moe",
     "gpt_oss",
+    "deepseek_v2",
     "deepseek_v3",
+    "deepseek_v32",
+    "deepseek_v4",
+    "deepseek_v41",
     "kimi_linear",
+    "minimax",
+    "minimax_m2",
     "olmoe",
     "mixtral",
     "qwen2_moe",
@@ -806,6 +832,7 @@ MOE_FAMILIES = (
     "granitemoehybrid",
     "gemma4",
     "lfm2_moe",
+    "qwen4_exp",
 )
 _MOE_PRECISION = {
     "lora": {"mode": ("lora",), "expert_lora": (False,)},
@@ -850,6 +877,82 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
+_DSV41_PP = (
+    "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
+)
+# Its checkpoint is zoo's non-reentrant layer replay whichever function runs it (Unsloth's offloading one included).
+_MOE_PP_MEMORY = {"deepseek_v41": ("none", "gc", "unsloth_offload")}
+_MOE_PP_MM = (
+    "tests/test_pp_mm_moe_aux_gloo.py::test_pp2_wrapper_moe_aux_matches_gradient_accumulation"
+)
+_MOE_PP_MM_CASES = {
+    ("lora+experts", True): "lora_experts_coef0.01_1f1b",
+    ("lora", True): "lora_coef1_gpipe",
+    ("lora+experts", False): "lora_experts_aux_off_gpipe",
+    ("lora", False): "lora_aux_off_1f1b",
+}
+# Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
+# fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
+_KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
+_KIMI_EAGER = "eager: remote code, no compiled region"
+# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
+# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
+# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+_MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
+_MINIMAX_EAGER = "eager: block compile not measured for this family"
+# DeepSeek (transformers' DeepseekV2 / V3 / V32 / V4ForCausalLM, fused experts): V2 / V3 MLA (YaRN softmax scale,
+# narrower value heads) on the generic route, V3.2's global DSA indexer top-k and V4's sliding / CSA / HCA sink
+# attention on their own Ulysses forwards; right padded rows, fp64 against one process, every gradient (None vs
+# zero) and one AdamW step. HF checkpointing only. V4 runs eager attention only.
+_DEEPSEEK = "tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference"
+_DEEPSEEK_EAGER = "eager: block compile not measured for this family"
+_DEEPSEEK_CASES = {
+    "deepseek_v2": {
+        "full": "v2_cp2|v2_cp4|v2_dp2cp2|v2_cp2_eager_checkpoint",
+        "lora": "v2_cp2_lora",
+        "lora+experts": "v2_cp2_lora_experts",
+    },
+    "deepseek_v3": {
+        "full": "v3_cp2|v3_cp4|v3_dp2cp2|v3_cp2_eager_checkpoint",
+        "lora": "v3_cp2_lora",
+        "lora+experts": "v3_cp2_lora_experts",
+    },
+    "deepseek_v32": {
+        "full": "v32_cp2|v32_cp4_late_rank_empty|v32_dp2cp2|v32_cp2_sdpa_checkpoint",
+        "lora": "v32_cp2_lora",
+        "lora+experts": "v32_cp2_lora_experts",
+    },
+    "deepseek_v4": {
+        "full": "v4_cp2|v4_cp4_late_rank_empty|v4_dp2cp2|v4_cp2_checkpoint",
+        "lora": "v4_cp2_lora",
+        "lora+experts": "v4_cp2_lora_experts",
+    },
+}
+# Gemma 4: text-only Gemma4ForCausalLM, HF checkpointing only.
+_GEMMA4 = "tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference"
+_GEMMA4_EAGER = "eager: block compile not measured for this family"
+_GEMMA4_CASES = {
+    "full": "moe_cp2|moe_cp2_window9_prompt_masked|moe_cp4|moe_dp2cp2|moe_cp2_eager_checkpoint",
+    "lora": "moe_cp2_lora",
+    "lora+experts": "moe_cp2_lora_experts|moe_cp2_lora_experts_eager_checkpoint",
+}
+# gpt-oss: eager only (no SDPA path honours the sinks); HF checkpointing only.
+_GPT_OSS = "tests/test_ulysses_gpt_oss.py::test_gpt_oss_cp_matches_fp64_reference"
+_GPT_OSS_EAGER = "eager: block compile not measured for this family"
+_GPT_OSS_CASES = {
+    "full": "cp2|cp2_window9_prompt_masked|cp4|dp2cp2|cp2_checkpoint|cp2_zoo_forward",
+    "lora": "cp2_lora|cp4_lora",
+    "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
+}
+# Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "deepseek_v41": ("eager",), "gpt_oss": ("eager",)}
+_MOE_TEXT_ONLY = {
+    "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
+    "text-only Gemma4ForCausalLM ran",
+}
+# Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
+_MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
 _MOE_EVIDENCE = {
     ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2
@@ -880,13 +983,88 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    ("deepseek_v41", "lora", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe|pp2_1f1b|pp4_gpipe_mb4|pp2_gpipe_mb4_gc|pp2_1f1b_gc]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("deepseek_v41", "lora+experts", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe_experts|pp2_1f1b_experts_gc]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    **{
+        (family, precision, aux, "pp"): (f"{_MOE_PP_MM}[{family}_{case}]",) * 2
+        + ("eager: no compiled region",)
+        for family in ("qwen3_5_moe", "qwen4_exp")
+        for (precision, aux), case in _MOE_PP_MM_CASES.items()
+    },
+    # Gemma 4 26B-style MoE has no router auxiliary loss: pp2 text-only vs one process (losses, every gradient).
+    ("gemma4", "lora", False, "pp"): (
+        "tests/test_pp_vlm_text_only_gloo.py::test_pp2_text_only_matches_one_process[gemma4_moe]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("kimi_linear", "full", False, "cp"): (_KIMI_MOE + "[full-sdpa-cp2|full-eager-gc-dp2xcp2]",) * 2
+    + (_KIMI_EAGER,),
+    ("kimi_linear", "lora", False, "cp"): (_KIMI_MOE + "[lora-eager-gc-cp2]",) * 2 + (_KIMI_EAGER,),
+    ("kimi_linear", "lora+experts", False, "cp"): (
+        _KIMI_MOE + "[lora_experts-sdpa-gc-cp2|lora_experts-eager-cp2]",
+    )
+    * 2
+    + (_KIMI_EAGER,),
+    ("minimax", "full", False, "cp"): (
+        _MINIMAX + "[m1_cp2|m1_cp4|m1_dp2_cp2|m1_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora|m1_cp2_lora_checkpoint|m1_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora_experts|m1_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "full", False, "cp"): (
+        _MINIMAX + "[m2_cp2|m2_cp4_gqa|m2_dp2_cp2|m2_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora|m2_cp2_lora_reentrant|m2_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora_experts|m2_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    **{
+        (family, precision, False, "cp"): (f"{_DEEPSEEK}[{ids}]",) * 2 + (_DEEPSEEK_EAGER,)
+        for family, cases in _DEEPSEEK_CASES.items()
+        for precision, ids in cases.items()
+    },
+    **{
+        ("gemma4", precision, False, "cp"): (f"{_GEMMA4}[{ids}]",) * 2 + (_GEMMA4_EAGER,)
+        for precision, ids in _GEMMA4_CASES.items()
+    },
+    **{
+        ("gpt_oss", precision, False, "cp"): (f"{_GPT_OSS}[{ids}]",) * 2 + (_GPT_OSS_EAGER,)
+        for precision, ids in _GPT_OSS_CASES.items()
+    },
 }
 
 
 # Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 _TP_BLOCKED_FAMILIES = {
+    "deepseek_v2": "multi-head latent attention (MLA, kv_lora_rank)",
     "deepseek_v3": "multi-head latent attention (MLA, kv_lora_rank)",
+    "deepseek_v32": "multi-head latent attention (MLA, kv_lora_rank)",
     "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
 }
 
@@ -901,8 +1079,11 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family != "qwen3_moe":
-            return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
+        if family not in ("qwen3_moe", "gemma4", "qwen3_5_moe", "qwen4_exp", "deepseek_v41"):
+            return (
+                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
+                "only (refused at the split)"
+            )
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
     if precision == "qlora" and mode == "pp" and family == "qwen3_moe" and aux:
@@ -938,8 +1119,14 @@ def _moe_cells():
                     }
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
+                        if family in _MOE_ATTENTION:
+                            match = {**match, "attention": _MOE_ATTENTION[family]}
+                        # Pipeline parallel trains a multimodal checkpoint on text (PPConfig.text_only): its evidence ran on one.
+                        text_only = family in _MOE_TEXT_ONLY and mode != "pp"
+                        if text_only:
+                            match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
-                        if mode in ("cp", "fsdp2_cp"):
+                        if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
                             case = f"{precision.split('+')[0]}-{mode}2"  # lora-cp2, lora-fsdp2_cp2, full-cp2
                             note = (
@@ -949,7 +1136,32 @@ def _moe_cells():
                         if mode in ("pp", "tp"):
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
+                        if mode == "pp" and family in _MOE_PP_MEMORY:
+                            match = {**match, "memory": _MOE_PP_MEMORY[family]}
                         cells.append(Cell(name, match, *evidence, note = note))
+                        if text_only:
+                            cells.append(
+                                Cell(
+                                    name + ", multimodal",
+                                    {**match, "multimodal": (True,)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = _MOE_TEXT_ONLY[family],
+                                )
+                            )
+                        if mode in ("cp", "fsdp2_cp") and family not in _MOE_UNSLOTH_GC_FAMILIES:
+                            cells.append(
+                                Cell(
+                                    name + ", Unsloth checkpoint",
+                                    {**match, "memory": ("unsloth_offload",)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = "only HF gradient checkpointing ran under cp for this family; "
+                                    "use_gradient_checkpointing = True (not 'unsloth') runs the measured cell",
+                                )
+                            )
                         if not evidence[2].startswith("eager:"):
                             cells.append(
                                 Cell(
@@ -1186,6 +1398,7 @@ def _direct_params(model) -> bool:
     try:
         from .models import tp_native
         _, layers = tp_native._decoder_layers(model)
+        text = tp_native._text_config(model)
     except Exception:
         return False
     for layer in layers:
@@ -1197,8 +1410,11 @@ def _direct_params(model) -> bool:
                 not attention and tp_native._is_moe_block(child)
             ):
                 continue
-            if next(child.named_parameters(recurse = False), None) is not None:
-                return True
+            # tp_native._region shards a latent-query MQA's own sinks with its heads (DeepSeek-V4.1).
+            latent = attention and tp_native._is_latent_mqa(child, text)
+            for name, param in child.named_parameters(recurse = False):
+                if not (latent and name in tp_native._HEAD_PARAMS and param.ndim == 1):
+                    return True
     return False
 
 
@@ -1245,8 +1461,10 @@ def _low_precision(model) -> Optional[str]:
         for m in model.modules():
             if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
                 return "fp8"
-            cls = type(m)
-            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+            if any(
+                c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+                for c in type(m).__mro__
+            ):
                 return "fp8"
     except Exception:
         pass
@@ -1369,9 +1587,13 @@ def _kernels(model):
     try:
         for m in model.modules():
             forward = getattr(type(m), "forward", None)
-            if getattr(forward, "__module__", "").startswith("unsloth.models.") and type(
-                m
-            ).__name__.endswith("Attention"):
+            module = getattr(forward, "__module__", "")
+            # A native port (models/<name>/modeling.py) runs its own attention, not the fast kernels.
+            if (
+                module.startswith("unsloth.models.")
+                and not module.endswith(".modeling")
+                and type(m).__name__.endswith("Attention")
+            ):
                 return True
     except Exception:
         pass

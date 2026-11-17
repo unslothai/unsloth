@@ -361,6 +361,7 @@ function CodeGroup({
           disabled={streaming}
           language={code.language}
           source={() => code.source}
+          wrappable={false}
         />
       )}
       {first.first && (

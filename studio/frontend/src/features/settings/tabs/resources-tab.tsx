@@ -22,8 +22,10 @@ import {
   gpuMemoryDisplay,
   hasSharedMemoryHeadroom,
   sharedMemoryAvailableGb,
+  sharedMemoryDetail,
 } from "@/hooks/gpu-memory-display";
 import {
+  carveOutVramGb,
   deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
@@ -42,7 +44,7 @@ import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
@@ -69,7 +71,28 @@ import {
   type StorageSegment,
   StorageOverview,
 } from "../components/storage-overview";
+import {
+  MONITOR_REFRESH_OPTIONS_MS,
+  monitorRefreshMs,
+} from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { MemoryShareBar } from "@/components/monitor-memory";
+import { inferenceGpuDisjoint, poolSplit } from "@/components/monitor-share";
+import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
+import {
+  holdsModelsInVram,
+  npuActive,
+  npuCard,
+  vramCards,
+} from "@/components/monitor-cards";
+import { useNpuStatus } from "@/features/npu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -148,14 +171,16 @@ function MetricTile({
   percent,
   showUsage = true,
   extraDetail,
+  children,
 }: {
   label: string;
   value: string;
-  detail: string;
+  detail?: string;
   // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
   percent: number | null;
   showUsage?: boolean;
   extraDetail?: string;
+  children?: ReactNode;
 }) {
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
@@ -186,12 +211,14 @@ function MetricTile({
         >
           {value}
         </span>
-        <span
-          title={detail}
-          className="truncate text-ui-11 text-muted-foreground"
-        >
-          {detail}
-        </span>
+        {detail ? (
+          <span
+            title={detail}
+            className="truncate text-ui-11 text-muted-foreground"
+          >
+            {detail}
+          </span>
+        ) : null}
         {extraDetail ? (
           <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
             {extraDetail}
@@ -206,6 +233,7 @@ function MetricTile({
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
+      {children ? <div className="mt-auto">{children}</div> : null}
     </div>
   );
 }
@@ -293,7 +321,20 @@ export function ResourcesTab() {
     setShowDetails,
     detailMetrics: storedDetailMetrics,
     setDetailMetric,
+    refreshMs,
+    setRefreshMs,
+    showUnslothShare,
+    setShowUnslothShare,
+    showModelBreakdown,
+    setShowModelBreakdown,
   } = useMonitorOverlayStore();
+  const wantsModels = showUnslothShare || showModelBreakdown;
+  const [npuStatus] = useNpuStatus();
+  const wantsModelRows = wantsModels || npuActive(npuStatus);
+  const { polledEntries: loadedModels } = useLoadedModels(
+    wantsModelRows,
+    wantsModelRows,
+  );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
@@ -396,23 +437,31 @@ export function ResourcesTab() {
     const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
     const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
     const vramUsageKnown = vramUsed !== null;
-    const vramFree = perDeviceKnown
-      ? usageDevices.reduce(
-          (sum, device) =>
-            sum +
-            (device.vram_free_gb ??
-              Math.max(
-                0,
-                (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
-              )),
-          0,
-        )
-      : vramUsed !== null
-        ? Math.max(0, vramTotal - vramUsed)
-        : null;
+    const vramCarveOut = carveOutVramGb(
+      usageDevices,
+      vramUsed,
+      systemInfo.memory?.available_gb ?? null,
+    );
+    const vramFree = vramCarveOut
+      ? vramCarveOut.freeGb
+      : perDeviceKnown
+        ? usageDevices.reduce(
+            (sum, device) =>
+              sum +
+              (device.vram_free_gb ??
+                Math.max(
+                  0,
+                  (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
+                )),
+            0,
+          )
+        : vramUsed !== null
+          ? Math.max(0, vramTotal - vramUsed)
+          : null;
+    const vramCapacity = vramCarveOut?.totalGb ?? vramTotal;
     const vramPercent =
-      vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
-        ? (vramUsed / vramTotal) * 100
+      vramUsageKnown && isFiniteNumber(vramUsed) && vramCapacity > 0
+        ? (vramUsed / vramCapacity) * 100
         : 0;
 
     return {
@@ -429,6 +478,7 @@ export function ResourcesTab() {
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
+      vramCarveOut,
       vramUsed,
       vramFree,
       vramPercent,
@@ -555,13 +605,15 @@ export function ResourcesTab() {
   const diskBytes = (entry: (typeof cache.entries)[number]) =>
     entry.systemDiskBytes ??
     (systemEntries.includes(entry) ? entry.sizeBytes : 0);
+  const isModels = (entry: (typeof cache.entries)[number]) =>
+    entry.key === "hf_hub" || entry.key === "npu_models";
   const modelsDiskGb =
     cache.entries
-      .filter((entry) => entry.key === "hf_hub")
+      .filter(isModels)
       .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const cachesDiskGb =
     cache.entries
-      .filter((entry) => entry.key !== "hf_hub")
+      .filter((entry) => !isModels(entry))
       .reduce((sum, entry) => sum + diskBytes(entry), 0) / 1e9;
   const otherDiskGb = Math.max(
     0,
@@ -605,12 +657,44 @@ export function ResourcesTab() {
   ];
   const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0 && !unifiedPool
+    !metrics.vramCarveOut && metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+      : formatGiB(
+          unifiedPool
+            ? metrics.vramShared
+            : (metrics.vramCarveOut?.totalGb ?? metrics.vramTotal),
+        );
+  const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
+  const discreteVram =
+    hasGpu &&
+    !unifiedPool &&
+    !memoryDisplay.sharedOnly &&
+    holdsModelsInVram(vram.cards);
+  const processMb =
+    systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
+  const split = poolSplit({
+    entries: loadedModels,
+    showShare: showUnslothShare,
+    showBreakdown: showModelBreakdown,
+    modelsInVram: discreteVram,
+    inferenceGpuElsewhere: inferenceGpuDisjoint(
+      systemInfo.gpu?.backend,
+      separateInferenceGpu?.backend,
+    ),
+    processGb: !hostUnread && processMb !== undefined ? processMb / 1024 : null,
+    ramUsedGb: metrics.ramUsed,
+    ramTotalGb: metrics.ramTotal,
+    vramUsedGb: vram.usedGb,
+    vramTotalGb: vram.totalGb,
+  });
+  const ramSegments = split.ram;
+  const vramSegments = split.vram;
+  const npu = hostUnread
+    ? null
+    : npuCard(npuStatus, loadedModels, systemInfo.npu_load_percent);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -653,7 +737,7 @@ export function ResourcesTab() {
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-4 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>{t("settings.resources.liveUpdates")}</span>
             <Switch
               className="scale-[0.88]"
@@ -725,7 +809,7 @@ export function ResourcesTab() {
           )}
           <MetricTile
             label={t(
-              memoryDisplay.sharedOnly
+              memoryDisplay.sharedOnly || unifiedPool
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",
             )}
@@ -757,7 +841,7 @@ export function ResourcesTab() {
                       ? t("settings.resources.gpu.estimatedAvailable", {
                           value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : metrics.vramUsageKnown
+                      : metrics.vramUsageKnown && metrics.vramFree !== null
                         ? t("settings.resources.liveMonitor.free", {
                             value: formatGiB(metrics.vramFree),
                           })
@@ -770,14 +854,107 @@ export function ResourcesTab() {
             extraDetail={
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
-                ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
-                : unifiedPool && !memoryDisplay.sharedOnly
-                  ? t("settings.resources.gpu.sharedWithSystemRam")
-                  : undefined
+                ? sharedMemoryDetail(
+                    memoryDisplay.sharedAvailableGb,
+                    t("settings.resources.gpu.sharedWithSystemRam"),
+                    (gb) =>
+                      t("settings.resources.gpu.estimatedAvailable", {
+                        value: formatGiB(gb),
+                      }),
+                  )
+                : metrics.vramCarveOut
+                  ? t("settings.resources.gpu.alsoSystemRam", {
+                      value: formatGiB(metrics.vramCarveOut.borrowableGb),
+                    })
+                  : unifiedPool && !memoryDisplay.sharedOnly
+                    ? t("settings.resources.gpu.sharedWithSystemRam")
+                    : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
+          {npu && (
+            <MetricTile
+              label={t("settings.resources.liveMonitor.npu")}
+              value={npu.name}
+              detail={
+                npu.driver
+                  ? t("settings.resources.liveMonitor.npuDriver", {
+                      version: npu.driver,
+                    })
+                  : undefined
+              }
+              extraDetail={
+                npu.model
+                  ? npu.residentGb !== null
+                    ? t("settings.resources.liveMonitor.npuModelInRam", {
+                        model: npu.model,
+                        size: formatGiB(npu.residentGb),
+                      })
+                    : npu.model
+                  : t("settings.resources.liveMonitor.noModelLoaded")
+              }
+              showUsage={npu.loadPercent !== null}
+              percent={npu.loadPercent}
+            />
+          )}
         </div>
+        {(ramSegments || vramSegments) && (
+          <div
+            className="grid gap-3 pb-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2"
+            data-testid="settings-unsloth-share"
+          >
+            {ramSegments && (
+              <MetricTile
+                label={t(
+                  unifiedPool
+                    ? "settings.resources.liveMonitor.memory"
+                    : "settings.resources.liveMonitor.ram",
+                )}
+                value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={ramSegments}
+                  noModels={!discreteVram && split.noModels}
+                />
+              </MetricTile>
+            )}
+            {vramSegments && (
+              <MetricTile
+                label={t("settings.resources.liveMonitor.vram")}
+                value={`${formatGiB(vram.usedGb)} / ${formatGiB(vram.totalGb)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={vramSegments}
+                  noModels={split.noModels}
+                />
+              </MetricTile>
+            )}
+          </div>
+        )}
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.unslothShare")}
+          description={t("settings.resources.liveMonitor.unslothShareDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.unslothShare")}
+            checked={showUnslothShare}
+            onCheckedChange={setShowUnslothShare}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.modelBreakdown")}
+          description={t("settings.resources.liveMonitor.modelBreakdownDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.modelBreakdown")}
+            checked={showModelBreakdown}
+            onCheckedChange={setShowModelBreakdown}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -863,7 +1040,9 @@ export function ResourcesTab() {
               {t("settings.resources.gpu.ggufInference")}
             </span>
             <span className="text-right font-mono text-xs text-foreground">
-              {separateInferenceGpu.backend?.toUpperCase() ?? "GPU"}
+              {t("settings.resources.gpu.llamaCppBuild", {
+                backend: separateInferenceGpu.backend?.toUpperCase() ?? "GPU",
+              })}
               {separateInferenceGpu.available ? (
                 inferenceVramTotal ? (
                   <span className="block">
@@ -897,12 +1076,11 @@ export function ResourcesTab() {
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
-                    {t("settings.resources.gpu.sharedEstimatedAvailable", {
-                      value:
-                        inferenceDisplay.sharedAvailableGb === null
-                          ? unknownLabel
-                          : formatGiB(inferenceDisplay.sharedAvailableGb),
-                    })}
+                    {inferenceDisplay.sharedAvailableGb === null
+                      ? t("settings.resources.gpu.sharedWithSystemRam")
+                      : t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(inferenceDisplay.sharedAvailableGb),
+                        })}
                   </span>
                 )}
             </span>
@@ -912,15 +1090,21 @@ export function ResourcesTab() {
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
             // Preserve null (unknown); 0 would render a fabricated reading.
-            const total = device.memory_total_gb ?? null;
             const used = device.vram_used_gb ?? null;
-            const free =
-              device.vram_free_gb ??
-              (isFiniteNumber(total) && isFiniteNumber(used)
-                ? Math.max(0, total - used)
-                : null);
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
+            const carveOut = sharedSplit
+              ? carveOutVramGb([device], used, null)
+              : null;
+            const total = carveOut?.totalGb ?? device.memory_total_gb ?? null;
+            const free = carveOut
+              ? carveOut.freeGb
+              : (device.vram_free_gb ??
+                (isFiniteNumber(total) && isFiniteNumber(used)
+                  ? Math.max(0, total - used)
+                  : null));
             const percent =
-              device.vram_utilization_pct ??
+              (carveOut ? null : device.vram_utilization_pct) ??
               (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
                 ? (used / total) * 100
                 : null);
@@ -937,11 +1121,9 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
-            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
-            const sharedSplit = deviceSharedMemorySplitGb(device);
             const telemetry = telemetryByOrdinal.get(`${ordinal ?? index}`);
             // Shared pool: used is every app's GPU allocation (AGX), free an available-RAM floor.
-            const shared = device.shared_memory === true;
+            const shared = device.shared_memory === true && !carveOut;
             const usedBySystem =
               shared &&
               isFiniteNumber(total) &&
@@ -1111,6 +1293,31 @@ export function ResourcesTab() {
             checked={isOpen}
             onCheckedChange={setIsOpen}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.refreshRate")}
+          description={t("settings.resources.liveMonitor.refreshRateDescription")}
+        >
+          <Select
+            value={String(monitorRefreshMs(refreshMs))}
+            onValueChange={(value) => setRefreshMs(Number(value))}
+          >
+            <SelectTrigger
+              className="w-28"
+              aria-label={t("settings.resources.liveMonitor.refreshRate")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MONITOR_REFRESH_OPTIONS_MS.map((ms) => (
+                <SelectItem key={ms} value={String(ms)}>
+                  {t("settings.resources.liveMonitor.refreshEvery", {
+                    seconds: ms / 1000,
+                  })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}

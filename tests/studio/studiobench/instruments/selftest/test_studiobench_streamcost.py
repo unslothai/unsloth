@@ -251,8 +251,7 @@ MAX_SSE_CHUNK_CHARS = 65536
 
 
 def test_a_batched_sse_read_above_the_decoder_scan_bound_is_still_detected():
-    """Batched SSE reads above MAX_SSE_CHUNK_CHARS must still be detected, since stalls make them
-    largest."""
+    """Batched SSE reads over MAX_SSE_CHUNK_CHARS are detected; stalls make them largest."""
     out = one_decoded_batch("batch-over", BURST_CHAIN_MS)
 
     assert out["decoded_chars"] > MAX_SSE_CHUNK_CHARS, out
@@ -388,8 +387,7 @@ def test_the_close_side_drain_does_not_disturb_the_window_s_own_reading():
 
 
 def test_a_half_open_window_does_not_leak_its_open_reading_into_the_next_cell():
-    """`_chars_open` is per window; a cell that died between open and close must not seed the next
-    cell's first window with a stale character count."""
+    """`_chars_open` is per window: a cell that died mid-window must not seed the next window."""
     inst = StreamCostInstrument()
     inst.start_cell(_FakeCell())
     inst._chars_open = 12345

@@ -14,6 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -22,12 +27,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectSeparator,
   SelectTrigger,
   SelectValue,
@@ -35,11 +42,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { TrashIcon } from "@/lib/hugeicons-derived";
+import { openExternalLink } from "@/lib/open-link";
 import {
-  Edit03Icon,
-  PlusSignIcon,
-  Wifi02Icon,
+  ArrowUpRight01Icon,
+  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -48,12 +54,27 @@ import {
   ArrowLeftIcon,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { useIsAccountOwner, useLoginMode } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
+import { ConnectionGallery, buildConnectionGallery } from "./connection-gallery";
+import { ConnectionModelList } from "./connection-model-list";
+import { ConnectionRow, ConnectionStatusLine } from "./connection-row";
+import {
+  type ConnectionCheck,
+  checkFailureDetail,
+  connectionStatus,
+  formatCheckedAgo,
+  suggestedModelIds,
+} from "./connection-status";
+import {
+  isOlderModel,
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "./model-catalog";
 
 import { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
 import { ClaudeAgentSetup, ClaudeExperimentalBadge } from "./claude-agent-status";
@@ -88,6 +109,10 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
+  customProviderApiKeyUrl,
+  customProviderDefaultBaseUrl,
+  connectionCheckNeedsModel,
+  isCloudPresetProviderType,
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   connectionApiFields,
   getExternalProviderApiKey,
@@ -97,9 +122,14 @@ import {
   OPENCODE_PLANS,
   isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  newConnectionRequestType,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
   learnCatalogModelCapabilities,
+  NEW_MODEL_CHECK_INTERVALS,
+  isNewModelCheckInterval,
+  newModelCheckOf,
+  type NewModelCheckInterval,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -108,22 +138,42 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { useConnectionChecksStore } from "./stores/connection-checks-store";
 import {
   providerSavesInFlight,
   useExternalProvidersStore,
 } from "./stores/external-providers-store";
 import {
-  mergeLearnedModelCapabilities,
+  autoTickLimit,
+  autoTicksNewlyListedModels,
+  codexCapabilitiesWithPlanModels,
+  MAX_AUTO_TICKED_MODELS,
   pruneProviderModelIds,
+  refreshModelsDevCatalog,
   refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
+  withNewlyListedModels,
+  withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
+import { parseAutoCompactTokens } from "./utils/auto-compaction";
+import { SettingsSection } from "@/features/settings/components/settings-section";
+import {
+  learnModelDisplayNames,
+  providerModelDisplayName,
+  useModelDisplayNamesVersion,
+} from "./model-display-names";
 
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
   0.165, 0.84, 0.44, 1,
 ];
 const PROVIDER_FORM_DURATION = 0.2;
+const NEW_MODEL_CHECK_LABELS: Record<NewModelCheckInterval, string> = {
+  launch: "Every launch",
+  daily: "Daily",
+  weekly: "Weekly",
+  off: "Off",
+};
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen", "opencode_go"]);
@@ -145,8 +195,35 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
 }
 
+/** Fades the picker's top or bottom edge while more rows lie beyond it. */
+function fadeProviderMenuEdges(content: HTMLElement | null) {
+  const viewport = content?.querySelector<HTMLElement>("[data-radix-select-viewport]");
+  if (!viewport) return;
+  const update = () => {
+    const above = viewport.scrollTop > 1;
+    const below = viewport.scrollTop + viewport.clientHeight < viewport.scrollHeight - 1;
+    const mask = `linear-gradient(to bottom, ${above ? "transparent" : "#000"} 0, #000 28px, #000 calc(100% - 28px), ${below ? "transparent" : "#000"} 100%)`;
+    viewport.style.maskImage = mask;
+    viewport.style.setProperty("-webkit-mask-image", mask);
+  };
+  update();
+  // The menu is capped after mount, so measure again once that lands.
+  const frame = requestAnimationFrame(update);
+  viewport.addEventListener("scroll", update, { passive: true });
+  return () => {
+    cancelAnimationFrame(frame);
+    viewport.removeEventListener("scroll", update);
+  };
+}
+
 function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
   return providerType === "openrouter";
+}
+
+/** Once a provider has listed its models, the registry's suggestions only order that list. */
+export function liveModelSeeds(seeds: string[], live: string[]): string[] {
+  if (live.length === 0) return seeds;
+  return seeds.filter((id) => live.includes(id));
 }
 
 export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
@@ -176,6 +253,11 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
       title: "No llama.cpp models found.",
       description:
         "Ensure llama-server is running with models loaded, then reload — or enter model IDs manually below.",
+    },
+    sglang: {
+      title: "No SGLang models found.",
+      description:
+        "Ensure the SGLang server is running, then reload — or enter model IDs manually below.",
     },
     vllm: {
       title: "No vLLM models found.",
@@ -207,6 +289,7 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
     providerType === "vllm" ||
+    providerType === "sglang" ||
     providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }
@@ -215,11 +298,45 @@ function shouldShowProviderApiType(providerType: string): boolean {
   return providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
 }
 
-function formatModelSummary(models: string[]): string {
+type FormCheck =
+  | { state: "checking" }
+  | { state: "ok"; message: string }
+  | { state: "error"; message: string; auth: boolean };
+
+// Shorter than this is still being typed, not pasted.
+const MIN_AUTO_CHECK_KEY_LENGTH = 16;
+const AUTO_CHECK_DELAY_MS = 700;
+const CONNECTION_CHECK_TTL_MS = 10 * 60 * 1000;
+const KEY_REJECTED_PATTERN = /rejected the API key|refused the API key/i;
+// Their /models answers without auth (backend _KEY_CHECKED_PROVIDERS), so listing proves nothing about a key.
+const KEY_CHECKED_SEPARATELY = new Set(["openrouter", "huggingface", "vercel"]);
+
+/** The backend's list order: own connections by age, then the ones the owner shared. */
+function byListOrder(a: ExternalProviderConfig, b: ExternalProviderConfig): number {
+  return (
+    Number(a.sharedByOwner === true) - Number(b.sharedByOwner === true) || a.createdAt - b.createdAt
+  );
+}
+
+function endpointHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function formatModelSummary(
+  providerType: string,
+  models: string[],
+  claudeAgentNames: Record<string, string>,
+): string {
   if (models.length === 0) {
     return "No models enabled";
   }
-  const visible = models.slice(0, 4);
+  const visible = models
+    .slice(0, 4)
+    .map((model) => connectionModelLabel(providerType, model, claudeAgentNames));
   const remaining = models.length - visible.length;
   return `${visible.join(", ")}${remaining > 0 ? ` +${remaining}` : ""}`;
 }
@@ -232,50 +349,23 @@ interface ChatProvidersSettingsProps {
   onOpenProviderConsumed?: () => void;
 }
 
-export function codexCapabilitiesWithPlanModels(
-  entry: ProviderRegistryEntry | undefined,
-  listed: CodexSubscriptionModels | null,
-  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
-): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
-  if (!listed || listed.source !== "subscription") return null;
-  // Without the registry row every model reads as unlisted and persisted capabilities go wrong.
-  if (!entry) return null;
-  const registryCapabilities = entry.model_capabilities ?? {};
-  // Keyed by provider type, so merge into what is learned or a second connection drops the first's.
-  const capabilities = mergeLearnedModelCapabilities(
-    stored,
-    registryCapabilities,
-    entry?.supports_studio_tools,
-  );
-  for (const model of listed.known ?? listed.models) {
-    // Only the plan describes unlisted slugs; mirror the backend bool(vision) gate as false, not null.
-    if (!(model.id in registryCapabilities)) {
-      capabilities[model.id] = {
-        ...capabilities[model.id],
-        vision: model.vision === true,
-      };
-    }
-  }
-  return capabilities;
-}
-
+export { codexCapabilitiesWithPlanModels };
 
 export function resolveCodexPickerModels(
-  curated: string[],
   savedModels: string[],
   listed: CodexSubscriptionModels | null,
 ): { catalog: string[]; selected: string[] } {
-  // Only the plan's own catalog can retire a slug; the curated fallback seed must not drop one.
+  // Only the plan's own catalog can retire a slug; without it the saved models stand.
   const planListed = listed?.source === "subscription" && listed.models.length > 0;
   if (!planListed) {
-    const catalog = [...new Set([...curated, ...savedModels])];
-    const offered = new Set(catalog);
-    return { catalog, selected: savedModels.filter((model) => offered.has(model)) };
+    const catalog = [...new Set(savedModels)];
+    return { catalog, selected: catalog };
   }
   const offeredIds = listed.models.map((model) => model.id);
   // "Hide" retires from the picker, not from use; only slugs the plan no longer returns retire.
   const known = new Set((listed.known ?? listed.models).map((model) => model.id));
-  const selected = savedModels.filter((model) => known.has(model));
+  const selected =
+    savedModels.length > 0 ? savedModels.filter((model) => known.has(model)) : offeredIds;
   const catalog = [...new Set([...offeredIds, ...selected])];
   return { catalog, selected };
 }
@@ -288,11 +378,12 @@ export function ChatProvidersSettings({
   onOpenProviderConsumed,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  // Re-render when a listing learns model names.
+  useModelDisplayNamesVersion();
   const seededProviderTypeRef = useRef<string | null>(null);
+  const seededModelsRef = useRef<string[]>([]);
   // One object per automatic load: a reopened form reuses the key, never the request.
   const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
-  // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
-  const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const t = useT();
   const [providerType, setProviderType] = useState<string>("");
@@ -303,6 +394,7 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
   const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -321,9 +413,18 @@ export function ChatProvidersSettings({
   const [catalogAutoLoad, setCatalogAutoLoad] = useState<{ key: string } | null>(null);
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
-  const [testingProviderIds, setTestingProviderIds] = useState<
-    ReadonlySet<string>
-  >(new Set());
+  const disabledProviders = useExternalProvidersStore((s) => s.disabledProviders);
+  const setDisabledProviders = useExternalProvidersStore((s) => s.setDisabledProviders);
+  const checks = useConnectionChecksStore((s) => s.checks);
+  const checkingIds = useConnectionChecksStore((s) => s.checking);
+  const [formCheck, setFormCheck] = useState<FormCheck | null>(null);
+  const formCheckRequestRef = useRef(0);
+  const checkedKeyRef = useRef("");
+  const [testingDraft, setTestingDraft] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  // Re-render when a catalog refresh lands, so the freshness line follows it.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const [pendingDeleteProvider, setPendingDeleteProvider] =
     useState<ExternalProviderConfig | null>(null);
   const [manualModelIds, setManualModelIds] = useState("");
@@ -345,6 +446,8 @@ export function ChatProvidersSettings({
   const setConnectionsEnabled = useExternalProvidersStore(
     (s) => s.setConnectionsEnabled,
   );
+  const [newModelCheckDraft, setNewModelCheckDraft] =
+    useState<NewModelCheckInterval>("daily");
   const isCustomProvider = isCustomProviderType(providerType);
   const decisionsOnly = isDecisionConnection({
     providerType,
@@ -355,6 +458,9 @@ export function ChatProvidersSettings({
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   ) && !decisionsOnly;
+  // ChatGPT sign-in runs through the Codex route, which has no compaction of its own.
+  const supportsAutoCompactTokens =
+    Boolean(providerType) && providerType !== "openai_codex" && !decisionsOnly;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
   // Legacy OpenAI rows also appear as Custom in the UI, but must not gain this opt-in.
   const isCustomReasoningConnection =
@@ -377,6 +483,11 @@ export function ChatProvidersSettings({
     if (!(isOpenCodeProviderType(providerType) && isOpenCodeProviderType(value))) {
       setApiKey("");
     }
+    formCheckRequestRef.current += 1;
+    // The retired load no longer owns the form, so it will not clear this itself.
+    setModelsLoading(false);
+    checkedKeyRef.current = "";
+    setFormCheck(null);
     setProviderType(value);
     setReasoningConfig(null);
     setAvailableModels([]);
@@ -404,9 +515,11 @@ export function ChatProvidersSettings({
       ...visible.filter(isDecision),
     ];
   }, [registry]);
-  const firstBelowFoldProviderType = menuRegistry.find((entry) =>
-    isDecisionConnection({ providerType: entry.provider_type }),
-  )?.provider_type;
+  // The form's picker lists what the gallery lists, in the same groups.
+  const pickerGroups = useMemo(
+    () => buildConnectionGallery(menuRegistry),
+    [menuRegistry],
+  );
   const selectedProviderContract = registryByType.get(
     toExternalBackendProviderType(providerType),
   );
@@ -451,8 +564,13 @@ export function ChatProvidersSettings({
     availableModels.length > 0;
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
+  // A switched-off connection is still editable, so lookups cover both lists.
+  const allProviders = useMemo(
+    () => [...providers, ...disabledProviders],
+    [providers, disabledProviders],
+  );
   const editingProvider = editingProviderId
-    ? providers.find((provider) => provider.id === editingProviderId)
+    ? allProviders.find((provider) => provider.id === editingProviderId)
     : undefined;
   const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
   const showShareToggle =
@@ -499,27 +617,39 @@ export function ChatProvidersSettings({
           : missingModelCatalogApiKey
             ? "Enter an API key before loading models"
             : undefined;
+  const [showOlderModels, setShowOlderModels] = useState(false);
+  const catalogVersion = useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const filteredAvailableModels = useMemo(() => {
     const query = modelSearchQuery.trim().toLowerCase();
-    if (!query) {
-      return availableModels;
+    if (query) {
+      // A search reaches the folded older models too.
+      return availableModels.filter(
+        (model) =>
+          model.toLowerCase().includes(query) ||
+          providerModelDisplayName(providerType, model).toLowerCase().includes(query),
+      );
     }
-    return availableModels.filter((model) =>
-      model.toLowerCase().includes(query),
+    if (showOlderModels) return availableModels;
+    const selected = new Set(selectedModelIds);
+    return availableModels.filter(
+      (model) => selected.has(model) || !isOlderModel(providerType, model),
     );
-  }, [availableModels, modelSearchQuery]);
-  const availableModelsLabel = modelSearchQuery.trim()
-    ? `${filteredAvailableModels.length} of ${availableModels.length} models`
-    : `${availableModels.length} models`;
-  const modelSearchInputClassName =
-    "h-8 w-full bg-background/55 text-xs placeholder:text-muted-foreground/65 focus-visible:border-border focus-visible:ring-0";
-  // Full-bleed rows of the Models card (-mx-4 undoes the body padding). The list grows with its rows
-  // and only scrolls past 10 (rows are min-h-9, plus 1px dividers).
-  const modelListClassName = cn(
-    "-mx-4 divide-y divide-border/60 border-border/60 border-y last:-mb-4 last:border-b-0",
-    filteredAvailableModels.length > 10 &&
-      "max-h-[calc(var(--spacing)*90+10px)] overflow-y-auto",
+  }, [availableModels, modelSearchQuery, providerType, showOlderModels, selectedModelIds, catalogVersion]);
+  const olderModelCount = useMemo(
+    () => availableModels.filter((model) => isOlderModel(providerType, model)).length,
+    [availableModels, providerType, catalogVersion],
   );
+  const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
+  const apiKeyUrl =
+    customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
+  // Without a key field the rejection has nowhere to show but the Models strip.
+  const keyRejected = formCheck?.state === "error" && formCheck.auth && showApiKeyField;
+  const canTestDraft =
+    !usesOAuth &&
+    Boolean(providerType) &&
+    (keyOptional ||
+      apiKey.trim().length > 0 ||
+      (editingProviderHasSavedKey && !clearApiKeyRequested));
 
   useEffect(() => {
     providersRef.current = providers;
@@ -537,10 +667,74 @@ export function ChatProvidersSettings({
   }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    const key = apiKey.trim();
+    if (
+      page !== "form" ||
+      !showApiKeyField ||
+      isManualModelList ||
+      isCuratedModelList ||
+      missingModelCatalogBaseUrl ||
+      key.length < MIN_AUTO_CHECK_KEY_LENGTH ||
+      key === checkedKeyRef.current
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => void loadModels({ keepSelection: true }),
+      AUTO_CHECK_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [apiKey, page, providerType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The list and the form share one scroller; each opens at its top, not where the other was left.
+  const pageTopRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    pageTopRef.current?.scrollIntoView({ block: "start" });
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== "list") return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== "list" || !providersReady || !connectionsEnabled) return;
+    const { checks: known } = useConnectionChecksStore.getState();
+    for (const provider of providers) {
+      const last = known[provider.id];
+      if (last && Date.now() - last.checkedAt < CONNECTION_CHECK_TTL_MS) continue;
+      void checkConnection(provider, { interactive: false });
+    }
+  }, [page, providersReady, connectionsEnabled, providers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let active = true;
+    void refreshModelsDevCatalog()
+      .then(async (refreshed) => {
+        if (!refreshed) return;
+        const registryRows = await listProviderRegistry();
+        if (active) setRegistry(registryRows.filter((entry) => !entry.hidden));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const entry = registryByType.get(providerType);
+    // A refreshed registry replaces only a list still showing its suggestions.
+    if (entry && availableModels === seededModelsRef.current) seedModels(entry);
+  }, [registryByType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setAutoCompactTokensDraft("");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -549,19 +743,12 @@ export function ChatProvidersSettings({
     if (!entry) {
       if (isCustomProviderType(providerType)) {
         setCustomProviderName(customProviderDisplayName(providerType));
-        setBaseUrlDraft("");
+        setBaseUrlDraft(customProviderDefaultBaseUrl(providerType));
       }
       return;
     }
-    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
-    const seedDefaults =
-      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds(
-      isDecisionConnection({ providerType })
-        ? entry.default_models.slice(0, 1)
-        : [],
-    );
+    seedModels(entry);
+    setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -605,13 +792,6 @@ export function ChatProvidersSettings({
         // Trust the backend: an empty array means all were removed, possibly in another tab.
         onProvidersChange(syncedProviders);
         setProvidersReady(true);
-        // Open the form on an empty synced list, once only so the focus re-sync cannot pull users back.
-        if (!autoOpenedAddFormRef.current) {
-          autoOpenedAddFormRef.current = true;
-          if (syncedProviders.length === 0 && selectableRegistry.length > 0) {
-            setPage("form");
-          }
-        }
       } catch (error) {
         if (showSpinner) {
           const message =
@@ -646,6 +826,11 @@ export function ChatProvidersSettings({
     };
   }, [onProvidersChange]);
 
+  function seedModels(entry: ProviderRegistryEntry) {
+    seededModelsRef.current = [...entry.default_models];
+    setAvailableModels(seededModelsRef.current);
+  }
+
   function resetForm() {
     // Every form transition retires the in-flight Codex request; its shared spinner blocks the next form.
     codexCatalogRequestRef.current += 1;
@@ -657,6 +842,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setAutoCompactTokensDraft("");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -668,30 +854,31 @@ export function ChatProvidersSettings({
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
+    setNewModelCheckDraft("daily");
     setSharedDraft(false);
     modelFieldsAtOpenRef.current = null;
+    formCheckRequestRef.current += 1;
+    checkedKeyRef.current = "";
+    setFormCheck(null);
+    setTestingDraft(false);
+    setAdvancedOpen(false);
   }
 
-  function openAddProvider() {
+  function openAddProvider(presetType?: string) {
     resetForm();
-    const entry = providerType ? registryByType.get(providerType) : null;
-    if (
-      entry &&
-      (entry.model_list_mode === "curated" ||
-        hasPublicModelCatalog(providerType))
-    ) {
-      setAvailableModels([...entry.default_models]);
+    const type = presetType ?? providerType;
+    if (presetType) {
+      setProviderType(presetType);
+      setCustomProviderName(customProviderDisplayName(presetType));
     }
-    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
-      setSelectedModelIds(entry.default_models.slice(0, 1));
-    }
-    autoOpenedAddFormRef.current = true;
+    setBaseUrlDraft(customProviderDefaultBaseUrl(type));
+    const entry = type ? registryByType.get(type) : null;
+    if (entry) seedModels(entry);
     setPage("form");
   }
 
   function closeForm() {
     resetForm();
-    autoOpenedAddFormRef.current = true;
     setPage("list");
   }
 
@@ -759,20 +946,25 @@ export function ChatProvidersSettings({
 
   async function loadModels({
     autoLoad,
-  }: { autoLoad?: { key: string } } = {}) {
+    keepSelection = false,
+  }: {
+    autoLoad?: { key: string };
+    /** Nobody asked for this load, so it must not untick an id the fresh list happens to lack. */
+    keepSelection?: boolean;
+  } = {}): Promise<{ listed: string[]; ticked: string[] } | null> {
     const silent = autoLoad !== undefined;
     if (!providerType) {
       toast.error("Choose a connection first.");
-      return;
+      return null;
     }
     if (isCustomProvider && !supportsRemoteModelCatalog(providerType)) {
       toast.info("This connection uses manual model IDs.");
-      return;
+      return null;
     }
     if (providerType === "openai_codex") {
       if (!editingProviderId) {
         toast.info("Connect this ChatGPT subscription to load the models it can reach.");
-        return;
+        return null;
       }
       const provider = providersRef.current.find(
         (candidate) => candidate.id === editingProviderId,
@@ -787,13 +979,13 @@ export function ChatProvidersSettings({
       ).catch(() => true);
       // Only the request that still owns the form clears the shared flag.
       if (applied) setModelsLoading(false);
-      return;
+      return null;
     }
     if (isCuratedModelList) {
       toast.info(
         "This connection has a very large model catalog. Use the suggestions and add model IDs manually — full list is not fetched.",
       );
-      return;
+      return null;
     }
     if (
       !isCustomProvider &&
@@ -802,7 +994,7 @@ export function ChatProvidersSettings({
       !editingProviderHasSavedKey
     ) {
       toast.error("Add an API key first.");
-      return;
+      return null;
     }
     if (
       editingProvider?.hasApiKey &&
@@ -811,10 +1003,20 @@ export function ChatProvidersSettings({
     ) {
       // The saved key only goes to the saved server, so the backend would list that server's models.
       toast.info("Save the new Base URL first, then load its models.");
-      return;
+      return null;
     }
+    const typedKey = apiKey.trim();
+    const sendsKey =
+      typedKey.length > 0 || (editingProviderHasSavedKey && !clearApiKeyRequested);
+    // Leaving or switching the form bumps this, so a late answer cannot write into another connection's form.
+    const request = silent ? 0 : ++formCheckRequestRef.current;
+    const owned = () => silent || request === formCheckRequestRef.current;
     if (silent) setCatalogAutoLoad(autoLoad);
-    else setModelsLoading(true);
+    else {
+      checkedKeyRef.current = typedKey;
+      setModelsLoading(true);
+      setFormCheck({ state: "checking" });
+    }
     try {
       // Auto-loads can run before the form drops the previous provider's key and Base URL.
       const baseUrl = silent
@@ -826,22 +1028,37 @@ export function ChatProvidersSettings({
           );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
+      if (!silent && typedKey && KEY_CHECKED_SEPARATELY.has(backendProviderType)) {
+        const keyTest = await testProviderConnection({
+          providerType: backendProviderType,
+          providerId: editingProviderId,
+          apiKey: typedKey,
+          baseUrl,
+          extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
+        });
+        if (!owned()) return null;
+        if (!keyTest.success) throw new Error(checkFailureDetail(keyTest.message));
+      }
       const models = await listProviderModels({
         providerType: backendProviderType,
 
         providerId: editingProviderId,
-        apiKey: silent ? "" : apiKey.trim(),
+        apiKey: silent ? "" : typedKey,
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
         extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
       });
-      if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
+      if (silent && autoLoadedCatalogRef.current !== autoLoad) return null;
+      if (!owned()) return null;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
+      learnModelDisplayNames(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
-        : (registryByType.get(providerType)?.default_models ?? []);
-      // Defaults first so curated picks show when /models omits them.
+        : liveModelSeeds(
+            registryByType.get(providerType)?.default_models ?? [],
+            models.map((model) => model.id.trim()),
+          );
       const modelIds = pruneProviderModelIds(providerType, [
         ...new Set(
           [
@@ -850,42 +1067,153 @@ export function ChatProvidersSettings({
           ].filter((id) => id.length > 0),
         ),
       ]);
+      let ticked: string[] = [];
       // OpenRouter routing variants (:nitro, :floor) are valid ids that /models never lists.
       if (silent || hasPublicModelCatalog(providerType)) {
         setAvailableModels(withSavedModelIds(modelIds, selectedModelIds));
       } else {
-        setAvailableModels(modelIds);
-        setSelectedModelIds((prev) =>
-          prev.filter((id) => modelIds.includes(id)),
+        setAvailableModels(
+          keepSelection ? withSavedModelIds(modelIds, selectedModelIds) : modelIds,
         );
+        const kept = keepSelection
+          ? selectedModelIds
+          : selectedModelIds.filter((id) => modelIds.includes(id));
+        // A new connection starts with the provider's newest models ticked. Gateways list too many to guess.
+        if (
+          !editingProviderId &&
+          kept.length === 0 &&
+          (autoTicksNewlyListedModels({ providerType }) ||
+            supportsRemoteModelCatalog(providerType))
+        ) {
+          ticked = suggestedModelIds(registryDefaults, modelIds);
+        }
+        const suggested = ticked;
+        setSelectedModelIds((prev) => {
+          const stillListed = keepSelection ? prev : prev.filter((id) => modelIds.includes(id));
+          return stillListed.length === 0 && suggested.length > 0 ? suggested : stillListed;
+        });
       }
       if (!silent && modelIds.length === 0) {
         const hint =
           providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
             ? SYSTEM_ONE_EMPTY_CATALOG_HINT
             : emptyCatalogHint(providerType);
+        setFormCheck(null);
         toast.info(hint.title, { description: hint.description });
       } else if (!silent) {
-        toast.success(
-          `Found ${modelIds.length} ${modelIds.length === 1 ? "model" : "models"}.`,
-        );
+        const count = `${modelIds.length} ${modelIds.length === 1 ? "model" : "models"} available`;
+        setFormCheck({
+          state: "ok",
+          message: [
+            sendsKey ? "Key accepted" : "Connected",
+            count,
+            ticked.length > 0 ? `${ticked.length} suggested ticked` : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        });
       }
       if (editingProviderId) {
-        onProvidersChange(
-          providersRef.current.map((provider) =>
-            provider.id === editingProviderId
-              ? { ...provider, availableModels: modelIds }
-              : provider,
-          ),
+        const record = providersRef.current.find(
+          (provider) => provider.id === editingProviderId,
         );
+        // Only the saved key and endpoint list the saved connection.
+        const listedSavedConnection =
+          silent || (!apiKey.trim() && baseUrlDraft.trim() === (record?.baseUrl ?? ""));
+        const fresh =
+          record &&
+          listedSavedConnection &&
+          autoTicksNewlyListedModels(record) &&
+          newModelCheckOf(record) !== "off"
+            ? withNewlyListedModels(record.models, record.availableModels ?? [], modelIds, {
+                maxAdded: autoTickLimit(record.id, MAX_AUTO_TICKED_MODELS),
+              })
+            : null;
+        if (fresh && fresh.added.length > 0) {
+          const { added } = fresh;
+          setSelectedModelIds((prev) => [...new Set([...prev, ...added])]);
+        }
+        const persisted =
+          fresh !== null &&
+          (await updateProviderConfig(editingProviderId, {
+            models: fresh.models,
+            availableModels: fresh.availableModels,
+          }).then(
+            () => true,
+            () => false,
+          ));
+        const next = providersRef.current.map((provider) =>
+          provider.id !== editingProviderId
+            ? provider
+            : persisted && fresh
+              ? { ...provider, models: fresh.models, availableModels: fresh.availableModels }
+              : { ...provider, availableModels: modelIds },
+        );
+        providersRef.current = next;
+        onProvidersChange(next);
       }
       if (!silent) setModelSearchQuery("");
+      return { listed: modelIds, ticked };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      if (!silent) toast.error(`Could not load models: ${message}`);
+      if (!silent && owned()) {
+        setFormCheck({ state: "error", message, auth: KEY_REJECTED_PATTERN.test(message) });
+      }
+      return null;
     } finally {
       if (silent) setCatalogAutoLoad((current) => (current === autoLoad ? null : current));
-      else setModelsLoading(false);
+      else if (owned()) setModelsLoading(false);
+    }
+  }
+
+  async function testDraftConnection() {
+    if (!providerType || testingDraft) return;
+    if (
+      editingProvider?.hasApiKey &&
+      !apiKey.trim() &&
+      baseUrlDraft.trim() !== editingProvider.baseUrl
+    ) {
+      // The saved key only goes to the saved server, so the check would answer for that one.
+      toast.info("Save the new Base URL first, then test it.");
+      return;
+    }
+    const request = ++formCheckRequestRef.current;
+    setTestingDraft(true);
+    setFormCheck({ state: "checking" });
+    try {
+      const result = await testProviderConnection({
+        providerType: toExternalBackendProviderType(providerType) ?? providerType,
+        providerId: editingProviderId,
+        apiKey: apiKey.trim(),
+        baseUrl: parseBaseUrlForProvider(baseUrlDraft, isCustomProvider, providerType),
+        apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
+        extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
+        modelId:
+          providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
+          decisionsOnly ||
+          connectionCheckNeedsModel(
+            providerType,
+            parseBaseUrlForProvider(baseUrlDraft, isCustomProvider, providerType),
+          )
+            ? (selectedModelIds[0] ?? parseManualModelIds(manualModelIds)[0] ?? null)
+            : null,
+      });
+      if (request !== formCheckRequestRef.current) return;
+      setFormCheck(
+        result.success
+          ? { state: "ok", message: result.message }
+          : {
+              state: "error",
+              message: checkFailureDetail(result.message),
+              auth: result.error_kind === "auth",
+            },
+      );
+    } catch (error) {
+      if (request !== formCheckRequestRef.current) return;
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setFormCheck({ state: "error", message, auth: KEY_REJECTED_PATTERN.test(message) });
+    } finally {
+      setTestingDraft(false);
     }
   }
 
@@ -899,19 +1227,10 @@ export function ChatProvidersSettings({
 
     setMutatingProvider(true);
     try {
-      const models = pruneProviderModelIds(
-        providerType,
-        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
-      );
-      const available = pruneProviderModelIds(providerType, [
-        ...new Set([...availableModels, ...entry.default_models]),
-      ]);
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName: entry.display_name,
         baseUrl: null,
-        models,
-        availableModels: available,
       });
       const provider: ExternalProviderConfig = {
         id: created.id,
@@ -919,8 +1238,8 @@ export function ChatProvidersSettings({
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         ...connectionApiFields(created.api_type),
-        models,
-        availableModels: available,
+        models: [],
+        availableModels: [],
         hasApiKey: created.has_api_key,
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -938,8 +1257,6 @@ export function ChatProvidersSettings({
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
       void refreshProviderModelCatalogs([provider]);
-      setSelectedModelIds(models);
-      setAvailableModels(available);
       setEditingProviderId(created.id);
       return created.id;
     } finally {
@@ -959,7 +1276,7 @@ export function ChatProvidersSettings({
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
     if (
-      !isCustomProvider &&
+      !keyOptional &&
       selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
       !isClaudeAgent &&
       !apiKey.trim()
@@ -990,22 +1307,18 @@ export function ChatProvidersSettings({
         toast.error("Add at least one model ID.");
         return;
       }
-    } else if (remoteAllowsManual) {
-      if (modelsToSave.length === 0) {
-        toast.error("Add at least one model ID.");
-        return;
+    } else if (modelsToSave.length === 0) {
+      // Nothing chosen yet: list what the key or server offers and tick the suggestions, so one more click adds it.
+      const canList =
+        !isCuratedModelList &&
+        (!supportsRemoteModelCatalog(providerType) || baseUrlDraft.trim().length > 0);
+      const loaded = canList ? await loadModels() : null;
+      if (loaded && loaded.ticked.length > 0) {
+        toast.info("Review the ticked models, then add the connection.");
+      } else if (loaded || !canList) {
+        toast.error(remoteAllowsManual ? "Add at least one model ID." : "Select at least one model.");
       }
-    } else {
-      if (availableModels.length === 0) {
-        toast.error(
-          "Load available models first, then choose which to enable.",
-        );
-        return;
-      }
-      if (selectedModelIds.length === 0) {
-        toast.error("Select at least one model.");
-        return;
-      }
+      return;
     }
     setMutatingProvider(true);
     try {
@@ -1016,6 +1329,9 @@ export function ChatProvidersSettings({
       );
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
+      const autoCompactTokens = supportsAutoCompactTokens
+        ? parseAutoCompactTokens(autoCompactTokensDraft)
         : undefined;
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const created = await createProviderConfig({
@@ -1028,6 +1344,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        autoCompactTokens: autoCompactTokens ?? undefined,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1057,6 +1374,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        autoCompactTokens: created.auto_compact_tokens ?? undefined,
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
@@ -1069,6 +1387,7 @@ export function ChatProvidersSettings({
         authStatus: created.auth_status,
         autoReloadModels:
           uiProviderType === "llama_cpp" ? autoReloadModels : undefined,
+        newModelCheck: newModelCheckDraft,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -1081,8 +1400,7 @@ export function ChatProvidersSettings({
       ]);
       void refreshProviderModelCatalogs([provider]);
       resetForm();
-      autoOpenedAddFormRef.current = true;
-      setPage("list");
+        setPage("list");
       toast.success(
         "Connection added.",
         isDecisionConnection(provider)
@@ -1107,7 +1425,7 @@ export function ChatProvidersSettings({
 
   async function saveProviderEdits() {
     if (!editingProviderId) return;
-    const existing = providers.find(
+    const existing = allProviders.find(
       (provider) => provider.id === editingProviderId,
     );
     if (!existing) {
@@ -1129,7 +1447,7 @@ export function ChatProvidersSettings({
     );
     const isEditingOAuthProvider = existing.authKind === "chatgpt_oauth";
     if (
-      !isEditingCustomProvider &&
+      (!isEditingCustomProvider || isCloudPresetProviderType(existing.providerType)) &&
       !isEditingOAuthProvider &&
       credentialEdit.action === "missing"
     ) {
@@ -1199,6 +1517,9 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const autoCompactTokens = supportsAutoCompactTokens
+        ? parseAutoCompactTokens(autoCompactTokensDraft)
+        : undefined;
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -1210,6 +1531,7 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        autoCompactTokens,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1246,6 +1568,7 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        autoCompactTokens: updated.auto_compact_tokens ?? undefined,
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
@@ -1255,6 +1578,7 @@ export function ChatProvidersSettings({
         shared: updated.shared === true,
         autoReloadModels:
           existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
+        newModelCheck: newModelCheckDraft,
         isReasoningModel: supportsProviderReasoningToggle(
           existing.providerType,
         )
@@ -1263,16 +1587,20 @@ export function ChatProvidersSettings({
         updatedAt,
       };
       // Live store, not the render snapshot: auto reload may have written during the await.
-      onProvidersChange(
-        useExternalProvidersStore.getState().providers.map((provider) =>
-          provider.id === editingProviderId ? editedProvider : provider,
-        ),
-      );
+      const store = useExternalProvidersStore.getState();
+      const withEdit = (rows: ExternalProviderConfig[]) =>
+        rows.map((provider) => (provider.id === editingProviderId ? editedProvider : provider));
+      if (store.disabledProviders.some((provider) => provider.id === editingProviderId)) {
+        setDisabledProviders(withEdit(store.disabledProviders));
+      } else {
+        onProvidersChange(withEdit(store.providers));
+      }
       void refreshProviderModelCatalogs([editedProvider]);
+      // The key or endpoint may have changed, so the old answer no longer stands.
+      useConnectionChecksStore.getState().clearCheck(editingProviderId);
       toast.success("Connection updated.");
       resetForm();
-      autoOpenedAddFormRef.current = true;
-      setPage("list");
+        setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to update connection: ${message}`);
@@ -1289,13 +1617,12 @@ export function ChatProvidersSettings({
     refresh = false,
   ): Promise<boolean> {
     const request = ++codexCatalogRequestRef.current;
-    const curated = registryByType.get("openai_codex")?.default_models ?? [];
     let listed: CodexSubscriptionModels | null = null;
     if (authStatus === "connected") {
       try {
         listed = await fetchCodexSubscriptionModels(providerId, { refresh });
       } catch {
-        // Keep the curated seed: the form must still open when upstream is unreachable.
+        // The form must still open when upstream is unreachable.
       }
     }
     if (request !== codexCatalogRequestRef.current) {
@@ -1308,6 +1635,9 @@ export function ChatProvidersSettings({
       getProviderModelCapabilities("openai_codex"),
     );
     if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed?.source === "subscription") {
+      learnModelDisplayNames("openai_codex", listed.known ?? listed.models);
+    }
     if (listed?.source === "reauthorization_required") {
       void syncExternalProvidersFromBackend(providersRef.current)
         .then((synced) => {
@@ -1316,21 +1646,51 @@ export function ChatProvidersSettings({
         })
         .catch(() => undefined);
     }
-    const picker = resolveCodexPickerModels(curated, savedModels, listed);
+    const picker = resolveCodexPickerModels(savedModels, listed);
     if (refresh && listed?.source !== "subscription") {
-      // A curated fallback is not the account's catalog, so it retires nothing.
       setAvailableModels((previous) => [...new Set([...picker.catalog, ...previous])]);
       setManualModelIds("");
       return true;
     }
     setAvailableModels(picker.catalog);
+    const record = providersRef.current.find((provider) => provider.id === providerId);
+    const fresh =
+      record && newModelCheckOf(record) !== "off"
+      ? withNewlyOfferedCodexModels(
+          record.models,
+          record.availableModels ?? [],
+          listed,
+          autoTickLimit(record.id),
+        )
+      : null;
+    const added = fresh?.added ?? [];
     if (refresh) {
       const offered = new Set(picker.catalog);
-      setSelectedModelIds((previous) => previous.filter((id) => offered.has(id)));
+      setSelectedModelIds((previous) => [
+        ...new Set([...previous.filter((id) => offered.has(id)), ...added]),
+      ]);
     } else {
-      setSelectedModelIds(picker.selected);
+      setSelectedModelIds([...new Set([...picker.selected, ...added])]);
     }
     setManualModelIds("");
+    if (fresh) {
+      const { models, availableModels } = fresh;
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    } else if (!refresh && savedModels.length === 0 && picker.selected.length > 0) {
+      const models = pruneProviderModelIds("openai_codex", picker.selected);
+      const availableModels = pruneProviderModelIds("openai_codex", picker.catalog);
+      await updateProviderConfig(providerId, { models, availableModels });
+      const saved = providersRef.current.map((provider) =>
+        provider.id === providerId ? { ...provider, models, availableModels } : provider,
+      );
+      providersRef.current = saved;
+      onProvidersChange(saved);
+    }
     return true;
   }
 
@@ -1344,22 +1704,34 @@ export function ChatProvidersSettings({
     codexCatalogRequestRef.current += 1;
     setModelsLoading(false);
     setEditingProviderId(provider.id);
-    autoOpenedAddFormRef.current = true;
     setPage("form");
     setProviderType(provider.providerType);
     setCustomProviderName(
       provider.name || customProviderDisplayName(provider.providerType),
     );
-    setApiKey(
-      provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
-    );
+    const legacyKey = provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id);
+    setApiKey(legacyKey);
 
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
+    setNewModelCheckDraft(newModelCheckOf(provider));
     setSharedDraft(provider.shared === true);
     modelFieldsAtOpenRef.current = null;
+    formCheckRequestRef.current += 1;
+    // A browser-held key prefilled into the field was not typed, so opening the form does not check it.
+    checkedKeyRef.current = legacyKey.trim();
+    setFormCheck(null);
+    // Folded settings that are in use must not hide behind the fold.
+    setAdvancedOpen(
+      provider.maxOutputTokens != null ||
+        Object.keys(provider.extraHeaders ?? {}).length > 0 ||
+        provider.reasoningConfig?.enabled === true ||
+        provider.isReasoningModel === true ||
+        provider.autoReloadModels === true ||
+        newModelCheckOf(provider) !== "daily",
+    );
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
     );
@@ -1381,6 +1753,9 @@ export function ChatProvidersSettings({
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
     );
+    setAutoCompactTokensDraft(
+      provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
+    );
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
@@ -1398,7 +1773,10 @@ export function ChatProvidersSettings({
       setManualModelIds(provider.models.join("\n"));
       return;
     }
-    if (supportsRemoteModelCatalog(provider.providerType)) {
+    if (
+      supportsRemoteModelCatalog(provider.providerType) ||
+      isDecisionConnection({ providerType: provider.providerType })
+    ) {
       const cachedCatalog = provider.availableModels ?? [];
       const catalogModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
@@ -1435,8 +1813,11 @@ export function ChatProvidersSettings({
       setSelectedModelIds(inDefaults);
       setManualModelIds(custom.join("\n"));
     } else {
-      const shortlist = entry?.default_models ?? [];
       const cachedCatalog = provider.availableModels ?? [];
+      const shortlist = liveModelSeeds(
+        entry?.default_models ?? [],
+        cachedCatalog,
+      );
       const mergedModels = pruneProviderModelIds(provider.providerType, [
         ...new Set(
           [...shortlist, ...cachedCatalog, ...provider.models]
@@ -1461,7 +1842,17 @@ export function ChatProvidersSettings({
     }
     if (!providersReady) return;
     if (openedProviderRef.current === openProviderId) return;
-    const provider = providers.find(
+    const newType = newConnectionRequestType(openProviderId);
+    if (newType !== null) {
+      if (newType && registry.length === 0) return;
+      openedProviderRef.current = openProviderId;
+      // No provider named: the list page is where the gallery of them is.
+      if (registryByType.has(newType) || isCustomProviderType(newType)) openAddProvider(newType);
+      else closeForm();
+      onOpenProviderConsumed?.();
+      return;
+    }
+    const provider = allProviders.find(
       (candidate) => candidate.id === openProviderId,
     );
     if (!provider) return;
@@ -1470,7 +1861,7 @@ export function ChatProvidersSettings({
     onOpenProviderConsumed?.();
     // editProvider is redeclared each render; the latch above is what fires this once per id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
+  }, [openProviderId, providers, providersReady, onOpenProviderConsumed, registry]);
 
   async function refreshAfterClaudeAgentTurnedOn() {
     const [registryRows, synced] = await Promise.all([
@@ -1547,7 +1938,6 @@ export function ChatProvidersSettings({
       );
       toast.success(existing ? "Connection updated." : "Claude Agent connected.");
       resetForm();
-      autoOpenedAddFormRef.current = true;
       setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -1562,11 +1952,15 @@ export function ChatProvidersSettings({
     try {
       await deleteProviderConfig(providerId);
       removeExternalProviderApiKey(providerId);
-      onProvidersChange(
-        useExternalProvidersStore.getState().providers.filter(
-          (provider) => provider.id !== providerId,
-        ),
-      );
+      useConnectionChecksStore.getState().clearCheck(providerId);
+      const store = useExternalProvidersStore.getState();
+      if (store.disabledProviders.some((provider) => provider.id === providerId)) {
+        setDisabledProviders(
+          store.disabledProviders.filter((provider) => provider.id !== providerId),
+        );
+      } else {
+        onProvidersChange(store.providers.filter((provider) => provider.id !== providerId));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to delete connection: ${message}`);
@@ -1575,25 +1969,20 @@ export function ChatProvidersSettings({
     }
   }
 
-  async function testProvider(provider: ExternalProviderConfig) {
-    if (testingProviderIds.has(provider.id)) return;
-    setTestingProviderIds((prev) => new Set(prev).add(provider.id));
-    try {
-      await runProviderTest(provider);
-    } finally {
-      setTestingProviderIds((prev) => {
-        const next = new Set(prev);
-        next.delete(provider.id);
-        return next;
-      });
-    }
-  }
-
-  async function runProviderTest(provider: ExternalProviderConfig) {
+  async function checkConnection(
+    provider: ExternalProviderConfig,
+    { interactive }: { interactive: boolean },
+  ) {
+    const checksStore = useConnectionChecksStore.getState();
+    if (checksStore.checking[provider.id]) return;
     if (provider.authKind === "chatgpt_oauth") {
       if (provider.authStatus === "connected") {
-        toast.success("ChatGPT subscription is connected.");
-      } else {
+        checksStore.setCheck(provider.id, {
+          ok: true,
+          message: "ChatGPT subscription is connected.",
+          checkedAt: Date.now(),
+        });
+      } else if (interactive) {
         await editProvider(provider);
         toast.info("Authorize this ChatGPT subscription connection.");
       }
@@ -1608,15 +1997,16 @@ export function ChatProvidersSettings({
       provider.providerType !== CLAUDE_AGENT_PROVIDER_TYPE &&
       !supportsRemoteModelCatalog(provider.providerType)
     ) {
-      if (isCustomProviderType(provider.providerType)) {
-        await editProvider(provider);
-        toast.info(CUSTOM_PROVIDER_MISSING_KEY_MESSAGE);
-        return;
-      }
+      if (!interactive) return;
       await editProvider(provider);
-      toast.info(`No API key for ${provider.name}. Add one in Connections and save.`);
+      toast.info(
+        isCustomProviderType(provider.providerType)
+          ? CUSTOM_PROVIDER_MISSING_KEY_MESSAGE
+          : `No API key for ${provider.name}. Add one in Connections and save.`,
+      );
       return;
     }
+    checksStore.setChecking(provider.id, true);
     try {
       const result = await testProviderConnection({
         providerType:
@@ -1630,30 +2020,89 @@ export function ChatProvidersSettings({
         extraHeaders: provider.extraHeaders,
         modelId:
           provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
-          isDecisionConnection(provider)
+          isDecisionConnection(provider) ||
+          connectionCheckNeedsModel(provider.providerType, provider.baseUrl)
             ? (provider.models[0] ?? null)
             : null,
       });
-      if (result.success) {
-        toast.success(result.message);
-      } else {
-        toast.error(result.message);
-      }
+      checksStore.setCheck(provider.id, {
+        ok: result.success,
+        message: result.message,
+        // Older backends send no kind; a rejected key is still worth naming.
+        kind:
+          result.error_kind ??
+          (!result.success && KEY_REJECTED_PATTERN.test(result.message) ? "auth" : null),
+        checkedAt: Date.now(),
+      });
+      if (interactive && !result.success) toast.error(result.message);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Test failed: ${message}`);
+      checksStore.setCheck(provider.id, { ok: false, message, checkedAt: Date.now() });
+      if (interactive) toast.error(`Test failed: ${message}`);
+    } finally {
+      checksStore.setChecking(provider.id, false);
     }
   }
 
+  function checkAllConnections() {
+    for (const provider of providers) {
+      void checkConnection(provider, { interactive: false });
+    }
+  }
+
+  async function setProviderEnabled(provider: ExternalProviderConfig, enabled: boolean) {
+    setMutatingProvider(true);
+    try {
+      await updateProviderConfig(provider.id, { isEnabled: enabled });
+      const store = useExternalProvidersStore.getState();
+      const others = (rows: ExternalProviderConfig[]) =>
+        rows.filter((row) => row.id !== provider.id);
+      if (enabled) {
+        setDisabledProviders(others(store.disabledProviders));
+        onProvidersChange([...others(store.providers), provider].sort(byListOrder));
+      } else {
+        onProvidersChange(others(store.providers));
+        setDisabledProviders([...others(store.disabledProviders), provider]);
+        useConnectionChecksStore.getState().clearCheck(provider.id);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to turn ${enabled ? "on" : "off"} ${provider.name}: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
+  const modelChecklist = (clearsTypedIds: boolean) => (
+    <ConnectionModelList
+      providerType={providerType}
+      panelKey={modelsPanelKey}
+      models={filteredAvailableModels}
+      totalCount={availableModels.length}
+      selectedIds={selectedModelIds}
+      query={modelSearchQuery}
+      onQueryChange={setModelSearchQuery}
+      olderCount={olderModelCount}
+      showOlder={showOlderModels}
+      onShowOlderChange={setShowOlderModels}
+      onToggle={toggleModel}
+      onSelectAll={selectAllModels}
+      onClear={() => {
+        clearModelSelection();
+        if (clearsTypedIds && !modelSearchQuery.trim()) setManualModelIds("");
+      }}
+    />
+  );
+
   if (page === "form") {
     return (
-      <div className="@container -mt-3 flex shrink-0 flex-col gap-2">
+      <div ref={pageTopRef} className="@container -mt-3 flex shrink-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            className="size-8"
+            className="-ml-2 size-8"
             onClick={closeForm}
             aria-label="Back to connections"
             title="Back to connections"
@@ -1675,9 +2124,9 @@ export function ChatProvidersSettings({
         </header>
 
         <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3">
-          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
-            <div className="divide-y divide-border/60">
-              <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+          <section>
+            <div>
+              <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -1688,7 +2137,7 @@ export function ChatProvidersSettings({
                   <p className="text-xs leading-snug text-muted-foreground">
                     {isClaudeAgent
                       ? t("claudeAgent.connectionHint")
-                      : "OpenAI, Anthropic, or a compatible local endpoint."}
+                      : "A provider or your own server."}
                   </p>
                 </div>
                 <Select
@@ -1703,69 +2152,51 @@ export function ChatProvidersSettings({
                     <SelectValue placeholder="Choose a connection" />
                   </SelectTrigger>
                   {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
-                  <SelectContent className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden">
-                    <SelectGroup>
-                      <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ApiProviderLogo
-                            providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
-                            className="size-4"
-                            title={CUSTOM_PROVIDER_DISPLAY_NAME}
-                          />
-                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
-                        </span>
-                      </SelectItem>
-                      {CUSTOM_PROVIDER_PRESETS.map((preset) => (
-                        <SelectItem
-                          key={preset.providerType}
-                          value={preset.providerType}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <ApiProviderLogo
-                              providerType={preset.providerType}
-                              className="size-4"
-                              title={preset.displayName}
-                            />
-                            <span className="truncate">{preset.displayName}</span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                    <SelectSeparator />
-                    <SelectGroup>
-                      {menuRegistry.map((entry) => (
-                          <SelectItem
-                            key={entry.provider_type}
-                            value={entry.provider_type}
-                            ref={
-                              entry.provider_type === firstBelowFoldProviderType
-                                ? capProviderMenuAtItem
-                                : undefined
-                            }
-                          >
-                            <span className="flex min-w-0 items-center gap-2">
-                              <ApiProviderLogo
-                                providerType={entry.provider_type}
-                                className="size-4"
-                                title={entry.display_name}
-                              />
-                              <span className="truncate">
-                                {entry.provider_type === "opencode" ? "OpenCode" : entry.display_name}
+                  <SelectContent
+                    ref={fadeProviderMenuEdges}
+                    className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                  >
+                    {pickerGroups.map((group, groupIndex) => (
+                      <Fragment key={group.id}>
+                        {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
+                        <SelectGroup aria-label={group.label}>
+                          {group.id === "popular" ? null : (
+                            <SelectLabel>{group.label}</SelectLabel>
+                          )}
+                          {group.items.map((item, itemIndex) => (
+                            <SelectItem
+                              key={item.providerType}
+                              value={item.providerType}
+                              className="rounded-full"
+                              ref={
+                                group.id === "even-more" && itemIndex === 0
+                                  ? capProviderMenuAtItem
+                                  : undefined
+                              }
+                            >
+                              <span className="flex min-w-0 items-center gap-2">
+                                <ApiProviderLogo
+                                  providerType={item.providerType}
+                                  className="size-4"
+                                  title={item.name}
+                                />
+                                <span className="truncate">{item.name}</span>
+                                {item.providerType === CLAUDE_AGENT_PROVIDER_TYPE ? (
+                                  <ClaudeExperimentalBadge />
+                                ) : null}
                               </span>
-                              {entry.provider_type === CLAUDE_AGENT_PROVIDER_TYPE ? (
-                                <ClaudeExperimentalBadge />
-                              ) : null}
-                            </span>
-                          </SelectItem>
-                        ))}
-                    </SelectGroup>
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </Fragment>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
 
               {isClaudeAgent ? null : (<>
               {isOpenCodeProviderType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
                       Plan
@@ -1794,21 +2225,33 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
                       className="text-sm font-medium"
                     >
-                      API key {isCustomProvider ? "(optional)" : ""}
+                      API key {keyOptional ? "(optional)" : ""}
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
                       {editingProviderHasSavedKey
                         ? "Saved securely. Leave blank to keep it."
-                        : "Saved securely after you connect."}
+                        : "Saved securely."}
                     </p>
+                    {apiKeyUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => openExternalLink(apiKeyUrl)}
+                        className="inline-flex w-fit items-center gap-0.5 rounded-sm text-xs text-control-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        Get an API key
+                        <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                      </button>
+                    ) : null}
                   </div>
-                  <div className="relative mt-[var(--ui-title-cap-inset)] min-w-0 @max-[520px]:mt-0">
+                  <div className="mt-[var(--ui-title-cap-inset)] min-w-0 @max-[520px]:mt-0">
+                    {/* Own box, so the eye stays centred on the input when messages render below it. */}
+                    <div className="relative">
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
@@ -1823,6 +2266,8 @@ export function ChatProvidersSettings({
                           ? "Leave blank to keep saved key"
                           : "Enter API key"
                       }
+                      aria-invalid={keyRejected || undefined}
+                      aria-describedby={keyRejected ? "provider-api-key-error" : undefined}
                       className="h-9 pr-9 text-sm"
                     />
                     <button
@@ -1838,6 +2283,7 @@ export function ChatProvidersSettings({
                         <HugeiconsIcon icon={ViewOffSlashIcon} className="size-3.5" />
                       )}
                     </button>
+                    </div>
                     {editingProviderHasSavedKey ? (
                       <Button
                         type="button"
@@ -1857,13 +2303,23 @@ export function ChatProvidersSettings({
                         The saved key will be removed when you save this connection.
                       </p>
                     ) : null}
+                    {keyRejected ? (
+                      <p
+                        id="provider-api-key-error"
+                        role="alert"
+                        className="mt-1 text-xs text-destructive"
+                      >
+                        {formCheck?.state === "error" ? formCheck.message : null} Check
+                        that the whole key was pasted.
+                      </p>
+                    ) : null}
 
                   </div>
                 </div>
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -1884,13 +2340,13 @@ export function ChatProvidersSettings({
               ) : null}
 
               {shouldShowProviderApiType(providerType) ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">
                       API type
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      Choose the endpoint your enabled models support.
+                      The endpoint your models support.
                     </p>
                   </div>
                   <Select
@@ -1916,7 +2372,7 @@ export function ChatProvidersSettings({
               ) : null}
               {isCustomProvider &&
               selectedProviderContract?.base_url_editable !== false ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -1941,109 +2397,8 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {supportsMaxOutputTokens ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <Label
-                      htmlFor="provider-max-output-tokens"
-                      className="text-sm font-medium"
-                    >
-                      Max Tokens limit
-                    </Label>
-                    <p
-                      id="provider-max-output-tokens-help"
-                      className="text-xs leading-snug text-muted-foreground"
-                    >
-                      Caps Max Tokens for this connection. Never raises it past a
-                      model's documented limit. Leave blank to use that limit, or
-                      32,768 for a model without one.
-                    </p>
-                  </div>
-                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
-                    {/* Text, not type=number: that blanks "131,072" and silently clears the override. */}
-                    <Input
-                      id="provider-max-output-tokens"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      spellCheck={false}
-                      value={maxOutputTokensDraft}
-                      onChange={(event) =>
-                        setMaxOutputTokensDraft(event.target.value)
-                      }
-                      placeholder="32768"
-                      aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
-                      className="h-9 text-sm"
-                    />
-                    <p
-                      id="provider-max-output-tokens-warning"
-                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
-                    >
-                      If the upstream provider does not support this value,
-                      requests may fail.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
-              {providerType !== "openai_codex" && !isClaudeAgent ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <Label
-                      htmlFor="provider-extra-headers"
-                      className="text-sm font-medium"
-                    >
-                      Extra headers
-                    </Label>
-                    <p
-                      id="provider-extra-headers-help"
-                      className="text-xs leading-snug text-muted-foreground"
-                    >
-                      One header per line, as Name: value. Use {"{{CHAT_SESSION_ID}}"} for
-                      the open chat. Sent on every request to this connection.
-                    </p>
-                  </div>
-                  <Textarea
-                    id="provider-extra-headers"
-                    value={extraHeadersDraft}
-                    onChange={(event) => setExtraHeadersDraft(event.target.value)}
-                    placeholder={
-                      'X-LiteLLM-Session-Id: unsloth-{{CHAT_SESSION_ID}}'
-                    }
-                    aria-describedby="provider-extra-headers-help"
-                    className="min-h-20 font-mono text-sm"
-                  />
-                </div>
-              ) : null}
-
-              {providerType === "llama_cpp" ? (
-                <div className="flex items-start justify-between gap-4 px-4 py-3">
-                  <div className="space-y-1">
-                    <Label
-                      htmlFor="provider-auto-reload-models"
-                      className="text-sm font-medium"
-                    >
-                      Reload models automatically on connect
-                    </Label>
-                    <p
-                      id="provider-auto-reload-models-help"
-                      className="text-xs text-muted-foreground"
-                    >
-                      Refresh once on connect and after a disconnect while Unsloth is open.
-                      New model IDs are enabled automatically. Saved in this browser.
-                    </p>
-                  </div>
-                  <Switch
-                    className="mt-[var(--ui-title-cap-inset)]"
-                    id="provider-auto-reload-models"
-                    checked={autoReloadModels}
-                    onCheckedChange={setAutoReloadModels}
-                    aria-describedby="provider-auto-reload-models-help"
-                  />
-                </div>
-              ) : null}
               {showShareToggle ? (
-                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                <div className="flex items-start justify-between gap-4 py-3">
                   <div className="space-y-1">
                     <Label
                       htmlFor="provider-shared"
@@ -2070,15 +2425,232 @@ export function ChatProvidersSettings({
                   />
                 </div>
               ) : null}
+              </>)}
+            </div>
+          </section>
+
+          {isClaudeAgent ? (
+            <ClaudeAgentSetup
+              key={editingProviderId ?? "new"}
+              savedModels={editingProvider ? editingProvider.models : null}
+              savedMaxOutputTokens={maxOutputTokensDraft}
+              off={claudeAgentOff}
+              saving={mutatingProvider}
+              onTurnedOn={refreshAfterClaudeAgentTurnedOn}
+              onSave={(models, maxTokens) => void saveClaudeAgent(models, maxTokens)}
+              onCancel={closeForm}
+            />
+          ) : (<>
+          {supportsAutoCompactTokens ? (
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label
+                  htmlFor="provider-auto-compact-tokens"
+                  className="text-sm font-medium"
+                >
+                  Auto-compact after
+                </Label>
+                <p
+                  id="provider-auto-compact-tokens-help"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  Tokens before older messages are summarized. Blank uses 75% of
+                  the model's context window
+                  {providerType === "anthropic" || providerType === "openai"
+                    ? ", up to 200,000"
+                    : ""}
+                  .
+                </p>
+              </div>
+              <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                <Input
+                  id="provider-auto-compact-tokens"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={autoCompactTokensDraft}
+                  onChange={(event) =>
+                    setAutoCompactTokensDraft(event.target.value)
+                  }
+                  placeholder="Default"
+                  aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
+                  className="h-9 text-sm"
+                />
+                <p
+                  id="provider-auto-compact-tokens-note"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  {providerType === "anthropic"
+                    ? "At least 50,000 for Claude. Capped at the model's context window."
+                    : "Capped at the model's context window."}
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          <Collapsible
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            className="overflow-hidden"
+          >
+            <CollapsibleTrigger className="group/advanced flex items-center gap-1 rounded-md py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              Advanced settings
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                className="size-3.5 -rotate-90 transition-transform group-data-[state=open]/advanced:rotate-0"
+              />
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+            <div>
+              {supportsMaxOutputTokens ? (
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-max-output-tokens"
+                      className="text-sm font-medium"
+                    >
+                      Max Tokens limit
+                    </Label>
+                    <p
+                      id="provider-max-output-tokens-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      Caps Max Tokens for this connection. Blank uses the model's
+                      limit, or 32,768 without one.
+                    </p>
+                  </div>
+                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                    {/* Text, not type=number: that blanks "131,072" and silently clears the override. */}
+                    <Input
+                      id="provider-max-output-tokens"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={maxOutputTokensDraft}
+                      onChange={(event) =>
+                        setMaxOutputTokensDraft(event.target.value)
+                      }
+                      placeholder="32768"
+                      aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
+                      className="h-9 text-sm"
+                    />
+                    <p
+                      id="provider-max-output-tokens-warning"
+                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+                    >
+                      Requests may fail if the provider rejects this value.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {providerType !== "openai_codex" ? (
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-extra-headers"
+                      className="text-sm font-medium"
+                    >
+                      Extra headers
+                    </Label>
+                    <p
+                      id="provider-extra-headers-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      One per line, as Name: value. {"{{CHAT_SESSION_ID}}"} is the open chat.
+                    </p>
+                  </div>
+                  <Textarea
+                    id="provider-extra-headers"
+                    value={extraHeadersDraft}
+                    onChange={(event) => setExtraHeadersDraft(event.target.value)}
+                    placeholder={"X-Title: Unsloth\nX-Session-Id: {{CHAT_SESSION_ID}}"}
+                    aria-describedby="provider-extra-headers-help"
+                    className="min-h-20 font-mono text-xs md:text-xs"
+                  />
+                </div>
+              ) : null}
+
+              {providerType === "llama_cpp" ? (
+                <div className="flex items-start justify-between gap-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-auto-reload-models"
+                      className="text-sm font-medium"
+                    >
+                      Reload models automatically on connect
+                    </Label>
+                    <p
+                      id="provider-auto-reload-models-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Refresh once on connect and after a disconnect while Unsloth is open.
+                      New model IDs are enabled automatically. Saved in this browser.
+                    </p>
+                  </div>
+                  <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
+                    id="provider-auto-reload-models"
+                    checked={autoReloadModels}
+                    onCheckedChange={setAutoReloadModels}
+                    aria-describedby="provider-auto-reload-models-help"
+                  />
+                </div>
+              ) : null}
+              {providerType === "openai_codex" ||
+              autoTicksNewlyListedModels({ providerType }) ? (
+                <div className="flex items-start justify-between gap-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-new-model-check"
+                      className="text-sm font-medium"
+                    >
+                      Check for new models
+                    </Label>
+                    <p
+                      id="provider-new-model-check-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {newModelCheckDraft === "off"
+                        ? "New models stay unticked."
+                        : "New models are ticked for you. Saved in this browser."}
+                    </p>
+                  </div>
+                  <Select
+                    value={newModelCheckDraft}
+                    onValueChange={(value) => {
+                      if (isNewModelCheckInterval(value)) setNewModelCheckDraft(value);
+                    }}
+                  >
+                    <SelectTrigger
+                      id="provider-new-model-check"
+                      className="mt-[var(--ui-title-cap-inset)] w-36 shrink-0"
+                      aria-describedby="provider-new-model-check-help"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {NEW_MODEL_CHECK_INTERVALS.map((interval) => (
+                        <SelectItem key={interval} value={interval}>
+                          {NEW_MODEL_CHECK_LABELS[interval]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+
               {showCustomReasoning ? (
                 <>
-                  <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
                         Reasoning support
                       </Label>
                       <p id="provider-reasoning-support-help" className="text-xs leading-snug text-muted-foreground">
-                        Opt in only if this endpoint accepts reasoning controls. Otherwise no reasoning fields are sent.
+                        Turn on only if this endpoint accepts reasoning controls.
                       </p>
                     </div>
                     <label htmlFor="provider-reasoning-support" className="flex cursor-pointer items-center gap-2 text-sm">
@@ -2095,13 +2667,13 @@ export function ChatProvidersSettings({
                     </label>
                   </div>
                   {reasoningConfig?.enabled ? (
-                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
                           Reasoning parameter style
                         </Label>
                         <p className="text-xs leading-snug text-muted-foreground">
-                          Choose the request format your endpoint supports.
+                          The request format your endpoint supports.
                         </p>
                       </div>
                       <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2137,7 +2709,7 @@ export function ChatProvidersSettings({
                 </>
               ) : null}
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
                     className="text-sm font-medium"
@@ -2159,44 +2731,21 @@ export function ChatProvidersSettings({
                   </label>
                 </div>
               ) : null}
-              {runsStudioToolsLocally ? (
-                <div className="px-4 py-3">
-                  <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Tools,
-                    MCP and Docs. Those run on this machine, and their
-                    results are sent back to the provider as part of the next
-                    message. Code and terminal calls still ask before anything
-                    risky runs.
-                  </p>
-                </div>
-              ) : null}
-              </>)}
             </div>
-          </section>
+            </CollapsibleContent>
+          </Collapsible>
 
-          {isClaudeAgent ? (
-            <ClaudeAgentSetup
-              key={editingProviderId ?? "new"}
-              savedModels={editingProvider ? editingProvider.models : null}
-              savedMaxOutputTokens={maxOutputTokensDraft}
-              off={claudeAgentOff}
-              saving={mutatingProvider}
-              onTurnedOn={refreshAfterClaudeAgentTurnedOn}
-              onSave={(models, maxTokens) => void saveClaudeAgent(models, maxTokens)}
-              onCancel={closeForm}
-            />
-          ) : (<>
           {isCodexSubscription ? (
             <OpenAICodexConnect
               providerId={editingProviderId}
-              authStatus={providers.find((provider) => provider.id === editingProviderId)?.authStatus}
+              authStatus={editingProvider?.authStatus}
               ensureProvider={ensureCodexProvider}
               onChanged={async () => {
                 // Take a fresh generation: sharing one let an in-flight catalog request clear
                 // the loading flag and re-enable Save mid-sync.
                 const request = ++codexCatalogRequestRef.current;
                 const changedProviderId = editingProviderId;
-                // Save is gated on this, or pre-authorization seed slugs get saved and fail.
+                // Save is gated on this, so nothing is saved before the plan's list is read.
                 setModelsLoading(true);
                 let owned = true;
                 try {
@@ -2227,7 +2776,7 @@ export function ChatProvidersSettings({
             />
           ) : null}
 
-          <section className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
+          <section>
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={modelsPanelKey}
@@ -2247,7 +2796,7 @@ export function ChatProvidersSettings({
                 }}
               >
                 <div
-                  className={`flex flex-wrap items-start justify-between gap-3 px-4 py-3 ${showModelsBody ? "border-border/60 border-b" : ""}`}
+                  className={`flex flex-wrap items-start justify-between gap-3 py-3`}
                 >
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label className="text-sm font-medium">Models</Label>
@@ -2256,34 +2805,63 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <div data-title-line-control={true} className="shrink-0">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className={
-                        availableModels.length > 0
-                          ? "h-7 shrink-0 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/45 hover:text-foreground"
-                          : "shrink-0"
-                      }
-                      disabled={loadModelsDisabled}
-                      title={loadModelsTitle}
-                      onClick={() => void loadModels()}
-                    >
-                      {modelsLoading || catalogAutoLoading ? (
-                        <>
-                          <Spinner className="mr-2 size-3.5" />
-                          Loading…
-                        </>
-                      ) : availableModels.length > 0 ? (
-                        "Reload models"
-                      ) : (
-                        "Load available models"
-                      )}
-                    </Button>
+                    {availableModels.length > 0 ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="size-7 text-muted-foreground hover:text-foreground"
+                        disabled={loadModelsDisabled}
+                        title={loadModelsTitle ?? "Reload models"}
+                        aria-label="Reload models"
+                        onClick={() => void loadModels()}
+                      >
+                        {modelsLoading || catalogAutoLoading ? (
+                          <Spinner className="size-4" />
+                        ) : (
+                          <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        )}
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={loadModelsDisabled}
+                        title={loadModelsTitle}
+                        onClick={() => void loadModels()}
+                      >
+                        {modelsLoading || catalogAutoLoading ? (
+                          <>
+                            <Spinner className="mr-2 size-3.5" />
+                            Loading…
+                          </>
+                        ) : (
+                          "Load available models"
+                        )}
+                      </Button>
+                    )}
                   </div>
                 </div>
+                {formCheck && !keyRejected ? (
+                  <div
+                    role={formCheck.state === "error" ? "alert" : "status"}
+                    className="py-2"
+                  >
+                    <ConnectionStatusLine
+                      status={
+                        formCheck.state === "checking"
+                          ? { tone: "muted", label: "Checking" }
+                          : formCheck.state === "ok"
+                            ? { tone: "ok", label: formCheck.message }
+                            : { tone: "error", label: "Check failed", detail: formCheck.message }
+                      }
+                    />
+                  </div>
+                ) : null}
                 {isCustomProvider && !supportsRemoteModelCatalog(providerType) ? (
-                  <div className="space-y-3 px-4 py-4">
+                  <div className="space-y-3 py-3">
                     <div className="space-y-2">
                       <Label
                         htmlFor="provider-manual-models"
@@ -2303,81 +2881,12 @@ export function ChatProvidersSettings({
                       />
                     </div>
                   </div>
-                ) : isCuratedModelList ? (
-                  <div className="space-y-3 px-4 py-4">
+                ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
+                  <div className="space-y-3 py-3">
                     <p className="text-xs leading-relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.
                     </p>
-                    {availableModels.length > 0 ? (
-                      <>
-                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
-                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-                            {availableModelsLabel}
-                          </span>
-                          <Input
-                            id={`provider-model-search-${modelsPanelKey}`}
-                            type="search"
-                            value={modelSearchQuery}
-                            onChange={(event) =>
-                              setModelSearchQuery(event.target.value)
-                            }
-                            placeholder="Search"
-                            aria-label="Search models"
-                            className={modelSearchInputClassName}
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                              onClick={selectAllModels}
-                            >
-                              Select all
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                              onClick={() => {
-                                clearModelSelection();
-                                if (!modelSearchQuery.trim()) setManualModelIds("");
-                              }}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-                        </div>
-                        <ul className={modelListClassName}>
-                          {filteredAvailableModels.length === 0 ? (
-                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
-                              No matching models
-                            </li>
-                          ) : (
-                            filteredAvailableModels.map((model, index) => (
-                              <li
-                                key={model}
-                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
-                                onClick={() => toggleModel(model)}
-                              >
-                                <Checkbox
-                                  id={`provider-model-curated-${modelsPanelKey}-${index}`}
-                                  checked={selectedModelIds.includes(model)}
-                                  onCheckedChange={() => toggleModel(model)}
-                                  onClick={(event) => event.stopPropagation()}
-                                />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                      </>
-                    ) : null}
+                    {availableModels.length > 0 ? modelChecklist(true) : null}
                     {modelIdsEditable ? (
                       <div className="space-y-2">
                         <Label
@@ -2399,74 +2908,8 @@ export function ChatProvidersSettings({
                   </div>
                 ) : availableModels.length === 0 &&
                   !allowsManualModelIdsWithCatalog(providerType) ? null : (
-                  <div className="space-y-3 px-4 py-4">
-                    {availableModels.length === 0 ? null : (
-                      <>
-                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
-                          <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-                            {availableModelsLabel}
-                          </span>
-                          <Input
-                            id={`provider-model-search-${modelsPanelKey}`}
-                            type="search"
-                            value={modelSearchQuery}
-                            onChange={(event) =>
-                              setModelSearchQuery(event.target.value)
-                            }
-                            placeholder="Search"
-                            aria-label="Search models"
-                            className={modelSearchInputClassName}
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                              onClick={selectAllModels}
-                            >
-                              Select all
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
-                              onClick={clearModelSelection}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-                        </div>
-                        <ul className={modelListClassName}>
-                          {filteredAvailableModels.length === 0 ? (
-                            <li className="px-4 py-2.5 text-xs text-muted-foreground">
-                              No matching models
-                            </li>
-                          ) : (
-                            filteredAvailableModels.map((model, index) => (
-                              <li
-                                key={model}
-                                className="flex min-h-9 cursor-pointer items-center gap-2.5 px-4 py-1.5 hover:bg-muted/35"
-                                onClick={() => toggleModel(model)}
-                              >
-                                <Checkbox
-                                  id={`provider-model-remote-${modelsPanelKey}-${index}`}
-                                  checked={selectedModelIds.includes(model)}
-                                  onCheckedChange={() => toggleModel(model)}
-                                  onClick={(event) => event.stopPropagation()}
-                                />
-                                <span
-                                  className="min-w-0 break-all text-sm leading-tight"
-                                >
-                                  {model}
-                                </span>
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                      </>
-                    )}
+                  <div className="space-y-3 py-3">
+                    {availableModels.length === 0 ? null : modelChecklist(false)}
                     {allowsManualModelIdsWithCatalog(providerType) ? (
                       <div className="space-y-2">
                         <Label
@@ -2497,11 +2940,34 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
-          {/* -mb-3 trims the settings pane's p-6 so the gap below the buttons matches the gap-3 above. */}
-          <div className="-mb-3 flex flex-wrap items-center justify-end gap-3">
+          {/* -mb-3 trims the settings pane's p-6 so the gap below the last row matches the gap-3 above. */}
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-end gap-3",
+              !runsStudioToolsLocally && "-mb-3",
+            )}
+          >
             <div className="flex flex-wrap gap-2">
+              {usesOAuth ? null : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={!canTestDraft || testingDraft || modelsLoading || mutatingProvider}
+                  title={
+                    canTestDraft
+                      ? "Check this connection as typed, before saving"
+                      : "Enter an API key first"
+                  }
+                  onClick={() => void testDraftConnection()}
+                >
+                  {testingDraft ? <Spinner className="size-3.5" data-icon="inline-start" /> : null}
+                  Test connection
+                </Button>
+              )}
               <Button
                 type="button"
+                variant="primary"
                 size="sm"
                 disabled={
                   registryLoading ||
@@ -2521,193 +2987,180 @@ export function ChatProvidersSettings({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={editingProviderId ? closeForm : resetForm}
+                onClick={closeForm}
               >
-                {editingProviderId ? "Cancel" : "Clear"}
+                Cancel
               </Button>
             </div>
           </div>
+          {runsStudioToolsLocally ? (
+            <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
+              Search, Tools, MCP and Docs run on this machine and send their results to
+              the provider. Risky code and terminal calls still ask first.
+            </p>
+          ) : null}
           </>)}
         </div>
       </div>
     );
   }
 
+  const listedProviders = [
+    ...providers.map((provider) => ({ provider, enabled: true })),
+    ...disabledProviders.map((provider) => ({ provider, enabled: false })),
+  ].sort((a, b) => byListOrder(a.provider, b.provider));
+  const connectedTypes = new Set(
+    allProviders.map((provider) => connectionPickerValue(provider.providerType)),
+  );
+  const checkingAny = providers.some((provider) => checkingIds[provider.id]);
+  const oldestCheckAt = providers.reduce<number | null>((oldest, provider) => {
+    const at = checks[provider.id]?.checkedAt;
+    return at === undefined ? oldest : oldest === null ? at : Math.min(oldest, at);
+  }, null);
+
   return (
-    <div className="settings-page min-h-0">
-      <header className="flex min-w-0 flex-col gap-1 pr-8">
-        <h1 className="text-xl font-semibold font-heading">Connections</h1>
-        <p className="text-xs text-muted-foreground">
-          Manage model connections for chat and the Decision API.
-        </p>
+    <div ref={pageTopRef} className="settings-page min-h-0">
+      <header className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-wrap items-start justify-between gap-3 pe-10">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h1 className="text-xl font-semibold font-heading">Connections</h1>
+          <p className="text-xs text-muted-foreground">
+            Use cloud providers and your own servers in chat.
+          </p>
+        </div>
+        {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
+        <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
+          <label className="flex h-9 shrink-0 items-center gap-4 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+            <span>Enable connections</span>
+            <Switch
+              className="scale-[0.88]"
+              checked={connectionsEnabled}
+              onCheckedChange={setConnectionsEnabled}
+              aria-label="Enable connections"
+              title="When off, all connections are disabled."
+            />
+          </label>
+        </div>
       </header>
 
-      <div className="flex w-full max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-x-6">
-        <div className="flex items-center gap-2">
-          <Label
-            htmlFor="chat-connections-enabled"
-            className="cursor-pointer text-xs text-muted-foreground"
-          >
-            Enable connections
-          </Label>
-          <Switch
-            id="chat-connections-enabled"
-            checked={connectionsEnabled}
-            onCheckedChange={setConnectionsEnabled}
-            aria-label="Enable connections"
-            aria-describedby="chat-connections-description"
-          />
-        </div>
-        <p
-          id="chat-connections-description"
-          className="max-w-md text-ui-11 leading-snug text-muted-foreground/65 sm:text-right"
+      <div className="max-w-[calc(760px*var(--ui-space-scale,1))]">
+        <SettingsSection
+          title="Your connections"
+          description={`${listedProviders.length} connections · ${totalModels} models`}
+          action={
+            providers.length > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                disabled={checkingAny || !connectionsEnabled}
+                onClick={checkAllConnections}
+                title="Check every connection now"
+              >
+                {checkingAny ? (
+                  <Spinner className="size-3.5" data-icon="inline-start" />
+                ) : (
+                  <HugeiconsIcon icon={Refresh01Icon} data-icon="inline-start" />
+                )}
+                {checkingAny
+                  ? "Checking"
+                  : oldestCheckAt === null
+                    ? "Check all"
+                    : `Checked ${formatCheckedAgo(oldestCheckAt, now)}`}
+              </Button>
+            ) : undefined
+          }
         >
-          When off, all connections are disabled.
-        </p>
-      </div>
-
-      <section className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-2">
-        <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/[0.12]">
-          <div className="flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5">
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground/90">
-              {providers.length} connections · {totalModels} models
-            </span>
-            <Button variant="dark" size="sm" onClick={openAddProvider}>
-              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
-              Add connection
-            </Button>
-          </div>
-          {providers.length === 0 ? (
-            <div className="px-3 py-4">
+          {listedProviders.length === 0 ? (
+            <div className="py-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <span className="text-sm font-medium text-foreground">
                   No connections yet
                 </span>
                 <span className="text-xs leading-snug text-muted-foreground">
-                  Add a connection to use hosted models from chat.
+                  {syncingProviders
+                    ? "Loading your connections"
+                    : "Pick a provider below."}
                 </span>
               </div>
             </div>
           ) : (
-            <>
-              {providers.map((provider) => {
-                const registryEntry = registryByType.get(provider.providerType);
-                const detail =
-                  provider.baseUrl || registryEntry?.base_url || "";
-                const providerLabel =
-                  registryEntry?.display_name ??
-                  customProviderDisplayName(provider.providerType);
-                const modelLabels = provider.models.map((model) =>
-                  connectionModelLabel(provider.providerType, model, claudeAgentNames),
-                );
-                const modelSummary = formatModelSummary(modelLabels);
-                return (
-                  <div
-                    key={provider.id}
-                    className="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-border/60 border-b px-3 py-3 transition-colors last:border-b-0 hover:bg-muted/35 max-sm:grid-cols-1"
-                  >
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-sm border border-border/70 bg-background/80">
-                        <ApiProviderLogo
-                          providerType={provider.providerType}
-                          className="size-5"
-                          title={provider.name}
-                        />
-                      </div>
-                      <div className="min-w-0 pt-px">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">
-                            {provider.name}
-                          </span>
-                          <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
-                            {provider.models.length}{" "}
-                            {provider.models.length === 1 ? "model" : "models"}
-                          </span>
-                          {isDecisionConnection(provider) ? (
-                            <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
-                              {t("settings.apiKeys.decisionApi.title")}
-                            </span>
-                          ) : null}
-                          {provider.shared ? (
-                            <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-0.5 text-ui-10 leading-none text-muted-foreground">
-                              {provider.sharedByOwner ? "Shared by owner" : "Shared"}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                          <span>{providerLabel}</span>
-                          {detail ? (
-                            <>
-                              {" · "}
-                              <span>{detail}</span>
-                            </>
-                          ) : null}
-                        </div>
-                        <div
-                          className="mt-1 truncate text-ui-11 leading-4 text-muted-foreground/80"
-                          title={modelLabels.join(", ")}
-                        >
-                          {modelSummary}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground">
-                      {provider.sharedByOwner ? null : (
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="ghost"
-                        className="size-7 hover:text-foreground"
-                        disabled={mutatingProvider}
-                        onClick={() => editProvider(provider)}
-                        title="Edit connection"
-                        aria-label={`Edit ${provider.name}`}
-                      >
-                        <HugeiconsIcon icon={Edit03Icon} className="size-4" />
-                      </Button>
-                      )}
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="ghost"
-                        className="size-7 hover:text-foreground"
-                        disabled={
-                          mutatingProvider ||
-                          testingProviderIds.has(provider.id)
-                        }
-                        aria-busy={testingProviderIds.has(provider.id)}
-                        onClick={() => void testProvider(provider)}
-                        title="Check connection"
-                        aria-label={`Check ${provider.name}`}
-                      >
-                        {testingProviderIds.has(provider.id) ? (
-                          <Spinner className="size-4" />
-                        ) : (
-                          <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
-                        )}
-                      </Button>
-                      {provider.sharedByOwner ? null : (
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="ghost"
-                        className="size-7 hover:text-destructive"
-                        disabled={mutatingProvider}
-                        onClick={() => setPendingDeleteProvider(provider)}
-                        title="Delete connection"
-                        aria-label={`Delete ${provider.name}`}
-                      >
-                        <HugeiconsIcon icon={TrashIcon} className="size-4" />
-                      </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
+            listedProviders.map(({ provider, enabled }) => {
+              const registryEntry = registryByType.get(provider.providerType);
+              const providerLabel =
+                registryEntry?.display_name ??
+                customProviderDisplayName(provider.providerType);
+              const customEndpoint =
+                provider.baseUrl && provider.baseUrl !== registryEntry?.base_url
+                  ? endpointHost(provider.baseUrl)
+                  : "";
+              const source = [
+                providerLabel === provider.name ? "" : providerLabel,
+                customEndpoint,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <ConnectionRow
+                  key={provider.id}
+                  provider={provider}
+                  enabled={enabled}
+                  status={connectionStatus(provider, {
+                    enabled: enabled && connectionsEnabled,
+                    keyOptional:
+                      provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE ||
+                      (isCustomProviderType(provider.providerType) &&
+                        !isCloudPresetProviderType(provider.providerType)) ||
+                      getExternalProviderApiKey(provider.id).trim().length > 0,
+                    checking: checkingIds[provider.id] === true,
+                    check: checks[provider.id],
+                    now,
+                  })}
+                  source={source}
+                  modelSummary={formatModelSummary(
+                    provider.providerType,
+                    provider.models,
+                    claudeAgentNames,
+                  )}
+                  badges={
+                    <>
+                      <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                        {provider.models.length}{" "}
+                        {provider.models.length === 1 ? "model" : "models"}
+                      </span>
+                      {isDecisionConnection(provider) ? (
+                        <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                          {t("settings.apiKeys.decisionApi.title")}
+                        </span>
+                      ) : null}
+                      {provider.shared ? (
+                        <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-0.5 text-ui-10 leading-none text-muted-foreground">
+                          {provider.sharedByOwner ? "Shared by owner" : "Shared"}
+                        </span>
+                      ) : null}
+                    </>
+                  }
+                  busy={mutatingProvider}
+                  checking={checkingIds[provider.id] === true}
+                  onEdit={() => void editProvider(provider)}
+                  onCheck={() => void checkConnection(provider, { interactive: true })}
+                  onDelete={() => setPendingDeleteProvider(provider)}
+                  onEnabledChange={(next) => void setProviderEnabled(provider, next)}
+                />
+              );
+            })
           )}
-        </div>
-      </section>
+        </SettingsSection>
+      </div>
+
+      <div className="flex max-w-[calc(760px*var(--ui-space-scale,1))] flex-col gap-3 pb-8">
+        <ConnectionGallery
+          registry={menuRegistry}
+          connectedTypes={connectedTypes}
+          loading={registryLoading}
+          onPick={(type) => openAddProvider(type)}
+        />
+      </div>
       <AlertDialog
         open={pendingDeleteProvider !== null}
         onOpenChange={(open) => {
@@ -2762,7 +3215,7 @@ export function ChatProvidersDialog({
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>
           <DialogDescription>
-            Manage model connections for chat.
+            Use cloud providers and your own servers in chat.
           </DialogDescription>
         </DialogHeader>
         <ChatProvidersSettings

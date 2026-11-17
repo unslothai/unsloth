@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type { ClaudeAgentStatus } from "./api/providers-api";
 import { CLAUDE_AGENT_PROVIDER_TYPE } from "./external-providers";
+import { providerModelDisplayName } from "./model-display-names";
 export const CLAUDE_CODE_INSTALL_COMMANDS = {
   unix: "curl -fsSL https://claude.ai/install.sh | bash",
   // lint-allow: AV005 shown to the user to copy, never executed
@@ -241,6 +242,8 @@ export function connectionModelLabel(
   modelId: string,
   names: Record<string, string> = useClaudeAgentModelNames.getState().names,
 ): string {
-  if (providerType !== CLAUDE_AGENT_PROVIDER_TYPE) return modelId;
+  if (providerType !== CLAUDE_AGENT_PROVIDER_TYPE) {
+    return providerModelDisplayName(providerType, modelId);
+  }
   return names[modelId] || claudeAgentFallbackName(modelId);
 }

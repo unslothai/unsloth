@@ -184,7 +184,8 @@ test("the main composer has one Dictate entry and does not gate it on draft text
   );
   const controlsStart = threadSource.indexOf("const ComposerRightControls:");
   const controls = threadSource.slice(controlsStart);
-  assert.equal((controls.match(/tooltip="Dictate"/g) ?? []).length, 1);
+  assert.equal((controls.match(/tooltip=\{micLabel\}/g) ?? []).length, 1);
+  assert.match(controls, /\? t\("settings\.voice\.dictation\.micRecordForModel"\)\s*: "Dictate";/);
   assert.doesNotMatch(controls, /Upload01Icon|DialogTrigger/);
 });
 

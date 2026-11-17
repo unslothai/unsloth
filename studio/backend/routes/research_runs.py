@@ -220,11 +220,7 @@ def _watch_if_unattended_stop(
     *,
     replace: bool = False,
 ) -> None:
-    """Cancel ``run`` the way the cancel route does once no tab is following it, if its owner asked.
-
-    ``replace`` for a new attempt under the run's id: a rebind or retry starts its own grace, and a
-    rebound attempt that keeps running drops the watch the previous attempt left behind.
-    """
+    """Cancel run like the cancel route once unattended; replace drops the watch a previous attempt left."""
     run_id = run["id"]
     if not (run.get("config") or {}).get("stopWhenUnattended"):
         if replace:
@@ -272,11 +268,7 @@ def _watch_if_unattended_stop(
 
 
 def rearm_unattended_research_runs(app: Any) -> None:
-    """Watch every unsettled run that asked to stop with its tab, after a restart emptied the watches.
-
-    The supervisor resumes these runs on its own, so waiting for a follower to reattach would let a
-    run whose tab never comes back finish despite the setting. Its grace starts now.
-    """
+    """Re-watch unsettled stop-when-unattended runs; waiting for a tab to reattach would let them finish."""
     from core.training.account_jobs import job_accounts
     for account in job_accounts():
         for run in run_as(account, db.list_all_active):
@@ -290,8 +282,7 @@ def _is_sensitive_key(key: object) -> bool:
 
 
 def _contains_sensitive_key(value: object) -> bool:
-    """Recursively test whether any (possibly nested) mapping key looks sensitive,
-    so credentials cannot be smuggled into a durable run via a nested dict."""
+    """Recursively checks nested keys for sensitive names, so credentials cannot be stored in a run."""
     if isinstance(value, dict):
         return any(
             _is_sensitive_key(key) or _contains_sensitive_key(item) for key, item in value.items()

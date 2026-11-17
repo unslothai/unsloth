@@ -85,9 +85,7 @@ def _triton_cc() -> str:
 
 
 def _needs_msvc_headers() -> bool:
-    """Only cl and clang-cl need them; Triton otherwise picks bundled TinyCC, which carries its own.
-    The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
-    the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
+    """Only cl and clang-cl need MSVC headers; unanswerable means ungated, as gating wrongly breaks it."""
     try:
         cc = _triton_cc()
     except Exception:  # noqa: BLE001
@@ -97,8 +95,7 @@ def _needs_msvc_headers() -> bool:
 
 
 def _toolchain_summary() -> str:
-    """0 include dirs means no Visual Studio; dirs missing only `vcruntime.h` means an SDK
-    without the VC toolset."""
+    """0 include dirs: no Visual Studio. Only vcruntime.h missing: an SDK without VC toolset."""
     try:
         cc = os.path.basename(_triton_cc())
     except Exception:  # noqa: BLE001

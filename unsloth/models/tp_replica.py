@@ -9,12 +9,12 @@ from __future__ import annotations
 import datetime
 import gc
 import os
-import pickle
 import types
 
 import torch
 import torch.nn as nn
 
+from . import _store_codec
 from . import tp_native as tpn
 
 __all__ = [
@@ -62,11 +62,9 @@ def replica_active(model):
 
 
 def _device(root):
-    for param in root.parameters():
-        if tpn._is_dtensor(param):
-            return param.to_local().device
-        return param.device
-    return torch.device("cpu")
+    # Not a host-served input embedding (tp_native._serve_embedding_from_host): it is often the first
+    # parameter, and its CPU device would send NCCL collectives CPU tensors.
+    return tpn._compute_device(root, torch.device("cpu"))
 
 
 def _gib(n):
@@ -402,10 +400,13 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
-        if saved is not None:
-            for key, value in saved.items():
-                replica.set(module, key, value)
+        owners = [module] + [o for o, _, _ in getattr(region, "child_params", ())]
+        for owner in {id(o): o for o in owners}.values():
+            # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
+            saved = owner.__dict__.get("_unsloth_tp_saved_attrs")
+            if saved is not None:
+                for key, value in saved.items():
+                    replica.set(owner, key, value)
         for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
             if key in module.__dict__:
                 replica.set(module, key, tpn._MISSING)
@@ -543,11 +544,7 @@ def _publish(key, payload):
     if store is None:
         _dist().barrier()
         return
-    try:
-        data = pickle.dumps(payload)
-    except Exception:
-        data = pickle.dumps((payload[0], None) + tuple(payload[2:]))
-    store.set(key, data)
+    store.set(key, _store_codec.encode(tuple(payload)))
 
 
 def _wait(key):
@@ -556,7 +553,13 @@ def _wait(key):
         _dist().barrier()
         return ("ok", None)
     store.wait([key], _timeout())
-    return pickle.loads(store.get(key))
+    try:
+        payload = _store_codec.decode(store.get(key))
+    except ValueError:
+        payload = None
+    if not isinstance(payload, tuple) or len(payload) < 2 or payload[0] not in ("ok", "error"):
+        return ("error", "rank 0 left an unreadable result in the store")
+    return payload
 
 
 def _keep_tree(root):
@@ -718,11 +721,10 @@ def tp_world_save(what, write, directory):
     import tempfile
 
     absolute = os.path.abspath(target)
-    parent = os.path.dirname(absolute)
     os.makedirs(absolute, exist_ok = True)
-    private = tempfile.mkdtemp(
-        prefix = f".{os.path.basename(absolute)}.unsloth_tp_rank{_rank()}_", dir = parent
-    )
+    # Staged inside the destination: same filesystem for os.replace (a mounted output dir would raise
+    # EXDEV from a sibling), and no write access to the parent needed.
+    private = tempfile.mkdtemp(prefix = f".unsloth_tp_rank{_rank()}_", dir = absolute)
     try:
         result = write(private)
         for root, _, files in os.walk(private):

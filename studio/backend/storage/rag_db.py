@@ -28,6 +28,14 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+# Han, Kana and Hangul. unicode61 keeps an unspaced run as one token, so chunks_fts holds them one per token.
+CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff66-\uff9f\U00020000-\U0002fa1f"
+_CJK_CHAR = re.compile(f"[{CJK}]")
+
+
+def fts_text(text: str) -> str:
+    return _CJK_CHAR.sub(r" \g<0> ", text)
+
 
 class RagExtensionUnavailable(RuntimeError):
     """sqlite-vec is installed but its native library will not load (a missing vec0 binary in the venv is the
@@ -271,8 +279,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
     if "whole_document_token_count" not in chunk_cols:
         conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
-    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
-    # an index probe rather than a scan.
+    # Partial: empty until a chat is compacted; keeps the MAX() ordinal lookup an index probe.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
@@ -283,13 +290,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        conn.executemany(
+            "UPDATE chunks_fts SET text=? WHERE rowid=?",
+            [
+                (fts_text(text), rowid)
+                for rowid, text in conn.execute("SELECT rowid, text FROM chunks_fts")
+                if text and _CJK_CHAR.search(text)
+            ],
+        )
+        conn.execute("PRAGMA user_version = 1")
     conn.commit()
 
 
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
-    """Add the linked-folder columns a database created by an earlier build is missing. Also called for
-    the metadata connection, which skips _ensure_schema so that scope retirement keeps working when
-    the vector extension cannot load."""
+    """Adds linked-folder columns missing from older builds; also called on the metadata connection,
+    which skips _ensure_schema so scope retirement works without the vector extension"""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
@@ -447,9 +463,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def get_metadata_connection() -> sqlite3.Connection:
-    """Open rag.db without loading sqlite-vec. This connection is only for ordinary SQLite metadata
-    tables. It lets lifecycle tombstones remain writable when the optional native vector extension
-    is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
+    """Metadata-only connection without sqlite-vec: tombstones stay writable; do not touch vec0 tables."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite_gate.connect(db_path)
@@ -605,27 +619,46 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# Under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+_DOC_ID_BATCH = 900
+
+
+def _id_batches(ids):
+    ids = list(dict.fromkeys(ids))
+    for start in range(0, len(ids), _DOC_ID_BATCH):
+        batch = ids[start : start + _DOC_ID_BATCH]
+        yield batch, ",".join("?" * len(batch))
+
+
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
-    reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
-    stay citable."""
-    if (
-        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
-        is None
-    ):
-        return
-    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
-    owned = "SELECT id FROM chunks WHERE document_id=?"
-    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
-    if vec_table_exists(conn):
-        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    """Deletes chunk rows, keeps the documents row; retrieval filters by scope, so leftovers stay
+    citable."""
+    _delete_documents_chunks(conn, [document_id])
+
+
+def _delete_documents_chunks(
+    conn,
+    document_ids,
+    *,
+    vec: bool = True,
+) -> None:
+    """chunk_id is unindexed in fts5 and vec0: one full scan per id batch, not per document."""
+    has_vec = None if vec else False
+    for batch, marks in _id_batches(document_ids):
+        owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"
+        if conn.execute(f"{owned} LIMIT 1", batch).fetchone() is None:
+            continue
+        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", batch)
+        if has_vec is None:
+            has_vec = vec_table_exists(conn)
+        if has_vec:
+            conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", batch)
+        conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fail ingestion jobs/documents left mid-flight by a crash so they stop showing as stuck
-    "processing" and become re-ingestible. Work owned by another live backend is left alone until
-    its lease expires. No-op without RAG. Returns the number of jobs reset."""
+    """Fails crash-orphaned ingestion jobs so they can re-run; another live backend's work is left
+    alone until its lease expires; no-op without RAG"""
     # rag_available(): the package may be installed without the vec0 binary.
     if not rag_available():
         return 0

@@ -70,7 +70,7 @@ const surface = {
 };
 const placed = () => ["left", "top", "width", "height"].map((key) => Number.parseFloat(style[key] ?? "NaN"));
 
-const { floatSurface, startFloatingGesture } = await import("../src/features/browser/floating-preview.ts");
+const { floatSurface, nudgeFloating, startFloatingGesture } = await import("../src/features/browser/floating-preview.ts");
 
 function drag(edge: Parameters<typeof startFloatingGesture>[1], from: [number, number], to: [number, number]) {
   const target = { closest: () => null };
@@ -139,6 +139,19 @@ test("a move stays in the chat, and one dropped at the right edge stays anchored
   drag("move", [400, 700], [2400, 700]);
   assert.equal(JSON.parse(storage.get("unsloth_browser_floating_preview") ?? "{}").left, null);
   assert.equal(placed()[0] + placed()[2], 1300 - 12);
+  release();
+});
+
+test("arrow keys move a window anchored at the right edge off it", () => {
+  const release = floatSurface(surface as never);
+  drag("move", [400, 700], [2400, 700]);
+  const right = placed()[0];
+  const press = () => nudgeFloating({ key: "ArrowLeft", shiftKey: false, currentTarget: surface, preventDefault() {} } as never);
+  press();
+  press();
+  assert.equal(placed()[0], right - 32);
+  assert.equal(JSON.parse(storage.get("unsloth_browser_floating_preview") ?? "{}").left, right - 32 - 312);
+  drag("move", [400, 700], [2400, 700]);
   release();
 });
 

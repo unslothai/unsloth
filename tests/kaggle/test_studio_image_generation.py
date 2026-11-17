@@ -66,9 +66,8 @@ def test_the_size_is_read_from_the_file_and_not_from_the_record():
 
 
 def test_the_ihdr_offsets_are_right():
-    """Executed against a PNG built here, because an off-by-four in a
-    fixed-offset parse reads a plausible number out of the wrong bytes and
-    every other rule still passes."""
+    """The IHDR width and height offsets are checked against a PNG built in the test, since an
+    off-by-four would read a plausible number and still pass other rules."""
     blob = _png(256, 256, zlib.compress(b"\x00" * 16))
     assert int.from_bytes(blob[16:20], "big") == 256
     assert int.from_bytes(blob[20:24], "big") == 256
@@ -78,9 +77,8 @@ def test_the_ihdr_offsets_are_right():
 
 
 def test_a_flat_image_is_a_failure():
-    """A pipeline whose weights never loaded returns a uniform frame, and a
-    uniform frame is a valid PNG of exactly the right size. Every other rule
-    here passes on it."""
+    """A pipeline whose weights never loaded returns a uniform frame that is a valid PNG of the
+    right size and passes every other rule, so a flat image must fail."""
     func = _func("assert_image_generation")
     assert any(
         isinstance(n, ast.If) and ast.unparse(n.test) == "flat" for n in ast.walk(func)
@@ -104,9 +102,8 @@ def test_the_bytes_are_fetched_raw_rather_than_through_the_json_client():
 
 
 def test_the_pipeline_is_unloaded_in_a_finally():
-    """A diffusion pipeline is the largest single thing this payload puts on a
-    T4. Left resident, it takes the card from whatever runs next and that
-    failure lands on the wrong assertion."""
+    """The diffusion pipeline is the largest thing the payload puts on a T4; it must be unloaded in
+    a finally, or it takes the card from whatever runs next."""
     func = _func("assert_image_generation")
     finals = "\n".join(
         ast.unparse(n) for t in ast.walk(func) if isinstance(t, ast.Try) for n in t.finalbody
@@ -151,9 +148,8 @@ def test_the_load_is_WAITED_ON_rather_than_assumed_synchronous():
 
 
 def test_a_load_that_never_finishes_fails_rather_than_generating_anyway():
-    """The refusal branch. Falling through to `generate` after the deadline
-    reports a 409 under the generation's name, which sends the reader after the
-    wrong component -- which is exactly what happened."""
+    """The refusal branch: falling through to generate after the deadline reports a 409 under the
+    generation's name and sends the reader after the wrong component."""
     func = _func("assert_image_generation")
     src = ast.get_source_segment(SRC, func) or ""
     marker = "never reported loaded within"

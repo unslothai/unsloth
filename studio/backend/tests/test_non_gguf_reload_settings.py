@@ -123,8 +123,7 @@ def test_gguf_only_knobs_never_block_reuse(field, value):
 
 
 class TestNonGgufStatusReportsWhatTheLoadAskedFor:
-    """Placement is not kept on the parent-side orchestrator entry at all, so anything
-    the route does not stamp is simply unavailable to a client."""
+    """The parent entry keeps no placement, so any field the route does not stamp is lost."""
 
     STAMPED = ("max_seq_length_requested", "load_in_4bit_requested", "gpu_ids_requested")
 
@@ -141,8 +140,7 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         assert field in self._stamp_block(), f"{field} is never recorded on the resident"
 
     def _status_for(self, monkeypatch, entry):
-        """Asserts the published field through the route, not the source spelling, which a refactor
-        changed."""
+        """Checks the published field, not the source spelling, which a refactor changed."""
         import asyncio
 
         backend = _Backend(entry)
@@ -239,16 +237,14 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
     def test_a_requested_context_length_is_published_only_when_it_is_a_count(
         self, monkeypatch, requested, published
     ):
-        """0 means size it yourself and must survive; bools and negatives are rejected, numeric
-        strings kept."""
+        """0 must survive as auto-size; bools and negatives rejected, numeric strings kept."""
         response = self._status_for(monkeypatch, {"max_seq_length_requested": requested})
 
         assert response.requested_context_length == published
 
 
 class TestOmittedPrecisionKeepsTheResidentOne:
-    """A CLI load that leaves load_in_4bit out must not requantize a 16-bit model when
-    another setting, such as the context, forces the reload."""
+    """An omitted load_in_4bit keeps the resident precision; a reload must not requantize it."""
 
     def test_same_model_inherits_the_resident_precision(self):
         request = _Request(max_seq_length = 0)

@@ -113,6 +113,7 @@ test("a fully highlighted fence parked as plain text comes back in quiet-work ba
     source: string,
     code: { current: null },
     frame: { current: null },
+    surface: { current: null },
     parked: boolean,
   ) => { progress: HighlightProgress | null; staged: boolean };
   const queue: { run: () => boolean; flush: () => void; cancelled: boolean }[] = [];
@@ -134,6 +135,10 @@ test("a fully highlighted fence parked as plain text comes back in quiet-work ba
     watchHighlighting: () => {},
     unwatchHighlighting: () => {},
     visibleHighlightLine: () => 0,
+    // An uncapped block: no inner line window, so the batched path runs.
+    innerLineWindow: () => null,
+    lineWindowColoured: () => false,
+    pausedFences: new Set(),
     highlightQueue: {
       add(run: () => boolean, flush: () => void) {
         const entry = { run, flush, cancelled: false };
@@ -156,7 +161,7 @@ test("a fully highlighted fence parked as plain text comes back in quiet-work ba
   assert.ok(needsHighlightBatches(tokens, WINDOW_CAP_LINES));
   const refs = { current: null };
   const props = (parked: boolean): Parameters<Hook> =>
-    [tokens, false, false, "text", "source", refs, refs, parked];
+    [tokens, false, false, "text", "source", refs, refs, refs, parked];
   const live = () => queue.filter((entry) => !entry.cancelled);
   const highlighted = (progress: HighlightProgress | null) =>
     progress === null ? Number.POSITIVE_INFINITY

@@ -143,11 +143,9 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin the cache locations the backend pins, for in-process CLI commands.
-
-    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
-    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
-    """
+    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
+    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
+    (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -338,21 +336,35 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
     return raw
 
 
+class _LatestMarkdown:
+    # visible_text() and Markdown() each scan the whole reply: run them per drawn frame, not per chunk.
+    def __init__(self, show_thinking: bool):
+        self.state = ("", False)  # (raw, final), swapped whole so the Live thread never sees a mix
+        self._show_thinking = show_thinking
+        self._built = None
+
+    def __rich_console__(self, console, options):
+        from rich.markdown import Markdown
+        from rich.text import Text
+
+        state = self.state
+        if self._built is None or self._built[0] is not state:
+            text = visible_text(state[0], self._show_thinking, final = state[1])
+            self._built = (state, Markdown(text) if text.strip() else Text(""))
+        yield self._built[1]
+
+
 def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.live import Live
-    from rich.markdown import Markdown
-    from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    view = _LatestMarkdown(show_thinking)
+    with Live(view, console = console, refresh_per_second = 12, vertical_overflow = "visible"):
         for chunk in stream:
-            if not isinstance(chunk, str):
-                continue
-            raw = chunk
-            visible = visible_text(chunk, show_thinking)
-            live.update(Markdown(visible) if visible.strip() else Text(""))
-        visible = visible_text(raw, show_thinking, final = True)
-        live.update(Markdown(visible) if visible.strip() else Text(""))
+            if isinstance(chunk, str):
+                raw = chunk
+                view.state = (raw, False)
+        view.state = (raw, True)
     return raw
 
 
@@ -397,10 +409,8 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether a backend's end-of-generation stats say the reply ran out of budget.
-
-    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
-    """
+    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
+    MLX and llama-server set finish_reason to length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
@@ -740,6 +750,47 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
+_SECURITY_BLOCKS = ("malware_blocked", "remote_code_blocked")
+
+
+def _http_error_text(exc: Exception) -> str:
+    # str(HTTPError) is only "HTTP Error <code>: <reason>"; the server's cause is in the body.
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail")
+        except Exception:
+            detail = None
+        if isinstance(detail, str) and detail:
+            return f"HTTP Error {exc.code}: {detail}"
+    return str(exc)
+
+
+def _exit_if_refused_load(
+    model: str,
+    reason: str,
+    trust_remote_code: bool,
+    error_kind: Optional[str] = None,
+) -> None:
+    if error_kind in _SECURITY_BLOCKS:
+        typer.echo(f"Error: {reason}", err = True)
+        typer.echo(
+            "The repository security scan refused this load; --trust-remote-code never "
+            "overrides it.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+    # transformers and the server both phrase this refusal with the kwarg name.
+    if trust_remote_code or "trust_remote_code" not in reason:
+        return
+    typer.echo(
+        f"Error: {model} needs its own modelling code to load. If you trust this repository, "
+        "rerun with --trust-remote-code (it executes Python from the repo).",
+        err = True,
+    )
+    raise typer.Exit(code = 1)
+
+
 def load_chat_backend(
     model: str,
     *,
@@ -750,14 +801,12 @@ def load_chat_backend(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
     model_config = None,
     fresh_backend: bool = False,
 ):
-    """Load `model` in-process: GGUF via llama-server, else the orchestrator.
-
-    fresh_backend uses a private orchestrator so a second model (compare's
-    base column) can run alongside the main one.
-    """
+    """Load model in-process, GGUF via llama-server else the orchestrator; fresh_backend uses a
+    private orchestrator so a second model (compare's base column) runs alongside."""
     from unsloth_cli._studio_deps import studio_backend_imports
 
     with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
@@ -798,7 +847,7 @@ def load_chat_backend(
             from core.inference import get_inference_backend
             backend = get_inference_backend()
         try:
-            loaded = backend.load_model(
+            load_kwargs = dict(
                 config = model_config,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -806,7 +855,13 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
+            if trust_remote_code:
+                load_kwargs["trust_remote_code"] = trust_remote_code
+            loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
+            _exit_if_refused_load(
+                model, str(exc), trust_remote_code, getattr(exc, "error_kind", None)
+            )
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -852,8 +907,7 @@ _STUDIO_SERVICE_MARKER = "Unsloth UI Backend"
 
 
 def _recorded_loopback_bases(address: Optional[str], port: str) -> list:
-    """Loopback bases for a server recorded at *address*. The wrong family reaches whoever else
-    holds that port number."""
+    """Loopback bases for a recorded address; the wrong family hits whoever holds that port."""
     import ipaddress
 
     loopback, parsed_any = set(), False
@@ -918,8 +972,7 @@ def _answers_as_studio(base: str, timeout: float) -> bool:
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
-    # the flow talks to that exact address.
+    # Use the first loopback address that answers, so the flow talks to that exact address.
     found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
     if os.environ.get("UNSLOTH_STUDIO_URL"):
         return found
@@ -997,8 +1050,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
 
 
 def _studio_token() -> Optional[str]:
-    """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
-    signs with the same stored secret the server validates against."""
+    """Signs a JWT with the server's stored secret, since the CLI runs as the same OS user."""
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
 
@@ -1066,6 +1118,7 @@ class HttpChatBackend:
         speculative_type: Optional[SpeculativeType] = None,
         spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
@@ -1082,6 +1135,8 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
+        if trust_remote_code:
+            payload["trust_remote_code"] = trust_remote_code
         resident_variant = self._resident_gguf_variant(model)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
@@ -1093,7 +1148,9 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
-            typer.echo(f"Model load failed: {exc}", err = True)
+            reason = _http_error_text(exc)
+            _exit_if_refused_load(model, reason, trust_remote_code)
+            typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
 
@@ -1237,6 +1294,7 @@ def connect_studio_server(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1298,5 +1356,6 @@ def connect_studio_server(
         speculative_type = speculative_type,
         spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
+        trust_remote_code = trust_remote_code,
     )
     return backend
