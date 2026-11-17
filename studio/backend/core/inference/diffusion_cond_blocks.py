@@ -7,7 +7,9 @@ UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables. Offloaded (CUDA): computed inside the 
 UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE=0 keeps stock. Modulation heads project one row per sample,
 not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows. With reference
 images the joint blocks take one row per span (image, references) instead of a per-token copy, bit-identical;
-UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows"""
+UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows. Text-to-image renders on a resident denoiser cache the
+text stream too (its five blocks were 1.4-1.6% of a 1024^2 step on L4 / A100);
+UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE=0 runs them every step again"""
 
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
 SPAN_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD"
+TEXT_COND_ENV = "UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE"
 SPAN_KWARG = "unsloth_cond_mod"
 SPAN_LEN_KWARG = "unsloth_cond_span"
 COND_KWARG = "unsloth_cond"
@@ -56,6 +59,20 @@ def offload_cache_enabled() -> bool:
 
 def compact_enabled() -> bool:
     return _switch(COMPACT_MOD_ENV)
+
+
+def text_cond_enabled() -> bool:
+    return _switch(TEXT_COND_ENV)
+
+
+def _text_only(module: Any) -> bool:
+    """A render without a reference stream caches its text stream: by default on a resident denoiser (an offloaded
+    one keeps the stock forward, its prefetch order unchanged); ``_unsloth_cond_text_only`` in the instance dict
+    decides when present."""
+    flag = module.__dict__.get("_unsloth_cond_text_only")
+    if flag is not None:
+        return bool(flag)
+    return text_cond_enabled() and not module.__dict__.get(_OFFLOADED_ATTR)
 
 
 def span_enabled() -> bool:
@@ -554,8 +571,7 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     iid = kwargs.get("image_cond_ids")
     if hidden_states is None or ehs is None or txt_ids is None or (ich is None) != (iid is None):
         return None
-    if ich is None and not module.__dict__.get("_unsloth_cond_text_only"):
-        # Text alone is ~0.6% of a 1024^2 step (noise on B200); the saving is the ~4k-token reference stream.
+    if ich is None and not _text_only(module):
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
