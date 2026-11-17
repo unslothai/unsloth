@@ -4,6 +4,10 @@
 // Harness for tests/studio/playwright_thread_weight.py: the real Thread and real markdown bodies,
 // seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
+import {
+  hasPendingProgressiveMounts,
+  holdProgressiveMounts,
+} from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,6 +16,7 @@ import {
   type ChatModelAdapter,
   ExportedMessageRepository,
   SimpleImageAttachmentAdapter,
+  type ThreadAssistantMessagePart,
   type ThreadMessageLike,
   useAui,
   unstable_useRemoteThreadListRuntime,
@@ -32,9 +37,13 @@ import { watchModalPointerLock } from "./src/lib/modal-pointer-lock";
 // Answer ForkCountBadge GETs in-page: a Playwright-side answer would add a CDP round trip per
 // assistant message inside the timed region.
 const realFetch = window.fetch.bind(window);
+const apiWrites: { url: string; body: string | null }[] = [];
 window.fetch = (input, init) => {
   const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
   if (url.includes("/api/")) {
+    if (init?.method && init.method !== "GET") {
+      apiWrites.push({ url, body: typeof init.body === "string" ? init.body : null });
+    }
     return Promise.resolve(
       new Response("{}", {
         status: 200,
@@ -102,6 +111,9 @@ type SeedOptions = {
    * `sources` adds six URL source parts after every web_search call.
    */
   agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
+  /** Each default reply also carries a numbered equation, which KaTeX counts page-wide, and
+   *  the same environments as code. */
+  numbered?: boolean;
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
@@ -168,7 +180,15 @@ function buildMessages(
     if (index % 2 === 0) {
       return {
         role: "user" as const,
-        content: [{ type: "text" as const, text: userMarkdown(index) }],
+        content: [
+          {
+            type: "text" as const,
+            // A prompt shows math source as text, so these take no number.
+            text:
+              userMarkdown(index) +
+              (options?.numbered ? "\n\n$$\\begin{equation}p=1\\end{equation}$$" : ""),
+          },
+        ],
       };
     }
     if (agent) {
@@ -200,7 +220,13 @@ function buildMessages(
           type: "text" as const,
           text: isPlain((index - 1) / 2, options)
             ? plainAssistantMarkdown(index)
-            : assistantMarkdown(index),
+            : assistantMarkdown(index) +
+              (options?.numbered
+                ? `\n\n$$\n\\begin{equation}E_{${index}} = mc^2\\end{equation}\n$$` +
+                  "\n\n$$\n\\begin{align}f &= \\begin{cases}1\\\\0\\end{cases}\\\\ g &= 2\\end{align}\n$$" +
+                  // Examples, not math: they render verbatim and take no number.
+                  "\n\n```latex\n\\begin{equation}x\\end{equation}\n```\n\nInline `\\begin{align}a\\end{align}` too."
+                : ""),
         },
       ],
     };
@@ -214,9 +240,36 @@ const STREAM_CHUNKS = Number(
 // `&sources=1`: the streamed reply follows a web_search call with six URL sources.
 const STREAM_SOURCES =
   new URLSearchParams(window.location.search).get("sources") === "1";
+// `&rounds=N`: N agent rounds (reasoning, a call, its result, text with math) stream before the reply.
+const STREAM_ROUNDS = Number(
+  new URLSearchParams(window.location.search).get("rounds") ?? "0",
+);
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
   ? {
       async *run({ abortSignal }) {
+        const rounds: ThreadAssistantMessagePart[] = [];
+        for (let round = 0; round < STREAM_ROUNDS; round++) {
+          const callArgs = { url: `https://example.com/${round}` };
+          const call = {
+            type: "tool-call" as const,
+            toolCallId: `call_round_${round}`,
+            toolName: "browser_snapshot",
+            args: callArgs,
+            argsText: JSON.stringify(callArgs),
+          };
+          for (const step of [
+            () => rounds.push({ type: "reasoning", text: `Planning round ${round}.` }),
+            () => rounds.push(call),
+            () => (rounds[rounds.length - 1] = { ...call, result: `Snapshot ${round}. ${PROSE}` }),
+            () => rounds.push({ type: "text", text: `Round ${round} gave $x_{${round}}^2$.` }),
+          ]) {
+            step();
+            await tick();
+            if (abortSignal.aborted) return;
+            yield { content: [...rounds] };
+          }
+        }
         const args = { query: "live reference" };
         const prefix = STREAM_SOURCES
           ? [
@@ -233,10 +286,10 @@ const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
           : [];
         let text = "";
         for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          await tick();
           if (abortSignal.aborted) return;
           text += `word${chunk} `;
-          yield { content: [...prefix, { type: "text" as const, text }] };
+          yield { content: [...rounds, ...prefix, { type: "text" as const, text }] };
         }
       },
     }
@@ -290,6 +343,24 @@ function ThreadWeightApi({
       messageCount(): number {
         return document.querySelectorAll("[data-role]").length;
       },
+      /** Opens the last user prompt's editor; returns its message id. */
+      editLastPrompt(): string | null {
+        const messages = aui.thread().getState().messages;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role !== "user") continue;
+          aui.thread().message({ index }).composer().beginEdit();
+          return messages[index].id;
+        }
+        return null;
+      },
+      /** The conversation's length, where messageCount() is how much of it is mounted. */
+      threadLength(): number {
+        return aui.thread().getState().messages.length;
+      },
+      /** What the turn rail waits on before it renders: a full mount still under way. */
+      pendingMounts(): boolean {
+        return hasPendingProgressiveMounts();
+      },
       counts(): {
         messages: number;
         assistantMessages: number;
@@ -333,6 +404,10 @@ function ThreadWeightApi({
       viewport(): HTMLElement | null {
         return document.querySelector<HTMLElement>(".aui-thread-viewport");
       },
+      /** Non-GET /api/ calls the stub above answered. */
+      apiWrites(): { url: string; body: string | null }[] {
+        return apiWrites;
+      },
       composer(): HTMLTextAreaElement | null {
         return document.querySelector<HTMLTextAreaElement>(
           ".aui-composer-input",
@@ -375,6 +450,13 @@ function ThreadWeightApi({
   }, [aui, setThreadMounted]);
 
   return null;
+}
+
+// The checks on this page measure what a whole thread costs in the DOM (the state an open find bar
+// or a print puts the app in), so every row stays mounted. `?window=1` leaves the thread as the
+// app opens it: only the rows near the reader are mounted.
+if (new URLSearchParams(window.location.search).get("window") !== "1") {
+  holdProgressiveMounts();
 }
 
 // `?shell=1`: the ancestors the app puts around the thread (root layout + chat page), so CSS

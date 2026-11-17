@@ -1786,3 +1786,42 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
     fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
     with pytest.raises(HTTPException):
         routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
+
+
+def test_sycl_build_beside_an_nvidia_card_is_not_planned_against_it(tmp_path, monkeypatch):
+    """#17787: a 16.7 GB model on a 32 GB SYCL Arc was capped to 8192 and its projector put on CPU,
+    because the free VRAM came from nvidia-smi's 12 GB card."""
+    import sys
+
+    from utils.hardware import gpu_query, mig, nvidia
+
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix, ext = ("", "dll") if sys.platform == "win32" else ("lib", "so")
+    for lib in ("base", "cpu", "sycl"):
+        (lib_dir / f"{prefix}ggml-{lib}.{ext}").write_bytes(b"x")
+    monkeypatch.setattr("core.inference.llama_cpp._llama_lib_dir", lambda _binary: lib_dir)
+    monkeypatch.setattr(mig, "visible_devices", lambda **_kw: None)
+    monkeypatch.setattr(nvidia, "get_mig_gpu_indices_or_none", lambda: set())
+    monkeypatch.setattr(
+        gpu_query,
+        "run_nvidia_smi",
+        lambda *_a, **_kw: SimpleNamespace(
+            returncode = 0, stdout = "0, 10198, 12282, GPU-4070\n", stderr = ""
+        ),
+    )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_sm_gate_keep", staticmethod(lambda _b, gpus: gpus))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_widen_integrated_cuda_rows", staticmethod(lambda gpus: gpus)
+    )
+    backend, gguf = _backend(
+        tmp_path, memory = [], model_bytes = int(16.68 * GIB), mmproj_bytes = 888 * MIB
+    )
+    del backend._get_gpu_memory, backend._get_gpu_free_memory
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--no-mmproj-offload" not in cmd
+    assert int(cmd[cmd.index("-c") + 1]) == NATIVE_CTX
+    assert cmd[cmd.index("--fit") + 1] == "on"

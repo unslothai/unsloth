@@ -280,6 +280,28 @@ function lookupCandidates(providerType: string, modelId: string): string[] {
   return candidates;
 }
 
+const OLDER_MODEL_AGE_MS = 365 * 24 * 3600 * 1000;
+
+/** Released over a year ago. Unknown dates (bundled snapshot, self-hosted servers) are never older. */
+export function isOlderModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (!providerType || !modelId) return false;
+  const normalizedProvider = providerType.trim().toLowerCase();
+  hydrateModelsDev();
+  const served = modelsDev?.providers[catalogNamespace(normalizedProvider)];
+  if (!served) return false;
+  for (const candidate of lookupCandidates(normalizedProvider, modelId)) {
+    const released = served[candidate]?.released;
+    if (!released) continue;
+    const at = Date.parse(released);
+    return Number.isFinite(at) && now - at > OLDER_MODEL_AGE_MS;
+  }
+  return false;
+}
+
 function findByBaseName(
   models: Readonly<Record<string, unknown>>,
   baseName: string,

@@ -104,6 +104,8 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
         expect_gen = account.credential_gen,
         # Pinned to this account, as Deep Research does: the username could name a recreated namesake.
         account_id = None if record.is_owner else record.account_id,
+        # Only an inference only key binds NEVER; its chat's tools must not get wider access.
+        access = storage.API_KEY_ACCESS_INFERENCE if account.load_policy == "never" else None,
     )
 
 

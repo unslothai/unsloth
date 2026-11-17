@@ -513,11 +513,16 @@ def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[
     return candidates
 
 
-def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
-    """Resolve a canonical SHA below this repository's active snapshots dir."""
+def _safe_snapshot_for_revision(
+    repo: str,
+    revision: str,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a canonical SHA below this repository's snapshots dir in *hub_cache* (default: the active cache)."""
     if not _HF_COMMIT_SHA.fullmatch(revision):
         return None
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     candidate = snapshots / revision
     try:
         snapshots_resolved = snapshots.resolve()
@@ -543,27 +548,36 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub."""
+    """Find one complete local snapshot in any cache find_in_hub_caches covers, without contacting the Hub."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
+    from core.inference.model_cache_search import find_in_hub_caches
 
     recorded = _read_revision_record(repo)
+    return find_in_hub_caches(
+        repo, lambda hub_cache: _complete_snapshot_in(model_id, repo, recorded, hub_cache)
+    )
+
+
+def _complete_snapshot_in(
+    model_id: str, repo: str, recorded: Optional[str], hub_cache: Path
+) -> Optional[Path]:
     if recorded:
-        snapshot = _safe_snapshot_for_revision(repo, recorded)
+        snapshot = _safe_snapshot_for_revision(repo, recorded, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             return snapshot
 
-    ref = _repo_cache_dir(repo) / "refs" / "main"
+    ref = _repo_cache_dir(repo, hub_cache = hub_cache) / "refs" / "main"
     try:
         revision = ref.read_text(encoding = "utf-8").strip()
     except OSError:
         revision = ""
-    snapshot = _safe_snapshot_for_revision(repo, revision)
+    snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
     if snapshot is not None and _snapshot_usable(model_id, snapshot):
         _write_revision_record(repo, revision)
         return snapshot
 
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     try:
         revisions = sorted(
             (
@@ -576,7 +590,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
     except OSError:
         return None
     for _mtime, revision in revisions:
-        snapshot = _safe_snapshot_for_revision(repo, revision)
+        snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             _write_revision_record(repo, revision)
             return snapshot

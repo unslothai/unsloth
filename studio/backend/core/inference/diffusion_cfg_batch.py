@@ -54,6 +54,8 @@ NOT_BATCHABLE: dict[str, str] = {
     "MOSSImageTransformer": "the negative branch skips block 22 (uncond_skip_layers): per-branch compute",
     "Cosmos3OmniTransformer": "each branch packs its own variable-length token sequence",
     "MiniMaxH3Transformer3DModel": "one denoiser call per step (no guidance pair to batch)",
+    "MiniMaxH3ImageTransformer2DModel": "guidance-distilled: one denoiser call per step, guidance_scale must be 1 "
+    "(no guidance pair to batch)",
     "ChromaTransformer2DModel": "not measured batched: each branch passes its own T5 attention mask, and Chroma "
     "runs eager",
     "CosmosTransformer3DModel": "Anima's modular guider runs each branch as its own guider batch "

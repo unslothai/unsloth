@@ -51,6 +51,14 @@ def host_ram_check_disabled() -> bool:
     return _env(HOST_RAM_CHECK_ENV) in ("0", "off", "false", "no")
 
 
+# "0": explicit transformer_quant none / off on a small host falls back to int8; default keeps it memory-mapped, cast per call.
+DENSE_DENOISER_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_DENSE"
+
+
+def dense_denoiser_enabled() -> bool:
+    return _env(DENSE_DENOISER_ENV) not in ("0", "off", "false", "no")
+
+
 # Int8 spill: the route's int8 DiT weights live in a memory-mapped scratch file, not anonymous host RAM.
 # Auto only when the in-RAM route does not fit; 0 = off, 1 = always.
 SPILL_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_SPILL"
@@ -435,6 +443,8 @@ class SmallHostDecision:
     refuse: Optional[str] = None
     int8_spill: bool = False
     spill_route_host_mib: int = 0
+    # the denoiser stays memory-mapped at its stored dtype, cast per call (an explicit transformer_quant none / off)
+    dense_denoiser: bool = False
 
 
 def decide_small_host(
@@ -448,11 +458,14 @@ def decide_small_host(
     host_commit_mib: Optional[int] = None,
     pread_libraries: tuple[str, ...] = (),
     spill_free_mib: Optional[int] = None,
+    dense_denoiser: bool = False,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
     also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
-    violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill."""
+    violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.
+    ``dense_denoiser``: the caller asked for the unquantised denoiser, so the route keeps it memory-mapped at its
+    stored dtype (cast per call) instead of storing it as int8."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -471,12 +484,12 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8
+    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8, or memory-mapped like an encoder
     route = sum(
         c.mib // 2
-        if n in INT8_DENOISER_NAMES
+        if n in INT8_DENOISER_NAMES and not dense_denoiser
         else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
-        if n.startswith("text_encoder")
+        if n.startswith("text_encoder") or n in INT8_DENOISER_NAMES
         else c.mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
     )
@@ -526,8 +539,10 @@ def decide_small_host(
             route,
             **extra,
         )
-    spill, spill_route = _spill_choice(
-        converted, compute, route, reserve, host_available_mib, spill_free_mib
+    spill, spill_route = (
+        (False, route)
+        if dense_denoiser
+        else _spill_choice(converted, compute, route, reserve, host_available_mib, spill_free_mib)
     )
     need = spill_route if spill else route
     refuse = None
@@ -554,6 +569,7 @@ def decide_small_host(
         refuse = refuse,
         int8_spill = spill,
         spill_route_host_mib = spill_route if spill else 0,
+        dense_denoiser = bool(dense_denoiser),
         **extra,
     )
 
@@ -840,9 +856,9 @@ def cast_resident_(module: Any, device: Any, compute_dtype: Any) -> None:
 
 
 def prepare_streamed_encoder_(module: Any, compute_dtype: Any) -> int:
-    """Layerwise-cast a memory-mapped bf16 encoder: Linear / Embedding weights keep their stored dtype, everything
-    else converts now, including the owner of the first float parameter (``module.dtype`` sets the prompt-embedding
-    dtype). Returns the MiB left memory-mapped."""
+    """Layerwise-cast a memory-mapped bf16 encoder (or a denoiser kept dense, ``dense_denoiser``): Linear / Embedding
+    weights keep their stored dtype, everything else converts now, including the owner of the first float parameter
+    (``module.dtype`` sets the prompt-embedding dtype). Returns the MiB left memory-mapped."""
     import torch
     from diffusers.hooks import apply_layerwise_casting
 
@@ -1047,6 +1063,18 @@ def mark(pipe: Any, info: dict) -> None:
 
 def engaged_on(pipe: Any) -> Optional[dict]:
     return getattr(pipe, SMALL_HOST_ATTR, None)
+
+
+MAPPED_DENOISER_PREFIX = "memory-mapped"
+
+
+def mapped_denoiser(pipe: Any) -> bool:
+    """Whether the route kept a denoiser memory-mapped at its stored dtype (cast per call)."""
+    info = engaged_on(pipe) or {}
+    return any(
+        name in INT8_DENOISER_NAMES and str(value).startswith(MAPPED_DENOISER_PREFIX)
+        for name, value in (info.get("components") or {}).items()
+    )
 
 
 ENCODER_PREFETCH_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_PREFETCH"

@@ -5,6 +5,7 @@
 
 import base64
 import io
+import json
 import os
 import sys
 
@@ -210,6 +211,63 @@ def test_a_16_bit_image_on_a_multi_image_turn_keeps_its_levels_too(monkeypatch):
     assert len(served) == 2
     levels = _as_image(served[0]).convert("RGB")
     assert [levels.getpixel(at)[0] for at in ((0, 0), (1, 0), (0, 1), (1, 1))] == [0, 77, 155, 255]
+
+
+def _tool_picture(size: int) -> list:
+    data = _sized(size)["image_url"]["url"].split(",", 1)[1]
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "mcp__a__shot", "arguments": "{}"},
+    }
+    return [
+        ChatMessage(role = "assistant", content = "", tool_calls = [call]),
+        ChatMessage(
+            role = "tool",
+            tool_call_id = "call_1",
+            name = "mcp__a__shot",
+            content = "[1 image returned]\n__MCP_IMAGES__:"
+            + json.dumps([{"mimeType": "image/png", "data": data}]),
+        ),
+        ChatMessage(role = "assistant", content = "taken"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "between, sizes, own",
+    [
+        ([ChatMessage(role = "assistant", content = "seen")], [2, 4], (0, 1)),
+        (_tool_picture(8), [2, 8, 4], (0, 2)),
+    ],
+    ids = ["two turns", "a tool's picture between them"],
+)
+def test_built_in_tools_stay_on_once_a_conversation_carries_several_images(
+    monkeypatch, between, sizes, own
+):
+    backend = passthrough._ToolLoopBackend(passthrough._fixed("done"))
+    backend.models["sf-model"].update(
+        is_vision = True,
+        chat_template_info = {
+            "template": "<tool_call> chatml",
+            "renders_image": True,
+            "accepts_multiple_images": True,
+        },
+    )
+    messages = [
+        ChatMessage(role = "user", content = [_sized(2), _text("one")]),
+        *between,
+        ChatMessage(role = "user", content = [_sized(4), _text("two")]),
+        ChatMessage(role = "assistant", content = "seen"),
+        ChatMessage(role = "user", content = "search the web for both"),
+    ]
+    payload = passthrough._request(messages = messages, stream = False, enable_tools = True)
+
+    passthrough._call(payload, monkeypatch, backend)
+
+    [call] = backend.calls
+    assert call.get("caller_image_indexes") == own
+    assert [_as_image(image).width for image in call["images"]] == sizes
+    assert sum(len(_markers(message)) for message in call["messages"]) == len(sizes)
 
 
 _PDF = {

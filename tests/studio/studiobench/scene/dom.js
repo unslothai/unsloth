@@ -277,15 +277,16 @@
       return q('[data-testid="settings-tab-' + id + '"]');
     },
 
+    // Chat's picker is the composer chip; Images and the other pages keep the header picker.
     modelTrigger() {
-      return q("button.unsloth-model-selector-trigger");
+      return q('button[data-tour="chat-model-selector"]') || q("button.unsloth-model-selector-trigger");
     },
     modelMenu() {
-      return q(".unsloth-model-selector-menu");
+      return q("[data-composer-model-picker]") || q(".unsloth-model-selector-menu");
     },
     modelOptions() {
       const menu = D.modelMenu();
-      return menu ? qa("button[data-model-picker-option]", menu) : [];
+      return menu ? qa("[data-model-picker-option]", menu) : [];
     },
     currentModelLabel() {
       const t = D.modelTrigger();

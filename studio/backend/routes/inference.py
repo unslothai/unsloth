@@ -176,6 +176,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -886,6 +887,20 @@ def _context_budget_http_error(exc) -> "HTTPException":
             param = "messages",
         ),
     )
+
+
+def _refuse_what_ollama_would_cut(provider_type, truncation, window) -> None:
+    """Ollama drops the middle of an oversized prompt (instructions included) instead of refusing it."""
+    if (
+        provider_type != "ollama"
+        or not window
+        or not truncation
+        or truncation.get("fits", True)
+        or int(truncation.get("irreducible_tokens") or 0) < window
+    ):
+        return
+    context_refusal.record_fit({**truncation, "context_length": window})
+    raise context_refusal.ContextBudgetExceeded(truncation["irreducible_tokens"], window)
 
 
 def _openai_stream_error_sse(error: dict) -> str:
@@ -3433,6 +3448,7 @@ from models.inference import (
     validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
+    LoraSpec,
     MediaUnloadOutcome,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
@@ -3751,6 +3767,8 @@ from core.inference.external_provider import (
     llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
+    _ANTHROPIC_COMPACTION_MIN,
+    _OPENAI_COMPACTION_MIN,
     compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
@@ -3762,6 +3780,7 @@ from core.inference.sse_control_frames import (
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
+    _delta_text,
     stream_with_studio_tools,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -4982,6 +5001,18 @@ def _reject_confirm_gate_without_channel(
     )
 
 
+def _mark_claude_code_thinking(payload, request) -> None:
+    """Claude Code omits `thinking` when thinking is off on a model id it does not know."""
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return
+    betas = (beta.strip() for beta in headers.get("anthropic-beta", "").split(","))
+    if headers.get("user-agent", "").startswith("claude-cli/") or any(
+        beta.startswith("claude-code-") for beta in betas
+    ):
+        payload._omitted_thinking_is_off = True
+
+
 def _anthropic_reasoning_args(payload) -> dict:
     """Forwards /v1/messages thinking and x-unsloth reasoning fields; else the load-time default sticks."""
     # x-unsloth controls outrank `thinking`; consult reasoning_effort before the native block.
@@ -6004,6 +6035,8 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
     return scopes
 
 
+# Runs per document, 3x per row, every RAG turn. typed: 1 and 1.0 hash alike but str() differently.
+@functools.lru_cache(maxsize = 65536, typed = True)
 def _roster_name(raw: object) -> str:
     """Linked-folder names are raw disk paths; newlines, quotes and direction overrides are neutralized."""
     name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
@@ -6148,6 +6181,35 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         return False
 
 
+_computer_use_withheld: "str | None" = None
+
+
+def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+    from core.inference.computer_use import computer_tool, policy
+    from state import computer_use as computer_state
+
+    if not (can_show_and_see and policy.offered()):
+        # Logged once per reason, since token counts ask as often as the user types.
+        global _computer_use_withheld
+        reason = (
+            policy.unavailable_reason()
+            or ("it is switched off in Settings" if not policy.settings()["enabled"] else None)
+            or "the model can't see images or the request is not a UI stream"
+        )
+        if reason != _computer_use_withheld:
+            _computer_use_withheld = reason
+            logger.info("computer use not offered: %s", reason)
+        return None
+    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    computer_state.set_coordinates(
+        computer_state.session_key(
+            getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
+        ),
+        mode,
+    )
+    return computer_tool(mode)
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest,
     *,
@@ -6183,6 +6245,16 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        from core.inference.computer_use import COMPUTER_TOOL_NAME
+        if COMPUTER_TOOL_NAME in payload.enabled_tools:
+            # Only where the approval card can be shown.
+            computer = await asyncio.to_thread(
+                _computer_use_tool, payload, ui_events and supports_vision
+            )
+            if computer is not None:
+                # First, or a small model with code tools scripts the mouse in Python instead.
+                tools.insert(0, computer)
     if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
         from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
@@ -7568,7 +7640,19 @@ def _monitor_openai_chunk(
             choice_index = idx
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
-        if isinstance(delta, dict) and delta.get("reasoning_content"):
+        raw_content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and (
+            delta.get("reasoning_content")
+            or (
+                isinstance(raw_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") == "thinking"
+                    and _delta_text(part.get("thinking"))
+                    for part in raw_content
+                )
+            )
+        ):
             api_monitor.mark_first_token(monitor_id)
 
         streamed_tool_delta = False
@@ -7584,7 +7668,7 @@ def _monitor_openai_chunk(
                     choice_index,
                     delta.get("function_call"),
                 )
-        content = delta.get("content") if isinstance(delta, dict) else None
+        content = _delta_text(raw_content)
         if content:
             if streaming:
                 _flush_monitor_stream_tool_calls(
@@ -7684,7 +7768,10 @@ def _monitor_openai_sse_data(
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             return "error"
-        _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        try:
+            _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
+        except Exception as exc:
+            logger.warning("api_monitor.chunk_failed", error = str(exc))
     return None
 
 
@@ -7695,7 +7782,7 @@ def _monitor_openai_sse_event(
 ) -> Optional[str]:
     # Returns error if any line is an upstream error payload (HTTP 200 SSE data with an error key), so relays mark it failed, not kept warm.
     status = None
-    for line in event.decode("utf-8", errors = "ignore").splitlines():
+    for line in SSE_LINE_END.split(event.decode("utf-8", errors = "ignore")):
         stripped = line.strip()
         result = _monitor_openai_sse_line(monitor_id, stripped, context_length)
         if result is None and not monitor_id:
@@ -7896,7 +7983,7 @@ def _monitor_anthropic_response(
                     if isinstance(chunk, (bytes, bytearray))
                     else str(chunk)
                 )
-                for line in text.splitlines():
+                for line in SSE_LINE_END.split(text):
                     if (
                         _monitor_anthropic_sse_line(
                             monitor_id,
@@ -8205,6 +8292,7 @@ _REPLAY_LOAD_FIELDS = frozenset(
         "cache_ram",
         "tensor_parallel",
         "disable_vision",
+        "engram_precision",
         "gpu_memory_mode",
         "gpu_layers",
         "n_cpu_moe",
@@ -8508,6 +8596,10 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        npu_context_fit = None,
+        npu_power_mode = None,
+        npu_prefill_chunk_len = None,
+        npu_img_pre_resize = None,
         speaks = False,
         mlx_kv_quant = None,
         mlx_kv_quant_requested = None,
@@ -9842,7 +9934,20 @@ _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 # Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
 # registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset(
-    {"huggingface", "openrouter", "qwen", "qwencloud", "zai", "opencode", "opencode_go"}
+    {
+        "huggingface",
+        "openrouter",
+        "qwen",
+        "qwencloud",
+        "zai",
+        "opencode",
+        "opencode_go",
+        "xai",
+        "nvidia",
+        "vercel",
+        "azure",
+        "bedrock",
+    }
 )
 
 # Mixed catalogs whose models.dev namespace answers vision per model.
@@ -9852,6 +9957,11 @@ _CATALOG_VISION_NAMESPACES = {
     "zai": "zai",
     "opencode": "opencode",
     "opencode_go": "opencode_go",
+    "xai": "xai",
+    "nvidia": "nvidia",
+    "vercel": "vercel",
+    "azure": "azure",
+    "bedrock": "bedrock",
 }
 
 
@@ -11166,12 +11276,14 @@ async def _auto_switch_npu_model(
     """
     from core.inference.gpu_arbiter import MultiModelAlwaysRefusal, require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
+    from core.inference.npu_flm_args import NPU_FLM_FIELDS
     from utils.openai_auto_switch_settings import get_model_override, resolve_fit_max_seq_length
 
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
-    # The context length saved in the model's settings, as a picker load sends it.
-    max_seq_length = resolve_fit_max_seq_length(get_model_override(named_model), is_gguf = False)
+    override = get_model_override(named_model)
+    max_seq_length = resolve_fit_max_seq_length(override, is_gguf = False)
+    flm_fields = {key: override[key] for key in NPU_FLM_FIELDS if override.get(key) is not None}
     cancel_event = getattr(getattr(fastapi_request, "state", None), "generation_cancel_event", None)
 
     def _raise_if_cancelled() -> None:
@@ -11198,7 +11310,11 @@ async def _auto_switch_npu_model(
                     loaded_ok = False
                     try:
                         await _load_model_impl(
-                            LoadRequest(model_path = named_model, max_seq_length = max_seq_length or 0),
+                            LoadRequest(
+                                model_path = named_model,
+                                max_seq_length = max_seq_length or 0,
+                                **flm_fields,
+                            ),
                             fastapi_request,
                             current_subject,
                             current_request_counted = True,
@@ -18835,7 +18951,12 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
-def _npu_load_response(resident, status: str) -> LoadResponse:
+def _npu_load_response(
+    resident,
+    status: str,
+    flm_args: Optional[str] = None,
+) -> LoadResponse:
+    from core.inference.npu_flm_args import flm_args_status
     model = resident.model
     return LoadResponse(
         status = status,
@@ -18845,7 +18966,10 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
         is_vision = model.vision,
         inference = load_inference_config(model.id),
         context_length = resident.context_length,
-        max_context_length = model.max_context_length,
+        **flm_args_status(flm_args),
+        # The free-RAM estimate where one was made, as llama.cpp reports its fit.
+        max_context_length = resident.max_context_length,
+        npu_context_fit = resident.fitted_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
         context_length_fitted = None,
@@ -18867,6 +18991,23 @@ async def _unload_npu_before_local_load() -> None:
         await asyncio.to_thread(npu.unload)
 
 
+def _npu_flm_args(request: LoadRequest, model, requested_ctx: Optional[int]) -> Optional[str]:
+    """The ``flm_args`` this load asks for; a bad value is the client's 400. npu.load holds the
+    prefill chunk to the context it resolves, which under Auto only the load knows."""
+    from core.inference.npu_flm_args import NPU_FLM_FIELDS, build_flm_args
+
+    if all(getattr(request, field) is None for field in NPU_FLM_FIELDS):
+        return None
+    try:
+        return build_flm_args(
+            power_mode = request.npu_power_mode,
+            prefill_chunk_len = request.npu_prefill_chunk_len,
+            img_pre_resize = request.npu_img_pre_resize if model.vision else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
 async def _load_npu_model(
     request: LoadRequest,
     *,
@@ -18882,6 +19023,7 @@ async def _load_npu_model(
         model_id_from_path,
     )
     from core.inference.llama_keepwarm import note_model_unloaded
+    from core.inference.npu_flm_args import clamp_prefill_chunk
 
     if account_access.managed_account():
         raise HTTPException(
@@ -18903,13 +19045,19 @@ async def _load_npu_model(
         and not request.force_reload
         # Exact: Auto after a pin, or a pin after Auto, is a different load.
         and requested_ctx == resident.requested_context_length
+        # Both held to the resident's context, as a load would: a chunk past it runs the same.
+        and clamp_prefill_chunk(
+            _npu_flm_args(request, resident.model, requested_ctx), resident.context_length
+        )
+        == clamp_prefill_chunk(resident.flm_args, resident.context_length)
     ):
         account_access.join_resident("chat")
-        return _npu_load_response(resident, "already_loaded")
+        return _npu_load_response(resident, "already_loaded", resident.flm_args)
     try:
-        await asyncio.to_thread(npu.loadable_model, model_id)
+        model = await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
+    flm_args = _npu_flm_args(request, model, requested_ctx)
     # The NPU model replaces the primary: under Always only the one already serving may reload.
     # After the checks above, so a request that can only fail never asks to unload a model.
     if routed_slot.get() is None:
@@ -18958,7 +19106,11 @@ async def _load_npu_model(
     await asyncio.to_thread(release_chat_gpu_claim)
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
-    load = asyncio.ensure_future(asyncio.to_thread(npu.load, model_id, requested_ctx))
+    load = asyncio.ensure_future(
+        asyncio.to_thread(
+            npu.load, model_id, requested_ctx, **({"flm_args": flm_args} if flm_args else {})
+        )
+    )
     if load_cancel_event is not None:
         # Stop the load mid-way, as a GGUF load polls its cancel event.
         while not load.done():
@@ -18982,7 +19134,7 @@ async def _load_npu_model(
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
-    return _npu_load_response(resident, "loaded")
+    return _npu_load_response(resident, "loaded", resident.flm_args)
 
 
 async def _load_model_impl(
@@ -19575,6 +19727,12 @@ async def _load_model_impl(
                 ),
             )
 
+        if request.engram_precision and not config.is_gguf:
+            raise HTTPException(
+                status_code = 400,
+                detail = "An Engram table precision applies only to a GGUF model run by llama.cpp.",
+            )
+
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
         if effective_load_in_4bit != request.load_in_4bit:
@@ -19846,6 +20004,11 @@ async def _load_model_impl(
             # every rejection and drain has completed. the load now owns the slot for studio.
             _set_preview_resident(None)
 
+            # Save slot KV before replacing llama-server, as /unload does (#9037).
+            if replacing and llama_backend.is_loaded:
+                from core.inference.chat_swap_kv import save_chat_kv_before_unload
+                await save_chat_kv_before_unload()
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -20013,6 +20176,10 @@ async def _load_model_impl(
             )
         # every rejection and drain has completed. the load now owns the slot for studio.
         _set_preview_resident(None)
+        # Save slot KV before teardown, as /unload does (#9037).
+        if replacing and llama_backend.is_loaded:
+            from core.inference.chat_swap_kv import save_chat_kv_before_unload
+            await save_chat_kv_before_unload()
         # Off-loop: a 600 GB teardown takes ~160s.
         try:
             await _unload_llama_before_standard_load(llama_backend)
@@ -22575,6 +22742,9 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse) and response.is_gguf:
         response.resident_mib, response.resident_on_gpu = _llama_resident()
+    elif isinstance(response, InferenceStatusResponse) and response.is_npu:
+        # Off Linux psutil finds lemond's children by reading every process: not on the loop.
+        response.resident_mib, response.resident_on_gpu = await asyncio.to_thread(_npu_resident_mib)
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22615,6 +22785,43 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
 
         # No parsed buffers proves nothing (Vulkan, SYCL); only a CPU-only build is a CPU run.
         return mib, (False if _Llama._backend_lacks_gpu_lib() else None)
+    except Exception:  # noqa: BLE001 - optional decoration on a status read
+        return None, None
+
+
+def _npu_resident_mib() -> "tuple[Optional[int], Optional[bool]]":
+    """RSS of lemond's process tree, floored at the catalog size: NPU buffers can miss the working set."""
+    try:
+        from core.inference.npu_backend import peek_npu_backend
+
+        npu = peek_npu_backend()
+        resident = npu.resident() if npu is not None else None
+        if resident is None:
+            return None, None
+        measured = 0
+        pid = getattr(getattr(npu, "_server", None), "pid", None)
+        if isinstance(pid, int):
+            import psutil
+
+            from utils.process_tree import linux_descendant_pids
+
+            try:
+                root = psutil.Process(pid)
+                descendants = linux_descendant_pids(pid)
+                tree = root.children(recursive = True) if descendants is None else descendants
+            except psutil.Error:
+                root, tree = None, []
+            for proc in [root, *tree] if root is not None else []:
+                try:
+                    proc = psutil.Process(proc) if isinstance(proc, int) else proc
+                    measured += proc.memory_info().rss
+                except psutil.Error:
+                    continue
+        # Lemonade lists sizes in decimal GB.
+        size_gb = resident.model.size_gb
+        catalog = size_gb * 1000**3 if size_gb else 0
+        mib = int(max(measured, catalog) // (1024 * 1024))
+        return (mib, False) if mib > 0 else (None, None)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
         return None, None
 
@@ -22684,6 +22891,7 @@ async def _slot_status(current_subject: str):
         backend = _peek_inference_backend()
 
         from core.inference.npu_backend import peek_npu_backend
+        from core.inference.npu_flm_args import flm_args_status
 
         _npu = peek_npu_backend()
         _npu_resident = _npu.resident() if _npu is not None and routed_slot.get() is None else None
@@ -22699,7 +22907,9 @@ async def _slot_status(current_subject: str):
                 inference = load_inference_config(_npu_model.id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
-                max_context_length = _npu_model.max_context_length,
+                **flm_args_status(_npu_resident.flm_args),
+                max_context_length = _npu_resident.max_context_length,
+                npu_context_fit = _npu_resident.fitted_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,
                 context_length_fitted = None,
@@ -23427,7 +23637,9 @@ async def audio_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+        await asyncio.to_thread(
+            account_access.require_model_access, request.model_path, hf_token = request.hf_token
+        )
     from core.inference.native_audio import native_audio_download_plan
     from utils.native_path_leases import redact_native_paths
 
@@ -25111,6 +25323,7 @@ async def _external_stt_transcription(
     encrypted_api_key: Optional[str],
     request: Request,
     timestamp_granularities: Optional[list[str]] = None,
+    prompt: Optional[str] = None,
 ) -> Response:
     provider_id = provider_id.strip()
     if not provider_id:
@@ -25179,6 +25392,7 @@ async def _external_stt_transcription(
             language = language,
             response_format = response_format,
             timestamp_granularities = timestamp_granularities,
+            **({"prompt": prompt} if prompt else {}),
         )
     )
     disconnect_watcher = asyncio.create_task(
@@ -25445,7 +25659,9 @@ async def openai_audio_translations(
 
     sidecar_model = None if model in (None, "", "whisper-1") else model
     # mtmd / audio.cpp engines and turbo checkpoints would just transcribe.
-    if _stt_engine_for_model(sidecar_model) is not None or not can_translate(sidecar_model):
+    if _stt_engine_for_model(sidecar_model) is not None or not await asyncio.to_thread(
+        can_translate, sidecar_model
+    ):
         raise HTTPException(
             status_code = 400,
             detail = openai_error_body(
@@ -25896,11 +26112,28 @@ async def stt_status(
     audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
     # The first probe imports torch, Transformers and PyAV (seconds); keep it off the event loop.
     transformers_available = await asyncio.to_thread(is_available)
-    transformers_downloaded = [
-        model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
-    ]
-    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
-        transformers_downloaded.append(model)
+
+    def downloaded_ids() -> tuple[list[str], list[str], list[str]]:
+        transformers = [
+            model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
+        ]
+        if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+            transformers.append(model)
+        mtmd_ids = [
+            model_id
+            for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+            if stt_mtmd_sidecar.is_model_downloaded(model_id)
+        ]
+        gguf_ids = [
+            model_id
+            for model_id in stt_ggml_sidecar.GGML_STT_MODELS
+            if stt_ggml_sidecar._cached_model_path(model_id) is not None
+        ]
+        return transformers, mtmd_ids, gguf_ids
+
+    transformers_downloaded, mtmd_downloaded, gguf_downloaded = await asyncio.to_thread(
+        downloaded_ids
+    )
     response = JSONResponse(
         content = {
             "available": transformers_available,
@@ -25931,11 +26164,7 @@ async def stt_status(
                 "keep_alive_seconds": mtmd.keep_alive_seconds,
                 "default_model": None,
                 "models": list(stt_mtmd_sidecar.MTMD_STT_MODELS),
-                "downloaded_models": [
-                    model_id
-                    for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
-                    if stt_mtmd_sidecar.is_model_downloaded(model_id)
-                ],
+                "downloaded_models": mtmd_downloaded,
                 "download": stt_mtmd_sidecar.download_status(),
             },
             # whisper.cpp (GGUF) engine.
@@ -25947,11 +26176,7 @@ async def stt_status(
                 "keep_alive_seconds": ggml.keep_alive_seconds,
                 "default_model": stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL,
                 "models": list(stt_ggml_sidecar.GGML_STT_MODELS.keys()),
-                "downloaded_models": [
-                    model_id
-                    for model_id in stt_ggml_sidecar.GGML_STT_MODELS
-                    if stt_ggml_sidecar._cached_model_path(model_id) is not None
-                ],
+                "downloaded_models": gguf_downloaded,
                 "download": stt_ggml_sidecar.download_status(),
             },
             # models: recommended list plus downloads; downloaded_models: found by GGUF header in the HF cache.
@@ -26239,6 +26464,7 @@ async def _transcribe_audio_result(
     timestamps: bool = False,
     translate: bool = False,
     context_length: int = 0,
+    prompt: Optional[str] = None,
 ) -> dict:
     """source_path is read in place by audio.cpp; translate is honoured only by the Transformers sidecar."""
     if account_access.managed_account():
@@ -26284,7 +26510,7 @@ async def _transcribe_audio_result(
         functools.partial(sidecar.transcribe, task = "translate") if translate else sidecar.transcribe
     )
     if serving_engine == "mtmd":
-        transcribe = functools.partial(transcribe, context_length = context_length)
+        transcribe = functools.partial(transcribe, context_length = context_length, prompt = prompt)
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -26544,10 +26770,18 @@ def _source_transcript(result: dict, source, speakers: bool) -> dict:
     return out
 
 
+def _accent_refused() -> HTTPException:
+    return HTTPException(
+        status_code = 422,
+        detail = "This model cannot take a speaker accent hint. Clear it, or pick Qwen3-ASR "
+        "(llama.cpp) or a connection to a non-Whisper transcription model.",
+    )
+
+
 async def _external_source_transcript(
     body: TranscribeSourceRequest, source, request: Request
 ) -> dict:
-    from core.inference import audio_inputs, audio_metrics
+    from core.inference import audio_inputs, audio_metrics, stt_capabilities
 
     def _encode():
         path = audio_inputs.prepared_path(source, 16000)
@@ -26578,6 +26812,7 @@ async def _external_source_transcript(
         timestamp_granularities = ["segment", "word"] if body.timestamps else None,
         encrypted_api_key = None,
         request = request,
+        prompt = stt_capabilities.accent_prompt(body.speaker_accent),
     )
     data = json.loads(response.body) if "json" in response.media_type else {}
     if not isinstance(data, dict) or not isinstance(data.get("text"), str):
@@ -26636,7 +26871,10 @@ async def transcribe_audio_source(
     from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
 
+    accent_prompt = stt_capabilities.accent_prompt(body.speaker_accent)
     if body.provider_id is not None:
+        if accent_prompt and not stt_capabilities.connection_takes_accent_hint(body.model):
+            raise _accent_refused()
 
         def _resolve():
             source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
@@ -26660,6 +26898,8 @@ async def transcribe_audio_source(
     serving_engine = _resolve_serving_stt_engine(engine)
     caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
+    if accent_prompt and not caps.get("accent_hint"):
+        raise _accent_refused()
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
     cap = stt_capabilities.max_seconds_for(serving_engine)
 
@@ -26686,6 +26926,7 @@ async def transcribe_audio_source(
             source_path = path,
             timestamps = body.timestamps,
             context_length = body.context_length,
+            prompt = accent_prompt,
         )
         return _source_transcript(result, source, body.speakers)
 
@@ -26889,8 +27130,15 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
 # base64 inflates ~4/3; _MAX_AUDIO_SECONDS bounds decoded length of compressed files.
 _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
-# Padded base64 of the composer's 64 MB, rounded up (flooring refused exact-size files).
-_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+# Padded base64 of the composer's 256 MB, rounded up (flooring refused exact-size files).
+_MAX_VIDEO_BYTES = 256 * 1024 * 1024
+# llama-server's HTTP layer refuses bodies over 100 MB, so a clip larger than this is transcoded first.
+_LLAMA_VIDEO_FORWARD_BYTES = 64 * 1024 * 1024
+_LLAMA_VIDEO_FORWARD_B64_CHARS = 4 * math.ceil(_LLAMA_VIDEO_FORWARD_BYTES / 3)
+_VIDEO_OVER_FORWARD_BUDGET = (
+    "Video is too large to send to the model even after compressing it. "
+    "Trim it to a shorter clip and try again."
+)
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
@@ -27659,7 +27907,7 @@ def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
     if not payload_len:
         return (400, "Could not read the provided video file.")
     if payload_len > _MAX_VIDEO_B64_CHARS:
-        return (413, "Video file is too large (max 64 MB).")
+        return (413, "Video file is too large (max 256 MB).")
     return None
 
 
@@ -27670,7 +27918,7 @@ def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]
     if not video_b64:
         return "", (400, "Could not read the provided video file.")
     if len(video_b64) > _MAX_VIDEO_B64_CHARS:
-        return video_b64, (413, "Video file is too large (max 64 MB).")
+        return video_b64, (413, "Video file is too large (max 256 MB).")
     return video_b64, None
 
 
@@ -27880,7 +28128,7 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
         total += _video_payload_chars(clip)
         # And bytes bound the per-clip transcode cost the count cannot see.
         if total > _MAX_VIDEO_B64_CHARS:
-            return (413, "Videos are too large (max 64 MB per request).")
+            return (413, "Videos are too large (max 256 MB per request).")
     return None
 
 
@@ -27893,10 +28141,10 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         else None
     )
     try:
-        return await asyncio.to_thread(
+        shrunk = await asyncio.to_thread(
             shrink_video_for_llama,
             video_b64,
-            _MAX_VIDEO_BYTES,
+            _LLAMA_VIDEO_FORWARD_BYTES,
             sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
             ffmpeg_dir = getattr(llama_backend, "_video_ffmpeg_dir", None),
             env = child_env,
@@ -27907,6 +28155,20 @@ async def _shrink_clip_for_llama(video_b64: str, llama_backend) -> str:
         raise HTTPException(
             status_code = 400, detail = "Could not process the provided video file."
         ) from None
+    return shrunk
+
+
+def _forwarded_video_chars(messages: list[dict]) -> int:
+    total = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "input_video":
+                data = (part.get("input_video") or {}).get("data")
+                total += len(data) if isinstance(data, str) else 0
+    return total
 
 
 async def _shrink_video_parts(messages: list[dict], llama_backend) -> None:
@@ -28420,9 +28682,8 @@ def _build_external_messages(
     _native_gemini = False
     if provider_type == "gemini" and base_url:
         try:
-            from urllib.parse import urlparse as _urlparse
-            _host = (_urlparse(base_url).hostname or "").lower()
-            _native_gemini = _host == "generativelanguage.googleapis.com"
+            from core.inference.providers import speaks_native_gemini
+            _native_gemini = speaks_native_gemini(base_url)
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini or provider_type == "openai_codex"
@@ -28896,35 +29157,86 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 # keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
+# /compact on Anthropic lowers the native trigger to its 50K floor, which only fires on a prompt
+# past it; the margin covers the estimate running high. Shorter threads get Unsloth's summary.
+_ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
-def _fit_external_context(
-    messages: list[dict],
-    payload,
-    *,
-    tools: Optional[list[dict]] = None,
-    branch: Optional[list[dict]] = None,
-    tool_loop: bool = False,
-) -> tuple[list[dict], Optional[dict], Optional[int]]:
-    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
-    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns."""
+def _extends_turn(old: Any, new: Any) -> bool:
+    """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
+    if isinstance(old, str) and isinstance(new, str):
+        return new.startswith(old)
+    return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
+    # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
+    start = next(
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if asked
+            and messages[i].get("role") == "user"
+            and _extends_turn(asked.get("content"), messages[i].get("content"))
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    latest = next(
+        (i for i in range(len(messages) - 1, start, -1) if messages[i].get("role") == "assistant"),
+        len(messages),
+    )
+    return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
+def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
+    """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
+
+    The loop may also replace the trailing user turn (a re-prompt merged into it); that edit is
+    carried onto the fitted copy, whose text may lead with an inline recall block."""
+    seen, fitted = state.get("input"), state.get("fitted")
+    if seen is None:
+        return None
+    n = len(seen)
+    if messages[:n] == seen:
+        return fitted + messages[n:]
+    if not (
+        n
+        and len(messages) >= n
+        and messages[: n - 1] == seen[:-1]
+        and seen[-1].get("role") == messages[n - 1].get("role") == "user"
+        and fitted
+        and fitted[-1].get("role") == "user"
+    ):
+        return None
+    old, new, kept = (
+        seen[-1].get("content"),
+        messages[n - 1].get("content"),
+        fitted[-1].get("content"),
+    )
+    if (
+        all(isinstance(x, str) for x in (old, new, kept))
+        and kept.endswith(old)
+        and new.startswith(old)
+    ):
+        last = {**fitted[-1], "content": kept + new[len(old) :]}
+    elif isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old:
+        parts = kept if isinstance(kept, list) else [{"type": "text", "text": kept or ""}]
+        last = {**fitted[-1], "content": parts + new[len(old) :]}
+    else:
+        last = messages[n - 1]
+    return fitted[:-1] + [last] + messages[n:]
+
+
+def _external_token_counter(payload, tools: Optional[list[dict]]):
     from core.inference.context_window import (
-        estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
         messages_without_unpriced_media,
-        prompt_budget,
-        retrieval_budget,
-    )
-    from core.inference.llama_cpp import (
-        _archive_and_recall,
-        _boundary_metadata,
-        _compaction_fit_kwargs,
-        _conversation_recall_reserve,
-        _fit_with_instruction_pins,
-        _keeps_compaction_boundary,
-        _records_boundary,
-        _sticky_compaction_state,
     )
 
     tool_tokens = _openai_llama_admission_injected_tool_tokens(tools)
@@ -28944,10 +29256,14 @@ def _fit_external_context(
             + tool_tokens
         )
 
+    return _count
+
+
+def _external_fit_limits(payload, prompt_tokens: int) -> tuple[int, Optional[int]]:
+    """The context length to fit a prompt of ``prompt_tokens`` into, and the reply cap to send."""
     context_length = payload.compaction_threshold
     max_tokens = _effective_max_tokens(payload)
     window = payload.context_window
-    prompt_tokens = _count(messages)
     if window and max_tokens:
         # reserve the full reply cap while leaving at least half the window for the prompt.
         margin = window // 32
@@ -28956,29 +29272,101 @@ def _fit_external_context(
             max_tokens = min(max_tokens, window - room - margin)
             # The largest context whose prompt_budget stays within room.
             context_length = min(context_length, room + max_tokens, room * 4 // 3)
-    if prompt_tokens <= prompt_budget(context_length, max_tokens):
-        return messages, None, max_tokens
+    return context_length, max_tokens
+
+
+def _fit_external_context(
+    messages: list[dict],
+    payload,
+    *,
+    tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
+    can_reset: bool = False,
+    first_pass: bool = True,
+    replays_manual: bool = False,
+    keep_ids: Optional[set[int]] = None,
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
+    queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
+    ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
+    replays a /compact epoch on a request that may not start one."""
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
+        retrieval_budget,
+    )
+    from core.inference.llama_cpp import (
+        _archive_and_recall,
+        _boundary_metadata,
+        _can_reset_epoch,
+        _compaction_fit_kwargs,
+        _conversation_recall_reserve,
+        _fit_with_instruction_pins,
+        _keeps_compaction_boundary,
+        _records_boundary,
+        _sticky_compaction_details,
+        _sticky_compaction_state,
+    )
+
+    _count = _external_token_counter(payload, tools)
+    prompt_tokens = _count(messages)
+    context_length, max_tokens = _external_fit_limits(payload, prompt_tokens)
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
-    sticky, sticky_is_checkpoint = _sticky_compaction_state(
-        thread_id,
-        messages,
-        context_policy = policy,
-        can_reset = False,
-        compaction_headroom_ratio = ratio,
-    )
+    # The caller vouches the model can receive search_conversation on a later turn, as GGUF does.
+    can_reset = can_reset and _can_reset_epoch(thread_id, True)
+    # A later tool-loop pass refits the first pass's result, so the boundary and /compact apply once.
+    force_reset = first_pass and can_reset and getattr(payload, "compact_context", None) is True
+    sticky, sticky_is_checkpoint = (None, None) if first_pass else (0, True)
+    sticky_manual = False
+    if (can_reset or replays_manual) and first_pass:
+        # Read before the fits check: a /compact epoch replays while the chat still fits.
+        sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = can_reset,
+            compaction_headroom_ratio = ratio,
+        )
+    if (
+        prompt_tokens <= prompt_budget(context_length, max_tokens)
+        and not force_reset
+        and not sticky_manual
+    ):
+        return messages, None, max_tokens
+    if not (can_reset or replays_manual) and first_pass:
+        # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
+        sticky, sticky_is_checkpoint = _sticky_compaction_state(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = False,
+            compaction_headroom_ratio = ratio,
+        )
+    # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
+    recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
+        anchor_ids = (
+            (_active_turn_anchors(messages, branch) or set())
+            if can_reset or replays_manual
+            else set()
+        )
+        | (keep_ids or set())
+        or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
-        recall_offered = False,
+        recall_offered = recall_offered,
         reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
+        sticky_manual = sticky_manual,
+        force_reset = force_reset,
+        can_reset = can_reset,
         estimate_message = estimate_message_tokens_without_unpriced_media,
         **_compaction_fit_kwargs(policy, ratio),
     )
@@ -28998,6 +29386,7 @@ def _fit_external_context(
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
+            force_recall = not recall_offered or bool(truncation.get("checkpoint_started", True)),
             recall_done = not truncation.get("fits", True),
             recall_budget_tokens = retrieval_budget(
                 context_length,
@@ -29010,6 +29399,261 @@ def _fit_external_context(
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
     return fitted, truncation, max_tokens
+
+
+class _ExternalCompactionPlan:
+    """What a cloud request's fit found before any summary call: ``to_summarise`` is non-empty
+    when the same connection has to be asked for a summary first."""
+
+    __slots__ = (
+        "messages",
+        "body",
+        "current",
+        "covered",
+        "summary",
+        "pins",
+        "budget",
+        "context_length",
+        "max_tokens",
+        "prompt_tokens",
+        "to_summarise",
+        "cut",
+        "auto",
+        "force",
+        "summarise",
+        "summary_failed",
+    )
+
+
+def _plan_external_compaction(
+    messages: list[dict],
+    payload,
+    *,
+    tools: Optional[list[dict]] = None,
+    auto: bool = True,
+    force: Optional[str] = None,
+    summarise: bool = True,
+) -> _ExternalCompactionPlan:
+    """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
+    replayed. ``force`` summarises everything before the newest user turn whether or not the
+    prompt fits: "manual" for /compact, "overflow" after the provider refused the prompt."""
+    from core.inference import cloud_compaction
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
+    )
+
+    plan = _ExternalCompactionPlan()
+    plan.messages = messages
+    plan.auto = bool(auto and payload.compaction_threshold)
+    plan.force = force
+    plan.summarise = summarise
+    plan.summary_failed = None
+    plan.to_summarise = []
+    plan.body = cloud_compaction.body_messages(messages)
+    count = _external_token_counter(payload, tools)
+    plan.prompt_tokens = count(messages)
+    if plan.auto:
+        plan.context_length, plan.max_tokens = _external_fit_limits(payload, plan.prompt_tokens)
+        plan.budget = prompt_budget(plan.context_length, plan.max_tokens)
+    else:
+        plan.context_length, plan.max_tokens = None, _effective_max_tokens(payload)
+        plan.budget = None
+    try:
+        from core.inference import instruction_pin
+        plan.pins = instruction_pin.pinned_instruction_ids(messages, prompt_target = plan.budget or 0)
+    except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
+        plan.pins = set()
+
+    thread_id = str(payload.thread_id) if payload.thread_id else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    plan.covered = int(record["covered_messages"]) if record else 0
+    plan.summary = record["summary"] if record else None
+    plan.current = (
+        cloud_compaction.apply_summary(messages, plan.summary, plan.covered, keep_ids = plan.pins)
+        if record
+        else messages
+    )
+    plan.cut = plan.covered
+    over = plan.budget is not None and count(plan.current) > plan.budget
+    if summarise and (force or over):
+        tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        cut = cloud_compaction.tail_start(
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+        )
+        if cut <= plan.covered and tail_tokens:
+            # The tail is within its share and the prompt still does not fit (a large tool
+            # catalogue, a long system prompt): summarise up to the newest turn before evicting.
+            cut = cloud_compaction.tail_start(
+                plan.body, estimate_message_tokens_without_unpriced_media, 0
+            )
+        if cut > plan.covered:
+            plan.cut = cut
+            plan.to_summarise = plan.body[plan.covered : cut]
+        elif over:
+            # Nothing older than the newest turn is left to summarise.
+            plan.summary_failed = False
+    return plan
+
+
+async def _finish_external_compaction(
+    plan: _ExternalCompactionPlan,
+    payload,
+    *,
+    client,
+    model: str,
+    tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """Summarise what the plan asked for (falling back to eviction when the call fails), then
+    let the evicting fit catch whatever still does not fit."""
+    from core.inference import cloud_compaction
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        retrieval_budget,
+    )
+    from core.inference.llama_cpp import _archive_and_recall
+
+    thread_id = str(payload.thread_id) if payload.thread_id else None
+    count = _external_token_counter(payload, tools)
+    current = plan.current
+    summary_failed = plan.summary_failed
+    summarised_now = False
+    if plan.to_summarise:
+        reply_tokens = cloud_compaction.summary_max_tokens(plan.budget)
+        # The whole window when it is known: the threshold only says when to compact.
+        room = payload.context_window or plan.context_length
+        chunks = cloud_compaction.summary_chunks(
+            plan.to_summarise,
+            estimate_message_tokens_without_unpriced_media,
+            # Room for the instructions, the summary so far and the reply.
+            max(1_000, room - 2 * reply_tokens - 1_000) if room else None,
+        )
+        summary = plan.summary
+        try:
+            for chunk in chunks:
+                summary = await cloud_compaction.collect_summary(
+                    client.stream_chat_completion(
+                        messages = cloud_compaction.summary_request_messages(summary, chunk),
+                        model = model,
+                        temperature = None,
+                        top_p = None,
+                        max_tokens = reply_tokens,
+                        tool_choice = "none",
+                        enable_prompt_caching = False,
+                        thread_id = payload.thread_id,
+                    )
+                )
+        except cloud_compaction.SummaryFailed as exc:
+            logger.warning("external_provider.summary_failed", error = str(exc), model = model)
+            summary_failed = True
+        else:
+            await asyncio.to_thread(
+                cloud_compaction.save_summary,
+                thread_id,
+                covered = plan.body[: plan.cut],
+                summary = summary,
+                model = model,
+                manual = plan.force == "manual",
+            )
+            plan.summary, plan.covered = summary, plan.cut
+            current = cloud_compaction.apply_summary(
+                plan.messages, summary, plan.covered, keep_ids = plan.pins
+            )
+            summarised_now = True
+
+    truncation = None
+    refusal = None
+    max_tokens = plan.max_tokens
+    fit_payload = payload if plan.auto else None
+    if plan.force == "overflow" and not summarised_now:
+        # The provider counted more than the estimate allowed for: evict down to half of it.
+        fit_payload = payload.model_copy(
+            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
+        )
+    if fit_payload is not None:
+        fitted, evicted, max_tokens = await asyncio.to_thread(
+            _fit_external_context,
+            current,
+            fit_payload,
+            tools = tools,
+            branch = branch,
+            tool_loop = tool_loop,
+            keep_ids = cloud_compaction.summary_turn_ids(current),
+        )
+        current = fitted
+        if evicted and not plan.summarise:
+            truncation = evicted
+        elif evicted and evicted.get("dropped_messages"):
+            truncation = {**evicted, "summary_failed": bool(summary_failed)}
+            if plan.covered and plan.summary is not None:
+                # Counted on the summarised prompt: the boundary is past the summary's own.
+                truncation["boundary_messages"] = plan.covered + int(
+                    evicted.get("boundary_messages") or evicted["dropped_messages"]
+                )
+                # The fit archived only what it cut from the summarised prompt.
+                archived = await asyncio.to_thread(
+                    _archive_and_recall,
+                    current,
+                    plan.messages,
+                    branch_messages = plan.messages,
+                    thread_id = thread_id,
+                    style = "inline",
+                    recall_done = True,
+                )
+                truncation.update(archived["counts"])
+        elif evicted:
+            # Nothing could be dropped: the prompt is still too long, and any summary still stands.
+            refusal = evicted
+    if truncation is None and plan.summary is not None and plan.covered > 0:
+        kept = sum(1 for message in plan.body[: plan.covered] if id(message) in plan.pins)
+        truncation = {
+            "dropped_messages": plan.covered - kept,
+            "boundary_messages": plan.covered,
+            "fits": True,
+            "summarized": True,
+            "summary_source": "unsloth",
+            "prompt_tokens_before": plan.prompt_tokens,
+            "prompt_tokens_after": count(current),
+        }
+        if plan.context_length:
+            truncation["context_length"] = plan.context_length
+        if refusal is not None:
+            truncation = {**refusal, **truncation, "fits": bool(refusal.get("fits"))}
+        if summarised_now:
+            truncation["checkpoint_started"] = True
+            if plan.force == "manual":
+                truncation["manual"] = True
+        # The summary carries continuity; recall adds the exact wording of summarised turns the
+        # newest one asks about, within the prompt room left, as the evicting fit does.
+        room_for = plan.context_length or payload.context_window
+        recalled = await asyncio.to_thread(
+            _archive_and_recall,
+            current,
+            plan.messages,
+            branch_messages = plan.messages,
+            query_messages = branch,
+            thread_id = thread_id,
+            style = "inline",
+            recall_done = refusal is not None,
+            recall_budget_tokens = (
+                retrieval_budget(
+                    room_for,
+                    max_tokens,
+                    truncation["prompt_tokens_after"],
+                    reply_returns = tool_loop,
+                )
+                if room_for
+                else 0
+            ),
+            count_tokens = count,
+        )
+        current = recalled["conversation"]
+        truncation.update(recalled["counts"])
+    if truncation is None and refusal is not None:
+        truncation = {**refusal, "summary_failed": bool(summary_failed)}
+    return current, truncation, max_tokens
 
 
 def _is_compaction_block_sse(line: str) -> bool:
@@ -29192,6 +29836,7 @@ async def _proxy_to_external_provider(
             offered_subscription_model_ids,
             forget_subscription_models,
             mark_subscription_catalog_stale,
+            restore_subscription_catalog,
             subscription_catalog_known,
             saved_models_proven_for,
             subscription_catalog_matches_account,
@@ -29215,11 +29860,6 @@ async def _proxy_to_external_provider(
                 status_code = 400, detail = "ChatGPT subscription chat requires stream=true."
             )
         model = payload.external_model or payload.model
-        from core.inference.providers import get_provider_info as _get_codex_provider_info
-
-        info = _get_codex_provider_info("openai_codex") or {}
-
-        # /codex/models may list slugs newer than the seed. Drop a catalog from another account.
         current_bundle = load_oauth_bundle(payload.provider_id)
         current_account = current_bundle.get("account_id") if current_bundle else None
         if current_account and not subscription_catalog_matches_account(
@@ -29227,6 +29867,7 @@ async def _proxy_to_external_provider(
         ):
             forget_subscription_models(payload.provider_id)
             mark_subscription_catalog_stale(payload.provider_id)
+        restore_subscription_catalog(payload.provider_id, current_bundle)
 
         def _allowed_codex_models() -> set[str]:
             """Once read, the plan catalog is the authority; a saved slug survives hide, not a plan dropping it."""
@@ -29238,11 +29879,11 @@ async def _proxy_to_external_provider(
                     if offered_subscription_model(payload.provider_id, slug) is not None
                 }
             if subscription_catalog_stale(payload.provider_id):
-                return set(info.get("default_models", []))
+                return set()
             if not saved_models_proven_for(payload.provider_id, current_account):
                 # Saved models unproven for this account: a rebind before restart or on another worker leaves this.
-                return set(info.get("default_models", []))
-            return set(info.get("default_models", [])) | saved
+                return set()
+            return saved
 
         allowed_models = _allowed_codex_models()
         if model not in allowed_models:
@@ -29256,17 +29897,12 @@ async def _proxy_to_external_provider(
         if model not in allowed_models:
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
-        capabilities = info.get("model_capabilities", {})
         image_requested = any(
             isinstance(message.content, list)
             and any(part.type == "image_url" for part in message.content)
             for message in payload.messages
         )
-        listed_model = (
-            None
-            if model in capabilities
-            else offered_subscription_model(payload.provider_id, model)
-        )
+        listed_model = offered_subscription_model(payload.provider_id, model)
         # Vision flag is fixed for the run; an MCP tool may return a picture later.
         _may_receive_image = (
             image_requested
@@ -29279,7 +29915,7 @@ async def _proxy_to_external_provider(
             # A conversation already carrying an image needs the capability even with MCP off, or it is stripped.
             or _request_has_promotable_mcp_images(payload, exact = False)
         )
-        if _may_receive_image and model not in capabilities and listed_model is None:
+        if _may_receive_image and listed_model is None:
             # No catalog read this process; fetch modalities only when an image may be sent.
             try:
                 await ensure_subscription_models(payload.provider_id)
@@ -29289,11 +29925,10 @@ async def _proxy_to_external_provider(
             except Exception:
                 pass
             listed_model = offered_subscription_model(payload.provider_id, model)
-        if model in capabilities:
-            model_supports_vision = bool(capabilities[model].get("vision"))
-        else:
-            # A slug the registry never listed: the plan's own entry is all we know.
-            model_supports_vision = bool(listed_model and listed_model.get("vision"))
+        model_supports_vision = listed_model.get("vision") if listed_model else None
+        if model_supports_vision is None:
+            from routes.providers import cached_catalog_model_inputs
+            model_supports_vision = "image" in (cached_catalog_model_inputs("openai", model) or ())
         if not model_supports_vision:
             for message in payload.messages:
                 if isinstance(message.content, list) and any(
@@ -29644,6 +30279,27 @@ async def _proxy_to_external_provider(
     _supports_vision = (
         managed.supports_vision if managed is not None else _pinfo.get("supports_vision", False)
     )
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        api_type = api_type,
+        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
+        **({"managed_loopback": True} if managed is not None else {}),
+    )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
+    _takes_tool_images = _external_takes_mcp_images(provider_type, _supports_vision, model, _pinfo)
+    if (
+        _takes_tool_images
+        and provider_type in ("ollama", "llama_cpp")
+        and (studio_tool_loop or _messages_mention_mcp_images(payload.messages))
+    ):
+        # An unread flag keeps the image: a vision model must not lose it to a silent server.
+        _takes_tool_images = await client.served_model_reads_images(model) is not False
     _external_promoted_parts: list = []
     chat_messages = await _build_external_messages_async(
         payload.messages,
@@ -29653,9 +30309,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_type = api_type,
         promoted_out = _external_promoted_parts,
-        promote_mcp_images = _external_takes_mcp_images(
-            provider_type, _supports_vision, model, _pinfo
-        ),
+        promote_mcp_images = _takes_tool_images,
         model = model,
         preserve_thinking = payload.preserve_thinking,
     )
@@ -29673,19 +30327,6 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = await asyncio.to_thread(
-        ExternalProviderClient,
-        provider_type = provider_type,
-        base_url = base_url,
-        api_key = api_key,
-        api_type = api_type,
-        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
-        **({"extra_headers": extra_headers} if extra_headers else {}),
-        **({"managed_loopback": True} if managed is not None else {}),
-    )
-    # Metadata preflights (served context window, template) run before streaming starts.
-    if extra_headers:
-        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
@@ -29706,9 +30347,7 @@ async def _proxy_to_external_provider(
     if studio_tool_loop:
         external_studio_tools = await _select_request_tools(
             payload,
-            supports_vision = _external_takes_mcp_images(
-                provider_type, _supports_vision, model, _pinfo
-            ),
+            supports_vision = _takes_tool_images,
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
@@ -29768,68 +30407,256 @@ async def _proxy_to_external_provider(
     if (
         managed is None
         and payload.context_overflow == "truncate_oldest"
-        and not payload.compaction_threshold
+        and (provider_type == "ollama" or not payload.compaction_threshold)
         and not _provider_compacts
     ):
         # a self-hosted server reports its startup window when the catalog has none.
-        _served_window = payload.context_window or await client.served_context_window(model)
-        if _served_window:
+        _loaded_window = None
+        if provider_type == "ollama" or not payload.context_window:
+            # Ollama loads its own num_ctx, usually far below the catalogued window.
+            _loaded_window = await client.served_context_window(model)
+        _served_window = min(filter(None, (payload.context_window, _loaded_window)), default = None)
+        if _served_window and (_loaded_window or not payload.compaction_threshold):
+            _threshold = min(
+                _EXTERNAL_COMPACTION_THRESHOLD_MAX,
+                int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+            )
             payload = payload.model_copy(
                 update = {
                     "context_window": _served_window,
                     "compaction_threshold": min(
-                        _EXTERNAL_COMPACTION_THRESHOLD_MAX,
-                        int(_served_window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+                        payload.compaction_threshold or _threshold, _threshold
                     ),
                 }
             )
+
+    async def _tool_result_window() -> Optional[int]:
+        served = await client.served_context_window(model)
+        return min(served, payload.context_window or served) if served else None
+
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _external_context_fitter = None
     _compaction_fallback = None
-    if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
-        _request_branch = chat_messages
+    _request_branch = chat_messages
+    _rolling = _rolling_context_policy(payload) is not None
+    # The connection's "Auto-compact after" may pass the 200K default, never the model's window.
+    _compaction_uncapped = bool(payload.compaction_uncapped and payload.compaction_threshold)
+    if _compaction_uncapped and payload.context_window:
+        payload = payload.model_copy(
+            update = {
+                "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
+            }
+        )
+    # Eviction's replacement: providers that compact server-side keep doing so themselves.
+    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _provider_compacts
+    # /compact. A saved thread only, so the summary outlives this request.
+    _compact_now = managed is None and payload.compact_context is True and bool(payload.thread_id)
+    _first_turn_overrides: dict = {}
+    if _compact_now and _provider_compacts:
+        _native_trigger = None
+        if provider_type != "anthropic":
+            _native_trigger = _OPENAI_COMPACTION_MIN
+        elif (
+            await asyncio.to_thread(
+                _external_token_counter(payload, _external_fit_tools), chat_messages
+            )
+            >= _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS
+        ):
+            _native_trigger = _ANTHROPIC_COMPACTION_MIN
+        if _native_trigger is not None:
+            # The provider compacts on this request because its trigger is already behind us.
+            _first_turn_overrides = {"compaction_threshold": _native_trigger}
+    _manual_summary_pending = _compact_now and not _first_turn_overrides
+    _has_saved_summary = False
+    if managed is None and payload.thread_id and not _auto_summary and not _manual_summary_pending:
+        from core.inference import cloud_compaction as _cloud_compaction
+        _has_saved_summary = await asyncio.to_thread(
+            _cloud_compaction.thread_has_summaries, str(payload.thread_id)
+        )
+    # A managed local engine keeps the evicting fit it always had.
+    _fit_active = _auto_summary or (
+        managed is None and (_manual_summary_pending or _has_saved_summary)
+    )
 
-        async def _external_context_fitter(messages):
-            nonlocal _external_truncation
+    # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
+    _checkpoint_pass: dict = {}
+    _first_payload = payload
+
+    async def _managed_context_fitter(messages, tools):
+        nonlocal _first_payload
+        # After a checkpoint fit, later passes extend its result, as the GGUF loop does.
+        candidate = _extend_checkpoint_fit(_checkpoint_pass, messages)
+        later = candidate is not None
+
+        def fit(conversation, fit_payload, first_pass):
+            return _fit_external_context(
+                conversation,
+                fit_payload,
+                tools = tools,
+                branch = _request_branch,
+                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
+                # The NPU has no compaction of its own, so /compact resets here as on GGUF.
+                can_reset = not _tool_calls_are_disabled(payload),
+                first_pass = first_pass,
+                replays_manual = True,
+            )
+
+        refit = not later
+        if later:
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                _fit_external_context,
-                messages,
+                fit, candidate, payload, False
+            )
+            refit = bool(
+                truncation and (truncation.get("dropped_messages") or not truncation.get("fits"))
+            )
+            if refit:
+                # Boundaries must count the full branch, so an overflow refits it without /compact.
+                fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                    fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                )
+        else:
+            # /compact applies to the loop's first fit only, whether or not it evicted anything.
+            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                fit, messages, _first_payload, True
+            )
+            _first_payload = payload.model_copy(update = {"compact_context": None})
+        # A refit moves the boundary, so the next pass extends this result, not the stale one.
+        if (later and not refit) or (refit and truncation and truncation.get("checkpoint") is True):
+            _checkpoint_pass.update(input = list(messages), fitted = fitted)
+        return fitted, truncation, fallback_max_tokens
+
+    # The loop passes this turn's catalogue: a withdrawn one (tool_choice "none", spent budget) costs nothing.
+    async def _external_fit_steps(
+        messages,
+        tools = _external_fit_tools,
+        *,
+        force = None,
+        auto = None,
+        plan = None,
+    ):
+        """Yields a progress line when a summary has to be written first, then
+        ``(messages, max_tokens, truncation_line)``."""
+        nonlocal _external_truncation, _manual_summary_pending
+        from core.inference import cloud_compaction
+
+        if force is None and _manual_summary_pending:
+            force = "manual"
+        _manual_summary_pending = False
+        if managed is not None:
+            fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
+        else:
+            if plan is None:
+                plan = await asyncio.to_thread(
+                    _plan_external_compaction,
+                    messages,
+                    payload,
+                    tools = tools,
+                    auto = _auto_summary if auto is None else auto,
+                    force = force,
+                )
+            if plan.to_summarise and not _non_stream_custom_responses:
+                yield cloud_compaction.COMPACTING_SSE_LINE
+            fitted, truncation, fallback_max_tokens = await _finish_external_compaction(
+                plan,
                 payload,
-                tools = _external_fit_tools,
+                client = client,
+                model = model,
+                tools = tools,
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
-            fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
-            if truncation and truncation.get("dropped_messages"):
-                _external_truncation = truncation
-            truncation_line = None
-            if (
-                truncation
-                and truncation.get("dropped_messages")
-                and not _non_stream_custom_responses
-            ):
-                truncation_line = _context_truncated_sse_chunk(
-                    f"chatcmpl-{uuid.uuid4().hex}", model, truncation
-                ).rstrip("\n")
-            return fitted, fallback_max_tokens, truncation_line
+        _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
+        fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        if truncation and truncation.get("dropped_messages"):
+            _external_truncation = truncation
+        truncation_line = None
+        if truncation and truncation.get("dropped_messages") and not _non_stream_custom_responses:
+            truncation_line = _context_truncated_sse_chunk(
+                f"chatcmpl-{uuid.uuid4().hex}", model, truncation
+            ).rstrip("\n")
+        yield fitted, fallback_max_tokens, truncation_line
 
-        if _provider_compacts and (provider_type == "openai" or api_type == "responses"):
-            _compaction_fallback = _external_context_fitter
+    async def _external_context_fitter(
+        messages,
+        tools = _external_fit_tools,
+        **options,
+    ):
+        fit = None
+        async for step in _external_fit_steps(messages, tools, **options):
+            if not isinstance(step, str):
+                fit = step
+        return fit
+
+    async def _external_overflow_refit(messages, tools = _external_fit_tools):
+        """The provider refused the prompt as too long: summarise everything before the newest
+        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        nonlocal _external_truncation
+        earlier, _external_truncation = _external_truncation, None
+        async for step in _external_fit_steps(messages, tools, force = "overflow"):
+            if isinstance(step, str):
+                yield step
+                continue
+            truncation = _external_truncation or {}
+            changed = truncation.get("checkpoint_started") or (
+                truncation.get("dropped_messages") and not truncation.get("summarized")
+            )
+            if not changed:
+                _external_truncation = earlier
+            yield step if changed else (None, None, None)
+
+    # Only with auto-compact on: a user who switched it off gets the provider's refusal as is.
+    _overflow_recovery = managed is None and _rolling
 
     if (
         payload.compaction_threshold
-        and not _provider_compacts
-        and not run_studio_tool_loop
-        and _rolling_context_policy(payload) is not None
+        and _rolling
+        and _provider_compacts
+        and (provider_type == "openai" or api_type == "responses")
     ):
+
+        async def _compaction_fallback(messages):
+            return await _external_context_fitter(messages, auto = True)
+
+    _deferred_fit_plan = None
+    # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
+    _unfitted_messages = chat_messages
+    if _fit_active and not run_studio_tool_loop and managed is not None:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
             chat_messages,
             payload,
             tools = _external_fit_tools,
+            # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
+            can_reset = bool(managed.supports_tools) and not _tool_calls_are_disabled(payload),
+            replays_manual = True,
         )
+        try:
+            _refuse_what_ollama_would_cut(
+                provider_type, _external_truncation, payload.context_window
+            )
+        except context_refusal.ContextBudgetExceeded as exc:
+            raise _context_budget_http_error(exc)
         chat_messages = _date_a_fitted_system_turn(chat_messages, request, run_studio_tool_loop)
+    elif _fit_active and not run_studio_tool_loop:
+        _prefit_plan = await asyncio.to_thread(
+            _plan_external_compaction,
+            chat_messages,
+            payload,
+            tools = _external_fit_tools,
+            auto = _auto_summary,
+            force = "manual" if _manual_summary_pending else None,
+        )
+        _manual_summary_pending = False
+        if _prefit_plan.to_summarise and payload.stream and not _non_stream_custom_responses:
+            # The summary call takes seconds: run it inside the stream, behind a progress frame.
+            _deferred_fit_plan = _prefit_plan
+        else:
+            try:
+                chat_messages, _external_max_tokens, _ = await _external_context_fitter(
+                    chat_messages, plan = _prefit_plan
+                )
+            except context_refusal.ContextBudgetExceeded as exc:
+                raise _context_budget_http_error(exc)
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
@@ -29866,6 +30693,7 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            compaction_uncapped = _compaction_uncapped,
             compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
@@ -29894,7 +30722,9 @@ async def _proxy_to_external_provider(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
-                    message_fitter = (_external_context_fitter if not _provider_compacts else None),
+                    message_fitter = _external_fit_steps if _fit_active else None,
+                    overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
+                    first_turn_overrides = _first_turn_overrides,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
@@ -29907,10 +30737,10 @@ async def _proxy_to_external_provider(
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
-                    supports_vision = _external_takes_mcp_images(
-                        provider_type, _supports_vision, model, _pinfo
-                    ),
+                    supports_vision = _takes_tool_images,
                     promoted_image_parts = tuple(_external_promoted_parts),
+                    served_window = _tool_result_window if managed is None else None,
+                    max_tokens = _external_max_tokens,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
@@ -29938,16 +30768,58 @@ async def _proxy_to_external_provider(
                 mcp_image = _mcp_image,
             )
         else:
-            gen = client.stream_chat_completion(
-                messages = chat_messages,
-                model = model,
-                enabled_tools = payload.enabled_tools,
-                tools = payload.tools,
-                tool_choice = payload.tool_choice,
-                continue_final_message = _continue_final_message(payload),
-                stream = payload.stream,
-                **_provider_kwargs,
-            )
+            _sent_messages = chat_messages
+
+            def _send_plain(messages, **overrides):
+                return client.stream_chat_completion(
+                    messages = messages,
+                    model = model,
+                    enabled_tools = payload.enabled_tools,
+                    tools = payload.tools,
+                    tool_choice = payload.tool_choice,
+                    continue_final_message = _continue_final_message(payload),
+                    stream = payload.stream,
+                    **{**_provider_kwargs, **overrides},
+                )
+
+            async def _plain_turn():
+                nonlocal _sent_messages
+                overrides = dict(_first_turn_overrides)
+                if _deferred_fit_plan is not None:
+                    fit = None
+                    async for step in _external_fit_steps(chat_messages, plan = _deferred_fit_plan):
+                        if isinstance(step, str):
+                            yield step
+                        else:
+                            fit = step
+                    _sent_messages, overrides["max_tokens"], truncation_line = fit
+                    if truncation_line:
+                        yield truncation_line
+                async for line in _send_plain(_sent_messages, **overrides):
+                    yield line
+
+            async def _recover_plain():
+                fit = None
+                async for step in _external_overflow_refit(_unfitted_messages):
+                    if not isinstance(step, str):
+                        fit = step
+                if fit is None or fit[0] is None:
+                    return None
+                refit_messages, max_tokens, truncation_line = fit
+
+                async def _resend():
+                    if truncation_line:
+                        yield truncation_line
+                    async for line in _send_plain(refit_messages, max_tokens = max_tokens):
+                        yield line
+
+                return _resend
+
+            if _overflow_recovery and not _non_stream_custom_responses:
+                from core.inference import cloud_compaction
+                gen = cloud_compaction.stream_with_overflow_retry(_plain_turn, _recover_plain)
+            else:
+                gen = _plain_turn()
         if managed is not None:
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)
@@ -30022,7 +30894,15 @@ async def _proxy_to_external_provider(
                     yield _context_truncated_sse_chunk(
                         f"chatcmpl-{uuid.uuid4().hex}",
                         model,
-                        _provider_compaction_truncation(chat_messages),
+                        {
+                            **_provider_compaction_truncation(chat_messages),
+                            # /compact lowered the provider's trigger for this request.
+                            **(
+                                {"manual": True, "checkpoint_started": True}
+                                if _first_turn_overrides
+                                else {}
+                            ),
+                        },
                     )
                 # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
@@ -30067,17 +30947,16 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            error = (
+                _openai_stream_error_chunk(exc)
+                if isinstance(exc, context_refusal.ContextBudgetExceeded)
+                else {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+            )
             if _non_stream_custom_responses:
-                yield json.dumps(
-                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
-                )
+                yield json.dumps(error)
                 return
             # A bare EOF reads as success to the chat client; surface the failure.
-            yield (
-                "data: "
-                + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
-                + "\n\n"
-            )
+            yield "data: " + json.dumps(error) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
             cancel_event.set()
@@ -30191,6 +31070,22 @@ def _npu_kv_cache_full(usage: Any) -> bool:
     )
 
 
+def _explain_npu_error_line(npu, mark, line: str) -> str:
+    """A Lemonade SSE error line, its message carrying the reason lemond printed for it."""
+    try:
+        chunk = json.loads(line[len("data:") :].strip())
+    except ValueError:
+        return line
+    error = chunk.get("error") if isinstance(chunk, dict) else None
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        error["message"] = npu.explain_failure(mark, error["message"])
+    elif isinstance(error, str):
+        chunk["error"] = npu.explain_failure(mark, error)
+    else:
+        return line
+    return "data: " + json.dumps(chunk)
+
+
 class _NpuStreamRelay:
     """Normalize model IDs, enforce stop sequences, and collect non-streaming replies.
 
@@ -30210,6 +31105,7 @@ class _NpuStreamRelay:
         self.error: Optional[dict] = None
         self.completion_id: Optional[str] = None
         self.created: Optional[int] = None
+        self.context_truncated: Optional[dict] = None
 
     def _held_back(self, text: str) -> int:
         """Length of the longest tail of ``text`` that begins some stop sequence."""
@@ -30275,6 +31171,8 @@ class _NpuStreamRelay:
                 else {"message": str(chunk["error"])}
             )
             return [line]
+        if isinstance(chunk.get("context_truncated"), dict):
+            self.context_truncated = chunk["context_truncated"]
         self.completion_id = self.completion_id or chunk.get("id")
         self.created = self.created or chunk.get("created")
         if "model" in chunk:
@@ -30353,6 +31251,8 @@ class _NpuStreamRelay:
         }
         if self.usage is not None:
             body["usage"] = self.usage
+        if self.context_truncated is not None:
+            body["context_truncated"] = self.context_truncated
         return body
 
 
@@ -30423,8 +31323,9 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     """
     from core.inference.npu_backend import NpuError, get_npu_backend
 
+    npu = get_npu_backend()
     try:
-        upstream = await asyncio.to_thread(get_npu_backend().upstream)
+        upstream = await asyncio.to_thread(npu.upstream)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     _refuse_npu_chat_request(
@@ -30450,6 +31351,15 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
     update: dict = {"stream": True}
+    if upstream.context_length and _rolling_context_policy(payload) is not None:
+        # Lemonade does not compact, so fit the chat to the loaded window as managed engines do.
+        window = min(filter(None, (payload.context_window, upstream.context_length)))
+        threshold = min(
+            _EXTERNAL_COMPACTION_THRESHOLD_MAX,
+            int(window * (1 - _EXTERNAL_COMPACTION_HEADROOM)),
+        )
+        update["context_window"] = window
+        update["compaction_threshold"] = min(payload.compaction_threshold or threshold, threshold)
     if _legacy_image_is_distinct(payload):
         # The proxy reads messages only, so splice a top-level image in as GGUF chat does.
         update["messages"] = [
@@ -30467,10 +31377,16 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
 
     async def _lines():
         body = response.body_iterator
+        # Opened after every refusal: a window marks any load it overlaps as shared for good.
+        output_mark = npu.output_mark(upstream)
         try:
             async for piece in body:
                 text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
                 for line in text.split("\n"):
+                    if line.startswith("data:") and '"error"' in line:
+                        line = await asyncio.to_thread(
+                            _explain_npu_error_line, npu, output_mark, line
+                        )
                     if line.strip():
                         yield line
         finally:
@@ -32472,7 +33388,10 @@ async def produce_openai_chat_completions(
                 raise _reject(*video_rejection)
             if payload.video_base64:
                 video_b64, _ = _video_b64_rejection(payload.video_base64)
-                video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
+                try:
+                    video_b64 = await _shrink_clip_for_llama(video_b64, llama_backend)
+                except HTTPException as e:
+                    raise _reject(e.status_code, e.detail) from None
 
         # The loop's image cap counts the whole conversation, so seed it with replayed parts.
         _gguf_replayed_image_parts: list = []
@@ -32488,8 +33407,14 @@ async def produce_openai_chat_completions(
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
-        await _shrink_video_parts(gguf_messages, llama_backend)
+        try:
+            await _shrink_video_parts(gguf_messages, llama_backend)
+        except HTTPException as e:
+            raise _reject(e.status_code, e.detail) from None
         _translate_video_parts(gguf_messages)
+        # A failed transcode hands back the original, so this also catches one clip still over budget.
+        if _forwarded_video_chars(gguf_messages) > _LLAMA_VIDEO_FORWARD_B64_CHARS:
+            raise _reject(413, _VIDEO_OVER_FORWARD_BUDGET)
 
         cancel_event = _chat_cancel_event(request)
 
@@ -34598,8 +35523,7 @@ async def produce_openai_chat_completions(
         # Images stay in the loop only for vision models without a client catalog, so client
         # tools are not swapped for built-ins. Replayed MCP images count too.
         and (not _sf_has_any_image or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
-        # A caller's several images and a video clip stay out of the loop, as on main.
-        and not images
+        # A video clip stays out of the loop, as on main.
         and not _video_clips
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
@@ -34749,6 +35673,11 @@ async def produce_openai_chat_completions(
                 _pil_to_png_b64(image),
                 placed_at = _sf_attachment_at,
             )
+        elif images:
+            # Promotion already interleaved the caller's decoded images in marker order.
+            _sf_attachment_at = [
+                at for at, one in enumerate(_sf_loop_images) if any(one is own for own in images)
+            ]
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
@@ -35502,10 +36431,8 @@ async def produce_openai_chat_completions(
         if "kwargs" in _sf_fit_cache:
             return _sf_fit_cache["kwargs"], ()
         fitted_kwargs, events = gen_kwargs, ()
-        # The count cannot price pictures or video, so those prompts are left alone.
-        if _sf_fit_overflow and all(
-            gen_kwargs.get(key) is None for key in ("image", "images", "videos")
-        ):
+        # The count cannot price video, or an attachment beside replayed pictures.
+        if _sf_fit_overflow and all(gen_kwargs.get(key) is None for key in ("images", "videos")):
             fitted = backend.compact_chat_context(
                 gen_kwargs.get("messages") or [],
                 system_prompt = gen_kwargs.get("system_prompt") or "",
@@ -35522,12 +36449,15 @@ async def produce_openai_chat_completions(
                 preserve_thinking = gen_kwargs.get("preserve_thinking"),
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
+                images = [image] if image is not None else None,
             )
             fitted_kwargs = {
                 **gen_kwargs,
                 "messages": fitted["messages"],
                 "system_prompt": fitted["system_prompt"],
             }
+            if fitted.get("dropped_images"):
+                fitted_kwargs["image"] = None
             events = fitted.get("events") or ()
         if _sf_call_prefix:
             # After fitting: compaction leaves a prompt ending in a continuation untouched.
@@ -35976,14 +36906,19 @@ async def produce_openai_chat_completions(
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
                                 # The fitted prompt: the retry extends it and is not refitted.
-                                _nudge_base = _sf_fit_request()[0]["messages"]
-                                if _sf_renders_image or _video_clips:
+                                _nudge_fitted = _sf_fit_request()[0]
+                                _nudge_base = _nudge_fitted["messages"]
+                                # A picture the fit dropped with its turn is not marked again.
+                                _nudge_image = (
+                                    _sf_renders_image and _nudge_fitted.get("image") is image
+                                )
+                                if _nudge_image or _video_clips:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
                                     _nudge_base = _nudge_attach(
                                         _nudge_base,
-                                        image = _sf_renders_image,
+                                        image = _nudge_image,
                                         video = len(_video_clips),
                                     )
                                 retry_messages = [
@@ -41456,7 +42391,7 @@ async def _responses_stream(
                     )
                     return
 
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, disconnect_event)
                 )
@@ -42601,6 +43536,7 @@ async def _mlx_count_chat_tokens(
         if not _tools_to_use:
             _tools_to_use = None
 
+    _nudge = ""
     if (
         not _tools_to_use
         and _takes_tools
@@ -42749,16 +43685,33 @@ async def _mlx_count_chat_tokens(
             status_code = 503,
             detail = "Cannot count tokens while a generation is in progress.",
         )
-    try:
-        count, _counted = await asyncio.to_thread(
-            backend.count_chat_tokens,
-            messages,
-            system_prompt or "",
-            tools = _tools_to_use,
+
+    def _count(
+        count_messages,
+        tools,
+        *,
+        include_system = True,
+    ) -> int:
+        instructions = system_prompt if include_system else ""
+        if instructions and _tools_to_use and not tools:
+            instructions = _without_tool_nudge(instructions, _nudge)
+        count, _counted = backend.count_chat_tokens(
+            count_messages,
+            instructions or "",
+            tools = tools,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
         )
+        return count
+
+    try:
+        if payload.breakdown:
+            count, breakdown = await asyncio.to_thread(
+                _count_breakdown, _count, messages, _tools_to_use
+            )
+        else:
+            count, breakdown = await asyncio.to_thread(_count, messages, _tools_to_use), None
     except Exception:
         raise HTTPException(
             status_code = 503,
@@ -42775,9 +43728,65 @@ async def _mlx_count_chat_tokens(
         )
     # The id /status publishes as model_identifier (the raw active name, a local folder or
     # snapshot path included): the client drops a count naming any other checkpoint.
-    return JSONResponse(
-        content = {"input_tokens": int(count), "model": _count_model_id(active, via_api_key)}
+    # The MLX worker returns only the total, no rendered prompt.
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(active, via_api_key),
+        breakdown,
+        _monitor_context_length(),
+        None,
     )
+
+
+def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
+    """Marginal costs of tools and history; messages carry the template framing. Each is capped
+    at what remains, since a template can grow when an instruction or catalog is removed."""
+    total = count(messages, tools)
+    without_tools = count(messages, None) if tools else total
+    tool_tokens = max(0, total - without_tools)
+    remainder = total - tool_tokens
+    history = [m for m in messages if m.get("role") not in ("system", "developer")]
+    message_tokens = min(remainder, count(history, None, include_system = False)) if history else 0
+    return total, {
+        "system": remainder - message_tokens,
+        "tools": tool_tokens,
+        "messages": message_tokens,
+        "tool_names": [(t.get("function") or {}).get("name") for t in tools or []],
+    }
+
+
+def _without_tool_nudge(text: str, nudge: str) -> str:
+    """``text`` without the tool nudge, which a breakdown counts under Tools."""
+    if not nudge:
+        return text
+    if "\n\n" + nudge in text:
+        return text.replace("\n\n" + nudge, "", 1)
+    return text.replace(nudge, "", 1)
+
+
+def _count_response(
+    payload,
+    total: int,
+    model,
+    parts: Optional[dict],
+    context_length,
+    prompt,
+    *,
+    passthrough = False,
+):
+    content = {"input_tokens": int(total), "model": model}
+    if parts is not None:
+        from core.inference.context_window import prompt_budget
+        content.update(
+            breakdown = parts,
+            context_length = context_length,
+            compaction_budget = prompt_budget(context_length, payload.max_tokens)
+            if context_length and not passthrough and _rolling_context_policy(payload) is not None
+            else None,
+            prompt = prompt,
+        )
+    return JSONResponse(content = content)
 
 
 def _count_model_id(model_id, via_api_key):
@@ -42789,7 +43798,8 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
-def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs, nudge):
+    """``(total, parts, prompt)``; parts and the rendered prompt only for a breakdown."""
     from core.inference.llama_cpp import (
         _can_reset_epoch,
         _compaction_fit_kwargs,
@@ -42798,15 +43808,20 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
         _sticky_compaction_details,
     )
 
-    def count_tokens(candidate):
+    def count_tokens(
+        candidate,
+        candidate_tools = tools,
+        **extra,
+    ):
         return backend.count_chat_tokens(
             candidate,
             None,
-            tools,
+            candidate_tools,
             strict = True,
             chat_template_kwargs = template_kwargs,
             # A generation can start between /apply-template and /tokenize.
             should_abort = lambda: model_slots.routed_generation_count() > 0,
+            **extra,
         )
 
     context_length = getattr(backend, "_effective_context_length", None)
@@ -42849,10 +43864,43 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
                 replay_only = True,
                 **_compaction_fit_kwargs(policy, ratio),
             )
-            if truncation is not None:
-                return int(truncation["prompt_tokens_after"])
+            if truncation is not None and not payload.breakdown:
+                return int(truncation["prompt_tokens_after"]), None, None
             messages = fitted
-    return count_tokens(messages)
+    if not payload.breakdown:
+        return count_tokens(messages), None, None
+    # The first render is the full prompt.
+    rendered: dict = {}
+
+    def without_nudge(candidate):
+        out = []
+        for message in candidate:
+            content = message.get("content")
+            if message.get("role") in ("system", "developer") and isinstance(content, str):
+                stripped = _without_tool_nudge(content, nudge)
+                if stripped != content:
+                    if not stripped:
+                        continue
+                    message = {**message, "content": stripped}
+            out.append(message)
+        return out
+
+    def priced(
+        candidate,
+        candidate_tools,
+        *,
+        include_system = True,
+    ):
+        if include_system and not candidate_tools:
+            candidate = without_nudge(candidate)
+        return count_tokens(
+            candidate,
+            candidate_tools,
+            on_prompt = lambda text: rendered.setdefault("prompt", text),
+        )
+
+    total, parts = _count_breakdown(priced, messages, tools)
+    return total, parts, rendered.get("prompt")
 
 
 @router.post("/chat/count_tokens")
@@ -42997,12 +44045,17 @@ async def chat_count_tokens(
 
     # Only the passthrough sends the caller's own catalog; others render from the selection below.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
+    _count_nudge = ""
     # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+    if _tools_on and not _launcher_tool_default_applies(
+        payload, _ui_stream_events_enabled(request)
+    ):
+        _tools_on = False
     # Same rule as the completion path, so both agree on whether MCP schemas are in the prompt.
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
@@ -43132,13 +44185,14 @@ async def chat_count_tokens(
     from core.inference.llama_cpp import CountAborted
 
     try:
-        count = await asyncio.to_thread(
+        count, breakdown, prompt = await asyncio.to_thread(
             _count_chat_context_tokens,
             llama_backend,
             payload,
             openai_messages,
             openai_tools,
             _template_kwargs,
+            _count_nudge,
         )
     except CountAborted:
         raise HTTPException(
@@ -43156,11 +44210,14 @@ async def chat_count_tokens(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
         )
-    return JSONResponse(
-        content = {
-            "input_tokens": int(count),
-            "model": _count_model_id(_tokenizer_model, via_api_key),
-        }
+    return _count_response(
+        payload,
+        count,
+        _count_model_id(_tokenizer_model, via_api_key),
+        breakdown,
+        getattr(llama_backend, "context_length", None),
+        prompt,
+        passthrough = _takes_passthrough,
     )
 
 
@@ -43666,6 +44723,7 @@ async def anthropic_count_tokens(
     tokenizer, or a resident MLX model's through the chat count route, and returns
     ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
+    _mark_claude_code_thinking(payload, request)
     if _connection_model_ref(payload.model) is not None:
         raise HTTPException(
             status_code = 400,
@@ -44326,6 +45384,7 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
@@ -46271,7 +47330,7 @@ async def _anthropic_passthrough_stream(
         # cancel scope in a different task` / `RuntimeError: async generator
         # ignored GeneratorExit` as "Exception ignored in:" unraisable warnings.
         #
-        # Fix: save `resp.aiter_lines()` as `lines_iter`, and in finally
+        # Fix: save `aiter_sse_lines(resp)` as `lines_iter`, and in finally
         # explicitly `await lines_iter.aclose()` BEFORE `resp.aclose()` /
         # `client.aclose()`. This closes the iterator in our own task's event
         # loop, cleaning up the httpcore byte-stream before the asyncgen
@@ -46363,7 +47422,7 @@ async def _anthropic_passthrough_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
-            lines_iter = resp.aiter_lines()
+            lines_iter = aiter_sse_lines(resp)
             items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
@@ -47789,7 +48848,7 @@ async def _openai_passthrough_stream_admitted(
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
-                lines_iter = resp.aiter_lines()
+                lines_iter = aiter_sse_lines(resp)
                 _keepalive_s = _openai_passthrough_stream_keepalive_interval()
                 items_iter = _aiter_llama_stream_items(
                     lines_iter,
@@ -48764,10 +49823,7 @@ async def diffusion_download_plan(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -49026,7 +50082,7 @@ def _require_resolved_image_base_access(request, fam, kind: str, engine_name) ->
     refused = None
     for base in candidates:
         try:
-            account_access.require_model_access(base)
+            account_access.require_model_access(base, hf_token = request.hf_token)
             return
         except HTTPException as exc:
             refused = refused or (base, exc)
@@ -49057,10 +50113,7 @@ async def load_diffusion_model_gated(
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -49585,6 +50638,22 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _expected_load_loras_kwarg(generate: Any, signature: Optional[tuple]) -> dict:
+    """``expected_load_loras`` for an engine whose generate() takes it (the diffusers backend), else nothing."""
+    if signature is None:
+        return {}
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+        if "expected_load_loras" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            return {"expected_load_loras": signature}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
     try:
@@ -49792,6 +50861,41 @@ def _decode_external_images(encoded: list) -> list:
     return images
 
 
+# decode_b64_image's per-side limit, restated so a connection run does not import the diffusion stack.
+_EXTERNAL_EDIT_MAX_SIDE = 4096
+
+
+def _external_edit_uploads(sources: list[str]) -> list[bytes]:
+    """Each base64 or data-URL source as an upright, flattened PNG (sd-server ignores EXIF orientation)."""
+    from PIL import Image
+
+    uploads = []
+    for source in sources:
+        raw = source.strip()
+        if raw.startswith("data:"):
+            raw = raw.partition(",")[2]
+        try:
+            image = Image.open(io.BytesIO(base64.b64decode(raw)))
+            width, height = image.size
+            # Checked from the header so a huge image is never loaded.
+            oversized = max(width, height) > _EXTERNAL_EDIT_MAX_SIDE
+            if not oversized:
+                image.load()
+                image = _mcp_flattened_rgb(exif_upright(image))
+        except Exception as exc:  # noqa: BLE001 - surfaced as a 400
+            # Not str(exc): Pillow's message includes the buffer's repr.
+            raise ValueError("Could not decode the image to edit.") from exc
+        if oversized:
+            raise ValueError(
+                f"Image is too large ({width}x{height}); maximum is "
+                f"{_EXTERNAL_EDIT_MAX_SIDE}px per side."
+            )
+        buffer = io.BytesIO()
+        image.save(buffer, format = "PNG", compress_level = 1)
+        uploads.append(buffer.getvalue())
+    return uploads
+
+
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
@@ -49810,9 +50914,10 @@ async def _external_image_generation(
             status_code = 400,
             detail = "model is required when using an external image connection.",
         )
+    editing = body.workflow == "edit"
     if (
-        body.init_image
-        or body.reference_images
+        (not editing and (body.init_image or body.reference_images or body.workflow))
+        or body.reference_resolution is not None
         or body.loras
         or body.controlnet
         or body.prompts
@@ -49821,7 +50926,6 @@ async def _external_image_generation(
         or body.mask_image
         or body.strength is not None
         or body.upscale is not None
-        or body.workflow
         or body.localized_edit
         or body.sampler
         or body.schedule_type
@@ -49837,7 +50941,12 @@ async def _external_image_generation(
     ):
         raise HTTPException(
             status_code = 400,
-            detail = "An external image connection only supports text to image.",
+            detail = "An external image connection only supports text to image and image edits.",
+        )
+    if editing and not body.init_image:
+        raise HTTPException(
+            status_code = 400,
+            detail = "init_image is required to edit an image through an external connection.",
         )
 
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
@@ -49893,10 +51002,25 @@ async def _external_image_generation(
         **_saved_extra_headers_kwarg(current, request),
         timeout = 600.0,
     )
+
+    async def _edit() -> list[str]:
+        try:
+            uploads = await asyncio.to_thread(
+                _external_edit_uploads, [body.init_image, *(body.reference_images or [])]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+        return await client.create_image_edits(
+            prompt = body.prompt, model = external_model, n = body.batch_size, images = uploads
+        )
+
     owner = current_account_id()
     generation_started = time.perf_counter()
+    # Source normalization runs inside the tracked task, so a Stop during it cancels the edit.
     task = asyncio.create_task(
-        client.create_images(
+        _edit()
+        if editing
+        else client.create_images(
             prompt = body.prompt,
             model = external_model,
             n = body.batch_size,
@@ -49922,7 +51046,8 @@ async def _external_image_generation(
             raise HTTPException(
                 status_code = 502,
                 detail = (
-                    f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                    f"Image {'edit ' if editing else ''}endpoint returned HTTP "
+                    f"{exc.response.status_code}: {exc.response.text[:300]}"
                 ),
             ) from exc
         except httpx.HTTPError as exc:
@@ -49960,6 +51085,16 @@ async def _external_image_generation(
                             "model": external_model,
                             "model_kind": "connection",
                             "created_at": created_at,
+                            # Recorded like a local edit, so Restore reopens Edit.
+                            **(
+                                {
+                                    "workflow": "edit",
+                                    "reference_image_count": len(body.reference_images or [])
+                                    or None,
+                                }
+                                if editing
+                                else {}
+                            ),
                         },
                     )
                     for index, image in enumerate(images)
@@ -49981,7 +51116,11 @@ async def _external_image_generation(
         _stopped_external_image_runs.discard(task)
 
 
-async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
+async def _enhance_generate_prompts(
+    backend,
+    request: DiffusionGenerateRequest,
+    probe: Optional[dict] = None,
+):
     """FLUX.3 prompt upsampling for one generate call (``EnhanceOutcome``). Every other family, and FLUX.3 with
     ``enhance_prompt=false``, passes its prompts through untouched. Never fails the generation: only a Stop during
     the upsampling surfaces, as the cancelled 409."""
@@ -49994,6 +51133,8 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
         logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
         status, family = {}, None
+    if probe is not None and status:
+        probe["status"] = status
     if not pup.supports_family(family):
         return pup.EnhanceOutcome(status = None)
     # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
@@ -50194,9 +51335,10 @@ async def _generate_diffusion_image_run(
         DIFFUSION_NOT_LOADED_MSG,
         DiffusionModelReplacedError,
         load_identity,
+        load_lora_signature,
     )
 
-    from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
@@ -50218,6 +51360,11 @@ async def _generate_diffusion_image_run(
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
     )
+    txt2img_size_omitted = (
+        request.workflow is None
+        and request.init_image is None
+        and not ({"width", "height"} & request.model_fields_set)
+    )
     localized_edit = (
         LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
         if request.localized_edit is not None
@@ -50226,7 +51373,9 @@ async def _generate_diffusion_image_run(
     submitted = request
     generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
-    enhancement = await _enhance_generate_prompts(backend, request)
+    # reuse the enhance step's status read (no second read)
+    probe: dict = {}
+    enhancement = await _enhance_generate_prompts(backend, request, probe)
     if enhancement.status != "applied":
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
@@ -50238,6 +51387,7 @@ async def _generate_diffusion_image_run(
         request = submitted
         status = None
         expected_load = None
+        expected_load_loras = None
         if account_access.managed_account():
             status = backend.status()
             await asyncio.to_thread(
@@ -50264,6 +51414,59 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if request.loras is None:
+            # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no load adapters: the engine's default stands
+                    logger.debug(
+                        "images.generate: status read for the omitted loras failed: %s", exc
+                    )
+        if request.loras is None and status is not None:
+            loaded = bool(status.get("loaded"))
+            pairs = _load_lora_defaults(status) if loaded else []
+            # The pin above is repo / base / family only: a same-model reload with other adapters must retry too.
+            expected_load_loras = (
+                load_lora_signature(status.get("load_lora_specs")) if loaded else ()
+            )
+            if pairs:
+                request = request.model_copy(
+                    update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
+                )
+            if expected_load is None:
+                # Pinned even when it resolved to none: a load swapped in before the slot retries with its own set.
+                expected_load = (
+                    load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+                    if loaded
+                    else load_identity(None, None, None)
+                )
+        if txt2img_size_omitted:
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no family size: the schema's stands
+                    logger.debug(
+                        "images.generate: status read for the omitted size failed: %s", exc
+                    )
+            size = (
+                omitted_txt2img_size(status.get("family"))
+                if status is not None and status.get("loaded")
+                else None
+            )
+            if size is not None:
+                request = request.model_copy(update = {"width": size[0], "height": size[1]})
+                if expected_load is None:
+                    # a replaced model retries with its own default size
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
@@ -50276,6 +51479,7 @@ async def _generate_diffusion_image_run(
                 result = await _image_generate_in_thread(
                     backend.generate,
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
@@ -51832,26 +53036,55 @@ async def clear_diffusion_queue(current_subject: str = Depends(get_current_subje
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
 
 
+async def _upsampler_for(family: Optional[str]) -> Any:
+    """The enhancer module serving ``family`` (the loaded family when None): MiniMax-H3-Image's own, else the FLUX.3
+    upsampler."""
+    from core.inference import flux3_prompt_upsampler as pup
+
+    if family is None:
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            status = await asyncio.to_thread(get_active_diffusion_engine().status)
+            family = status.get("family") if status.get("loaded") else None
+        except Exception:  # noqa: BLE001 -- nothing loaded reads as FLUX.3
+            family = None
+    if pup.uses_h3_image_enhancer(family):
+        from core.inference import h3_image_prompt_enhancer
+        return h3_image_prompt_enhancer
+    return pup
+
+
 @studio_router.get("/images/prompt-upsampler/status")
-async def prompt_upsampler_status(current_subject: str = Depends(get_current_subject)):
-    """Whether the FLUX.3 prompt upsampler can run (llama-server present), is downloaded, is loaded, and the
-    download progress (the dictation download's shape)."""
-    from core.inference import flux3_prompt_upsampler
-    return JSONResponse(content = await asyncio.to_thread(flux3_prompt_upsampler.status))
+async def prompt_upsampler_status(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Whether the prompt upsampler of ``family`` (the loaded family's; FLUX.3's by default) can run (llama-server
+    present), is downloaded, is loaded, and the download progress (the dictation download's shape)."""
+    module = await _upsampler_for(family)
+    return JSONResponse(content = await asyncio.to_thread(module.status))
 
 
 @studio_router.post("/images/prompt-upsampler/download")
 async def prompt_upsampler_download(
     payload: Optional[PromptUpsamplerDownloadRequest] = None,
+    family: Optional[str] = Query(None, max_length = 64),
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """Start the background download of the upsampler GGUF and its vision projector; progress on /status."""
-    from core.inference import flux3_prompt_upsampler
+    from core.inference import flux3_prompt_upsampler as pup
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
-    if flux3_prompt_upsampler.status().get("override"):
+    upsampler = await _upsampler_for(family)
+    if upsampler is not pup:
+        if upsampler.overridden():
+            raise HTTPException(
+                status_code = 409,
+                detail = "The prompt enhancer files come from UNSLOTH_H3_IMAGE_ENHANCER_GGUF / _MMPROJ; set both instead.",
+            )
+    elif upsampler._overridden():
         raise HTTPException(
             status_code = 409,
             detail = "The prompt upsampler files come from UNSLOTH_FLUX3_UPSAMPLER_GGUF / _MMPROJ; set both instead.",
@@ -51860,24 +53093,22 @@ async def prompt_upsampler_download(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(flux3_prompt_upsampler.start_download, token)
+        download_id = await asyncio.to_thread(upsampler.start_download, token)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "download_id": download_id}
-    )
+    return JSONResponse(content = {**upsampler.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/images/prompt-upsampler/cancel")
-async def prompt_upsampler_cancel(current_subject: str = Depends(get_current_subject)):
+async def prompt_upsampler_cancel(
+    family: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
     """Stop the upsampler download; partial files stay cached, so the next download resumes."""
-    from core.inference import flux3_prompt_upsampler
-
     account_access.require_installation_owner()
-    cancelled = await asyncio.to_thread(flux3_prompt_upsampler.cancel_download)
-    return JSONResponse(
-        content = {**flux3_prompt_upsampler.download_status(), "cancelled": cancelled}
-    )
+    upsampler = await _upsampler_for(family)
+    cancelled = await asyncio.to_thread(upsampler.cancel_download)
+    return JSONResponse(content = {**upsampler.download_status(), "cancelled": cancelled})
 
 
 def _cancel_upsampler_warm_start() -> None:
@@ -52026,22 +53257,34 @@ async def prompt_upsampler_preview(
     from core.inference import flux3_prompt_upsampler as pup
 
     variant = request.variant
-    if variant is None:
+    family = request.family
+    if variant is None or family is None:
         try:
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             status = await asyncio.to_thread(get_active_diffusion_engine().status)
-            variant = pup.variant_for_family(status.get("family") if status.get("loaded") else None)
+            loaded_family = status.get("family") if status.get("loaded") else None
         except Exception:  # noqa: BLE001 -- nothing loaded reads as distilled
-            variant = "distilled"
+            loaded_family = None
+        family = loaded_family if family is None else family
+        if variant is None:
+            variant = pup.variant_for_family(loaded_family)
     account_access.require_idle_other_accounts()
     try:
         with account_access.media_generation("diffusion"):
-            caption = await asyncio.to_thread(
-                pup.upsample,
-                request.prompt,
-                variant = variant,
-                reference_images = request.reference_images or None,
-            )
+            if pup.uses_h3_image_enhancer(family):
+                from core.inference import h3_image_prompt_enhancer
+                caption = await asyncio.to_thread(
+                    h3_image_prompt_enhancer.upsample,
+                    request.prompt,
+                    reference_images = request.reference_images or None,
+                )
+            else:
+                caption = await asyncio.to_thread(
+                    pup.upsample,
+                    request.prompt,
+                    variant = variant,
+                    reference_images = request.reference_images or None,
+                )
     except pup.UpsamplerNotDownloadedError as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
     except pup.UpsamplerUnavailableError as exc:
@@ -52084,7 +53327,8 @@ async def mask_segmenter_download(
 
     account_access.require_installation_owner()
     if not diffusion_segment.transformers_supports_sam3():
-        raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
+        status = await asyncio.to_thread(diffusion_segment.status)
+        raise HTTPException(status_code = 501, detail = status["reason"])
     variant = await asyncio.to_thread(diffusion_segment.active_variant)
     if (os.environ.get(diffusion_segment.ENV_PATH_OVERRIDE) or "").strip():
         raise HTTPException(
@@ -52102,7 +53346,7 @@ async def mask_segmenter_download(
         download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    plan = diffusion_segment.download_plan(variant)
+    plan = await asyncio.to_thread(diffusion_segment.download_plan, variant)
     return JSONResponse(
         content = {
             **diffusion_segment.download_status(),
@@ -52407,6 +53651,30 @@ async def openai_image_generations(
         )
 
 
+def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tuple[str, float]]:
+    """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
+    if body.loras is not None:
+        return [(spec.id, float(spec.weight)) for spec in body.loras]
+    return _load_lora_defaults(status)
+
+
+def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
+    """Adapters an omitted ``loras`` stands for: baked set, else the load's named set (none once compiled
+    adapter-free). The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
+    pairs = []
+    specs = status.get("baked_lora_specs") or (
+        status.get("load_lora_specs") if status.get("supports_lora", True) else None
+    )
+    for spec in specs or ():
+        try:
+            lora_id, weight = str(spec["id"]), float(spec["weight"])
+        except Exception:  # noqa: BLE001 - a malformed status row names no adapter
+            continue
+        if lora_id and weight:
+            pairs.append((lora_id, weight))
+    return pairs
+
+
 def _image_generation_defaults(status: dict) -> tuple[int, float]:
     """Steps and guidance for the loaded image model: the diffusers recipe when the status reports one, else the family table (sd.cpp and MLX report none). It reads checkpoint headers, so call it off the event loop."""
     from core.inference.diffusion_content import content_variant_hint
@@ -52433,6 +53701,7 @@ async def _batched_openai_images(
     steps: int,
     guidance: float,
     expected_load: Any,
+    loras: Optional[list[tuple[str, float]]] = None,
 ) -> Optional[dict]:
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
@@ -52486,6 +53755,7 @@ async def _batched_openai_images(
                     seeds = seeds,
                     batch_size = len(seeds),
                     expected_load = expected_load,
+                    **({"loras": loras} if loras else {}),
                 )
             except Exception as exc:
                 # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
@@ -52501,6 +53771,7 @@ async def _batched_openai_images(
         steps,
         guidance,
         body.negative_prompt or None,
+        tuple(loras or ()),
     )
 
     def cancelled(exc: BaseException) -> bool:
@@ -52551,6 +53822,7 @@ async def _generate_openai_images(
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_lora import LoraSelectionError
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
     # A replacement can commit between status() and generate(): pin the read to the generation and
@@ -52570,6 +53842,9 @@ async def _generate_openai_images(
             await asyncio.to_thread(
                 account_access.require_media_generation_access, status, "diffusion"
             )
+            # Explicit adapters authorize like /images/generate; the baked set was authorized by its load.
+            if body.loras:
+                await asyncio.to_thread(account_access.require_media_adapters, body)
 
         # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
         workflows = status.get("workflows") or []
@@ -52590,11 +53865,12 @@ async def _generate_openai_images(
         expected_load = load_identity(
             status.get("repo_id"), status.get("base_repo"), status.get("family")
         )
+        loras = _openai_image_loras(body, status)
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await _batched_openai_images(
-                    backend, status, body, width, height, steps, guidance, expected_load
+                    backend, status, body, width, height, steps, guidance, expected_load, loras
                 )
                 if result is None:
                     result = await _image_generate_in_thread(
@@ -52608,6 +53884,8 @@ async def _generate_openai_images(
                         seed = body.seed,
                         batch_size = body.n,
                         expected_load = expected_load,
+                        # Only when set, so engines without the parameter keep their call shape.
+                        **({"loras": loras} if loras else {}),
                     )
             break
         except DiffusionModelReplacedError:
@@ -52629,7 +53907,12 @@ async def _generate_openai_images(
                     detail = _NO_IMAGE_MODEL_MSG,
                     headers = problem_headers("not_loaded", kind = "image"),
                 )
-            # Typed: the activation refusal is written for the caller; no other ValueError text escapes.
+            # Typed: these refusals are written for the caller; no other ValueError text escapes.
+            if isinstance(exc, LoraSelectionError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "loras"),
+                )
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(
                     status_code = 400,
@@ -52671,6 +53954,7 @@ async def _generate_openai_images(
         "transformer_cache": result.get("transformer_cache"),
         "cpu_offload": result.get("cpu_offload"),
         "baked_loras": list(result.get("baked_loras") or []),
+        "loras": [f"{lora_id}:{weight:g}" for lora_id, weight in loras],
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }
