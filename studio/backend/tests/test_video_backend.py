@@ -5765,8 +5765,6 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
 
 
 class _FailingVaeSpec:
-    """A modular ComponentSpec whose fetch fails the way the hosted H3 ``vae/`` did."""
-
     def __init__(self, error):
         self.pretrained_model_name_or_path = "unsloth/MiniMax-H3"
         self.subfolder = "vae"
@@ -5784,8 +5782,6 @@ class _FakeModelMixin:
 
 
 class _SwallowingModularPipe(_FakeModularPipe):
-    """load_components as diffusers runs it: a component that raises is logged and left None."""
-
     error: BaseException = OSError()
 
     def __init__(self) -> None:
@@ -5803,8 +5799,7 @@ class _SwallowingModularPipe(_FakeModularPipe):
 
 
 def _disk_full_then_bin_404() -> BaseException:
-    """diffusers drops the ENOSPC and raises the 404 on the pickle twin it tries next; asked for safetensors only,
-    it raises the ENOSPC."""
+    """ENOSPC hidden behind the .bin 404 unless asked for safetensors only."""
     import errno
 
     error = OSError(
@@ -5815,7 +5810,6 @@ def _disk_full_then_bin_404() -> BaseException:
 
 
 def _bin_404_only() -> BaseException:
-    """Neither the safetensors weight nor its pickle twin is on the Hub."""
     error = OSError(
         "unsloth/MiniMax-H3 does not appear to have a file named diffusion_pytorch_model.bin."
     )
@@ -5836,7 +5830,6 @@ def _bin_404_only() -> BaseException:
 def test_h3_modular_load_fails_when_the_vae_cannot_be_fetched(
     fake_runtime, monkeypatch, error, kind, text
 ):
-    """A VAE whose download failed must fail the load, named, not surface as a None at the first render."""
     from core.inference.diffusion_component_fetch import ComponentFetchError
 
     monkeypatch.setattr(_SwallowingModularPipe, "error", error)
@@ -5856,7 +5849,6 @@ def test_h3_modular_load_fails_when_the_vae_cannot_be_fetched(
         _load_h3_modular(VideoBackend())
     assert info.value.component == "vae"
     assert info.value.kind == kind
-    # Named by the repo the component was actually fetched from (the harness stages the upstream id).
     assert "the vae component of MiniMaxAI/MiniMax-H3 (vae/)" in str(info.value)
     assert text in str(info.value)
 

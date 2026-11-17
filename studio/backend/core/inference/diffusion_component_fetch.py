@@ -1,17 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Modular diffusers loads that fail when a component cannot be fetched, instead of leaving it None.
+"""``load_components`` that raises ``ComponentFetchError`` instead of registering a failed component as None.
 
-``ModularPipeline.load_components`` catches every per-component exception and only logs a warning, so a VAE whose
-download hit a full disk (or a 404, or a dropped connection) is registered as None and the load reports success; the
-first render then dies on ``'NoneType' object has no attribute 'config'``. ``load_components_strict`` records each
-component's own exception and raises ``ComponentFetchError`` naming the component and the cause once the call returns.
-
-diffusers also hides the real cause of a failed safetensors download: it logs it, then tries the pickle twin
-(``diffusion_pytorch_model.bin``), and a repo that ships only safetensors answers that with a 404. The disk-full
-OSError is gone by then, so a model component that failed on that 404 is asked once more for safetensors only, which
-either loads it (a transient failure) or raises the error that actually stopped it.
+diffusers masks a failed safetensors fetch with a 404 on the ``.bin`` twin, so such a model component is retried once
+with ``use_safetensors=True`` to load it or surface the real cause (e.g. a full disk).
 """
 
 from __future__ import annotations
@@ -21,9 +14,8 @@ import re
 import shutil
 from typing import Any, Iterable, Iterator, Optional
 
-# Disk full or over quota: retrying cannot help until space is freed.
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
-# hf_xet and a few wrappers report it as text only ("No space left on device (os error 28)").
+# hf_xet reports it as text only.
 _DISK_FULL_TEXT = re.compile(
     r"no space left on device|os error 28|\[errno 28\]|disk quota exceeded", re.I
 )
@@ -49,9 +41,7 @@ _PICKLE_FALLBACK_MISS = re.compile(
 
 
 class ComponentFetchError(RuntimeError):
-    """A pipeline component could not be fetched or built; the message names the component and the cause.
-
-    ``kind`` is one of ``disk_full``, ``not_found``, ``access``, ``offline``, ``network`` or ``error``."""
+    """``kind`` is one of ``disk_full``, ``not_found``, ``access``, ``offline``, ``network`` or ``error``."""
 
     def __init__(self, message: str, *, component: str, source: str, kind: str) -> None:
         super().__init__(message)
@@ -73,7 +63,6 @@ def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
 
 
 def fetch_failure_kind(exc: BaseException) -> str:
-    """Classify why a component fetch failed, from the whole exception chain (diffusers re-wraps the hub error)."""
     links = list(_exception_chain(exc))
     for link in links:
         if isinstance(link, OSError) and link.errno in _DISK_FULL_ERRNOS:
@@ -97,7 +86,7 @@ def fetch_failure_kind(exc: BaseException) -> str:
             link, (ConnectionError, TimeoutError)
         ):
             return "network"
-    # diffusers' own wording for a missing weight, raised from a hub error it did not chain on every version.
+    # diffusers does not chain the hub error on every version.
     if any("does not appear to have a file named" in str(link) for link in links):
         return "not_found"
     return "error"
@@ -131,7 +120,6 @@ def component_fetch_error(
     cache_dir: Optional[str] = None,
     also_failed: Iterable[str] = (),
 ) -> ComponentFetchError:
-    """The typed error for ``component`` (fetched from ``source``) failing with ``exc``."""
     kind = fetch_failure_kind(exc)
     what = f"the {component} component of {source}"
     if kind == "disk_full":
@@ -177,7 +165,6 @@ def _is_model_mixin(type_hint: Any) -> bool:
 
 
 def _pickle_fallback_miss(exc: BaseException) -> bool:
-    """True when diffusers' last word was the 404 on the ``.bin`` twin it tries after a failed safetensors fetch."""
     return any(_PICKLE_FALLBACK_MISS.search(str(link)) for link in _exception_chain(exc))
 
 
@@ -219,9 +206,7 @@ def load_components_strict(
     optional: Iterable[str] = (),
     **kwargs: Any,
 ) -> None:
-    """``pipe.load_components(**kwargs)``, raising ``ComponentFetchError`` for a component whose load failed.
-
-    ``optional`` names components the pipeline really runs without; their failure stays a logged warning."""
+    """``optional`` components may fail and stay None (logged by diffusers)."""
     specs = getattr(pipe, "_component_specs", None)
     failures: dict[str, BaseException] = {}
     patched: list[Any] = []

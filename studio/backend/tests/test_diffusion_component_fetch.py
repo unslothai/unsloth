@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A modular component whose download fails fails the load, typed, instead of registering None.
-
-Runs diffusers' real ``ModularPipeline.load_components`` and ``AutoencoderKL.from_pretrained``; only the Hub file
-fetch is faked: the VAE safetensors write hits a full disk (ENOSPC) and the ``.bin`` fallback diffusers then tries
-answers 404, as on the hosted MiniMax-H3 ``vae/`` folder."""
+"""Real diffusers loads; only the Hub fetch is faked (safetensors hits ENOSPC, the ``.bin`` fallback 404s)."""
 
 import errno
 import json
@@ -42,8 +38,6 @@ _TINY_VAE = {
 
 
 class _Pipe:
-    """The attributes ``ModularPipeline.load_components`` reads, nothing else; the method itself is diffusers'."""
-
     def __init__(self, specs):
         self._component_specs = specs
         self._pretrained_model_name_or_path = REPO
@@ -65,7 +59,6 @@ def _vae_spec():
 
 @pytest.fixture
 def fake_hub(monkeypatch, tmp_path):
-    """Config resolves locally; weights go through ``weights(filename)``, which the test sets."""
     config = tmp_path / "config.json"
     config.write_text(json.dumps(_TINY_VAE), encoding = "utf-8")
     state = types.SimpleNamespace(weights = None, calls = [])
@@ -97,7 +90,6 @@ def _not_found(filename):
 
 
 def test_diffusers_alone_leaves_the_vae_none_on_a_full_disk(fake_hub):
-    """The hole: diffusers swallows the failure and the load looks complete."""
     fake_hub.weights = _disk_full_then_404
     pipe = _Pipe({"vae": _vae_spec()})
     pipe.load_components(names = ["vae"])
@@ -115,7 +107,6 @@ def test_a_full_disk_fails_the_load_naming_the_vae_and_the_disk(fake_hub):
     assert err.component == "vae"
     assert "Not enough disk space" in str(err)
     assert f"vae component of {REPO} (vae/)" in str(err)
-    # Not the misleading 404 on the pickle twin.
     assert ".bin" not in str(err)
     assert any(isinstance(link, OSError) and link.errno == errno.ENOSPC for link in _chain(err))
 
@@ -130,7 +121,6 @@ def test_a_vae_missing_on_the_hub_fails_the_load_as_not_found(fake_hub):
 
 
 def test_a_transient_safetensors_failure_is_retried_safetensors_only(fake_hub, tmp_path):
-    """The .bin 404 hides the first failure; one safetensors-only retry either loads it or names the real cause."""
     from safetensors.torch import save_file
 
     weights = tmp_path / "diffusion_pytorch_model.safetensors"
