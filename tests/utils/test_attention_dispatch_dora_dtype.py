@@ -185,3 +185,33 @@ def test_fp32_model_sdpa_matches_fp32_reference(monkeypatch):
     ref = torch.nn.functional.scaled_dot_product_attention(Q, K, V, is_causal = True).transpose(1, 2)
     assert out.dtype == torch.float32
     torch.testing.assert_close(out.reshape(ref.shape), ref, atol = 1e-6, rtol = 1e-6)
+
+
+def test_fp32_cached_multi_token_query_keeps_causal_flash(monkeypatch):
+    # Unmasked SDPA is not causal for q_len < kv_seq_len, so this call must stay on flash.
+    captured = {}
+    _spy_sdpa(monkeypatch, captured)
+
+    def fake_flash_dense(Q, K, V, **kwargs):
+        captured["flash"] = kwargs.get("causal")
+        return torch.zeros_like(Q)
+
+    monkeypatch.setattr(ad, "flash_attn_func", fake_flash_dense, raising = False)
+    Q = torch.randn(1, 2, 4, 8)
+    K, V = torch.randn(1, 2, 8, 8), torch.randn(1, 2, 8, 8)
+    config = ad.AttentionConfig(
+        backend = ad.FLASH_DENSE, n_kv_heads = 2, n_groups = 1, flash_dense_kwargs = {"causal": True}
+    )
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 8,
+        n_heads = 2,
+        head_dim = 8,
+        requires_grad = False,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    ad.run_attention(config = config, context = context, Q = Q, K = K, V = V)
+    assert captured.get("flash") is True and "sdpa" not in captured

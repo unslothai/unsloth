@@ -1317,6 +1317,14 @@ def _sdpa_replaces_half_kernel(config, context) -> bool:
         and type(mask).__name__ != "LowerTriangularMask"
     ):
         return False
+    # SDPA's unmasked call is causal only for square shapes: cached multi-token queries keep the kernel.
+    if (
+        context.is_causal
+        and context.seq_info is None
+        and context.attention_mask is None
+        and 1 < context.q_len != context.kv_seq_len
+    ):
+        return False
     return True
 
 
