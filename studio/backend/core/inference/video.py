@@ -12539,7 +12539,11 @@ class VideoBackend:
             for name, source in mirrored_sources.items()
             if _base_fetch_revision and source == fetch_base
         }
-        pipe.load_components(
+        # Strict: diffusers logs a failed component and registers None, which then fails at the first render.
+        from .diffusion_component_fetch import load_components_strict
+
+        load_components_strict(
+            pipe,
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),

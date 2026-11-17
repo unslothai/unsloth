@@ -133,8 +133,11 @@ import { isCapableCheckpointQuant } from "@/features/model-picker/components/mod
 import {
   type NpuModel,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDownloadLabel,
+  npuRowTooltip,
   npuSizeLabel,
+  refreshNpuModels,
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
@@ -243,6 +246,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -1683,6 +1687,11 @@ export function ComposerModelPicker({
       : undefined,
   );
   const npuModels = npuCatalog?.models ?? null;
+  // The picker stays mounted, so a conversion made on the Export page lists only on a fresh read.
+  const npuReady = npuStatus?.supported === true && npuStatus.ready === true;
+  useEffect(() => {
+    if (open && npuReady) void refreshNpuModels();
+  }, [open, npuReady]);
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
@@ -2029,21 +2038,7 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2130,17 +2125,7 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
+    const npuOffers: Row[] = npuPickerRows(npuModels, false);
     const all = [...marked, ...npuOffers, ...hub, ...external];
     return browseOnly
       ? all.filter(
@@ -3102,6 +3087,12 @@ export function ComposerModelPicker({
       isLora: false,
       isDownloaded: true,
     } as const;
+    if (model.local?.problem) {
+      toast.error("Can't load this model on the NPU", {
+        description: model.local.problem,
+      });
+      return;
+    }
     if (model.downloaded) {
       if (row.id !== chosen?.id) {
         setPending(row);
@@ -3749,7 +3740,7 @@ export function ComposerModelPicker({
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
     }
-    if (row.npu?.downloaded) {
+    if (row.npu?.downloaded && !row.npu.local?.problem) {
       return {
         source: "local",
         isLora: false,
@@ -4007,7 +3998,7 @@ export function ComposerModelPicker({
     if (npu?.downloaded && npuCatalog) {
       return {
         title: `Delete ${row.label}?`,
-        description: "This removes the model's NPU files from this device.",
+        description: npuDeleteDescription(npu),
         successMessage: `Deleted ${row.label}`,
         disabled: row.loaded || source?.deleteDisabled,
         onConfirm: () => npuCatalog.remove(npu),
@@ -4159,6 +4150,7 @@ export function ComposerModelPicker({
             // Shared with the header picker's rows: the Playwright drivers select by these.
             data-model-picker-option=""
             data-model-picker-active-option={rowActive ? "true" : undefined}
+            title={row.npu ? (npuRowTooltip(row.npu) ?? undefined) : undefined}
             onMouseMove={() => {
               setActive(index);
               setHighlight(true);

@@ -666,7 +666,11 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
         assert hits, "landmark not found in the modular loader"
         return min(hits)
 
-    load_components = _line(lambda n: isinstance(n, ast.Attribute) and n.attr == "load_components")
+    load_components = _line(
+        lambda n: isinstance(n, ast.Name)
+        and n.id == "load_components_strict"
+        and isinstance(n.ctx, ast.Load)
+    )
     fence = _line(
         lambda n: isinstance(n, ast.Compare)
         and "_load_token" in ast.dump(n)
