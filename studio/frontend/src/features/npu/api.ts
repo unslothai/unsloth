@@ -70,11 +70,9 @@ export interface NpuModel {
 }
 
 export interface NpuLocalModel {
-  /** Path under the account's exports folder. */
   folder: string;
   /** FastFlowLM catalog tag whose NPU kernels run it. */
   base: string | null;
-  /** Why it cannot load, e.g. a missing tokenizer file. */
   problem: string | null;
 }
 

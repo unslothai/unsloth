@@ -963,8 +963,7 @@ class LemonadeNpuBackend:
             if staged.is_dir() and not staged.is_symlink():
                 shutil.rmtree(staged, ignore_errors = True)
         if local.stamp:
-            # Hidden by the weights' stamp: a new conversion into the folder lists it again, and
-            # only stamps whose weights are gone or replaced are dropped.
+            # Keyed by weights stamp: a re-conversion lists it again; stale stamps are dropped.
             hidden = [
                 stamp
                 for stamp in self._hidden_local()

@@ -202,7 +202,6 @@ def test_a_linked_weights_file_from_another_account_is_neither_listed_nor_staged
     [local] = run_as(ALICE, nlm.account_local_models)
     assert "model.q4nx" not in local.files
     assert "model.q4nx is missing" in local.problem
-    # A folder swapped after listing is refused at staging time too.
     listed = run_as(ALICE, lambda: nlm._describe(folder, exports_root()))
     stale = dataclasses.replace(listed, files = ("model.q4nx", *listed.files))
     with pytest.raises(OSError, match = "model.q4nx is a link"):
@@ -441,7 +440,6 @@ def test_delete_drops_the_registration_and_keeps_the_export(runtime):
     with pytest.raises(nb.NpuError, match = "not a converted model"):
         runtime.load(local.id)
 
-    # Converting into the folder again lists it again.
     (folder / "model.q4nx").write_bytes(b"new weights")
     assert [m.id for m in runtime.catalog() if m.local] == [local.id]
 
