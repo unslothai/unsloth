@@ -34,6 +34,7 @@ import threading
 from typing import Any, Optional
 
 from . import diffusion_int8_attention as _I8
+from . import diffusion_qwenimage21_attn as _Q21
 
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
@@ -311,6 +312,11 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
             )
             mode = backend.sinks
             return _I8.int8_attention_call(*qkv, mode) if mode else _I8.int8_attention_call(*qkv)
+        backend = kwargs["backend"]
+    if isinstance(backend, _Q21.StridedCudnn):
+        out = _Q21.maybe_strided(backend, args, kwargs)
+        if out is not None:
+            return out
     return _STATE["original"](*args, **kwargs)
 
 
@@ -682,7 +688,9 @@ def _install(
             v: Any,
             backend: Any = incumbent,
         ) -> Any:
-            return original(q, k, v, backend = backend)
+            # the incumbent as the processor runs it (a strided cuDNN pin races without diffusers' copies)
+            out = _Q21.maybe_strided(backend, (q, k, v), {"backend": backend})
+            return out if out is not None else original(q, k, v, backend = backend)
 
         floors: dict = {}
         impl = None
