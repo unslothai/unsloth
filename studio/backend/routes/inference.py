@@ -33422,6 +33422,11 @@ async def produce_openai_chat_completions(
         created = int(time.time())
 
         _gguf_think_prov: dict = {"wrapped": 0}
+        if _continue_final_message(payload) and getattr(
+            payload.messages[-1], "reasoning_content", None
+        ):
+            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            _gguf_think_prov["split"] = True
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
@@ -34311,10 +34316,16 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                turn_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
                             break
+                        if event.get("type") == "tool_start" or (
+                            event.get("type") == "status" and not event.get("text")
+                        ):
+                            # A new turn opens its own leading wrap, as in the streaming route.
+                            turn_mark = _think_ledger_mark(_gguf_think_prov)
                         if event.get("type") == "metadata":
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
@@ -34330,14 +34341,18 @@ async def produce_openai_chat_completions(
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
+                    provenance = {**_gguf_think_prov, **turn_mark}
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
-                        full_text = _strip_tool_xml_for_display(
-                            raw_text,
+                        span = _ResponsesReasoningExtractor(
+                            think_provenance = provenance
+                        ).server_wrap_span(raw_text)
+                        full_text = raw_text[:span] + _strip_tool_xml_for_display(
+                            raw_text[span:],
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation
+                    return full_text, usage, finish, timings, context_truncation, provenance
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -34411,6 +34426,7 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
+                        think_provenance,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -34419,6 +34435,7 @@ async def produce_openai_chat_completions(
                     parse_think_markers = _responses_should_parse_think_markers(
                         payload, llama_backend
                     ),
+                    think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:
@@ -35049,6 +35066,7 @@ async def produce_openai_chat_completions(
                         completion_usage = None
                         completion_finish = None
                         _choice_context_truncation = None
+                        _choice_mark = _think_ledger_mark(_gguf_think_prov)
                         for token in gguf_generate(_idx):
                             if isinstance(token, dict):
                                 if token.get("type") == "metadata":
@@ -35077,6 +35095,7 @@ async def produce_openai_chat_completions(
                                 payload,
                                 llama_backend,
                             ),
+                            think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
                         if reasoning_text:
@@ -40494,6 +40513,11 @@ class _ResponsesReasoningExtractor:
                     self._wrap_taken = 0
                 continue
 
+            if not (self._single_block or self._in_reasoning) and self._server_splits():
+                # The server split reasoning out after inline text: its recorded wraps take over.
+                self._after_lead = True
+                continue
+
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
@@ -40516,15 +40540,24 @@ class _ResponsesReasoningExtractor:
 
             if self._single_block:
                 if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    wrap = self._claim_wrap()
+                    if wrap is None and self._server_splits():
+                        # Not the server's leading block: a later wrap at this offset or literal text.
+                        self._after_lead = True
+                        continue
                     self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
-                    self._wrap = self._lead = self._claim_wrap()
+                    self._wrap = self._lead = wrap
                     self._wrap_taken = 0
-                    self._in_reasoning = self._wrap is None
+                    self._in_reasoning = wrap is None
                     continue
                 if _RESPONSES_THINK_OPEN.startswith(self._buffer):
                     break  # still short of the opener; it may yet arrive
-                if self._provenance is not None:
+                if self._server_splits():
                     self._after_lead = True
+                    continue
+                if self._provenance is not None:
+                    # The server left reasoning inline, so read the tags as before.
+                    self._single_block = False
                     continue
                 self._parse_think_markers = False
                 visible_parts.append(self._buffer)
@@ -40554,6 +40587,13 @@ class _ResponsesReasoningExtractor:
             break
 
         return "".join(reasoning_parts), "".join(visible_parts)
+
+    def _server_splits(self) -> bool:
+        # Once the server has split reasoning out in this request, only its recorded wraps are reasoning.
+        prov = self._provenance
+        return prov is not None and bool(
+            prov.get("split") or prov.get("wraps") or prov.get("later")
+        )
 
     def _claim_wrap(self):
         # The recorded length keeps a literal </think> inside the trace from ending it early.
@@ -40616,15 +40656,25 @@ def _extract_responses_reasoning(
     parse_think_markers: bool = False,
     reasoning_prefilled: bool = False,
     single_block: bool = False,
+    think_provenance: Optional[dict] = None,
 ) -> tuple[str, str]:
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = parse_think_markers,
         reasoning_prefilled = reasoning_prefilled,
         single_block = single_block,
+        think_provenance = think_provenance,
     )
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
     return reasoning + final_reasoning, visible + final_visible
+
+
+def _think_ledger_mark(provenance: dict) -> dict:
+    # Claim cursors for an extractor over {**ledger, **mark}, so it skips the wraps recorded so far.
+    return {
+        "claimed": len(provenance.get("wraps") or []),
+        "later_claimed": len(provenance.get("later") or []),
+    }
 
 
 def _responses_should_parse_think_markers(

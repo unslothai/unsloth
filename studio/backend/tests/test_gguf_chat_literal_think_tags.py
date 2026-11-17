@@ -55,26 +55,53 @@ def _llama_server(monkeypatch, frames):
 class _ThinkingGguf(FakeLlamaCppBackend):
     reasoning_always_on = True
     supports_reasoning = True
+    supports_tools = True
 
-    def __init__(self, real):
+    def __init__(self, real = None):
         self._real = real
+
+    def _request_reasoning_kwargs(self, *args, **kwargs):
+        return {}
 
     def generate_chat_completion(self, **kwargs):
         return self._real.generate_chat_completion(**kwargs)
 
+    def generate_chat_completion_with_tools(self, **kwargs):
+        return self._real.generate_chat_completion_with_tools(**kwargs)
 
-def _stream(monkeypatch, frames):
-    backend = _ThinkingGguf(_llama_server(monkeypatch, frames))
+
+def _post(
+    monkeypatch,
+    backend,
+    *,
+    stream = True,
+    tools = False,
+    messages = None,
+):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: tools)
+
+    async def _select(payload, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
     app = FastAPI()
     app.include_router(inference_route.router)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     response = TestClient(app).post(
         "/chat/completions",
-        json = {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+        json = {
+            "messages": messages or [{"role": "user", "content": "hi"}],
+            "stream": stream,
+            "enable_tools": tools,
+            "continue_final_message": messages is not None,
+        },
+        headers = {"X-Unsloth-Events": "1"} if tools else {},
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
+    if not stream:
+        message = response.json()["choices"][0]["message"]
+        return message.get("reasoning_content") or "", message["content"]
     reasoning = content = ""
     for line in response.text.splitlines():
         if not line.startswith("data: {"):
@@ -84,6 +111,28 @@ def _stream(monkeypatch, frames):
             reasoning += delta.get("reasoning_content") or ""
             content += delta.get("content") or ""
     return reasoning, content
+
+
+def _stream(monkeypatch, frames, **kwargs):
+    return _post(monkeypatch, _ThinkingGguf(_llama_server(monkeypatch, frames)), **kwargs)
+
+
+class _ScriptedToolLoop(_ThinkingGguf):
+    """Replays tool-loop events, recording one leading wrap per turn as the backend does."""
+
+    def __init__(self, turns, answer):
+        self._turns, self._answer = turns, answer
+
+    def generate_chat_completion_with_tools(self, **kwargs):
+        prov = kwargs["reasoning_provenance"]
+        for index, trace in enumerate(self._turns):
+            if index:
+                yield {"type": "status", "text": ""}
+            prov.setdefault("wraps", []).append({"len": len(trace)})
+            yield {"type": "content", "text": f"<think>{trace}"}
+            yield {"type": "content", "text": f"<think>{trace}</think>"}
+        yield {"type": "content", "text": f"<think>{self._turns[-1]}</think>{self._answer}"}
+        yield {"type": "metadata", "finish_reason": "stop"}
 
 
 def test_literal_think_tags_in_the_answer_stay_answer_text(monkeypatch):
@@ -140,97 +189,9 @@ def test_a_later_reasoning_segment_stays_reasoning(monkeypatch):
 
 def test_a_trace_quoting_tool_tags_keeps_the_answer_with_tools_on(monkeypatch):
     trace = "Quote </think> and </function>."
+    backend = _ScriptedToolLoop([trace], "OK")
 
-    class _ToolGguf(FakeLlamaCppBackend):
-        supports_tools = True
-        reasoning_always_on = True
-        supports_reasoning = True
-
-        def _request_reasoning_kwargs(self, *args, **kwargs):
-            return {}
-
-        def generate_chat_completion_with_tools(self, **kwargs):
-            prov = kwargs["reasoning_provenance"]
-            prov["wrapped"] += 1
-            prov.setdefault("wraps", []).append({"len": len(trace)})
-            yield {"type": "content", "text": "<think>" + trace}
-            yield {"type": "content", "text": "<think>" + trace + "</think>OK"}
-            yield {"type": "metadata", "finish_reason": "stop"}
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ToolGguf())
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
-
-    async def _select(payload, **_kwargs):
-        return [{"type": "function", "function": {"name": "web_search"}}]
-
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
-    app = FastAPI()
-    app.include_router(inference_route.router)
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    response = TestClient(app).post(
-        "/chat/completions",
-        json = {
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": True,
-            "enable_tools": True,
-        },
-        headers = {"X-Unsloth-Events": "1"},
-    )
-    assert response.status_code == 200, response.text
-    reasoning = content = ""
-    for line in response.text.splitlines():
-        if not line.startswith("data: {"):
-            continue
-        for choice in json.loads(line[len("data: ") :]).get("choices") or []:
-            delta = choice.get("delta") or {}
-            reasoning += delta.get("reasoning_content") or ""
-            content += delta.get("content") or ""
-
-    assert reasoning == trace
-    assert content == "OK"
-
-
-def _stream_with_tools(monkeypatch, frames):
-    real = _llama_server(monkeypatch, frames)
-
-    class _ToolGguf(_ThinkingGguf):
-        supports_tools = True
-
-        def _request_reasoning_kwargs(self, *args, **kwargs):
-            return {}
-
-        def generate_chat_completion_with_tools(self, **kwargs):
-            return self._real.generate_chat_completion_with_tools(**kwargs)
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ToolGguf(real))
-    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
-
-    async def _select(payload, **_kwargs):
-        return [{"type": "function", "function": {"name": "web_search"}}]
-
-    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
-    app = FastAPI()
-    app.include_router(inference_route.router)
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    response = TestClient(app).post(
-        "/chat/completions",
-        json = {
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": True,
-            "enable_tools": True,
-        },
-        headers = {"X-Unsloth-Events": "1"},
-    )
-    assert response.status_code == 200, response.text
-    reasoning = content = ""
-    for line in response.text.splitlines():
-        if not line.startswith("data: {"):
-            continue
-        for choice in json.loads(line[len("data: ") :]).get("choices") or []:
-            delta = choice.get("delta") or {}
-            reasoning += delta.get("reasoning_content") or ""
-            content += delta.get("content") or ""
-    return reasoning, content
+    assert _post(monkeypatch, backend, tools = True) == (trace, "OK")
 
 
 def test_a_later_reasoning_segment_stays_reasoning_with_tools_on(monkeypatch):
@@ -242,7 +203,7 @@ def test_a_later_reasoning_segment_stays_reasoning_with_tools_on(monkeypatch):
         "data: [DONE]\n",
     ]
 
-    reasoning, content = _stream_with_tools(monkeypatch, frames)
+    reasoning, content = _stream(monkeypatch, frames, tools = True)
 
     assert reasoning == "Plan.Check."
     assert content == "Literal <think>x</think> first. Answer"
@@ -252,7 +213,88 @@ def test_a_trace_quoting_a_tool_call_keeps_the_answer_with_tools_on(monkeypatch)
     trace = "Quote </think> and <tool_call>{}</tool_call>."
     frames = [_sse({"reasoning_content": trace}), _sse({"content": "OK"}), "data: [DONE]\n"]
 
-    reasoning, content = _stream_with_tools(monkeypatch, frames)
+    assert _stream(monkeypatch, frames, tools = True) == (trace, "OK")
 
-    assert reasoning == trace
-    assert content == "OK"
+
+def test_a_non_streamed_reply_keeps_literal_tags_where_they_were_written(monkeypatch):
+    trace = "Match <think> up to </think> lazily."
+    frames = [_sse({"reasoning_content": trace}), _sse({"content": _ANSWER}), "data: [DONE]\n"]
+
+    assert _stream(monkeypatch, frames, stream = False) == (trace, _ANSWER)
+
+
+def test_a_non_streamed_tool_loop_reply_keeps_literal_tags(monkeypatch):
+    trace = "Quote </think> and <tool_call>{}</tool_call>."
+    backend = _ScriptedToolLoop(["Search.", trace], _ANSWER)
+
+    assert _post(monkeypatch, backend, stream = False, tools = True) == (trace, _ANSWER)
+
+
+def _extract(chunks, ledger):
+    extractor = inference_route._ResponsesReasoningExtractor(
+        parse_think_markers = True, think_provenance = ledger
+    )
+    parts = [extractor.feed(chunk) for chunk in chunks] + [extractor.finish()]
+    return "".join(r for r, _ in parts), "".join(v for _, v in parts)
+
+
+def test_inline_reasoning_still_parses_when_the_server_split_none_out():
+    chunks = ["\n", "<thi", "nk>plan</think>answer"]
+
+    assert _extract(chunks, {"wrapped": 0}) == ("plan", "\nanswer")
+
+
+def test_a_leading_literal_tag_is_answer_once_the_server_splits_reasoning():
+    ledger = {"wrapped": 1, "wraps": [{"len": 5}], "claimed": 1}
+
+    assert _extract(["<think>x</think> is the tag."], ledger) == (
+        "",
+        "<think>x</think> is the tag.",
+    )
+
+
+def test_reasoning_split_out_after_a_preface_takes_over_from_inline_parsing():
+    trace = "Quote </think> literally."
+    ledger = {"wrapped": 0}
+    extractor = inference_route._ResponsesReasoningExtractor(
+        parse_think_markers = True, think_provenance = ledger
+    )
+    parts = [extractor.feed("Preface. ")]
+    ledger["later"] = [{"len": len(trace), "at": len("Preface. ")}]
+    parts += [extractor.feed(f"<think>{trace}</think>Use <think>x</think>."), extractor.finish()]
+
+    assert "".join(r for r, _ in parts) == trace
+    assert "".join(v for _, v in parts) == "Preface. Use <think>x</think>."
+
+
+def test_a_continued_answer_after_split_reasoning_keeps_literal_tags(monkeypatch):
+    frames = [_sse({"content": '<think>.*?</think>", "", text).'}), "data: [DONE]\n"]
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": 'Use re.sub(r"', "reasoning_content": "Plan."},
+    ]
+
+    assert _stream(monkeypatch, frames, messages = messages) == (
+        "",
+        '<think>.*?</think>", "", text).',
+    )
+    del messages[-1]["reasoning_content"]
+    inline = [_sse({"content": "<think>plan</think>answer"}), "data: [DONE]\n"]
+    assert _stream(monkeypatch, inline, messages = messages) == ("plan", "answer")
+    # Resuming inside a thought an inline server opened: its closing tag is still a delimiter.
+    messages[-1] = {"role": "assistant", "content": "", "reasoning_content": "Plan the regex"}
+    closing = [_sse({"content": " carefully.</think>Use regex."}), "data: [DONE]\n"]
+    assert _stream(monkeypatch, closing, messages = messages) == ("", " carefully.Use regex.")
+
+
+def test_a_split_after_an_inline_block_still_claims_its_wrap():
+    ledger = {"wrapped": 0}
+    extractor = inference_route._ResponsesReasoningExtractor(
+        parse_think_markers = True, think_provenance = ledger
+    )
+    parts = [extractor.feed("<think>Inline.</think>")]
+    ledger["later"] = [{"len": len("Split."), "at": len("<think>Inline.</think>")}]
+    parts += [extractor.feed("<think>Split.</think>Answer <think>"), extractor.finish()]
+
+    assert "".join(r for r, _ in parts) == "Inline.Split."
+    assert "".join(v for _, v in parts) == "Answer <think>"
