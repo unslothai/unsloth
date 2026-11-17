@@ -5841,7 +5841,11 @@ export function createOpenAIStreamAdapter(
         owner: serverCancel,
       });
       const continuationPartial = continuation
-        ? continuationSeed(continuation.partial, resumedThought)
+        ? continuationSeed(
+            continuation.partial,
+            resumedThought,
+            continuation.splitReasoningSeen === true,
+          )
         : "";
       const geminiContinuationReplayTurns =
         continuation?.geminiReplayTurns?.length

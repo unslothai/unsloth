@@ -296,13 +296,20 @@ export function carriedThought(
     : "";
 }
 
-/** Both come from saved parts, so any tag inside them is literal text. */
-export function continuationSeed(partial: string, thought: string): string {
-  partial = markLiteralThinkTags(partial);
+/** Both come from saved parts, so their tags are literal; the seed's trailing fragment may still
+ * open an inline tag unless the turn's reasoning arrived split out. */
+export function continuationSeed(
+  partial: string,
+  thought: string,
+  splitReasoningSeen = false,
+): string {
+  partial = markLiteralThinkTags(partial, { pending: splitReasoningSeen });
   if (!thought) {
     return partial;
   }
-  thought = markLiteralThinkTags(thought);
+  thought = markLiteralThinkTags(thought, {
+    pending: Boolean(partial) || splitReasoningSeen,
+  });
   return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 

@@ -103,7 +103,7 @@ test("a structured thinking part keeps a literal closing tag inside it", () => {
 test("a replay overlapping or restarting a marked continuation seed is still recognised", async () => {
   const { joinContinuation } = await import("../src/features/chat/utils/continuation.ts");
   const partial = "Use literal <think> tags to find the block you want removed.";
-  const seed = continuationSeed(partial, "");
+  const seed = continuationSeed(partial, "", true);
   assert.equal(
     joinContinuation(seed, "<think> tags to find the block you want removed. Then", {
       streaming: true,
@@ -112,4 +112,18 @@ test("a replay overlapping or restarting a marked continuation seed is still rec
   );
   const restart = markLiteralThinkTags(`${partial.slice(0, 52)}rewritten.`);
   assert.equal(joinContinuation(seed, restart), restart);
+});
+
+test("a continuation seed leaves a trailing inline opener resumable unless reasoning was split", () => {
+  assert.deepEqual(parseAssistantContent(`${continuationSeed("<thi", "")}nk>Plan.</think>Answer`), [
+    { type: "reasoning", text: "Plan." },
+    { type: "text", text: "Answer" },
+  ]);
+  assert.deepEqual(parseAssistantContent(`${continuationSeed("a <thi", "", true)}nk> b`), [
+    { type: "text", text: "a <think> b" },
+  ]);
+  assert.deepEqual(parseAssistantContent(`${continuationSeed("", "plan </thi")}nk>answer`), [
+    { type: "reasoning", text: "plan " },
+    { type: "text", text: "answer" },
+  ]);
 });
