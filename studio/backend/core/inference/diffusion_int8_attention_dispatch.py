@@ -39,10 +39,14 @@ DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
-# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix.
+# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
 AUTO_DITS = frozenset(
     {
+        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
         "ZImageTransformer2DModel",
@@ -50,10 +54,24 @@ AUTO_DITS = frozenset(
 )
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
-    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
 )
 # Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
-AUTO_CUDA_ONLY = frozenset({"Flux3Transformer2DModel", "ZImageTransformer2DModel"})
+AUTO_CUDA_ONLY = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "ZImageTransformer2DModel",
+    }
+)
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
 
