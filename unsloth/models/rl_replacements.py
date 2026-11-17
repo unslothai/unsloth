@@ -7058,10 +7058,18 @@ def _unsloth_stock_logps_hook(
 ):
     """False when a subclass overrides one of ``hooks`` below the class whose ``method`` is the rewritten one: TRL's
     body would call the override (or it reads the full logits the chunked path replaces with stand-ins)."""
+
+    def own(klass, name):
+        # The shared-prefix wrapper (dpo_prefix_share.py) only scopes the call; read through it.
+        function = vars(klass).get(name)
+        if getattr(function, "_unsloth_dpo_prefix_share", False):
+            function = getattr(function, "__wrapped__", function)
+        return function
+
     owner = None
     for klass in type(self).__mro__:
         # The rewritten body calls a chunked or fused-pass helper; a subclass method wrapping it via super() does not.
-        names = getattr(getattr(vars(klass).get(method), "__code__", None), "co_names", ())
+        names = getattr(getattr(own(klass, method), "__code__", None), "co_names", ())
         if any(
             name.startswith("_unsloth_") and ("chunked" in name or "fused_pass" in name)
             for name in names
@@ -7071,7 +7079,15 @@ def _unsloth_stock_logps_hook(
     if owner is None:
         return True
     for name in hooks:
-        hook = next((klass for klass in type(self).__mro__ if name in vars(klass)), None)
+        hook = next(
+            (
+                klass
+                for klass in type(self).__mro__
+                if name in vars(klass)
+                and not getattr(vars(klass)[name], "_unsloth_dpo_prefix_share", False)
+            ),
+            None,
+        )
         if hook is not None and hook not in owner.__mro__:
             return False
     return True

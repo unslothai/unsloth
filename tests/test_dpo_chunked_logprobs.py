@@ -609,6 +609,52 @@ def test_stock_logps_hook_detects_overrides():
     assert hook(Patched(), "concatenated_forward", stand_ins)
 
 
+def test_stock_logps_hook_reads_through_the_prefix_share_wrapper():
+    # rl.py wraps concatenated_forward on the Unsloth trainer class (dpo_prefix_share.wrap_preference_trainer);
+    # that scoping wrapper must not count as a user override, or ORPO / CPO lose the chunked head.
+    import functools
+
+    hook = _helpers()["_unsloth_stock_logps_hook"]
+    hooks = ("get_batch_logps", "get_batch_loss_metrics", "concatenated_forward")
+
+    class Stock:
+        def get_batch_logps(self):
+            pass
+
+        def concatenated_forward(self):
+            pass
+
+    class Patched(Stock):
+        def concatenated_forward(self):
+            return _unsloth_dpo_chunked_head  # noqa: F821  (only the name matters)
+
+    def prefix_share_wrap(function):
+        @functools.wraps(function)
+        def wrapped(self, *args, **kwargs):
+            return function(self, *args, **kwargs)
+
+        wrapped._unsloth_dpo_prefix_share = True
+        return wrapped
+
+    class Wrapped(Patched):
+        pass
+
+    Wrapped.concatenated_forward = prefix_share_wrap(Patched.concatenated_forward)
+    assert hook(Wrapped(), "concatenated_forward", hooks)
+
+    class UserOverride(Wrapped):
+        def get_batch_logps(self):
+            pass
+
+    assert not hook(UserOverride(), "concatenated_forward", hooks)
+
+    class PlainWrapper(Patched):
+        def concatenated_forward(self):
+            return super().concatenated_forward()
+
+    assert not hook(PlainWrapper(), "concatenated_forward", hooks)
+
+
 def test_router_aux_loss_falls_back():
     ns = _helpers()
 

@@ -15,6 +15,7 @@ Model: UNSLOTH_DPS_TEST_MODEL (default trl-internal-testing/tiny-Qwen3ForCausalL
 attention to SDPA (see _pin_fp32_attention); UNSLOTH_DPS_TEST_REAL_ATTENTION=1 keeps the real backend."""
 
 import gc
+import importlib
 import os
 import random
 import types
@@ -315,8 +316,14 @@ def _preference_trainer(kind):
     try:
         trainer_cls = getattr(trl, f"{name}Trainer")
         config_cls = getattr(trl, f"{name}Config")
-    except Exception as exc:
-        pytest.skip(f"TRL {trl.__version__} has no {name}Trainer ({exc!r})")
+    except Exception:
+        # TRL >= 1.0 moved ORPO / CPO to trl.experimental.
+        try:
+            module = importlib.import_module(f"trl.experimental.{name.lower()}")
+            trainer_cls = getattr(module, f"{name}Trainer")
+            config_cls = getattr(module, f"{name}Config")
+        except Exception as exc:
+            pytest.skip(f"TRL {trl.__version__} has no {name}Trainer ({exc!r})")
     wrapped = [
         m
         for m in _PREFERENCE_METHODS
