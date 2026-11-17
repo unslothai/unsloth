@@ -81,10 +81,15 @@ test("stripForSpeech still drops markup and emoji", () => {
   assert.equal(stripForSpeech("**bold** and `code` 😀"), "bold and code");
 });
 
+test("the word no ends a sentence; No. before a number does not", () => {
+  assert.deepEqual(splitIntoSentences("I said no. Then I left."), ["I said no.", "Then I left."]);
+  assert.deepEqual(splitIntoSentences("See No. 5 for it."), ["See No. 5 for it."]);
+});
+
 test("a Unicode minus before a number survives as a minus", () => {
   assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
   assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
-  assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
+  assert.equal(stripForSpeech("Paris — the capital."), "Paris — the capital.");
 });
 
 test("a streamed reply never queues a sentence the finished text splits differently", () => {

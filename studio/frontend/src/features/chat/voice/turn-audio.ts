@@ -116,6 +116,7 @@ export function coalescedTurnAudio(messages: readonly Message[], turn: string): 
 
 const AUDIO_PLAYER = /<audio-player\b[^>]*\/>/g;
 
+// Blanked to the same length, not removed, so offsets into the reply stay valid; callers trim.
 export function withoutAudioPlayer(text: string): string {
-  return text.includes("<audio-player") ? text.replace(AUDIO_PLAYER, "").trim() : text;
+  return text.includes("<audio-player") ? text.replace(AUDIO_PLAYER, (tag) => " ".repeat(tag.length)) : text;
 }

@@ -113,7 +113,9 @@ test("only a turn sent with its speech is answered as a spoken reply", () => {
 
 test("the reply's player markup is never spoken or matched as an echo", () => {
   const text = 'Paris is the capital.<audio-player src="data:audio/wav;base64,AAAA" />';
-  assert.equal(withoutAudioPlayer(text), "Paris is the capital.");
+  assert.equal(withoutAudioPlayer(text).trim(), "Paris is the capital.");
+  // Same length: offsets into the reply still point at the same characters.
+  assert.equal(withoutAudioPlayer(text).length, text.length);
   assert.equal(withoutAudioPlayer("  plain reply "), "  plain reply ");
 });
 

@@ -18,8 +18,9 @@ export function stripForSpeech(text: string): string {
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
     .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash
-    .replace(/[^\S\n]*[—–―‒−][^\S\n]*/g, " ")
-    .replace(/[^\S\n]*…[^\S\n]*/g, " ")
+    // A range ("10–20") reads "10 to 20". The em dash and "…" go to the voice as written: it pauses on them.
+    .replace(/(\d)[^\S\n]*[–—‒][^\S\n]*(?=\d)/g, "$1 to ")
+    .replace(/[^\S\n]*[–―‒−][^\S\n]*/g, " ")
     .replace(/\.{2,}/g, " ")
     .replace(/[‐‑]/g, "-")
     .replace(/[*_`~^|#<>\\{}[\]]/g, " ")
@@ -62,30 +63,35 @@ function dropJsonLines(): (line: string, i: number, lines: string[]) => string {
   return (line, i, lines) => {
     if (depth > 0) {
       depth += bracketDepth(line);
-      return "";
+      return blankLine(line);
     }
     if (JSON_OPEN_RE.test(line)) {
       depth = Math.max(0, bracketDepth(line));
-      return "";
+      return blankLine(line);
     }
-    if (JSON_KEY_LINE_RE.test(line)) return "";
-    if (i === lines.length - 1 && JSON_KEY_PREFIX_RE.test(line)) return "";
+    if (JSON_KEY_LINE_RE.test(line)) return blankLine(line);
+    if (i === lines.length - 1 && JSON_KEY_PREFIX_RE.test(line)) return blankLine(line);
     return line;
   };
 }
 
 // Every rule only looks backwards or drops to the end, so a streamed prefix splits as the finished reply does.
+// Dropped regions are blanked to the same length, never cut out, so every offset still points into the reply.
+const blankAs = (first: string) => (region: string) =>
+  region ? first + " ".repeat(region.length - 1) : "";
+const blankLine = (line: string) => " ".repeat(line.length);
+
 export function speakableReply(text: string): string {
   return text
-    .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, " ")
-    .replace(/<\|channel\|?>[\s\S]*?(<\|?channel\|>|$)/g, " ")
-    .replace(/```[\s\S]*?(```|$)/g, "\n")
+    .replace(/<(think|thinking|reasoning|tool_call)>[\s\S]*?(<\/\1>|$)/gi, blankAs(" "))
+    .replace(/<\|channel\|?>[\s\S]*?(<\|?channel\|>|$)/g, blankAs(" "))
+    .replace(/```[\s\S]*?(```|$)/g, blankAs("\n"))
     .split("\n")
     .map(dropJsonLines())
     .join("\n")
-    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "")
+    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, blankLine)
     .split("\n")
-    .map((line) => (speakable(line) ? line : ""))
+    .map((line) => (speakable(line) ? line : blankLine(line)))
     .join("\n");
 }
 
@@ -97,49 +103,63 @@ const SPEECH_ABBREVIATIONS = new Set([
   "nov", "dec",
 ]);
 
-const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr"]);
+// "I said no. Then": "no" is the word far more often than "No. 5".
+const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr", "no"]);
 
 const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
 
-export function splitIntoSentences(text: string): string[] {
-  const norm = text
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+/** A sentence and where it sits in the text it was split from: start/end are offsets into that text. */
+export interface SpokenSentence {
+  text: string;
+  start: number;
+  end: number;
+}
+
+function sentenceSpans(text: string): SpokenSentence[] {
   // A sentence ends at .!? (plus closing quotes) only before whitespace or the end, so "3.5",
   // ".env", "./train.py" and "D.C." stay whole; a line without one ends at the newline.
-  const raw = norm.match(/\S[^\n]*?(?:[.!?]+["'”’»)\]]*(?=\s|$)|(?=\n|$))/g);
-  if (!raw) return [text];
-  const out: string[] = [];
-  let lead = "";
-  for (let part of raw) {
+  const body = text.trimEnd();
+  const raw = [...body.matchAll(/\S[^\n]*?(?:[.!?]+["'”’»)\]]*(?=\s|$)|(?=\n|$))/g)].map((m) => ({
+    text: m[0].replace(/[^\S\n]+/g, " "),
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
+  if (raw.length === 0) return [{ text, start: 0, end: text.length }];
+  const out: SpokenSentence[] = [];
+  let lead: SpokenSentence | null = null;
+  const join = (into: SpokenSentence, next: SpokenSentence) => {
+    into.text = `${into.text} ${next.text}`;
+    into.end = next.end;
+  };
+  for (const piece of raw) {
+    const part: SpokenSentence = lead ? { ...lead } : { ...piece };
     if (lead) {
-      part = `${lead} ${part}`;
-      lead = "";
+      join(part, piece);
+      lead = null;
     }
     const prev = out[out.length - 1];
     // Punctuation alone ("...", "--") is no request of its own.
-    if (!speakable(part)) {
+    if (!speakable(part.text)) {
       if (prev === undefined) lead = part;
-      else out[out.length - 1] = `${prev} ${part}`;
+      else join(prev, part);
       continue;
     }
     if (prev !== undefined) {
-      const tail = prev.replace(/["'”’»)\]]+$/, "");
+      const tail = prev.text.replace(/["'”’»)\]]+$/, "");
       const word = /([A-Za-z]+)\.$/.exec(tail)?.[1]?.toLowerCase();
       // "J. Smith", "John F. Kennedy" are names; "pick option A. Then" is a boundary.
       const nameInitial =
-        /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);
-      const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
+        /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part.text);
+      const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part.text);
       // "etc. Then I left": these also end sentences, so only a lowercase word or digit continues one.
       const abbrev =
         word !== undefined &&
         SPEECH_ABBREVIATIONS.has(word) &&
-        (!SENTENCE_FINAL_ABBREVIATIONS.has(word) || /^[a-z\d]/.test(part));
+        (!SENTENCE_FINAL_ABBREVIATIONS.has(word) || /^[a-z\d]/.test(part.text));
       // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
-      const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
+      const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part.text);
       if (nameInitial || initial || abbrev || initialism) {
-        out[out.length - 1] = `${prev} ${part}`;
+        join(prev, part);
         continue;
       }
     }
@@ -149,14 +169,36 @@ export function splitIntoSentences(text: string): string[] {
   return out;
 }
 
+export function splitIntoSentences(text: string): string[] {
+  return sentenceSpans(text).map((s) => s.text);
+}
+
+/** The reply's spoken sentences, each with its offsets into the reply itself. */
+export function splitSpoken(text: string): SpokenSentence[] {
+  const spans = sentenceSpans(speakableReply(text));
+  // Nothing speakable: one empty sentence, where the old splitter returned the leftover whitespace.
+  return spans.length === 1 && !/\S/.test(spans[0].text) ? [{ text: "", start: 0, end: 0 }] : spans;
+}
+
 /**
  * Sentences of a reply still streaming that can no longer change. The last part may still grow
  * ("Dr." before "Dr. Smith", "about 2." before "2.5"), and whether it joins the one before turns
  * on its first two characters, so it stays partial until endStream.
  */
-export function splitStreaming(raw: string): { complete: string[]; partial: string } {
-  const parts = splitIntoSentences(speakableReply(raw));
-  const tail = parts[parts.length - 1] ?? "";
+export function splitStreamingSpans(raw: string): { complete: SpokenSentence[]; partial: string } {
+  const parts = splitSpoken(raw);
+  const tail = parts[parts.length - 1]?.text ?? "";
   const settled = Math.max(0, parts.length - (tail.length >= 2 ? 1 : 2));
-  return { complete: parts.slice(0, settled), partial: parts.slice(settled).join(" ") };
+  return {
+    complete: parts.slice(0, settled),
+    partial: parts
+      .slice(settled)
+      .map((s) => s.text)
+      .join(" "),
+  };
+}
+
+export function splitStreaming(raw: string): { complete: string[]; partial: string } {
+  const { complete, partial } = splitStreamingSpans(raw);
+  return { complete: complete.map((s) => s.text), partial };
 }

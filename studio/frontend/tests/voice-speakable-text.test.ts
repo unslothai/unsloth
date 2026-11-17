@@ -132,5 +132,14 @@ test("a clip with no voice on it is dropped", () => {
 test("a Unicode minus before a number survives as a minus", () => {
   assert.equal(stripForSpeech("The temperature is −5 degrees."), "The temperature is -5 degrees.");
   assert.equal(stripForSpeech("The result is −2."), "The result is -2.");
-  assert.equal(stripForSpeech("Paris — the capital."), "Paris the capital.");
+  assert.equal(stripForSpeech("Paris — the capital."), "Paris — the capital.");
+});
+
+test("the em dash and the ellipsis reach the voice as written; a dash between numbers is a range", () => {
+  assert.equal(stripForSpeech("Got it—no more suggestions!"), "Got it—no more suggestions!");
+  assert.equal(stripForSpeech("Well… I think so."), "Well… I think so.");
+  assert.equal(stripForSpeech("Wait…"), "Wait…");
+  assert.equal(stripForSpeech("It takes 10–20 minutes."), "It takes 10 to 20 minutes.");
+  assert.equal(stripForSpeech("Pages 3 — 7."), "Pages 3 to 7.");
+  assert.equal(stripForSpeech("well-known"), "well-known");
 });
