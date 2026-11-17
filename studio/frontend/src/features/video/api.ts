@@ -5,10 +5,12 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
+import type { CosmosGuardrailStatus } from "./cosmos-guardrail";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
+import type { RestyleStatusLike } from "./restyle-setup";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -473,10 +475,7 @@ export interface VideoRestyleProgress {
   seed?: number | null;
 }
 
-export interface VideoRestyleStatus {
-  available: boolean;
-  reason: string | null;
-}
+export type VideoRestyleStatus = RestyleStatusLike;
 
 export interface VideoRestylePreview {
   frames: number;
@@ -488,8 +487,33 @@ export interface VideoRestylePreview {
   edges_jpeg: string;
 }
 
+export async function fetchCosmosGuardrailStatus(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail"));
+}
+
+export async function startCosmosGuardrailInstall(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail/install", { method: "POST" }));
+}
+
 export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
   return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+/** Install whatever Restyle is missing (server, weights); progress arrives through the status. */
+export async function startVideoRestyleSetup(hfToken?: string): Promise<VideoRestyleStatus> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
+    }),
+  );
+}
+
+export async function cancelVideoRestyleSetup(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup/cancel", { method: "POST" }),
+  );
 }
 
 function restyleForm(video?: File | null, frames?: File[]): FormData {

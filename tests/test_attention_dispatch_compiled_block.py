@@ -73,6 +73,9 @@ def test_rerouted_xformers_keeps_the_fp32_downcast(monkeypatch):
     # DoRA fp32 Q/K/V on a GPU whose xformers op rejects fp32: the SDPA reroute must downcast like xformers.
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    # DoRA trains under autocast, the case the downcast is for (#18099). CPU CI cannot enter CUDA autocast, and
+    # faking torch.is_autocast_enabled trips dynamo's global-state guard, so take the autocast decision directly.
+    monkeypatch.setattr(ad, "_keeps_fp32_attention", lambda Q, K, V: False)
     torch._dynamo.reset()
     compiled = torch.compile(_run(ad.XFORMERS), fullgraph = True, backend = "eager", dynamic = True)
     Q, K, V = _qkv(8)
@@ -81,6 +84,18 @@ def test_rerouted_xformers_keeps_the_fp32_downcast(monkeypatch):
     torch.testing.assert_close(
         out.float().reshape(1, 8, 4, 16), _reference(Q, K, V), atol = 3e-2, rtol = 3e-2
     )
+
+
+def test_rerouted_xformers_keeps_an_fp32_model_in_fp32(monkeypatch):
+    # No autocast: a genuine fp32 model stays fp32 on the reroute instead of taking xformers' bf16 (#18099).
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    torch._dynamo.reset()
+    compiled = torch.compile(_run(ad.XFORMERS), fullgraph = True, backend = "eager", dynamic = True)
+    Q, K, V = _qkv(8)
+    out = compiled(Q, K, V)
+    assert out.dtype == torch.float32
+    torch.testing.assert_close(out.reshape(1, 8, 4, 16), _reference(Q, K, V))
 
 
 def _compile_counts(fn, *inputs, dynamic):

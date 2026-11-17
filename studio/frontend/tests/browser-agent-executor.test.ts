@@ -54,3 +54,59 @@ test("a page that navigates away while it fills in is not read as the new page",
   assert.equal(result.ok, false);
   assert.equal(result.text, undefined);
 });
+
+/** Runs one navigate whose page read calls `onRead`; returns the posted result and the read count. */
+async function navigateReading(id: string, url: string, onRead: (tabId: string, read: number) => void) {
+  const posted: Posted[] = [];
+  globals.__authFetch = async (_url: string, init: { body: string }) => {
+    posted.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  };
+  let reads = 0;
+  // A tab that starts loading reports its load a beat later, as the frame does.
+  const stopLoading = useBrowserStore.subscribe((state) => {
+    for (const tab of state.tabs) {
+      if (tab.loading) setTimeout(() => useBrowserStore.getState().updateTab(tab.id, { loading: false }), 20);
+    }
+  });
+  globals.__frameAgent = async (tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, requests: 0, quietMs: 1000 } };
+    onRead(tabId, ++reads);
+    return { installed: true, result: { ok: true, text: "Flights", links: [] } };
+  };
+  await runBrowserAction(
+    { id, sessionId: "s", op: "navigate", url, direction: "down", policy: { allowedDomains: [], blockedDomains: [] } },
+    { runKey: "r", userText: `open ${url}` },
+  );
+  stopLoading();
+  assert.equal(posted.length, 1);
+  return { result: posted[0].result, reads };
+}
+
+test("a router that rewrites the address during the read is read again at its new address", async () => {
+  const { result, reads } = await navigateReading("a3", "https://example.com/travel/flights?q=x", (tabId, read) => {
+    if (read === 1) useBrowserStore.getState().updateTab(tabId, { displayUrl: "https://example.com/travel/flights?tfs=abc" });
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.ok, true);
+  assert.equal(result.url, "https://example.com/travel/flights?tfs=abc");
+  assert.equal(reads, 2);
+});
+
+test("a router that never stops rewriting the address still reports the page changed", async () => {
+  const { result, reads } = await navigateReading("a4", "https://example.com/feed", (tabId, read) => {
+    useBrowserStore.getState().updateTab(tabId, { displayUrl: `https://example.com/feed?t=${read}` });
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /changed while it was being read/);
+  assert.equal(reads, 3);
+});
+
+test("a page that navigates away during the read is not read again", async () => {
+  const { result, reads } = await navigateReading("a5", "https://example.com/docs", (tabId, read) => {
+    if (read === 1) useBrowserStore.getState().navigate(tabId, { url: "https://other.example.org/" }, { replace: false });
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.text, undefined);
+  assert.equal(reads, 1);
+});

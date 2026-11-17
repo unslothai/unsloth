@@ -152,7 +152,7 @@ for _case in "Unsloth Studio Beta.app" "AI & ML/Unsloth.app" "Development/AI/Loc
     assert_present "macOS: prefs kept for $_case"            "$H/Library/Preferences/$BID.plist"
 done
 
-# ── 1d. macOS: install.sh's launcher bundle shares the id but is not the owner ──
+# ── 1d. macOS: legacy install.sh launcher bundles share the id but are not owners ──
 LAUNCHER_APPS="$_TMP_ROOT/Applications-launcher"
 make_app "$LAUNCHER_APPS/Unsloth Studio.app" launch-studio
 H=$(new_home)

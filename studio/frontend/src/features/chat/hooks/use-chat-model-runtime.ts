@@ -33,6 +33,7 @@ import {
   notifyModelLifecycle,
   subscribeModelLifecycle,
 } from "@/lib/model-lifecycle-events";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -723,10 +724,11 @@ export async function syncInferenceStatusToStore(options?: {
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
-    // Read a TTS-owned slot as empty so the eviction branch clears the stale chat pick.
+    // Read a TTS-owned or Translate-owned slot as empty so the eviction branch clears the stale chat pick.
     const chatActiveModel =
       statusRes.active_model &&
       !isSpeechOnlyStatus(statusRes) &&
+      !isTranslationHeldSlot(statusRes.active_model, selectedCheckpoint) &&
       !(statusLoading && options?.externalChatSlotLoad);
     if (
       chatActiveModel &&

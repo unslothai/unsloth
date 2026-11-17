@@ -3384,6 +3384,252 @@ def test_a_reset_saved_setting_does_not_come_back_from_the_freed_launch(monkeypa
     assert rec.calls[1].max_seq_length == 8192
 
 
+def _saved(
+    monkeypatch,
+    override,
+    local = None,
+):
+    asked = []
+
+    def _resolve(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        asked.append((load_id, alias_id, variant))
+        return (load_id if override else None), dict(override)
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", _resolve)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: local)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    return asked
+
+
+@pytest.mark.parametrize(
+    "named",
+    [{"model_path": "org/A-GGUF:q4_k_m"}, {"model_path": "org/A-GGUF", "gguf_variant": "q4_k_m"}],
+)
+def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
+    asked = _saved(
+        monkeypatch, {"kv_cache_dtype": "q8_0"}, local = ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
+    request = LoadRequest(**named, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
+    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+
+
+def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):
+    asked = _saved(
+        monkeypatch, {"kv_cache_dtype": "q8_0"}, local = ("/cache/snap/A", "Q8_0", "org/A-GGUF")
+    )
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True)
+    asyncio.run(inference_route._with_saved_settings(request))
+    assert asked == [("/cache/snap/A", "org/A-GGUF", None)]
+
+
+def test_the_format_is_read_after_the_index_is_warmed(monkeypatch):
+    _saved(monkeypatch, {"engine": "vllm", "engine_precision": "bf16"})
+    scanned = []
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda ref, **k: scanned.append(ref))
+    # A cold index reads every unknown id as GGUF, which drops managed-engine settings.
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: not scanned)
+    request = LoadRequest(model_path = "org/A", use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.engine, filled.engine_precision) == ("vllm", "bf16")
+
+
+def test_a_load_asking_for_saved_settings_takes_the_ones_it_left_unset(monkeypatch):
+    asked = _saved(
+        monkeypatch,
+        {"custom_context_length": 100000, "kv_cache_dtype": "q8_0", "llama_extra_args": ["-cmoe"]},
+    )
+    request = LoadRequest(
+        model_path = "unsloth/flint-GGUF", gguf_variant = "UD-Q4_K_XL", use_saved_settings = True
+    )
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert asked == [("unsloth/flint-GGUF", "unsloth/flint-GGUF", "UD-Q4_K_XL")]
+    assert (filled.max_seq_length, filled.cache_type_kv, filled.llama_extra_args) == (
+        100000,
+        "q8_0",
+        ["-cmoe"],
+    )
+    assert {"max_seq_length", "cache_type_kv", "llama_extra_args"} <= filled.model_fields_set
+    assert filled._override_alias_id == "unsloth/flint-GGUF"
+
+
+def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
+    _saved(
+        monkeypatch,
+        {
+            "kv_cache_dtype": "q8_0",
+            "n_parallel": 2,
+            "gpu_layers": 20,
+            "llama_extra_args": ["-cmoe", "-c", "4096"],
+        },
+    )
+    request = LoadRequest(
+        model_path = "org/A-GGUF",
+        max_seq_length = 32768,
+        cache_type_kv = "f16",
+        gpu_memory_mode = "auto",
+        use_saved_settings = True,
+    )
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.max_seq_length, filled.cache_type_kv, filled.n_parallel) == (32768, "f16", 2)
+    assert "gpu_layers" not in filled.model_fields_set
+    assert filled.llama_extra_args == ["-cmoe"]
+
+
+@pytest.mark.parametrize(
+    "sent, saved, kept",
+    [
+        (True, ["--split-mode", "tensor", "-cmoe"], ["-cmoe"]),
+        (False, ["--split-mode", "tensor", "-cmoe"], ["-cmoe"]),
+        # Only the tensor toggle overrides a split mode; row survives an explicit off.
+        (False, ["--split-mode", "row", "-cmoe"], ["--split-mode", "row", "-cmoe"]),
+    ],
+)
+def test_a_saved_split_mode_yields_only_to_the_tensor_toggle(monkeypatch, sent, saved, kept):
+    _saved(monkeypatch, {"llama_extra_args": saved})
+    request = LoadRequest(model_path = "org/A-GGUF", tensor_parallel = sent, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.tensor_parallel, filled.llama_extra_args) == (sent, kept)
+
+
+@pytest.mark.parametrize(
+    "sent, kept",
+    [
+        (
+            {"gpu_memory_mode": "manual", "gpu_layers": 20},
+            ["--top-k", "20"],
+        ),
+        ({}, ["--top-k", "20", "--tensor-split", "1,3"]),
+    ],
+)
+def test_a_saved_tensor_split_flag_yields_to_a_manual_layer_count(monkeypatch, sent, kept):
+    _saved(monkeypatch, {"llama_extra_args": ["--top-k", "20", "--tensor-split", "1,3"]})
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True, **sent)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.llama_extra_args == kept
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_a_saved_gpu_pin_is_kept_only_while_this_machine_has_it(monkeypatch, present):
+    _saved(
+        monkeypatch,
+        {"gpu_ids": [0, 1], "tensor_split": [2.0, 1.0], "kv_cache_dtype": "q8_0"},
+    )
+
+    async def _resolves(gpu_ids, kind = "physical"):
+        return present
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    pin = ([0, 1], [2.0, 1.0]) if present else (None, None)
+    assert (filled.gpu_ids, filled.tensor_split) == pin
+    assert filled.cache_type_kv == "q8_0"
+
+
+def test_the_load_route_applies_saved_settings_only_when_asked(monkeypatch):
+    _saved(monkeypatch, {"kv_cache_dtype": "q8_0"})
+    loaded = []
+
+    async def _gated(request, *args, **kwargs):
+        loaded.append(request.cache_type_kv)
+        return {}
+
+    async def _padded(coro, *, label):
+        return await coro
+
+    monkeypatch.setattr(inference_route, "load_model_gated", _gated)
+    monkeypatch.setattr(inference_route, "_tunnel_safe_json", _padded)
+    for ask in (False, True):
+        request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = ask)
+        asyncio.run(inference_route.load_model(request, None, "owner"))
+    assert loaded == [None, "q8_0"]
+
+
+def test_saved_settings_resolve_inside_the_padded_load(monkeypatch):
+    order = []
+
+    async def _fill(request):
+        order.append("saved")
+        return request
+
+    async def _gated(request, *args, **kwargs):
+        return {}
+
+    async def _padded(coro, *, label):
+        order.append("padded")
+        return await coro
+
+    monkeypatch.setattr(inference_route, "_with_saved_settings", _fill)
+    monkeypatch.setattr(inference_route, "load_model_gated", _gated)
+    monkeypatch.setattr(inference_route, "_tunnel_safe_json", _padded)
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True)
+    asyncio.run(inference_route.load_model(request, None, "owner"))
+    assert order == ["padded", "saved"]
+
+
+def test_settings_filled_from_a_snapshot_keyed_row_are_not_replayed(monkeypatch):
+    snapshot = "/cache/models--org--A-GGUF/snapshots/rev"
+    saved = {"custom_context_length": 100000, "kv_cache_dtype": "q8_0"}
+
+    def _resolve(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        if snapshot in settings.override_lookup_candidates(load_id, alias_id, variant):
+            return snapshot, dict(saved)
+        return None, {}
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", _resolve)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda *a, **k: (snapshot, None, "org/A-GGUF")
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    request = LoadRequest(model_path = "org/A-GGUF", n_parallel = 2, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.max_seq_length, filled.cache_type_kv) == (100000, "q8_0")
+    backend = types.SimpleNamespace()
+    inference_route._note_replay_launch(backend, filled)
+    assert backend.replay_launch == {"n_parallel": 2}
+
+
+@pytest.mark.parametrize("four_bit, precision", [(True, "int4"), (False, "auto")])
+def test_a_sent_4bit_choice_is_the_saved_engine_precision(monkeypatch, four_bit, precision):
+    _saved(monkeypatch, {"engine": "vllm", "engine_precision": "fp8"})
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: False)
+    request = LoadRequest(model_path = "org/A", load_in_4bit = four_bit, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.engine == "vllm" and "engine_precision" not in filled.model_fields_set
+    seen = []
+
+    def _validate(engine, request):
+        seen.append(request.engine_precision)
+        raise ValueError("stop")
+
+    import core.inference.managed_engine as managed_engine
+
+    monkeypatch.setattr(managed_engine, "validate_load", _validate)
+    with pytest.raises(Exception):
+        asyncio.run(inference_route._managed_engine_request(filled))
+    assert seen == [precision]
+
+
+def test_filling_saved_settings_keeps_the_request_private_state(monkeypatch):
+    _saved(monkeypatch, {"kv_cache_dtype": "q8_0"})
+    request = LoadRequest(model_path = "/runs/job-1", use_saved_settings = True)
+    request._advertised_id = "job-1"
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.cache_type_kv, filled._advertised_id) == ("q8_0", "job-1")
+
+
 def test_managed_caller_may_reload_the_owners_idle_freed_projector(monkeypatch):
     _idle_unload_a_custom_launch(
         monkeypatch, launch = {"llama_extra_args": ["--mmproj", "/owner/p.gguf"]}

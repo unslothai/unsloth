@@ -54,7 +54,25 @@ def _compute_dtype(linear: nn.Module) -> torch.dtype:
     """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
     diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
     declared = getattr(linear, "compute_dtype", None)
-    return declared if isinstance(declared, torch.dtype) else linear.weight.dtype
+    if isinstance(declared, torch.dtype):
+        return declared
+    # A layer kept at its stored dtype under diffusers' layerwise casting (the small-host route's dense denoiser)
+    # widens its weight in a pre-forward hook: the input has to arrive in that compute dtype, not the stored one.
+    get_hook = getattr(getattr(linear, "_diffusers_hook", None), "get_hook", None)
+    if callable(get_hook):
+        try:
+            hooked = getattr(get_hook("layerwise_casting"), "compute_dtype", None)
+        except Exception:  # noqa: BLE001
+            hooked = None
+        if isinstance(hooked, torch.dtype):
+            return hooked
+    weight = getattr(linear, "weight", None)
+    if weight is None:
+        # The small-host route's ``Int8WeightLinear``: int8 ``qweight``, ``scale`` stored in the compute dtype.
+        scale = getattr(linear, "scale", None)
+        if torch.is_tensor(scale) and scale.is_floating_point():
+            return scale.dtype
+    return weight.dtype
 
 
 class _RMSNorm(nn.Module):
@@ -1153,13 +1171,17 @@ def load_moss_image_pipeline(
     vae_dtype: Any = None,
     checkpoint: Optional[str] = None,
     vae: Any = None,
+    storage_dtypes: Optional[dict] = None,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
     Loads safetensors and JSON only, per subfolder; the repo's ``pipeline_moss_image.py`` is never imported.
     ``transformer`` / ``text_encoder`` let a quantised or pre-cast build hand in a component. The VAE decodes in fp32
     unless ``vae_dtype`` says otherwise (the reference and ComfyUI's MOSS launcher both decode in fp32). ``checkpoint``
-    (else ``repo_id``) picks SFT or Base skip defaults."""
+    (else ``repo_id``) picks SFT or Base skip defaults. ``storage_dtypes`` (component -> dtype name, the small-host
+    route's ``SmallHostDecision.storage_dtypes``) loads those components at their stored dtype instead of ``dtype``, so
+    they stay memory-mapped until the route converts them; a float32 load on an fp16-only card otherwise widens the
+    9B encoder and the DiT in host RAM first (54 GB, more than a 51 GB Colab T4 High-RAM)."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     assert_transformers_supported()
@@ -1175,8 +1197,14 @@ def load_moss_image_pipeline(
         repo_id, subfolder = "tokenizer", **common
     )
     check_cancelled()
+    stored = {
+        name: getattr(torch, str(dt).replace("torch.", ""))
+        for name, dt in (storage_dtypes or {}).items()
+    }
     if text_encoder is None:
-        text_encoder = load_moss_image_text_encoder(repo_id, dtype, **common)
+        text_encoder = load_moss_image_text_encoder(
+            repo_id, stored.get("text_encoder", dtype), **common
+        )
         check_cancelled()
     else:
         # A pre-cast build (the hosted int8 ConvRot encoder) carries the vision tower and needs the same guard.
@@ -1184,7 +1212,7 @@ def load_moss_image_pipeline(
         install_gdn_offload_guard(text_encoder)
     if transformer is None:
         transformer = MOSSImageTransformer.from_pretrained(
-            repo_id, subfolder = "transformer", torch_dtype = dtype, **common
+            repo_id, subfolder = "transformer", torch_dtype = stored.get("transformer", dtype), **common
         )
         check_cancelled()
     transformer.eval()

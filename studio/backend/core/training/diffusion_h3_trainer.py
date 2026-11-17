@@ -172,15 +172,19 @@ def _load_conditioners(cfg, device):
     # Pin the cache dir: diffusers falls back to an import-time hub default, and this subprocess lacks the cache wrapper, so components get re-downloaded.
     cache_dir = hub_cache_dir()
     pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
-    # load_components swallows per-component failures, so a missing token surfaces as None.
+    from core.inference.diffusion_component_fetch import load_components_strict
+
+    # load_components swallows per-component failures (a missing token, a full disk); the strict call raises them.
     auth = {"token": cfg.hf_token} if cfg.hf_token else {}
-    pipe.load_components(
+    load_components_strict(
+        pipe,
         names = list(_H3_TEXT_COMPONENTS),
         torch_dtype = torch.bfloat16,
         cache_dir = cache_dir,
         **auth,
     )
-    pipe.load_components(
+    load_components_strict(
+        pipe,
         names = list(_H3_VAE_COMPONENTS),
         torch_dtype = torch.float32,
         cache_dir = cache_dir,

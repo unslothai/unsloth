@@ -717,6 +717,11 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
+def selects_spec_type(args: Optional[Iterable[str]]) -> bool:
+    """Whether ``args`` choose the speculative mode (--spec-type / --spec-default), not just tune it."""
+    return any(_flag_name(str(arg)) in ("--spec-type", "--spec-default") for arg in args or ())
+
+
 def matches_explicit_ctx_override(args: Optional[Iterable[str]], n_ctx: Any) -> bool:
     """True when a pass-through -c/--ctx-size equals n_ctx, which is a choice to run past the VRAM fit."""
     if isinstance(n_ctx, bool) or not isinstance(n_ctx, int) or n_ctx <= 0:

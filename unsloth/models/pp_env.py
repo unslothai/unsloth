@@ -10,7 +10,8 @@
   checkpoint larger than the GPU loads only each rank's stages (pipeline_sharded_loading): no replica then.
 - Trainer / SFTTrainer: every training step runs through the pipeline schedule (PipelineParallel.step runs the
   backward, the Trainer does not). The Trainer batch is split into UNSLOTH_PP_MICROBATCHES micro-batches
-  (default 2 x pp, lowered to a divisor of the batch); every micro-batch loss is its summed token loss over the
+  (default 2 x pp, lowered to a divisor of the batch) under UNSLOTH_PP_SCHEDULE (default 1f1b; a
+  step with fewer micro-batches than stages runs as gpipe); every micro-batch loss is its summed token loss over the
   token count of the whole accumulation window over every dp replica, as with gradient accumulation on one
   GPU. The pp (and tp) ranks of one dp replica read the same batches; the optimizer steps each stage's own
   parameters; clipping, the fp16 GradScaler skip and the logged loss are global. Evaluation runs the pipeline
@@ -128,6 +129,9 @@ def pipeline_parallel_env_apply(model, layout):
     if _preload_info(model)[1] is not None:
         keep = False  # loaded per stage (larger than the GPU): there is no whole model to keep
     default = layout.microbatches or 2 * layout.pp
+    schedule = layout.schedule
+    if getattr(layout, "schedule_auto", False) and schedule == "1f1b" and default < layout.pp:
+        schedule = "gpipe"  # UNSLOTH_PP_MICROBATCHES below the stage count: every step would fall back anyway
     text_only = None
     for level in _model_levels(model):
         text_only = level.__dict__.get(_TEXT_ONLY, text_only)
@@ -136,13 +140,14 @@ def pipeline_parallel_env_apply(model, layout):
             model,
             layout.pp_mesh,
             n_microbatches = default,
-            schedule = layout.schedule,
+            schedule = schedule,
             config = PPConfig(keep_replica = keep, text_only = text_only),
         )
     except (ValueError, RuntimeError, NotImplementedError) as exc:
         from .tp_env import _reraise_with_hint
         _reraise_with_hint(exc)
     stage.env_layout = layout
+    stage.schedule_auto = bool(getattr(layout, "schedule_auto", False))
     if layout.dp > 1 and not layout.fsdp2:
         from .tp_env import _broadcast_trainable
 
@@ -184,7 +189,15 @@ def resolve_microbatches(
     layout = getattr(stage, "env_layout", None)
     explicit = layout.microbatches if layout is not None else None
     want = int(explicit or stage.n_microbatches)
-    m, pad = _plan_microbatches(want, explicit, stage.num_stages, stage.schedule, batch_size, train)
+    m, pad = _plan_microbatches(
+        want,
+        explicit,
+        stage.num_stages,
+        stage.schedule,
+        batch_size,
+        train,
+        auto = getattr(stage, "schedule_auto", False),
+    )
     if m == want and not pad:
         return m, 0
     if train and not stage.__dict__.get("_unsloth_mb_note"):
@@ -204,9 +217,23 @@ def resolve_microbatches(
     return m, pad
 
 
-def _plan_microbatches(want, explicit, num_stages, schedule, batch_size, train):
-    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count."""
-    floor = num_stages if (schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
+def _plan_microbatches(
+    want,
+    explicit,
+    num_stages,
+    schedule,
+    batch_size,
+    train,
+    auto = False,
+):
+    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count.
+    `auto` (the default 1F1B, UNSLOTH_PP_SCHEDULE unset): a step with fewer micro-batches than stages runs as
+    GPipe instead of padding."""
+    floor = (
+        num_stages
+        if (schedule == "1f1b" and train and not auto) or _gpipe_needs_stage_count()
+        else 1
+    )
     if batch_size % want == 0:
         m = want
     elif explicit is not None and train:
@@ -754,6 +781,54 @@ def pp_trainer_refusals(
             + hint
         )
     _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, train_dataset, eval_dataset)
+    _refuse_uncarried_router_aux_at_init(trainer_cls, args, model)
+
+
+def _refuse_uncarried_router_aux_at_init(trainer_cls, args, model):
+    """Refuse a Trainer that turns on an uncarried MoE router aux loss. TRL >= 1.x sets it later in __init__
+    (coef None = architecture's), so the stage forward re-checks."""
+    if not isinstance(model, nn.Module):
+        return
+    from ..parallel_capabilities import _trainer_kind
+    from .pp_native import (
+        _router_aux_coef_of,
+        _text_config,
+        _uncarried_moe_owner,
+        _uncarried_router_aux_message,
+    )
+
+    try:
+        inner = _uncarried_moe_owner(model)
+    except Exception:
+        return  # the split reports what it cannot find
+    if inner is None:
+        return
+    text = _text_config(model)
+    on = bool(getattr(text, "output_router_logits", False))
+    trl = (
+        args is not None
+        and _trainer_kind(trainer_cls) in ("sft", "dpo", "grpo", "other_rl")
+        and hasattr(args, "router_aux_loss_coef")
+        and hasattr(text, "router_aux_loss_coef")
+    )
+    if trl:
+        coef = args.router_aux_loss_coef
+        coef = (getattr(text, "router_aux_loss_coef", 0) or 0) if coef is None else coef
+        on = hasattr(text, "output_router_logits") and bool(coef)
+    if not on or _router_aux_coef_of(inner, text) == 0:
+        return
+    raise NotImplementedError(
+        _uncarried_router_aux_message(
+            inner,
+            "this Trainer turns it on"
+            + (
+                f" (router_aux_loss_coef = {args.router_aux_loss_coef!r} in {type(args).__name__})"
+                if trl
+                else " (config.output_router_logits = True)"
+            ),
+        )
+        + _hint()
+    )
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
@@ -845,7 +920,13 @@ def _refuse_split_router_aux_at_init(
             continue
         try:
             m, pad = _plan_microbatches(
-                want, layout.microbatches, layout.pp, schedule, batch_size, train
+                want,
+                layout.microbatches,
+                layout.pp,
+                schedule,
+                batch_size,
+                train,
+                auto = getattr(layout, "schedule_auto", False),
             )
         except ValueError:
             continue  # the step raises its own error

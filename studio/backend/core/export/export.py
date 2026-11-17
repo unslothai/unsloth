@@ -2244,19 +2244,26 @@ class ExportBackend:
                 )
 
                 if npu_q4nx:
-                    source = q4nx.source_gguf(exported_ggufs, quant_methods)
+                    sources = q4nx.source_ggufs(exported_ggufs, quant_methods)
                     try:
-                        if source is None:
+                        if not sources:
                             raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
-                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
-                            q4nx.convert_gguf_to_q4nx(
-                                source,
-                                staging,
-                                json.loads(exported_config) if exported_config else None,
-                            )
-                            self._write_q4nx_companions(staging, exported_config)
-                            # The NPU folder is deployed on its own, so it carries its own report.
-                            self._sync_reap_report(staging)
+                        # Q4_0 fits some models and Q4_1 others: a refused source falls to the next.
+                        for index, source in enumerate(sources):
+                            try:
+                                with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                                    q4nx.convert_gguf_to_q4nx(
+                                        source,
+                                        staging,
+                                        json.loads(exported_config) if exported_config else None,
+                                    )
+                                    self._write_q4nx_companions(staging, exported_config)
+                                    # The NPU folder is deployed on its own, so it carries its own report.
+                                    self._sync_reap_report(staging)
+                                break
+                            except q4nx.SourceMismatch:
+                                if index == len(sources) - 1:
+                                    raise
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (
