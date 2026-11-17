@@ -1864,7 +1864,7 @@ export function ChatSettingsPanel({
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          {/* The docked panel's slot, so the overlay takes the same glass. */}
+          {/* The docked panel's slot, so the sheet gets its glass. */}
           <div data-tour="chat-settings" data-slot="chat-settings-panel" className="relative flex h-full flex-col">
             {settingsContent}
           </div>

@@ -6996,9 +6996,7 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-prev
   --glass-composer-boost: 9%;
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1) + 5px + var(--glass-repaint, 0) * .01px);
 }
-/* The user's bubble takes the conversation composer's tint, and code blocks the panes' darker
-   reading floor. No blur: the thread viewport's mask is a backdrop root, so a backdrop-filter here
-   would frost only the reading wash. */
+/* Bubble: the composer's tint; code: the panes' darker floor. No blur: the viewport mask is a backdrop root. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-user-message-content {
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
 }
@@ -7220,7 +7218,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
   background-color: transparent;
 }
-/* The narrow window's overlay sheet: its inner panel carries the glass, so the sheet paints none. */
+/* Narrow-window sheet: its inner panel carries the glass. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-chat-settings-sheet],
 html[data-glass="macos"] [data-chat-settings-sheet] {
   background-color: transparent;
