@@ -33,6 +33,8 @@ SIGMA_SCHEDULES = ("sgm_uniform", "training_grid")
 FUSED_QKV_ATTR = "_unsloth_moss_fused_qkv"
 LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
 QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
+# q / k / v on one ConvRot rotation + act quant (``diffusion_int8_gemm.shared_rotq_linears``)
+SHARED_QKV_ATTR = "_unsloth_moss_shared_qkv"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
@@ -109,10 +111,13 @@ def _rotate(x, tables):
 
 
 class _AttnProcessor:
-    """Holds the attention backend diffusers' ``set_attention_backend`` assigns (None = the dispatcher's active one)."""
+    """Holds the attention backend diffusers' ``set_attention_backend`` assigns (None = the dispatcher's active one).
+    The blocks call this module's ``dispatch_attention_fn`` with it, so the INT8 attention route
+    (``diffusion_int8_attention_dispatch``) can take the calls."""
 
     _attention_backend = None
     _parallel_config = None
+    _calls_dispatch_attention_fn = True
 
 
 def _dispatch_attention():
@@ -123,7 +128,8 @@ def _dispatch_attention():
     return dispatch_attention_fn
 
 
-_DISPATCH = _dispatch_attention()
+# Read from the module globals on every call: the INT8 attention route swaps this name for its wrapper.
+dispatch_attention_fn = _dispatch_attention()
 
 
 def _attention(
@@ -138,12 +144,12 @@ def _attention(
     q = _rotate(q.reshape(shape), tables)
     k = _rotate(k.reshape(shape), tables)
     v = v.reshape(shape)
-    if _DISPATCH is None:
+    if dispatch_attention_fn is None:
         out = F.scaled_dot_product_attention(
             q.to(v.dtype).transpose(1, 2), k.to(v.dtype).transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2)
     else:
-        out = _DISPATCH(q.to(v.dtype), k.to(v.dtype), v, backend = backend)
+        out = dispatch_attention_fn(q.to(v.dtype), k.to(v.dtype), v, backend = backend)
     return out.flatten(2)
 
 
@@ -155,12 +161,12 @@ def _attention_heads_first(
 ):
     """Attention over already normalised and rotated [B, H, S, D] q / k / v (the dispatcher takes [B, S, H, D] views)."""
     q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-    if _DISPATCH is None:
+    if dispatch_attention_fn is None:
         out = F.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2)
     else:
-        out = _DISPATCH(q, k, v, backend = backend)
+        out = dispatch_attention_fn(q, k, v, backend = backend)
     return out.flatten(2)
 
 
@@ -178,6 +184,7 @@ class _TextBlock(nn.Module, _AttentionMixin):
     def __init__(self, dim, ffn_dim, heads):
         super().__init__()
         self.heads = heads
+        self.head_dim = dim // heads
         self.processor = _AttnProcessor()
         self.norm1, self.norm2 = _RMSNorm(dim), _RMSNorm(dim)
         self.q_norm, self.k_norm = _RMSNorm(dim // heads), _RMSNorm(dim // heads)
@@ -215,6 +222,7 @@ class _Block(nn.Module, _AttentionMixin):
     def __init__(self, dim, ffn_dim, heads):
         super().__init__()
         self.heads = heads
+        self.head_dim = dim // heads
         self.processor = _AttnProcessor()
         self.norm1, self.norm2 = _RMSNorm(dim), _RMSNorm(dim)
         self.q_norm, self.k_norm = _RMSNorm(dim // heads), _RMSNorm(dim // heads)
@@ -235,6 +243,12 @@ class _Block(nn.Module, _AttentionMixin):
             # only while q / k / v are still the modules it was built from (a LoRA wrapper replaces them)
             if self.proj["q"] is q and self.proj["k"] is k and self.proj["v"] is v:
                 return (linear(y) if run is None else run(linear, y)).chunk(3, -1)
+        shared = self.__dict__.get(SHARED_QKV_ATTR) if torch.compiler.is_compiling() else None
+        if shared is not None:
+            # None unless all three are swapped ConvRot int8 Linears (checked per call)
+            out = shared(y, (self.proj["q"], self.proj["k"], self.proj["v"]))
+            if out is not None:
+                return out[0], out[1], out[2]
         return self._linear("q", y), self._linear("k", y), self._linear("v", y)
 
     def forward(self, x, rope, modulation):

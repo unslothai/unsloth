@@ -12,6 +12,8 @@ from typing import Any
 
 MOSS_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED"
 MOSS_FUSED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED_QKV"
+# q / k / v of a ConvRot int8 checkpoint on one rotation + act quant (the int8 GEMM swap's shared quant)
+MOSS_SHARED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_SHARED_QKV"
 _LOCK = threading.Lock()
 
 
@@ -54,7 +56,7 @@ def install(
 ) -> dict:
     """Before the first compile; deferred to the first forward when the weights are not on the GPU yet. A streamed
     (offloaded) denoiser keeps the stock projections: its hooks own each Linear's weights."""
-    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0}
+    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0}
     if (
         moss_fused_disabled()
         or offload_active
@@ -67,17 +69,23 @@ def install(
     if resident_cuda_device(transformer) is not None:
         return install_modules(transformer, logger)
     run_on_first_call(transformer, "moss_fused", lambda t: install_modules(t, logger))
-    return {"fused_qkv": None, "int8_runner": None}
+    return {"fused_qkv": None, "int8_runner": None, "shared_qkv": None}
 
 
 def install_modules(root: Any, logger: Any = None) -> dict:
     from .diffusion_int8_fused import arm_linear, int8_linear, resident_cuda_device
     import torch
 
-    from .diffusion_moss_image import FUSED_QKV_ATTR, LINEAR_RUNNER_ATTR, QK_ROPE_ATTR
+    from .diffusion_convrot import is_rotated_linear
+    from .diffusion_moss_image import (
+        FUSED_QKV_ATTR,
+        LINEAR_RUNNER_ATTR,
+        QK_ROPE_ATTR,
+        SHARED_QKV_ATTR,
+    )
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
-    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0}
+    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0}
     dev = resident_cuda_device(root)
     if dev is None or moss_fused_disabled():
         return result
@@ -87,8 +95,21 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     fuse = not _off(MOSS_FUSED_QKV_ENV)
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     rope_op = qk_rope_op() if _on(MOSS_QK_ROPE_ENV) and qk_rope_device_ok(index) else None
+    shared = None
+    if not _off(MOSS_SHARED_QKV_ENV):
+        from .diffusion_int8_gemm import shared_rotq_linears as shared
     with _LOCK:
         for block in blocks:
+            # Rotated q / k / v: the int8 GEMM swap (on the first forward) runs each one's own rotation + act quant
+            # over the same input; one shared quant serves all three (the same op on the same tensor; the compiled
+            # graph around it changes, so images match within compile noise, not bit for bit).
+            if shared is not None and all(
+                is_rotated_linear(block.proj[n]) for n in ("q", "k", "v")
+            ):
+                block.__dict__[SHARED_QKV_ATTR] = shared
+                result["shared_qkv"] += 1
+            else:
+                block.__dict__.pop(SHARED_QKV_ATTR, None)
             norms_ok = all(
                 n.weight.dtype == torch.bfloat16 and n.weight.numel() == 128
                 for n in (block.q_norm, block.k_norm)
@@ -117,12 +138,13 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     if logger is not None:
         logger.info(
             "diffusion.moss_fused: one q/k/v GEMM on %d of %d block(s); int8 runner on %d (act quant kernel %s); "
-            "fused q/k norm + RoPE on %d",
+            "fused q/k norm + RoPE on %d; shared ConvRot q/k/v act quant on %d",
             result["fused_qkv"],
             len(blocks),
             result["int8_runner"],
             "probed" if armed else "torchao's",
             result["qk_rope"],
+            result["shared_qkv"],
         )
     return result
 
@@ -132,7 +154,12 @@ def uninstall(transformer: Any = None) -> None:
     if transformer is None:
         return
     from .diffusion_int8_fused import cancel_first_call
-    from .diffusion_moss_image import FUSED_QKV_ATTR, LINEAR_RUNNER_ATTR, QK_ROPE_ATTR
+    from .diffusion_moss_image import (
+        FUSED_QKV_ATTR,
+        LINEAR_RUNNER_ATTR,
+        QK_ROPE_ATTR,
+        SHARED_QKV_ATTR,
+    )
 
     cancel_first_call(transformer, "moss_fused")
     try:
@@ -144,6 +171,7 @@ def uninstall(transformer: Any = None) -> None:
             block.__dict__.pop(FUSED_QKV_ATTR, None)
             block.__dict__.pop(LINEAR_RUNNER_ATTR, None)
             block.__dict__.pop(QK_ROPE_ATTR, None)
+            block.__dict__.pop(SHARED_QKV_ATTR, None)
 
 
 # Fuses q/k RMSNorm + RoPE + layout copy into one pass; keeps every eager bf16 rounding of the port.
