@@ -4843,6 +4843,11 @@ class FastLlamaModel:
         tokenizer,
         correct_dtype = None,
     ):
+        try:
+            from .tp_native import cast_host_read_tables
+            cast_host_read_tables(model, False, correct_dtype)
+        except Exception:
+            pass
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = True, correct_dtype = correct_dtype
         )

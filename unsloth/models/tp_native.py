@@ -2053,14 +2053,210 @@ def _default_mesh(model):
 
 
 def _host_served_params(model):
-    """ids of parameters of lookup tables served from host memory."""
+    """ids of parameters of lookup tables served from (or loaded into) host memory."""
     ids = set()
     for module in model.modules():
         if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
             module, "_unsloth_fsdp2_cpu_lookup", False
         ):
             ids.update(id(p) for p in module.parameters())
+    for module in _host_loaded_modules(model):
+        ids.update(id(p) for p in module.parameters())
     return ids
+
+
+# Also set on the weight: post-load patching installs a new Embedding module over the same weight.
+_HOST_LOADED = "_unsloth_tp_host_loaded"
+_HOST_PINNED = "_unsloth_tp_host_pinned"
+_HOST_MODEL = "_unsloth_tp_host_load_model"
+
+
+def _input_embedding_host_loaded(model, embed):
+    """Marked, or unhooked on the CPU in a host-loaded model (rebuilding the weight drops marks)."""
+    if _is_host_loaded(embed):
+        return True
+    weight = embed.__dict__.get("_parameters", {}).get("weight")
+    if weight is None or weight.device.type != "cpu":
+        return False
+    if getattr(embed, "_unsloth_offload_hooks_installed", False) or getattr(
+        embed, "_unsloth_fsdp2_cpu_lookup", False
+    ):
+        return False
+    return any(level.__dict__.get(_HOST_MODEL, False) for level in _tp_chain(model))
+
+
+def _is_host_loaded(module):
+    weight = module.__dict__.get("_parameters", {}).get("weight")
+    if weight is None or weight.device.type != "cpu":
+        return False
+    return bool(
+        module.__dict__.get(_HOST_LOADED, False) or weight.__dict__.get(_HOST_LOADED, False)
+    )
+
+
+def _host_load_embedding(model, mesh, device):
+    """Input embedding apply_tensor_parallel would serve from host, judged on the meta model, or None.
+    Per rank is safe: apply_tensor_parallel agrees over the tp group and returns unserved tables to the GPU."""
+    import torch.distributed as dist
+
+    from .fsdp2_perf import _env_tristate
+
+    forced = _env_tristate("UNSLOTH_TP_EMBED_ON_CPU")
+    fraction = TPConfig.host_input_embedding
+    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+        return None
+    if device.type != "cuda" or mesh.device_type != "cuda":
+        return None
+    if dist.is_initialized() and mesh.size() != dist.get_world_size():
+        return None
+    try:
+        embed = model.get_input_embeddings()
+        head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    except Exception:
+        return None
+    if not isinstance(embed, nn.Embedding):
+        return None
+    params = list(embed.parameters())
+    if len(params) != 1 or params[0] is not embed.weight:
+        return None
+    weight = embed.weight
+    if type(weight) is not nn.Parameter or not weight.is_floating_point():
+        return None
+    if head is not None and any(p is weight for p in head.parameters()):
+        return None  # tied: lm_head reads the same table
+    owners = sum(1 for m in model.modules() for p in m.parameters(recurse = False) if p is weight)
+    if owners != 1:
+        return None
+    if forced is None:
+        total = torch.cuda.get_device_properties(device).total_memory
+        if weight.numel() * weight.element_size() < fraction * total:
+            return None
+    return embed
+
+
+def _mark_host_loaded(model, embed):
+    embed.__dict__[_HOST_LOADED] = True
+    embed.weight.__dict__[_HOST_LOADED] = True
+    model.__dict__[_HOST_MODEL] = True
+    try:
+        from .vision import _pin_device_to_decoder
+        if _pin_device_to_decoder(model):
+            model.__dict__[_HOST_PINNED] = True
+    except Exception:
+        pass
+
+
+def _host_loaded_modules(model):
+    marked = [m for m in model.modules() if _is_host_loaded(m)]
+    try:
+        embed = model.get_input_embeddings()
+    except Exception:
+        embed = None
+    if (
+        isinstance(embed, nn.Module)
+        and all(embed is not m for m in marked)
+        and _input_embedding_host_loaded(model, embed)
+    ):
+        marked.append(embed)
+    return marked
+
+
+def _host_table_home(model):
+    """First accelerator parameter's device (skip meta: storage-free meta params exist), else first non-CPU."""
+    skip = _host_served_params(model)
+    fallback = None
+    for param in model.parameters():
+        if id(param) in skip:
+            continue
+        device = param.to_local().device if _is_dtensor(param) else param.device
+        if device.type not in ("cpu", "meta"):
+            return device
+        if fallback is None and device.type != "cpu":
+            fallback = device
+    return fallback
+
+
+def cast_host_read_tables(
+    model,
+    do_forced_float32 = False,
+    correct_dtype = None,
+):
+    """Cast host-read embeddings in place before the zoo dtype pass, whose module.to() on host holds both copies."""
+    converted = 0
+    for module in _host_loaded_modules(model):
+        weight = module.weight
+        if hasattr(weight, "_pre_set_compute_dtype"):
+            continue  # the pass casts it to its own pin
+        if do_forced_float32:
+            target = getattr(module, "_pre_set_compute_dtype", torch.float16)
+        elif correct_dtype == torch.float16 and weight.dtype == torch.bfloat16:
+            if any(
+                hasattr(m, "_pre_set_compute_dtype") and any(c is module for c in m.modules())
+                for m in model.modules()
+            ):
+                continue  # a module pin decides
+            target = torch.float16
+        else:
+            continue
+        if (
+            target == weight.dtype
+            or not weight.dtype.is_floating_point
+            or weight.element_size() != torch.empty(0, dtype = target).element_size()
+            or not weight.data.is_contiguous()
+        ):
+            continue
+        src = weight.data.view(-1)
+        dst = src.view(target)
+        step = max(1, _READ_SLICE_BYTES // src.element_size())
+        with torch.no_grad():
+            for start in range(0, src.numel(), step):
+                dst[start : start + step].copy_(src[start : start + step].to(target))
+        weight.data = weight.data.view(target)
+        converted += 1
+    return converted
+
+
+def _return_host_loaded(model, served):
+    """Move host-read tables apply_tensor_parallel does not serve from host back to the GPU."""
+    marked = _host_loaded_modules(model)
+    device = _host_table_home(model) if marked else None
+    try:
+        outer = model.get_input_embeddings()
+    except Exception:
+        outer = None
+    moved = 0
+    for module in marked:
+        if module is served:
+            continue
+        module.__dict__.pop(_HOST_LOADED, None)
+        module.weight.__dict__.pop(_HOST_LOADED, None)
+        if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
+            module, "_unsloth_fsdp2_cpu_lookup", False
+        ):
+            continue
+        # trainable_token_indices: the PEFT wrapper made its own host tensors too.
+        target = module
+        if (
+            isinstance(outer, nn.Module)
+            and outer is not module
+            and any(m is module for m in outer.modules())
+        ):
+            target = outer
+        if device is not None and device.type != "cpu":
+            if any(t.device.type == "cpu" for t in (*target.parameters(), *target.buffers())):
+                target.to(device)
+                moved += 1
+    offloaded = any(
+        getattr(m, "_unsloth_offload_hooks_installed", False)
+        and any(p.device.type == "cpu" for p in m.parameters())
+        for m in model.modules()
+    )
+    if served is None and not offloaded:
+        for level in _tp_chain(model):
+            level.__dict__.pop(_HOST_MODEL, None)
+            if level.__dict__.pop(_HOST_PINNED, False):
+                level._unsloth_embedding_offloaded = False
+    return moved
 
 
 def _compute_device(model, default = None):
@@ -2111,11 +2307,12 @@ def _host_embedding_candidate(model, forced, fraction):
     if len(params) != 1 or params[0] is not embed.weight:
         return None
     weight = embed.weight
+    host_loaded = _input_embedding_host_loaded(model, embed)
     if (
         weight.requires_grad
         or type(weight) is not nn.Parameter
         or not weight.is_floating_point()
-        or weight.device.type not in (("cuda", "cpu") if forced else ("cuda",))
+        or weight.device.type not in (("cuda", "cpu") if forced or host_loaded else ("cuda",))
         or getattr(weight, "_unsloth_tp_full_shape", None) is not None
     ):
         return None
@@ -2127,7 +2324,10 @@ def _host_embedding_candidate(model, forced, fraction):
     if owners != 1:
         return None
     if forced is None:
-        total = torch.cuda.get_device_properties(weight.device).total_memory
+        device = _host_table_home(model) if host_loaded else weight.device
+        if device is None or device.type != "cuda":
+            return None
+        total = torch.cuda.get_device_properties(device).total_memory
         if weight.numel() * weight.element_size() < fraction * total:
             return None
     return embed
@@ -2138,7 +2338,8 @@ def _serve_embedding_from_host(model, embed, rank):
     from .fsdp2_native import _offload_lookup_table, _serve_lookups_from_cpu
 
     nbytes = embed.weight.numel() * embed.weight.element_size()
-    if embed.weight.device.type == "cpu":  # UNSLOTH_TP_EMBED_ON_CPU = 1 on a CPU mesh
+    if embed.weight.device.type == "cpu" and not _input_embedding_host_loaded(model, embed):
+        # UNSLOTH_TP_EMBED_ON_CPU = 1 on a CPU mesh (a host-loaded table is hooked like a GPU one)
         _serve_lookups_from_cpu(embed)
     else:
         with contextlib.redirect_stdout(None) if rank != 0 else contextlib.nullcontext():
@@ -2368,6 +2569,7 @@ def apply_tensor_parallel(
     host_embed = None
     if not any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
         host_embed = _host_input_embedding(model, tp_mesh, config.host_input_embedding)
+    _return_host_loaded(model, host_embed)
     if host_embed is not None:
         _serve_embedding_from_host(model, host_embed, rank)
     if config.sync_trainable and tp > 1:
@@ -3106,6 +3308,52 @@ class _SliceReader:
         self.slice_bytes += t.numel() * t.element_size()
         return t
 
+    def rows_to(
+        self,
+        key,
+        start,
+        stop,
+        dtype,
+        device,
+        sliced = True,
+    ):
+        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy)."""
+        view = self._open(key).get_slice(key)
+        shape = tuple(view.get_shape())
+        tail = shape[1:]
+        from .bnb_sharded_load import _SAFETENSORS_DTYPES
+
+        itemsize = _SAFETENSORS_DTYPES[view.get_dtype()].itemsize
+        row_bytes = max(1, math.prod(tail) * itemsize)
+        rows = stop - start
+        if rows * row_bytes <= _READ_SLICE_BYTES:
+            t = view[start:stop]
+            nbytes = t.numel() * t.element_size()
+            if sliced:
+                self.slice_bytes += nbytes
+            else:
+                self.full_bytes += nbytes
+            return t.to(device = device, dtype = dtype)
+        out = torch.empty((rows,) + tail, dtype = dtype, device = device)
+        step = max(1, _READ_SLICE_BYTES // row_bytes)
+        for first in range(0, rows, step):
+            last = min(rows, first + step)
+            out[first:last].copy_(view[start + first : start + last])
+        if sliced:
+            self.slice_bytes += rows * row_bytes
+        else:
+            self.full_bytes += rows * row_bytes
+        return out
+
+    def full_to(self, key, dtype, device):
+        shape = self.shape(key)
+        if len(shape) == 0:
+            return self.full(key).to(device = device, dtype = dtype)
+        return self.rows_to(key, 0, shape[0], dtype, device, sliced = False)
+
+
+_READ_SLICE_BYTES = 64 << 20
+
 
 def _checkpoint_key(names, model, index):
     prefix = getattr(_unwrap(model), "base_model_prefix", "") or ""
@@ -3208,12 +3456,14 @@ def _fill_from_checkpoint(
     read_local,
     label = "tensor parallel",
     fallback = "full load, then apply_tensor_parallel",
+    host = (),
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
     A bitsandbytes Linear4bit weight (pre-quantized checkpoint) is `reader.quant.module(old)`; read whole it is
-    the Params4bit transformers builds. Meta buffers come from the checkpoint or a meta-parameter skeleton of
-    the same class (RoPE tables). Returns (reader, sharded numel, whole numel)."""
+    the Params4bit transformers builds. Whole 16-bit tensors are read in row slices (no whole-table host copy);
+    those whose id is in `host` go to host memory instead of `device`. Meta buffers come from the checkpoint
+    or a meta-parameter skeleton of the same class (RoPE tables). Returns (reader, sharded numel, whole numel)."""
     from .bnb_sharded_load import QuantReads, quantized_weights
 
     index = _checkpoint_index(name, kwargs)
@@ -3269,7 +3519,8 @@ def _fill_from_checkpoint(
             new = reader.quant.whole(key, quantized_module, device)
             full_numel += old.numel()
         elif new is None:
-            value = reader.full(key).to(device = device, dtype = old.dtype)
+            target = torch.device("cpu") if id(old) in host else device
+            value = reader.full_to(key, old.dtype, target)
             new = nn.Parameter(value, requires_grad = old.requires_grad)
             full_numel += old.numel()
         else:
@@ -3296,9 +3547,20 @@ def _fill_from_checkpoint(
     return reader, sharded_numel, full_numel
 
 
-def _materialize_sharded(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
+def _materialize_sharded(
+    model,
+    name,
+    kwargs,
+    mesh,
+    plan,
+    device,
+    host_embed = False,
+):
+    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices.
+    `host_embed`: read a host-servable input embedding straight into host memory."""
     tp, rank = mesh.size(), mesh.get_local_rank()
+    host_module = _host_load_embedding(model, mesh, device) if host_embed else None
+    host = {id(host_module.weight)} if host_module is not None else set()
     tp_plan = derive_tp_plan(model, tp, plan)
     shards = {}
     for region in tp_plan.regions:
@@ -3336,8 +3598,10 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         return new
 
     reader, sharded_numel, full_numel = _fill_from_checkpoint(
-        model, name, kwargs, device, read_local
+        model, name, kwargs, device, read_local, host = host
     )
+    if host_module is not None:
+        _mark_host_loaded(model, host_module)
     for region in tp_plan.regions:
         for proj in region.projs:
             base = _weight(proj.module)[1]
@@ -3353,6 +3617,7 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         "read_bytes_sliced": reader.slice_bytes,
         "regions": len(tp_plan.regions),
         "source": tp_plan.source,
+        "host_loaded_embedding": host_module is not None,
     }
     model.__dict__["_unsloth_tp_load_stats"] = stats
     return stats
@@ -3519,7 +3784,9 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             f"{state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
     materialize = state.get("materialize", _materialize_sharded)
-    materialize(model, name, kwargs, mesh, state["plan"], device)
+    materialize(
+        model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
+    )
     state["models"].append(model)
     return loaded
 
