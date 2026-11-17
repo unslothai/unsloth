@@ -351,8 +351,8 @@ def test_the_situ_producer_arms_only_on_measured_cards(monkeypatch):
     from core.inference import diffusion_convrot_quant as Q
 
     monkeypatch.delenv(Q.SITU_FUSED_ENV, raising = False)
-    assert Q.situ_arch_ok((12, 0))
-    for cap in ((8, 0), (8, 9), (7, 5), (9, 0), (10, 0), None):
+    assert Q.situ_arch_ok((12, 0)) and Q.situ_arch_ok((8, 9))
+    for cap in ((8, 0), (8, 6), (7, 5), (9, 0), (10, 0), None):
         assert not Q.situ_arch_ok(cap)
     monkeypatch.setenv(Q.SITU_FUSED_ENV, "1")
     assert Q.situ_arch_ok((8, 0))

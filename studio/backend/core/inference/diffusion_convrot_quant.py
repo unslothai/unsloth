@@ -1962,10 +1962,10 @@ def _arm_producer(index: int) -> bool:
 
 _SITU_PROBE_SHAPES = ((65, 256 * 4), (130, 256 * 32))
 # Cards where building the SiTU-GLU product inside the act quant measured faster end to end (MOSS-Image SFT, 1024 px,
-# 25 steps, INT8 default): sm120 (RTX PRO 6000) 4.914 -> 4.859 s/image. On sm80 (A100) it measured slower, 8.791 ->
-# 8.985 s/image, so other cards keep the compiled stock SiTU until measured. ``UNSLOTH_DIFFUSION_MOSS_SITU_FUSED=1``
-# arms it on any card whose probe passes.
-_SITU_ARCHS = ((12, 0),)
+# 25 steps, INT8 default): sm120 (RTX PRO 6000) 4.914 -> 4.859 s/image, sm89 (L4) 30.76 -> 29.45 s/image. On sm80
+# (A100) it measured slower, 8.791 -> 8.985 s/image, so other cards keep the compiled stock SiTU until measured.
+# ``UNSLOTH_DIFFUSION_MOSS_SITU_FUSED=1`` arms it on any card whose probe passes.
+_SITU_ARCHS = ((8, 9), (12, 0))
 SITU_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_SITU_FUSED"
 
 
