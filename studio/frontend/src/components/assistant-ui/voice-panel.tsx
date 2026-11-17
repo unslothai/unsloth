@@ -19,6 +19,7 @@ import { useChatModelStatus } from "@/features/chat/voice/chat-model-ready";
 import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
 import { vadDisplayName } from "@/features/chat/voice/vad-client";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
+import { clearVoiceModelRest } from "@/features/chat/voice/voice-models-client";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { ORB_IDLE_GRADIENT } from "@/features/chat/voice/orb-config";
 import { DotTag } from "@/features/hub";
@@ -276,6 +277,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const pickDecision = async (name: string | null) => {
     try {
       decision.switched(await setVoiceDecision(name));
+      clearVoiceModelRest();
       back();
     } catch (e) {
       toast.error(t("voicePanel.decideSwitchFailed"), {

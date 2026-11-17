@@ -18,7 +18,18 @@ const TIMEOUT_MS = 400;
 // Asked while the chat model generates on the same GPU, where a cold call took 500 ms.
 const INTERJECT_TIMEOUT_MS = 1500;
 
+// A 503 means the server has no such model (built-in classifiers not installed): asking again every
+// turn only fills the console with errors, so that path rests a minute.
+const UNAVAILABLE_REST_MS = 60_000;
+const unavailableUntil = new Map<string, number>();
+
+/** A decision model switch can make a resting path available again. */
+export function clearVoiceModelRest(): void {
+  unavailableUntil.clear();
+}
+
 async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Promise<T | null> {
+  if ((unavailableUntil.get(path) ?? 0) > Date.now()) return null;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   const call = (async () => {
@@ -29,6 +40,7 @@ async function post<T>(path: string, body: unknown, timeoutMs = TIMEOUT_MS): Pro
         body: JSON.stringify(body),
         signal: ctl.signal,
       });
+      if (res.status === 503) unavailableUntil.set(path, Date.now() + UNAVAILABLE_REST_MS);
       if (!res.ok) return null;
       return (await res.json()) as T;
     } catch {
