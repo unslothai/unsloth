@@ -373,8 +373,6 @@ def test_ppo_training_keeps_padding_masks_then_restores():
 
 
 def test_llama_training_forward_mask_is_opt_in():
-    # Every other trainer keeps today's behaviour: training mode drops the mask unless the flag is
-    # set or a pad precedes a real token (test_llama_left_padding_training_mask.py).
     source = (RL_PY.parent / "llama.py").read_text(encoding = "utf-8")
     assert (
         "    elif (\n"

@@ -1300,10 +1300,7 @@ __DTYPE_MAP = {
 
 
 def _has_padding_before_tokens(attention_mask):
-    # Dropping the mask is exact only when every pad comes after the last real token (right padding,
-    # no padding). A pad before a real token (left or interior padding) is attended causally without
-    # the mask, which changes the loss and LoRA gradients, and in label-less forwards with zeroed pad
-    # embeddings gives NaN gradients (issue 3705). One elementwise pass and one host sync per forward.
+    # Drop the mask only if no pad precedes a real token: else causal attention attends pads (#3705).
     if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
         return False
     real = attention_mask != 0

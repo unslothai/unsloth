@@ -117,11 +117,7 @@ def _avoids_cudnn(Q, training):
     return bool(training) and Q.is_cuda and Q.device.index in _NO_CUDNN_TRAINING
 
 
-# torch < 2.14 under torch.compile (2.11, 2.12 and 2.13 fault, 2.14.0 does not): Inductor stores the
-# head-expanded attention bias of a masked SDPA backward densely, so a sequence length that is not a
-# multiple of 8 hands the memory-efficient kernel an unaligned bias ("attn_bias is not correctly
-# aligned" or a misaligned address fault). Eager SDPA pads the bias itself. Padding the traced call to
-# a multiple of 8 (padded keys masked, padded queries sliced off) is exact.
+# torch < 2.14 compiled masked SDPA backward faults on an unaligned bias; pad the call to a multiple of 8.
 _MASKED_SDPA_ALIGNMENT = 8
 _MASKED_SDPA_NEEDS_ALIGNMENT = Version(torch.__version__.split("+")[0]) < Version("2.14.0")
 
@@ -139,7 +135,7 @@ def _masked_sdpa_needs_alignment(Q, K, attn_mask):
 def _training_sdpa(*args, **kwargs):
     """Avoid per-length cuDNN planning on SM100 training calls, including traced forwards."""
     if len(args) >= 3 and _masked_sdpa_needs_alignment(args[0], args[1], kwargs.get("attn_mask")):
-        # Pad by 2..9 rows: dynamo specialises a pad of 0 or 1, recompiling for that length class.
+        # Pad 2..9, never 0 or 1: dynamo specialises those and recompiles.
         Q, K, V = args[:3]
         q_len = Q.shape[-2]
         pad = 2 + (-q_len - 2) % _MASKED_SDPA_ALIGNMENT

@@ -19,7 +19,6 @@ def _left_padded_mask(
     additive = False,
     dtype = torch.float32,
 ):
-    # The mask run_attention hands SDPA: causal & key padding, fully masked rows opened up.
     pad = torch.tensor([0, 3, q_len // 2])[:bsz]
     keep = torch.arange(q_len)[None, :] >= pad[:, None]
     causal = torch.ones(q_len, q_len, dtype = torch.bool).tril()
@@ -59,7 +58,6 @@ def test_gate_matches_affected_torch_versions():
     affected = Version(torch.__version__.split("+")[0]) < Version("2.14.0")
     assert ad._MASKED_SDPA_NEEDS_ALIGNMENT is affected
     q = torch.zeros(1, 1, 4, 8)
-    # Eager and CPU calls never pad.
     assert not ad._masked_sdpa_needs_alignment(q, q, torch.ones(1, 1, 4, 4, dtype = torch.bool))
 
 

@@ -31,11 +31,9 @@ def test_has_padding_before_tokens(dtype):
     def check(rows):
         return has_padding_before_tokens(torch.tensor(rows).to(dtype))
 
-    # No padding or right padding: causal attention alone is exact, the mask may be dropped.
     assert check([[1, 1, 1], [1, 1, 1]]) is False
     assert check([[1, 1, 0], [1, 0, 0]]) is False
     assert check([[0, 0, 0], [1, 1, 1]]) is False
-    # A pad before a real token, left or interior, must keep the mask.
     assert check([[0, 1, 1], [1, 1, 1]]) is True
     assert check([[1, 1, 1], [0, 0, 1]]) is True
     assert check([[1, 0, 1]]) is True
@@ -114,7 +112,6 @@ def _lora_model(dtype):
         use_gradient_checkpointing = False,
         random_state = 0,
     )
-    # Nonzero LoRA B so both LoRA factors receive gradients.
     generator = torch.Generator().manual_seed(1)
     for name, param in sorted(model.named_parameters()):
         if "lora_" in name:
@@ -170,8 +167,6 @@ def test_padded_labelled_lora_training_matches_unpadded_rows(padding, length):
         attention_mask = torch.ones_like(alone_ids),
         labels = labels[1, keep][None],
     )
-    # Measured on a B200 in float32: relative grad error ~1e-6 with the mask kept, 1.0 to 1.8 when
-    # the pads are attended.
     torch.testing.assert_close(padded_loss, alone_loss, atol = 1e-5, rtol = 1e-5)
     relative = (padded_grads - alone_grads).norm() / alone_grads.norm()
     assert relative < 1e-3, float(relative)
