@@ -2716,7 +2716,7 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  // A model with no thinking controls has nothing to collapse to, whatever its quants.
+  // No thinking controls: nothing to collapse to, whatever the quants.
   const noThinking =
     !(pane || modelLoading) &&
     !(
@@ -2725,7 +2725,7 @@ export function ComposerModelPicker({
       reasoning.supportsFast
     );
   const isExpanded = expanded || !chosenName || noThinking;
-  // Stored too, so the next pick from this list does not load into the collapsed view.
+  // Stored, so the next pick does not load into the collapsed view.
   useEffect(() => {
     if (noThinking && !expanded) {
       setExpanded(true);
@@ -2789,7 +2789,7 @@ export function ComposerModelPicker({
   // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
-  // Read after the load settles, when the store already holds the new model's reasoning.
+  // Runs once the load settles, when the store holds the new model's reasoning.
   const closeIfNoThinking = useRef(() => {});
   closeIfNoThinking.current = () => {
     if (noThinking) {
