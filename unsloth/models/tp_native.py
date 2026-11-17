@@ -235,14 +235,12 @@ class TPPlan:
     replicated_layers: int = (
         0  # decoder layers with no region (e.g. short convolutions): run replicated
     )
-    # Mixture-of-experts blocks (outside the attention / MLP regions). apply_tensor_parallel shards their routed
-    # experts by index over tp where that is exact (moe_sharded), else runs them replicated, outputs averaged.
+    # MoE blocks: routed experts sharded by index where exact (moe_sharded), else replicated with outputs averaged.
     moe_blocks: list = dataclasses.field(default_factory = list)
     moe_sharded: list = dataclasses.field(default_factory = list)
 
     @property
     def replicated_moe(self):
-        # Every MoE block (sharded experts or not): the block's router / shared experts always run replicated.
         return len(self.moe_blocks)
 
     @property
@@ -1650,13 +1648,8 @@ def _moe_post_hook(module, args, output):
     )
 
 
-# Routed experts sharded by index over tp (UNSLOTH_TP_MOE_SHARD, default on). Every tp rank reads the same tokens,
-# so rank r keeps only its contiguous ceil(E / tp) experts and runs them on the (token, slot) pairs routed there;
-# one sum all-reduce of the partial outputs replaces the replicated block's mean, with no all-to-all. The router,
-# shared experts and router aux loss stay replicated (same input and weights on every rank, same result). An expert
-# count tp does not divide is padded with zero experts the router never selects (dropped again on every gather).
-# Blocks this cannot shard exactly keep the replicated path: quantized / packed expert stacks, DoRA or LoRA bias on
-# the experts, swapped expert LoRA factors, or an experts call other than (hidden_states, top_k_index, top_k_weights).
+# Rank r keeps ceil(E / tp) contiguous experts on the same tokens; one sum all-reduce replaces the mean (no all-to-all).
+# Uneven E is padded with zero experts the router never selects; inexact blocks keep the replicated path.
 _MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
 _EXPERT_STACKS = ("gate_up_proj", "down_proj")
 _EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
@@ -1664,13 +1657,11 @@ _EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 
 
 def moe_shard_enabled():
-    """UNSLOTH_TP_MOE_SHARD=0 keeps every MoE block's experts replicated (the pre-sharding behaviour)."""
     import os
     return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
 
 
 def _experts_chain(block):
-    """[block.experts, its PEFT wrappers' base layers ..., the fused experts module]."""
     outer = block._modules.get("experts")
     if not isinstance(outer, nn.Module):
         return []
@@ -1691,7 +1682,7 @@ def expert_shard_problem(block):
         return "no `experts` child"
     leaf, wrappers = chain[-1], chain[:-1]
     if isinstance(leaf, (nn.ModuleList, nn.ModuleDict)):
-        # transformers 4.x: one MLP module per expert, looped over by the block's own forward (no experts call)
+        # transformers 4.x per-expert modules: the block loops them itself (no experts call), so stay replicated
         return "unfused per-expert modules (transformers 4.x layout)"
     E = leaf.__dict__.get("num_experts")
     if not isinstance(E, int) or isinstance(E, bool) or E < 2:
@@ -1751,16 +1742,13 @@ def expert_shard_problem(block):
 
 
 def _loaded_zoo_module(name):
-    """unsloth_zoo.<name> if an Unsloth run already imported it, else None. Never import it from here: zoo imports
-    patch transformers process-wide (e.g. causal LM forwards that return empty training logits), which a plain
-    transformers / PEFT model under apply_tensor_parallel must not get as a side effect."""
+    """Never import unsloth_zoo here: its import patches transformers process-wide (empty training logits)."""
     import sys
     return sys.modules.get("unsloth_zoo." + name)
 
 
 def _lora_b_layout(wrapper = None, adapter = None):
-    """How this wrapper's fused expert lora_B columns pack experts: zoo's per-wrapper answer in an Unsloth run (a
-    wrapper on PEFT's forward stays rank-major whatever the process mode), else PEFT's (expert index fastest)."""
+    """Per wrapper: one still on PEFT's forward stays rank-major whatever zoo's process mode is."""
     moe_utils = _loaded_zoo_module("temporary_patches.moe_utils")
     per_wrapper = getattr(moe_utils, "moe_lora_b_layout_for_wrapper", None)
     if callable(per_wrapper) and wrapper is not None:
@@ -1781,7 +1769,6 @@ def _trim_expert_pad(full, dim, groups, experts, padded, per):
 
 
 def _shard_expert_param(owner, name, dim, groups, per, E, E_pad, mesh, rank, tp):
-    """owner.<name> (dim laid out as (groups, E, per)) -> Shard DTensor of this rank's contiguous experts."""
     full = owner._parameters[name]
     t = full.detach()
     if E_pad != E:
@@ -1798,14 +1785,14 @@ def _shard_expert_param(owner, name, dim, groups, per, E, E_pad, mesh, rank, tp)
 
 
 class _ExpertShard:
-    """One MoE block's routed experts over tp: this rank owns global experts [lo, hi) as local 0 .. hi - lo."""
+    """This rank owns global experts [lo, hi) as local 0 .. hi - lo."""
 
     def __init__(self, block, leaf, lo, hi, per_rank, experts, group):
         self.block, self.leaf, self.group = block, leaf, group
         self.lo, self.hi, self.per_rank, self.experts = lo, hi, per_rank, experts
-        self.swaps = []  # (owner, name): DTensor parameters the experts forward reads as local tensors
+        self.swaps = []
         self.full_attrs = []  # (module, attribute, one-GPU value): tp_replica restores these
-        self.frozen = {}  # id(frozen DTensor) -> (DTensor, local Parameter): one stable local per frozen stack
+        self.frozen = {}
 
 
 @contextlib.contextmanager
@@ -1833,7 +1820,6 @@ def _expert_locals(shard):
 
 
 def _moe_checkpoint_routing():
-    """Unsloth gradient checkpointing's MoE routing reuse, when an Unsloth run loaded it (see _loaded_zoo_module)."""
     return getattr(_loaded_zoo_module("gradient_checkpointing"), "moe_checkpoint_routing", None)
 
 
@@ -1861,8 +1847,7 @@ def _experts_reduce(y, group):
 def _sharded_experts(shard, prior, hidden, index, weights):
     routing = _moe_checkpoint_routing()
     if routing is not None:
-        # Unsloth gradient checkpointing: the replay must pick the first pass's (token, slot) pairs here, so the
-        # local selection below (and the experts call's own reuse inside it) sees the same pairs in both passes.
+        # Gradient checkpointing replay must select the first pass's (token, slot) pairs.
         index, weights = routing(shard.leaf, index, weights)
     shape, group = hidden.shape, shard.group
     x = hidden.reshape(-1, shape[-1])
@@ -1901,7 +1886,7 @@ def _sharded_experts(shard, prior, hidden, index, weights):
 def _tp_experts_forward(shard, prior):
     def forward(*args, **kwargs):
         if shard.block.__dict__.get("_unsloth_tp_gathered"):
-            return prior(*args, **kwargs)  # tp_replica: the whole experts are back in place
+            return prior(*args, **kwargs)
         call = _expert_call_args(args, kwargs)
         if call is None:
             raise RuntimeError(

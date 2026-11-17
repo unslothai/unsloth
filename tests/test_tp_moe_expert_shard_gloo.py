@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tensor parallel on a gloo CPU world vs one process: mixture-of-experts routed experts sharded by index over tp
-(UNSLOTH_TP_MOE_SHARD, default on), expert LoRA sharded with its experts, uneven expert counts padded; the kill
-switch keeps them replicated; a dropped expert reduction must break parity."""
+"""gloo CPU tensor parallel vs one process: MoE experts sharded by index, padding, kill switch, dropped reduction."""
 
 import multiprocessing
 import os
@@ -31,8 +29,7 @@ _FUSED = []
 
 
 def _require_fused_experts():
-    """Expert sharding needs fused expert stacks called as experts(hidden_states, top_k_index, top_k_weights)
-    (transformers 5.x); transformers 4.x builds one MLP per expert and keeps the replicated path."""
+    """transformers 4.x builds one MLP per expert, which stays replicated."""
     if not _FUSED:
         model = build(QWEN3_MOE, _overrides(4), **MOE_LORA)
         _FUSED.append(tpn.expert_shard_problem(tpn.derive_tp_plan(model, 2).moe_blocks[0]))
@@ -186,7 +183,6 @@ def _spawn(
 
 
 def _diffs(res):
-    """(max |logit diff|, max |grad diff|, max |loss diff|) of this rank against its one-process reference."""
     ref_logits, ref_grads, ref_losses, _ = res["ref"]
     logits, grads, losses, _ = res["tp"]
     assert set(grads) == set(ref_grads), sorted(set(grads) ^ set(ref_grads))[:6]
@@ -200,8 +196,7 @@ def _check_parity(results):
     for rank, res in enumerate(results):
         ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
         logits, grads, losses, norms = res["tp"]
-        # apply_tensor_parallel must not import unsloth_zoo: its import patches transformers process-wide
-        # (empty training logits on Windows / ROCm), which a plain transformers model must never get.
+        # tp_native must never import unsloth_zoo: its import patches transformers process-wide.
         assert not res[
             "zoo_imported"
         ], f"apply_tensor_parallel / training imported {res['zoo_imported'][:5]}"
@@ -212,24 +207,21 @@ def _check_parity(results):
         torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
         assert set(grads) == set(ref_grads), sorted(set(grads) ^ set(ref_grads))[:6]
         assert any("experts" in n and "lora_" in n for n in ref_grads), sorted(ref_grads)[:8]
-        for name in ref_grads:  # every grad, the expert LoRA factors included
+        for name in ref_grads:
             torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-5, atol = 1e-5, msg = name)
         assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-5), (rank, losses, ref_losses)
         assert norms[0] == pytest.approx(ref_norms[0], rel = 1e-5), (rank, norms, ref_norms)
-        # Steps 2-3 norms follow AdamW (eps 1e-8), which turns fp32 reduction-order noise on near-zero grads into
-        # 1e-4 .. 5e-4 relative depending on the CPU; the replicated path (UNSLOTH_TP_MOE_SHARD=0) shows the same
-        # gap. A missed or doubled reduction is caught by the first-step grads / norm above (1e-5).
+        # Later AdamW steps amplify fp32 reduction-order noise (replicated path too); step-1 checks catch reductions.
         assert norms == pytest.approx(ref_norms, rel = 2e-3), (rank, norms, ref_norms)
         assert res["generated"] == (1, 4)
         worst = tuple(max(a, b) for a, b in zip(worst, _diffs(res)))
-    # Before any step the saved adapter is the same tensors: gather, lora_B unpermute and padding trim are exact.
+    # Before any step the saved adapter must match exactly (gather, lora_B unpermute, padding trim).
     saved_tp, saved_ref = results[0]["saved0_tp"], results[0]["saved0_ref"]
     assert set(saved_tp) == set(saved_ref)
     for key in saved_ref:
         assert saved_tp[key].shape == saved_ref[key].shape, key  # padding experts dropped on save
         torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 0, atol = 0, msg = key)
-    # After 3 AdamW steps only the layout is compared: AdamW's g / sqrt(v) turns fp32 reduction-order noise on
-    # near-zero grads into up to ~lr changes (seen at 2-3e-4 on gfx1151 / x86 CPUs, replicated path included).
+    # After AdamW steps only the layout: g / sqrt(v) amplifies reduction-order noise up to ~lr.
     saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
     assert set(saved_tp) == set(saved_ref)
     for key in saved_ref:
@@ -239,7 +231,7 @@ def _check_parity(results):
 
 
 def _check_sharded(results, experts, world):
-    # Every rank holds at least 2 local experts (a 1-expert stack reads as a plain 2-D LoRA): padding fills the rest.
+    # At least 2 local experts: a 1-expert stack reads as a plain 2-D LoRA.
     per_rank = max(2, -(-experts // world))
     for res in results:
         assert res["moe_blocks"] == 1
@@ -342,8 +334,7 @@ class _Experts(torch.nn.Module):
 
 @pytest.mark.parametrize("dense", [False, True], ids = ["per_slot_weights", "dense_weights"])
 def test_local_dispatch_sums_to_the_whole_call(dense, monkeypatch):
-    """_sharded_experts on every rank in turn (collectives as identity): partial outputs and input / routing-weight
-    grads sum to the whole experts call, for [tokens, k] and dense [tokens, experts] routing weights."""
+    """_sharded_experts per rank (collectives as identity): partial outputs and grads sum to the whole call."""
     import types
 
     monkeypatch.setattr(tpn, "_experts_copy", lambda t, group: t)
@@ -380,7 +371,6 @@ def test_local_dispatch_sums_to_the_whole_call(dense, monkeypatch):
         xr, wr = x0.clone().requires_grad_(True), w0.clone().requires_grad_(True)
         y = tpn._sharded_experts(shard, local.forward, xr, index, wr)
         y_sum = y_sum + y.detach()
-        # The loss is quadratic in the summed output: feed every rank the whole output's gradient.
         y.backward(2 * full(x0, index, w0).detach())
         dx_sum, dw_sum = dx_sum + xr.grad, dw_sum + wr.grad
     torch.testing.assert_close(y_sum, full(x0, index, w0).detach(), rtol = 1e-5, atol = 1e-5)
