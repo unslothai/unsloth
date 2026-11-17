@@ -21,6 +21,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { authFetch } from "@/features/auth";
+import {
+  SANDBOX_FILE_TOOLS,
+  isSandboxToolResult,
+  sandboxFilePath,
+} from "@/components/assistant-ui/sandbox-files";
 
 import { cn } from "@/lib/utils";
 import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -607,10 +613,10 @@ async function loadConversationForHtml(
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
-    messages: messages.map((msg) => {
+    messages: await Promise.all(messages.map(async (msg) => {
       const images: string[] = [];
       const rest = {
-        content: takeDataImages(msg.content, images),
+        content: takeDataImages(await withSandboxImages(msg.content), images),
         attachments: msg.attachments?.map((attachment) => ({
           content: takeDataImages(attachment?.content, images),
         })),
@@ -624,8 +630,51 @@ async function loadConversationForHtml(
         ),
         images,
       };
-    }),
+    })),
   };
+}
+
+async function withSandboxImages(content: unknown): Promise<unknown> {
+  if (!Array.isArray(content)) return content;
+  const parts = await Promise.all(
+    content.map(async (part) => {
+      const { type, toolName, result } = (part ?? {}) as Record<string, unknown>;
+      if (
+        type !== "tool-call" ||
+        typeof toolName !== "string" ||
+        !SANDBOX_FILE_TOOLS.has(toolName) ||
+        !isSandboxToolResult(result)
+      ) {
+        return [part];
+      }
+      const { sessionId, images } = result as { text: string; sessionId: string; images: unknown[] };
+      const pictures = await Promise.all(
+        images
+          .filter((name): name is string => typeof name === "string" && name.length > 0)
+          .map((name) => sandboxImageMarkdown(sessionId, name)),
+      );
+      return [part, ...pictures.map((text) => ({ type: "text", text }))];
+    }),
+  );
+  return parts.flat();
+}
+
+async function sandboxImageMarkdown(sessionId: string, name: string): Promise<string> {
+  const alt = name.replace(/[\\[\]]/g, "\\$&");
+  const blob = await authFetch(sandboxFilePath(sessionId, name))
+    .then((response) => (response.ok ? response.blob() : null))
+    .catch(() => null);
+  const src = blob ? await blobDataUrl(blob) : "";
+  return isDataImage(src) ? `![${alt}](${src})` : `[image: ${alt}]`;
+}
+
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(blob);
+  });
 }
 
 function takeDataImages(content: unknown, images: string[]): unknown {
