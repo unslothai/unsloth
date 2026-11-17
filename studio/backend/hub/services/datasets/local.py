@@ -556,13 +556,16 @@ def _partial_upload_path(stored_path: Path) -> Path:
 
 
 def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
-    with _REUSE_LOCK:
-        existing = _find_identical_upload(partial_path, stored_path)
-        if existing is not None:
+    try:
+        with _REUSE_LOCK:
+            existing = _find_identical_upload(partial_path, stored_path)
+            if existing is not None:
+                return existing
+            partial_path.replace(stored_path)
+            return stored_path
+    finally:
+        with suppress(OSError):
             partial_path.unlink(missing_ok = True)
-            return existing
-        partial_path.replace(stored_path)
-        return stored_path
 
 
 def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:

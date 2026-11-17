@@ -1260,6 +1260,20 @@ def test_upload_accepts_name_at_filename_limit(monkeypatch, tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == [Path(response.stored_path).name]
 
 
+def test_upload_leaves_no_staged_file_when_publish_fails(monkeypatch, tmp_path):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+    name = "a" * (256 - 33 - len(".jsonl")) + ".jsonl"
+
+    with pytest.raises(OSError):
+        asyncio.run(local.upload_dataset_response(_Upload(name, b'{"text":"a"}\n')))
+
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_delete_uploaded_dataset_removes_only_named_upload(monkeypatch, tmp_path):
     upload_root = tmp_path / "uploads"
     upload_root.mkdir()
