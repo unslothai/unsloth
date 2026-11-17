@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO PrefixGrouper also runs under vLLM (fast_inference=True), and one self-verify outlier on an
-already verified signature no longer turns it off for the run.
-
-Both PrefixGrouper sites used to skip vLLM: the no-grad old / ref log-prob forward in
-rl_replacements.py and the gradient forward in zoo's grpo_accumulated_loss (rewritten here at
-generation time). UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0 restores the skip.
-"""
+"""GRPO PrefixGrouper under vLLM, and verified signatures surviving one self-verify outlier."""
 
 import ast
 import inspect
@@ -81,7 +75,6 @@ def test_zoo_vllm_gate_patch_engages_under_vllm():
     assert patch_vllm_gate(patched) == patched  # idempotent
     assert _run(patched, True, use_vllm = True) == "pg"
     assert _run(patched, True, use_vllm = False) == "pg"
-    # Kill switch restores zoo's skip; other exclusions are untouched.
     assert _run(patched, False, use_vllm = True) is None
     assert _run(patched, False, use_vllm = False) == "pg"
     assert _run(patched, True, use_vllm = True, need_entropy = True) is None
@@ -94,7 +87,6 @@ def test_unpatched_zoo_skips_vllm():
 def test_zoo_vllm_gate_patch_leaves_other_sources():
     no_pg = "def grpo_accumulated_loss(trainer):\n    return getattr(trainer, 'use_vllm', False)\n"
     assert patch_vllm_gate(no_pg) == no_pg
-    # A zoo that already dropped the vLLM skip is left as is.
     no_skip = _ZOO_LIKE.replace(' and not getattr(trainer, "use_vllm", False)', "")
     assert patch_vllm_gate(no_skip) == no_skip
 
@@ -177,14 +169,10 @@ def test_grad_kill_spares_a_verified_signature():
     patched = patch_kill(_ZOO_VERIFY)
     assert patched != _ZOO_VERIFY
     assert patch_kill(patched) == patched  # idempotent
-    # Never verified: a large mismatch still marks it unsafe, as before.
     assert _verify(patched, None, 6.4) == {(1, (8,))}
     assert _verify(patched, {(2, (8, 8)): (100, 50)}, 6.4) == {(1, (8,))}
-    # Verified at a smaller T: the same mismatch only falls back for this batch.
     assert _verify(patched, {(1, (8,)): (5642, 2576)}, 6.4) is None
-    # Borderline mismatches never kill.
     assert _verify(patched, None, 1.0) is None
-    # Unpatched zoo kills the verified signature.
     assert _verify(_ZOO_VERIFY, {(1, (8,)): (5642, 2576)}, 6.4) == {(1, (8,))}
 
 

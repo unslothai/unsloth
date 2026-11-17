@@ -147,7 +147,7 @@ UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "
     "no",
     "off",
 )
-# PrefixGrouper under vLLM (fast_inference=True); UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0 restores the old vLLM skip.
+# UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0 restores the old PrefixGrouper skip under vLLM.
 UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON = os.environ.get(
     "UNSLOTH_GRPO_PREFIX_GROUPER_VLLM", "1"
 ).lower() not in ("0", "false", "no", "off")
@@ -4064,7 +4064,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
-            # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). Under vLLM the old-policy logprob forward still runs (importance-sampling correction), and PG cuts it like the training forward.
+            # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). vLLM still runs the old-policy logprob forward, so PG helps.
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
                 and (UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False))
@@ -4491,7 +4491,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )
                             if _pg_u is None:
                                 _pg_u = set()
-                            # Kill only a signature that never verified. Once it has, a mismatch at a larger T is the bf16 tail (packed vs per-row also reaches 1-4 nats at T ~ 20k), so fall back for this batch only.
+                            # Kill only never-verified signatures; later mismatches are bf16 tail (1-4 nats at T ~ 20k), so fall back per batch.
                             _pg_v = getattr(
                                 unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
                             )
@@ -4897,7 +4897,7 @@ _GRPO_PREFIX_GROUPER_GRAD_KILL = re.compile(r"\bif\s+_pg_diff\s*>=\s*_PG_TOL_KIL
 
 
 def _patch_grpo_accumulated_loss_prefix_grouper_kill(source):
-    """In zoo's gradient PrefixGrouper self-verify, mark a signature unsafe only if it never verified. A verified signature that mismatches at a larger T falls back for that batch: bf16 max|d| over thousands of completion tokens has multi-nat outliers between two exact paths too, and one of them would turn PG off for the rest of the run. A zoo without that line is left alone."""
+    """Zoo grad self-verify: kill only never-verified signatures; bf16 outliers on verified ones fall back per batch."""
     if "prefix_seg_info" not in source:
         return source
     return _GRPO_PREFIX_GROUPER_GRAD_KILL.sub(
@@ -4909,7 +4909,7 @@ def _patch_grpo_accumulated_loss_prefix_grouper_kill(source):
 
 
 def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
-    """Let zoo's gradient PrefixGrouper run under vLLM unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0. Zoo skips it there; the layout, self-verify and scatter do not depend on how completions were sampled. A zoo without that skip is left alone."""
+    """Drop zoo's vLLM skip for gradient PrefixGrouper unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0."""
     if "prefix_seg_info" not in source:
         return source
     return _GRPO_PREFIX_GROUPER_VLLM_GATE.sub(
