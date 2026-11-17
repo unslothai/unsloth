@@ -1508,3 +1508,30 @@ def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, mo
     )
     assert response.thread.title == "Renamed (1)"
     assert "Stale" not in response.thread.title
+
+
+def test_revision_route_reads_repeated_thread_ids(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+
+    seen = []
+
+    def fake_revisions(thread_ids):
+        seen.append(thread_ids)
+        return 7, {thread_id: 3 for thread_id in thread_ids}
+
+    monkeypatch.setattr(chat_history, "get_chat_history_revisions", fake_revisions)
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    client = TestClient(app)
+
+    response = client.get("/api/chat/revision?threadId=a&threadId=b")
+    assert response.status_code == 200
+    assert response.json() == {"revision": 7, "threads": {"a": 3, "b": 3}}
+    assert seen == [["a", "b"]]
+
+    too_many = "&".join(f"threadId=t{i}" for i in range(chat_history._REVISION_THREADS_MAX + 1))
+    assert client.get(f"/api/chat/revision?{too_many}").status_code == 400

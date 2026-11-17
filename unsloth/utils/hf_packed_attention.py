@@ -552,7 +552,10 @@ def _sdpa_packed_varlen(
         ):
             # Host inputs were prepared eagerly (block_varlen_kwargs); the kernel call traces.
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
-            return _flash_varlen(query, key, value, *block_varlen, scale, window), None
+            cu_seqlens, max_seqlen = block_varlen
+            if isinstance(max_seqlen, torch.Tensor):
+                max_seqlen = max_seqlen.shape[0]
+            return _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window), None
         if query.shape[-1] > 256 and _large_head_takes(query, key, value, dropout, window, kwargs):
             scale = query.shape[-1] ** -0.5 if scaling is None else scaling
             return _large_head_varlen(query, key, value, block_varlen[0], scale), None
@@ -893,11 +896,11 @@ _varlen_in_graph = _constant_probe(_varlen_in_graph_eager)
 
 
 def block_varlen_kwargs(layer, hidden_states, kwargs):
-    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen) for its
-    packed row, so attention runs torch's varlen op inside the graph. Building them there needs a host
-    read of the longest segment and the mask check a host sync, which is why the traced wrapper used to
-    fall back to SDPA over the dense mask. None keeps that path; _LEAVE_BLOCK runs the eager
-    wrapper."""
+    """Eager, before _block_compile runs a compiled decoder block: (cu_seqlens, max_seqlen carrier, a
+    tensor as long as the longest document) for its packed row, so attention runs torch's varlen op
+    inside the graph. Building them there needs a host read of the longest segment and the mask check a
+    host sync, which is why the traced wrapper used to fall back to SDPA over the dense mask. None keeps
+    that path; _LEAVE_BLOCK runs the eager wrapper."""
     seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
@@ -1019,8 +1022,13 @@ def _block_varlen_prepare(
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+    # The longest document as a dynamic tensor length (prepare_packed_block's carrier): a Python int
+    # was guarded on, so every new longest document recompiled the block. 2+: a length of 1 would
+    # specialise; an upper bound is still exact for varlen.
+    carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = hidden_states.device)
+    torch._dynamo.maybe_mark_dynamic(carrier, 0)
     HF_PACKED_ATTENTION_STATS["compiled"] += 1
-    return cu_seqlens, int(max_seqlen)
+    return cu_seqlens, carrier
 
 
 def enable_hf_packed_attention() -> bool:

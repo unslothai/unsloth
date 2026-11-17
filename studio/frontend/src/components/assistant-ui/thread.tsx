@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { MemoryToolUI } from "./tool-ui-memory";
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -536,6 +537,10 @@ import {
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  COMPOSER_MIN_ROWS,
+  useComposerMaxRows,
+} from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
@@ -2704,7 +2709,10 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
+      <div
+        ref={dockInnerRef}
+        className="unsloth-composer-dock-inner relative pb-[calc(1rem*var(--ui-space-scale,1))]"
+      >
         <div
           ref={composerColumnRef}
           className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
@@ -3271,7 +3279,10 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const oneRowHeight = Math.round(40 * uiSpaceScale);
+  const minEditorHeight = Math.round(
+    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
+  );
+  const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
   const detachFromBottom = useDetachThreadFromBottom();
@@ -6192,7 +6203,7 @@ const Composer: FC<{
               className="unsloth-composer-editor"
               style={
                 {
-                  "--composer-editor-height": `${composerText.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
+                  "--composer-editor-height": `${composerText.length === 0 ? minEditorHeight : Math.max(minEditorHeight, editorHeight)}px`,
                 } as CSSProperties
               }
             >
@@ -6206,7 +6217,7 @@ const Composer: FC<{
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
-                maxRows={12}
+                maxRows={maxRows}
                 onHeightChange={handleEditorHeightChange}
                 autoFocus={!disabled}
                 disabled={disabled}
@@ -8060,6 +8071,10 @@ function useContinuation() {
     const request: ContinuationRequest = {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
+      ...((metadata as { custom?: { splitReasoningSeen?: unknown } } | undefined)?.custom
+        ?.splitReasoningSeen === true
+        ? { splitReasoningSeen: true }
+        : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
       ...(answerParts.length > 0 ? { answerParts } : {}),
@@ -8290,6 +8305,7 @@ const ASSISTANT_PART_COMPONENTS = {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
       read_skill: ReadSkillToolUIConfirmable,
+      update_memory: withToolConfirmation(MemoryToolUI),
       studio_load_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,

@@ -560,6 +560,24 @@ def _e8m0_pow2(amax, qmax):
     return torch.exp2(torch.ceil(torch.log2((amax / qmax).clamp_min(2.0**-126))))
 
 
+def _fp8_dequantizes_on_cpu(monkeypatch):
+    """These tests load the FP8 release onto CPU and run it in float32. transformers dequantizes a pre-quantized FP8
+    checkpoint only on a host with no CUDA / XPU device; with a GPU present it keeps FP8 linears on CPU (no .float(),
+    no CPU init of a missing fp8 weight). Pin the CPU-host behaviour so the test means the same on every host."""
+    try:
+        from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+    except Exception:
+        return
+    original = FineGrainedFP8HfQuantizer.validate_environment
+
+    def validate_environment(self, *args, **kwargs):
+        if self.pre_quantized:
+            self.quantization_config.dequantize = True
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(FineGrainedFP8HfQuantizer, "validate_environment", validate_environment)
+
+
 def _quantized_release(tmp_path, model):
     """Write the tiny model in the release's fp8 / fp4 storage with its quantization_config."""
     import json
@@ -639,6 +657,7 @@ def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
         pytest.skip("torch without float8_e8m0fnu")
     from transformers import AutoConfig, AutoModelForCausalLM
 
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     if convert == "1":
         monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
@@ -755,6 +774,7 @@ def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, mon
     """Released fp8 engram rows load into Parameter-backed tables identically to the frozen store."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     if convert == "1":
         monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
@@ -789,6 +809,7 @@ def test_a_released_checkpoint_in_a_subfolder_loads_from_that_subfolder(
         pytest.skip("torch without float8_e8m0fnu")
     import shutil
 
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     root = tmp_path / "repo"
     shutil.copytree(src, root / "sub")
@@ -965,6 +986,7 @@ def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
 ):
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
     text = DeepseekV41Config.from_pretrained(src).text_config.to_dict()
@@ -2207,3 +2229,51 @@ def test_no_module_attribute_shares_a_def_name():
     defs = set(re.findall(r"\bdef\s+(\w+)", source))
     clashes = sorted(n for n in defs if inspect.ismodule(getattr(dsv41, n, None)))
     assert not clashes, clashes
+
+
+@pytest.mark.parametrize("want_info", [False, True])
+def test_sharded_loading_of_a_released_checkpoint_returns_the_model(
+    tmp_path, monkeypatch, want_info
+):
+    """Tensor parallel / FSDP2 / pipeline sharded loading of a released-layout checkpoint. DeepSeek-V4.1's
+    from_pretrained asks transformers for the loading info to refuse a partial load, so the meta build returns
+    (model, info): the sharded loader must fill the model, not the tuple, and hand the caller what it asked for."""
+    import torch.distributed as dist
+    from safetensors.torch import save_file
+    from torch.distributed.device_mesh import init_device_mesh
+    from unsloth.models import tp_native
+
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialized")
+    monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
+    model = (
+        _tiny_model().to(torch.bfloat16).float()
+    )  # bf16-exact: a conversion stacks experts in bf16
+    src = tmp_path / "released"
+    model.config.save_pretrained(src)
+    save_file(_released_state_dict(model), os.path.join(src, "model.safetensors"))
+    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'pg'}", rank = 0, world_size = 1)
+    try:
+        mesh = init_device_mesh("cpu", (1,), mesh_dim_names = ("tp",))["tp"]
+        with tp_native.sharded_loading(mesh) as state:
+            out = dsv41.DeepseekV41ForCausalLM.from_pretrained(
+                src, dtype = torch.float32, output_loading_info = want_info
+            )
+    except ValueError as e:
+        # transformers 5 merges the per-expert tensors at load (a weight conversion): refused cleanly.
+        assert "weight conversion" in str(e), e
+        return
+    finally:
+        dist.destroy_process_group()
+    loaded = out
+    if want_info:
+        assert isinstance(out, tuple) and len(out) == 2
+        loaded, info = out
+        assert not info["missing_keys"] and not info["unexpected_keys"]
+    assert isinstance(loaded, dsv41.DeepseekV41ForCausalLM)
+    assert state["models"] == [loaded]
+    assert loaded._unsloth_tp_load_stats["sharded_numel"] > 0
+    got = loaded.state_dict()
+    for name, value in model.state_dict().items():
+        assert not got[name].is_meta, name
+        assert torch.equal(got[name], value), name

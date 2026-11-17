@@ -13,12 +13,37 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
 from typing import Any
 
 WIDEST_FUSED_HEAD_DIM = 256
 _GUARD_ATTR = "_unsloth_windows_rocm_wide_head_guard"
 
 logger = logging.getLogger(__name__)
+
+# Backend flags are process-wide: the first wide-head call in flight saves them and pins math, the last restores them,
+# so an overlapping call (another thread) never sees the fused kernels back early nor saves the math-only state.
+_HELD = [0, None]
+_LOCK = threading.Lock()
+
+
+def _math_on() -> None:
+    from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
+    with _LOCK:
+        if _HELD[0] == 0:
+            _HELD[1] = _cur_sdpa_kernel_backends()
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
+        _HELD[0] += 1
+
+
+def _math_off() -> None:
+    from torch.nn.attention import _sdpa_kernel
+    with _LOCK:
+        _HELD[0] -= 1
+        if _HELD[0] == 0:
+            _sdpa_kernel(_HELD[1])
+            _HELD[1] = None
 
 
 def _wide_cuda_head(query: Any) -> bool:
@@ -30,17 +55,35 @@ def _wide_cuda_head(query: Any) -> bool:
     )
 
 
+_ORIGINALS: dict = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+
+
+def _math_only(token: str, query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+    """allow_in_graph (as unsloth.import_fixes does): Dynamo cannot enter the lock, and the restore must use the
+    run-time backends, not the trace-time ones."""
+    _math_on()
+    try:
+        return _ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _math_off()
+
+
 def guard_sdpa(sdpa: Any) -> Any:
     """``sdpa`` with every call whose head is wider than 256 pinned to the math backend."""
     if getattr(sdpa, _GUARD_ATTR, False):
         return sdpa
-    from torch.nn.attention import SDPBackend, sdpa_kernel
+    try:
+        import torch._dynamo
+        torch._dynamo.allow_in_graph(_math_only)
+    except Exception:  # noqa: BLE001 -- eager calls still take the math backend
+        pass
+    token = f"sdpa_{len(_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _ORIGINALS[token] = sdpa
 
     @functools.wraps(sdpa)
     def guarded(query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
         if _wide_cuda_head(query):
-            with sdpa_kernel([SDPBackend.MATH]):
-                return sdpa(query, key, value, *args, **kwargs)
+            return _math_only(token, query, key, value, *args, **kwargs)
         return sdpa(query, key, value, *args, **kwargs)
 
     setattr(guarded, _GUARD_ATTR, True)

@@ -2271,7 +2271,7 @@ DESKTOP_EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>ai.unsloth.studio</string>
+    <string>ai.unsloth.studio.launcher</string>
     <key>CFBundleName</key>
     <string>Unsloth Studio</string>
     <key>CFBundleDisplayName</key>
@@ -2342,6 +2342,9 @@ STUB_EOF
 
         # Touch so Finder indexes it
         touch "$_css_app"
+        # After the bundle id change, macOS 26 kept resolving Desktop's id here on touch alone.
+        _css_lsr="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+        [ -x "$_css_lsr" ] && "$_css_lsr" -f "$_css_app" >/dev/null 2>&1 || true
 
         # -n is required: without it a re-run creates the link inside the bundle.
         if [ -d "$HOME/Desktop" ]; then
@@ -7669,8 +7672,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.4}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.4"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.11.6}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.11.6"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.

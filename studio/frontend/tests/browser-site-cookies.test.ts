@@ -138,3 +138,19 @@ test("a favicon is fetched without the site's cookies", async () => {
   await fetchBrowserPage({ url: `${SITE}/` }, new AbortController().signal).catch(() => undefined);
   assert.equal(bodies[1]?.credentials, "include");
 });
+
+test("a cookie write's SameSite reaches the backend, and the mirror never sends one back", async () => {
+  const sent: string[] = [];
+  (globalThis as { __authFetch?: unknown }).__authFetch = (_url: string, init: { body: string }) => {
+    sent.push(init.body);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  };
+  writePageStorage(SITE, "tab", "cookie", "token=/", "|secret", {}, `${SITE}/`, 1, "strict");
+  writePageStorage(SITE, "tab", "cookie", "theme=/", "|dark", {}, `${SITE}/`, 2);
+  mirrorSiteCookies(`${SITE}/`, [["token=/", "|rotated"]]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(sent.map((body) => JSON.parse(body)), [
+    { page: `${SITE}/`, key: "token=/", value: "|secret", same_site: "strict" },
+    { page: `${SITE}/`, key: "theme=/", value: "|dark" },
+  ]);
+});
