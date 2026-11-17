@@ -26,6 +26,8 @@ import {
   formatBytes,
   refreshScanFolders,
   removeScanFolderFromStore,
+  renameScanFolderInStore,
+  scanFolderName,
   scanFolderStatusCopy,
   setScanFolderRecursive,
   useDeviceInventorySources,
@@ -49,6 +51,7 @@ import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Download01Icon,
   InformationCircleIcon,
+  PencilEdit02Icon,
   PlusSignIcon,
   Refresh01Icon,
 } from "@hugeicons/core-free-icons";
@@ -57,7 +60,15 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { setDownloadDir, useDownloadDir } from "../download-manager";
 
-type Pending = "add" | `remove:${number}` | `recursive:${number}` | null;
+type Pending =
+  | "add"
+  | `remove:${number}`
+  | `recursive:${number}`
+  | `rename:${number}`
+  | null;
+
+// Matches the backend's SCAN_FOLDER_LABEL_MAX_LENGTH.
+const FOLDER_LABEL_MAX_LENGTH = 40;
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -89,6 +100,7 @@ export function OnDeviceFoldersDialog({
     enabled: open,
   });
   const [path, setPath] = useState("");
+  const [label, setLabel] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
@@ -103,7 +115,7 @@ export function OnDeviceFoldersDialog({
     () =>
       [...folders].sort(
         (a, b) =>
-          folderDisplayName(a.path).localeCompare(folderDisplayName(b.path)) ||
+          scanFolderName(a).localeCompare(scanFolderName(b)) ||
           a.path.localeCompare(b.path),
       ),
     [folders],
@@ -188,16 +200,21 @@ export function OnDeviceFoldersDialog({
       setPending("add");
       setInputError(null);
       try {
-        const { folder, alreadyAdded } = await addScanFolderToStore(nextPath);
+        const { folder, alreadyAdded } = await addScanFolderToStore(
+          nextPath,
+          undefined,
+          label.trim() || undefined,
+        );
         setPath("");
+        setLabel("");
         if (alreadyAdded) {
           toast.info("Already in your folders", {
-            description: folderDisplayName(folder.path),
+            description: scanFolderName(folder),
           });
           return;
         }
         toast.success("Folder added", {
-          description: folderDisplayName(folder.path),
+          description: scanFolderName(folder),
         });
         onInventoryChange?.();
       } catch (err) {
@@ -208,7 +225,7 @@ export function OnDeviceFoldersDialog({
         setPending(null);
       }
     },
-    [onInventoryChange, pending],
+    [label, onInventoryChange, pending],
   );
 
   const browseLocations = useCallback(async () => {
@@ -249,6 +266,26 @@ export function OnDeviceFoldersDialog({
     [onInventoryChange, pending],
   );
 
+  const handleRename = useCallback(
+    async (folder: ScanFolderInfo, nextLabel: string): Promise<boolean> => {
+      if (pending) return false;
+      setPending(`rename:${folder.id}`);
+      try {
+        await renameScanFolderInStore(folder, nextLabel);
+        onInventoryChange?.();
+        return true;
+      } catch (err) {
+        toast.error("Couldn't rename folder", {
+          description: formatError(err),
+        });
+        return false;
+      } finally {
+        setPending(null);
+      }
+    },
+    [onInventoryChange, pending],
+  );
+
   const handleRemove = useCallback(
     async (folder: ScanFolderInfo) => {
       if (pending) return;
@@ -258,11 +295,15 @@ export function OnDeviceFoldersDialog({
         onInventoryChange?.();
         // Removing only stops the scan, so an undo is safer than a confirm step.
         toast.success("Folder removed", {
-          description: folderDisplayName(folder.path),
+          description: scanFolderName(folder),
           action: {
             label: "Undo",
             onClick: () => {
-              addScanFolderToStore(folder.path, Boolean(folder.recursive))
+              addScanFolderToStore(
+                folder.path,
+                Boolean(folder.recursive),
+                folder.label ?? undefined,
+              )
                 .then(() => onInventoryChange?.())
                 .catch((err) =>
                   toast.error("Couldn't restore folder", {
@@ -291,6 +332,15 @@ export function OnDeviceFoldersDialog({
         <DialogContent
           className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(620px*var(--ui-space-scale,1))] lg:max-w-[calc(660px*var(--ui-space-scale,1))] xl:max-w-[calc(680px*var(--ui-space-scale,1))] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
+          onEscapeKeyDown={(event) => {
+            // Radix sees Escape before the field does; inside a rename it only cancels the rename.
+            if (
+              event.target instanceof HTMLElement &&
+              event.target.dataset.folderRename !== undefined
+            ) {
+              event.preventDefault();
+            }
+          }}
         >
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">
             <DialogTitle className="text-ui-15">Model folders</DialogTitle>
@@ -468,62 +518,73 @@ export function OnDeviceFoldersDialog({
 
               <div className="border-b border-border/60 bg-muted/20 p-3">
                 <form
-                  className="flex flex-col gap-2 sm:flex-row sm:items-center"
+                  className="flex flex-col gap-2"
                   onSubmit={(event) => {
                     event.preventDefault();
                     void handleAdd(path, "input");
                   }}
                 >
-                  <Input
-                    value={path}
-                    onChange={(event) => {
-                      setPath(event.target.value);
-                      if (inputError) setInputError(null);
-                    }}
-                    aria-label="Folder path"
-                    aria-invalid={inputError ? true : undefined}
-                    aria-describedby={
-                      inputError ? "custom-folder-error" : undefined
-                    }
-                    placeholder="Paste a folder path"
-                    spellCheck={false}
-                    autoComplete="off"
-                    className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
-                  />
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void browseLocations()}
-                      disabled={pending !== null}
-                    >
-                      <HugeiconsIcon
-                        icon={FolderSearchIcon}
-                        strokeWidth={1.75}
-                        data-icon="inline-start"
-                        className="size-3.5"
-                      />
-                      Browse...
-                    </Button>
-                    <Button
-                      type="submit"
-                      size="sm"
-                      disabled={!path.trim() || pending !== null}
-                    >
-                      {pending === "add" ? (
-                        <Spinner className="size-3.5" />
-                      ) : (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Input
+                      value={path}
+                      onChange={(event) => {
+                        setPath(event.target.value);
+                        if (inputError) setInputError(null);
+                      }}
+                      aria-label="Folder path"
+                      aria-invalid={inputError ? true : undefined}
+                      aria-describedby={
+                        inputError ? "custom-folder-error" : undefined
+                      }
+                      placeholder="Paste a folder path"
+                      spellCheck={false}
+                      autoComplete="off"
+                      className="field-soft h-control min-w-0 flex-1 rounded-full px-3 font-mono text-ui-12 placeholder:font-sans"
+                    />
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void browseLocations()}
+                        disabled={pending !== null}
+                      >
                         <HugeiconsIcon
-                          icon={PlusSignIcon}
+                          icon={FolderSearchIcon}
                           strokeWidth={1.75}
                           data-icon="inline-start"
                           className="size-3.5"
                         />
-                      )}
-                      Add
-                    </Button>
+                        Browse...
+                      </Button>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={!path.trim() || pending !== null}
+                      >
+                        {pending === "add" ? (
+                          <Spinner className="size-3.5" />
+                        ) : (
+                          <HugeiconsIcon
+                            icon={PlusSignIcon}
+                            strokeWidth={1.75}
+                            data-icon="inline-start"
+                            className="size-3.5"
+                          />
+                        )}
+                        Add
+                      </Button>
+                    </div>
                   </div>
+                  <Input
+                    value={label}
+                    onChange={(event) => setLabel(event.target.value)}
+                    maxLength={FOLDER_LABEL_MAX_LENGTH}
+                    aria-label="Folder name"
+                    placeholder="Name (optional), e.g. Jan or GPT4All"
+                    autoComplete="off"
+                    className="field-soft h-control rounded-full px-3 text-ui-12 sm:max-w-[calc(280px*var(--ui-space-scale,1))]"
+                  />
                 </form>
                 {inputError ? (
                   <p
@@ -571,6 +632,7 @@ export function OnDeviceFoldersDialog({
                         pending={pending}
                         onOpen={handleOpen}
                         onRecursive={handleRecursive}
+                        onRename={handleRename}
                         onRemove={handleRemove}
                       />
                     ))}
@@ -607,6 +669,7 @@ function FolderRow({
   pending,
   onOpen,
   onRecursive,
+  onRename,
   onRemove,
 }: {
   folder: ScanFolderInfo;
@@ -614,13 +677,27 @@ function FolderRow({
   pending: Pending;
   onOpen: (folder: ScanFolderInfo) => void;
   onRecursive: (folder: ScanFolderInfo, recursive: boolean) => void;
+  onRename: (folder: ScanFolderInfo, label: string) => Promise<boolean>;
   onRemove: (folder: ScanFolderInfo) => void;
 }) {
-  const name = folderDisplayName(folder.path);
+  const name = scanFolderName(folder);
   const problem = scanFolderStatusCopy(folder.status);
   const removing = pending === `remove:${folder.id}`;
   const toggling = pending === `recursive:${folder.id}`;
+  const renaming = pending === `rename:${folder.id}`;
   const switchId = `scan-folder-recursive-${folder.id}`;
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const commitRename = async () => {
+    if (draft === null || renaming) return;
+    const nextLabel = draft.trim();
+    if (nextLabel === (folder.label ?? "")) {
+      setDraft(null);
+      return;
+    }
+    if (await onRename(folder, nextLabel)) setDraft(null);
+  };
+
   return (
     <li className="flex min-h-14 items-center gap-3 border-b border-border/50 px-3 py-2.5 last:border-b-0">
       <div className="flex size-8 shrink-0 items-center justify-center rounded-sm bg-muted text-muted-foreground">
@@ -632,12 +709,35 @@ function FolderRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-2">
-          <p
-            className="truncate text-ui-12p5 font-medium text-foreground"
-            title={name}
-          >
-            {name}
-          </p>
+          {draft !== null ? (
+            <Input
+              autoFocus={true}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void commitRename();
+                } else if (event.key === "Escape") {
+                  setDraft(null);
+                }
+              }}
+              onBlur={() => void commitRename()}
+              disabled={renaming}
+              maxLength={FOLDER_LABEL_MAX_LENGTH}
+              data-folder-rename=""
+              aria-label={`Name for ${folder.path}`}
+              placeholder={folderDisplayName(folder.path)}
+              className="field-soft h-7 min-w-0 flex-1 rounded-full px-2.5 text-ui-12p5"
+            />
+          ) : (
+            <p
+              className="truncate text-ui-12p5 font-medium text-foreground"
+              title={name}
+            >
+              {name}
+            </p>
+          )}
           {modelCount !== null && !problem ? (
             <span className="shrink-0 text-ui-10p5 text-muted-foreground">
               {modelCountLabel(modelCount)}
@@ -683,6 +783,30 @@ function FolderRow({
           </TooltipTrigger>
           <TooltipContent side="bottom" className="tooltip-compact">
             Also scan sub-folders
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={`Rename ${name}`}
+              onClick={() => setDraft(folder.label ?? "")}
+              disabled={pending !== null || draft !== null}
+              className="inline-flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              {renaming ? (
+                <Spinner className="size-3.5" />
+              ) : (
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-4"
+                />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="left" className="tooltip-compact">
+            Rename
           </TooltipContent>
         </Tooltip>
         {isTauri ? (

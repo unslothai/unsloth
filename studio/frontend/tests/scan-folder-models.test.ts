@@ -8,9 +8,8 @@ import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { countModelsPerFolder, folderDisplayName } = await import(
-  "../src/features/hub/lib/scan-folder-models.ts"
-);
+const { countModelsPerFolder, folderDisplayName, scanFolderName } =
+  await import("../src/features/hub/lib/scan-folder-models.ts");
 const { scanFolderStatusCopy } = await import(
   "../src/features/hub/lib/scan-folder-status.ts"
 );
@@ -52,6 +51,21 @@ test("a folder name is the last path segment", () => {
   assert.equal(folderDisplayName("C:\\AI\\gguf\\"), "gguf");
 });
 
+test("a named folder shows its name, a blank name falls back to the path", () => {
+  assert.equal(
+    scanFolderName({ path: "/data/jan/models", label: "Jan" }),
+    "Jan",
+  );
+  assert.equal(
+    scanFolderName({ path: "/data/jan/models", label: "  " }),
+    "models",
+  );
+  assert.equal(
+    scanFolderName({ path: "/data/jan/models", label: null }),
+    "models",
+  );
+});
+
 test("a folder skipped for taking too long says so", () => {
   const copy = scanFolderStatusCopy("slow", "Mozilla/5.0 (Macintosh)");
   assert.ok(copy);
@@ -73,5 +87,8 @@ test("every folder surface shares one store and the hub API", async () => {
   // The /api/models copy never bumped the inventory version, so the rest of the app went stale.
   assert.doesNotMatch(chatIndex, /ScanFolder/);
   // Re-adding from the dialog must not send an explicit flag that resets a folder's sub-folder setting.
-  assert.match(dialog, /addScanFolderToStore\(nextPath\)/);
+  assert.match(
+    dialog,
+    /addScanFolderToStore\(\s*nextPath\s*(?:\)|,\s*undefined\s*,)/,
+  );
 });

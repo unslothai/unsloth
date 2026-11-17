@@ -15,8 +15,10 @@ const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "custom",
 ]);
 
-function baseModelLabel(source: LocalModelInfo["source"]): string {
-  switch (source) {
+function baseModelLabel(model: LocalModelInfo): string {
+  const named = model.source === "custom" ? model.source_label?.trim() : "";
+  if (named) return named;
+  switch (model.source) {
     case "lmstudio":
       return "LM Studio";
     case "omlx":
@@ -53,7 +55,7 @@ export function chatLocalModelOptions(
     options.push({
       id: model.id,
       name: model.display_name,
-      baseModel: baseModelLabel(model.source),
+      baseModel: baseModelLabel(model),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
       // A GGUF directory needs no `gguf` in its name: the scan's format says so.
