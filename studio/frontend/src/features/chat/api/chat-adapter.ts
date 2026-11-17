@@ -2994,6 +2994,8 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
+  /** Hub repo id of a Hugging Face cache row, whose id and loadId are its snapshot path. */
+  repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
   /** null when the target is one file already (a local .gguf) or safetensors. */
@@ -3058,6 +3060,9 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
+      // The last used model is remembered by repo id, which only model_id carries here.
+      repoId:
+        row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
       maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
       listVariants: needsVariant
@@ -3082,7 +3087,8 @@ function isRememberedSource(
   const target = normalizeTarget(remembered.id);
   return (
     normalizeTarget(source.id) === target ||
-    normalizeTarget(source.loadId) === target
+    normalizeTarget(source.loadId) === target ||
+    (source.repoId !== undefined && normalizeTarget(source.repoId) === target)
   );
 }
 
@@ -4176,6 +4182,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         hadNonTrustFailure = true;
         continue;
       }
+      // The last used model is on the device but failed: report it rather than load a different model.
+      if (isRemembered && loadFailure.current) break;
     }
 
     // The cap gates the default download too, so the whole /load budget is MAX_AUTO_LOAD_ATTEMPTS.
