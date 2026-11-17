@@ -32556,7 +32556,9 @@ async def produce_openai_chat_completions(
         payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
     )
     if _pre_parsed is not None and payload.messages is not _messages_before_memory:
-        _pre_parsed = _extract_content_parts(payload.messages, keep_tool_images = True)
+        _pre_parsed = await _extract_content_parts_async(
+            payload.messages, keep_tool_images = True
+        )
     if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
@@ -43984,7 +43986,6 @@ async def chat_count_tokens(
     from core.chat_memory import apply_to_request
 
     await _route_to_extra_slot(payload.model)
-    apply_to_request(payload, _monitor_context_length())
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
             status_code = 503,
@@ -44006,6 +44007,8 @@ async def chat_count_tokens(
             and isinstance(_tool.get("function"), dict)
         ):
             _tool["type"] = "function"
+
+    apply_to_request(payload, _monitor_context_length())
 
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_attached_image(payload):
