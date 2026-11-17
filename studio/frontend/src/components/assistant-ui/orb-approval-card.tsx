@@ -12,9 +12,15 @@ import { type FC, useState } from "react";
 export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) => {
   const t = useT();
   const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
   const decide = (decision: "allow" | "deny") => {
     setPending(true);
-    void decideToolCall(id, decision).finally(() => setPending(false));
+    setFailure(null);
+    void decideToolCall(id, decision)
+      .then((result) => {
+        if (result === "retry" || result === "gone") setFailure(result);
+      })
+      .finally(() => setPending(false));
   };
   const brief = toolBrief(id);
   // An image share is decided on the chat card, which carries its disclosure.
@@ -47,6 +53,12 @@ export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) 
           {t("browser.agent.deny")}
         </Button>
       </span>
+      {/* A refused answer leaves the card up: say why, or it reads as a click that did nothing. */}
+      {failure ? (
+        <p role="alert" className="w-full text-right text-ui-12 text-destructive">
+          {t(failure === "gone" ? "voiceOrb.approvalGone" : "voiceOrb.approvalRetry")}
+        </p>
+      ) : null}
     </div>
   );
 };

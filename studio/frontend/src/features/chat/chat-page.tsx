@@ -3232,7 +3232,7 @@ export function ChatPage({
         );
         return true;
       } catch (error) {
-        toast.error("Voice model failed to load", {
+        toast.error(translate("voiceControls.loadFailed"), {
           description: error instanceof Error ? error.message : undefined,
         });
         return false;
