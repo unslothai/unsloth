@@ -341,7 +341,6 @@ def test_a_screenshot_past_the_shared_cap_reaches_the_model_whole_but_other_imag
     assert max(sent({**huge, "maxEdge": 99_999})) == 2016
     assert max(sent({**plain, "maxEdge": True})) == MAX_IMAGE_EDGE
     assert max(sent({**plain, "maxEdge": "1904"})) == MAX_IMAGE_EDGE
-    # A screenshot within the old cap carries nothing new.
     small = json.loads(screen.envelope(Image.new("RGB", (1008, 560))).split(":", 1)[1])
     assert "maxEdge" not in small[0]
 

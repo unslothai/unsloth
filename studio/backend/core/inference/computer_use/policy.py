@@ -27,8 +27,7 @@ _GRID_MODEL_RE = re.compile(
     r"|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini|nemotron(?:[-_ ]?3\.5)?[-_ ]?bolt",
     re.IGNORECASE,
 )
-# Shown a larger picture of a large screen (screen.shot_edge): on 4K, Qwen3.8 hit 2/30 small targets
-# at 1008 px and 12/30 at 1904. Gemma 4 drifts ~50 px up at that size and misses buttons, so not it.
+# Larger screenshots (screen.shot_edge) only where they help: Gemma 4 drifts up and misses buttons.
 _DETAIL_MODEL_RE = re.compile(
     r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|qwen[-_ ]?3\.[5-9](?!\d)", re.IGNORECASE
 )

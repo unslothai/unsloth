@@ -28,7 +28,6 @@ class Session:
     apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
-    # Larger screenshots of a large screen (screen.shot_edge).
     detail: bool = False
     frame: Any = None
     display: Optional[int] = None

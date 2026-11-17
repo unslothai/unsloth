@@ -46,8 +46,7 @@ def fit_size(
 
 
 def shot_edge(width: int, height: int, detail: bool) -> int:
-    """Half the captured screen, for grid answers: 1008 px leaves a 4K screen's icons a few
-    pixels wide (#18137: Qwen3.8 hit 4/30 targets at 1008, 16/30 at 2016)."""
+    """Half the captured screen: at 1008 px a 4K screen's icons are a few pixels wide (#18137)."""
     if not detail:
         return MAX_EDGE
     half = max(width, height) // 2 // CELL * CELL

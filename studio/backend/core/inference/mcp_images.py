@@ -30,7 +30,6 @@ DECODE_FAILURE_ALLOWANCE = 4
 # MIME type has no length bound; metadata must not hide megabytes from the byte budgets on both sides
 MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
-# A computer use screenshot may ask for up to this via "maxEdge" (computer_use/screen.py).
 MAX_SCREENSHOT_EDGE = 2016
 # Bounded off the header: a small PNG can hold tens of gigapixels.
 MAX_IMAGE_PIXELS = 40_000_000
