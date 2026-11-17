@@ -5744,6 +5744,16 @@ _TOOL_BASE_NUDGE = (
     "materially helps; otherwise answer normally and follow the user's requested "
     "format."
 )
+_TOOL_MEMORY_TIP = (
+    "Answer normally without calling update_memory by default. Use update_memory only when "
+    "the latest user message supplies new lasting information about the user or an established "
+    "decision for the current project, corrects such information, or asks to forget it. Greetings, "
+    "questions, requests for code or advice, hypothetical options, temporary instructions and "
+    "text supplied for translation or summarization do not establish memories. Facts about "
+    "people in quoted text are not facts about the user. Never save your own answers or "
+    "suggestions. Do not re-save remembered facts. If there is no qualifying new fact, "
+    "answer directly with no memory call."
+)
 _TOOL_WEB_COMPACT_TIP = "When using web_search, do not repeat the same search query."
 # Only with Search images on; small models call the tool before knowing their list, so answer first.
 _TOOL_IMAGES_TIP = (
@@ -5920,7 +5930,7 @@ def _build_tool_action_nudge(
     full_access_only: bool = False,
     user_folder: bool = False,
 ) -> str:
-    """full_access_only keeps just the environment sentences (Full access, project folder) and skills catalog, not the general guidance."""
+    """full_access_only omits general guidance, keeping environment, skills and memory rules."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -5938,8 +5948,9 @@ def _build_tool_action_nudge(
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
     has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    memory_tip = _TOOL_MEMORY_TIP if "update_memory" in tool_names else ""
     if not (has_web or has_code or has_artifact or has_research or has_skills):
-        return ""
+        return memory_tip
     model_size_b = _extract_model_size_b(model_name)
     # Small models get the shorter web tip and the smaller skill catalog.
     compact = model_size_b is not None and model_size_b < 9
@@ -5950,7 +5961,7 @@ def _build_tool_action_nudge(
     )
     folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
-        tips = []
+        tips = [memory_tip]
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
         if folder_tip:
@@ -5959,7 +5970,7 @@ def _build_tool_action_nudge(
             tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
-        tips = []
+        tips = [memory_tip]
         if has_research:
             tips.append(_TOOL_RESEARCH_TIP)
         if has_skills:
@@ -5984,6 +5995,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
     if has_skills:
         tool_tip_parts.append(skill_tip)
+    if memory_tip:
+        tool_tip_parts.append(memory_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 

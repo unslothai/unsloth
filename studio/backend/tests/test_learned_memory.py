@@ -188,6 +188,24 @@ def test_unmarked_tool_history_does_not_get_studio_warning(db):
     assert payload.model_dump() == before
 
 
+@pytest.mark.parametrize("extra_tool", [None, "python", "deep_research", "read_skill"])
+@pytest.mark.parametrize("full_access_only", [False, True])
+@pytest.mark.parametrize("memory_on", [False, True])
+def test_memory_guidance_follows_the_offered_catalog(
+    monkeypatch, extra_tool, full_access_only, memory_on
+):
+    from routes import inference
+
+    monkeypatch.setattr(inference, "_enabled_agent_skills", lambda: [])
+    tools = [{"type": "function", "function": {"name": extra_tool}}] if extra_tool else []
+    if memory_on:
+        tools.append(memory.TOOL)
+    nudge = inference._build_tool_action_nudge(
+        tools = tools, model_name = "test-4B", full_access_only = full_access_only
+    )
+    assert ("update_memory" in nudge) is memory_on
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_responses_conversion_preserves_memory_context(db, stream):
     from models.inference import ResponsesRequest
