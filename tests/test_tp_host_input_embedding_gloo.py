@@ -224,8 +224,7 @@ def _load_replica():
 
 
 def test_replica_device_skips_the_host_served_embedding(monkeypatch):
-    """embed_tokens is the first parameter: once served from the CPU, the replica gather and its NCCL
-    collectives must still run on the device the model computes on (meta stands in for the GPU here)."""
+    """A CPU-served first param must not move replica collectives off the GPU (meta stands in)."""
     replica = _load_replica()
     model = _model()
     model.to("meta")

@@ -189,8 +189,7 @@ class TPConfig:
     # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
     # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
-    # A frozen, untied input embedding holding at least this fraction of the GPU is served from host memory
-    # instead of being replicated on every rank (0 = never). UNSLOTH_TP_EMBED_ON_CPU = 1 / 0 forces it.
+    # Host-serve a frozen untied input embedding >= this GPU fraction (0 = never); env UNSLOTH_TP_EMBED_ON_CPU forces.
     host_input_embedding: float = 0.15
 
 
@@ -2054,8 +2053,7 @@ def _default_mesh(model):
 
 
 def _host_served_params(model):
-    """ids of the parameters of lookup tables served from host memory (offload_embedding hooks, the plain CPU
-    lookup): they sit on the CPU while the model computes on its accelerator."""
+    """ids of parameters of lookup tables served from host memory."""
     ids = set()
     for module in model.modules():
         if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
@@ -2066,8 +2064,7 @@ def _host_served_params(model):
 
 
 def _compute_device(model, default = None):
-    """The device the model computes on: its first parameter's (a DTensor's local one), skipping host-served
-    lookup tables, which may be the first registered parameter (embed_tokens)."""
+    """First parameter's device, skipping host-served tables (embed_tokens is often first)."""
     skip = _host_served_params(model)
     for param in model.parameters():
         if id(param) in skip:
@@ -2077,11 +2074,8 @@ def _compute_device(model, default = None):
 
 
 def _host_input_embedding(model, tp_mesh, fraction):
-    """The input embedding to serve from host memory instead of replicating it on every tp rank, or None.
-    It must be frozen, untied from (and not shared with) any other module, a plain floating tensor on the
-    tp mesh's GPU and at least `fraction` of it, and tp must span the whole world (a dp / pp dimension wraps
-    or splits the model afterwards, so it is left as before). UNSLOTH_TP_EMBED_ON_CPU = 1 skips the size
-    rule, 0 turns it off. Collective over `tp_mesh` on a CUDA mesh: every rank must decide alike."""
+    """Frozen, untied input embedding of at least `fraction` of the GPU to serve from host, or None.
+    tp must span the whole world (dp / pp wrap or split the model later). Collective: ranks decide alike."""
     import torch.distributed as dist
 
     from .fsdp2_perf import _env_tristate
@@ -2140,8 +2134,7 @@ def _host_embedding_candidate(model, forced, fraction):
 
 
 def _serve_embedding_from_host(model, embed, rank):
-    """The table moves to CPU, lookups run there and only the looked-up rows go back to the GPU: Unsloth's
-    offload_embedding hooks, as native FSDP2 does (#18028), or the plain CPU lookup without them."""
+    """Table on CPU, only looked-up rows go to the GPU, as native FSDP2 does (#18028)."""
     from .fsdp2_native import _offload_lookup_table, _serve_lookups_from_cpu
 
     nbytes = embed.weight.numel() * embed.weight.element_size()
@@ -2376,7 +2369,6 @@ def apply_tensor_parallel(
     if not any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
         host_embed = _host_input_embedding(model, tp_mesh, config.host_input_embedding)
     if host_embed is not None:
-        # Before sharding, whose slices need the room.
         _serve_embedding_from_host(model, host_embed, rank)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
