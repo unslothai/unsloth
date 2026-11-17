@@ -966,6 +966,102 @@ def fix_transformers5_legacy_config_types():
     logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
 
 
+def fix_transformers_config_commit_hash():
+    """transformers 5.18 stopped stamping `config._commit_hash` (huggingface/transformers#47611 resolves the revision
+    once per load and passes it around instead), so a loaded config no longer says which commit it was read at.
+    Unsloth pins remote code, text-only probes, exports and drafts to that commit; restore the stamp."""
+    import os
+
+    try:
+        from transformers import configuration_utils as cu
+        from transformers.utils import hub as tf_hub
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping config commit hash fix ({e})")
+        return
+    resolve_revision = getattr(tf_hub, "resolve_revision", None)
+    base = getattr(cu, "PreTrainedConfig", None) or getattr(cu, "PretrainedConfig", None)
+    if resolve_revision is None or base is None:
+        return  # transformers <= 5.17 records the commit itself.
+    if getattr(base, "_unsloth_commit_hash_patched", False):
+        return
+    probe = "0" * 40
+    try:
+        if getattr(base(_commit_hash = probe), "_commit_hash", None) == probe:
+            return
+    except Exception:
+        pass
+    get_config_dict = getattr(base.__dict__.get("get_config_dict"), "__func__", None)
+    from_dict = getattr(base.__dict__.get("from_dict"), "__func__", None)
+    if get_config_dict is None or from_dict is None:
+        return
+    pinned = getattr(tf_hub, "_pinned_commit_hash", None)
+    extract = getattr(tf_hub, "extract_commit_hash", None)
+
+    def _commit_of(name, revision, subfolder):
+        commit = None
+        try:
+            if pinned is not None:
+                commit = pinned(revision)
+            else:
+                commit = getattr(revision, "resolved", None)
+        except Exception:
+            commit = None
+        if commit is None and extract is not None and os.path.isdir(str(name)):
+            # A local snapshot folder of the Hub cache: 5.17 read the commit off the path.
+            try:
+                path = os.path.join(str(name), subfolder or "", cu.CONFIG_NAME)
+                commit = extract(path, None)
+            except Exception:
+                commit = None
+        return commit if isinstance(commit, str) and commit else None
+
+    def patched_get_config_dict(cls, pretrained_model_name_or_path, **kwargs):
+        # Resolve exactly as transformers does; an already resolved revision is returned as is.
+        try:
+            kwargs["revision"] = resolve_revision(
+                pretrained_model_name_or_path,
+                kwargs.get("revision"),
+                token = kwargs.get("token"),
+                local_files_only = kwargs.get("local_files_only", False),
+                cache_dir = kwargs.get("cache_dir"),
+            )
+        except Exception:
+            pass
+        revision = kwargs.get("revision")
+        subfolder = kwargs.get("subfolder", "")
+        config_dict, unused = get_config_dict(cls, pretrained_model_name_or_path, **kwargs)
+        if isinstance(config_dict, dict):
+            # As 5.17 did: the commit read now, never a stale one saved inside config.json.
+            config_dict["_commit_hash"] = _commit_of(
+                pretrained_model_name_or_path, revision, subfolder
+            )
+        return config_dict, unused
+
+    def patched_from_dict(cls, config_dict, **kwargs):
+        commit = kwargs.get("_commit_hash")
+        if commit is None and isinstance(config_dict, dict):
+            commit = config_dict.get("_commit_hash")
+        output = from_dict(cls, config_dict, **kwargs)
+        config = output[0] if isinstance(output, tuple) else output
+        if isinstance(commit, str) and getattr(config, "_commit_hash", None) is None:
+            try:
+                config._commit_hash = commit
+            except Exception:
+                pass
+        return output
+
+    patched_get_config_dict.__wrapped__ = get_config_dict
+    patched_from_dict.__wrapped__ = from_dict
+    try:
+        base.get_config_dict = classmethod(patched_get_config_dict)
+        base.from_dict = classmethod(patched_from_dict)
+        base._unsloth_commit_hash_patched = True
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching config commit hash ({e})")
+        return
+    logger.info("Unsloth: Patched transformers configs to record the commit they were loaded at.")
+
+
 # Image modules first so their `resize` wins; transformers.utils last, it can shadow names.
 _IMAGE_PROCESSING_SYMBOL_HOMES = (
     "transformers.image_transforms",

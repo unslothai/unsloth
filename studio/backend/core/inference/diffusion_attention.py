@@ -3635,6 +3635,14 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
     warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
+def _auto_request(requested: Any) -> bool:
+    """Whether a load left the attention pick to Studio (no request, "" or "auto")."""
+    try:
+        return normalize_attention_backend(requested) == ATTN_AUTO
+    except ValueError:
+        return False
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
@@ -3643,19 +3651,36 @@ def apply_attention_backend(
     target: Any = None,
     requested: Optional[str] = None,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> Optional[str]:
     """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
 
     ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
-    processors of a native pick to the INT8 kernel, and that name is returned. The DiTs whose processors call
+    processors of a native pick to the INT8 kernel, and that name is returned; with no request and the switch unset,
+    the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
     diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
     wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
-    ``speed_active`` is False (speed off stays bit-identical)."""
+    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical)."""
     engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    if target is not None:
+        try:
+            from .diffusion_int8_attention import forget_plans
+            forget_plans()
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 plans", exc)
     if target is not None and (engaged is None or str(engaged).startswith("_native")):
         try:
-            from .diffusion_int8_attention import BACKEND, install_requested
+            from .diffusion_int8_attention import BACKEND, install_auto, install_requested
             if install_requested(pipe, requested, target, logger = logger):
+                return BACKEND
+            # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
+            if _auto_request(requested) and install_auto(
+                pipe,
+                target,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
+            ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
             _warn(logger, "unsloth_int8", exc)
@@ -3664,7 +3689,12 @@ def apply_attention_backend(
             from .diffusion_int8_attention import BACKEND
             from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
             if install_int8_dispatch(
-                pipe, target, requested = requested, logger = logger, speed_active = speed_active
+                pipe,
+                target,
+                requested = requested,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
             ):
                 return BACKEND
         except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
@@ -3816,7 +3846,10 @@ def _apply_attention_backend(
             _tag_dits(pipe, backend)
             if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
                 from .diffusion_flux3_attn import install as install_flux3_strided
+                from .diffusion_qwenimage21_attn import install as install_q21_strided
+
                 install_flux3_strided(pipe, backend, target, logger)
+                install_q21_strided(pipe, backend, target, logger)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
             else:

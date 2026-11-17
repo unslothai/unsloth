@@ -3364,3 +3364,33 @@ def test_video_wires_the_streamed_eager_install_after_placement():
     assert (
         src.index("install_streamed_eager_int8_gemm(view, target.torch_device, logger)") > generic
     )
+
+
+def test_int8_attention_races_where_unset_speed_has_no_profile_to_follow():
+    """Speed left unset with no deferred profile (an int8 DiT the offload streams on a T4) still races the INT8
+    attention routes; off by request stays bit-identical, and a deferred profile installs them when it engages."""
+    from core.inference.diffusion_speed import (
+        SPEED_DEFAULT,
+        SPEED_OFF,
+        int8_attention_speed_active as active,
+    )
+
+    assert active(None, SPEED_OFF, False)
+    assert not active(None, SPEED_OFF, True)
+    assert not active(SPEED_OFF, SPEED_OFF, False)
+    assert active(None, SPEED_DEFAULT, False) and active("eager", "eager", False)
+
+
+def test_the_load_races_int8_attention_by_the_unset_speed_rule():
+    import ast
+
+    calls, _ = _diffusion_calls("apply_attention_backend")
+    loads = [
+        ast.unparse(k.value)
+        for c in calls
+        for k in c.keywords
+        if k.arg == "speed_active" and "True" != ast.unparse(k.value)
+    ]
+    assert loads == ["int8_attention_speed_active(speed_mode, effective_speed, speed_deferred)"]
+    unset = [ast.unparse(k.value) for c in calls for k in c.keywords if k.arg == "speed_unset_only"]
+    assert unset == ["effective_speed == SPEED_OFF"]
