@@ -5115,32 +5115,6 @@ def _unsloth_grpo_rollout_logps_as_old(
     return True
 
 
-def _unsloth_grpo_policy_has_dropout(model):
-    """True when the policy forward is random in train mode (an nn.Dropout with p > 0, LoRA dropout
-    included, or a config dropout rate above 0): two forwards then score two different policies."""
-    if model is None:
-        return False
-    for module in model.modules():
-        if isinstance(module, torch.nn.Dropout) and float(getattr(module, "p", 0.0) or 0.0) > 0.0:
-            return True
-    config = getattr(model, "config", None)
-    configs = [config, getattr(config, "text_config", None)]
-    for cfg in configs:
-        if cfg is None:
-            continue
-        values = cfg.to_dict() if hasattr(cfg, "to_dict") else vars(cfg)
-        for key, value in values.items():
-            if (
-                ("dropout" in key or key.endswith("pdrop"))
-                and not key.startswith("classifier")
-                and isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and value > 0
-            ):
-                return True
-    return False
-
-
 def _unsloth_grpo_old_logps_from_new(trainer):
     """True when this generation batch can skip TRL's old-policy forward under the vLLM importance
     sampling correction (UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 keeps it).
@@ -5151,7 +5125,7 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     loss on it, so pi_old is the policy the loss scores: TRL itself then uses
     per_token_logps.detach() for the PPO ratio. unsloth_zoo takes the IS weight pi_old / pi_vllm from
     that same detached forward, so the loss and its gradient are unchanged and one forward is saved.
-    Not with a random forward (dropout), where two passes score two different policies."""
+    Not with a random forward (dropout, router jitter), where two passes score two different policies."""
     import os
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
@@ -5174,7 +5148,8 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     if supported is None:
         try:
             from unsloth_zoo.rl_replacements import grpo_old_logps_from_new  # noqa: F401
-            supported = not _unsloth_grpo_policy_has_dropout(getattr(trainer, "model", None))
+            from unsloth_zoo.rl_replacements import grpo_policy_is_stochastic
+            supported = not grpo_policy_is_stochastic(getattr(trainer, "model", None))
         except Exception:
             supported = False
         trainer._unsloth_old_logps_from_new_ok = supported
@@ -5401,7 +5376,6 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_flush_metric
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_policy_has_dropout))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_from_new))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))

@@ -32,7 +32,6 @@ SOURCE = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replac
 def _helpers():
     tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     names = (
-        "_unsloth_grpo_policy_has_dropout",
         "_unsloth_grpo_old_logps_from_new",
         "_unsloth_grpo_is_metric_values",
     )
@@ -48,6 +47,14 @@ class _Zoo:
         module = types.ModuleType("unsloth_zoo.rl_replacements")
         if supported:
             module.grpo_old_logps_from_new = lambda new: new.detach()
+            # Stand-in for unsloth_zoo's detector (tested there): dropout modules and config rates.
+            module.grpo_policy_is_stochastic = (
+                lambda model: any(
+                    isinstance(m, torch.nn.Dropout) and m.p > 0 for m in model.modules()
+                )
+                or float(getattr(getattr(model, "config", None), "attention_dropout", 0.0) or 0.0)
+                > 0
+            )
         monkeypatch.setitem(sys.modules, "unsloth_zoo.rl_replacements", module)
 
 
@@ -164,6 +171,8 @@ def _run_fake(
     else:
         monkeypatch.setenv("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", env)
     monkeypatch.delenv("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", raising = False)
+    # Import the real modules before the stub zoo goes in, or they would bind to it.
+    patched = _patched()
     _Zoo(monkeypatch, True)
     helpers = _helpers()
     ns = {
@@ -172,7 +181,7 @@ def _run_fake(
         "_unsloth_grpo_old_logps_from_new": helpers["_unsloth_grpo_old_logps_from_new"],
         "_unsloth_reject_grpo_image_list": lambda *args: None,
     }
-    exec(textwrap.dedent(_patched()), ns)
+    exec(textwrap.dedent(patched), ns)
     calls = []
     trainer = _trainer(**trainer_kwargs)
     trainer.score = lambda: calls.append(1) or torch.zeros(3, 5)
