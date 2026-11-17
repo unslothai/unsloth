@@ -443,6 +443,16 @@ class ToolLoopPolicy:
     website_policy: dict[str, Any] | None = None
 
 
+def _observed_pass_tokens(turn: Any) -> int:
+    """Prompt plus reply tokens the provider reported for this pass, or 0 without a prompt count."""
+    usage = getattr(turn, "usage", None)
+    if not isinstance(usage, dict):
+        return 0
+    if _usage_int(usage, "context_tokens") <= 0 and _usage_int(usage, "prompt_tokens") <= 0:
+        return 0
+    return _pass_context_tokens(usage)
+
+
 def _result_budget_tokens(
     window: int,
     max_tokens: int | None,
@@ -475,6 +485,11 @@ def _result_budget_tokens(
         + held
         + estimate_messages_tokens_conservative(batch, dense_ascii = True)
     )
+    observed = _observed_pass_tokens(turn)
+    if observed:
+        # The provider priced the prompt and reply; only this batch's results are still unpriced.
+        held = estimate_messages_tokens_conservative(tool_messages, dense_ascii = True)
+        spent = observed + held
     # Uncounted results get two characters a budget token: fit the window even at one token each.
     room = min(
         tool_result_budget(window, max_tokens, spent),

@@ -23,6 +23,7 @@ from core.inference.studio_tool_loop import (
 
 _DONE = "data: [DONE]"
 _LONG = "\n".join(f"row {i}: the order shipped on time" for i in range(500))
+_PROSE = "The quick brown fox jumps over the lazy dog while the committee reviewed numbers. "
 
 WEB = {
     "type": "function",
@@ -282,3 +283,66 @@ def test_a_local_model_at_the_same_window_does_not_price_the_connection(monkeypa
     (result,) = _results(messages)
     rest = [message for message in messages if message.get("role") != "tool"]
     assert len(result) + estimate_messages_tokens_conservative(rest) < 8192
+
+
+def _usage_line(prompt_tokens, completion_tokens = 40):
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+    return "data: " + json.dumps({"choices": [], "usage": usage})
+
+
+def _a_long_search_history():
+    """About 50K real tokens of chat and 80K characters of earlier `web_search` results."""
+    history = []
+    for _ in range(10):
+        history.append({"role": "user", "content": _PROSE * 130})
+        history.append({"role": "assistant", "content": _PROSE * 130})
+    for i in range(8):
+        call = {
+            "id": f"old{i}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": f"old{i}"})},
+        }
+        history.append({"role": "assistant", "content": None, "tool_calls": [call]})
+        history.append({"role": "tool", "tool_call_id": f"old{i}", "content": "result. " * 1250})
+    return history
+
+
+def _call_turn_reporting_usage(prompt_tokens):
+    turn = _call_turn("c1")
+    return [*turn[:-1], _usage_line(prompt_tokens), turn[-1]]
+
+
+def test_a_result_is_not_omitted_while_the_window_has_room():
+    messages = _forwarded(
+        FakeTransport([_call_turn_reporting_usage(70_000), _ANSWER_TURN]),
+        history = _a_long_search_history(),
+        served_window = _serves(128_000),
+    )
+
+    result = _results(messages)[-1]
+    assert "no context room left" not in result
+    assert result.startswith(_LONG[:200])
+
+
+def test_a_result_is_omitted_when_the_provider_reports_a_full_window():
+    messages = _forwarded(
+        FakeTransport([_call_turn_reporting_usage(127_000), _ANSWER_TURN]),
+        history = _a_long_search_history(),
+        served_window = _serves(128_000),
+    )
+
+    assert "no context room left" in _results(messages)[-1]
+
+
+def test_without_a_provider_count_the_estimate_still_sizes_the_result():
+    messages = _forwarded(
+        FakeTransport([_call_turn("c1"), _ANSWER_TURN]),
+        history = _a_long_search_history(),
+        served_window = _serves(128_000),
+    )
+
+    assert "no context room left" in _results(messages)[-1]
