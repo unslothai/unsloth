@@ -2383,12 +2383,20 @@ def _language_decoder_layers(model):
 
 def _stream_block_lists(model, units):
     """[(ModuleList, {index: unit})] for the language model's decoder blocks that are FSDP units.
-    Only those are streamed; every other unit (towers, projectors, embeddings) is gathered up front."""
+    Only those are streamed; every other unit (towers, projectors, embeddings, and image-only blocks
+    such as Mllama's cross-attention layers, which text-only ranks skip) is gathered up front."""
+    from .fsdp2_vision import _image_only_modules
+
     layers = _language_decoder_layers(model)
     if layers is None:
         return []
     unit_ids = {id(unit) for unit in units}
-    blocks = {i: m for i, m in enumerate(layers) if id(m) in unit_ids}
+    image_only = {id(m) for m in _image_only_modules(layers)}
+    blocks = {
+        i: m
+        for i, m in enumerate(layers)
+        if id(m) in unit_ids and not any(id(s) in image_only for s in m.modules())
+    }
     return [(layers, blocks)] if blocks else []
 
 
