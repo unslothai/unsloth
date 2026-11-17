@@ -5,7 +5,8 @@
 
 Any load failure or tile failing the bit-exact probe keeps today's path; a tile replaces it only when it wins
 the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
-``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``)."""
+``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``);
+``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides that race on interleaved short timings like the others."""
 
 from __future__ import annotations
 
@@ -414,6 +415,51 @@ def available(index: int) -> bool:
     return bool(probed_tiles(index))
 
 
+SUSTAINED_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED"
+# seconds per candidate to let a power-capped card's clock settle on that kernel, then the same again timed
+_SUSTAIN_S = 0.25
+
+
+def sustained_enabled() -> bool:
+    raw = (os.environ.get(SUSTAINED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def time_sustained_us(
+    fns: dict,
+    settle_s: float = _SUSTAIN_S,
+    measure_s: float = _SUSTAIN_S,
+) -> dict:
+    """{name: us per call}, each candidate run back to back: ``settle_s`` untimed, then timed for about ``measure_s``.
+
+    Interleaved short timings favour power-hungry kernels on a power-capped card: the clock lags the draw, so a short
+    burst runs at the clock the previous candidate left. L4 (72 W), H3 shapes at 16384 rows: CUTLASS tile 8 is 23%
+    faster than the Triton path in short interleaved timings and 25% slower sustained (855 vs 1290 MHz)."""
+    import time
+
+    import torch
+
+    start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+    out = {}
+    for name, fn in fns.items():
+        calls, t0 = 0, time.perf_counter()
+        while True:
+            fn()
+            torch.cuda.synchronize()
+            calls += 1
+            if time.perf_counter() - t0 >= settle_s and calls >= 2:
+                break
+        per_call = (time.perf_counter() - t0) / calls
+        n = max(2, int(measure_s / max(per_call, 1e-6)))
+        start.record()
+        for _ in range(n):
+            fn()
+        end.record()
+        end.synchronize()
+        out[name] = start.elapsed_time(end) * 1000.0 / n
+    return out
+
+
 def time_us(
     fns: dict,
     rounds: int = 3,
@@ -494,6 +540,8 @@ def race(
         fns = {base_name: base}
         fns.update({t: cut(t) for t in top})
         timing = time_us(fns, rounds = 3, reps = 3, warm = 1)
+        if m >= _HUGE_M and sustained_enabled():
+            timing = time_sustained_us(fns)
     best = min(top, key = lambda t: timing[t])
     keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
     us = {str(k_): round(v, 1) for k_, v in timing.items()}

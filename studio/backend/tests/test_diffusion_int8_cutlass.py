@@ -254,6 +254,46 @@ def test_race_margin_keeps_todays_path_on_a_tie(monkeypatch):
     assert r["tile"] == 0
 
 
+def _burst_vs_sustained(monkeypatch):
+    """Short interleaved timings say tile 0 wins by 20%; run back to back it is 25% slower (L4 at its power cap)."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (8, 9))
+    monkeypatch.setattr(cut, "probed_tiles", lambda i: (0, 1))
+    monkeypatch.setattr(cut, "has_kernel", lambda *a: True)
+    monkeypatch.setattr(cut, "eligible", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda d: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(
+        cut, "time_us", lambda fns, **k: {n: {0: 80.0, 1: 95.0, "today": 100.0}[n] for n in fns}
+    )
+    sustained = []
+
+    def fake_sustained(fns, **k):
+        sustained.append(sorted(map(str, fns)))
+        return {n: {0: 125.0, 1: 110.0, "today": 100.0}[n] for n in fns}
+
+    monkeypatch.setattr(cut, "time_sustained_us", fake_sustained)
+    w = torch.zeros(64, 64, dtype = torch.int8)
+    ws = torch.ones(64, dtype = torch.bfloat16)
+    return w, ws, sustained
+
+
+def test_the_huge_race_is_decided_on_sustained_timings(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch)
+    # small operands stand in for the race's: the decision logic is what is under test
+    monkeypatch.setattr(cut, "_HUGE_M", 64)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] is None and sustained == [["0", "1", "today"]]
+
+
+def test_smaller_races_and_the_kill_switch_keep_short_timings(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] == 0 and not sustained  # below _HUGE_M
+    monkeypatch.setattr(cut, "_HUGE_M", 64)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
+    assert r["tile"] == 0 and not sustained
+
+
 def _load_build():
     spec = importlib.util.spec_from_file_location("i8gemm_build", _BUILD)
     mod = importlib.util.module_from_spec(spec)
