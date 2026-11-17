@@ -849,10 +849,14 @@ def _fake_stage(carry = None, segments = None):
         is_last = False,
         start = 0,
         end = 2,
+        wire_dtypes = None,
     )
-    return types.SimpleNamespace(
+    stage = types.SimpleNamespace(
         _pp_ctx = ctx, _pp_dtype = torch.float32, _pp_warned = False, _wire = lambda t: t
     )
+    stage._publish = lambda t: ppn._PPStageModule._publish(stage, t)
+    stage._restore = lambda t: ppn._PPStageModule._restore(stage, t)
+    return stage
 
 
 def test_pp_boundary_compiles_in_one_graph():
