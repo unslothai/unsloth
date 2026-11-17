@@ -100,6 +100,7 @@ import {
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
+  editedSamplingKey,
   isSamePresetConfig,
   MAX_TOKENS_MIN,
   localMaxTokensCeiling,
@@ -868,7 +869,7 @@ export function ChatSettingsPanel({
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
-      setActivePresetSource(nextSource);
+      setActivePresetSource(nextSource, editedSamplingKey(key));
       setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });

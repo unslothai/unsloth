@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import threading
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -36,6 +38,7 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
+_REUSE_LOCK = threading.Lock()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -121,10 +124,14 @@ def _safe_mtime(path: Path) -> float | None:
         return None
 
 
+def _is_upload_id(prefix: str) -> bool:
+    return len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix)
+
+
 def _display_uploaded_dataset_name(path: Path) -> str:
     stem = path.stem
     prefix, sep, rest = stem.partition("_")
-    if sep and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+    if sep and _is_upload_id(prefix):
         return f"{rest}{path.suffix}"
     return path.name
 
@@ -463,10 +470,11 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     if grant.size_bytes is not None and grant.size_bytes > max_bytes:
         raise _upload_too_large(max_label)
 
+    partial_path = _partial_upload_path(stored_path)
     written = 0
     upload_complete = False
     try:
-        with open(grant.canonical_path, "rb") as source, open(stored_path, "wb") as target:
+        with open(grant.canonical_path, "rb") as source, open(partial_path, "wb") as target:
             while chunk := source.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
@@ -481,13 +489,15 @@ def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResp
     finally:
         if not upload_complete:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
+                partial_path.unlink(missing_ok = True)
 
     if written == 0:
-        stored_path.unlink(missing_ok = True)
+        partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    return UploadDatasetResponse(
+        filename = filename, stored_path = str(_publish_upload(partial_path, stored_path))
+    )
 
 
 async def upload_dataset_response(
@@ -508,10 +518,11 @@ async def upload_dataset_response(
     if isinstance(declared_size, int) and declared_size > max_bytes:
         raise _upload_too_large(max_label)
 
+    partial_path = _partial_upload_path(stored_path)
     written = 0
     upload_complete = False
     try:
-        with open(stored_path, "wb") as f:
+        with open(partial_path, "wb") as f:
             while chunk := await file.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
                 if written > max_bytes:
@@ -521,13 +532,82 @@ async def upload_dataset_response(
     finally:
         if not upload_complete:
             with suppress(OSError):
-                stored_path.unlink(missing_ok = True)
+                partial_path.unlink(missing_ok = True)
 
     if written == 0:
-        stored_path.unlink(missing_ok = True)
+        partial_path.unlink(missing_ok = True)
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
-    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+    reused_path = await asyncio.to_thread(_publish_upload, partial_path, stored_path)
+    return UploadDatasetResponse(filename = filename, stored_path = str(reused_path))
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(LOCAL_UPLOAD_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _partial_upload_path(stored_path: Path) -> Path:
+    # Only the upload id: appending to a long original name can exceed the 255-byte filename limit.
+    return stored_path.with_name(f"{stored_path.name.split('_', 1)[0]}.part")
+
+
+def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
+    try:
+        with _REUSE_LOCK:
+            existing = _find_identical_upload(partial_path, stored_path)
+            if existing is not None:
+                return existing
+            partial_path.replace(stored_path)
+            return stored_path
+    finally:
+        with suppress(OSError):
+            partial_path.unlink(missing_ok = True)
+
+
+def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:
+    suffix = stored_path.name.split("_", 1)[-1]
+    try:
+        size = partial_path.stat().st_size
+        candidates = [
+            path
+            for path in DATASET_UPLOAD_DIR.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and within_account(path)
+            and _is_upload_id(path.name.split("_", 1)[0])
+            and path.name.split("_", 1)[-1] == suffix
+            and path.stat().st_size == size
+        ]
+        if not candidates:
+            return None
+        new_digest = _file_digest(partial_path)
+        for existing in candidates:
+            if _file_digest(existing) == new_digest:
+                return existing
+    except OSError:
+        pass
+    return None
+
+
+def delete_uploaded_dataset_response(dataset_id: str) -> dict:
+    name = Path(dataset_id or "").name
+    if not name or name != dataset_id or Path(name).suffix.lower() not in LOCAL_UPLOAD_EXTS:
+        raise HTTPException(status_code = 400, detail = "Invalid uploaded dataset id")
+    path = DATASET_UPLOAD_DIR / name
+    with _REUSE_LOCK:
+        if not path.is_file() or path.is_symlink() or not within_account(path):
+            raise HTTPException(status_code = 404, detail = "Uploaded dataset not found")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise HTTPException(
+                status_code = 500, detail = "Could not delete the uploaded dataset"
+            ) from exc
+    return {"status": "deleted", "id": name}
 
 
 def list_local_datasets_response() -> LocalDatasetsResponse:

@@ -34,26 +34,49 @@ import threading
 from typing import Any, Optional
 
 from . import diffusion_int8_attention as _I8
+from . import diffusion_qwenimage21_attn as _Q21
 
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
 # DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
-# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix.
+# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
 AUTO_DITS = frozenset(
     {
+        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "MOSSImageTransformer",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
         "ZImageTransformer2DModel",
     }
 )
+# AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
+# INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
+AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
-    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
 )
 # Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
-AUTO_CUDA_ONLY = frozenset({"Flux3Transformer2DModel", "ZImageTransformer2DModel"})
+AUTO_CUDA_ONLY = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "ZImageTransformer2DModel",
+    }
+)
 # processors that already run the kernel themselves
 _STRIDED_FLAG = "_unsloth_int8"
 
@@ -311,6 +334,11 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
             )
             mode = backend.sinks
             return _I8.int8_attention_call(*qkv, mode) if mode else _I8.int8_attention_call(*qkv)
+        backend = kwargs["backend"]
+    if isinstance(backend, _Q21.StridedCudnn):
+        out = _Q21.maybe_strided(backend, args, kwargs)
+        if out is not None:
+            return out
     return _STATE["original"](*args, **kwargs)
 
 
@@ -362,7 +390,10 @@ def install_dispatch_route() -> int:
 
 def _calls_dispatch(proc: Any) -> bool:
     """Whether the processor's ``__call__`` calls ``dispatch_attention_fn`` (directly, or through a module attribute
-    or a function-level import of it)."""
+    or a function-level import of it), or its class declares that its blocks do (``_calls_dispatch_attention_fn``:
+    MOSS-Image's in-tree blocks call their module's ``dispatch_attention_fn`` with the processor's backend)."""
+    if getattr(type(proc), "_calls_dispatch_attention_fn", False) is True:
+        return True
     call = getattr(type(proc), "__call__", None)
     code = getattr(call, "__code__", None)
     if code is None:
@@ -393,6 +424,30 @@ def routable_modules(dit: Any) -> list:
             continue
         out.append(m)
     return out
+
+
+def quantized_weights(dit: Any) -> bool:
+    """Whether a Linear of ``dit`` holds a quantized weight: a tensor subclass (torchao INT8 / FP8) or 8-bit storage."""
+    import torch
+
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return False
+    low = {
+        torch.int8,
+        torch.uint8,
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    }
+    for m in modules():
+        if not isinstance(m, torch.nn.Linear):
+            continue
+        w = getattr(m, "weight", None)
+        if w is None:
+            continue
+        if type(w) not in (torch.nn.Parameter, torch.Tensor) or w.dtype in low:
+            return True
+    return False
 
 
 def _dits(pipe: Any) -> list:
@@ -648,6 +703,7 @@ def _install(
         if not forced and (
             type(dit).__name__ not in AUTO_DITS
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
+            or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
         ):
             continue
         mods = [
@@ -682,7 +738,9 @@ def _install(
             v: Any,
             backend: Any = incumbent,
         ) -> Any:
-            return original(q, k, v, backend = backend)
+            # the incumbent as the processor runs it (a strided cuDNN pin races without diffusers' copies)
+            out = _Q21.maybe_strided(backend, (q, k, v), {"backend": backend})
+            return out if out is not None else original(q, k, v, backend = backend)
 
         floors: dict = {}
         impl = None
