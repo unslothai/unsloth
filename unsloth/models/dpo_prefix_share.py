@@ -17,6 +17,11 @@ Env ``UNSLOTH_DPO_PREFIX_SHARE``: ``auto`` (default: on for CUDA sm80+ when the 
 least ``_MIN_SAVED`` (default 2048) prompt tokens and ``unshared / shared`` tokens is at least ``_TOKR``
 (default 1.3). ``_VERIFY`` (default 1) compares the first shared forward of each backbone with the
 unshared one and turns the feature off for that backbone if they disagree.
+
+Train mode: dropout (LoRA or otherwise) runs on the shared stream, so both rows of a pair see the same
+mask on their prompt; each row's own mask has the same distribution as in the unshared forward, so
+the expected gradient is unchanged. NEFTune keeps a training forward unshared, since its noise is
+scaled by the sequence length.
 """
 
 from __future__ import annotations
@@ -384,10 +389,27 @@ class _HookState:
         self.pending = []
 
 
+def _neftune_active(causal_lm):
+    """NEFTune scales its embedding noise by 1 / sqrt(seq_len * hidden), so on the flat stream it would
+    add less noise than the padded rows get, and the same noise to both rows' prompt."""
+    try:
+        embeddings = causal_lm.get_input_embeddings()
+    except Exception:
+        return False
+    return bool(
+        embeddings is not None
+        and embeddings.training
+        and getattr(embeddings, "neftune_noise_alpha", None) is not None
+    )
+
+
 def _pre_hook(module, args, kwargs):
     global DECLINED_COUNT
     state = getattr(module, _STATE, None)
     if state is None or args or getattr(module, _UNSAFE, False):
+        return None
+    if _neftune_active(state.causal_lm):
+        DECLINED_COUNT += 1
         return None
     if _unknown_kwarg_set(kwargs):
         DECLINED_COUNT += 1
@@ -576,17 +598,26 @@ def preference_prefix_share(trainer, *models):
                 pass
 
 
+def _compile_error_type():
+    """PrefixGrouperCompileError, or () (catches nothing) where the kernel module cannot import (torch
+    without FlexAttention): there every backbone is declined and the forward runs unshared."""
+    try:
+        from ..utils.prefix_grouper_kernel import PrefixGrouperCompileError
+    except Exception:
+        return ()
+    return PrefixGrouperCompileError
+
+
 def _wrap_method(function):
     if getattr(function, "_unsloth_dpo_prefix_share", False):
         return function
 
     @functools.wraps(function)
     def wrapped(self, model, *args, **kwargs):
-        from ..utils.prefix_grouper_kernel import PrefixGrouperCompileError
         try:
             with preference_prefix_share(self, model):
                 return function(self, model, *args, **kwargs)
-        except PrefixGrouperCompileError:
+        except _compile_error_type():
             # The flex kernel failed its first-call check inside the forward (nothing backpropagated
             # yet); compile_check_failed() now declines every backbone, so this rerun is unshared.
             return function(self, model, *args, **kwargs)

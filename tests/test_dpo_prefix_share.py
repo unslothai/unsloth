@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import torch
 
+pytest.importorskip("torch.nn.attention.flex_attention")  # PrefixGrouper's kernel (torch >= 2.5)
+
 _ROOT = Path(__file__).resolve().parents[1] / "unsloth"
 
 
@@ -427,3 +429,46 @@ def test_flex_compile_failure_reruns_the_forward_unshared():
     assert Trainer()._compute_loss("m", {}) == 7 and calls == ["m", "m"]
     with pytest.raises(ValueError):
         Other()._compute_loss("m", {})
+
+
+def test_neftune_declines_in_train_mode_only():
+    # NEFTune noise is scaled by 1 / sqrt(seq_len * hidden): the flat stream would get less of it than
+    # the padded rows, so a training forward with it on stays unshared; eval forwards still share.
+    rng = random.Random(6)
+    ids, am, _ = _batch([_rand_tokens(rng, 30)], [_rand_tokens(rng, 5)], [_rand_tokens(rng, 6)])
+
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(V, D)
+
+    class CausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+
+        def get_input_embeddings(self):
+            return self.model.embed_tokens
+
+    lm = CausalLM()
+    backbone = lm.model
+    setattr(backbone, dps._STATE, dps._HookState(lm))
+    kwargs = {"input_ids": ids, "attention_mask": am}
+
+    def shared():
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
+            mp.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+            out = dps._pre_hook(backbone, (), dict(kwargs))
+        getattr(backbone, dps._STATE).pending.clear()
+        return out is not None
+
+    lm.train()
+    assert shared()
+    lm.model.embed_tokens.neftune_noise_alpha = 5.0
+    assert not shared()
+    lm.eval()
+    assert shared()
+    lm.train()
+    del lm.model.embed_tokens.neftune_noise_alpha
+    assert shared()
