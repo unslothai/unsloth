@@ -511,6 +511,27 @@ class DeepseekV41Compressor(nn.Module):
         return self.kv_norm(kv.to(dtype))
 
 
+# Elements of one indexer score chunk [b, rows, heads, t] (fp32): 1 << 26 = 256 MiB, at most 3 live copies.
+_INDEXER_SCORE_BUDGET = 1 << 26
+
+
+def _indexer_q_ranges(q_len, per_row):
+    """Query-row chunks for the indexer score (zoo flex_attention/sparse_blocks.py _q_ranges pattern). One chunk
+    under torch.compile, where a loop over the sequence length specialises a graph per length."""
+    if q_len <= 0 or torch.compiler.is_compiling():
+        return [(0, q_len)]
+    chunk = 0
+    env = os.environ.get("UNSLOTH_DSV41_INDEXER_Q_CHUNK")
+    if env:
+        try:
+            chunk = max(1, int(env))
+        except ValueError:
+            chunk = 0
+    if chunk <= 0:
+        chunk = max(1, _INDEXER_SCORE_BUDGET // max(1, per_row))
+    return [(start, min(start + chunk, q_len)) for start in range(0, q_len, chunk)]
+
+
 def select_candidate_blocks(logits, compress_lens, topk_blocks, block_size):
     """model.py:584-611 verbatim: keep the ``topk_blocks`` best blocks per query (bool mask shaped like logits)."""
     width = logits.size(-1)
@@ -569,22 +590,34 @@ class DeepseekV41Indexer(nn.Module):
         q = self.q_b_proj(qr).unflatten(-1, (self.n_heads, self.head_dim))
         q = apply_rotary(q, cos, sin)
         weights = self.weights_proj(x).float() * (self.softmax_scale * self.n_heads**-0.5)
-        score = torch.einsum("bshd,btd->bsht", q.float(), index_k.float())
-        score = (score.relu() * weights.unsqueeze(-1)).sum(dim = 2)  # [b, s, t]
+        index_k = index_k.float()
         # compressed group j is visible once query i has passed its last token: j < (i + 1) // ratio
         compress_lens = (torch.arange(1, seqlen + 1, device = x.device) // ratio).unsqueeze(-1)
-        score = score.masked_fill(
-            torch.arange(n_comp, device = x.device) >= compress_lens, float("-inf")
-        )
-        if self.is_candidate_source:
-            shared["candidates"] = select_candidate_blocks(
-                score, compress_lens, self.candidate_topk_blocks, self.candidate_block_size
-            )
-        elif self.uses_candidates and shared.get("candidates") is not None:
-            score = score.masked_fill(~shared["candidates"].to(x.device), float("-inf"))
+        visible = torch.arange(n_comp, device = x.device)
+        candidates = shared.get("candidates") if self.uses_candidates else None
         topk = min(self.index_topk, n_comp)
-        idxs = score.topk(topk, dim = -1, sorted = False).indices.sort(dim = -1).values
-        return torch.where(idxs < compress_lens, idxs + offset, -1).to(torch.int32)
+        # Rows are independent, so score + top-k one query chunk at a time: the [b, s, heads, t] fp32 score
+        # (2 GiB at s = t = 4096) never materialises whole.
+        out, picked = [], []
+        for start, end in _indexer_q_ranges(seqlen, bsz * self.n_heads * max(1, n_comp)):
+            score = torch.einsum("bshd,btd->bsht", q[:, start:end].float(), index_k)
+            score = (score.relu() * weights[:, start:end].unsqueeze(-1)).sum(dim = 2)  # [b, c, t]
+            lens = compress_lens[start:end]
+            score = score.masked_fill(visible >= lens, float("-inf"))
+            if self.is_candidate_source:
+                picked.append(
+                    select_candidate_blocks(
+                        score, lens, self.candidate_topk_blocks, self.candidate_block_size
+                    )
+                )
+            elif candidates is not None:
+                score = score.masked_fill(~candidates[:, start:end].to(x.device), float("-inf"))
+            idxs = score.topk(topk, dim = -1, sorted = False).indices.sort(dim = -1).values
+            del score
+            out.append(torch.where(idxs < lens, idxs + offset, -1).to(torch.int32))
+        if self.is_candidate_source:
+            shared["candidates"] = picked[0] if len(picked) == 1 else torch.cat(picked, dim = 1)
+        return out[0] if len(out) == 1 else torch.cat(out, dim = 1)
 
 
 class DeepseekV41Attention(nn.Module):
