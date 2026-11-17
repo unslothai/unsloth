@@ -5249,6 +5249,7 @@ export const id = {
       title: "Tidak dapat menerjemahkan",
       noChatModel: "Tidak ada model chat yang dimuat. Muat model di Chat, atau pilih model terjemahan.",
       downloadFailed: "Model tidak dapat diunduh. Periksa Unduhan di Hub model, lalu coba lagi.",
+      loadFailed: "Model tidak dapat dimuat. Berkasnya mungkin rusak, atau memori tidak cukup. Coba model lain atau unduh lagi.",
       unavailable: "Koneksi model ini tidak tersedia. Periksa di Pengaturan, atau pilih model lain.",
       cutOff: "Terjemahan terpotong sebelum selesai.",
       filtered: "Filter konten penyedia menghentikan terjemahan.",

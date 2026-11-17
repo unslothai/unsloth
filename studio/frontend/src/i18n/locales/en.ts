@@ -4927,6 +4927,7 @@ export const en = {
       title: "Could not translate",
       noChatModel: "No chat model is loaded. Load one in Chat, or pick a translation model.",
       downloadFailed: "The model could not be downloaded. Check Downloads in the Model hub, then try again.",
+      loadFailed: "The model could not be loaded. Its file may be damaged, or there is not enough memory. Try another model, or download it again.",
       unavailable: "This model's connection is unavailable. Check it in Settings, or pick another model.",
       cutOff: "The translation was cut off before it finished.",
       filtered: "The provider's content filter stopped the translation.",

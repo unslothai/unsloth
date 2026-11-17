@@ -5271,6 +5271,7 @@ export const cs = {
         "Není načten žádný model pro chat. Načtěte ho v Chatu nebo vyberte překladový model.",
       downloadFailed:
         "Model se nepodařilo stáhnout. Zkontrolujte Stahování v Centru modelů a zkuste to znovu.",
+      loadFailed: "Model se nepodařilo načíst. Jeho soubor může být poškozený, nebo není dost paměti. Zkuste jiný model nebo ho stáhněte znovu.",
       unavailable:
         "Připojení tohoto modelu není dostupné. Zkontrolujte ho v Nastavení nebo vyberte jiný model.",
       cutOff: "Překlad byl přerušen před dokončením.",

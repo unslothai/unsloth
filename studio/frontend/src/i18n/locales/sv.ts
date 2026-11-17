@@ -5121,6 +5121,7 @@ export const sv = {
       title: "Det gick inte att översätta",
       noChatModel: "Ingen chattmodell är inläst. Läs in en i Chatt eller välj en översättningsmodell.",
       downloadFailed: "Modellen kunde inte hämtas. Kontrollera Hämtningar i Modellhubben och försök igen.",
+      loadFailed: "Modellen kunde inte läsas in. Filen kan vara skadad eller så räcker inte minnet. Prova en annan modell eller ladda ner den igen.",
       unavailable: "Modellens anslutning är inte tillgänglig. Kontrollera den i Inställningar eller välj en annan modell.",
       cutOff: "Översättningen avbröts innan den blev klar.",
       filtered: "Leverantörens innehållsfilter stoppade översättningen.",

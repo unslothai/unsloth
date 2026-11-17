@@ -5336,6 +5336,7 @@ export const es419 = {
         "No hay ningún modelo de chat cargado. Carga uno en Chat o elige un modelo de traducción.",
       downloadFailed:
         "No se pudo descargar el modelo. Revisa Descargas en el Centro de modelos y vuelve a intentarlo.",
+      loadFailed: "No se pudo cargar el modelo. Puede que el archivo esté dañado o que no haya suficiente memoria. Prueba con otro modelo o descárgalo de nuevo.",
       unavailable:
         "La conexión de este modelo no está disponible. Revísala en Configuración o elige otro modelo.",
       cutOff: "La traducción se cortó antes de terminar.",

@@ -4935,6 +4935,7 @@ export const ptBR = {
       title: "Não foi possível traduzir",
       noChatModel: "Nenhum modelo de chat está carregado. Carregue um no Chat ou escolha um modelo de tradução.",
       downloadFailed: "Não foi possível baixar o modelo. Verifique os Downloads no Hub de modelos e tente novamente.",
+      loadFailed: "Não foi possível carregar o modelo. O arquivo pode estar danificado ou pode faltar memória. Tente outro modelo ou baixe-o de novo.",
       unavailable: "A conexão deste modelo está indisponível. Verifique-a em Configurações ou escolha outro modelo.",
       cutOff: "A tradução foi interrompida antes de terminar.",
       filtered: "O filtro de conteúdo do provedor interrompeu a tradução.",

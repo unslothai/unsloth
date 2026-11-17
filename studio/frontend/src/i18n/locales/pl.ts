@@ -5297,6 +5297,7 @@ export const pl = {
       title: "Nie udało się przetłumaczyć",
       noChatModel: "Nie wczytano modelu czatu. Wczytaj go w Czacie lub wybierz model tłumaczenia.",
       downloadFailed: "Nie udało się pobrać modelu. Sprawdź sekcję Pobieranie w Centrum modeli i spróbuj ponownie.",
+      loadFailed: "Nie udało się wczytać modelu. Plik może być uszkodzony albo brakuje pamięci. Wypróbuj inny model lub pobierz go ponownie.",
       unavailable: "Połączenie tego modelu jest niedostępne. Sprawdź je w Ustawieniach lub wybierz inny model.",
       cutOff: "Tłumaczenie zostało przerwane przed ukończeniem.",
       filtered: "Filtr treści dostawcy zatrzymał tłumaczenie.",

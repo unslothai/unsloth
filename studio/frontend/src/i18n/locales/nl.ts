@@ -5296,6 +5296,7 @@ export const nl = {
       title: "Vertalen is mislukt",
       noChatModel: "Er is geen chatmodel geladen. Laad er een in Chat of kies een vertaalmodel.",
       downloadFailed: "Het model kon niet worden gedownload. Controleer Downloads in de Modelhub en probeer het opnieuw.",
+      loadFailed: "Het model kon niet worden geladen. Het bestand is mogelijk beschadigd of er is te weinig geheugen. Probeer een ander model of download het opnieuw.",
       unavailable: "De verbinding van dit model is niet beschikbaar. Controleer deze in Instellingen of kies een ander model.",
       cutOff: "De vertaling is afgebroken voordat ze klaar was.",
       filtered: "Het inhoudsfilter van de provider heeft de vertaling gestopt.",

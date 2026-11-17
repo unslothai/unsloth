@@ -5244,6 +5244,7 @@ export const vi = {
       title: "Không thể dịch",
       noChatModel: "Chưa tải mô hình trò chuyện nào. Hãy tải một mô hình trong Trò chuyện hoặc chọn một mô hình dịch.",
       downloadFailed: "Không thể tải xuống mô hình. Hãy kiểm tra mục Tải xuống trong Trung tâm mô hình rồi thử lại.",
+      loadFailed: "Không thể tải mô hình. Tệp có thể bị hỏng hoặc không đủ bộ nhớ. Hãy thử mô hình khác hoặc tải lại.",
       unavailable: "Kết nối của mô hình này không khả dụng. Hãy kiểm tra trong Cài đặt hoặc chọn mô hình khác.",
       cutOff: "Bản dịch bị cắt trước khi hoàn tất.",
       filtered: "Bộ lọc nội dung của nhà cung cấp đã dừng bản dịch.",

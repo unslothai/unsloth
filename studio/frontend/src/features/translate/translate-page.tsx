@@ -1144,7 +1144,9 @@ export function TranslatePage() {
 
   const errorMessage = error
     ? error.code === "other"
-      ? error.message
+      ? /failed to load model|llama-server failed to start/i.test(error.message)
+        ? t("translate.errors.loadFailed")
+        : error.message
       : t(`translate.errors.${error.code}`)
     : "";
   const promptOptions = translatePromptOptions(prefs);

@@ -4990,6 +4990,7 @@ export const fr = {
       title: "Impossible de traduire",
       noChatModel: "Aucun modèle de chat n'est chargé. Chargez-en un dans Chat ou choisissez un modèle de traduction.",
       downloadFailed: "Impossible de télécharger le modèle. Vérifiez les Téléchargements dans le Hub de modèles, puis réessayez.",
+      loadFailed: "Le modèle n'a pas pu être chargé. Son fichier est peut-être endommagé, ou la mémoire est insuffisante. Essayez un autre modèle ou téléchargez-le à nouveau.",
       unavailable: "La connexion de ce modèle est indisponible. Vérifiez-la dans les Paramètres ou choisissez un autre modèle.",
       cutOff: "La traduction a été interrompue avant la fin.",
       filtered: "Le filtre de contenu du fournisseur a bloqué la traduction.",

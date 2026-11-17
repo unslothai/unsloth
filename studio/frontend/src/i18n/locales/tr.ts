@@ -5246,6 +5246,7 @@ export const tr = {
       title: "Çevrilemedi",
       noChatModel: "Yüklü bir sohbet modeli yok. Sohbet'te bir model yükleyin veya bir çeviri modeli seçin.",
       downloadFailed: "Model indirilemedi. Model merkezi'ndeki İndirilenler'i kontrol edip yeniden deneyin.",
+      loadFailed: "Model yüklenemedi. Dosyası bozuk olabilir veya bellek yetersiz olabilir. Başka bir model deneyin ya da yeniden indirin.",
       unavailable: "Bu modelin bağlantısı kullanılamıyor. Ayarlar'dan kontrol edin veya başka bir model seçin.",
       cutOff: "Çeviri tamamlanmadan kesildi.",
       filtered: "Sağlayıcının içerik filtresi çeviriyi durdurdu.",

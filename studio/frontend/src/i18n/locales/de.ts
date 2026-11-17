@@ -4980,6 +4980,7 @@ export const de = {
       title: "Übersetzung fehlgeschlagen",
       noChatModel: "Es ist kein Chat-Modell geladen. Lade eines im Chat oder wähle ein Übersetzungsmodell.",
       downloadFailed: "Das Modell konnte nicht heruntergeladen werden. Prüfe die Downloads im Modell-Hub und versuche es erneut.",
+      loadFailed: "Das Modell konnte nicht geladen werden. Die Datei ist möglicherweise beschädigt oder der Speicher reicht nicht aus. Wähle ein anderes Modell oder lade es erneut herunter.",
       unavailable: "Die Verbindung dieses Modells ist nicht verfügbar. Prüfe sie in den Einstellungen oder wähle ein anderes Modell.",
       cutOff: "Die Übersetzung wurde vorzeitig abgebrochen.",
       filtered: "Der Inhaltsfilter des Anbieters hat die Übersetzung gestoppt.",

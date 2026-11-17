@@ -2490,14 +2490,38 @@ export function ComposerModelPicker({
     !inventory.cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
+  const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
+  const [browseDevice, setBrowseDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!browseOnly) return;
+    if (!open) {
+      setBrowseDevice(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setBrowseDevice((known) => known ?? false),
+      2000,
+    );
+    return () => clearTimeout(timer);
+  }, [browseOnly, open]);
+  useEffect(() => {
+    if (browseOnly && open && inventory.cachedReady) {
+      setBrowseDevice((known) => known ?? hasDeviceRows);
+    }
+  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
-    // Browsing starts on what can be downloaded, without waiting on the device scan.
-    (hasModels && !browseOnly
-      ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
-        (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
-        DEVICE_TAB)
-      : RECOMMENDED_TAB);
+    (browseOnly
+      ? browseDevice
+        ? DEVICE_TAB
+        : RECOMMENDED_TAB
+      : hasModels
+        ? ((lastTab && tabs.some((t) => t.value === lastTab)
+            ? lastTab
+            : null) ??
+          (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
+          DEVICE_TAB)
+        : RECOMMENDED_TAB);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
