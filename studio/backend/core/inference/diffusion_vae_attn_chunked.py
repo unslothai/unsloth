@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 / fp16
-VAE's math SDPA keeps its own dtype (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that
-process-wide flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the
-fp32 upcast). Linux ROCm wide heads use the fp32 path automatically because their unavailable fused kernels are not
-trusted for the default half-math route."""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 VAE's
+math SDPA keeps bf16 (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that process-wide
+flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32
+upcast). fp16 always upcasts: the FLUX.1 / Z-Image VAE's mid-block scores reach 1e6 to 5e7, past fp16's 65504."""
 
 from __future__ import annotations
 
@@ -73,10 +72,12 @@ def _autocast_dtype(device_type: str) -> Any:
 
 
 def _half_math_call(q: Any) -> bool:
+    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
+    # cards without native bf16, gfx103x and older, run the VAE in fp16).
     import torch
     return (
         getattr(getattr(q, "device", None), "type", None) == "cuda"
-        and q.dtype in (torch.bfloat16, torch.float16)
+        and q.dtype == torch.bfloat16
         and is_rocm_torch(torch)
         and half_math_enabled()
     )
@@ -91,12 +92,11 @@ def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     return max(1, mb) * 2**20
 
 
-# Maximum head width we trust for fused ROCm SDPA. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151 accepts head dim
-# 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative error 19-38
-# against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental switch;
-# 128 and 256 match math. Linux ROCm rejects these wide heads from fused dispatch, so both platforms use 256 as the
-# boundary for the safe fallback.
-ROCM_FUSED_MAX_HEAD_DIM = 256
+# Widest head the Windows ROCm fused SDPA kernels compute correctly. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151
+# accepts head dim 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative
+# error 19-38 against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental
+# switch; 128 and 256 match math. That wrecked every Windows AMD VAE encode / decode (renders and training latents).
+WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
 
 
 def windows_rocm(torch: Any = None) -> bool:
@@ -113,18 +113,10 @@ def windows_rocm(torch: Any = None) -> bool:
 
 
 def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
-    import sys
-    return sys.platform == "win32" and _rocm_untrusted_head(q, torch)
-
-
-def _non_windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
-    import sys
-    return sys.platform != "win32" and _rocm_untrusted_head(q, torch)
-
-
-def _rocm_untrusted_head(q: Any, torch: Any) -> bool:
     shape = getattr(q, "shape", None) or ()
-    return len(shape) > 0 and int(shape[-1]) > ROCM_FUSED_MAX_HEAD_DIM and is_rocm_torch(torch)
+    return (
+        len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
+    )
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
@@ -245,17 +237,6 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
-                        if _non_windows_rocm_untrusted_head(q, torch):
-                            # Linux ROCm rejects these wide heads from fused dispatch, but its default half-math
-                            # path can overflow at full-resolution VAE decode. Match the trusted fp32 math route.
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
-                            with torch.autocast(q.device.type, enabled = False):
-                                if _score_bytes(q, k) > self.budget:
-                                    self.chunked += 1
-                                    return chunked_sdpa(fp32_math_sdpa, q, k, v, self.budget, scale)
-                                return fp32_math_sdpa(q, k, v, scale)
                         if _half_math_call(q):
                             self.half += 1
                             cast = _autocast_dtype(q.device.type)
