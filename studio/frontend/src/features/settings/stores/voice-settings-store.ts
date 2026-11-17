@@ -17,6 +17,16 @@ import {
   STT_MODEL_REPOS,
   type SttModel,
   migrateVoiceSettings,
+  DEFAULT_VOICE_REPLY_INSTRUCTION,
+  DEFAULT_VOICE_TURN_ENDING,
+  VOICE_TURN_ENDINGS,
+  type VoiceTurnEnding,
+  TURN_JUDGE_BAR,
+  VOICE_CUSTOM_INSTRUCTION_MAX,
+  VOICE_REPLY_INSTRUCTIONS,
+  VOICE_ROLLOUT_DEFAULTS,
+  type VoiceReplyInstruction,
+  type VoiceRolloutSetting,
 } from "./stt-model-catalog";
 import { syncSttDevicePreference } from "../api/stt-device";
 
@@ -207,6 +217,22 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   setVoiceLogOptOut: (threadId: string, optOut: boolean) => void;
   voiceLogExportedAt: number | null;
   setVoiceLogExportedAt: (value: number | null) => void;
+
+  /** Voice mode switches (Settings > Voice > Voice mode): first clause early, numbers as words, heard-text cut. */
+  clauseFirstChunk: boolean;
+  speechNormalize: boolean;
+  heardCut: boolean;
+  setVoiceRollout: (setting: VoiceRolloutSetting, on: boolean) => void;
+  turnEnding: VoiceTurnEnding;
+  setTurnEnding: (value: VoiceTurnEnding) => void;
+  /** The text judge's bar in the Smart Turn + judge lane. */
+  turnJudgeBar: number;
+  setTurnJudgeBar: (value: number) => void;
+  /** What voice mode tells the chat model about answering aloud; "custom" sends replyInstructionCustom. */
+  replyInstruction: VoiceReplyInstruction;
+  setReplyInstruction: (value: VoiceReplyInstruction) => void;
+  replyInstructionCustom: string;
+  setReplyInstructionCustom: (value: string) => void;
 }
 
 /** On quota errors drop the oldest dictations instead of losing the whole save. */
@@ -418,11 +444,24 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         }),
       voiceLogExportedAt: null,
       setVoiceLogExportedAt: (voiceLogExportedAt) => set({ voiceLogExportedAt }),
+
+      ...VOICE_ROLLOUT_DEFAULTS,
+      setVoiceRollout: (setting, on) => set({ [setting]: on }),
+      turnEnding: DEFAULT_VOICE_TURN_ENDING,
+      setTurnEnding: (turnEnding) => set({ turnEnding }),
+      turnJudgeBar: TURN_JUDGE_BAR.default,
+      setTurnJudgeBar: (value) =>
+        set({ turnJudgeBar: clampNumber(value, TURN_JUDGE_BAR.min, TURN_JUDGE_BAR.max, TURN_JUDGE_BAR.default) }),
+      replyInstruction: DEFAULT_VOICE_REPLY_INSTRUCTION,
+      setReplyInstruction: (replyInstruction) => set({ replyInstruction }),
+      replyInstructionCustom: "",
+      setReplyInstructionCustom: (value) =>
+        set({ replyInstructionCustom: clipInstruction(value) }),
     }),
     {
       name: "unsloth_voice_settings",
       storage: createJSONStorage(() => quotaSafeLocalStorage),
-      version: 1,
+      version: 4,
       migrate: migrateVoiceSettings,
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
@@ -504,6 +543,18 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
             : [],
           voiceLogExportedAt:
             typeof saved?.voiceLogExportedAt === "number" ? saved.voiceLogExportedAt : null,
+          ...rolloutSettings(saved),
+          turnEnding: VOICE_TURN_ENDINGS.includes(saved?.turnEnding as VoiceTurnEnding)
+            ? (saved?.turnEnding as VoiceTurnEnding)
+            : DEFAULT_VOICE_TURN_ENDING,
+          turnJudgeBar: clampNumber(saved?.turnJudgeBar, TURN_JUDGE_BAR.min, TURN_JUDGE_BAR.max, TURN_JUDGE_BAR.default),
+          replyInstruction: VOICE_REPLY_INSTRUCTIONS.includes(saved?.replyInstruction as VoiceReplyInstruction)
+            ? (saved?.replyInstruction as VoiceReplyInstruction)
+            : DEFAULT_VOICE_REPLY_INSTRUCTION,
+          replyInstructionCustom:
+            typeof saved?.replyInstructionCustom === "string"
+              ? clipInstruction(saved.replyInstructionCustom)
+              : "",
         };
       },
     },
@@ -515,6 +566,23 @@ if (typeof window !== "undefined") {
       void useVoiceSettingsStore.persist.rehydrate();
     }
   });
+}
+
+// Never ends on half of a surrogate pair: a lone one is not valid UTF-8 on the way to the server.
+function clipInstruction(value: string): string {
+  const clipped = value.slice(0, VOICE_CUSTOM_INSTRUCTION_MAX);
+  return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
+}
+
+function rolloutSettings(
+  saved: Partial<VoiceSettingsState> | undefined,
+): Record<VoiceRolloutSetting, boolean> {
+  const out = { ...VOICE_ROLLOUT_DEFAULTS };
+  for (const key of Object.keys(out) as VoiceRolloutSetting[]) {
+    const value = saved?.[key];
+    if (typeof value === "boolean") out[key] = value;
+  }
+  return out;
 }
 
 function asString(value: unknown, fallback: string): string {

@@ -2001,6 +2001,90 @@ export const en = {
       },
       voiceMode: {
         sectionTitle: "Voice mode",
+        switches: {
+          clauseFirstChunk: {
+            label: "Start speaking sooner",
+            description:
+              "Sends the first phrase of a reply to the voice before the sentence is finished, with a short pause after it. Replies start about 0.3 s sooner.",
+          },
+          speechNormalize: {
+            label: "Read numbers as words",
+            description:
+              "Rewrites prices, times, dates, fractions, phone numbers and Roman numerals into words before the voice reads them. English only.",
+          },
+          heardCut: {
+            label: "Keep only what you heard",
+            description:
+              "When you interrupt a reply, the chat model remembers only the part that was spoken before you cut in.",
+          },
+        },
+        turnEnding: {
+          label: "End of your turn",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description:
+                "A small end-of-turn model listens for when you finish, so the reply starts about 0.3 s sooner than the fixed pause. When it doesn't hear you finish, the pause runs out and your words are checked: by the decision model if one is set, otherwise by whether they read cut off.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + decision model",
+              description:
+                "Also asks the decision model to agree when Smart Turn hears you finish. In testing this held more finished turns without catching more cut-offs. Without a decision model it works like Smart Turn.",
+            },
+            wait: {
+              label: "Fixed pause",
+              description: "One second of silence ends your turn.",
+            },
+          },
+          judgeBar: {
+            label: "Decision model must be this sure",
+            description:
+              "Higher holds more turns for you to go on, so fewer replies start while you're mid-thought, but finished turns wait longer.",
+          },
+        },
+        decisionModel: {
+          label: "Decision model (optional)",
+          description:
+            "Reads what you said after a pause Smart Turn didn't call the end, and holds the turn if you were mid-thought. It also picks filler lines and what to do when you speak over the reply.",
+          noneDescription:
+            "Voice mode works without one. After a pause, your turn is held only when the transcript reads cut off; a decision model catches more mid-sentence pauses.",
+          none: "None",
+          loading: "Loading the decision model",
+        },
+        replyInstruction: {
+          label: "How replies are spoken",
+          options: {
+            conversation: {
+              label: "Conversation",
+              description:
+                "Short spoken answers, answer first. Expects misheard words, says one line before a tool call, and shows code or links only when you ask for them.",
+            },
+            spoken: {
+              label: "Spoken reply",
+              description:
+                "One to three short sentences of plain speech, with a short version first when the answer is long. Code or lists only when you ask for them.",
+            },
+            voice: {
+              label: "Plain sentences",
+              description:
+                "Plain sentences without markdown, lists, code or links, one question at a time, numbers and dates said the way a person would.",
+            },
+            custom: {
+              label: "Custom",
+              description: "Your own instruction, sent after the chat's instructions while voice mode runs.",
+            },
+            none: {
+              label: "None",
+              description: "The chat model gets no instruction about speaking; replies are as long as in a typed chat.",
+            },
+          },
+          custom: {
+            label: "Your instruction",
+            placeholder: "For example: Answer in one short sentence, like a friend would.",
+            hint: "{n} of {max} characters",
+            empty: "Nothing is sent until you write an instruction.",
+          },
+        },
         arcsLabel: "Show decision arcs",
         arcsDescription: "The turn, filler and interrupt arcs around the voice orb.",
         captionLabel: "Show decision caption",

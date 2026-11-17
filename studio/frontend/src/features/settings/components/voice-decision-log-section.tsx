@@ -38,6 +38,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useVoiceSettingsStore } from "../stores/voice-settings-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
+import { VoiceModeSwitches } from "./voice-mode-switches";
 
 const MODELS: LayaModel[] = ["judge", "interject", "filler"];
 const ERROR_KINDS = [
@@ -173,6 +174,7 @@ export function VoiceDecisionLogSection() {
 
   return (
     <SettingsSection title={t("settings.voice.voiceMode.sectionTitle")}>
+      <VoiceModeSwitches />
       <SettingsRow
         label={t("settings.voice.voiceMode.arcsLabel")}
         description={t("settings.voice.voiceMode.arcsDescription")}

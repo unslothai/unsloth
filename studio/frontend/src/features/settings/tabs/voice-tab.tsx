@@ -1714,6 +1714,7 @@ export function VoiceTab() {
             {t("settings.voice.recents.manage")}
           </Button>
         </SettingsRow>
+
       </SettingsSection>
 
       <SettingsSection title={t("settings.voice.readAloud.sectionTitle")}>

@@ -100,12 +100,63 @@ export function migrateVoiceSettings(
   persisted: unknown,
   fromVersion: number,
 ): Record<string, unknown> | undefined {
-  const saved = persisted as Record<string, unknown> | undefined;
+  let saved = persisted as Record<string, unknown> | undefined;
   if (fromVersion < 1 && saved?.sttModel === LEGACY_DEFAULT_STT_MODEL) {
-    return { ...saved, sttModel: DEFAULT_STT_MODEL };
+    saved = { ...saved, sttModel: DEFAULT_STT_MODEL };
+  }
+  // v2 added the voice latency rollout switches: a v1 save takes their defaults.
+  if (fromVersion < 2 && saved) {
+    saved = { ...VOICE_ROLLOUT_DEFAULTS, ...saved };
+  }
+  // v3 turned reply shaping into a choice of instruction and made turn ending a three-way choice.
+  // Both were test-only before, so a v2 save takes the defaults the listening test picked.
+  if (fromVersion < 3 && saved) {
+    const rest = { ...saved };
+    for (const key of ["replyShaping", "smartTurn", "smartTurnJudge"]) delete rest[key];
+    saved = rest;
+  }
+  // v4 moved the turn-ending default to Smart Turn: a v3 save (test builds only) takes it.
+  if (fromVersion < 4 && saved) {
+    const rest = { ...saved };
+    delete rest.turnEnding;
+    saved = rest;
   }
   return saved;
 }
+
+/** One switch per latency phase, so a slower machine can go back to today's behaviour. */
+export type VoiceRolloutSetting =
+  | "clauseFirstChunk"
+  | "speechNormalize"
+  | "heardCut";
+
+export const VOICE_ROLLOUT_DEFAULTS: Readonly<Record<VoiceRolloutSetting, boolean>> = {
+  // On after the listening test: with its comma pause it rated as natural as the whole sentence.
+  clauseFirstChunk: true,
+  // Prices, times, dates and the like read as words; the listening test confirmed every rule.
+  speechNormalize: true,
+  heardCut: false,
+};
+
+/** What voice mode tells the chat model about answering aloud (Settings > Voice > Voice mode). */
+// A save holding the retired "both" is not in this list, so the store falls back to the default.
+export type VoiceReplyInstruction = "conversation" | "spoken" | "voice" | "custom" | "none";
+export const VOICE_REPLY_INSTRUCTIONS: readonly VoiceReplyInstruction[] = ["conversation", "spoken", "voice", "custom", "none"];
+// Rated best in the listening test (4.1 of 5, against 3.7 and 3.3 for either instruction alone).
+export const DEFAULT_VOICE_REPLY_INSTRUCTION: VoiceReplyInstruction = "conversation";
+export const VOICE_CUSTOM_INSTRUCTION_MAX = 2000;
+
+/**
+ * How a turn ends: the fixed silence wait, Smart Turn (the end-of-turn model shortens the wait), or
+ * Smart Turn with the text judge also agreeing before a turn it called finished is sent.
+ */
+export type VoiceTurnEnding = "smartTurnJudge" | "smartTurn" | "wait";
+export const VOICE_TURN_ENDINGS: readonly VoiceTurnEnding[] = ["smartTurn", "smartTurnJudge", "wait"];
+// Smart Turn makes the quick call and the decision model (when one is picked) rules on the pauses it
+// did not call finished. The judge lane only added holds on finished turns in the listening tests.
+export const DEFAULT_VOICE_TURN_ENDING: VoiceTurnEnding = "smartTurn";
+/** How sure the text judge must be, in the Smart Turn + judge lane (turn-fuser's text bar). */
+export const TURN_JUDGE_BAR = { min: 0.3, max: 0.95, step: 0.05, default: 0.65 } as const;
 
 // Separate name and size so lists can right-align the size.
 export const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {

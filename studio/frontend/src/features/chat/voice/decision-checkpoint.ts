@@ -29,7 +29,6 @@ export interface VoiceDecisionStatus {
 }
 
 const URL = "/api/inference/voice/decision";
-
 async function read(res: Response): Promise<VoiceDecisionStatus> {
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
