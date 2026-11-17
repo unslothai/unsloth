@@ -717,14 +717,27 @@ def _is_file_or_missing(path: Path) -> bool:
 
 
 def _manifest_tree_files(root: Path) -> list[Path]:
-    """Files under *root*; raises when a directory cannot be listed (``rglob`` skips it silently)."""
-
-    def fail(error: OSError) -> None:
-        # A store with no manifests-v2 (older Ollama) is complete, not unreadable.
-        if not (isinstance(error, FileNotFoundError) and error.filename == os.fspath(root)):
-            raise error
-
-    return [Path(d) / name for d, _, files in os.walk(root, onerror = fail) for name in files]
+    """Files under *root*, following directory symlinks once each. Any listing or classification
+    error raises: ``rglob`` / ``os.walk`` silently skip unreadable or symlinked directories, and a
+    skipped tag could still need a blob. Only a missing *root* (no manifests-v2 yet) is empty."""
+    files: list[Path] = []
+    pending, seen = [root], set()
+    while pending:
+        directory = pending.pop()
+        real = os.path.realpath(directory)
+        if real in seen:
+            continue
+        seen.add(real)
+        try:
+            with os.scandir(directory) as it:
+                entries = list(it)
+        except FileNotFoundError:
+            if directory == root:
+                continue
+            raise
+        for entry in entries:
+            (pending if entry.is_dir() else files).append(Path(entry.path))
+    return files
 
 
 def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:

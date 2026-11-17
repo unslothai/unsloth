@@ -261,6 +261,26 @@ def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
 
+def test_delete_keeps_blobs_a_tag_under_a_symlinked_directory_uses(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    store, ref, child_digest = _v2_store(tmp_path, monkeypatch)
+    alias_dir = store / "manifests-v2" / "ollama.com" / "library" / "alias"
+    elsewhere = tmp_path / "relocated-alias"
+    alias_dir.rename(elsewhere)
+    try:
+        alias_dir.symlink_to(elsewhere, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    ollama.delete_ollama_model_ref(ref)
+
+    assert (elsewhere / "latest").is_file()
+    assert {"sha256-cfg", "sha256-model", f"sha256-{child_digest}"} <= {
+        p.name for p in (store / "blobs").iterdir()
+    }
+
+
 def test_delete_split_gguf_takes_every_shard(lm_root, tmp_path, monkeypatch):
     hermes = tmp_path / "hermes"
     hermes.mkdir()
