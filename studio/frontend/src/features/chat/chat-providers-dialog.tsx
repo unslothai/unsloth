@@ -76,6 +76,7 @@ import {
   subscribeModelCatalog,
 } from "./model-catalog";
 
+import { ManagedEngineHint, isManagedEngineType } from "./managed-engine-hint";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -2091,6 +2092,9 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+              {editingProviderId == null && isManagedEngineType(providerType) ? (
+                <ManagedEngineHint engine={providerType} />
+              ) : null}
 
               {isOpenCodeProviderType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
@@ -2880,8 +2884,8 @@ export function ChatProvidersSettings({
           </div>
           {runsStudioToolsLocally ? (
             <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
-              Search, Tools, MCP and Docs run on this machine and send their results to
-              the provider. Risky code and terminal calls still ask first.
+              Search, Tools and MCP run on this machine and send results to the
+              provider. Risky calls still ask first.
             </p>
           ) : null}
         </div>
