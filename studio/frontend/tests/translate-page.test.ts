@@ -379,8 +379,8 @@ test("a cut-off or filtered reply fails, and history is shared across windows", 
     /finishReason === "content_filter"\)\s*throw new TranslateRunError\("filtered"\)/,
   );
   const store = readText("../src/features/translate/translate-store.ts");
-  assert.match(store, /let stored = storedHistory\(\);/);
-  assert.match(store, /addHistoryEntry\(stored,/);
+  assert.match(store, /const stored = storedHistory\(\);/);
+  assert.match(store, /addHistoryEntry\(rest,/);
   assert.match(store, /addEventListener\("storage"/);
 });
 
@@ -588,18 +588,41 @@ test("downloaded models offered for translation are complete text GGUFs, newest 
     },
     {
       id: "/models/llama.gguf",
+      path: "/models/llama.gguf",
+      model_id: "someone/llama",
       display_name: "llama",
       source: "models_dir",
       model_format: "gguf",
       partial: false,
     },
+    {
+      id: "/lmstudio/pub/Qwen3-8B-GGUF",
+      path: "/lmstudio/pub/Qwen3-8B-GGUF",
+      model_id: "pub/Qwen3-8B-GGUF",
+      display_name: "Qwen3-8B-GGUF",
+      source: "lmstudio",
+      model_format: "gguf",
+      partial: false,
+    },
   ]);
+  // A model outside the Hugging Face cache loads by its path on disk, never by a guessed repo name.
   assert.deepEqual(
-    offered.map((model) => [model.id, model.name, model.fromHub]),
+    offered.map((model) => [
+      model.id,
+      model.name,
+      model.needsQuant,
+      model.localPath,
+    ]),
     [
-      ["unsloth/gemma-3-270m-it-GGUF", "gemma-3-270m-it", true],
-      ["unsloth/Qwen3-0.6B-GGUF", "Qwen3-0.6B", true],
-      ["/models/llama.gguf", "llama", false],
+      ["unsloth/gemma-3-270m-it-GGUF", "gemma-3-270m-it", true, null],
+      ["unsloth/Qwen3-0.6B-GGUF", "Qwen3-0.6B", true, null],
+      ["/models/llama.gguf", "llama", false, "/models/llama.gguf"],
+      [
+        "/lmstudio/pub/Qwen3-8B-GGUF",
+        "Qwen3-8B",
+        true,
+        "/lmstudio/pub/Qwen3-8B-GGUF",
+      ],
     ],
   );
 });

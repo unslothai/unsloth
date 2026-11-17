@@ -494,24 +494,59 @@ function ModelMenu({
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   // What the server holds in memory: the Loaded note and Eject.
-  const [loaded, setLoaded] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState<
+    { id: string; variant: string | null }[]
+  >([]);
   const refreshLoaded = useCallback(() => {
     getInferenceStatus()
-      .then((status) => setLoaded(status.loaded ?? []))
+      .then((status) =>
+        Promise.all(
+          (status.loaded ?? []).map(async (id) => ({
+            id,
+            // The quant in memory: another quant of the same repo is not this model.
+            variant:
+              (await getInferenceStatus(undefined, id).catch(() => null))
+                ?.gguf_variant ?? null,
+          })),
+        ),
+      )
+      .then(setLoaded)
       .catch(() => undefined);
   }, []);
   // On arrival, when a run ends (its model is now loaded), and when the menu opens.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `busy` is the trigger, not an input.
   useEffect(refreshLoaded, [refreshLoaded, busy]);
+  const inventory = useDeviceInventorySources(["localModels"]);
+  const localRows = inventory.localModels.rows;
+  const mine = useMemo(() => downloadedTranslateModels(localRows), [localRows]);
+  const customMine =
+    value === CUSTOM_TRANSLATE_MODEL && custom !== null
+      ? (mine.find((model) => modelIdsMatch(model.id, custom.id)) ?? null)
+      : null;
+  const customIsMine = customMine !== null;
   const localModel =
     value === CUSTOM_TRANSLATE_MODEL
       ? custom && !isExternalModelId(custom.id)
         ? custom.id
         : null
       : (dedicatedTranslateModel(value)?.repo ?? null);
-  const isLoaded = (repo: string) =>
-    loaded.some((id) => modelIdsMatch(id, repo));
-  const ejectable = localModel !== null && isLoaded(localModel);
+  const isLoaded = (repo: string, variant?: string | null) =>
+    loaded.some(
+      (model) =>
+        modelIdsMatch(model.id, repo) &&
+        (!variant ||
+          !model.variant ||
+          model.variant.toLowerCase() === variant.toLowerCase()),
+    );
+  const selectedVariant =
+    value === CUSTOM_TRANSLATE_MODEL
+      ? custom?.variant
+      : dedicatedTranslateModel(value)?.variant;
+  // A model loaded by its path is reported under its Hub-style name.
+  const ejectable =
+    localModel !== null &&
+    (isLoaded(localModel, selectedVariant) ||
+      (customMine?.repo != null && isLoaded(customMine.repo, selectedVariant)));
   const selectedKey = translateModelKey(value, custom);
   const setModelReady = useTranslateStore((state) => state.setModelReady);
   // A model already in memory, say after a reload, may translate as you type.
@@ -529,35 +564,39 @@ function ModelMenu({
       toast.error(error instanceof Error ? error.message : String(error));
     }
   };
-  const inventory = useDeviceInventorySources(["localModels"]);
-  const localRows = inventory.localModels.rows;
-  const mine = useMemo(() => downloadedTranslateModels(localRows), [localRows]);
+  // A later choice wins over a quant lookup still in flight.
+  const pickSeq = useRef(0);
   const pickMine = async (model: DownloadedTranslateModel) => {
+    const seq = ++pickSeq.current;
     let variant: string | null = null;
     let sizeBytes = model.sizeBytes;
-    if (model.fromHub) {
+    if (model.needsQuant) {
       // The quant already on disk, so picking a downloaded model never starts a download.
       const listing = await listGgufVariants(model.id, undefined, {
         localOnly: true,
+        localPath: model.localPath,
       }).catch(() => null);
+      if (seq !== pickSeq.current) return;
       const onDisk = listing ? downloadedQuant(listing.variants) : null;
-      variant = onDisk?.quant ?? null;
-      sizeBytes = onDisk?.sizeBytes ?? sizeBytes;
+      if (!onDisk) {
+        // Nothing complete on disk any more: the quant is chosen in the full list.
+        setPickerOpen(true);
+        return;
+      }
+      variant = onDisk.quant;
+      sizeBytes = onDisk.sizeBytes;
     }
     onPickCustom({ id: model.id, name: model.name, variant, sizeBytes });
   };
   const mineValue = (id: string) => `mine:${id}`;
-  const customIsMine =
-    value === CUSTOM_TRANSLATE_MODEL &&
-    custom !== null &&
-    mine.some((model) => modelIdsMatch(model.id, custom.id));
-  const selectedValue = customIsMine && custom ? mineValue(custom.id) : value;
+  const selectedValue = customMine ? mineValue(customMine.id) : value;
   const openPickerOnClose = useRef(false);
   const label =
     value === CUSTOM_TRANSLATE_MODEL
       ? (custom?.name ?? "")
       : (dedicatedTranslateModel(value)?.label ?? t("translate.model.chat"));
   const pick = (id: string, meta: ModelSelectorChangeMeta) => {
+    pickSeq.current++;
     setPickerOpen(false);
     const variant = meta.ggufVariant ?? null;
     const builtIn = DEDICATED_TRANSLATE_MODELS.find(
@@ -580,7 +619,7 @@ function ModelMenu({
   const customNote = custom
     ? [
         custom.variant,
-        !isExternalModelId(custom.id) && isLoaded(custom.id)
+        !isExternalModelId(custom.id) && isLoaded(custom.id, custom.variant)
           ? t("translate.model.loaded")
           : formatModelBytes(custom.sizeBytes ?? 0),
       ]
@@ -645,8 +684,12 @@ function ModelMenu({
             value={selectedValue}
             onValueChange={(next) => {
               const picked = mine.find((model) => mineValue(model.id) === next);
-              if (picked) void pickMine(picked);
-              else if (isTranslateModelId(next)) onChange(next);
+              if (picked) {
+                void pickMine(picked);
+              } else if (isTranslateModelId(next)) {
+                pickSeq.current++;
+                onChange(next);
+              }
             }}
           >
             <DropdownMenuLabel>
@@ -665,7 +708,7 @@ function ModelMenu({
                   <span className="text-ui-12 leading-normal text-muted-foreground">
                     {[
                       t(MODEL_NOTE[model.id]),
-                      isLoaded(model.repo)
+                      isLoaded(model.repo, model.variant)
                         ? t("translate.model.loaded")
                         : downloaded[model.id]
                           ? t("translate.model.downloaded")
@@ -701,10 +744,21 @@ function ModelMenu({
                   </span>
                   <span className="text-ui-12 leading-normal text-muted-foreground">
                     {[
-                      isLoaded(model.id)
+                      customMine === model ? custom?.variant : null,
+                      isLoaded(
+                        model.id,
+                        customMine === model ? custom?.variant : null,
+                      ) ||
+                      (model.repo !== null &&
+                        isLoaded(
+                          model.repo,
+                          customMine === model ? custom?.variant : null,
+                        ))
                         ? t("translate.model.loaded")
                         : t("translate.model.downloaded"),
-                      formatModelBytes(model.sizeBytes ?? 0),
+                      customMine === model && custom?.sizeBytes
+                        ? formatModelBytes(custom.sizeBytes)
+                        : formatModelBytes(model.sizeBytes ?? 0),
                     ]
                       .filter(Boolean)
                       .join(" · ")}
@@ -999,7 +1053,7 @@ export function TranslatePage() {
           ?.label ??
         (runModelKey === CHAT_TRANSLATE_MODEL
           ? t("translate.model.chat")
-          : (prefs.customModel?.name ?? "")));
+          : (attempt?.customName ?? prefs.customModel?.name ?? "")));
 
   // Read again when a run ends: that is when a download has landed.
   useEffect(() => {

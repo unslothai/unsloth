@@ -76,6 +76,8 @@ type Result = {
   tone: TranslateTone;
   modelKey: string;
   custom: string | null;
+  /** The picked model's name when the run uses one from the picker, for the status line. */
+  customName: string | null;
 };
 
 type TranslateState = {
@@ -192,6 +194,10 @@ function resultOf(source: string, prefs: TranslatePrefs): Result {
     tone: prefs.tone,
     modelKey: translateModelKey(prefs.modelId, prefs.customModel),
     custom: customPromptOf(prefs),
+    customName:
+      prefs.modelId === CUSTOM_TRANSLATE_MODEL
+        ? (prefs.customModel?.name ?? null)
+        : null,
   };
 }
 
@@ -229,6 +235,8 @@ export function translatePromptOptions(
 let controller: AbortController | null = null;
 // The history entry the last auto run saved, replaced while the same draft keeps changing.
 let autoEntryId: string | null = null;
+// Shows the running translation's latest streamed text now; Stop calls it before letting go.
+let flushStreamed: (() => void) | null = null;
 
 // One render per frame: a render per streamed token overruns React's nested update limit.
 const nextFrame = (callback: () => void): (() => void) => {
@@ -364,10 +372,12 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     const flushOutput = () => {
       cancelFrame?.();
       cancelFrame = null;
-      // A stopped run still shows its last text; a newer run owns the pane.
-      if (streamed !== null && (current() || controller === null))
-        set({ output: streamed });
+      if (streamed !== null && current()) set({ output: streamed });
       streamed = null;
+    };
+    flushStreamed = flushOutput;
+    const release = () => {
+      if (flushStreamed === flushOutput) flushStreamed = null;
     };
     try {
       const { output, model } = await runTranslation({
@@ -384,33 +394,36 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         },
       });
       dropFrame();
+      release();
       if (!current()) return;
       controller = null;
       const state = get();
       // Onto the stored list, not this window's: another window may have added entries since.
       let history = state.history;
       if (state.prefs.saveHistory) {
-        let stored = storedHistory();
+        const stored = storedHistory();
         const previous = stored[0];
-        if (
+        const replaces =
           auto &&
-          output.trim() !== "" &&
-          previous &&
+          previous !== undefined &&
           previous.id === autoEntryId &&
           previous.target === prefs.target &&
-          sameDraft(previous.source, source)
-        ) {
-          stored = stored.slice(1);
-        }
-        const added = addHistoryEntry(stored, {
+          sameDraft(previous.source, source);
+        const rest = replaces ? stored.slice(1) : stored;
+        const added = addHistoryEntry(rest, {
           source,
           output,
           target: prefs.target,
           from: prefs.from === AUTO_SOURCE ? null : prefs.from,
           model,
         });
-        autoEntryId = auto && added[0] !== stored[0] ? added[0].id : null;
-        history = saveHistory(added);
+        // A translation too long to keep leaves the earlier entry where it was.
+        if (added[0] !== rest[0]) {
+          autoEntryId = auto ? added[0].id : null;
+          history = saveHistory(added);
+        } else {
+          history = stored;
+        }
       }
       set({
         phase: null,
@@ -422,8 +435,9 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           : [...state.readyModels, request.modelKey],
       });
     } catch (error) {
-      // Whatever streamed in before a Stop or a failure stays on screen.
+      // Whatever streamed in before a failure stays on screen; Stop already showed its own.
       flushOutput();
+      release();
       if (!current()) return;
       controller = null;
       if (
@@ -449,6 +463,9 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
 
   stop: () => {
     if (!controller) return;
+    // The text that arrived before Stop stays; nothing is written after it.
+    flushStreamed?.();
+    flushStreamed = null;
     controller.abort();
     controller = null;
     set({ phase: null });

@@ -171,17 +171,23 @@ export function formatModelBytes(bytes: number): string {
 
 /** A downloaded model offered under "Your models": a complete GGUF that generates text. */
 export type DownloadedTranslateModel = {
+  /** What the loader takes: a Hub repo for the Hugging Face cache, else the path on disk. */
   id: string;
   name: string;
   sizeBytes: number | null;
-  /** In the Hugging Face cache, so the quant on disk has to be looked up before loading it. */
-  fromHub: boolean;
+  /** A repo or folder holding several quants: the one on disk is looked up before loading. */
+  needsQuant: boolean;
+  /** The folder to look in for a model that is loaded by its path. */
+  localPath: string | null;
+  /** Its Hub-style name when known: a model loaded by path can be reported under it. */
+  repo: string | null;
 };
 
 type InventoryRow = {
   id: string;
   model_id?: string | null;
   display_name: string;
+  path?: string;
   source: string;
   model_format?: string | null;
   runtime?: string | null;
@@ -208,12 +214,22 @@ export function downloadedTranslateModels(
         !isTranslationOnlyRepo(row.model_id ?? row.id),
     )
     .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
-    .map((row) => ({
-      id: row.model_id ?? row.id,
-      name: row.display_name.replace(/-GGUF$/i, ""),
-      sizeBytes: row.size_bytes && row.size_bytes > 0 ? row.size_bytes : null,
-      fromHub: row.source === "hf_cache",
-    }))
+    .map((row) => {
+      // The active Hugging Face cache lists a repo id; every other row is a path on disk.
+      const fromHub =
+        row.source === "hf_cache" && row.id === (row.model_id ?? row.id);
+      const singleFile =
+        row.source === "ollama" ||
+        (row.path ?? row.id).toLowerCase().endsWith(".gguf");
+      return {
+        id: row.id,
+        name: row.display_name.replace(/-GGUF$/i, ""),
+        sizeBytes: row.size_bytes && row.size_bytes > 0 ? row.size_bytes : null,
+        needsQuant: fromHub || !singleFile,
+        localPath: fromHub ? null : (row.path ?? row.id),
+        repo: row.model_id ?? null,
+      };
+    })
     .filter((model) => !seen.has(model.id) && seen.add(model.id))
     .slice(0, DOWNLOADED_MODELS_SHOWN);
 }

@@ -20,6 +20,28 @@ Object.defineProperty(globalThis, "navigator", {
 
 class TranslateRunError extends Error {}
 let reply = (input: string) => `FR:${input}`;
+type RunOptions = {
+  text: string;
+  signal: AbortSignal;
+  onOutput: (text: string) => void;
+};
+const answer = async (options: RunOptions) => ({
+  output: reply(options.text),
+  model: "Hy-MT2 1.8B",
+});
+let runner: (
+  options: RunOptions,
+) => Promise<{ output: string; model: string }> = answer;
+// Streams one piece, then waits for Stop like a run still in flight.
+const streaming = (options: RunOptions) => {
+  options.onOutput("partial text");
+  return new Promise<never>((_, reject) => {
+    options.signal.addEventListener("abort", () =>
+      reject(new DOMException("Aborted", "AbortError")),
+    );
+  });
+};
+const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
 type Store = {
   getState: () => Record<string, any>;
@@ -36,10 +58,7 @@ const { useTranslateStore, AUTO_SOURCE } = loadWithStubs<{
   "./translate-text": text,
   "./translate-runner": {
     TranslateRunError,
-    runTranslation: async (options: { text: string }) => ({
-      output: reply(options.text),
-      model: "Hy-MT2 1.8B",
-    }),
+    runTranslation: (options: RunOptions) => runner(options),
   },
 });
 
@@ -48,6 +67,7 @@ const state = () => useTranslateStore.getState();
 beforeEach(() => {
   storage.clear();
   reply = (input) => `FR:${input}`;
+  runner = answer;
   useTranslateStore.setState({
     source: "",
     output: "",
@@ -148,4 +168,60 @@ test("long text is cut into passages a small model translates whole", () => {
   for (const chunk of text.splitForTranslation(source)) {
     assert.ok(chunk.text.length <= 1000);
   }
+});
+
+test("Stop keeps the text that had streamed in", async () => {
+  runner = streaming;
+  state().setSource("Hello");
+  const run = state().translate();
+  await Promise.resolve();
+  state().stop();
+  await run;
+  await settle();
+  assert.equal(state().output, "partial text");
+  assert.equal(state().result, null);
+});
+
+test("Clear during a run leaves nothing behind", async () => {
+  runner = streaming;
+  state().setSource("Hello");
+  const run = state().translate();
+  await Promise.resolve();
+  state().clear();
+  await run;
+  await settle();
+  assert.equal(state().source, "");
+  assert.equal(state().output, "");
+});
+
+test("restoring a history entry during a run shows that entry, not the stopped text", async () => {
+  runner = streaming;
+  state().setSource("Hello");
+  const run = state().translate();
+  await Promise.resolve();
+  state().restore({
+    id: "1",
+    at: 1,
+    source: "Old",
+    output: "Vieux",
+    target: "fr",
+    from: "en",
+    model: "m",
+  });
+  await run;
+  await settle();
+  assert.equal(state().output, "Vieux");
+});
+
+test("a typed draft too long for the history keeps the entry it would have replaced", async () => {
+  const first = `${"word ".repeat(1500)}end`;
+  state().setSource(first);
+  await state().translate({ auto: true });
+  assert.equal(state().history.length, 1);
+  state().setSource(`${first} ${"more ".repeat(1500)}`);
+  await state().translate({ auto: true });
+  assert.deepEqual(
+    state().history.map((entry: { source: string }) => entry.source),
+    [first],
+  );
 });
