@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parallel connections to one OAuth MCP server must share one refresh, not race a rotating token."""
+"""Parallel connections to one OAuth MCP server must share one refresh and keep a live refresh token."""
 
 import asyncio
 import json
@@ -19,31 +19,35 @@ http = getattr(oauth2, "httpx2", None) or oauth2.httpx
 
 
 class _RotatingServer:
+    """Notion's token endpoint: a refresh accepts the current or the previous token and rotates it."""
+
     def __init__(self):
         self.lock = threading.Lock()
-        self.refresh_token = "r0"
-        self.access_token = None
+        self.current = "r0"
+        self.previous = None
+        self.access_tokens = set()
         self.refreshes = 0
 
     def handle(self, request):
         if request.url.path == "/token":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             with self.lock:
-                if form.get("refresh_token") != self.refresh_token:
+                if form.get("refresh_token") not in (self.current, self.previous):
                     return http.Response(400, json = {"error": "invalid_grant"}, request = request)
                 self.refreshes += 1
-                self.refresh_token = f"r{self.refreshes}"
-                self.access_token = f"a{self.refreshes}"
+                self.previous, self.current = form["refresh_token"], f"r{self.refreshes}"
+                access = f"a{self.refreshes}"
+                self.access_tokens.add(access)
                 body = {
-                    "access_token": self.access_token,
-                    "refresh_token": self.refresh_token,
+                    "access_token": access,
+                    "refresh_token": self.current,
                     "token_type": "Bearer",
                     "expires_in": 3600,
                 }
             time.sleep(0.2)
             return http.Response(200, content = json.dumps(body).encode(), request = request)
-        ok = request.headers.get("Authorization") == f"Bearer {self.access_token}"
-        return http.Response(200 if ok else 401, request = request)
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        return http.Response(200 if token in self.access_tokens else 401, request = request)
 
 
 async def _connect(server):
@@ -92,3 +96,5 @@ def test_parallel_connections_refresh_once(tmp_path, monkeypatch):
 
     assert statuses == [200, 200, 200]
     assert server.refreshes == 1
+    stored = asyncio.run(mcp_client._oauth(URL).token_storage_adapter.get_tokens())
+    assert stored.refresh_token in (server.current, server.previous)

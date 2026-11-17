@@ -593,8 +593,8 @@ def _accept_root_issuer_slash(auth) -> None:
 
 
 def _serialize_token_refresh(auth, lock: threading.Lock) -> None:
-    """Each connection builds its own provider, so parallel ones spend one rotating refresh token;
-    the loser 401s into a new registration and a fresh consent prompt (#18164)."""
+    """Each connection builds its own provider, so parallel ones each rotate the refresh token and the
+    one saved last can already be revoked: the next refresh fails into a new consent prompt (#18164)."""
     flow = auth.async_auth_flow
 
     async def async_auth_flow(request):
