@@ -9,6 +9,7 @@ path so the test stays CPU-only and does not import ``unsloth``.
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import types
@@ -260,6 +261,10 @@ def test_trainable_embeddings_default_to_false(ddp_env, modules_to_save):
     assert _helper()(_args(), model) is False
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "torchrun's rendezvous needs libuv, which Windows torch builds lack",
+)
 def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
     # Two gloo ranks: before the fix the first backward raised "mark a variable ready only once".
     import json
