@@ -2470,15 +2470,17 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  const chosenName =
-    shown?.label ??
-    (checkpoint
-      ? (missingExternalModel(
-          checkpoint,
-          externalModels ?? [],
-          source?.externalConnections ?? [],
-        )?.modelName ?? modelDisplayName(checkpoint))
-      : null);
+  // A browse panel has no choice of its own to collapse to: always the list.
+  const chosenName = browseOnly
+    ? undefined
+    : (shown?.label ??
+      (checkpoint
+        ? (missingExternalModel(
+            checkpoint,
+            externalModels ?? [],
+            source?.externalConnections ?? [],
+          )?.modelName ?? modelDisplayName(checkpoint))
+        : null));
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -2708,7 +2710,7 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName || browseOnly;
+  const isExpanded = expanded || !chosenName;
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -5280,7 +5282,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName && !browseOnly ? (
+              {chosenName ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
