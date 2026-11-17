@@ -10339,7 +10339,11 @@ def _alias_load_settings_met(fastapi_request) -> bool:
     launched = {
         "max_seq_length": intent.n_ctx,
         "kv_cache_dtype": intent.cache_type_kv or "f16",
-        "speculative_type": _canonicalize_spec_mode(intent.speculative_type) or "auto",
+        # The requested mode survives a crash recovery that relaunches with "off".
+        "speculative_type": _canonicalize_spec_mode(
+            getattr(backend, "requested_spec_mode", intent.speculative_type)
+        )
+        or "auto",
     }
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,

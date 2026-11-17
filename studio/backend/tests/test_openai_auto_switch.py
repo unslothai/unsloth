@@ -360,6 +360,16 @@ def test_a_blank_alias_field_reloads_with_the_saved_setting_not_another_alias(mo
     ]
 
 
+def test_an_auto_alias_is_served_after_a_crash_recovery_relaunched_without_drafting(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    rec.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0", speculative_type = "off"
+    )
+    rec.backend.requested_spec_mode = "auto"
+    _run_alias_hook()
+    assert rec.calls == []
+
+
 @pytest.mark.parametrize("enabled, load_policy", [(False, "any"), (True, "never")])
 def test_an_alias_is_refused_when_its_load_settings_cannot_be_loaded(
     monkeypatch, enabled, load_policy
