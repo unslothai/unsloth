@@ -1056,8 +1056,15 @@ class LemonadeNpuBackend:
                 return model
         raise NpuError(f"{model_id} is not in the FastFlowLM catalog.")
 
+    def _refuse_local_while_downloading(self) -> None:
+        # Listing a conversion restarts lemond, which would kill a running pull.
+        if self._downloads:
+            raise NpuError("Wait for the NPU download to finish, then load this model.")
+
     def loadable_model(self, model_id: str) -> NpuModel:
         """The catalog entry ``load`` would accept, checked before a caller unloads anything."""
+        if local_q4nx.is_local_id(model_id):
+            self._refuse_local_while_downloading()
         try:
             model = self._model(model_id)
         except LemonadeUnavailable as exc:
@@ -1281,9 +1288,7 @@ class LemonadeNpuBackend:
                 if local_q4nx.is_local_id(model_id):
                     local = self._local_model(model_id)
                     self._require_supported()
-                    if self._downloads:
-                        # Listing a conversion restarts lemond, which would kill a running pull.
-                        raise NpuError("Wait for the NPU download to finish, then load this model.")
+                    self._refuse_local_while_downloading()
                     if self._register_local(local) and self._server is not None:
                         # lemond reads FastFlowLM's catalog at start; a restart lists the new entry.
                         self._server.stop()

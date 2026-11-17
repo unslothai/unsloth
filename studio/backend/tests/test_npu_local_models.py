@@ -568,6 +568,8 @@ def test_a_conversion_waits_for_a_running_download(runtime):
     [local] = nlm.account_local_models()
     runtime._downloads = 1
     with pytest.raises(nb.NpuError, match = "Wait for the NPU download"):
+        runtime.loadable_model(local.id)
+    with pytest.raises(nb.NpuError, match = "Wait for the NPU download"):
         runtime.load(local.id)
     assert not (runtime.root / "local_q4nx" / "registered.json").exists()
     runtime._downloads = 0
