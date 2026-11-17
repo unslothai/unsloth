@@ -287,17 +287,17 @@ def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
                     _, end = _JSON_DECODER.raw_decode(text, colon.end())
                 except (ValueError, RecursionError):
                     continue
-                parts.extend((text[written:colon.end()], '"<redacted>"'))
+                parts.extend((text[written : colon.end()], '"<redacted>"'))
                 written = pos = end
             continue
-        if r'\"' in token and ":" in token:
+        if r"\"" in token and ":" in token:
             try:
                 message = json.loads(token)
             except ValueError:
                 continue
             masked = _mask_json_strings(message, inside_message = True)
             if masked != message:
-                parts.extend((text[written:match.start()], json.dumps(masked)))
+                parts.extend((text[written : match.start()], json.dumps(masked)))
                 written = pos
     if not parts:
         return text
@@ -312,7 +312,7 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
-    if r'\"' in text and ":" in text:
+    if r"\"" in text and ":" in text:
         text = _mask_json_strings(text)
     for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
         if gate is None or gate.search(text) is not None:
