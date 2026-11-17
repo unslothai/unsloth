@@ -1597,6 +1597,42 @@ def test_a_project_in_a_previous_home_stays_listed_and_downloadable(
     assert studio_db.get_chat_project("p-retained")["rootPath"] == project["rootPath"]
 
 
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_items_are_unavailable_until_storage_returns(
+    client, signed_in, monkeypatch, tmp_path, missing
+):
+    from core.inference import tools
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(tools, "_workdirs", {})
+    project = studio_db.upsert_chat_project(
+        {"id": "offline-library", "name": "Files", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(project["rootPath"])
+    (root / "sandbox" / "notes.txt").write_text("original content")
+    session_id = "project-offline-library"
+    item_id = f"sandbox:{session_id}:notes.txt"
+    assert _download(client, item_id).content == b"original content"
+
+    # An old fallback with this session id must never answer for the offline project.
+    fallback = Path(tools.sandbox_root()) / session_id
+    fallback.mkdir(parents = True)
+    (fallback / tools._SANDBOX_MARKER).write_text(session_id)
+    (fallback / "notes.txt").write_text("unrelated fallback content")
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "disconnected"
+    absent.rename(offline)
+
+    assert _download(client, item_id).status_code == 404
+    assert _post(client, "items/reveal", id = item_id).status_code == 404
+    assert not absent.exists()
+    assert (fallback / "notes.txt").read_text() == "unrelated fallback content"
+
+    offline.rename(absent)
+    assert _download(client, item_id).content == b"original content"
+
+
 def test_listing_many_projects_reads_the_saved_locations_once(client, monkeypatch, tmp_path):
     from storage import studio_db
     from utils import project_workspace_settings as settings

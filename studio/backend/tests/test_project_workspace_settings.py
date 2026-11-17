@@ -28,6 +28,11 @@ from utils.paths.storage_roots import project_workspaces_root, shared_project_wo
 ALICE = AccountContext("a" * 32, "alice")
 
 
+@pytest.fixture
+def tmp_path(linkable_tmp_path):
+    return linkable_tmp_path
+
+
 @pytest.fixture(autouse = True)
 def isolated_projects(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -250,6 +255,47 @@ def test_missing_configured_folder_fails_new_creation_without_recreating_it(tmp_
     updated = studio_db.upsert_chat_project({**old, "name": "Still usable", "updatedAt": 2})
     assert updated["rootPath"] == old["rootPath"]
     assert studio_db.ensure_chat_project_workspace("old")["rootPath"] == old["rootPath"]
+
+
+@pytest.mark.parametrize("part", ["root", "sandbox"])
+def test_existing_workspace_replaced_by_a_file_is_left_untouched(tmp_path, part):
+    project = studio_db.upsert_chat_project(_project("existing"))
+    root = Path(project["rootPath"])
+    target = root if part == "root" else root / "sandbox"
+    target.rename(tmp_path / "original-directory")
+    target.write_text("replacement file")
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        studio_db.ensure_chat_project_workspace(project["id"])
+    assert target.read_text() == "replacement file"
+    assert studio_db.get_chat_project(project["id"]) == project
+
+
+@pytest.mark.parametrize(
+    "path", ["/Volumes/Projects/Example/sandbox", r"C:\Users\Test\Projects\Example\sandbox"]
+)
+def test_unavailable_workspace_message_preserves_path_and_explains_recovery(path):
+    cause = FileNotFoundError(2, "No such file or directory", path)
+    error = studio_db.ProjectWorkspaceUnavailableError(path, cause)
+
+    assert path in str(error)
+    assert "Reconnect" in str(error)
+    assert "restore" in str(error)
+
+
+def test_legacy_project_without_a_recorded_root_still_allocates_a_workspace(tmp_path):
+    project = studio_db.upsert_chat_project(_project("legacy"))
+    selected = _folder(tmp_path, "chosen")
+    settings.set_projects_home(str(selected))
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE chat_projects SET root_path = NULL WHERE id = ?", (project["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    allocated = studio_db.ensure_chat_project_workspace(project["id"])
+    assert Path(allocated["rootPath"]).parent == selected
+    assert (Path(allocated["rootPath"]) / "sandbox").is_dir()
+    assert Path(project["rootPath"]).is_dir()
 
 
 @pytest.mark.parametrize("reset", [False, True])
@@ -493,6 +539,9 @@ def test_existing_project_cannot_contain_the_new_projects_parent(client, relativ
     response = client.put("/api/settings/projects-home", json = {"projects_home": str(selected)})
 
     assert response.status_code == 400, response.text
+    assert (
+        response.json()["detail"] == "Choose a projects folder outside existing project workspaces."
+    )
     assert settings.get_projects_home_status() == before
     assert studio_db.get_chat_project(parent["id"])["rootPath"] == str(root)
     assert keep.read_text() == "Existing project content"

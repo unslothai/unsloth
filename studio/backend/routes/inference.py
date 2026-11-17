@@ -4614,12 +4614,16 @@ async def _materialize_sandbox_attachments(payload) -> None:
     from starlette.concurrency import run_in_threadpool
 
     from core.inference.tools import materialize_sandbox_attachments
+    from storage.studio_db import ProjectWorkspaceUnavailableError
 
-    await run_in_threadpool(
-        materialize_sandbox_attachments,
-        payload.session_id,
-        [(item.sha256, item.name) for item in payload.sandbox_attachments],
-    )
+    try:
+        await run_in_threadpool(
+            materialize_sandbox_attachments,
+            payload.session_id,
+            [(item.sha256, item.name) for item in payload.sandbox_attachments],
+        )
+    except ProjectWorkspaceUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
 
 
 def _tools_on_by_launcher_default_only(payload) -> bool:
@@ -37085,9 +37089,13 @@ _SANDBOX_MEDIA_TYPES = {
 def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     """create=False resolves the path without creating it, so read-only lookups leave no directory."""
     from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+    from storage.studio_db import ProjectWorkspaceUnavailableError
 
     resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
-    return os.path.realpath(resolver(session_id))
+    try:
+        return os.path.realpath(resolver(session_id))
+    except ProjectWorkspaceUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
 
 
 # Taken from the snapshot walk so the card never advertises a file this route refuses.
@@ -37364,6 +37372,7 @@ async def upload_sandbox_file(
     from starlette.concurrency import run_in_threadpool
 
     from core.inference.tools import SandboxUploadExists, save_sandbox_upload
+    from storage.studio_db import ProjectWorkspaceUnavailableError
     from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES
 
     def _chunks():
@@ -37380,6 +37389,8 @@ async def upload_sandbox_file(
         )
     except SandboxUploadExists as exc:
         raise HTTPException(status_code = 409, detail = f"{exc} already exists") from None
+    except ProjectWorkspaceUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from exc
     except OSError:
         logger.error("Failed to save a sandbox upload", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Could not save the file") from None

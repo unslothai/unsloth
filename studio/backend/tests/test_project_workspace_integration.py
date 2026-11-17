@@ -21,6 +21,11 @@ from utils.paths.storage_roots import project_workspaces_root
 
 
 @pytest.fixture
+def tmp_path(linkable_tmp_path):
+    return linkable_tmp_path
+
+
+@pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))
@@ -232,3 +237,93 @@ def test_replaced_saved_directory_returns_an_actionable_project_error(client, tm
     existing = client.get("/api/chat/projects/existing", headers = headers)
     assert existing.status_code == 200, existing.text
     assert existing.json()["rootPath"] == old.json()["rootPath"]
+
+
+@pytest.mark.parametrize("missing", ["workspace", "parent", "sandbox"])
+@pytest.mark.parametrize("method", ["GET", "POST", "PATCH"])
+def test_offline_existing_project_is_not_recreated_or_modified(client, tmp_path, missing, method):
+    headers = _headers()
+    home = tmp_path / "selected-projects"
+    home.mkdir()
+    _save_home(client, headers, home)
+    created = _create_project(client, headers, "offline-project")
+    assert created.status_code == 200, created.text
+    before = studio_db.get_chat_project("offline-project")
+    root = Path(before["rootPath"])
+    marker = root / "sandbox" / "keep.txt"
+    marker.write_text("original project contents")
+    # This recorded location must remain authoritative after the default changes.
+    reset = client.put("/api/settings/projects-home", headers = headers, json = {"projects_home": None})
+    assert reset.status_code == 200, reset.text
+    absent = {"workspace": root, "parent": home, "sandbox": root / "sandbox"}[missing]
+    offline = tmp_path / "offline-storage"
+    absent.rename(offline)
+
+    payload = {"name": "Renamed while offline", "updatedAt": 2}
+    url = "/api/chat/projects/offline-project"
+    if method == "POST":
+        payload.update({"id": "offline-project", "createdAt": 1})
+        url = "/api/chat/projects"
+    response = client.request(
+        method, url, headers = headers, **({"json": payload} if method != "GET" else {})
+    )
+
+    assert response.status_code == 503, response.text
+    unavailable = root / "sandbox" if missing == "sandbox" else root
+    assert str(unavailable) in response.json()["detail"]
+    detail = response.json()["detail"].lower()
+    assert "unavailable" in detail
+    assert "reconnect" in detail or "restore" in detail
+    assert not absent.exists()
+    assert root.exists() is (missing == "sandbox")
+    assert studio_db.get_chat_project("offline-project") == before
+    assert (offline / marker.relative_to(absent)).read_text() == "original project contents"
+
+    offline.rename(absent)
+    restored = client.get("/api/chat/projects/offline-project", headers = headers)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["rootPath"] == str(root)
+    assert marker.read_text() == "original project contents"
+
+
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_metadata_remains_available_to_its_account(client, tmp_path, missing):
+    headers = _headers()
+    created = _create_project(client, headers, "offline-export")
+    assert created.status_code == 200, created.text
+    before = studio_db.update_chat_project(
+        "offline-export", {"instructions": "Keep these instructions"}
+    )
+    root = Path(before["rootPath"])
+    absent = root if missing == "workspace" else root / "sandbox"
+    absent.rename(tmp_path / "offline-storage")
+    url = "/api/chat/projects/offline-export?require_workspace=false"
+
+    response = client.get(url, headers = headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["instructions"] == "Keep these instructions"
+    assert response.json()["rootPath"] == str(root)
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers = _headers("alice")).status_code == 404
+    assert client.get("/api/chat/projects/offline-export", headers = headers).status_code == 503
+    assert not absent.exists()
+    assert studio_db.get_chat_project("offline-export") == before
+
+
+def test_metadata_read_does_not_allocate_a_legacy_project_workspace(client):
+    headers = _headers()
+    created = _create_project(client, headers, "legacy")
+    assert created.status_code == 200, created.text
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE chat_projects SET root_path = NULL WHERE id = 'legacy'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get("/api/chat/projects/legacy?require_workspace=false", headers = headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["rootPath"] is None
+    assert studio_db.get_chat_project("legacy")["rootPath"] is None

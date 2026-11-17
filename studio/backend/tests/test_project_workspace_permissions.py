@@ -19,6 +19,11 @@ from utils.paths import storage_roots
 
 
 @pytest.fixture
+def tmp_path(linkable_tmp_path):
+    return linkable_tmp_path
+
+
+@pytest.fixture
 def project_homes(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))

@@ -49,6 +49,7 @@ from storage.studio_db import (
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
     ProjectWorkspaceError,
+    ProjectWorkspaceUnavailableError,
     build_chat_history_export,
     clear_chat_history,
     clear_chat_history_with_replay_status,
@@ -1344,6 +1345,16 @@ def list_projects(
     )
 
 
+def _project_workspace_unavailable_error(exc: ProjectWorkspaceUnavailableError) -> HTTPException:
+    return log_and_http_error(
+        exc,
+        503,
+        str(exc),
+        event = "chat_history.project_workspace_unavailable",
+        log = logger,
+    )
+
+
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
     lease = getattr(payload, "nativePathLease", None)
@@ -1352,6 +1363,7 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     try:
         project = payload.model_dump(exclude = {"nativePathLease"})
         if lease is None:
+            ensure_chat_project_workspace(project["id"])
             return ChatProject(**upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
         return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
@@ -1359,6 +1371,8 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
         raise
     except ProjectWorkingFolderConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
     except ProjectWorkspaceError as exc:
         # Only this project path error: the same upsert also opens the database elsewhere.
         raise log_and_http_error(
@@ -1384,8 +1398,19 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
-    project = ensure_chat_project_workspace(project_id)
+def get_project(
+    project_id: str,
+    current_subject: str = Depends(get_current_subject),
+    require_workspace: bool = True,
+):
+    try:
+        project = (
+            ensure_chat_project_workspace(project_id)
+            if require_workspace
+            else get_chat_project(project_id)
+        )
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -1413,9 +1438,12 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    project = update_chat_project(project_id, patch)
-    if project is not None:
+    try:
         project = ensure_chat_project_workspace(project_id)
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
+    if project is not None:
+        project = update_chat_project(project_id, patch)
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -1426,8 +1454,9 @@ def patch_project(
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     """Studio's own roots are reserved: they hold every account's data."""
-    from core.inference.tools import shared_sandbox_root
+    from core.inference.tools import list_orphaned_projects, shared_sandbox_root
     from core.rag import folder_sync
+    from storage.studio_db import list_chat_project_root_paths
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
     from utils.project_workspace_settings import owner_project_workspaces_roots
     from utils.paths.path_utils import is_path_within
@@ -1447,17 +1476,31 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    # A saved home may also hold unrelated repositories. Reserve actual workspaces,
+    # including kept/deferred-deletion folders whose project rows are already gone.
+    project_roots = list_chat_project_root_paths()
+    project_roots.extend(
+        root or workspace
+        for _, workspace, root, _, _ in list_orphaned_projects(include_missing = True)
+    )
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
-        *owner_project_workspaces_roots(),
         shared_sandbox_root(),
         shared_tmp_root(),
+        *project_roots,
     ):
         reserved = os.path.realpath(str(reserved))
         if is_path_within(path, reserved, allow_root = True) or is_path_within(
             reserved, path, allow_root = True
         ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unsloth's own folders cannot be used as a project folder.",
+            )
+    # Linking the home itself (or an ancestor) would expose future project workspaces.
+    for home in owner_project_workspaces_roots():
+        if is_path_within(os.path.realpath(str(home)), path, allow_root = True):
             raise HTTPException(
                 status_code = 400,
                 detail = "Unsloth's own folders cannot be used as a project folder.",

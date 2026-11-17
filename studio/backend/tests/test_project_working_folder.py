@@ -301,6 +301,161 @@ def test_tools_run_in_the_users_folder_and_back(env):
     assert env.tools._get_workdir("project-p1") == managed
 
 
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_linked_folder_remains_usable_when_managed_storage_is_offline(env, tmp_path, missing):
+    from core.inference import gallery_projects
+    from routes import chat_history
+
+    _use_repo(env)
+    # Resolve once before disconnecting storage to exercise an existing tool session too.
+    assert env.tools._get_workdir("project-p1") == str(env.repo)
+    root = Path(env.project["rootPath"])
+    absent = root if missing == "workspace" else root / "sandbox"
+    absent.rename(tmp_path / "offline-storage")
+
+    opened = chat_history.get_project("p1", current_subject = "u")
+    assert opened.rootPath == str(root)
+    assert opened.workingFolder == str(env.repo)
+    assert env.tools._get_workdir("project-p1") == str(env.repo)
+    assert gallery_projects._sandbox_dir("p1") == str(env.repo)
+    assert (env.repo / "main.py").read_text() == "print('hi')\n"
+    assert not absent.exists()
+
+
+def test_replaced_linked_folder_does_not_bypass_offline_workspace_check(env, tmp_path):
+    from core.inference import gallery_projects
+    from routes import chat_history
+
+    _use_repo(env)
+    root = Path(env.project["rootPath"])
+    root.rename(tmp_path / "offline-storage")
+    env.repo.rename(env.repo.with_name("repo-moved"))
+    env.repo.mkdir()
+
+    with pytest.raises(HTTPException) as exc:
+        chat_history.get_project("p1", current_subject = "u")
+    assert exc.value.status_code == 503
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        env.tools._get_workdir("project-p1")
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        gallery_projects._sandbox_dir("p1")
+    assert not root.exists()
+    assert list(env.repo.iterdir()) == []
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_tools_do_not_create_a_fallback_workspace(env, tmp_path, cached, missing):
+    if cached:
+        assert env.tools._get_workdir("project-p1") == env.project["sandboxPath"]
+    root = Path(env.project["rootPath"])
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "offline-storage"
+    absent.rename(offline)
+
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        env.tools._get_workdir("project-p1")
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        env.tools.resolve_sandbox_workdir("project-p1")
+    for execute, code in (
+        (env.tools._python_exec, "print(1)"),
+        (env.tools._bash_exec, "echo test"),
+    ):
+        result = execute(code, session_id = "project-p1")
+        assert result.startswith("Execution error:"), result
+        assert str(absent) in result
+        assert "Reconnect" in result and "restore" in result
+    assert not (Path(env.tools.sandbox_root()) / "project-p1").exists()
+    assert not absent.exists()
+
+    offline.rename(absent)
+    assert env.tools._get_workdir("project-p1") == env.project["sandboxPath"]
+
+
+@pytest.mark.parametrize("missing", ["workspace", "sandbox", "linked"])
+def test_selected_project_folder_disappearing_is_not_recreated(env, monkeypatch, missing):
+    if missing == "linked":
+        _use_repo(env)
+        absent = env.repo
+    else:
+        root = Path(env.project["rootPath"])
+        absent = root if missing == "workspace" else root / "sandbox"
+    (absent / "keep.txt").write_text("original files")
+    offline = absent.with_name(absent.name + "-offline")
+    resolve = env.tools._project_workdir_for
+
+    def disconnect_after_resolving(session_id):
+        workdir = resolve(session_id)
+        absent.rename(offline)
+        return workdir
+
+    monkeypatch.setattr(env.tools, "_project_workdir_for", disconnect_after_resolving)
+
+    with pytest.raises(studio_db.ProjectWorkspaceUnavailableError):
+        env.tools._get_workdir("project-p1")
+    assert not absent.exists()
+    assert (offline / "keep.txt").read_text() == "original files"
+    assert not (Path(env.tools.sandbox_root()) / "project-p1").exists()
+
+
+@pytest.mark.parametrize("managed_available", [False, True])
+def test_linked_folder_disappearing_during_resolution_checks_managed_fallback(
+    env, monkeypatch, managed_available
+):
+    _use_repo(env)
+    root = Path(env.project["rootPath"])
+    if not managed_available:
+        root.rename(root.with_name(root.name + "-offline"))
+    available = studio_db.available_project_working_folder
+    calls = 0
+
+    def disconnect_after_first_check(project):
+        nonlocal calls
+        folder = available(project)
+        calls += 1
+        if calls == 1:
+            assert folder == str(env.repo)
+            env.repo.rename(env.repo.with_name("repo-offline"))
+        return folder
+
+    monkeypatch.setattr(studio_db, "available_project_working_folder", disconnect_after_first_check)
+
+    if managed_available:
+        assert env.tools._get_workdir("project-p1") == env.project["sandboxPath"]
+    else:
+        with pytest.raises(studio_db.ProjectWorkspaceUnavailableError) as caught:
+            env.tools._get_workdir("project-p1")
+        assert caught.value.path == os.path.realpath(root)
+        assert not root.exists()
+    assert calls >= 2
+    assert not env.repo.exists()
+    assert (env.repo.with_name("repo-offline") / "main.py").is_file()
+
+
+def test_offline_project_does_not_interrupt_unrelated_chat_cleanup(env, tmp_path, monkeypatch):
+    from routes import chat_history
+
+    # A chat may have the same id as a project's tool session but owns a separate sandbox.
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
+    sessions = ("project-p1", "unrelated-chat")
+    workdirs = [Path(env.tools._get_workdir(session)) for session in sessions]
+    for workdir in workdirs:
+        (workdir / "chat.txt").write_text("chat files")
+    root = Path(env.project["rootPath"])
+    (root / "sandbox" / "keep.txt").write_text("project files")
+    offline = tmp_path / "offline-storage"
+    root.rename(offline)
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: None)
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda tid: None)
+
+    removed, kept = asyncio.run(chat_history._remove_sandboxes(sessions, delete_files = True))
+
+    assert (removed, kept) == (2, [])
+    assert all(not workdir.exists() for workdir in workdirs)
+    assert not root.exists()
+    assert (offline / "sandbox" / "keep.txt").read_text() == "project files"
+
+
 def test_setting_and_clearing_are_idempotent(env):
     first = _use_repo(env)
     second = _use_repo(env)
@@ -598,20 +753,56 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
     assert exc.value.status_code == 403
 
 
-@pytest.mark.parametrize("location", ["current", "previous"])
-@pytest.mark.parametrize("relation", ["same", "parent", "child"])
-def test_working_folder_cannot_overlap_a_saved_project_home(env, monkeypatch, location, relation):
+@pytest.fixture
+def saved_project_home(env, monkeypatch):
+    from utils import project_workspace_settings
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME")
+    monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(env.repo.parent / "Documents"))
+    home = env.repo / "Code"
+    home.mkdir()
+    project_workspace_settings.set_projects_home(str(home))
+    return home
+
+
+@pytest.mark.parametrize("reset", [False, True], ids = ["current", "previous"])
+def test_working_folder_can_use_unrelated_sibling_in_saved_project_home(
+    env, saved_project_home, monkeypatch, reset
+):
     from routes import chat_history
     from utils import native_path_leases, project_workspace_settings
 
-    homes = {name: env.repo / name / "Projects" for name in ("current", "previous")}
-    for root in homes.values():
-        (root / "project-1234").mkdir(parents = True)
-    monkeypatch.setattr(
-        project_workspace_settings, "owner_project_workspaces_roots", lambda: tuple(homes.values())
+    managed = studio_db.upsert_chat_project(
+        {"id": "managed", "name": "Managed", "createdAt": 1, "updatedAt": 1}
     )
-    root = homes[location]
-    candidate = {"same": root, "parent": root.parent, "child": root / "project-1234"}[relation]
+    candidate = saved_project_home / "repo"
+    candidate.mkdir()
+    (candidate / "main.py").write_text("print('unrelated repo')\n")
+    if reset:
+        project_workspace_settings.set_projects_home(None)
+    monkeypatch.setattr(
+        native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(candidate)
+    )
+    body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+
+    chat_history.set_project_working_folder("p1", body, current_subject = "u")
+
+    assert studio_db.get_chat_project("p1")["workingFolder"] == str(candidate)
+    assert Path(managed["rootPath"]).is_dir()
+    assert (candidate / "main.py").read_text() == "print('unrelated repo')\n"
+
+
+@pytest.mark.parametrize("reset", [False, True], ids = ["current", "previous"])
+@pytest.mark.parametrize("relation", ["same", "parent"])
+def test_working_folder_cannot_contain_a_saved_project_home(
+    env, saved_project_home, monkeypatch, reset, relation
+):
+    from routes import chat_history
+    from utils import native_path_leases, project_workspace_settings
+
+    if reset:
+        project_workspace_settings.set_projects_home(None)
+    candidate = saved_project_home if relation == "same" else saved_project_home.parent
     monkeypatch.setattr(
         native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(candidate)
     )
@@ -621,6 +812,82 @@ def test_working_folder_cannot_overlap_a_saved_project_home(env, monkeypatch, lo
     assert exc.value.status_code == 400
     assert "Unsloth's own folders" in exc.value.detail
     assert studio_db.get_chat_project("p1")["workingFolder"] is None
+
+
+@pytest.mark.parametrize("state", ["live", "archived", "pending-delete", "kept"])
+@pytest.mark.parametrize("relative", [".", "sandbox", "sandbox/nested"])
+def test_working_folder_cannot_overlap_workspace_in_previous_project_home(
+    env, saved_project_home, monkeypatch, state, relative
+):
+    from routes import chat_history
+    from utils import native_path_leases, project_workspace_settings
+
+    managed = studio_db.upsert_chat_project(
+        {"id": "managed", "name": "Managed", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(managed["rootPath"])
+    candidate = root / relative
+    candidate.mkdir(parents = True, exist_ok = True)
+    if state == "archived":
+        studio_db.update_chat_project("managed", {"archived": True})
+    elif state in ("pending-delete", "kept"):
+        studio_db.delete_chat_project("managed")
+        env.tools.record_orphaned_project(
+            "managed", str(root / "sandbox"), state == "pending-delete", str(root)
+        )
+    project_workspace_settings.set_projects_home(None)
+    monkeypatch.setattr(
+        native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(candidate)
+    )
+    body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+
+    with pytest.raises(HTTPException) as exc:
+        chat_history.set_project_working_folder("p1", body, current_subject = "u")
+
+    assert exc.value.status_code == 400
+    assert "Unsloth's own folders" in exc.value.detail
+    assert studio_db.get_chat_project("p1")["workingFolder"] is None
+
+
+@pytest.mark.parametrize("pending_delete", [False, True], ids = ["kept", "pending-delete"])
+@pytest.mark.parametrize("relative", [".", "sandbox"])
+def test_linking_an_unrelated_folder_preserves_offline_orphan_protection(
+    env, saved_project_home, monkeypatch, pending_delete, relative
+):
+    from routes import chat_history
+    from utils import native_path_leases, project_workspace_settings
+
+    managed = studio_db.upsert_chat_project(
+        {"id": "managed", "name": "Managed", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(managed["rootPath"])
+    studio_db.delete_chat_project("managed")
+    env.tools.record_orphaned_project("managed", str(root / "sandbox"), pending_delete, str(root))
+    project_workspace_settings.set_projects_home(None)
+    unrelated = env.repo / "unrelated"
+    unrelated.mkdir()
+    monkeypatch.setattr(
+        native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(unrelated)
+    )
+    body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+    disconnected = saved_project_home.with_name("disconnected")
+    saved_project_home.rename(disconnected)
+    try:
+        assert env.tools.list_orphaned_projects() == []
+        env.tools.collect_orphaned_project_workspaces()
+        chat_history.set_project_working_folder("p1", body, current_subject = "u")
+    finally:
+        disconnected.rename(saved_project_home)
+    monkeypatch.setattr(
+        native_path_leases, "verify_native_path_lease", lambda lease, **_: _grant(root / relative)
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        chat_history.set_project_working_folder("p1", body, current_subject = "u")
+
+    assert exc.value.status_code == 400
+    assert "Unsloth's own folders" in exc.value.detail
+    assert studio_db.get_chat_project("p1")["workingFolder"] == str(unrelated)
 
 
 def test_route_refuses_the_shared_temp_root(env, monkeypatch):

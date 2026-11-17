@@ -186,6 +186,12 @@ def _rollout(
     )
 
 
+@pytest.fixture(autouse = True)
+def isolated_project_workspaces(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "Documents"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+
+
 @pytest.fixture
 def codex_home(tmp_path, monkeypatch):
     home = tmp_path / "codex"
@@ -698,6 +704,46 @@ def test_import_groups_by_project_and_a_second_run_is_a_no_op(claude_home):
     assert studio_db.get_chat_project(project_id_for(claude.SOURCE, "-Users-me-app"))[
         "name"
     ].startswith("Claude · ")
+
+
+@pytest.mark.parametrize("missing", ["root", "sandbox"])
+def test_reimport_continues_when_an_existing_workspace_is_unavailable(
+    claude_home, tmp_path, missing
+):
+    first = _session(claude_home)
+    second = _session(claude_home, slug = "-Users-me-zebra", sid = "s2")
+    run_import(claude.SOURCE)
+    project_id = project_id_for(claude.SOURCE, "-Users-me-app")
+    studio_db.update_chat_project(
+        project_id,
+        {"name": "Renamed", "instructions": "Keep these instructions", "archived": True},
+    )
+    before = studio_db.get_chat_project(project_id)
+    root = Path(before["rootPath"])
+    assert root.is_relative_to(tmp_path)
+    (root / "sandbox" / "keep.txt").write_text("Project files", encoding = "utf-8")
+    unavailable = root if missing == "root" else root / "sandbox"
+    moved = tmp_path / "disconnected"
+    unavailable.rename(moved)
+
+    for path in (first, second):
+        _append(path, [c_user("u2", "More", parent = "a1", ts = "2026-08-01T10:00:02Z")])
+    summary = run_import(claude.SOURCE)
+    again = run_import(claude.SOURCE)
+
+    assert (summary.projects, summary.chats, summary.new_chats, summary.messages) == (2, 2, 0, 2)
+    assert summary.warnings == []
+    assert (again.new_chats, again.messages, again.warnings) == (0, 0, [])
+    for sid in ("s1", "s2"):
+        messages = _messages(claude.SOURCE, sid)
+        assert len(messages) == 3
+        assert messages[-1]["content"] == [{"type": "text", "text": "More"}]
+    after = studio_db.get_chat_project(project_id)
+    for field in ("name", "instructions", "archived", "createdAt", "rootPath"):
+        assert after[field] == before[field]
+    assert not unavailable.exists()
+    preserved_sandbox = moved / "sandbox" if missing == "root" else moved
+    assert (preserved_sandbox / "keep.txt").read_text(encoding = "utf-8") == "Project files"
 
 
 def test_reimport_appends_new_turns_and_keeps_studio_edits(claude_home):

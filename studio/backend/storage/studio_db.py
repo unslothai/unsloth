@@ -176,6 +176,34 @@ class ProjectWorkspaceError(OSError):
         self.path = path
 
 
+class ProjectWorkspaceUnavailableError(ProjectWorkspaceError):
+    """An existing workspace is unavailable; opening it must not recreate its files."""
+
+    def __str__(self) -> str:
+        return (
+            f"The project folder {self.path} is unavailable. Reconnect its drive if it is offline, "
+            "or restore this folder if it was moved or deleted, then try again."
+        )
+
+
+def require_project_directory(path: str | Path) -> None:
+    """Check an existing project directory without recreating missing/offline storage."""
+    try:
+        if not stat.S_ISDIR(os.stat(path).st_mode):
+            raise NotADirectoryError(str(path))
+    except OSError as exc:
+        raise ProjectWorkspaceUnavailableError(str(path), exc) from exc
+
+
+def _existing_project_workspace(root_path: str) -> str:
+    root = Path(root_path).expanduser()
+    # A disconnected drive can leave an empty mount point behind. Require the
+    # workspace and its sandbox without creating either directory.
+    for path in (root, *(root / name for name in _PROJECT_WORKSPACE_SUBDIRS)):
+        require_project_directory(path)
+    return root_path
+
+
 def _ensure_project_workspace(root_path: str, *, create_parents: bool = True) -> str:
     root = Path(root_path).expanduser()
     try:
@@ -3240,11 +3268,9 @@ def upsert_chat_project(
 ) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
-    root_path = (
-        _ensure_project_workspace(root_path)
-        if root_path
-        else _create_default_project_workspace(project)
-    )
+    # Reimports update database metadata even when the recorded workspace is offline.
+    # Callers that need its files validate availability with ensure_chat_project_workspace.
+    root_path = root_path or _create_default_project_workspace(project)
     conn = get_connection()
     try:
         if working_folder is not None:
@@ -3373,9 +3399,11 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     project = get_chat_project(id)
     if project is None:
         return None
+    if available_project_working_folder(project):
+        return project
     root_path = project.get("rootPath")
     root_path = (
-        _ensure_project_workspace(root_path)
+        _existing_project_workspace(root_path)
         if root_path
         else _create_default_project_workspace(project)
     )

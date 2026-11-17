@@ -861,6 +861,7 @@ def _sandbox_path(ref: str) -> str:
         _user_path_parts,
         resolve_sandbox_workdir,
     )
+    from storage.studio_db import ProjectWorkspaceUnavailableError
 
     session, _, relative = ref.partition(":")
     session_id = unquote(session)
@@ -869,7 +870,10 @@ def _sandbox_path(ref: str) -> str:
         raise LookupError(ref)
     if not _sandbox_session_eligible(session_id):
         raise LookupError(ref)
-    directory = os.path.realpath(resolve_sandbox_workdir(session_id))
+    try:
+        directory = os.path.realpath(resolve_sandbox_workdir(session_id))
+    except ProjectWorkspaceUnavailableError:
+        raise LookupError(ref) from None
     if len(_user_path_parts(parts, directory)) > _MAX_SANDBOX_PATH_SEGMENTS:
         raise LookupError(ref)
     path = os.path.join(directory, *parts)

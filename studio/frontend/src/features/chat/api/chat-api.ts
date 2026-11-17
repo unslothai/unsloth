@@ -1268,9 +1268,11 @@ export async function listChatProjects(
 
 export async function getChatProject(
   projectId: string,
+  args: { requireWorkspace?: boolean } = {},
 ): Promise<ProjectRecord | null> {
+  const query = args.requireWorkspace === false ? "?require_workspace=false" : "";
   const response = await authFetch(
-    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    `/api/chat/projects/${encodeURIComponent(projectId)}${query}`,
   );
   if (response.status === 404) return null;
   return parseJsonOrThrow<ProjectRecord>(response);
