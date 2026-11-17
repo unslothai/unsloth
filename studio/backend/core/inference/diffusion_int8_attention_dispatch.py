@@ -46,6 +46,7 @@ AUTO_DITS = frozenset(
     {
         "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "MOSSImageTransformer",
         "FluxTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
@@ -53,6 +54,9 @@ AUTO_DITS = frozenset(
         "ZImageTransformer2DModel",
     }
 )
+# AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
+# INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
+AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
 # Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
 SPEED_UNSET_DITS = frozenset(
     {
@@ -386,7 +390,10 @@ def install_dispatch_route() -> int:
 
 def _calls_dispatch(proc: Any) -> bool:
     """Whether the processor's ``__call__`` calls ``dispatch_attention_fn`` (directly, or through a module attribute
-    or a function-level import of it)."""
+    or a function-level import of it), or its class declares that its blocks do (``_calls_dispatch_attention_fn``:
+    MOSS-Image's in-tree blocks call their module's ``dispatch_attention_fn`` with the processor's backend)."""
+    if getattr(type(proc), "_calls_dispatch_attention_fn", False) is True:
+        return True
     call = getattr(type(proc), "__call__", None)
     code = getattr(call, "__code__", None)
     if code is None:
@@ -417,6 +424,30 @@ def routable_modules(dit: Any) -> list:
             continue
         out.append(m)
     return out
+
+
+def quantized_weights(dit: Any) -> bool:
+    """Whether a Linear of ``dit`` holds a quantized weight: a tensor subclass (torchao INT8 / FP8) or 8-bit storage."""
+    import torch
+
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return False
+    low = {
+        torch.int8,
+        torch.uint8,
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    }
+    for m in modules():
+        if not isinstance(m, torch.nn.Linear):
+            continue
+        w = getattr(m, "weight", None)
+        if w is None:
+            continue
+        if type(w) not in (torch.nn.Parameter, torch.Tensor) or w.dtype in low:
+            return True
+    return False
 
 
 def _dits(pipe: Any) -> list:
@@ -672,6 +703,7 @@ def _install(
         if not forced and (
             type(dit).__name__ not in AUTO_DITS
             or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
+            or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
         ):
             continue
         mods = [
