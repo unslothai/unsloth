@@ -137,6 +137,13 @@ def _call(payload: dict, message_id: str) -> dict:
     )
 
 
+def _turn(text: str, images: list[str]) -> list[dict]:
+    text = clean_text(text)
+    return [{"type": "image", "image": url} for url in images] + (
+        [{"type": "text", "text": text}] if text else []
+    )
+
+
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     file_created, file_updated = file_times_ms(path)
     revision = session_id_of(path)
@@ -144,6 +151,9 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     inherited = 0
     open_calls: dict[str, dict] = {}
     reread: set[str] = set()
+    images: list[str] = []
+    pictured: set[str] = set()
+    ends = [0]
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -153,17 +163,26 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         # (another thread) gets its own, since message ids are unique across threads.
         message_id = stable_id("codex", session_id, origin, str(ordinal), length = 16)
         item = payload.get("item") if kind == ("event_msg", "item_completed") else None
+        if kind == ("response_item", "message") and payload.get("role") == "user":
+            # The image bytes are only here; the turn's event that follows names just a path.
+            images = [
+                str(part["image_url"])
+                for part in payload.get("content") or []
+                if isinstance(part, dict)
+                and part.get("type") == "input_image"
+                and str(part.get("image_url") or "").startswith("data:image/")
+            ]
+            continue
         if kind in (("event_msg", "user_message"), ("event_msg", "agent_message")):
             role = "user" if payload["type"] == "user_message" else "assistant"
-            parts = [{"type": "text", "text": clean_text(str(payload.get("message") or ""))}]
+            attached = payload.get("images") or payload.get("local_images")
+            parts = _turn(str(payload.get("message") or ""), images if attached else [])
         elif isinstance(item, dict) and item.get("type") in ("UserMessage", "AgentMessage"):
             role = "user" if item["type"] == "UserMessage" else "assistant"
-            text = "".join(
-                str(part.get("text") or "")
-                for part in item.get("content") or []
-                if isinstance(part, dict)
-            )
-            parts = [{"type": "text", "text": clean_text(text)}]
+            content = [part for part in item.get("content") or [] if isinstance(part, dict)]
+            text = "".join(str(part.get("text") or "") for part in content)
+            attached = any(part.get("type") in ("image", "local_image") for part in content)
+            parts = _turn(text, images if attached else [])
         elif kind in (("response_item", "function_call"), ("response_item", "custom_tool_call")):
             role, parts = "assistant", [_call(payload, message_id)]
             open_calls[parts[0]["toolCallId"]] = parts[0]
@@ -179,7 +198,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             continue
         else:
             continue
-        if parts[0]["type"] == "text" and not parts[0]["text"]:
+        if not parts:
             continue
         if item is not None:
             reread.add(message_id)
@@ -196,6 +215,14 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
                 "metadata": {"importedFrom": "codex", "codexSessionId": session_id},
             }
         )
+        images = []
+        if parts[-1]["type"] == "image":
+            pictured.add(message_id)
+        else:
+            ends.append(len(messages))
+    # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
+    if reread or _meta(path).get("history_mode") == "paginated":
+        revision = f"{revision}:items"
     return Transcript(
         session_id = session_id,
         thread_id = thread_id,
@@ -203,12 +230,10 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
-        revision = f"{revision}:items"
-        if reread or _meta(path).get("history_mode") == "paginated"
-        else revision,
+        revision = f"{revision.partition(':')[0]}:images" if pictured else revision,
         inherited = inherited,
-        reread = frozenset(reread),
+        reread = frozenset(reread | pictured),
+        earlier = {revision: ends} if pictured else {},
     )
 
 

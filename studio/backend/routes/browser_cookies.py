@@ -227,27 +227,36 @@ def _http_only(cookie: http.cookiejar.Cookie) -> bool:
     return any(name.lower() == "httponly" for name in cookie._rest)  # type: ignore[attr-defined]
 
 
-def versioned_page_cookies(subject: str, url: str) -> tuple[list, list[tuple[str, str]]]:
-    """``([epoch, version], page_cookies(...))``, read together so the version dates the snapshot."""
+def site_cookie_state(subject: str, url: str) -> tuple[list, list[tuple[str, str]], bool]:
+    """``([epoch, version], page_cookies(...), has_site_cookies(...))``, read together so the version dates both."""
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        return [_EPOCH, _version], page_cookies(subject, url)
+        return [_EPOCH, _version], page_cookies(subject, url), has_site_cookies(subject, url)
+
+
+def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
+    """The cookies a same-origin request from ``url``'s page sends at some path, HttpOnly ones too."""
+    page = _request(url)
+    if page is None:
+        return
+    jar = _jar(subject)
+    for cookie in list(jar):
+        at_path = _request(f"{page.type}://{page.host}{cookie.path or '/'}")
+        if at_path is not None and jar._policy.return_ok(cookie, at_path):  # type: ignore[attr-defined]
+            yield cookie
+
+
+def has_site_cookies(subject: str, url: str) -> bool:
+    return next(iter(_site_cookies(subject, url)), None) is not None
 
 
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
     """What ``document.cookie`` may see on ``url``'s site, at any path, in the frame's own form
     (browser.py): ``"<name>=<path>"`` to ``"<deadline ms>|<value>"``. HttpOnly ones stay here."""
-    page = _request(url)
-    if page is None:
-        return []
-    jar = _jar(subject)
     found: list[tuple[str, str]] = []
     room = _MAX_PAGE_COOKIE_CHARS
-    for cookie in list(jar):
+    for cookie in _site_cookies(subject, url):
         if _http_only(cookie):
-            continue
-        at_path = _request(f"{page.type}://{page.host}{cookie.path or '/'}")
-        if at_path is None or not jar._policy.return_ok(cookie, at_path):  # type: ignore[attr-defined]
             continue
         deadline = "" if cookie.expires is None else str(int(cookie.expires) * 1000)
         entry = (f"{cookie.name}={cookie.path or '/'}", f"{deadline}|{cookie.value or ''}")
@@ -258,9 +267,16 @@ def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
     return found
 
 
-def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> None:
+def set_page_cookie(
+    subject: str,
+    url: str,
+    key: str,
+    stored: Optional[str],
+    same_site: Optional[str] = None,
+) -> None:
     """A page's ``document.cookie`` write in the frame's form (``stored`` None removes): host-only,
-    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7)."""
+    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7).
+    ``same_site`` is the write's SameSite; an unknown value leaves the default (Lax)."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return
@@ -282,6 +298,11 @@ def set_page_cookie(subject: str, url: str, key: str, stored: Optional[str]) -> 
         header = f"{name}={value}; Path={path}"
         if request.type == "https":
             header += "; Secure"
+        mode = (same_site or "").strip().lower()
+        if mode == "none" and request.type != "https":
+            return
+        if mode in ("strict", "lax", "none"):
+            header += f"; SameSite={mode.capitalize()}"
         if deadline.isdigit():
             header += f"; Max-Age={max(0, int(deadline) // 1000 - int(time.time()))}"
     store_cookies(subject, url, [("Set-Cookie", header)])

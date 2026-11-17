@@ -5639,7 +5639,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:

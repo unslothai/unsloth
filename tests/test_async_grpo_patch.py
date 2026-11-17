@@ -35,6 +35,7 @@ NAMES = (
     "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
+    "_forward_tree_unrolled",
     "_unsloth_async_grpo_lm_head",
     "_fast_inference_engine",
     "_async_grpo_uses_fast_inference",
@@ -48,6 +49,7 @@ NAMES = (
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
     "_async_grpo_masked_compute_loss",
+    "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
 )
 
@@ -162,7 +164,9 @@ def fake_trl(monkeypatch):
     mod.add_fused_lm_head = add_fused_lm_head
     mod.AsyncGRPOConfig = AsyncGRPOConfig
     mod.AsyncGRPOTrainer = AsyncGRPOTrainer
-    for name in ("trl", "trl.experimental", "trl.experimental.async_grpo"):
+    # An empty trl.trainer too, so the real TRL >= 1.18 trl.trainer.async_grpo_trainer is not found first.
+    monkeypatch.delitem(sys.modules, "trl.trainer.async_grpo_trainer", raising = False)
+    for name in ("trl", "trl.trainer", "trl.experimental", "trl.experimental.async_grpo"):
         pkg = types.ModuleType(name)
         pkg.__path__ = []
         pkg.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package = True)
@@ -745,16 +749,27 @@ def test_importance_sampling_mask_refuses_an_unknown_loss(fast_inference_trl):
 
 
 def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            from trl.experimental.async_grpo.async_grpo_trainer import AsyncGRPOTrainer
-    except Exception as e:
-        pytest.skip(reason = f"needs TRL >= 1.13, which ships trl.experimental.async_grpo: {e}")
+    AsyncGRPOTrainer = None
+    for name in (
+        "trl.trainer.async_grpo_trainer",
+        "trl.experimental.async_grpo.async_grpo_trainer",
+    ):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                AsyncGRPOTrainer = importlib.import_module(name).AsyncGRPOTrainer
+            break
+        except Exception as e:
+            error = e
+    if AsyncGRPOTrainer is None:
+        pytest.skip(reason = f"needs TRL >= 1.13, which ships AsyncGRPOTrainer: {error}")
     ns = _load()
     masked = ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
     code = masked.__code__
     assert masked is ns["_async_grpo_masked_compute_loss"](AsyncGRPOTrainer.compute_loss)
     assert code is not AsyncGRPOTrainer.compute_loss.__code__
-    assert "where" in code.co_names and "min" not in code.co_names
+    # No torch.min left (TRL 1.18's compute_loss also calls coef_1.min() for metrics).
+    loads = [i.argval for i in __import__("dis").get_instructions(code)]
+    assert "where" in code.co_names
+    assert not any(a == "torch" and b == "min" for a, b in zip(loads, loads[1:]))
     assert masked.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__

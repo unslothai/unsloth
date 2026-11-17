@@ -20,6 +20,7 @@ from storage.studio_db import (  # noqa: E402
     CorruptSettingsError,
     _deep_merge_settings,
     get_connection,
+    list_chat_settings,
     upsert_chat_settings_merge,
 )
 
@@ -367,3 +368,23 @@ def test_an_older_clients_modified_write_keeps_every_key(tmp_path, monkeypatch):
     finally:
         studio_db.close_wal_keeper()
         studio_db.reset_schema_state_for_tests()
+
+
+def _put_settings(patch):
+    payload = ChatSettingsPayload.model_validate(patch)
+    return upsert_chat_settings_merge(payload.model_dump(exclude_unset = True))
+
+
+def test_preset_edits_from_a_stale_window_keep_presets_saved_in_another():
+    def preset(name, temperature = 0.5):
+        return {"name": name, "params": {"temperature": temperature}}
+
+    _put_settings({"customPresets": [preset("Old"), preset("Spare")]})
+    _put_settings({"editCustomPresets": {"Coding": preset("Coding")}})
+    _put_settings({"editCustomPresets": {"Creative": preset("Creative")}})
+    _put_settings({"editCustomPresets": {"Spare": None, "Old": preset("Old", 0.9)}})
+
+    settings = list_chat_settings()
+    assert [p["name"] for p in settings["customPresets"]] == ["Coding", "Creative", "Old"]
+    assert settings["customPresets"][-1]["params"]["temperature"] == 0.9
+    assert "editCustomPresets" not in settings

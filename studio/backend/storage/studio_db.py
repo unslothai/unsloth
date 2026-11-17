@@ -6034,10 +6034,23 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 # merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
 # to a key the command does not name survives.
 _FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+# Per preset name, its new value or None to delete, so a stale window cannot drop others' presets.
+_EDIT_PRESETS_KEY = "editCustomPresets"
 
 
 def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     updates = dict(updates)
+    edits = updates.pop(_EDIT_PRESETS_KEY, None) or {}
+    if edits:
+        saved = [preset for preset in edits.values() if preset is not None]
+        names = set(edits) | {preset["name"] for preset in saved}
+        presets = current.get("customPresets")
+        kept = [
+            preset
+            for preset in (presets if isinstance(presets, list) else [])
+            if not (isinstance(preset, dict) and preset.get("name") in names)
+        ]
+        current = {**current, "customPresets": kept + saved}
     forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
     by_model = current.get("inferenceParamsByModel")
     if forget and isinstance(by_model, dict):

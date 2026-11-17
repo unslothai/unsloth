@@ -726,6 +726,14 @@
       "file": "unsloth/models/rl.py",
       "rule": "dynamic-import",
       "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 1,
+      "reason": "TRL's async GRPO trainer module, from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), not external input."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
       "digest": "fe73e10b8cc4e18a",
       "count": 1,
       "reason": "Prefix-bounded to trl.trainer.<config module>; name comes from the installed TRL trainer classes."

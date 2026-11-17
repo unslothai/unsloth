@@ -264,6 +264,32 @@ def test_install_swaps_stock_processors_and_uninstall_restores(monkeypatch):
         assert m.processor._attention_backend == "_native_cudnn"
 
 
+def test_a_strided_int8_processor_holds_the_qk_processor_it_would_give_back(monkeypatch):
+    """An INT8 strided processor keeps the processor it replaced, to give back where torch's attention wins its
+    plan's race: the install makes that one the Q / K processor the module would have had without the kernel (as
+    the load does without it, bitwise), and uninstall makes it stock again."""
+    from core.inference import diffusion_flux3_attn as fa
+
+    model = _tiny()
+    monkeypatch.setattr(qr, "wanted", lambda device = "cuda": True)
+    mods = [m for m in model.modules() if isinstance(m, tf3.Flux3Attention)]
+    held = []
+    for m in mods:
+        new = fa.strided_processor_class()()
+        new._unsloth_stock = m.processor
+        held.append(m.processor)
+        m.set_processor(new)
+    assert qr.install_for_pipe(SimpleNamespace(transformer = model), "cuda") == len(mods) > 0
+    for m, stock in zip(mods, held):
+        assert type(m.processor) is fa.strided_processor_class()
+        assert qr.is_qk_processor(m.processor._unsloth_stock)
+        assert m.processor._unsloth_stock._attention_backend == stock._attention_backend
+    assert qr.install_for_pipe(SimpleNamespace(transformer = model), "cuda") == 0
+    qr.uninstall()
+    for m in mods:
+        assert type(m.processor._unsloth_stock) is tf3.Flux3AttnProcessor
+
+
 def test_install_declines_a_changed_diffusers_processor(monkeypatch):
     from core.inference import diffusion_flux3_attn as fa
 

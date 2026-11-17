@@ -139,7 +139,7 @@ RULES = (
         "cp x tp",
         "context parallel x tensor parallel on hybrid (linear attention) or multimodal models",
         lambda q: q.cp > 1 and q.tp > 1 and (q.hybrid or q.multimodal),
-        "tensor parallel keeps the linear attention layers replicated, and that path is not verified with "
+        "tensor parallel shards the linear attention layers by heads, and that path is not verified with "
         "Ulysses",
         "drop tp (Ulysses cp runs Qwen3-Next / Qwen3.5 hybrids alone or with DDP / FSDP2)",
     ),
@@ -815,6 +815,7 @@ MOE_FAMILIES = (
     "deepseek_v3",
     "deepseek_v32",
     "deepseek_v4",
+    "deepseek_v41",
     "kimi_linear",
     "minimax",
     "minimax_m2",
@@ -831,6 +832,7 @@ MOE_FAMILIES = (
     "granitemoehybrid",
     "gemma4",
     "lfm2_moe",
+    "qwen4_exp",
 )
 _MOE_PRECISION = {
     "lora": {"mode": ("lora",), "expert_lora": (False,)},
@@ -875,6 +877,21 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Native DeepSeek-V4.1 (no router aux): cut where no group state crosses, engram tables on the owning stage.
+_DSV41_PP = (
+    "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
+)
+# Its checkpoint is zoo's non-reentrant layer replay whichever function runs it (Unsloth's offloading one included).
+_MOE_PP_MEMORY = {"deepseek_v41": ("none", "gc", "unsloth_offload")}
+_MOE_PP_MM = (
+    "tests/test_pp_mm_moe_aux_gloo.py::test_pp2_wrapper_moe_aux_matches_gradient_accumulation"
+)
+_MOE_PP_MM_CASES = {
+    ("lora+experts", True): "lora_experts_coef0.01_1f1b",
+    ("lora", True): "lora_coef1_gpipe",
+    ("lora+experts", False): "lora_experts_aux_off_gpipe",
+    ("lora", False): "lora_aux_off_1f1b",
+}
 # Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
@@ -929,7 +946,7 @@ _GPT_OSS_CASES = {
     "lora+experts": "cp2_lora_experts|cp2_lora_experts_checkpoint|cp4_lora_experts|cp2_lora_experts_zoo_forward",
 }
 # Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
-_MOE_ATTENTION = {"deepseek_v4": ("eager",), "gpt_oss": ("eager",)}
+_MOE_ATTENTION = {"deepseek_v4": ("eager",), "deepseek_v41": ("eager",), "gpt_oss": ("eager",)}
 _MOE_TEXT_ONLY = {
     "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
     "text-only Gemma4ForCausalLM ran",
@@ -965,6 +982,28 @@ _MOE_EVIDENCE = {
     * 2
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
+    + ("eager: no compiled region",),
+    ("deepseek_v41", "lora", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe|pp2_1f1b|pp4_gpipe_mb4|pp2_gpipe_mb4_gc|pp2_1f1b_gc]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    ("deepseek_v41", "lora+experts", False, "pp"): (
+        _DSV41_PP + "[pp2_gpipe_experts|pp2_1f1b_experts_gc]",
+    )
+    * 2
+    + ("eager: no compiled region",),
+    **{
+        (family, precision, aux, "pp"): (f"{_MOE_PP_MM}[{family}_{case}]",) * 2
+        + ("eager: no compiled region",)
+        for family in ("qwen3_5_moe", "qwen4_exp")
+        for (precision, aux), case in _MOE_PP_MM_CASES.items()
+    },
+    # Gemma 4 26B-style MoE has no router auxiliary loss: pp2 text-only vs one process (losses, every gradient).
+    ("gemma4", "lora", False, "pp"): (
+        "tests/test_pp_vlm_text_only_gloo.py::test_pp2_text_only_matches_one_process[gemma4_moe]",
+    )
+    * 2
     + ("eager: no compiled region",),
     ("kimi_linear", "full", False, "cp"): (_KIMI_MOE + "[full-sdpa-cp2|full-eager-gc-dp2xcp2]",) * 2
     + (_KIMI_EAGER,),
@@ -1040,8 +1079,11 @@ def _moe_note(family, precision, aux, mode):
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
     if mode == "pp":
-        if family != "qwen3_moe":
-            return "pipeline parallel carries the router auxiliary loss for Qwen3-MoE only (refused at the split)"
+        if family not in ("qwen3_moe", "gemma4", "qwen3_5_moe", "qwen4_exp", "deepseek_v41"):
+            return (
+                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
+                "only (refused at the split)"
+            )
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
     if precision == "qlora" and mode == "pp" and family == "qwen3_moe" and aux:
@@ -1079,7 +1121,9 @@ def _moe_cells():
                     if evidence:
                         if family in _MOE_ATTENTION:
                             match = {**match, "attention": _MOE_ATTENTION[family]}
-                        if family in _MOE_TEXT_ONLY:
+                        # Pipeline parallel trains a multimodal checkpoint on text (PPConfig.text_only): its evidence ran on one.
+                        text_only = family in _MOE_TEXT_ONLY and mode != "pp"
+                        if text_only:
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
@@ -1092,8 +1136,10 @@ def _moe_cells():
                         if mode in ("pp", "tp"):
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
+                        if mode == "pp" and family in _MOE_PP_MEMORY:
+                            match = {**match, "memory": _MOE_PP_MEMORY[family]}
                         cells.append(Cell(name, match, *evidence, note = note))
-                        if family in _MOE_TEXT_ONLY:
+                        if text_only:
                             cells.append(
                                 Cell(
                                     name + ", multimodal",
@@ -1541,9 +1587,13 @@ def _kernels(model):
     try:
         for m in model.modules():
             forward = getattr(type(m), "forward", None)
-            if getattr(forward, "__module__", "").startswith("unsloth.models.") and type(
-                m
-            ).__name__.endswith("Attention"):
+            module = getattr(forward, "__module__", "")
+            # A native port (models/<name>/modeling.py) runs its own attention, not the fast kernels.
+            if (
+                module.startswith("unsloth.models.")
+                and not module.endswith(".modeling")
+                and type(m).__name__.endswith("Attention")
+            ):
                 return True
     except Exception:
         pass

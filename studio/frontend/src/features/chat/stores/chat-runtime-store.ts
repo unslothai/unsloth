@@ -4904,9 +4904,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }
   },
   setCustomPresets: (customPresets) =>
-    set(() => {
+    set((state) => {
       customPresetsMutationVersion += 1;
-      saveSettingsPatch({ customPresets });
+      // Only the changed names: another window may have saved presets this list never saw.
+      const names = new Set(customPresets.map((preset) => preset.name));
+      const editCustomPresets: Record<string, Preset | null> = {};
+      for (const preset of state.customPresets) {
+        if (!names.has(preset.name)) editCustomPresets[preset.name] = null;
+      }
+      for (const preset of customPresets) {
+        if (!state.customPresets.includes(preset)) {
+          editCustomPresets[preset.name] = preset;
+        }
+      }
+      if (hasKeys(editCustomPresets)) saveSettingsPatch({ editCustomPresets });
       return { customPresets };
     }),
   setActivePreset: (activePreset) =>
