@@ -560,3 +560,16 @@ def test_a_loaded_conversion_asks_for_its_base_models_sampling(runtime):
     assert upstream.model == local.id
     assert upstream.sampling_model == "qwen3-0.6b-FLM"
     runtime.unload()
+
+
+@posix_only
+def test_a_conversion_waits_for_a_running_download(runtime):
+    _converted()
+    [local] = nlm.account_local_models()
+    runtime._downloads = 1
+    with pytest.raises(nb.NpuError, match = "Wait for the NPU download"):
+        runtime.load(local.id)
+    assert not (runtime.root / "local_q4nx" / "registered.json").exists()
+    runtime._downloads = 0
+    runtime.load(local.id)
+    runtime.unload()

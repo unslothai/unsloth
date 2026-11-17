@@ -410,6 +410,8 @@ class LemonadeNpuBackend:
         self._server: Optional[LemonadeServer] = None
         self._loaded: Optional[_Loaded] = None
         self._loading: Optional[str] = None
+        self._downloads = 0
+        self._downloads_lock = threading.Lock()
         self._load_cancelled = threading.Event()
         # Makes cancel_load and a load's commit exclusive, so a cancel either wins or finds nothing.
         self._commit_lock = threading.Lock()
@@ -1073,6 +1075,17 @@ class LemonadeNpuBackend:
     ) -> Iterator[dict[str, Any]]:
         """Raises unless lemond sends its complete event, since a cut-short stream leaves a partial
         model. Setting ``cancel`` raises NpuDownloadCancelled at the next chunk."""
+        with self._downloads_lock:
+            self._downloads += 1
+        try:
+            yield from self._download(model_id, cancel)
+        finally:
+            with self._downloads_lock:
+                self._downloads -= 1
+
+    def _download(
+        self, model_id: str, cancel: Optional[threading.Event]
+    ) -> Iterator[dict[str, Any]]:
         cancel = cancel or threading.Event()
         if local_q4nx.is_local_id(model_id):
             raise NpuError(f"{model_id} is a converted model already on this device.")
@@ -1268,6 +1281,9 @@ class LemonadeNpuBackend:
                 if local_q4nx.is_local_id(model_id):
                     local = self._local_model(model_id)
                     self._require_supported()
+                    if self._downloads:
+                        # Listing a conversion restarts lemond, which would kill a running pull.
+                        raise NpuError("Wait for the NPU download to finish, then load this model.")
                     if self._register_local(local) and self._server is not None:
                         # lemond reads FastFlowLM's catalog at start; a restart lists the new entry.
                         self._server.stop()
