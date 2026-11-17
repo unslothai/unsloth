@@ -3876,7 +3876,11 @@ html[data-chat-font] .aui-root {
 	   would resolve the var before the panel sets it. pickerWidth mirrors the width. */
 	.composer-model-picker {
 		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
-		--composer-picker-h: clamp(calc(320px * var(--ui-space-scale, 1)), 56dvh, calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+		/* pickerMinHeight floor; taller only into --picker-room (the space under Select model), up to 540px. A floor
+		   taller than that room rides up instead (pickerDropOffset). */
+		--picker-floor: calc(100dvh - 16px);
+		--composer-picker-min-h: min(calc(var(--picker-min-base, 420px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor));
+		--composer-picker-max-h: max(var(--composer-picker-min-h), min(calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-room, var(--picker-floor))));
 	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {

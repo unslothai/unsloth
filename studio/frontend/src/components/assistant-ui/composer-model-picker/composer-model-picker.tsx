@@ -213,6 +213,8 @@ import {
   PICKER_EDGE,
   PICKER_GAP,
   pickerDropOffset,
+  pickerMinHeight,
+  pickerRoomBelow,
   pickerWidth,
   pickerZoomOut,
   type PickerRow,
@@ -3292,18 +3294,22 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
+  const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
+  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = open && openSide === "bottom";
-  // Re-placed as the panel fits new rows, so only a list too long for the room below rides up.
+  // Grows into the room below; only the floor (pickerMinHeight) rides up when that room is shorter.
   useEffect(() => {
     if (!(dropsDown && panel)) {
       setDropOffset(PICKER_GAP);
+      setRoomBelow(null);
       return;
     }
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
+        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3344,6 +3350,9 @@ export function ComposerModelPicker({
           : null,
       );
       setPickerZoomOutState(zoomOut);
+      setPickerMinBase(
+        pickerMinHeight(window.innerWidth, window.innerHeight, zoomOut),
+      );
       setAlignOffset(
         pickerAlignOffset(
           align,
@@ -5139,7 +5148,15 @@ export function ComposerModelPicker({
         ref={setPanel}
         sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
-        style={{ "--picker-zoom-out": pickerZoomOutState } as CSSProperties}
+        style={
+          {
+            "--picker-zoom-out": pickerZoomOutState,
+            "--picker-min-base": `${pickerMinBase}px`,
+            ...(roomBelow === null
+              ? {}
+              : { "--picker-room": `${roomBelow}px` }),
+          } as CSSProperties
+        }
         data-tour="chat-model-selector-popover"
         data-list-last={
           isExpanded && !hasFoot && !configTarget ? "" : undefined
@@ -5152,17 +5169,17 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          // Opening up, the floor and room are the space above; opening down, see --picker-room.
+          openSide !== "bottom" &&
+            "[--picker-floor:var(--radix-popover-content-available-height)]",
           // The list view fits its rows; useAnimatedListHeight glides tab changes.
           configTarget
-            ? "h-(--composer-picker-h)"
-            : isExpanded &&
-                "min-h-[min(calc(240px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
+            ? "h-(--composer-picker-min-h) max-h-(--picker-floor)"
+            : isExpanded
+              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              : "max-h-(--picker-floor)",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, the height is not held to the room below: pickerDropOffset lifts it instead.
-          openSide === "bottom"
-            ? "max-h-[min(var(--composer-picker-h),calc(100dvh-16px))]"
-            : "max-h-[min(var(--composer-picker-h),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {

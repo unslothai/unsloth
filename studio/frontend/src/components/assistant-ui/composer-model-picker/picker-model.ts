@@ -464,6 +464,25 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
+/** The picker's floor: 380px on a short landscape window, 420px otherwise (phones included). On-screen px, so zoom does not move it. */
+export function pickerMinHeight(
+  innerWidth: number,
+  innerHeight: number,
+  zoomOut: number,
+): number {
+  const shortLandscape =
+    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
+  return shortLandscape ? 380 : 420;
+}
+
+/** Room under Select model for a panel opening down: the height it may grow to without riding up. */
+export function pickerRoomBelow(
+  triggerBottom: number,
+  viewportHeight: number,
+): number {
+  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
+}
+
 /** Rows that do not fit below ride up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
