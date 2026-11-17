@@ -159,37 +159,22 @@ def _rocm_device_arch(device: str) -> str:
         return ""
 
 
-def _rocm_visible_ordinals(physical: list[int]) -> Optional[list[int]]:
-    """``physical`` narrowed by ROCR_VISIBLE_DEVICES, then HIP_VISIBLE_DEVICES (else CUDA_VISIBLE_DEVICES); None when a
-    mask names a device by anything but its index (a UUID), which this cannot resolve."""
-    hip = os.environ.get("HIP_VISIBLE_DEVICES")
-    for raw in (
-        os.environ.get("ROCR_VISIBLE_DEVICES"),
-        hip if hip is not None else os.environ.get("CUDA_VISIBLE_DEVICES"),
-    ):
-        if raw is None:
-            continue
-        tokens = [t.strip() for t in raw.split(",") if t.strip()]
-        if not all(t.isdigit() for t in tokens):
-            return None
-        physical = [physical[int(t)] for t in tokens if int(t) < len(physical)]
-    return physical
-
-
 def _rocm_kfd_silicon_archs(device: str) -> Optional[list[str]]:
-    """KFD's silicon target for ``device``; every KFD GPU's when its physical node cannot be resolved."""
+    """KFD's silicon target for ``device``; every KFD GPU's when the masks cannot be composed into its physical node
+    (a UUID mask, GPU_DEVICE_ORDINAL, an index past the list)."""
     try:
         import torch
 
         from utils.hardware.amd import amd_kfd_gpu_gfx_targets
 
+        from .sd_cpp_backend import _physical_index_of
+
         targets = amd_kfd_gpu_gfx_targets()
         if not targets:
             return targets
-        index = torch.device(device).index
-        visible = _rocm_visible_ordinals(list(range(len(targets))))
-        if visible is not None and 0 <= (index or 0) < len(visible):
-            return [targets[visible[index or 0]]]
+        physical, _masked = _physical_index_of(torch.device(device).index or 0)
+        if physical is not None and 0 <= physical < len(targets):
+            return [targets[physical]]
         return targets
     except Exception:  # noqa: BLE001
         return None

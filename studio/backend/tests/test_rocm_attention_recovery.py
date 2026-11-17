@@ -476,13 +476,22 @@ def test_auto_flash_still_runs_on_integrated_gpus(monkeypatch):
         ({"ROCR_VISIBLE_DEVICES": "1,0", "HIP_VISIBLE_DEVICES": "1"}, 0, ["gfx1100"]),
         ({"HIP_VISIBLE_DEVICES": "GPU-abc"}, 0, ["gfx1100", "gfx1103"]),
         ({"HIP_VISIBLE_DEVICES": "0"}, 3, ["gfx1100", "gfx1103"]),
+        ({"GPU_DEVICE_ORDINAL": "1"}, 0, ["gfx1100", "gfx1103"]),
     ],
 )
 def test_kfd_silicon_is_read_for_the_requested_device(monkeypatch, env, index, expected):
     """A gfx1100 dGPU selected by a visibility mask is judged by its own node, not an unused gfx1103 beside it."""
     from utils.hardware import amd
 
-    for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    for name in (
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
         monkeypatch.delenv(name, raising = False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
