@@ -38,5 +38,6 @@ test("the voice settings store starts from the defaults and restores saved value
   assert.match(store, /\.\.\.readVoiceOrbOverlayPrefs\(saved\),/);
   const orb = readSrc("components/assistant-ui/voice-orb.tsx");
   assert.match(orb, /showOverlay && showArcs && <VoiceDecisionRing \/>/);
-  assert.match(orb, /chip: showOverlay && showCaption && hasDecision/);
+  // The decision chip still needs its setting; the heard caption shares the slot when the chip is off.
+  assert.match(orb, /chip: \(showOverlay && showCaption && hasDecision\) \|\| showHeard/);
 });

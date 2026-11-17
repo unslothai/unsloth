@@ -21,6 +21,7 @@ import {
   orbStackLayout,
 } from "@/features/chat/voice/orb-stack-layout";
 import { pendingApproval } from "@/features/chat/voice/orb-widget";
+import { lastUserUtterance, showsHeardCaption } from "@/features/chat/voice/heard-caption";
 import { type VoiceDecisions, useVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import { describeToolCall } from "@/features/chat/voice/voice-loop-bridge";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
@@ -34,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AudioLinesIcon, AudioWaveformIcon, InfoIcon, Loader2Icon, MicOffIcon } from "lucide-react";
+import { useAuiState } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "motion/react";
 import { Component, type FC, createRef, useEffect, useRef, useState } from "react";
 import { OrbApprovalCard } from "./orb-approval-card";
@@ -559,6 +561,25 @@ function latestDecision(d: VoiceDecisions): LatestDecision | undefined {
     .sort((a, b) => b.at - a.at)[0];
 }
 
+// What the transcriber heard, under the status while it is answered: a voice turn otherwise gives
+// no sign of a mishearing until the reply to it.
+const HeardCaption: FC<{ text: string }> = ({ text }) => (
+  <div className="flex h-9 items-center justify-center">
+    <AnimatePresence mode="wait">
+      <motion.p
+        key={text}
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{ duration: 0.2 }}
+        className="line-clamp-2 max-w-[min(calc(28rem*var(--ui-space-scale,1)),80vw)] text-center text-ui-13 leading-snug text-foreground/70 italic"
+      >
+        {`\u201c${text}\u201d`}
+      </motion.p>
+    </AnimatePresence>
+  </div>
+);
+
 const VoiceDecisionCaption: FC = () => {
   const latest = latestDecision(useVoiceDecisions());
   return (
@@ -759,13 +780,15 @@ export const VoiceOrb: FC = () => {
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
   const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
+  const heard = useAuiState(({ thread }) => lastUserUtterance(thread.messages));
+  const showHeard = showOverlay && !(showCaption && hasDecision) && showsHeardCaption(orbState) && heard !== "";
   // Filtered below to the voiced chat: the store also holds Compare panes' and background chats' calls.
   const confirmations = useChatRuntimeStore((s) => s.toolConfirmations);
   const voiceThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const approval = pendingApproval(confirmations, voiceThreadId, (id) => describeToolCall(id) !== null);
   const stack = orbStackLayout({
     arcs: showOverlay && showArcs,
-    chip: showOverlay && showCaption && hasDecision,
+    chip: (showOverlay && showCaption && hasDecision) || showHeard,
     card: showOverlay && approval !== null,
   });
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -846,7 +869,8 @@ export const VoiceOrb: FC = () => {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -3 }}
                         transition={{ duration: 0.09 }}
-                        className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
+                        // Spaced capitals suit Latin; spacing pulls apart joined (Arabic, Persian) and stacked (Devanagari, Thai) letters.
+                        className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55 [&:is(:lang(ar),:lang(fa),:lang(hi),:lang(th))]:tracking-normal"
                         style={{ fontFamily: "var(--font-heading)" }}
                       >
                         {meta.label}
@@ -858,7 +882,7 @@ export const VoiceOrb: FC = () => {
               </StackItem>
               {stack.chip !== null && (
                 <StackItem y={stack.chip}>
-                  <VoiceDecisionCaption />
+                  {showHeard ? <HeardCaption text={heard} /> : <VoiceDecisionCaption />}
                 </StackItem>
               )}
               {stack.card !== null && approval && (
