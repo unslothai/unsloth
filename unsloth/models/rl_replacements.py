@@ -3080,7 +3080,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + f"{_indent}_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(\n"
             + f"{_indent}    self, _unsloth_rollout_logps, completion_mask, locals().get('tool_mask'),\n"
             + f"{_indent})\n"
-            + f"{_indent}if _unsloth_rollout_old:\n"
+            # Aligned generation under vLLM IS: pi_old is the policy the loss scores, so skip that forward.
+            + f"{_indent}_unsloth_old_from_new = (not _unsloth_rollout_old) and _unsloth_grpo_old_logps_from_new(self)\n"
+            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new:\n"
             + f"{_indent}    old_per_token_logps = None\n"
             + f"{_indent}el"
             + function[_old_logps_if.start() + 1 + len(_indent) :]
@@ -3092,7 +3094,11 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
             "            )\n"
             # Older TRL (0.23.x) keeps the rollout logprobs only with the IS correction on.
-            '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n',
+            '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n'
+            "        if _unsloth_old_from_new:\n"
+            '            output["unsloth_old_logps_from_new"] = torch.ones(\n'
+            "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
+            "            )\n",
         )
     elif os.environ.get("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "0") == "1":
         _warn_once(
@@ -5108,6 +5114,44 @@ def _unsloth_grpo_rollout_logps_as_old(
     return True
 
 
+def _unsloth_grpo_old_logps_from_new(trainer):
+    """Skip TRL's old-policy forward under vLLM IS when generation is aligned to the optimizer step:
+    pi_old is then the policy the loss scores (TRL uses per_token_logps.detach() too). Not with a
+    stochastic forward (dropout), where two passes score different policies."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
+        return False
+    if not (
+        getattr(trainer, "use_vllm", False)
+        and getattr(trainer, "vllm_importance_sampling_correction", False)
+    ):
+        return False
+    try:
+        generate_every = int(trainer.args.steps_per_generation) * int(trainer.num_iterations)
+        if (
+            generate_every <= 0
+            or int(trainer.args.gradient_accumulation_steps) % generate_every != 0
+        ):
+            return False
+    except Exception:
+        return False
+    supported = getattr(trainer, "_unsloth_old_logps_from_new_ok", None)
+    if supported is None:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_old_logps_from_new  # noqa: F401
+            from unsloth_zoo.rl_replacements import grpo_policy_is_stochastic
+            supported = not grpo_policy_is_stochastic(getattr(trainer, "model", None))
+        except Exception:
+            supported = False
+        trainer._unsloth_old_logps_from_new_ok = supported
+    if supported:
+        trainer._unsloth_old_logps_from_new_batches = (
+            getattr(trainer, "_unsloth_old_logps_from_new_batches", 0) + 1
+        )
+    return supported
+
+
 def _unsloth_grpo_sample_weight_mode():
     import os
 
@@ -5204,7 +5248,10 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
         return delta.reshape(-1), flat_is_ratio.reshape(-1)
     keep = mask.to(torch.bool)
+    # nan = token not scored (skipped zero-advantage row); left out, as TRL does.
+    scored = ~torch.isnan(delta)
     if not sequence_level:
+        keep = keep & scored
         return delta[keep], flat_is_ratio[keep]
     # A row with no kept tokens is exp(0) = 1, as in TRL.
     counts = keep.sum(dim = -1)
@@ -5213,7 +5260,7 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
         (flat_is_ratio * keep).sum(dim = -1) / counts.clamp(min = 1),
         torch.ones_like(counts, dtype = flat_is_ratio.dtype),
     )
-    return delta[keep], per_row
+    return delta[keep & scored], per_row[scored.all(dim = -1)]
 
 
 def _unsloth_grpo_nanmin(tensor):
@@ -5320,6 +5367,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_flush_metric
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_from_new))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
@@ -5429,6 +5477,7 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _unsloth_grpo_refuse_rank_local_forwards(self, model)
@@ -5529,6 +5578,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             if _rollout_logps_as_old:
                 old_logps, sampling_per_token_logps = sampling_per_token_logps, None
+            elif _old_logps_from_new and old_logps is None:
+                old_logps = per_token_logps.detach()
             (
                 loss,
                 completion_length,
@@ -5652,6 +5703,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if _rollout_logps_as_old:
                 _grpo_accumulated_loss_kwargs["rollout_logps_as_old"] = True
+            if _old_logps_from_new:
+                _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
