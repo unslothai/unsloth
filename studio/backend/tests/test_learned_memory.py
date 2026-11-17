@@ -284,7 +284,9 @@ def test_offered_memory_scopes_follow_the_chat_without_mutating_other_offers(db)
 
 
 @pytest.mark.parametrize("enable_tools", [None, False])
-def test_memory_only_chat_falls_through_without_a_managed_tool_parser(db, monkeypatch, enable_tools):
+def test_memory_only_chat_falls_through_without_a_managed_tool_parser(
+    db, monkeypatch, enable_tools
+):
     import asyncio
     from types import SimpleNamespace
     from routes import inference as inf
@@ -294,10 +296,14 @@ def test_memory_only_chat_falls_through_without_a_managed_tool_parser(db, monkey
     reset_tool_policy()
     monkeypatch.setattr(inf.api_monitor, "fail", lambda *args: None)
     payload = ChatCompletionRequest(
-        model = "managed", thread_id = "chat", enable_tools = enable_tools,
+        model = "managed",
+        thread_id = "chat",
+        enable_tools = enable_tools,
         messages = [{"role": "user", "content": "hello"}],
     )
-    backend = SimpleNamespace(active_model_name = "managed", models = {"managed": {"supports_tools": False}})
+    backend = SimpleNamespace(
+        active_model_name = "managed", models = {"managed": {"supports_tools": False}}
+    )
     request = SimpleNamespace(headers = {})
     assert asyncio.run(managed_tool_chat(payload, request, backend, [], "", None)) is None
 
@@ -308,7 +314,9 @@ def test_memory_replay_keeps_the_tool_loop_without_a_launcher_default(db):
 
     reset_tool_policy()
     payload = ChatCompletionRequest(
-        model = "test", thread_id = "chat", studio_tool_history = True,
+        model = "test",
+        thread_id = "chat",
+        studio_tool_history = True,
         messages = [*_history("update_memory"), {"role": "user", "content": "Forget that"}],
     )
     assert inf._effective_enable_tools(payload)
@@ -322,8 +330,11 @@ def test_memory_only_auto_approval_needs_no_stream(db):
 
     reset_tool_policy()
     payload = ChatCompletionRequest(
-        model = "test", thread_id = "chat", enable_tools = False,
-        stream = False, permission_mode = "auto",
+        model = "test",
+        thread_id = "chat",
+        enable_tools = False,
+        stream = False,
+        permission_mode = "auto",
         messages = [{"role": "user", "content": "Remember I prefer Rust"}],
     )
     assert not inf._confirm_gate_needs_stream(payload)

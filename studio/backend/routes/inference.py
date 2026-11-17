@@ -4626,7 +4626,6 @@ _MEMORY_LOOP_TOOL_NAMES = ("update_memory", "search_conversation")
 
 def _effective_enable_tools(payload) -> Optional[bool]:
     from state.tool_policy import get_tool_policy
-
     if get_tool_policy() is not False and _memory_tool_requested(payload):
         return True
     return _base_enable_tools(payload)
