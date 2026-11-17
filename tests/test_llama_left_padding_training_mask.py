@@ -126,12 +126,14 @@ def _lora_model(dtype):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
 @pytest.mark.parametrize("padding", ["left", "interior"])
-def test_padded_labelled_lora_training_matches_unpadded_rows(padding):
+# 13: the compiled masked SDPA backward faulted on torch < 2.15 without the aligned call.
+@pytest.mark.parametrize("length", [13, 16])
+def test_padded_labelled_lora_training_matches_unpadded_rows(padding, length):
     model = _lora_model(torch.float32)
     params = [p for p in model.parameters() if p.requires_grad]
     torch.manual_seed(0)
     vocab = model.config.vocab_size
-    length, short = 16, 9
+    short = length - 7
     input_ids = torch.randint(3, vocab, (2, length), device = "cuda")
     attention_mask = torch.ones_like(input_ids)
     if padding == "left":
