@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""DPO prefix share on a real Unsloth model (CUDA, TRL >= 1.15 fused LM head).
+"""DPO prefix share on a real Unsloth model (CUDA).
 
 * Per-sequence chosen / rejected logps and LoRA grads from the shared-prefix forward match the
-  unshared padded forward in fp32 (<= 1e-4 nats per sequence) over many layouts.
-* DPOTrainer runs the decoder on P + 2C tokens per pair, not 2 (P + C) (fails without the feature),
-  and its losses match UNSLOTH_DPO_PREFIX_SHARE=0 step for step.
+  unshared padded forward in fp32 (<= 1e-4 nats per sequence) over many layouts, in train and eval
+  mode, through TRL's fused LM head (TRL >= 1.15) or the plain LM head (older TRL).
+* With LoRA dropout on, the shared forward applies it (train grads move with the seed) and its mean
+  gradient over seeds matches the unshared forward's.
+* DPOTrainer (and ORPO / CPO / SimPO where Unsloth patches them) runs the decoder on P + 2C tokens
+  per pair, not 2 (P + C) (fails without the feature), and its losses match
+  UNSLOTH_DPO_PREFIX_SHARE=0 step for step.
 
-Model: UNSLOTH_DPS_TEST_MODEL (default trl-internal-testing/tiny-Qwen3ForCausalLM)."""
+Model: UNSLOTH_DPS_TEST_MODEL (default trl-internal-testing/tiny-Qwen3ForCausalLM). fp32 runs pin dense
+attention to SDPA (see _pin_fp32_attention); UNSLOTH_DPS_TEST_REAL_ATTENTION=1 keeps the real backend."""
 
 import gc
 import os
@@ -68,17 +73,63 @@ def loaded():
                 p.copy_((torch.randn(p.shape, generator = g) * 0.02).to(p))
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    yield model, tok
-    del model
-    gc.collect()
+    pinned = _pin_fp32_attention()
+    try:
+        yield model, tok
+    finally:
+        _unpin(pinned)
+        del model
+        gc.collect()
+
+
+def _pin_fp32_attention():
+    """The fp32 comparisons need an fp32 reference. A training forward has no padding mask, so Unsloth's
+    attention takes FlashAttention or xformers when installed; neither has an fp32 kernel on every card
+    (xformers on sm_100+ runs only its fp16 / bf16 flash op), and the fp32 Q / K / V are downcast to
+    bf16 there. The unshared train-mode reference is then bf16-accurate (LoRA grads 6% off an fp64
+    oracle on tiny Qwen3 on a B200), while eval mode keeps the padding mask and SDPA. Pin dense
+    attention to SDPA for fp32 runs; bf16 runs (and UNSLOTH_DPS_TEST_REAL_ATTENTION=1) keep the real
+    backend."""
+    from unsloth.utils import attention_dispatch as ad
+
+    if DTYPE != "float32" or os.environ.get("UNSLOTH_DPS_TEST_REAL_ATTENTION") == "1":
+        return {}
+    pinned = {}
+    for flag in ("HAS_XFORMERS", "HAS_FLASH_ATTENTION"):
+        if getattr(ad, flag, False):
+            pinned[flag] = getattr(ad, flag)
+            setattr(ad, flag, False)
+    print(
+        f"DPS_PIN fp32 reference: dense attention on SDPA (was {sorted(pinned) or 'SDPA already'})"
+    )
+    return pinned
+
+
+def _unpin(pinned):
+    from unsloth.utils import attention_dispatch as ad
+    for flag, value in pinned.items():
+        setattr(ad, flag, value)
+
+
+def _fused_head_available():
+    try:
+        from trl.trainer.utils import add_fused_lm_head  # noqa: F401  TRL >= 1.15
+    except Exception:
+        return False
+    return True
 
 
 def _fused(model):
+    """Add TRL's fused LM head when this TRL has one; _logps falls back to the plain head."""
+    if not _fused_head_available():
+        return False
     from trl.trainer.utils import add_fused_lm_head
+
     base = model.get_base_model()
     if not getattr(base, "_dps_test_fused", False):
         add_fused_lm_head(base)
         base._dps_test_fused = True
+    return True
 
 
 def _batch(
@@ -88,9 +139,11 @@ def _batch(
     pad_id,
     spec = None,
 ):
-    from trl.trainer.dpo_trainer import DataCollatorForPreference
+    """[chosen_0 .. chosen_{B-1}, rejected_0 .. rejected_{B-1}] right-padded rows, the layout of TRL's
+    preference collators, built here so it does not depend on the TRL version."""
+    import torch
 
-    examples = []
+    rows = [None] * (2 * B)
     for i in range(B):
         if spec is not None:
             P, Cc, Cr, share = spec[i]
@@ -102,8 +155,41 @@ def _batch(
         rejected = (
             list(chosen) if Cr == "same" else head + [rng.randrange(10, vocab) for _ in range(Cr)]
         )
-        examples.append({"prompt_ids": prompt, "chosen_ids": chosen, "rejected_ids": rejected})
-    return DataCollatorForPreference(pad_token_id = pad_id)(examples)
+        rows[i] = (prompt, chosen)
+        rows[B + i] = (prompt, rejected)
+    L = max(len(p) + len(c) for p, c in rows)
+    ids = torch.full((2 * B, L), pad_id, dtype = torch.long)
+    am = torch.zeros((2 * B, L), dtype = torch.long)
+    cm = torch.zeros((2 * B, L), dtype = torch.long)
+    for r, (p, c) in enumerate(rows):
+        n = len(p) + len(c)
+        ids[r, :n] = torch.tensor(p + c)
+        am[r, :n] = 1
+        cm[r, len(p) : n] = 1
+    return {"input_ids": ids, "attention_mask": am, "completion_mask": cm}
+
+
+def _plain_head_logps(model, ids, am, labels):
+    """Per-token logps through the model's own LM head, one row at a time and recomputed in backward,
+    so the [rows, L, vocab] logits are never all alive."""
+    import torch
+    import torch.utils.checkpoint as checkpoint
+
+    causal_lm = model.get_base_model()
+    hidden = causal_lm.model(input_ids = ids, attention_mask = am, use_cache = False)[0]
+    head = causal_lm.get_output_embeddings()
+
+    def row_logps(h, target):
+        logp = head(h[:-1]).float().log_softmax(-1)
+        keep = target[1:] != -100
+        picked = logp.gather(-1, target[1:].clamp_min(0).unsqueeze(-1)).squeeze(-1)
+        return torch.nn.functional.pad(picked * keep, (0, 1))
+
+    rows = [
+        checkpoint.checkpoint(row_logps, hidden[r], labels[r], use_reentrant = False)
+        for r in range(ids.shape[0])
+    ]
+    return torch.stack(rows)
 
 
 def _logps(
@@ -127,10 +213,17 @@ def _logps(
     before = dps.ENGAGED_COUNT
     ctx = dps.preference_prefix_share(trainer, model) if shared else _null()
     with ctx:
-        out = model(
-            input_ids = ids, attention_mask = am, labels = labels, fused_lm_head = True, use_cache = False
-        )
-    seq = out.log_probs.sum(dim = 1)
+        if getattr(model.get_base_model(), "_dps_test_fused", False):
+            log_probs = model(
+                input_ids = ids,
+                attention_mask = am,
+                labels = labels,
+                fused_lm_head = True,
+                use_cache = False,
+            ).log_probs
+        else:
+            log_probs = _plain_head_logps(model, ids, am, labels)
+    seq = log_probs.sum(dim = 1)
     w = torch.linspace(0.5, 1.5, seq.numel(), device = seq.device, dtype = seq.dtype)
     (seq * w).sum().backward()
     grads = {
@@ -212,14 +305,40 @@ def test_logps_and_grads_match_unshared(loaded, name, spec, B, train, monkeypatc
     assert gerr <= GRAD_TOL, (name, gerr)
 
 
-def test_dpo_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatch):
+_PREFERENCE_METHODS = ("_compute_loss", "compute_ref_log_probs", "concatenated_forward")
+
+
+def _preference_trainer(kind):
+    """(trainer class, config class, wrapped method names) of ``kind`` as this TRL exposes it."""
+    import trl
+
+    name = {"dpo": "DPO", "orpo": "ORPO", "cpo": "CPO", "simpo": "CPO"}[kind]
+    try:
+        trainer_cls = getattr(trl, f"{name}Trainer")
+        config_cls = getattr(trl, f"{name}Config")
+    except Exception as exc:
+        pytest.skip(f"TRL {trl.__version__} has no {name}Trainer ({exc!r})")
+    wrapped = [
+        m
+        for m in _PREFERENCE_METHODS
+        if getattr(getattr(trainer_cls, m, None), "_unsloth_dpo_prefix_share", False)
+    ]
+    if not wrapped:
+        pytest.skip(f"Unsloth does not patch {name}Trainer on TRL {trl.__version__}")
+    return trainer_cls, config_cls, wrapped
+
+
+@pytest.mark.parametrize("kind", ["dpo", "orpo", "cpo", "simpo"])
+def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatch, kind):
     """Flip test: without the feature the decoder sees 2B x L tokens per forward."""
     monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
     import torch
     from datasets import Dataset
-    from trl import DPOConfig, DPOTrainer
     from unsloth.models import dpo_prefix_share as dps
 
+    trainer_cls, config_cls, wrapped = _preference_trainer(kind)
+    legacy = "_compute_loss" not in wrapped  # TRL < 1.0: concatenated_forward
     model, tok = loaded
     rng = random.Random(5)
     vocab = min(len(tok), 30000)
@@ -232,29 +351,48 @@ def test_dpo_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatch):
     ds = Dataset.from_list(rows)
     init = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
 
-    def run(
-        mode,
-        perturb = 0.0,
-        pad = None,
-    ):
+    def pad64(features, collate):
+        # A/A yardstick: 64 more right-pad columns on the completion side (other kernel tiling, same math).
+        out = collate(features)
+        for key, value in list(out.items()):
+            if not (torch.is_tensor(value) and value.dim() == 2):
+                continue
+            if key in ("input_ids", "attention_mask", "completion_mask") or key.startswith(
+                ("chosen_", "rejected_")
+            ):
+                fill = (
+                    tok.pad_token_id
+                    if key.endswith("input_ids")
+                    else (-100 if key.endswith("labels") else 0)
+                )
+                out[key] = torch.nn.functional.pad(value, (0, 64), value = fill)
+        return out
+
+    def run(mode, aa = False):
         os.environ["UNSLOTH_DPO_PREFIX_SHARE"] = mode
         if "ref" in getattr(model, "peft_config", {}):
-            model.delete_adapter("ref")  # DPOTrainer adds a frozen copy of the adapter each time
-        g = torch.Generator(device = "cpu").manual_seed(1)
+            model.delete_adapter(
+                "ref"
+            )  # TRL >= 1.0 DPOTrainer adds a frozen copy of the adapter each time
         with torch.no_grad():
             for n, p in model.named_parameters():
                 if n in init:
-                    noise = torch.randn(p.shape, generator = g).to(p) * perturb
-                    p.copy_(init[n] * (1 + noise))
+                    p.copy_(init[n])
         seen = []
         layer0 = model.get_base_model().model.layers[0]
         h = layer0.register_forward_pre_hook(
             lambda m, a, k: seen.append(int((a[0] if a else k["hidden_states"]).shape[:2].numel())),
             with_kwargs = True,
         )
-        cfg = DPOConfig(
-            output_dir = str(tmp_path / mode),
+        extra = (
+            {"max_length": None} if not legacy else {"max_length": 1024, "max_prompt_length": 512}
+        )
+        if kind == "simpo":
+            extra.update(loss_type = "simpo", cpo_alpha = 0.0, simpo_gamma = 0.5)
+        cfg = config_cls(
+            output_dir = str(tmp_path / f"{mode}{'_aa' if aa else ''}"),
             per_device_train_batch_size = B,
+            gradient_accumulation_steps = 1,
             max_steps = 3,
             # SGD: Adam's first steps are ~lr * sign(g), which turns fp32 noise in near-zero grad
             # coordinates into full-size updates and makes A/A runs drift apart by step 3.
@@ -262,45 +400,118 @@ def test_dpo_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatch):
             optim = "sgd",
             logging_steps = 1,
             report_to = "none",
-            max_length = None,
             beta = 0.1,
             seed = 0,
             save_strategy = "no",
             bf16 = False,
             fp16 = False,
-            **({"pad_to_multiple_of": pad} if pad else {}),
+            **extra,
         )
-        trainer = DPOTrainer(
-            model = model, ref_model = None, args = cfg, train_dataset = ds, processing_class = tok
+        kwargs = {"ref_model": None} if kind == "dpo" else {}
+        trainer = trainer_cls(
+            model = model, args = cfg, train_dataset = ds, processing_class = tok, **kwargs
         )
-        batch = trainer.data_collator([trainer.train_dataset[i] for i in range(B)])
+        if aa:
+            collate = trainer.data_collator
+            trainer.data_collator = lambda features: pad64(features, collate)
         engaged0 = dps.ENGAGED_COUNT
-        trainer.train()
-        h.remove()
+        try:
+            trainer.train()
+        finally:
+            h.remove()
+            # accelerate leaves the model's forward wrapped in the trainer's autocast (Unsloth runs an fp32
+            # model's preference training under bf16 autocast); later fp32 tests need the plain forward.
+            trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False)
         losses = [x["loss"] for x in trainer.state.log_history if "loss" in x]
-        return losses, seen, batch, dps.ENGAGED_COUNT - engaged0
+        return losses, seen, dps.ENGAGED_COUNT - engaged0
 
     try:
-        base_losses, base_seen, batch, e0 = run("0")
-        # A/A yardstick: the unshared run with other padding (other kernel tiling: fp32-level noise of
-        # the same size as the shared forward's, which SGD on DPO at pi = pi_ref then amplifies).
-        aa_losses, _, _, _ = run("0", pad = 256)
-        pg_losses, pg_seen, _, e1 = run("1")
+        base_losses, base_seen, e0 = run("0")
+        aa_losses, _, _ = run("0", aa = True)
+        pg_losses, pg_seen, e1 = run("1")
     finally:
         os.environ.pop("UNSLOTH_DPO_PREFIX_SHARE", None)
-    real = int(batch["attention_mask"].sum())
+        if "ref" in getattr(model, "peft_config", {}):
+            model.delete_adapter("ref")
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if n in init:
+                    p.copy_(init[n])
     pg_diff = max(abs(a - b) for a, b in zip(base_losses, pg_losses))
     aa_diff = max(abs(a - b) for a, b in zip(base_losses, aa_losses))
+    # transformers 4.x logs the loss rounded to 4 decimals.
+    rounded = all(abs(x * 1e4 - round(x * 1e4)) < 1e-6 for x in base_losses + pg_losses)
     print(
-        f"DPS_E2E real={real} base_seen={base_seen[:3]} pg_seen={pg_seen[:3]} engaged={e1} "
+        f"DPS_E2E {kind} legacy={legacy} base_seen={base_seen[:4]} pg_seen={pg_seen[:4]} engaged={e1} "
         f"pg_diff={pg_diff:.3e} aa_diff={aa_diff:.3e} base={base_losses} aa={aa_losses} pg={pg_losses}"
     )
-    assert e0 == 0 and e1 >= 6  # policy + reference forward per step
-    # Every decoder call ran on the shared stream (one prompt per pair), except the one verify forward.
-    assert min(base_seen) >= 2 * B * P, base_seen
-    assert sum(n > real - B * (P // 2) for n in pg_seen) <= 1, (pg_seen, real)
-    assert base_losses[0] == pg_losses[0]
-    assert pg_diff <= 3 * aa_diff + 1e-6 * max(1.0, abs(base_losses[0])), (pg_diff, aa_diff)
+    assert len(base_losses) == len(pg_losses) == 3
+    assert e0 == 0 and e1 >= 3, (e0, e1)
+    # Every decoder call but the one verify forward ran on the shared stream (one prompt per pair).
+    assert min(base_seen) >= 2 * B * (P // 2), base_seen
+    assert sum(n > min(base_seen) - B * (P // 2) for n in pg_seen) <= 1, (pg_seen, base_seen)
+    if kind == "dpo" and not rounded:
+        assert base_losses[0] == pg_losses[0]  # policy == reference at step 0: log 2 both ways
+    tol = 3 * aa_diff + 1e-6 * max(1.0, abs(base_losses[0])) + (1.01e-4 if rounded else 0.0)
+    assert pg_diff <= tol, (pg_diff, aa_diff)
+
+
+def test_lora_dropout_runs_on_the_shared_path(loaded, monkeypatch):
+    """Train mode with LoRA dropout: the shared forward must apply it (grads move with the seed and
+    stay apart from the eval grads), and its mean gradient over seeds must equal the unshared one's:
+    each row's dropout mask has the same distribution in both forwards (the shared prompt's mask is
+    common to both rows of a pair), so the expected gradient is the same."""
+    import torch
+
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    model, tok = loaded
+    _fused(model)
+    batch = _batch(
+        random.Random(21),
+        2,
+        min(len(tok), 30000),
+        tok.pad_token_id,
+        [(200, 40, 50, 0), (120, 60, 30, 0)],
+    )
+    swapped = []
+    for module in model.modules():
+        drop = getattr(module, "lora_dropout", None)
+        if isinstance(drop, torch.nn.ModuleDict) and "default" in drop:
+            swapped.append((drop, drop["default"]))
+            drop["default"] = torch.nn.Dropout(0.3)
+    assert swapped
+
+    def grads(
+        shared,
+        seed,
+        train = True,
+    ):
+        torch.manual_seed(seed)
+        _, g, n = _logps(model, batch, shared = shared, train = train)
+        assert n == int(shared), n
+        return torch.cat([g[k].flatten() for k in sorted(g)]).double()
+
+    try:
+        eval_ref, eval_got = grads(False, 0, train = False), grads(True, 0, train = False)
+        assert float((eval_ref - eval_got).abs().max() / eval_ref.abs().max()) <= GRAD_TOL
+        N = 32
+        S = torch.stack([grads(True, 100 + i) for i in range(N)])
+        U = torch.stack([grads(False, 100 + i) for i in range(N)])
+    finally:
+        for drop, original in swapped:
+            drop["default"] = original
+        model.train()
+    var_s, var_u = float(S.var(0).sum()), float(U.var(0).sum())
+    # Squared distance of the two means over its expectation when they are equal: ~1.
+    z = float((S.mean(0) - U.mean(0)).square().sum()) / ((var_s + var_u) / N)
+    seed_spread = float((S[0] - S[1]).norm() / S[0].norm())
+    print(
+        f"DPS_DROPOUT z={z:.3f} var_shared/var_unshared={var_s / var_u:.3f} seed_spread={seed_spread:.3e} "
+        f"shared_mean_vs_eval={float((S.mean(0) - eval_got).norm() / eval_got.norm()):.3e}"
+    )
+    assert seed_spread > 1e-2 and var_s > 0.25 * var_u  # dropout runs on the shared stream
+    assert z < 2.0, z
 
 
 def test_leaky_mask_is_caught(loaded, monkeypatch):
