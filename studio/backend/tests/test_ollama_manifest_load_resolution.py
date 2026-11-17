@@ -552,7 +552,9 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
 _IGNORABLE_LAYERS = (
     "application/vnd.ollama.image.draft",
     "application/vnd.ollama.image.embed",
+    # Downgrade-anchor layers newer Ollama appends to every pulled legacy manifest (#18058).
     "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.ollama.manifest.list.v2+json",
 )
 
 
@@ -616,6 +618,16 @@ def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatc
     rows = ollama.scan_ollama_dir(root)
     assert len(rows) == 1
     assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+def test_a_manifest_list_pull_anchor_is_listed(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-list-pull"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + _IGNORABLE_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    assert len(ollama.scan_ollama_dir(root)) == 1
 
 
 @pytest.mark.parametrize("unsupported", _UNSUPPORTED_RUNTIME_LAYERS)

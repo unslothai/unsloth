@@ -57,14 +57,24 @@ _OLLAMA_METADATA_LAYER_MEDIA_TYPES = frozenset(
     }
 )
 
-# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
-_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
+# Ollama's legacy-tree downgrade anchor lists its manifests-v2 blobs as layers only so an older
+# daemon's GC keeps them (manifest.WriteLegacyAnchor); a list pull adds both types.
+_OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES = frozenset(
     {
-        "application/vnd.ollama.image.draft",
-        "application/vnd.ollama.image.embed",
-        # Legacy manifests may carry an OCI manifest-reference layer alongside the GGUF.
         "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.ollama.manifest.list.v2+json",
     }
+)
+
+# `image.draft` only feeds speculative decoding; `image.embed` is deprecated and ignored by ollama.
+_OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = (
+    frozenset(
+        {
+            "application/vnd.ollama.image.draft",
+            "application/vnd.ollama.image.embed",
+        }
+    )
+    | _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES
 )
 
 _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
@@ -696,6 +706,51 @@ def _manifest_digests(manifest: object) -> set[str]:
     }
 
 
+def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:
+    """Digests *manifest* keeps alive, through manifest-list children and anchor layers.
+    ``strict`` raises on an unreadable child (a retention read must not under-count)."""
+    digests: set[str] = set()
+    pending, seen = [manifest], set()
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, dict):
+            continue
+        digests |= _manifest_digests(current)
+        children = current.get("manifests") or []
+        for entry in [
+            *(current.get("layers") or []),
+            *(children if isinstance(children, list) else []),
+        ]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("digest"), str):
+                continue
+            if entry.get("mediaType") not in _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES:
+                continue
+            digests.add(entry["digest"])
+            if entry["digest"] in seen:
+                continue
+            seen.add(entry["digest"])
+            blob = _ollama_blob_path(blobs_dir, entry["digest"])
+            if blob is None or not _safe_is_file(blob):
+                # A pull downloads one list child; the others are not on disk.
+                continue
+            try:
+                pending.append(json.loads(blob.read_text(encoding = "utf-8-sig")))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                if strict:
+                    raise
+    return digests
+
+
+def _ollama_v2_manifest_path(ollama_dir: Path, rel: Path) -> Optional[Path]:
+    """The manifests-v2 entry newer Ollama keeps beside a legacy tag (manifest.V2PathForName)."""
+    if len(rel.parts) != 4:
+        return None
+    host, *rest = rel.parts
+    if host.lower() in ("registry.ollama.ai", "ollama.com"):
+        host = "ollama.com"
+    return ollama_dir / "manifests-v2" / host.replace(":", "%3A") / Path(*rest)
+
+
 def ollama_model_ref_link_dirs(ref: str) -> list[Path]:
     """Every directory a load of *ref* may have put its ``.gguf`` links in."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
@@ -720,29 +775,56 @@ def delete_ollama_model_ref(ref: str) -> None:
         raise OllamaModelBusy("A model load is using this Ollama model")
     try:
         manifests_root = ollama_dir / "manifests"
+        v2_root = ollama_dir / "manifests-v2"
+        blobs_dir = ollama_dir / "blobs"
         link_dirs = ollama_model_ref_link_dirs(ref)
         try:
             manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             raise ValueError(f"Could not read Ollama manifest: {e}") from e
-        owned = _manifest_digests(manifest)
-        for other in manifests_root.rglob("*"):
-            if not _safe_is_file(other) or os.path.realpath(other) == str(tag_file):
+        owned = _manifest_closure_digests(blobs_dir, manifest, strict = False)
+        rel = _manifest_rel_path(tag_file, manifests_root)
+        v2_file = _ollama_v2_manifest_path(ollama_dir, rel) if rel is not None else None
+        # ``ollama rm`` drops both trees: leaving the v2 entry would point Ollama at deleted blobs.
+        v2_tag = v2_file if v2_file is not None and _safe_is_file(v2_file) else None
+        if v2_tag is not None:
+            try:
+                data = v2_tag.read_bytes()
+                owned.add(f"sha256:{hashlib.sha256(data).hexdigest()}")
+                owned |= _manifest_closure_digests(
+                    blobs_dir, json.loads(data.decode("utf-8-sig")), strict = False
+                )
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                pass
+        # v2 entries are compared by path: an ``ollama cp`` alias links the same manifest blob.
+        others = [
+            *(p for p in manifests_root.rglob("*") if os.path.realpath(p) != str(tag_file)),
+            *(p for p in (v2_root.rglob("*") if v2_root.is_dir() else ()) if p != v2_tag),
+        ]
+        for other in others:
+            if not _safe_is_file(other):
                 continue
             try:
-                owned -= _manifest_digests(json.loads(other.read_text(encoding = "utf-8-sig")))
+                data = other.read_bytes()
+                owned.discard(f"sha256:{hashlib.sha256(data).hexdigest()}")
+                owned -= _manifest_closure_digests(
+                    blobs_dir, json.loads(data.decode("utf-8-sig")), strict = True
+                )
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 # An unreadable manifest might reference any blob, so keep them all.
                 owned = set()
                 break
         tag_file.unlink()
-        parent = tag_file.parent
-        while parent != manifests_root and path_is_same_or_child(parent, manifests_root):
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
+        if v2_tag is not None:
+            v2_tag.unlink()
+        for tag, root in ((tag_file, manifests_root), (v2_tag, v2_root)):
+            parent = tag.parent if tag is not None else root
+            while parent != root and path_is_same_or_child(parent, root):
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
         for digest in owned:
             blob = _ollama_blob_path(ollama_dir / "blobs", digest)
             if blob is not None:
