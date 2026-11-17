@@ -761,8 +761,7 @@ def _rocm_table(
 
 
 def test_rocm_auto_races_a_listed_dit_on_its_arch_and_os(monkeypatch):
-    """With the switch unset, a DiT in ROCM_AUTO_DITS for the card's gfx arch and this OS races the Triton kernel:
-    timed, never forced, and the race's floor is kept."""
+    """Switch unset: a listed DiT races the Triton kernel (timed, never forced) and keeps the race's floor."""
     pipe = _Pipe(
         _wan_dit()
     )  # built before the card is faked (diffusers' lazy imports probe Triton)
@@ -778,9 +777,8 @@ def test_rocm_auto_races_a_listed_dit_on_its_arch_and_os(monkeypatch):
 
 
 def test_rocm_auto_stays_off_elsewhere(monkeypatch):
-    """Another gfx arch, an unreadable one, another OS, an unlisted DiT or a lost race keep the incumbent; the switch
-    1 still routes there."""
-    pipes = [_Pipe(_wan_dit()) for _ in range(7)]  # built before the card is faked
+    """Other arch / unreadable arch / other OS / unlisted DiT / lost race keep the incumbent; switch 1 still routes."""
+    pipes = [_Pipe(_wan_dit()) for _ in range(7)]
     seen = _fake_cuda(monkeypatch, impl = "triton")
     _rocm_table(monkeypatch, "WanTransformer3DModel")
     for arch, pipe in zip(("gfx1100", "gfx942:sramecc+:xnack-", ""), pipes):

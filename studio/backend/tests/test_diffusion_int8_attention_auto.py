@@ -187,9 +187,7 @@ def test_auto_route_stays_off(card, monkeypatch, case):
 
 
 def test_rocm_listed_dit_races_the_triton_kernel(card, monkeypatch):
-    """ROCm runs only the Triton kernel, so the CUDA-only rule does not apply there: a DiT in ROCM_AUTO_DITS for the
-    card's gfx arch and this OS races it with the switch unset (timed, never forced); FLUX.3 is not in the gfx1151
-    Linux set (2.3% slower end to end there) and keeps its processors."""
+    """A DiT in ROCM_AUTO_DITS races the Triton kernel with the switch unset; unlisted FLUX.3 keeps its processors."""
     import sys
 
     from core.inference import rocm_bf16
