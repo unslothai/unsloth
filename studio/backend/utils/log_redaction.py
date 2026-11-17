@@ -266,6 +266,7 @@ _JSON_STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"?')
 _JSON_COLON = re.compile(r"\s*:\s*")
 _JSON_SECRET_KEY = re.compile(_KEY_START + r"(?:" + _SECRET_KEYS + r")$", re.IGNORECASE)
 _JSON_DECODER = json.JSONDecoder()
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
@@ -306,8 +307,10 @@ def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
                 continue
             masked = _mask_json_strings(message, inside_message = True)
             if masked != message:
-                # Keep raw characters raw, or redact_native_paths no longer matches a non-ASCII path.
+                # Keep raw characters raw, or redact_native_paths no longer matches a non-ASCII path. A lone surrogate stays escaped: it cannot be written as UTF-8.
                 encoded = json.dumps(masked, ensure_ascii = token.isascii())
+                if not token.isascii():
+                    encoded = _SURROGATE_RE.sub(lambda m: f"\\u{ord(m[0]):04x}", encoded)
                 parts.extend((text[written : match.start()], encoded))
                 written = pos
     if not parts:

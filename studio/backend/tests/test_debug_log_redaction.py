@@ -458,3 +458,11 @@ def test_raw_utf8_native_path_beside_a_serialized_credential_is_masked(monkeypat
     out = redact_log_text(json.dumps({"event": "x: " + body}, ensure_ascii = False))
     assert "opaqueVal123xyz" not in out
     assert "<native_path>" in out and "private" not in out
+
+
+def test_escaped_lone_surrogate_beside_raw_utf8_stays_encodable():
+    line = '{"event": "x: {\\"api_key\\": \\"opaqueVal123xyz\\", \\"note\\": \\"é \\ud800\\"}"}'
+    out = redact_log_text(line)
+    assert "opaqueVal123xyz" not in out
+    assert json.loads(out) == json.loads(line.replace("opaqueVal123xyz", REDACTED))
+    out.encode("utf-8")
