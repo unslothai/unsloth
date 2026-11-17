@@ -2122,6 +2122,9 @@ def _shown_npu(
         def can_run(self):
             return runs_npu
 
+        def hardware(self):
+            return {"present": runs_npu, "family": "XDNA2", "supported": runs_npu}
+
     npu = _Npu()
     npu._server = _Server() if running else None
     if loaded:
@@ -2190,8 +2193,13 @@ def test_a_host_without_the_npu_passes_the_name_on(monkeypatch):
     from routes import inference as routes
 
     npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, runs_npu = False)
-    name = asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
-    assert name == "Qwen3-0.6B-NPU2"
+
+    async def _never(*_args, **_kwargs):
+        raise AssertionError("a host without the NPU must not reach the load policy")
+
+    monkeypatch.setattr(routes, "_keyless_caller_held_back", _never)
+    for name in ("Qwen3-0.6B-NPU2", "FastFlowLM/Qwen3-0.6B-NPU2"):
+        assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == name
     assert npu.catalog_reads == 0
 
 

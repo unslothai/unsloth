@@ -11400,6 +11400,9 @@ async def _npu_path_for_display_name(
 
     if not looks_like_npu_display_name(requested_model):
         return requested_model
+    npu = get_npu_backend()
+    if not npu.hardware().get("supported"):
+        return requested_model
     from core.inference.load_policy import owner_chat_loads_beside
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
@@ -11420,7 +11423,6 @@ async def _npu_path_for_display_name(
         if loaded is not None and loaded.answers_to(requested_model):
             return loaded.model_path
         return requested_model
-    npu = get_npu_backend()
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
 
     def _refuse(status: int, message: str, code: str) -> HTTPException:
