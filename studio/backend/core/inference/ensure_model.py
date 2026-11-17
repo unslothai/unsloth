@@ -25,7 +25,8 @@ PAGES = {
 _WHAT = {
     "llm": "chat model",
     "tts": "text-to-speech model",
-    "audio": "music model",
+    # audio.cpp speech and music models share this kind: "music model" named Kokoro one.
+    "audio": "audio model",
     "stt": "speech-to-text model",
     "image": "image model",
     "video": "video model",
