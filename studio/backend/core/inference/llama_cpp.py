@@ -838,6 +838,8 @@ class GgufLoadIntent:
     extra_args: Optional[tuple[str, ...]] = None
     # Inherited extras look like named ones; duplicate-load checks need the difference.
     extra_args_inherited: bool = False
+    # The request set cache_type_kv, so a launch strips inherited cache flags (_resolve_inherited_extra_args).
+    cache_type_kv_set: bool = False
     preserve_multi_gpu_on_layer: bool = False
     refuse_partial_gpu_fit: bool = False
     compare_mtp_draft: bool = False
@@ -9796,9 +9798,19 @@ class LlamaCppBackend:
             return False
         # Omitted extras inherit the LAUNCHED list; judge on the flag, not value equality, since a deliberate stripped list must not read as inheriting.
         _invoked_extras = self.requested_extra_args if intent.extra_args_inherited else extra_args
+        _cache_extras = _invoked_extras
+        if intent.extra_args_inherited and intent.cache_type_kv_set and _cache_extras:
+            # The launch drops inherited cache flags a set cache_type_kv shadows; plan the same pair.
+            _cache_extras = strip_shadowing_flags(
+                _cache_extras,
+                strip_context = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+            )
         # Requested against requested per axis; the scalar _cache_type_kv misses extras/env.
         if self._requested_cache_types != _planned_main_cache_types(
-            intent.cache_type_kv, _invoked_extras
+            intent.cache_type_kv, _cache_extras
         ):
             return False
         # Virtualised Metal never launches a tensor split, so judge the normalized request, else an extras -sm tensor the pin leaves in place would never match.

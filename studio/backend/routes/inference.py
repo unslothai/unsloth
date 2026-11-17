@@ -9004,6 +9004,7 @@ def _active_gguf_intent(
         ),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
+        cache_type_kv_set = "cache_type_kv" in request_fields_set,
     )
 
 
