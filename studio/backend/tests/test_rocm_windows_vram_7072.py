@@ -2313,3 +2313,31 @@ def test_the_monitor_poll_starts_nothing_that_can_elevate(win_rocm, monkeypatch)
     assert (device["gpu_utilization_pct"], device["temperature_c"]) == (64.0, 51.0)
     assert launched and all(cmd[0] == "powershell" and "Get-Counter" in cmd[-1] for cmd in launched)
     assert not any("GPU Engine" in cmd[-1] for cmd in launched)
+
+
+def test_hip_luids_without_dedicated_counters_never_sum_a_missing_snapshot(win_rocm, monkeypatch):
+    """APU beside a discrete card, Dedicated Usage failed, Shared Usage answered: the HIP LUIDs that keep
+    the engine and temperature reads alive must not send a missing snapshot into the unified sum."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
+    _mixed_host(monkeypatch)
+    monkeypatch.setattr(
+        hw, "_rocm_props_are_positively_unified", lambda props: props.total_memory == 8 * GB
+    )
+
+    def counters(
+        counter = "Dedicated Usage",
+        *a,
+        **k,
+    ):
+        return (
+            None
+            if counter == "Dedicated Usage"
+            else [("luid_0x00000000_0x0000c001_phys_0", 1.0 * GB)]
+        )
+
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", counters)
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0xC001, 0), (0xD1E2, 0)))
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["luid"] for d in devices] == [0xC001, 0xD1E2]
+    assert [d["used_gb"] for d in devices] == [None, None]
+    assert aggregate is None

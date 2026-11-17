@@ -4974,7 +4974,13 @@ def _rocm_windows_per_device_vram(
             # Beside another GPU only HIP's LUID says which counters are the iGPU's (#8942).
             for position, luid in enumerate(whole_adapter):
                 meta = dev_meta[position]
-                if pool_scoped[position] and meta["positively_unified"] and luid is not None:
+                # HIP alone can name the LUID (#18005); without a Dedicated snapshot there is nothing to sum.
+                if (
+                    pool_scoped[position]
+                    and meta["positively_unified"]
+                    and luid is not None
+                    and adapters
+                ):
                     assigned[position] = _rocm_windows_unified_used_bytes_for_luid(
                         luid, adapters, float(meta["total_bytes"])
                     )
