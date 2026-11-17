@@ -147,6 +147,10 @@ UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "
     "no",
     "off",
 )
+# PrefixGrouper under vLLM (fast_inference=True); UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0 restores the old vLLM skip.
+UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON = os.environ.get(
+    "UNSLOTH_GRPO_PREFIX_GROUPER_VLLM", "1"
+).lower() not in ("0", "false", "no", "off")
 if UNSLOTH_GRPO_PREFIX_GROUPER_ON:
     try:
         from ..utils.prefix_grouper import (
@@ -4060,10 +4064,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
-            # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM: the rollout dominates the step, so PG saves little and its self-verify is net overhead.
+            # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). Under vLLM the old-policy logprob forward still runs (importance-sampling correction), and PG cuts it like the training forward.
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
-                and not getattr(self, "use_vllm", False)
+                and (UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False))
                 # Its extract_logps always projects with lm_head.weight.
                 and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
@@ -4487,7 +4491,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )
                             if _pg_u is None:
                                 _pg_u = set()
-                            if _pg_diff >= _PG_TOL_KILL:
+                            # Kill only a signature that never verified. Once it has, a mismatch at a larger T is the bf16 tail (packed vs per-row also reaches 1-4 nats at T ~ 20k), so fall back for this batch only.
+                            _pg_v = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            )
+                            if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in (
+                                _pg_v if isinstance(_pg_v, dict) else {}
+                            ):
                                 _pg_u.add(_pg_layout.signature)
                                 unwrapped_model._unsloth_prefix_grouper_nograd_unsafe = _pg_u
                             _pg_use = False
@@ -4878,6 +4888,37 @@ def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
     return source
 
 
+_GRPO_PREFIX_GROUPER_VLLM_GATE = re.compile(
+    r"""(_pg_engage\s*=\s*bool\(_pg_funcs\)\s*and\s*)not\s+getattr\(\s*trainer\s*,\s*(["'])use_vllm\2\s*,\s*False\s*\)"""
+)
+
+
+_GRPO_PREFIX_GROUPER_GRAD_KILL = re.compile(r"\bif\s+_pg_diff\s*>=\s*_PG_TOL_KILL\s*:")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_kill(source):
+    """In zoo's gradient PrefixGrouper self-verify, mark a signature unsafe only if it never verified. A verified signature that mismatches at a larger T falls back for that batch: bf16 max|d| over thousands of completion tokens has multi-nat outliers between two exact paths too, and one of them would turn PG off for the rest of the run. A zoo without that line is left alone."""
+    if "prefix_seg_info" not in source:
+        return source
+    return _GRPO_PREFIX_GROUPER_GRAD_KILL.sub(
+        "if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in "
+        '(getattr(unwrapped_model, "_unsloth_prefix_grouper_grad_verified", None) or {}):',
+        source,
+        count = 1,
+    )
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
+    """Let zoo's gradient PrefixGrouper run under vLLM unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0. Zoo skips it there; the layout, self-verify and scatter do not depend on how completions were sampled. A zoo without that skip is left alone."""
+    if "prefix_seg_info" not in source:
+        return source
+    return _GRPO_PREFIX_GROUPER_VLLM_GATE.sub(
+        r'\1(UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(trainer, "use_vllm", False))',
+        source,
+        count = 1,
+    )
+
+
 _GRPO_HIDDEN_STATES_REQUEST = re.compile(
     r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
 )
@@ -5237,9 +5278,13 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_prefix_grouper_gate(
-        _patch_grpo_accumulated_loss_head_hooks(
-            _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_kill(
+        _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
+            _patch_grpo_accumulated_loss_prefix_grouper_gate(
+                _patch_grpo_accumulated_loss_head_hooks(
+                    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+                )
+            )
         )
     )
 )
@@ -5273,6 +5318,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
     "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '1').lower() not in ('0', 'false', 'no', 'off')\n"
+    "UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER_VLLM', '1').lower() not in ('0', 'false', 'no', 'off')\n"
     "if UNSLOTH_GRPO_PREFIX_GROUPER_ON:\n"
     "    try:\n"
     "        from unsloth.utils.prefix_grouper import build_group_layout as _pg_build_layout, prefix_grouper_enabled as _pg_enabled_fn, verify_on as _pg_verify_on, tol_ok as _pg_tol_ok, TOL_KILL as _PG_TOL_KILL\n"
