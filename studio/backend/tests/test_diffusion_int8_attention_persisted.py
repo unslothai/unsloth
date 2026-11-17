@@ -268,10 +268,10 @@ def test_namespace_sources_are_part_of_the_key(machine):
 def test_a_strided_cudnn_incumbent_has_its_own_verdict(machine):
     from core.inference import diffusion_qwenimage21_attn as Q21
 
-    strided = D._incumbent_name(Q21.StridedCudnn((0,)))
-    plain = D._incumbent_name("_native_cudnn")
+    strided = D._race_name(Q21.StridedCudnn((0,)))
+    plain = D._race_name("_native_cudnn")
     assert plain == "dispatch:_native_cudnn" and strided == "dispatch:_native_cudnn:strided"
-    assert D._incumbent_name(None) == "dispatch:native"
+    assert D._race_name(None) == "dispatch:native"
     I.verdict("cuda:0", torch.bfloat16, 8, 128, None, plain)
     machine["new_process"]()
     I.verdict("cuda:0", torch.bfloat16, 8, 128, None, strided)

@@ -1677,6 +1677,20 @@ class DeepseekV41PreTrainedModel(PreTrainedModel):
     ]
     _keys_to_ignore_on_load_missing = [r"engram_tables\.\d+\.weight_scale_inv$"]
 
+    def post_init(self):
+        """transformers 4.x post_init raises for a _keep_in_fp32_modules entry no parameter name contains; a config
+        with no KV source layer (a cut-down / pruned copy) builds no compressor. Drop such entries there (they match
+        nothing anyway); transformers 5 has no such check and keeps the class lists."""
+        from .convert import _transformers_major
+
+        if _transformers_major() < 5:
+            present = {part for name, _ in self.named_parameters() for part in name.split(".")}
+            for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+                keep = getattr(self, attr, None)
+                if keep:
+                    setattr(self, attr, [m for m in keep if m in present])
+        return super().post_init()
+
     def gradient_checkpointing_enable(
         self,
         gradient_checkpointing_kwargs = None,

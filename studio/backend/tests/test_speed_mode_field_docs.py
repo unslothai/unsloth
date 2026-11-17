@@ -12,7 +12,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 
 
 def _speed_mode_description(class_name: str) -> str:
-    tree = ast.parse((_BACKEND / "models" / "inference.py").read_text())
+    tree = ast.parse((_BACKEND / "models" / "inference.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
     field = next(
         n
@@ -25,7 +25,7 @@ def _speed_mode_description(class_name: str) -> str:
 
 def _video_unset() -> tuple[str, str]:
     # video.py resolves an unset speed_mode with dense_default = SPEED_DEFAULT for every kind.
-    src = (_BACKEND / "core" / "inference" / "video.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     assert 'speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT' in src
     return (
         resolve_speed_mode(None, is_gguf = False, dense_default = SPEED_DEFAULT),

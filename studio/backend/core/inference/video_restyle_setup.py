@@ -74,7 +74,7 @@ def setup_dir() -> Path:
 def _read_record(root: Optional[Path] = None) -> Optional[dict[str, Any]]:
     root = setup_dir() if root is None else root
     try:
-        record = json.loads((root / RECORD_NAME).read_text())
+        record = json.loads((root / RECORD_NAME).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return None
     return record if isinstance(record, dict) and record.get("version") == RECORD_VERSION else None
@@ -259,7 +259,7 @@ def merge_shards(
 
 
 def index_shards(index_path: Path) -> list[str]:
-    index = json.loads(Path(index_path).read_text())
+    index = json.loads(Path(index_path).read_text(encoding = "utf-8"))
     return sorted(set(index["weight_map"].values()))
 
 
@@ -636,7 +636,7 @@ class RestyleSetup:
             "transformer_payload_bytes": payload,
         }
         tmp = root / (RECORD_NAME + ".partial")
-        tmp.write_text(json.dumps(record, indent = 2))
+        tmp.write_text(json.dumps(record, indent = 2), encoding = "utf-8")
         os.replace(tmp, root / RECORD_NAME)
 
     def _check_disk(

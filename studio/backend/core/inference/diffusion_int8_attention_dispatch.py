@@ -109,6 +109,12 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
+def _race_name(incumbent: Any) -> str:
+    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
+    name = f"dispatch:{_backend_name(incumbent)}"
+    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+
+
 class Int8Route(str):
     """Routing backend equal to the incumbent's name. ``cards`` maps each passing CUDA index to its token floor (a
     layer split or CFG replica runs the processor on a second card); ``min_tokens`` is the lowest, ``index`` the
@@ -148,6 +154,7 @@ class Int8Route(str):
         return str(getattr(self.incumbent, "name", None) or self.value).upper()
 
     def __reduce__(self) -> tuple:
+        # the state dict carries what the constructor does not take: a CFG replica (deepcopy) keeps the sink mode
         return (
             Int8Route,
             (
@@ -159,6 +166,7 @@ class Int8Route(str):
                 self.impl,
                 self.cards,
             ),
+            {"sinks": self.sinks},
         )
 
     def __repr__(self) -> str:
@@ -676,13 +684,6 @@ def _card_floor(
     return found, max(minimum, MIN_TOKENS)
 
 
-def _incumbent_name(backend: Any) -> str:
-    """The verdict / race key of a processor's backend. A strided cuDNN pin races on the strided views rather than
-    diffusers' copies (``_Q21.maybe_strided``): its own verdict, never the plain cuDNN one (also across processes)."""
-    name = f"dispatch:{_backend_name(backend)}"
-    return name + ":strided" if isinstance(backend, _Q21.StridedCudnn) else name
-
-
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -753,7 +754,7 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = _incumbent_name(incumbent)
+        name = _race_name(incumbent)
 
         def run(
             q: Any,

@@ -995,6 +995,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Near-tied inductor norm-reduction configs, benchmarked per process, rendered different clips for one seed.
+        filter_reduction_configs = True,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
         offload_cuda_graph = True,
     ),
@@ -1039,6 +1041,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Same DiT as the 480p repack: one reduction config per kernel, not a per-process benchmark.
+        filter_reduction_configs = True,
     ),
     VideoFamily(
         name = "cosmos3-nano",
