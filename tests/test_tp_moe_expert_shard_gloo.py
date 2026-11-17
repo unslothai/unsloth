@@ -27,6 +27,19 @@ MOE_LORA = dict(target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.do
 EXPERT_STACKS = ("gate_up_proj", "down_proj")
 
 
+_FUSED = []
+
+
+def _require_fused_experts():
+    """Expert sharding needs fused expert stacks called as experts(hidden_states, top_k_index, top_k_weights)
+    (transformers 5.x); transformers 4.x builds one MLP per expert and keeps the replicated path."""
+    if not _FUSED:
+        model = build(QWEN3_MOE, _overrides(4), **MOE_LORA)
+        _FUSED.append(tpn.expert_shard_problem(tpn.derive_tp_plan(model, 2).moe_blocks[0]))
+    if _FUSED[0] is not None:
+        pytest.skip(f"experts stay replicated with this transformers: {_FUSED[0]}")
+
+
 def _overrides(experts, aux = False):
     out = {"mlp_only_layers": [1], "num_experts": experts}
     if aux:
@@ -214,12 +227,14 @@ def _check_sharded(results, experts, world):
     ],
 )
 def test_sharded_experts_match_one_process(world, experts):
+    _require_fused_experts()
     results = _spawn("parity", world, experts = experts)
     _check_sharded(results, experts, world)
     _check_parity(results)
 
 
 def test_router_aux_loss_matches_one_process():
+    _require_fused_experts()
     results = _spawn("parity", 2, experts = 4, aux = True)
     _check_sharded(results, 4, 2)
     _check_parity(results)
@@ -234,7 +249,23 @@ def test_kill_switch_keeps_experts_replicated():
     _check_parity(results)
 
 
+def test_unfused_experts_stay_replicated_and_match_one_process():
+    """transformers 4.x per-expert modules: never sharded (whatever the switch says), output mean path, parity."""
+    if not _FUSED:
+        try:
+            _require_fused_experts()
+        except pytest.skip.Exception:
+            pass
+    if _FUSED[0] is None:
+        pytest.skip("fused experts (transformers 5.x): covered by the sharded cases")
+    results = _spawn("parity", 2, experts = 4)
+    for res in results:
+        assert res["sharded_moe"] == 0 and all(res["mean_hooked"])
+    _check_parity(results)
+
+
 def test_dropped_forward_reduction_breaks_parity():
+    _require_fused_experts()
     results = _spawn("parity", 2, experts = 4, fault = "reduce")
     _check_sharded(results, 4, 2)
     logit, _, loss = max((_diffs(res) for res in results), key = lambda d: d[0])
@@ -242,6 +273,7 @@ def test_dropped_forward_reduction_breaks_parity():
 
 
 def test_dropped_backward_reduction_breaks_grad_parity():
+    _require_fused_experts()
     results = _spawn("parity", 2, experts = 4, fault = "copy")
     _check_sharded(results, 4, 2)
     diffs = [_diffs(res) for res in results]

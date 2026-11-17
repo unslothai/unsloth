@@ -1690,6 +1690,9 @@ def expert_shard_problem(block):
     if not chain:
         return "no `experts` child"
     leaf, wrappers = chain[-1], chain[:-1]
+    if isinstance(leaf, (nn.ModuleList, nn.ModuleDict)):
+        # transformers 4.x: one MLP module per expert, looped over by the block's own forward (no experts call)
+        return "unfused per-expert modules (transformers 4.x layout)"
     E = leaf.__dict__.get("num_experts")
     if not isinstance(E, int) or isinstance(E, bool) or E < 2:
         return "the experts module has no integer num_experts"
