@@ -64,9 +64,21 @@ def snap_frame_count(count: int) -> int:
 
 
 def model_files(env: Optional[dict[str, str]] = None) -> SdCppModelFiles:
+    """The env overrides when either is set, else the files Restyle setup wrote to Studio's cache."""
     env = os.environ if env is None else env
     model = (env.get(MODEL_ENV) or "").strip()
     vae = (env.get(VAE_ENV) or "").strip()
+    if not model and not vae:
+        from core.inference.video_restyle_setup import installed_files
+
+        installed = installed_files()
+        if installed is not None:
+            return SdCppModelFiles(diffusion_model = installed[0], vae = installed[1])
+        raise RestyleError(
+            "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine. Use Set up Restyle, "
+            f"or set {MODEL_ENV} and {VAE_ENV} to the merged transformer and the Wan2.2 VAE "
+            "(.safetensors or .gguf)."
+        )
     missing = [
         name
         for name, path in ((MODEL_ENV, model), (VAE_ENV, vae))
@@ -326,23 +338,48 @@ def binary_supports_cosmos3(binary: str) -> bool:
     return any(c.is_file() and _file_has_marker(c) for c in candidates)
 
 
+def env_overrides_weights(env: Optional[dict[str, str]] = None) -> bool:
+    env = os.environ if env is None else env
+    return bool((env.get(MODEL_ENV) or "").strip() or (env.get(VAE_ENV) or "").strip())
+
+
 def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """Whether Restyle can run, what is missing (``engine``, ``weights``), and whether Set up Restyle can fetch it
+    on this machine (``can_setup``) or why not (``refusal``)."""
+    from core.inference import video_restyle_setup as setup
+
+    missing: list[str] = []
+    reason: Optional[str] = None
     try:
         model_files(env)
-    except RestyleError:
-        return {
-            "available": False,
-            "reason": "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine.",
-        }
+    except RestyleError as exc:
+        missing.append("weights")
+        reason = (
+            str(exc)
+            if env_overrides_weights(env)
+            else "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine."
+        )
     from core.inference.sd_cpp_engine import find_sd_server_binary
 
     binary = find_sd_server_binary()
     if not binary or not binary_supports_cosmos3(binary):
-        return {
-            "available": False,
-            "reason": "No stable-diffusion.cpp server with Cosmos3 support is installed.",
-        }
-    return {"available": True, "reason": None}
+        missing.append("engine")
+        reason = reason or "No stable-diffusion.cpp server with Cosmos3 support is installed."
+    out: dict[str, Any] = {
+        "available": not missing,
+        "reason": reason,
+        "missing": missing,
+        "setup": setup.setup_runner.progress(),
+    }
+    if missing:
+        # Overridden weights that are missing are the user's to fix; setup only fetches into Studio's cache.
+        fixable = [m for m in missing if m == "engine" or not env_overrides_weights(env)]
+        plan = setup.hardware_plan()
+        out["refusal"] = plan["refusal"]
+        out["weights"] = plan["weights"]
+        out["vram_gib"] = plan["vram_gib"]
+        out["can_setup"] = plan["refusal"] is None and len(fixable) == len(missing)
+    return out
 
 
 def build_restyle_request(
