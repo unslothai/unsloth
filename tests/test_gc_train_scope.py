@@ -26,11 +26,14 @@ def _load_scope():
 @pytest.fixture
 def scope(monkeypatch):
     monkeypatch.delenv("UNSLOTH_GC_FREEZE", raising = False)
-    if gc.get_freeze_count() != 0:
-        pytest.skip("something in this process already froze the heap")
+    # Another import may have frozen the heap already: start from an unfrozen heap and refreeze after.
+    was_frozen = gc.get_freeze_count() != 0
+    gc.unfreeze()
     module = _load_scope()
     yield module
     gc.unfreeze()
+    if was_frozen:
+        gc.freeze()
     assert module._depth == 0
 
 
