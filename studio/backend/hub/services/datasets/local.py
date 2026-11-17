@@ -38,6 +38,7 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
 LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
 DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
+_REUSE_LOCK = threading.Lock()
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -123,10 +124,14 @@ def _safe_mtime(path: Path) -> float | None:
         return None
 
 
+def _is_upload_id(prefix: str) -> bool:
+    return len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix)
+
+
 def _display_uploaded_dataset_name(path: Path) -> str:
     stem = path.stem
     prefix, sep, rest = stem.partition("_")
-    if sep and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+    if sep and _is_upload_id(prefix):
         return f"{rest}{path.suffix}"
     return path.name
 
@@ -545,9 +550,6 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-_REUSE_LOCK = threading.Lock()
-
-
 def _partial_upload_path(stored_path: Path) -> Path:
     return stored_path.with_name(f"{stored_path.name}.part")
 
@@ -560,10 +562,6 @@ def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
             return existing
         partial_path.replace(stored_path)
         return stored_path
-
-
-def _is_upload_id(prefix: str) -> bool:
-    return len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix)
 
 
 def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:

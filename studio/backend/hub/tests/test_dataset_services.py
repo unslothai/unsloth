@@ -1221,6 +1221,56 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     assert any(getattr(function, "__name__", "") == "write" for function in offloaded)
 
 
+@pytest.mark.parametrize(
+    "second_name,second_payload,reused",
+    [
+        ("train.jsonl", b'{"text":"a"}\n', True),
+        ("train.jsonl", b'{"text":"b"}\n', False),
+        ("other.jsonl", b'{"text":"a"}\n', False),
+    ],
+)
+def test_upload_reuses_only_identical_name_and_content(
+    monkeypatch, tmp_path, second_name, second_payload, reused
+):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+
+    first = asyncio.run(local.upload_dataset_response(_Upload("train.jsonl", b'{"text":"a"}\n')))
+    second = asyncio.run(local.upload_dataset_response(_Upload(second_name, second_payload)))
+
+    assert (first.stored_path == second.stored_path) is reused
+    assert Path(second.stored_path).read_bytes() == second_payload
+    assert len(list(tmp_path.iterdir())) == (1 if reused else 2)
+
+
+def test_delete_uploaded_dataset_removes_only_named_upload(monkeypatch, tmp_path):
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    target = upload_root / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text('{"text":"b"}\n', encoding = "utf-8")
+    (upload_root / "link.jsonl").symlink_to(outside)
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
+
+    for bad_id, status in (
+        ("../outside.jsonl", 400),
+        ("notes.txt", 400),
+        ("missing.jsonl", 404),
+        ("link.jsonl", 404),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            local.delete_uploaded_dataset_response(bad_id)
+        assert excinfo.value.status_code == status
+
+    assert local.delete_uploaded_dataset_response("train.jsonl")["id"] == "train.jsonl"
+    assert not target.exists()
+    assert outside.exists()
+
+
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):
     recipe_root = tmp_path / "recipes"
     upload_root = tmp_path / "uploads"
