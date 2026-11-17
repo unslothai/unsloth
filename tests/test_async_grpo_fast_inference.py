@@ -305,8 +305,18 @@ def test_text_plain_posts_are_refused(served):
     assert llm.llm_engine.added_loras == [] and server.engine.paused is False
 
 
-def test_adapters_load_eagerly_serve_newest_and_unload_after_drain(served):
-    server, llm = served
+def test_versioned_adapters_load_eagerly_serve_newest_and_unload_after_drain(monkeypatch):
+    # UNSLOTH_ASYNC_GRPO_INPLACE_LORA=0: every sync loads a new adapter id, as before.
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "0")
+    llm = _FakeLLM()
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    try:
+        _versioned_adapters(server, llm)
+    finally:
+        server.stop()
+
+
+def _versioned_adapters(server, llm):
     engine = llm.llm_engine
     _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
     first = engine.added_loras[-1]
@@ -624,3 +634,177 @@ def test_trl_rollout_loop_samples_and_sizes_its_kv_cap_from_this_server(served):
     assert turn.output_log_probs == [-0.5, -1.0]
     # 16384 KV tokens / max_model_len 2048, not the 512 fallback with a warning.
     assert loop._kv_cap == 8
+
+
+def _recording(engine):
+    seen = []
+    original = engine.add_request
+
+    def add_request(
+        request_id,
+        prompt,
+        params,
+        lora_request = None,
+    ):
+        seen.append((prompt, lora_request))
+        return original(request_id, prompt, params, lora_request)
+
+    engine.add_request = add_request
+    return seen
+
+
+def test_syncs_overwrite_one_adapter_slot_and_salt_the_prefix_cache(served):
+    server, llm = served
+    engine = llm.llm_engine
+    seen = _recording(engine)
+    _complete(server, [1])
+    assert seen[-1] == ({"prompt_token_ids": [1]}, None)  # the base model: no adapter, no salt
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    (slot,) = engine.added_loras
+    assert engine.removed_loras == []
+    _complete(server, [1], model = "trl-policy-v1")
+    first_salt = seen[-1][0]["cache_salt"]
+    assert seen[-1][1].lora_int_id == slot and seen[-1][1].lora_path == "/tmp/v1"
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"})
+    # Same id, reloaded from the new path: dropped and added back in one engine-thread command.
+    assert engine.added_loras == [slot, slot] and engine.removed_loras == [slot]
+    _complete(server, [1], model = "trl-policy-v1")
+    assert seen[-1][1].lora_int_id == slot and seen[-1][1].lora_path == "/tmp/v2"
+    # vLLM keys cached blocks on the adapter name, which the slot keeps: a new version gets a new salt.
+    assert seen[-1][0]["cache_salt"] != first_salt
+    # TRL unloads stale versions; the slot stays while a newer name is served from it.
+    _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v1"})
+    assert engine.removed_loras == [slot]
+    _complete(server, [1], model = "trl-policy-v2")
+    assert seen[-1][1].lora_int_id == slot
+    _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v2"})
+    assert engine.removed_loras == [slot, slot]
+    _complete(server, [1])
+    assert seen[-1] == ({"prompt_token_ids": [1]}, None)
+    # Loaded again after a full unload: a plain add, nothing left to drop.
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v3", "lora_path": "/tmp/v3"})
+    assert engine.added_loras == [slot, slot, slot] and engine.removed_loras == [slot, slot]
+
+
+class _MaxLorasEngine(_FakeEngine):
+    """Admits a waiting request only while its adapter fits next to the running ones (max_loras=1), like vLLM's
+    scheduler; a prompt ending in 999 keeps running until `release` is set."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = []
+        self.running = {}
+        self.release = threading.Event()
+
+    def add_request(
+        self,
+        request_id,
+        prompt,
+        params,
+        lora_request = None,
+    ):
+        self.waiting.append((request_id, prompt["prompt_token_ids"], lora_request))
+
+    def step(self):
+        held = {lora.lora_int_id for _, lora in self.running.values() if lora is not None}
+        while self.waiting:
+            request_id, prompt, lora = self.waiting[0]
+            if lora is not None and len(held | {lora.lora_int_id}) > 1:
+                break
+            self.waiting.pop(0)
+            self.running[request_id] = (prompt, lora)
+            if lora is not None:
+                held.add(lora.lora_int_id)
+        outputs = []
+        for request_id, (prompt, lora) in list(self.running.items()):
+            if prompt[-1] == 999 and not self.release.is_set():
+                continue
+            del self.running[request_id]
+            completion = types.SimpleNamespace(
+                token_ids = [prompt[-1] + 1],
+                logprobs = [{prompt[-1] + 1: types.SimpleNamespace(logprob = -0.5)}],
+                finish_reason = "stop",
+            )
+            outputs.append(
+                types.SimpleNamespace(request_id = request_id, finished = True, outputs = [completion])
+            )
+        time.sleep(0.005)
+        return outputs
+
+    def abort_request(self, ids):
+        super().abort_request(ids)
+        self.waiting = [w for w in self.waiting if w[0] not in ids]
+        for request_id in ids:
+            self.running.pop(request_id, None)
+
+
+def test_a_sync_does_not_stall_new_requests_behind_the_previous_version():
+    llm = _FakeLLM()
+    llm.llm_engine = engine = _MaxLorasEngine()
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    box = {}
+    straggler = threading.Thread(
+        target = lambda: box.update(out = _complete(server, [999], model = "trl-policy-v1"))
+    )
+    try:
+        _post(
+            server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"}
+        )
+        straggler.start()
+        deadline = time.time() + 5
+        while not engine.running and time.time() < deadline:
+            time.sleep(0.01)
+        assert engine.running
+        _post(
+            server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"}
+        )
+        # The next version's rollout is served while the previous version's straggler is still decoding.
+        payload = {"model": "trl-policy-v2", "prompt": [5], "max_tokens": 4, "logprobs": 0}
+        choice = _post(server, "/v1/completions", payload, timeout = 5)[1]["choices"][0]
+        assert choice["token_ids"] == [6] and straggler.is_alive()
+    finally:
+        engine.release.set()
+        if straggler.is_alive():
+            straggler.join(10)
+        server.stop()
+    assert box["out"]["choices"][0]["token_ids"] == [1000]
+
+
+def test_a_failed_slot_reload_puts_the_previous_version_back(served):
+    server, llm = served
+    engine = llm.llm_engine
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    added = []
+    original = engine.add_lora
+
+    def add_lora(lora):
+        added.append(lora.lora_path)
+        if lora.lora_path == "/tmp/bad":
+            raise RuntimeError("bad adapter")
+        return original(lora)
+
+    engine.add_lora = add_lora
+    with pytest.raises(urllib.error.HTTPError) as error:
+        _post(
+            server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/bad"}
+        )
+    assert error.value.code == 400
+    assert added == ["/tmp/bad", "/tmp/v1"]
+    seen = _recording(engine)
+    _complete(server, [1], model = "trl-policy-v2")
+    assert seen[-1][1].lora_path == "/tmp/v1"
+
+
+def test_unloading_the_newest_version_puts_the_previous_one_back_in_the_slot(served):
+    server, llm = served
+    engine = llm.llm_engine
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"})
+    seen = _recording(engine)
+    _complete(server, [1], model = "trl-policy-v2")
+    v2_salt = seen[-1][0]["cache_salt"]
+    _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v2"})
+    (slot,) = set(engine.added_loras)
+    assert engine.added_loras == [slot] * 3 and engine.removed_loras == [slot] * 2
+    _complete(server, [1], model = "trl-policy-v1")
+    assert seen[-1][1].lora_path == "/tmp/v1" and seen[-1][0]["cache_salt"] != v2_salt

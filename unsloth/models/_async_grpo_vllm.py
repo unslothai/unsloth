@@ -13,6 +13,7 @@ import hmac
 import itertools
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -30,6 +31,15 @@ _LORA_IDS = itertools.count(_LORA_ID_BASE)
 # Every request is served by the newest adapter (see `_lora_for`), so any number of named versions is servable.
 _SERVABLE_LORAS = 1 << 20
 _BATCH_WAIT_S = 0.0005
+
+
+def _inplace_lora():
+    # Overwrite one adapter slot on each sync instead of loading every version under a new id. vLLM admits a waiting
+    # request only while its adapter fits in max_loras (Unsloth engines hold 1), so with a new id per sync the next
+    # version's requests sit idle until every straggler of the previous one finishes. In place, requests in flight
+    # continue on the new weights from their next token; the logprobs they return are still those of the weights
+    # that sampled each token, which is what TRL's importance ratio needs.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
 
 
 def _logprob(value):
@@ -84,6 +94,9 @@ class _Engine:
         self.loras = {}
         self.newest = None
         self.lora_holds = {}
+        self.inplace = _inplace_lora()
+        self.slot_id = None
+        self.slot_version = 0
         self.aborted = None
         self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
         self.thread = threading.Thread(
@@ -180,11 +193,14 @@ class _Engine:
     def _admit(self, prompt_ids, params, model, future):
         request_id = uuid.uuid4().hex
         lora = self._lora_for(model)
+        prompt = {"prompt_token_ids": prompt_ids}
+        if lora is not None and lora.lora_int_id == self.slot_id:
+            # vLLM keys cached prefix blocks on the adapter name, which an overwritten slot keeps: salt by version so
+            # a new version never reuses KV computed by the previous weights.
+            prompt["cache_salt"] = f"unsloth-lora-{self.slot_id}-v{self.slot_version}"
         try:
             sampling = self.sampling_params(**{**self._default_kwargs(), **params})
-            self.engine.add_request(
-                request_id, {"prompt_token_ids": prompt_ids}, sampling, lora_request = lora
-            )
+            self.engine.add_request(request_id, prompt, sampling, lora_request = lora)
         except BaseException as error:
             future.set_exception(error)
             return
@@ -243,6 +259,8 @@ class _Engine:
 
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
+        if self.inplace:
+            return self._overwrite_slot(name, path)
         lora_id = next(_LORA_IDS)
         lora = self.load_lora(path, lora_request_id = lora_id)
         # Load now, while the trainer waits on this sync, not lazily on the first request.
@@ -252,12 +270,45 @@ class _Engine:
         self.lora_holds.setdefault(lora.lora_int_id, [False, 0])
         return lora.lora_int_id
 
+    def _reload_slot(self, lora, previous):
+        # Unsloth's LoRA manager skips an id it already holds, so drop it and add it back: both run here, between
+        # engine steps, so no step sees the slot empty.
+        loaded = self.slot_id in self.lora_holds
+        if loaded:
+            self.engine.remove_lora(self.slot_id)
+        try:
+            self.engine.add_lora(lora)
+        except BaseException:
+            if loaded and previous is not None:
+                # Requests in flight still name the slot: put the previous version back.
+                self.engine.add_lora(previous)
+            raise
+        self.slot_version += 1
+
+    def _overwrite_slot(self, name, path):
+        if self.slot_id is None:
+            self.slot_id = next(_LORA_IDS)
+        lora = self.load_lora(path, lora_request_id = self.slot_id)
+        self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
+        self.loras[name] = lora
+        self.newest = name
+        # Re-arm a removal deferred for in-flight requests: the slot is in use again.
+        self.lora_holds.setdefault(self.slot_id, [False, 0])[0] = False
+        return self.slot_id
+
     def remove_adapter(self, name):
         lora = self.loras.pop(name, None)
         if lora is None:
             return False
-        if self.newest == name:
+        was_newest = self.newest == name
+        if was_newest:
             self.newest = next(reversed(self.loras), None)
+        if lora.lora_int_id == self.slot_id and self.loras:
+            # Every remaining name is served by the one slot; it holds the removed version's weights only if that
+            # was the newest (TRL only ever unloads stale versions), so put the newest remaining one back.
+            if was_newest:
+                self._reload_slot(self.loras[self.newest], lora)
+            return True
         state = self.lora_holds.setdefault(lora.lora_int_id, [False, 0])
         state[0] = True
         self._maybe_remove(lora.lora_int_id)
