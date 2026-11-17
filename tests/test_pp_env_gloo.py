@@ -904,8 +904,21 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
 
 
-def test_pp_default_schedule_plan():
+@pytest.fixture
+def checkout_unsloth():
+    """`import unsloth` from this checkout in the pytest process, then put the module table back.
+
+    _import_checkout_unsloth drops every unsloth.* module first; left that way, later tests on the same worker
+    lost the stub-loaded modules they read from sys.modules (KeyError: 'unsloth.models.pp_schedules')."""
+    saved = {n: m for n, m in sys.modules.items() if n == "unsloth" or n.startswith("unsloth.")}
     _import_checkout_unsloth()
+    yield
+    for name in [n for n in sys.modules if n == "unsloth" or n.startswith("unsloth.")]:
+        del sys.modules[name]
+    sys.modules.update(saved)
+
+
+def test_pp_default_schedule_plan(checkout_unsloth):
     from unsloth import parallel_env
     from unsloth.models import pp_env
 
@@ -934,10 +947,9 @@ def test_pp_default_schedule_plan():
     ],
     ids = ["default_bs4", "gpipe_bs4", "default_bs2_ga2", "default_bs1_falls_back"],
 )
-def test_pp_env_default_schedule_same_loss(bs, ga, schedule, expect):
+def test_pp_env_default_schedule_same_loss(bs, ga, schedule, expect, checkout_unsloth):
     # The default schedule moved from GPipe to 1F1B: same micro-batches, same per-token loss normalisation, so
     # every logged loss, grad norm and the trained adapter equal the one-process run (and so each other).
-    _import_checkout_unsloth()
     from unsloth.models import pp_env
 
     if bs < 2 and pp_env._gpipe_needs_stage_count():
