@@ -189,6 +189,10 @@ def test_x11_finds_the_window_under_a_point_in_front_or_behind(xvfb):
         assert backend.window_at(300, 50).app == "Notes"
         assert backend.window_at(500, 50).app == "Notes"
         assert backend.window_at(700, 500) is None
+        assert [bounds for _window, bounds in backend.window_stack()] == [
+            (200, 0, 400, 300),
+            (0, 0, 400, 300),
+        ]
     finally:
         x11.XCloseDisplay(display)
 

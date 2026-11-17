@@ -424,6 +424,14 @@ class MacBackend(Backend):
                 )
         return FrontWindow(app = app, app_id = bundle, pid = pid)
 
+    def window_stack(self) -> Optional[list[tuple[Any, tuple[float, float, float, float]]]]:
+        # Normal windows only, as window_at clicks them: a title is missing without a grant.
+        return [
+            (window.pid, window.bounds)
+            for layer, window in self._windows()
+            if layer == 0 and window.bounds is not None
+        ]
+
     def window_at(self, x: float, y: float) -> Optional[FrontWindow]:
         from ..policy import is_security_prompt
         for layer, window in self._windows():

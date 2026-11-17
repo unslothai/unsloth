@@ -396,6 +396,58 @@ def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     assert [event for event in desktop.events if event[0] == "click"]
 
 
+def test_a_target_moved_when_another_window_is_over_it_whatever_the_pixels():
+    from PIL import Image
+
+    display = Display(1, 0, 0, 1000, 1000, True)
+    page = ("page", (0, 0, 1000, 1000))
+
+    def frame(windows):
+        return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+    before = frame([page])
+    assert not screen.target_moved(before, frame([page]), 500, 500)
+    assert screen.target_moved(before, frame([("dialog", (400, 400, 200, 200)), page]), 500, 500)
+    assert not screen.target_moved(before, frame([("dialog", (0, 0, 200, 200)), page]), 500, 500)
+    assert screen.target_moved(before, frame([("page", (10, 0, 1000, 1000))]), 500, 500)
+    # Without a window list the pixels decide, as before.
+    assert not screen.target_moved(before, frame(None), 500, 500)
+
+
+def test_a_light_dialog_over_a_light_target_is_not_clicked(desktop):
+    look()
+    target = at(*FIELD)
+    dialog = (300, 260, 420, 140)
+    original = desktop.capture
+
+    def light_dialog(display):
+        from PIL import ImageDraw
+
+        image = original(display)
+        left, top, width, height = (value * virtual.SCALE for value in dialog)
+        ImageDraw.Draw(image).rectangle(
+            [left, top, left + width, top + height], fill = (246, 245, 244)
+        )
+        return image
+
+    desktop.capture = light_dialog
+    desktop.front = FrontWindow(app = "Notes", title = "Delete?", pid = 1, bounds = dialog)
+    before = state.session(state.session_key(SESSION)).frame
+    now = screen.take(desktop, desktop.displays()[0]).frame
+    ix, iy = before.from_desktop(*FIELD)
+    pixels_only = screen.Frame(before.display, before.width, before.height, before.gray)
+    assert not screen.target_moved(pixels_only, now, ix, iy)
+    text = run({"action": "click", **target})
+    assert text.startswith("Error:") and "changed after the screenshot" in text
+    assert not [event for event in desktop.events if event[0] == "click"]
+
+
+def test_a_window_opening_away_from_the_target_does_not_stop_the_click(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
+
+
 def test_a_later_target_in_a_chain_is_checked_after_the_actions_before_it(desktop):
     look()
     original = desktop.capture
@@ -647,8 +699,8 @@ def test_near_misses_of_blocked_keys_are_still_sent_on_linux(desktop, monkeypatc
     ["Unsloth", "Chat - Unsloth", "Unsloth — Mozilla Firefox", "Chat - Unsloth - Google Chrome"],
 )
 def test_unsloths_own_window_is_out_of_reach(desktop, title):
-    look()
     desktop.front = FrontWindow(app = "Firefox", title = title, bounds = (0, 0, 700, 800))
+    look()
     typed = run({"action": "type", "text": "allow"}, approved = True)
     assert typed.startswith("Error:") and "own window" in typed
     inside = run({"action": "click", **at(300, 300)}, approved = True)
@@ -673,10 +725,10 @@ def test_a_browser_window_with_no_readable_title_is_treated_as_unsloth():
 
 
 def test_unsloth_showing_from_behind_cannot_be_clicked_either(desktop):
-    look()
     desktop.behind = [
         FrontWindow(app = "Firefox", title = "Chat - Unsloth", bounds = (1050, 0, 230, 800))
     ]
+    look()
     refused = run({"action": "click", **at(1150, 400)})
     assert refused.startswith("Error:") and "own window" in refused
     assert not [event for event in desktop.events if event[0] == "click"]
@@ -707,8 +759,8 @@ def test_a_security_prompt_is_left_to_the_user(desktop):
 
 
 def test_a_security_prompt_showing_from_behind_is_left_alone_too(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "pinentry", title = "Passphrase", bounds = (1050, 0, 230, 800))]
+    look()
     end = at(1150, 400)
     for call in (
         {"action": "click", **end},
@@ -1055,8 +1107,8 @@ def test_apps_that_ask_every_time_cannot_be_always_allowed(desktop, name):
 
 
 def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    look()
     click_mail = {"action": "click", **at(1150, 400), "then": [{"action": "type", "text": "x"}]}
     assert policy.call_asks(click_mail, SESSION)["apps"] == ["Mail"]
     assert _asks("auto", click_mail)
@@ -1064,6 +1116,7 @@ def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     assert "Mail has not been allowed" in refused
     assert not [event for event in desktop.events if event[0] in ("click", "type")]
     desktop.behind = [FrontWindow(app = "Terminal", title = "zsh", bounds = (1050, 0, 230, 800))]
+    look()
     asks = policy.call_asks({"action": "click", **at(1150, 400)}, SESSION)
     assert asks == {"risks": ["Terminal is a terminal"], "apps": []}
     assert "Terminal has not been allowed" in run({"action": "click", **at(1150, 400)})
@@ -1096,11 +1149,11 @@ def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
 
 
 def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
-    look()
     shell = FrontWindow(
         app = "Windows Command Processor", app_id = "cmd.exe", title = "x", bounds = (1050, 0, 230, 800)
     )
     desktop.behind = [shell]
+    look()
     click = {"action": "click", **at(1150, 400)}
     scroll = {"action": "scroll", **at(1150, 400), "direction": "down"}
     assert policy.call_asks(click, SESSION) == {
@@ -1110,6 +1163,7 @@ def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
     assert run(click, approved = True).startswith("Done:")
     desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1050, 800))
     desktop.behind = [shell]
+    look()
     assert _asks("auto", scroll)
     assert "has not been allowed" in run(scroll)
 
