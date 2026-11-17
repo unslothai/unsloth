@@ -292,6 +292,8 @@ _APPROVED_RM_REFUSED = (
 _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
     {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
 )
+# The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
+_OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
 _CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
 _CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
@@ -301,8 +303,8 @@ _SHELL_OPERATOR_CHARS = frozenset(";&|()<>")
 _SHELL_COMMAND_PREFIXES = frozenset(
     {"{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "time"}
 )
-# Where this reading and bash could part ways: substitutions, heredocs, ANSI-C quotes, line continuations.
-_CHMOD_UNREADABLE_SYNTAX = ("$(", "`", "<(", ">(", "<<", "$'", "\\\n")
+# Where this reading and bash could part ways: substitutions, heredocs, ANSI-C quotes, line continuations, extglobs.
+_CHMOD_UNREADABLE_SYNTAX = ("$(", "`", "<(", ">(", "<<", "$'", "\\\n", "@(", "!(", "+(")
 
 
 def _shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
@@ -23795,12 +23797,16 @@ def _bash_exec(
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
+                    egress_proxy = bool(contained & _OS_SANDBOX_PROXIED_COMMANDS),
                 ),
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
             if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
                 return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
+            proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
+            if proxied and not prepared.egress_proxy:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(proxied))}")
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )

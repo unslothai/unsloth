@@ -16,6 +16,9 @@ import sysconfig
 import tempfile
 import threading
 
+from loggers import get_logger
+
+from . import sandbox_egress
 from .os_sandbox import (
     PROFILE_VERSION,
     SESSION_PACKAGES_RELPATH,
@@ -31,6 +34,8 @@ from .os_sandbox import (
     session_script_dirs,
     studio_state_roots,
 )
+
+logger = get_logger(__name__)
 
 BACKEND_NAME = "macos-seatbelt"
 PROFILE_ID = f"macos-seatbelt-{PROFILE_VERSION}"
@@ -528,6 +533,7 @@ def build_profile(
     private_tmp: str,
     runtime_paths: tuple[str, ...],
     developer_paths: tuple[str, ...] = (),
+    egress_port: int | None = None,
 ) -> str:
     """Writes and spawns nothing, so a test can assert on the text anywhere."""
     readable_paths = (
@@ -619,7 +625,12 @@ def build_profile(
         '(allow network-bind (local ip "*:*"))',
         "(allow network-inbound)",
         # Filtered to ip: an unfiltered outbound covers AF_UNIX, e.g. /var/run/docker.sock.
-        '(allow network-outbound (remote ip "*:*"))',
+        # A proxied call reaches only its proxy, which resolves and checks every destination on the host.
+        (
+            f'(allow network-outbound (remote ip "localhost:{int(egress_port)}"))'
+            if egress_port is not None
+            else '(allow network-outbound (remote ip "*:*"))'
+        ),
         # One path filter per endpoint; combining paths breaks multiprocessing on macOS 15.
         *(f"(allow network-bind (local unix-socket {path}))" for path in tmp_subpaths),
         *(f"(allow network-outbound (remote unix-socket {path}))" for path in tmp_subpaths),
@@ -709,7 +720,14 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     private_tmp = tempfile.mkdtemp(
         prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
     )
+    proxy = None
     try:
+        if plan.egress_proxy:
+            try:
+                proxy = sandbox_egress.EgressProxy()
+            except OSError:
+                logger.warning("Could not start the sandbox egress proxy", exc_info = True)
+        egress_url = f"http://127.0.0.1:{proxy.port}" if proxy else None
         runtime_paths = tuple(
             path for path in runtime_read_paths(workdir) if not _within(path, workdir)
         )
@@ -718,11 +736,15 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             private_tmp = private_tmp,
             runtime_paths = runtime_paths,
             developer_paths = _developer_paths(),
+            egress_port = proxy.port if proxy else None,
         )
+        env = _sandbox_environment(plan.env, workdir, private_tmp)
+        if egress_url:
+            env.update(sandbox_egress.proxy_environment(egress_url))
         return PreparedSandboxLaunch(
             argv = (SANDBOX_EXEC, "-p", profile, "--", *plan.argv),
             workdir = workdir,
-            env = _sandbox_environment(plan.env, workdir, private_tmp),
+            env = env,
             # Preserved: it is the os.setsid() tools.py's killpg teardown signals.
             preexec_fn = plan.preexec_fn,
             backend = BACKEND_NAME,
@@ -730,8 +752,12 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
+            cleanup_callbacks = [proxy.close] if proxy else [],
             launch_limitations = workdir_limitations,
+            egress_proxy = egress_url,
         )
     except Exception:
+        if proxy:
+            proxy.close()
         shutil.rmtree(private_tmp, ignore_errors = True)
         raise

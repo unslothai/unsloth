@@ -75,6 +75,9 @@ def test_a_plain_chmod_is_contained(command):
         "chmod +x a; echo $'\\'' ; chmod -R 777 . ; echo $'\\''",
         "cat <<EOF\n'\nEOF\nchmod -R 777 .\necho \"'\"; chmod +x a",
         "chmod() { find . -exec touch {} +; }; chmod 755 a",
+        "shopt -s extglob\nchmod 777 d @(-R)",
+        "shopt -s extglob\nchmod 777 d !(x)",
+        "shopt -s extglob\nchmod 777 d +(-R)",
     ],
 )
 def test_any_other_chmod_keeps_the_block(command):
