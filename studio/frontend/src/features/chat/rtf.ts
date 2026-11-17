@@ -313,15 +313,15 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
     }
   }
   flush();
+  const bodies = notes.map((note) => note.join("").replace(/\s+/g, " ").trim());
   for (const { at, note } of noteRefs) {
-    if (note < notes.length) {
+    if (bodies[note]) {
       parts[at] = `[${note + 1}]`;
     }
   }
-  const noteLines = notes.flatMap((note, i) => {
-    const body = note.join("").replace(/\s+/g, " ").trim();
-    return body ? [`[${i + 1}] ${body}`] : [];
-  });
+  const noteLines = bodies.flatMap((body, i) =>
+    body ? [`[${i + 1}] ${body}`] : [],
+  );
   if (noteLines.length > 0) {
     parts.push(`\n\nFootnotes\n${noteLines.join("\n")}`);
   }

@@ -2347,12 +2347,13 @@ test("RTF footnotes are kept as numbered notes after the text", async () => {
       "512 U.S. 1 (1994).}\\par",
       "Second paragraph.{\\super\\chftn{\\footnote{\\super\\chftn} Another note.}}\\par",
       "Third.{\\super\\chftn}{\\*\\footnote\\chftn\\~\\plain\\pard Pandoc note.}",
-      "{\\header{\\footnote Header note.}}\\par}",
+      "{\\header{\\footnote Header note.}}\\par",
+      "Empty.{\\super\\chftn}{\\footnote{\\super\\chftn}}\\par}",
     ].join("\n"),
   );
   assert.equal(
     text,
-    "The court held the clause void.[1]\nSecond paragraph.[2]\nThird.[3]\n\n" +
+    "The court held the clause void.[1]\nSecond paragraph.[2]\nThird.[3]\nEmpty.\n\n" +
       "Footnotes\n[1] See Smith v. Jones, 512 U.S. 1 (1994).\n[2] Another note.\n[3] Pandoc note.",
   );
 });
