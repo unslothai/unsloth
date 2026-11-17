@@ -10320,22 +10320,19 @@ def load_alongside_for_request(scope) -> None:
         scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
 
 
-def _alias_load_settings(fastapi_request) -> dict[str, Any]:
+def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
+    """The alias this request named, when it carries load settings."""
     from utils.model_aliases import ALIAS_SCOPE_KEY
 
     scope = getattr(fastapi_request, "scope", None)
     alias = scope.get(ALIAS_SCOPE_KEY) if isinstance(scope, dict) else None
-    return (alias or {}).get("load_settings") or {}
+    return alias if alias and alias.get("load_settings") else None
 
 
-def _alias_load_settings_met(fastapi_request) -> bool:
-    settings = _alias_load_settings(fastapi_request)
-    backend = get_llama_cpp_backend()
-    intent = getattr(backend, "last_load_intent", None)
-    if not settings or intent is None or not getattr(backend, "is_loaded", False):
-        return True
+def _launched_with(backend, settings: dict[str, Any]) -> bool:
     from core.inference.llama_cpp import _canonicalize_spec_mode
 
+    intent = backend.last_load_intent
     launched = {
         "max_seq_length": intent.n_ctx,
         "kv_cache_dtype": intent.cache_type_kv or "f16",
@@ -10372,34 +10369,83 @@ def _alias_load_settings_met(fastapi_request) -> bool:
     return all(launched[name] == value for name, value in wanted.items())
 
 
+def _alias_load_settings_met(fastapi_request) -> bool:
+    alias = _request_alias(fastapi_request)
+    backend = get_llama_cpp_backend()
+    if (
+        alias is None
+        or not getattr(backend, "is_loaded", False)
+        or getattr(backend, "last_load_intent", None) is None
+    ):
+        return True
+    return _launched_with(backend, alias["load_settings"])
+
+
 def _alias_reload_due(fastapi_request) -> bool:
     return _loads_anything() and not _alias_load_settings_met(fastapi_request)
+
+
+def _alias_refusal(fastapi_request, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = error_body_for_path(
+            fastapi_request.url.path, message, status = 409, code = code, param = "model"
+        ),
+    )
+
+
+def _refuse_changed_alias(fastapi_request) -> None:
+    from utils.model_aliases import get_model_aliases
+    alias = _request_alias(fastapi_request)
+    if alias is not None and alias not in get_model_aliases():
+        raise _alias_refusal(
+            fastapi_request,
+            "alias_changed",
+            f"The alias '{alias['name']}' was changed while this request waited. Send it again.",
+        )
 
 
 def _serves_alias_load_settings(switch):
     @functools.wraps(switch)
     async def wrapper(requested_model, fastapi_request, *args, **kwargs):
         await switch(requested_model, fastapi_request, *args, **kwargs)
+        _refuse_changed_alias(fastapi_request)
         if _alias_load_settings_met(fastapi_request):
             return
-        from utils.model_aliases import ALIAS_SCOPE_KEY
-
-        alias = fastapi_request.scope[ALIAS_SCOPE_KEY]
-        message = (
+        alias = _request_alias(fastapi_request)
+        raise _alias_refusal(
+            fastapi_request,
+            "model_settings_mismatch",
             f"The alias '{alias['name']}' has its own load settings, and '{alias['model']}' is "
             "loaded with different ones. This request could not reload it: that needs 'Switch "
             "model by request' on under Settings > API and an API key that may load models. Or "
-            "load the model with these settings in Unsloth Studio."
-        )
-        path = fastapi_request.url.path
-        raise HTTPException(
-            status_code = 409,
-            detail = error_body_for_path(
-                path, message, status = 409, code = "model_settings_mismatch", param = "model"
-            ),
+            "load the model with these settings in Unsloth Studio.",
         )
 
     return wrapper
+
+
+def _alias_row_for_its_launch(row: dict) -> dict:
+    """An alias row copied from a loaded model that runs with other load settings, as unloaded."""
+    settings = row.get("load_settings")
+    if not settings or not row.get("loaded"):
+        return row
+    target = row["alias_for"].lower()
+
+    def _probe() -> Optional[bool]:
+        backend = get_llama_cpp_backend()
+        if not backend.is_loaded or getattr(backend, "last_load_intent", None) is None:
+            return None
+        public = (_llama_public_model_id(backend) or "").lower()
+        if not public or public not in (target, target.rpartition(":")[0]):
+            return None
+        return _launched_with(backend, settings)
+
+    launches = [model_slots.in_slot(slot, _probe) for slot in (None, *model_slots.visible())]
+    if any(launches) or all(launch is None for launch in launches):
+        return row
+    shared = ("id", "object", "created", "owned_by", "task", "alias_for", "load_settings")
+    return _with_openai_residency({**{k: row[k] for k in shared if k in row}, "loaded": False})
 
 
 def _load_alongside_for_request(fastapi_request) -> bool:
@@ -12454,6 +12500,7 @@ async def _maybe_auto_switch_model(
                             ollama_same_system = await asyncio.to_thread(
                                 _same_ollama_system, target_id, backend
                             )
+                        _refuse_changed_alias(fastapi_request)
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
@@ -12483,8 +12530,9 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
-                        alias_settings = _alias_load_settings(fastapi_request)
-                        if alias_settings and resolved is not None and target_is_gguf:
+                        alias = _request_alias(fastapi_request)
+                        if alias is not None and resolved is not None and target_is_gguf:
+                            alias_settings = alias["load_settings"]
                             override = {**override, **alias_settings}
                             if "max_seq_length" in alias_settings:
                                 # Manual GPU memory with Auto layers reads the context from this key.
@@ -38754,7 +38802,12 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
-    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
+    aliases = await asyncio.to_thread(
+        lambda: [
+            _alias_row_for_its_launch(row)
+            for row in alias_model_objects(objects, _pinned_quant_row)
+        ]
+    )
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases

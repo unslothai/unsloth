@@ -16,7 +16,10 @@ export type ModelAlias = {
   load_settings: AliasLoadSettings;
 };
 
+let revision: string | undefined;
+
 function parseAliases(body: unknown): ModelAlias[] {
+  revision = (body as { revision?: string } | null)?.revision;
   const aliases = (body as { aliases?: unknown } | null)?.aliases;
   if (!Array.isArray(aliases)) {
     return [];
@@ -51,7 +54,7 @@ export async function saveModelAliases(
   const res = await authFetch("/api/settings/model-aliases", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ aliases }),
+    body: JSON.stringify({ aliases, revision }),
   });
   if (!res.ok) {
     throw new Error(

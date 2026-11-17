@@ -2708,18 +2708,20 @@ class ModelAliasEntry(BaseModel):
 
 class ModelAliasesPayload(BaseModel):
     aliases: list[ModelAliasEntry] = Field(default_factory = list)
+    revision: Optional[str] = None
 
 
 class ModelAliasesResponse(BaseModel):
     aliases: list[ModelAliasEntry]
+    revision: str
 
 
 @_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
 def get_model_aliases_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelAliasesResponse:
-    from utils.model_aliases import get_model_aliases
-    return ModelAliasesResponse(aliases = get_model_aliases())
+    from utils.model_aliases import get_model_aliases, model_aliases_revision
+    return ModelAliasesResponse(aliases = get_model_aliases(), revision = model_aliases_revision())
 
 
 @_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
@@ -2728,7 +2730,7 @@ async def update_model_aliases_setting(
 ) -> ModelAliasesResponse:
     from core.systemone import catalog as decision_catalog
     from routes.inference import _openai_catalog_objects
-    from utils.model_aliases import set_model_aliases
+    from utils.model_aliases import AliasConflict, model_aliases_revision, set_model_aliases
 
     # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
     objects = await _openai_catalog_objects()
@@ -2739,7 +2741,10 @@ async def update_model_aliases_setting(
             set_model_aliases,
             [entry.model_dump(exclude_unset = True) for entry in payload.aliases],
             model_ids,
+            payload.revision,
         )
+    except AliasConflict as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -2748,7 +2753,7 @@ async def update_model_aliases_setting(
             event = "settings.update_model_aliases_failed",
             log = logger,
         ) from exc
-    return ModelAliasesResponse(aliases = aliases)
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision())
 
 
 @_account_settings_router.get(

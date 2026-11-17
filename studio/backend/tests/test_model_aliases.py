@@ -84,6 +84,22 @@ def test_load_settings_are_stored_and_survive_a_client_that_does_not_send_them(s
     ]
 
 
+def test_a_save_from_a_stale_or_older_page_cannot_drop_load_settings(store):
+    model = "unsloth/Qwen3-4B-GGUF"
+    long = {"name": "long", "model": model, "load_settings": _LONG}
+    set_model_aliases([long])
+    opened = aliases_mod.model_aliases_revision()
+    set_model_aliases([{**long, "load_settings": {"max_seq_length": 4096}}], revision = opened)
+    for stale in ([long], [], [{"name": "renamed", "model": model, "load_settings": _LONG}]):
+        with pytest.raises(aliases_mod.AliasConflict):
+            set_model_aliases(stale, revision = opened)
+    for older_page in ([], [{"name": "renamed", "model": model}], [{"name": "long", "model": "x"}]):
+        with pytest.raises(aliases_mod.AliasConflict):
+            set_model_aliases(older_page)
+    assert aliases_mod.get_model_aliases() == [{**long, "load_settings": {"max_seq_length": 4096}}]
+    assert set_model_aliases([], revision = aliases_mod.model_aliases_revision()) == []
+
+
 @pytest.mark.parametrize(
     "load_settings",
     [{"kv_cache_dtype": "q9"}, {"max_seq_length": 0}, {"speculative_type": "fast"}, "q4_0"],

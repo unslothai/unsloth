@@ -6,8 +6,10 @@ than the target; names exclude / and :"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from typing import Any, Callable, Iterable, Optional
 
 MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
@@ -106,25 +108,56 @@ def get_model_aliases() -> list[dict[str, Any]]:
     return _normalized[1]
 
 
-def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, Any]]:
+class AliasConflict(ValueError):
+    pass
+
+
+_write_lock = threading.Lock()
+
+
+def model_aliases_revision() -> str:
+    stored = json.dumps(get_model_aliases(), sort_keys = True)
+    return hashlib.sha256(stored.encode("utf-8")).hexdigest()[:16]
+
+
+def set_model_aliases(
+    raw: Any,
+    model_ids: Iterable[str] = (),
+    revision: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Replace the whole alias list; the same input always stores the same value. ``model_ids``
-    are real ids an alias may not reuse: the rewrite would silently serve other weights."""
+    are real ids an alias may not reuse: the rewrite would silently serve other weights.
+    ``revision`` is the list the caller edited; a caller without one predates load settings."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
     aliases = normalize_model_aliases(raw)
-    # A client that predates load settings sends none: keep the ones stored for the same alias.
-    stored = {(a["name"].lower(), a["model"]): a.get("load_settings") for a in get_model_aliases()}
-    for alias, entry in zip(aliases, raw or ()):
-        kept = stored.get((alias["name"].lower(), alias["model"]))
-        if kept and "load_settings" not in entry:
-            alias["load_settings"] = kept
-    taken = {model_id.lower() for model_id in model_ids}
-    for alias in aliases:
-        if alias["name"].lower() in taken:
-            raise ValueError(f"'{alias['name']}' is already the name of a model on this server.")
-    upsert_app_settings({MODEL_ALIASES_SETTING_KEY: aliases})
-    _invalidate(MODEL_ALIASES_SETTING_KEY)
+    with _write_lock:
+        if revision is None:
+            sent = {(a["name"].lower(), a["model"]): (a, e) for a, e in zip(aliases, raw or ())}
+            for stored in get_model_aliases():
+                if "load_settings" not in stored:
+                    continue
+                kept = sent.get((stored["name"].lower(), stored["model"]))
+                if kept is None:
+                    raise AliasConflict(
+                        f"Alias '{stored['name']}' has load settings this page did not load. "
+                        "Reload the page and try again."
+                    )
+                if "load_settings" not in kept[1]:
+                    kept[0]["load_settings"] = stored["load_settings"]
+        elif revision != model_aliases_revision():
+            raise AliasConflict(
+                "Model aliases were changed somewhere else. Reload the page and try again."
+            )
+        taken = {model_id.lower() for model_id in model_ids}
+        for alias in aliases:
+            if alias["name"].lower() in taken:
+                raise ValueError(
+                    f"'{alias['name']}' is already the name of a model on this server."
+                )
+        upsert_app_settings({MODEL_ALIASES_SETTING_KEY: aliases})
+        _invalidate(MODEL_ALIASES_SETTING_KEY)
     return aliases
 
 

@@ -327,10 +327,18 @@ def _loaded_with_other_settings(monkeypatch, *, enabled):
     return rec
 
 
-def _run_alias_hook(load_settings = _FAST_ALIAS):
+_FAST = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": _FAST_ALIAS}
+
+
+def _run_alias_hook(
+    monkeypatch,
+    stored = None,
+    alias = _FAST,
+):
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
-    alias = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": load_settings}
+    stored = (alias,) if stored is None else stored
+    monkeypatch.setattr("utils.model_aliases.get_model_aliases", lambda: list(stored))
     request = SimpleNamespace(
         scope = {"_unsloth_model_alias": alias},
         state = SimpleNamespace(**{KEYLESS_ADMISSION_STATE_KEY: False}),
@@ -341,8 +349,8 @@ def _run_alias_hook(load_settings = _FAST_ALIAS):
 
 def test_an_alias_reloads_the_loaded_model_with_its_own_load_settings_once(monkeypatch):
     rec = _loaded_with_other_settings(monkeypatch, enabled = True)
-    _run_alias_hook()
-    _run_alias_hook()
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch)
     assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
         (4096, "q4_0", "auto")
     ]
@@ -351,9 +359,10 @@ def test_an_alias_reloads_the_loaded_model_with_its_own_load_settings_once(monke
 def test_a_blank_alias_field_reloads_with_the_saved_setting_not_another_alias(monkeypatch):
     rec = _loaded_with_other_settings(monkeypatch, enabled = True)
     monkeypatch.setattr(settings, "get_model_override", lambda _id: {"max_seq_length": 8192})
-    _run_alias_hook()
-    _run_alias_hook({"kv_cache_dtype": "q4_0"})
-    _run_alias_hook({"kv_cache_dtype": "q4_0"})
+    kv_only = {**_FAST, "load_settings": {"kv_cache_dtype": "q4_0"}}
+    _run_alias_hook(monkeypatch)
+    _run_alias_hook(monkeypatch, alias = kv_only)
+    _run_alias_hook(monkeypatch, alias = kv_only)
     assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [
         (4096, "q4_0"),
         (8192, "q4_0"),
@@ -366,20 +375,50 @@ def test_an_auto_alias_is_served_after_a_crash_recovery_relaunched_without_draft
         "unsloth/a-gguf", n_ctx = 4096, cache_type_kv = "q4_0", speculative_type = "off"
     )
     rec.backend.requested_spec_mode = "auto"
-    _run_alias_hook()
+    _run_alias_hook(monkeypatch)
     assert rec.calls == []
 
 
-@pytest.mark.parametrize("enabled, load_policy", [(False, "any"), (True, "never")])
-def test_an_alias_is_refused_when_its_load_settings_cannot_be_loaded(
-    monkeypatch, enabled, load_policy
-):
+@pytest.mark.parametrize(
+    "enabled, account",
+    [
+        (False, OWNER),
+        (True, replace(OWNER, load_policy = "never")),
+    ],
+)
+def test_an_alias_is_refused_when_its_load_settings_cannot_be_loaded(monkeypatch, enabled, account):
     rec = _loaded_with_other_settings(monkeypatch, enabled = enabled)
     with pytest.raises(HTTPException) as excinfo:
-        run_as(replace(OWNER, load_policy = load_policy), _run_alias_hook)
+        run_as(account, _run_alias_hook, monkeypatch)
     assert excinfo.value.status_code == 409
-    assert "fast" in str(excinfo.value.detail)
+    assert excinfo.value.detail["error"]["code"] == "model_settings_mismatch"
     assert rec.calls == []
+
+
+@pytest.mark.parametrize("stored", [(), ({**_FAST, "load_settings": {"max_seq_length": 2048}},)])
+def test_an_alias_edited_while_its_request_waited_is_refused_before_any_reload(monkeypatch, stored):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_alias_hook(monkeypatch, stored)
+    assert excinfo.value.detail["error"]["code"] == "alias_changed"
+    assert rec.calls == []
+
+
+def test_models_listing_marks_only_the_alias_whose_load_settings_are_running(monkeypatch):
+    _loaded_with_other_settings(monkeypatch, enabled = True)
+    loaded = {"id": "unsloth/a-gguf", "object": "model", "loaded": True, "context_length": 8192}
+    long = {**_FAST, "name": "long", "load_settings": {"max_seq_length": 8192}}
+
+    async def catalog(**_kw):
+        return [loaded]
+
+    monkeypatch.setattr(inference_route, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(inference_route, "_llama_public_model_id", lambda b: b.model_identifier)
+    monkeypatch.setattr("utils.model_aliases.get_model_aliases", lambda: [_FAST, long])
+    rows = {r["id"]: r for r in asyncio.run(inference_route._openai_catalog_with_aliases())}
+    assert rows["long"]["loaded"] is True and rows["long"]["context_length"] == 8192
+    assert rows["fast"]["loaded"] is False and "context_length" not in rows["fast"]
+    assert rows["fast"]["load_settings"] == _FAST_ALIAS
 
 
 def _as_chat_tools_key(account, fn, *args, **kwargs):
