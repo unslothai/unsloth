@@ -3080,8 +3080,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + f"{_indent}_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(\n"
             + f"{_indent}    self, _unsloth_rollout_logps, completion_mask, locals().get('tool_mask'),\n"
             + f"{_indent})\n"
-            # TRL scores pi_old under the vLLM IS correction even when generation is aligned to the
-            # optimizer step; pi_old is then the policy the loss scores, so that forward is skipped.
+            # Aligned generation under vLLM IS: pi_old is the policy the loss scores, so skip that forward.
             + f"{_indent}_unsloth_old_from_new = (not _unsloth_rollout_old) and _unsloth_grpo_old_logps_from_new(self)\n"
             + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new:\n"
             + f"{_indent}    old_per_token_logps = None\n"
@@ -5116,16 +5115,9 @@ def _unsloth_grpo_rollout_logps_as_old(
 
 
 def _unsloth_grpo_old_logps_from_new(trainer):
-    """True when this generation batch can skip TRL's old-policy forward under the vLLM importance
-    sampling correction (UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 keeps it).
-
-    TRL scores pi_old when generation is not aligned to the optimizer step
-    (gradient_accumulation_steps % (steps_per_generation * num_iterations) != 0) or whenever the vLLM
-    IS correction is on. In the aligned case no optimizer step runs between the rollout and the last
-    loss on it, so pi_old is the policy the loss scores: TRL itself then uses
-    per_token_logps.detach() for the PPO ratio. unsloth_zoo takes the IS weight pi_old / pi_vllm from
-    that same detached forward, so the loss and its gradient are unchanged and one forward is saved.
-    Not with a random forward (dropout, router jitter), where two passes score two different policies."""
+    """Skip TRL's old-policy forward under vLLM IS when generation is aligned to the optimizer step:
+    pi_old is then the policy the loss scores (TRL uses per_token_logps.detach() too). Not with a
+    stochastic forward (dropout), where two passes score different policies."""
     import os
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
@@ -5256,8 +5248,7 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     if mask is None or delta.shape != mask.shape or flat_is_ratio.shape != mask.shape:
         return delta.reshape(-1), flat_is_ratio.reshape(-1)
     keep = mask.to(torch.bool)
-    # nan marks a token the trainer did not score (a skipped zero-advantage row whose pi_old is the
-    # policy's own forward): left out, as TRL leaves out the tokens vLLM could not score.
+    # nan = token not scored (skipped zero-advantage row); left out, as TRL does.
     scored = ~torch.isnan(delta)
     if not sequence_level:
         keep = keep & scored
@@ -5486,7 +5477,6 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
-        # Generation skipped the old-policy forward (aligned steps, vLLM IS on): pi_old is this forward's.
         _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)

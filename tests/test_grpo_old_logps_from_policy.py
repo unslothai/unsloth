@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO: skip the old-policy forward under the vLLM IS correction when generation is aligned.
-
-TRL's _generate_and_score_completions scores pi_old when
-`gradient_accumulation_steps % (steps_per_generation * num_iterations) != 0` (rollouts outlive an
-optimizer step) or whenever `use_vllm and vllm_importance_sampling_correction`. In the aligned case no
-optimizer step separates the rollout from its last loss, so pi_old is the policy the loss scores and TRL
-itself uses per_token_logps.detach() as pi_old. Unsloth then skips that forward and marks the batch;
-unsloth_zoo takes pi_old for the IS weight from the training forward (old_logps_from_new).
-The helpers are lifted from the shipped source with `ast`, so nothing imports unsloth for them.
-"""
+"""GRPO: skip the old-policy forward under the vLLM IS correction when generation is aligned."""
 
 from __future__ import annotations
 
@@ -47,7 +38,6 @@ class _Zoo:
         module = types.ModuleType("unsloth_zoo.rl_replacements")
         if supported:
             module.grpo_old_logps_from_new = lambda new: new.detach()
-            # Stand-in for unsloth_zoo's detector (tested there): dropout modules and config rates.
             module.grpo_policy_is_stochastic = (
                 lambda model: any(
                     isinstance(m, torch.nn.Dropout) and m.p > 0 for m in model.modules()
@@ -245,7 +235,6 @@ def test_installed_trl_gets_the_skip():
     assert patched.index("generate_every = ") < skip.start()
     assert patched.index("self._get_per_token_logps_and_entropies(", skip.end()) > skip.end()
     assert 'output["unsloth_old_logps_from_new"] = torch.ones(' in patched
-    # TRL's own IS ratio / delta metric blocks (which read old_per_token_logps) stay disabled.
     assert "if self.use_vllm and self.vllm_importance_sampling_correction:" not in patched
 
 
@@ -271,7 +260,6 @@ def test_is_metrics_leave_out_unscored_rows():
     d, r = values(delta, ratio, mask, True)
     torch.testing.assert_close(d, torch.tensor([0.1, 0.2, 0.3]))
     torch.testing.assert_close(r, torch.tensor([1.0, 1.2]))
-    # No nan (every existing path): unchanged.
     finite = torch.nan_to_num(delta)
     d, r = values(finite, torch.nan_to_num(ratio), mask, False)
     assert d.numel() == 6
