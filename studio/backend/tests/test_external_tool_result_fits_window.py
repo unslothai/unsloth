@@ -178,6 +178,66 @@ def test_parallel_results_share_the_served_window():
     assert estimate_messages_tokens_conservative(messages) < 4096
 
 
+def _usage(prompt_tokens):
+    usage = {"prompt_tokens": prompt_tokens, "completion_tokens": 40}
+    return "data: " + json.dumps({"choices": [], "usage": usage})
+
+
+def _counted_call_turn(prompt_tokens):
+    turn = _call_turn("c1")
+    return [*turn[:-1], _usage(prompt_tokens), _DONE]
+
+
+def _tool_heavy_history(exchanges = 20):
+    history = []
+    for i in range(exchanges):
+        call = {
+            "id": f"h{i}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": "{}"},
+        }
+        history += [
+            {"role": "user", "content": f"question {i} " + "the order shipped on time " * 150},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": f"h{i}", "content": _LONG[:6000]},
+            {"role": "assistant", "content": "answer " + "it shipped on time " * 20},
+        ]
+    return history
+
+
+def test_a_long_thread_the_server_counted_keeps_a_short_result_whole(monkeypatch):
+    reply = _LONG[:2066]
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: reply)
+
+    messages = _forwarded(
+        [_counted_call_turn(50_000), _ANSWER_TURN],
+        history = _tool_heavy_history(),
+        served_window = _serves(128_000),
+    )
+
+    assert _results(messages)[-1] == reply
+
+
+def test_a_counted_prompt_near_the_window_still_trims_the_result():
+    messages = _forwarded([_counted_call_turn(7_000), _ANSWER_TURN], served_window = _serves(8192))
+
+    (result,) = _results(messages)
+    assert 7_040 + len(result) < 8192
+
+
+def test_a_long_thread_the_server_did_not_count_is_priced_at_the_worst_case(monkeypatch):
+    reply = _LONG[:2066]
+    monkeypatch.setattr(tools, "_web_search", lambda *a, **k: reply)
+
+    messages = _forwarded(
+        [_call_turn("c1"), _ANSWER_TURN],
+        history = _tool_heavy_history(),
+        served_window = _serves(128_000),
+    )
+
+    assert "no context room left" in _results(messages)[-1]
+
+
 def test_a_window_reported_after_the_first_turn_still_sizes_the_result():
     transport = FakeTransport([_call_turn("c1"), _ANSWER_TURN])
 

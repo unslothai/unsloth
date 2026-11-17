@@ -452,29 +452,37 @@ def _result_budget_tokens(
     calls: list[dict[str, Any]],
     tool_messages: list[dict[str, Any]],
     call_index: int,
+    sent_tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    thread = messages_without_unpriced_media(conversation)
-    results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
-    rest = [m for m in thread if m.get("role") != "tool"]
-    rest.append(
-        {
-            "role": "assistant",
-            "content": "".join(turn.text),
-            "reasoning_content": "".join(turn.reasoning),
-        }
-    )
-    replayed = [
-        {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
-        for call in calls
-    ]
-    batch = [{"role": "assistant", "tool_calls": replayed}]
-    held = estimate_messages_tokens_conservative(results, dense_ascii = True)
-    spent = (
-        estimate_messages_tokens_conservative(rest)
-        + estimate_messages_tokens_conservative(tools or [])
-        + held
-        + estimate_messages_tokens_conservative(batch, dense_ascii = True)
-    )
+    usage = turn.usage or {}
+    if _usage_int(usage, "prompt_tokens") > 0:
+        # The server counted the prompt and this turn; only what the batch added since is unpriced.
+        held = estimate_messages_tokens_conservative(tool_messages, dense_ascii = True)
+        added = [tool for tool in tools or [] if tool not in (sent_tools or [])]
+        spent = _pass_context_tokens(usage) + estimate_messages_tokens_conservative(added) + held
+    else:
+        thread = messages_without_unpriced_media(conversation)
+        results = [m for m in (*thread, *tool_messages) if m.get("role") == "tool"]
+        rest = [m for m in thread if m.get("role") != "tool"]
+        rest.append(
+            {
+                "role": "assistant",
+                "content": "".join(turn.text),
+                "reasoning_content": "".join(turn.reasoning),
+            }
+        )
+        replayed = [
+            {"name": (call.get("function") or {}).get("name"), "arguments": call.get("arguments")}
+            for call in calls
+        ]
+        batch = [{"role": "assistant", "tool_calls": replayed}]
+        held = estimate_messages_tokens_conservative(results, dense_ascii = True)
+        spent = (
+            estimate_messages_tokens_conservative(rest)
+            + estimate_messages_tokens_conservative(tools or [])
+            + held
+            + estimate_messages_tokens_conservative(batch, dense_ascii = True)
+        )
     # Uncounted results get two characters a budget token: fit the window even at one token each.
     room = min(
         tool_result_budget(window, max_tokens, spent),
@@ -2158,6 +2166,7 @@ async def _stream_with_studio_tools(
                 strict = strict_isolation,
                 share = image_share,
                 index = call_index,
+                sent_tools = active_tools,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -2196,6 +2205,7 @@ async def _stream_with_studio_tools(
                         calls,
                         tool_messages,
                         index,
+                        sent_tools,
                     )
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
