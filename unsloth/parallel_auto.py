@@ -160,9 +160,10 @@ def _local_cuda_device(torch):
     return torch.cuda.current_device()
 
 
-def _budget(held = 0):
-    """(capacity, total) bytes for this rank: what it could use (free + what it already holds) and the device
-    size the margin is a share of."""
+def _budget(held = 0, held_cuda = 0):
+    """(capacity, total) bytes for this rank: what it could use and the device size the margin is a share of.
+    CUDA: free + the allocator's reusable cache (reserved - allocated) + `held_cuda`, the part of the sized model
+    already resident there; other live tensors (a reference model loaded first) are not available."""
     raw = str(os.environ.get(BUDGET, "")).strip()
     if raw:
         value = _parse_budget(raw)
@@ -172,7 +173,8 @@ def _budget(held = 0):
     if torch.cuda.is_available():
         device = _local_cuda_device(torch)
         free, total = torch.cuda.mem_get_info(device)
-        return int(free + torch.cuda.memory_reserved(device)), int(total)
+        cache = max(torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device), 0)
+        return int(free + cache + held_cuda), int(total)
     try:
         local = max(int(os.environ.get("LOCAL_WORLD_SIZE", "1") or "1"), 1)
     except ValueError:
@@ -216,8 +218,8 @@ def _resolve(estimate, install_trainer_init):
         _STATE.update(choice = "single", reason = "one process: nothing to choose")
         return _STATE["choice"]
     try:
-        weights, state, held = estimate()
-        capacity, total = _budget(held)
+        weights, state, held, *rest = estimate()
+        capacity, total = _budget(held, *rest)
         fits, need = decide(weights, state, capacity, total)
         entry = dict(
             fits = bool(fits),
@@ -553,12 +555,14 @@ def resolve_for_trainer(model, training_args = None):
         return _STATE["choice"]
 
     def estimate():
-        seen, weights, trainable, grad_itemsize = set(), 0, 0, 4
+        seen, weights, trainable, grad_itemsize, on_cuda = set(), 0, 0, 4, 0
         for p in list(model.parameters()) + list(model.buffers()):
             if id(p) in seen:
                 continue
             seen.add(id(p))
             weights += p.numel() * p.element_size()
+            if getattr(p, "is_cuda", False):
+                on_cuda += p.numel() * p.element_size()
             if getattr(p, "requires_grad", False):
                 trainable += p.numel()
                 grad_itemsize = p.element_size()
@@ -567,6 +571,6 @@ def resolve_for_trainer(model, training_args = None):
         )
         # Already resident: on CPU it is out of the available RAM _budget reads (CUDA counts reserved).
         held = weights
-        return weights, state, held
+        return weights, state, held, on_cuda
 
     return _resolve(estimate, install_trainer_init = False)

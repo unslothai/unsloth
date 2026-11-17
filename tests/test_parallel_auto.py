@@ -476,12 +476,29 @@ def test_budget_measures_the_local_rank_gpu(clean, monkeypatch):
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (free[d], 16 * gib))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d = None: 0)
     monkeypatch.setattr(torch.cuda, "set_device", lambda d: calls.append(d))
     monkeypatch.setenv("LOCAL_RANK", "1")
     assert auto._budget() == (9 * gib, 16 * gib)
     assert calls == []
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)  # one visible GPU per rank
     assert auto._budget() == (2 * gib, 16 * gib)
+
+
+def test_budget_excludes_live_unrelated_allocations(clean, monkeypatch):
+    """Reserved memory still holding live tensors (a reference model loaded first) is not available; only the
+    allocator's free cache and the sized model's own resident bytes count."""
+    _, _, auto = clean
+    gib = 1024**3
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (4 * gib, 16 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 10 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d = None: 9 * gib)
+    monkeypatch.delenv("LOCAL_RANK", raising = False)
+    assert auto._budget() == (5 * gib, 16 * gib)
+    assert auto._budget(9 * gib, 9 * gib) == (14 * gib, 16 * gib)
 
 
 def test_import_installs_the_trainer_wrapper_while_auto_is_unresolved(clean, monkeypatch):
