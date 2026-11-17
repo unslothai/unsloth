@@ -232,3 +232,15 @@ export function downloadedQuant(
     onDisk.find((v) => v.quant.toUpperCase() === "Q4_K_M") ?? onDisk[0];
   return best ? { quant: best.quant, sizeBytes: best.size_bytes } : null;
 }
+
+/** Downloaded models that are not text models (image, video, audio), by lowercased id. */
+export function nonTextModelIds(rows: readonly InventoryRow[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row.audio_type || (row.task && row.task !== "text-generation")) {
+      ids.add(row.id.toLowerCase());
+      if (row.model_id) ids.add(row.model_id.toLowerCase());
+    }
+  }
+  return ids;
+}

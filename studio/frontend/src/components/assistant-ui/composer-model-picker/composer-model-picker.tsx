@@ -1483,6 +1483,8 @@ export function ComposerModelPicker({
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
+  const browseOnly = source?.browseOnly === true;
+  const hiddenIds = source?.hiddenIds;
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -2118,8 +2120,18 @@ export function ComposerModelPicker({
         section: "npu",
         npu: model,
       }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    const all = [...marked, ...npuOffers, ...hub, ...external];
+    // Browsing for a text model: nothing known as image, video or audio.
+    return browseOnly
+      ? all.filter(
+          (row) =>
+            !hiddenIds?.has(row.id.toLowerCase()) &&
+            mediaPageForTask(mediaTaskById.get(row.id.toLowerCase())) === null,
+        )
+      : all;
   }, [
+    browseOnly,
+    hiddenIds,
     inventory.cachedGguf,
     inventory.cachedModels,
     npuModels,
@@ -2481,7 +2493,7 @@ export function ComposerModelPicker({
   const viewed =
     tab ??
     // Browsing starts on what can be downloaded, without waiting on the device scan.
-    (hasModels && source?.browseOnly !== true
+    (hasModels && !browseOnly
       ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
         (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
         DEVICE_TAB)
@@ -2696,7 +2708,6 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const browseOnly = source?.browseOnly === true;
   const isExpanded = expanded || !chosenName || browseOnly;
   useAnimatedListHeight(listEl);
 

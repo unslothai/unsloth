@@ -117,6 +117,7 @@ import {
   type DownloadedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
+  nonTextModelIds,
   type TranslateModelId,
   dedicatedTranslateModel,
   formatModelBytes,
@@ -393,6 +394,7 @@ function OtherModelPicker({
         : [],
     [providers, connectionsEnabled],
   );
+  const hiddenIds = useMemo(() => nonTextModelIds(localRows), [localRows]);
   const loraModels = useMemo<LoraModelOption[]>(
     () => [
       ...loras.map((lora) => ({
@@ -420,6 +422,7 @@ function OtherModelPicker({
       externalConnections,
       connections: connectionsEnabled,
       browseOnly: true,
+      hiddenIds,
       onPick,
       // Translate loads and releases its model itself.
       eject: ignore,
@@ -446,6 +449,7 @@ function OtherModelPicker({
       externalModels,
       externalConnections,
       connectionsEnabled,
+      hiddenIds,
       onPick,
       open,
       onOpenChange,

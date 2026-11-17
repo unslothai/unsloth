@@ -34,6 +34,8 @@ export interface ComposerModelPickerSource {
   loaded: boolean;
   /** A panel opened to browse (Translate): the full list, never collapsed, opening on the models to download. */
   browseOnly?: boolean;
+  /** Lowercased ids left out of the list: models the caller knows it cannot run. */
+  hiddenIds?: ReadonlySet<string>;
   /** False where only local models run (the API page): no Connected or provider tabs. */
   connections?: boolean;
   /** A choice owned outside Chat (Compare, API page): no reasoning controls, Eject only while `loaded`. */

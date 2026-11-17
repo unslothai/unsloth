@@ -18,6 +18,7 @@ import {
   dedicatedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
+  nonTextModelIds,
   isTranslateModelId,
   parseCustomTranslateModel,
   translateInstruction,
@@ -623,4 +624,34 @@ test("a downloaded model loads the quant already on disk, Q4_K_M when there is a
     downloadedQuant([{ quant: "Q4_K_M", size_bytes: 3, downloaded: false }]),
     null,
   );
+});
+
+test("image, video and audio models are kept out of the Translate model browser", () => {
+  const hidden = nonTextModelIds([
+    {
+      id: "/cache/sdxl",
+      model_id: "org/SDXL-Pipe",
+      display_name: "sdxl",
+      source: "hf_cache",
+      task: "text-to-image",
+    },
+    {
+      id: "org/Kokoro-GGUF",
+      display_name: "Kokoro",
+      source: "hf_cache",
+      audio_type: "tts",
+    },
+    {
+      id: "unsloth/Qwen3-0.6B-GGUF",
+      display_name: "Qwen3",
+      source: "hf_cache",
+      task: "text-generation",
+    },
+    { id: "org/unknown", display_name: "unknown", source: "hf_cache" },
+  ]);
+  assert.deepEqual([...hidden].sort(), [
+    "/cache/sdxl",
+    "org/kokoro-gguf",
+    "org/sdxl-pipe",
+  ]);
 });
