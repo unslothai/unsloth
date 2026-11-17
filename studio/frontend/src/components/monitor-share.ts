@@ -156,6 +156,8 @@ export interface PoolSplitInput {
   ramTotalGb: number;
   vramUsedGb: number | null;
   vramTotalGb: number;
+  /** VRAM the backend's process tree holds (driver per-process sizes); absent on WDDM, Apple, MIG. */
+  vramUnslothGb?: number | null;
 }
 
 export interface PoolSplit {
@@ -191,15 +193,24 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
       (typeof entry.residentOnGpu !== "boolean" &&
         !(input.inferenceGpuElsewhere && entry.source === "chat")),
   );
+  // Measured, the slice also holds training, unsized models and engine overhead (CUDA context,
+  // KV cache), so the rest really is other apps. A Vulkan llama-server is not a compute process,
+  // so the sized models stay the floor.
+  const measuredGb = Number.isFinite(input.vramUnslothGb) ? (input.vramUnslothGb as number) : null;
+  const vramUnslothGb =
+    measuredGb !== null ? Math.max(measuredGb, sum(vramModels)) : unsized ? null : sum(vramModels);
   const vramShare =
-    modelsInVram && !unsized && input.vramUsedGb !== null
-      ? memoryShare(input.vramUsedGb, input.vramTotalGb, sum(vramModels))
+    modelsInVram && vramUnslothGb !== null && input.vramUsedGb !== null
+      ? memoryShare(input.vramUsedGb, input.vramTotalGb, vramUnslothGb)
       : null;
+  const vramBreakdown = !showBreakdown
+    ? null
+    : measuredGb !== null
+      ? modelBreakdown(vramUnslothGb, vramModels, true)
+      : { models: vramModels, app: null };
   return {
     ram: ramShare && memorySegments(ramShare, ramBreakdown),
-    vram:
-      vramShare &&
-      memorySegments(vramShare, showBreakdown ? { models: vramModels, app: null } : null, false),
+    vram: vramShare && memorySegments(vramShare, vramBreakdown, measuredGb !== null),
     noModels: showBreakdown && input.entries.length === 0,
   };
 }

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from loggers import get_logger
 
@@ -364,6 +364,99 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     )
 
 
+def _gpu_uuids_by_index() -> Optional[dict[int, str]]:
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,uuid", "--format=csv,noheader,nounits"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    uuids = {}
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2:
+            try:
+                uuids[int(parts[0])] = parts[1]
+            except ValueError:
+                continue
+    return uuids or None
+
+
+# A driver that rejects the process query is not asked again on every poll.
+_PROCESS_QUERY_BACKOFF_S = 60.0
+_process_query_failed_at: Optional[float] = None
+
+
+def get_process_vram_mib_by_uuid(pids: Collection[int]) -> Optional[dict[str, float]]:
+    """MiB each GPU (by UUID) holds for ``pids``, CUDA context included. None when none of them
+    is listed (a container's PID namespace hides them) or a size is unreadable (WDDM's [N/A])."""
+    global _process_query_failed_at
+    failed_at = _process_query_failed_at
+    if failed_at is not None and time.monotonic() - failed_at < _PROCESS_QUERY_BACKOFF_S:
+        return None
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-compute-apps=gpu_uuid,pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("nvidia-smi process query failed: %s", e)
+        _process_query_failed_at = time.monotonic()
+        return None
+    if result.returncode != 0:
+        _process_query_failed_at = time.monotonic()
+        return None
+    _process_query_failed_at = None
+    totals: dict[str, float] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        if pid not in pids:
+            continue
+        used = _parse_smi_value(parts[2])
+        if used is None:
+            return None
+        totals[parts[0]] = totals.get(parts[0], 0.0) + used
+    return totals or None
+
+
+def _unsloth_vram_mib_by_index(uuid_by_index: Optional[dict[int, str]]) -> Optional[dict[int, float]]:
+    from utils.process_tree import own_process_tree_pids
+
+    by_uuid = get_process_vram_mib_by_uuid(own_process_tree_pids())
+    if by_uuid is None:
+        return None
+    if uuid_by_index is None:
+        uuid_by_index = _gpu_uuids_by_index()
+    if not uuid_by_index or not set(by_uuid) <= set(uuid_by_index.values()):
+        return None
+    return {idx: by_uuid.get(uuid, 0.0) for idx, uuid in uuid_by_index.items()}
+
+
 def get_visible_gpu_utilization(
     parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
@@ -434,6 +527,13 @@ def get_visible_gpu_utilization(
                 "index_kind": "unresolved",
             }
 
+    unsloth_mib = (
+        _unsloth_vram_mib_by_index(
+            {idx: parts[1] for idx, parts in gpu_rows} if includes_uuid else None
+        )
+        if gpu_query.process_vram_wanted()
+        else None
+    )
     devices = []
     field_offset = 1 if includes_uuid else 0
     for idx, parts in gpu_rows:
@@ -452,6 +552,11 @@ def get_visible_gpu_utilization(
                 visible_ordinal = visible_ordinal,
                 gpu_utilization_pct = _parse_smi_value(parts[1 + field_offset]),
                 temperature_c = _parse_smi_value(parts[2 + field_offset]),
+                **(
+                    {"unsloth_used_gb": round(unsloth_mib.get(idx, 0.0) / 1024, 2)}
+                    if unsloth_mib is not None
+                    else {}
+                ),
             )
         )
 

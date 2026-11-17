@@ -7383,7 +7383,14 @@ def _installed_llama_backend() -> Optional[str]:
 
 
 # Readings the utilization probes already return, passed through for the Live monitor's detailed view.
-LIVE_GPU_TELEMETRY_KEYS = ("gpu_utilization_pct", "temperature_c", "power_draw_w", "power_limit_w")
+# unsloth_used_gb: VRAM held by this backend's process tree, where the driver reports per-process sizes.
+LIVE_GPU_TELEMETRY_KEYS = (
+    "gpu_utilization_pct",
+    "temperature_c",
+    "power_draw_w",
+    "power_limit_w",
+    "unsloth_used_gb",
+)
 
 
 def _smi_inference_device(

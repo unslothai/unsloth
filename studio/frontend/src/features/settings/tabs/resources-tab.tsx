@@ -692,6 +692,7 @@ export function ResourcesTab() {
     ramTotalGb: metrics.ramTotal,
     vramUsedGb: vram.usedGb,
     vramTotalGb: vram.totalGb,
+    vramUnslothGb: vram.unslothGb,
   });
   const ramSegments = split.ram;
   const vramSegments = split.vram;
