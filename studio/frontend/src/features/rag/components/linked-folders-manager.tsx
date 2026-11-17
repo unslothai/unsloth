@@ -23,13 +23,12 @@ import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
-import { FolderBrowser } from "@/features/model-picker";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import type {
   FolderSyncJob,
   LinkedFolder,
@@ -37,6 +36,12 @@ import type {
   LinkedFolderSkipReason,
 } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
+
+const FolderBrowser = lazy(() =>
+  import("@/features/model-picker/components/model-selector/folder-browser").then(
+    (module) => ({ default: module.FolderBrowser }),
+  ),
+);
 
 export const FOLDER_CARD_CLASS =
   "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
@@ -367,15 +372,17 @@ export function LinkedFoldersManager({
           </p>
         ) : null}
         {removeIndexConfirm}
-        <FolderBrowser
-          open={serverBrowserOpen}
-          onOpenChange={setServerBrowserOpen}
-          onSelect={(path) => void manager.linkServerPath(path)}
-          title="Choose a server folder"
-          description="Select a folder on the Studio server to keep in sync for project search."
-          confirmLabel="Link server folder"
-          showModelHints={false}
-        />
+        <Suspense fallback={null}>
+          <FolderBrowser
+            open={serverBrowserOpen}
+            onOpenChange={setServerBrowserOpen}
+            onSelect={(path) => void manager.linkServerPath(path)}
+            title="Choose a server folder"
+            description="Select a folder on the Studio server to keep in sync for project search."
+            confirmLabel="Link server folder"
+            showModelHints={false}
+          />
+        </Suspense>
       </section>
     );
   }
@@ -505,15 +512,17 @@ export function LinkedFoldersManager({
         </ul>
       )}
       {removeIndexConfirm}
-      <FolderBrowser
-        open={serverBrowserOpen}
-        onOpenChange={setServerBrowserOpen}
-        onSelect={(path) => void manager.linkServerPath(path)}
-        title="Choose a server folder"
-        description="Select a folder on the Studio server to keep in sync for project search."
-        confirmLabel="Link server folder"
-        showModelHints={false}
-      />
+      <Suspense fallback={null}>
+        <FolderBrowser
+          open={serverBrowserOpen}
+          onOpenChange={setServerBrowserOpen}
+          onSelect={(path) => void manager.linkServerPath(path)}
+          title="Choose a server folder"
+          description="Select a folder on the Studio server to keep in sync for project search."
+          confirmLabel="Link server folder"
+          showModelHints={false}
+        />
+      </Suspense>
     </section>
   );
 }
