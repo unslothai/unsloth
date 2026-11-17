@@ -770,7 +770,7 @@ export const ja = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "中断 — 「…{words}」まで読み上げ",
+      spokenUpTo: "「…{words}」のあとで中断",
       none: "読み上げ前に中断",
       useFull: "全文の返答を使う",
       restoreFailed: "完全な返答を復元できませんでした。",
@@ -790,6 +790,9 @@ export const ja = {
       speaking: "話しています",
       paused: "一時停止中",
       muted: "ミュート",
+      switching: "チャットモデルを切り替え中…",
+      downloading: "書き起こしモデルをダウンロード中…",
+      needsDownload: "話すには書き起こしモデルをダウンロードしてください",
     },
     help: {
       aria: "音声モードが検出しているもの",
@@ -822,6 +825,7 @@ export const ja = {
     holdToFloat: "{action} · 長押しで切り離す",
     synthFailed: "音声を合成できませんでした",
     transcriptionFailed: "文字起こしに失敗しました。",
+    setUp: "音声モード: モデルを選んで開始",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -895,6 +899,10 @@ export const ja = {
     ggufVoicesOnly: "音声モードは GGUF オーディオ音声でのみ話します。",
     ggufDetectorsOnly: "音声モードは GGUF オーディオ検出器でのみ発話を検出します。",
     cantListenWith: "音声モードはまだそのモデルで聞き取れません。",
+    chatModelLoading: "チャットモデルを切り替え中…",
+    chatModelWaiting: "チャットモデルを待っています",
+    downloadingTranscriber: "書き起こしモデルをダウンロード中…",
+    thinkNeedsChatThinking: "まずモデルメニューで Thinking をオンにしてください",
   },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
@@ -2033,6 +2041,79 @@ export const ja = {
         clearConfirmTitle: "音声の判定ログを消去しますか？",
         clearConfirmDescription: "{rows} 行とその文字起こしがこのコンピューターから削除されます。元に戻せません。",
         clearFailed: "音声ログを消去できませんでした。",
+        switches: {
+          clauseFirstChunk: {
+            label: "早めに話し始める",
+            description: "文が終わる前に返答の最初の区切りを音声に送り、そのあと短い間を入れます。返答が約 0.3 秒早く始まります。",
+          },
+          speechNormalize: {
+            label: "数字を言葉で読む",
+            description: "音声が読む前に、価格、時刻、日付、分数、電話番号、ローマ数字を言葉に書き換えます。英語のみ。",
+          },
+          heardCut: {
+            label: "聞いた部分だけ残す",
+            description: "返答をさえぎると、チャットモデルはさえぎる前に話された部分だけを覚えます。",
+          },
+        },
+        turnEnding: {
+          label: "ターンの終わり",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "小さなターン終了モデルが話し終わりを聞き取るので、固定の間より約 0.3 秒早く返答が始まります。話し終わりを聞き取れないときは間が過ぎてから言葉を確認します。判定モデルがあればそれで、なければ途中で切れているように見えるかで判断します。",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + 判定モデル",
+              description: "Smart Turn が話し終わりを聞き取ったときにも判定モデルの同意を求めます。テストでは、途中切れを多く捉えることなく、話し終えたターンをより多く保留しました。判定モデルがなければ Smart Turn と同じです。",
+            },
+            wait: {
+              label: "固定の間",
+              description: "1 秒の無音でターンが終わります。",
+            },
+          },
+          judgeBar: {
+            label: "判定モデルに求める確信度",
+            description: "高くするほど話を続けられるようにターンを保留するので、考えの途中で返答が始まることは減りますが、話し終えたターンの待ち時間は長くなります。",
+          },
+        },
+        decisionModel: {
+          label: "判定モデル（任意）",
+          description: "Smart Turn が終わりと判断しなかった間のあとに話した内容を読み取り、考えの途中ならターンを保留します。つなぎの言葉や、返答の途中で話したときの対応も選びます。",
+          noneDescription: "音声モードはなしでも動作します。間のあと、書き起こしが途中で切れているように見えるときだけターンを保留します。判定モデルを使うと文の途中の間をより多く捉えられます。",
+          none: "なし",
+          loading: "判定モデルを読み込み中",
+        },
+        replyInstruction: {
+          label: "返答の話し方",
+          options: {
+            conversation: {
+              label: "会話",
+              description: "短い話し言葉で、答えを先に。聞き間違いを前提にし、ツールを使う前にひと言伝え、コードやリンクは頼まれたときだけ表示します。",
+            },
+            spoken: {
+              label: "話し言葉の返答",
+              description: "平易な話し言葉で短い文を 1〜3 文。長い答えは先に要約を伝えます。コードやリストは頼まれたときだけ。",
+            },
+            voice: {
+              label: "平易な文",
+              description: "Markdown、リスト、コード、リンクを使わない平易な文で、質問は一度にひとつ、数字や日付は人が言うように読みます。",
+            },
+            custom: {
+              label: "カスタム",
+              description: "音声モード中、チャットの指示のあとに送られるあなた独自の指示です。",
+            },
+            none: {
+              label: "なし",
+              description: "チャットモデルに話し方の指示を送りません。返答は文字のチャットと同じ長さになります。",
+            },
+          },
+          custom: {
+            label: "あなたの指示",
+            placeholder: "例: 友だちのように短い一文で答えて。",
+            hint: "{n} / {max} 文字",
+            empty: "指示を書くまで何も送信されません。",
+          },
+        },
       },
     },
     general: {

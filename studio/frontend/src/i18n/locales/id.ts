@@ -866,7 +866,7 @@ export const id = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Terpotong — diucapkan sampai “…{words}”",
+      spokenUpTo: "Terpotong setelah “…{words}”",
       none: "Terpotong sebelum diucapkan",
       useFull: "Gunakan balasan lengkap",
       restoreFailed: "Tidak dapat memulihkan balasan lengkap.",
@@ -886,6 +886,9 @@ export const id = {
       speaking: "Berbicara",
       paused: "Dijeda",
       muted: "Dibisukan",
+      switching: "Mengganti model obrolan…",
+      downloading: "Mengunduh transkriber…",
+      needsDownload: "Unduh transkriber untuk berbicara",
     },
     help: {
       aria: "Apa yang dideteksi mode suara",
@@ -922,6 +925,7 @@ export const id = {
     holdToFloat: "{action} · tahan untuk mengambang",
     synthFailed: "Tidak dapat menyintesis suara",
     transcriptionFailed: "Transkripsi gagal.",
+    setUp: "Mode suara: pilih model dan mulai",
   },
   chatMenu: {
     more: "Opsi chat",
@@ -997,6 +1001,10 @@ export const id = {
     chatModelCannotSpeak: "Model chat tidak bisa menjawab dengan suara. Muat LFM3-Audio-2B atau LFM3-Omni-2B, atau pilih suara lain.",
     speakerFemale: "Perempuan",
     speakerMale: "Laki-laki",
+    chatModelLoading: "mengganti model obrolan…",
+    chatModelWaiting: "menunggu model obrolan",
+    downloadingTranscriber: "mengunduh transkriber…",
+    thinkNeedsChatThinking: "Aktifkan Thinking di menu model terlebih dahulu",
   },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
@@ -2215,6 +2223,79 @@ export const id = {
         clearConfirmDescription:
           "{rows} baris beserta transkripnya akan dihapus dari komputer ini. Tindakan ini tidak dapat dibatalkan.",
         clearFailed: "Tidak dapat menghapus log suara.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Mulai berbicara lebih cepat",
+            description: "Mengirim bagian pertama balasan ke suara sebelum kalimat selesai, dengan jeda singkat setelahnya. Balasan mulai sekitar 0,3 dtk lebih cepat.",
+          },
+          speechNormalize: {
+            label: "Baca angka sebagai kata",
+            description: "Menulis ulang harga, waktu, tanggal, pecahan, nomor telepon, dan angka Romawi menjadi kata sebelum suara membacanya. Hanya bahasa Inggris.",
+          },
+          heardCut: {
+            label: "Simpan hanya yang Anda dengar",
+            description: "Saat Anda memotong balasan, model obrolan hanya mengingat bagian yang sudah diucapkan sebelum Anda menyela.",
+          },
+        },
+        turnEnding: {
+          label: "Akhir giliran Anda",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Model kecil penanda akhir giliran mendengarkan kapan Anda selesai, sehingga balasan mulai sekitar 0,3 dtk lebih cepat daripada jeda tetap. Jika tidak mendengar Anda selesai, jeda habis dan ucapan Anda diperiksa: oleh model keputusan jika ada, jika tidak berdasarkan apakah tampak terpotong.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + model keputusan",
+              description: "Juga meminta persetujuan model keputusan saat Smart Turn mendengar Anda selesai. Dalam pengujian, ini menahan lebih banyak giliran yang selesai tanpa menangkap lebih banyak potongan. Tanpa model keputusan, cara kerjanya sama seperti Smart Turn.",
+            },
+            wait: {
+              label: "Jeda tetap",
+              description: "Satu detik hening mengakhiri giliran Anda.",
+            },
+          },
+          judgeBar: {
+            label: "Seyakin ini model keputusan harus",
+            description: "Nilai lebih tinggi menahan lebih banyak giliran agar Anda bisa melanjutkan, sehingga lebih sedikit balasan dimulai di tengah pikiran, tetapi giliran yang selesai menunggu lebih lama.",
+          },
+        },
+        decisionModel: {
+          label: "Model keputusan (opsional)",
+          description: "Membaca apa yang Anda ucapkan setelah jeda yang tidak dianggap akhir oleh Smart Turn, lalu menahan giliran Anda jika Anda masih di tengah pikiran. Juga memilih kalimat pengisi dan apa yang dilakukan saat Anda berbicara di atas balasan.",
+          noneDescription: "Mode suara tetap berjalan tanpanya. Setelah jeda, giliran Anda hanya ditahan saat transkrip tampak terpotong; model keputusan menangkap lebih banyak jeda di tengah kalimat.",
+          none: "Tidak ada",
+          loading: "Memuat model keputusan",
+        },
+        replyInstruction: {
+          label: "Cara balasan diucapkan",
+          options: {
+            conversation: {
+              label: "Percakapan",
+              description: "Balasan lisan yang singkat, jawaban dulu. Memperhitungkan kata yang salah dengar, mengucapkan satu kalimat sebelum memanggil alat, dan hanya menampilkan kode atau tautan jika Anda memintanya.",
+            },
+            spoken: {
+              label: "Balasan lisan",
+              description: "Satu sampai tiga kalimat pendek dengan bahasa lisan sederhana, dengan versi singkat dulu jika jawabannya panjang. Kode atau daftar hanya jika Anda memintanya.",
+            },
+            voice: {
+              label: "Kalimat sederhana",
+              description: "Kalimat sederhana tanpa markdown, daftar, kode, atau tautan, satu pertanyaan sekaligus, angka dan tanggal diucapkan seperti cara orang mengucapkannya.",
+            },
+            custom: {
+              label: "Kustom",
+              description: "Instruksi Anda sendiri, dikirim setelah instruksi obrolan selama mode suara berjalan.",
+            },
+            none: {
+              label: "Tidak ada",
+              description: "Model obrolan tidak menerima instruksi tentang berbicara; balasan sepanjang di obrolan ketik.",
+            },
+          },
+          custom: {
+            label: "Instruksi Anda",
+            placeholder: "Misalnya: Jawab dengan satu kalimat pendek, seperti seorang teman.",
+            hint: "{n} dari {max} karakter",
+            empty: "Tidak ada yang dikirim sampai Anda menulis instruksi.",
+          },
+        },
       },
     },
     general: {

@@ -1816,6 +1816,79 @@ export const it = {
         clearConfirmTitle: "Cancellare il registro delle decisioni vocali?",
         clearConfirmDescription: "{rows} righe e le relative trascrizioni verranno eliminate da questo computer. L'operazione non può essere annullata.",
         clearFailed: "Impossibile cancellare il registro vocale.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Inizia a parlare prima",
+            description: "Invia alla voce la prima parte di una risposta prima che la frase sia finita, con una breve pausa dopo. Le risposte iniziano circa 0,3 s prima.",
+          },
+          speechNormalize: {
+            label: "Leggi i numeri in parole",
+            description: "Riscrive in parole prezzi, orari, date, frazioni, numeri di telefono e numeri romani prima che la voce li legga. Solo in inglese.",
+          },
+          heardCut: {
+            label: "Tieni solo ciò che hai sentito",
+            description: "Quando interrompi una risposta, il modello di chat ricorda solo la parte detta prima che tu intervenissi.",
+          },
+        },
+        turnEnding: {
+          label: "Fine del tuo turno",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Un piccolo modello di fine turno ascolta quando finisci, così la risposta parte circa 0,3 s prima che con la pausa fissa. Se non ti sente finire, la pausa scade e le tue parole vengono controllate: dal modello decisionale se impostato, altrimenti in base a se sembrano interrotte.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + modello decisionale",
+              description: "Chiede anche al modello decisionale di confermare quando Smart Turn ti sente finire. Nei test ha trattenuto più turni finiti senza cogliere più interruzioni. Senza modello decisionale funziona come Smart Turn.",
+            },
+            wait: {
+              label: "Pausa fissa",
+              description: "Un secondo di silenzio chiude il tuo turno.",
+            },
+          },
+          judgeBar: {
+            label: "Sicurezza richiesta al modello decisionale",
+            description: "Un valore più alto tiene aperti più turni perché tu continui, così meno risposte partono a metà di un pensiero, ma i turni finiti aspettano di più.",
+          },
+        },
+        decisionModel: {
+          label: "Modello decisionale (facoltativo)",
+          description: "Legge ciò che hai detto dopo una pausa che Smart Turn non ha considerato la fine e tiene il tuo turno se eri a metà di un pensiero. Sceglie anche le frasi di riempimento e cosa fare quando parli sopra la risposta.",
+          noneDescription: "La modalità vocale funziona anche senza. Dopo una pausa, il tuo turno viene tenuto solo se la trascrizione sembra interrotta; un modello decisionale coglie più pause a metà frase.",
+          none: "Nessuno",
+          loading: "Caricamento del modello decisionale",
+        },
+        replyInstruction: {
+          label: "Come vengono dette le risposte",
+          options: {
+            conversation: {
+              label: "Conversazione",
+              description: "Risposte parlate brevi, prima la risposta. Mette in conto parole capite male, dice una frase prima di usare uno strumento e mostra codice o link solo se li chiedi.",
+            },
+            spoken: {
+              label: "Risposta parlata",
+              description: "Da una a tre frasi brevi in linguaggio semplice, con una versione breve prima quando la risposta è lunga. Codice o elenchi solo se li chiedi.",
+            },
+            voice: {
+              label: "Frasi semplici",
+              description: "Frasi semplici senza markdown, elenchi, codice o link, una domanda alla volta, numeri e date detti come li direbbe una persona.",
+            },
+            custom: {
+              label: "Personalizzata",
+              description: "La tua istruzione, inviata dopo le istruzioni della chat mentre è attiva la modalità vocale.",
+            },
+            none: {
+              label: "Nessuna",
+              description: "Il modello di chat non riceve istruzioni sul parlato; le risposte sono lunghe come in una chat scritta.",
+            },
+          },
+          custom: {
+            label: "La tua istruzione",
+            placeholder: "Per esempio: Rispondi con una frase breve, come farebbe un amico.",
+            hint: "{n} di {max} caratteri",
+            empty: "Non viene inviato nulla finché non scrivi un’istruzione.",
+          },
+        },
       },
     },
     general: {
@@ -3838,7 +3911,7 @@ export const it = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Interrotto — pronunciato fino a «…{words}»",
+      spokenUpTo: "Interrotto dopo «…{words}»",
       none: "Interrotto prima di essere pronunciato",
       useFull: "Usa la risposta completa",
       restoreFailed: "Impossibile ripristinare la risposta completa.",
@@ -3858,6 +3931,9 @@ export const it = {
       speaking: "Sta parlando",
       paused: "In pausa",
       muted: "Disattivato",
+      switching: "Cambio del modello di chat…",
+      downloading: "Download del trascrittore…",
+      needsDownload: "Scarica il trascrittore per parlare",
     },
     help: {
       aria: "Cosa rileva la modalità vocale",
@@ -3890,6 +3966,7 @@ export const it = {
     holdToFloat: "{action} · tieni premuto per staccare",
     synthFailed: "Impossibile sintetizzare la voce",
     transcriptionFailed: "Trascrizione non riuscita.",
+    setUp: "Modalità vocale: scegli i modelli e inizia",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -3963,6 +4040,10 @@ export const it = {
     ggufVoicesOnly: "La modalità vocale parla solo con le voci audio GGUF.",
     ggufDetectorsOnly: "La modalità vocale rileva il parlato solo con i rilevatori audio GGUF.",
     cantListenWith: "La modalità vocale non può ancora ascoltare con quel modello.",
+    chatModelLoading: "cambio del modello di chat…",
+    chatModelWaiting: "in attesa di un modello di chat",
+    downloadingTranscriber: "download del trascrittore…",
+    thinkNeedsChatThinking: "Attiva prima Thinking nel menu del modello",
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",

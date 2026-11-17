@@ -817,7 +817,7 @@ export const zhTW = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "已打斷 — 唸到「…{words}」",
+      spokenUpTo: "在「…{words}」之後打斷",
       none: "尚未朗讀就被打斷",
       useFull: "使用完整回覆",
       restoreFailed: "無法還原完整回覆。",
@@ -837,6 +837,9 @@ export const zhTW = {
       speaking: "正在說話",
       paused: "已暫停",
       muted: "已靜音",
+      switching: "正在切換聊天模型…",
+      downloading: "正在下載轉寫模型…",
+      needsDownload: "下載轉寫模型後即可說話",
     },
     help: {
       aria: "語音模式正在偵測什麼",
@@ -868,6 +871,7 @@ export const zhTW = {
     holdToFloat: "{action} · 按住以浮動顯示",
     synthFailed: "無法合成語音",
     transcriptionFailed: "轉錄失敗。",
+    setUp: "語音模式：選擇模型並開始",
   },
   chatMenu: {
     more: "聊天選項",
@@ -940,6 +944,10 @@ export const zhTW = {
     chatModelCannotSpeak: "聊天模型無法以語音回答。請載入 LFM3-Audio-2B 或 LFM3-Omni-2B，或選擇其他語音。",
     speakerFemale: "女聲",
     speakerMale: "男聲",
+    chatModelLoading: "正在切換聊天模型…",
+    chatModelWaiting: "正在等待聊天模型",
+    downloadingTranscriber: "正在下載轉寫模型…",
+    thinkNeedsChatThinking: "請先在模型選單中開啟 Thinking",
   },
   welcome: {
     goodToSeeYou: "很高興見到您",
@@ -2102,6 +2110,79 @@ export const zhTW = {
         clearConfirmTitle: "要清除語音判斷記錄嗎？",
         clearConfirmDescription: "將從這台電腦刪除 {rows} 列及其轉錄。此動作無法復原。",
         clearFailed: "無法清除語音記錄。",
+        switches: {
+          clauseFirstChunk: {
+            label: "更早開始說話",
+            description: "在句子結束前就把回覆的第一段傳給語音，之後稍作停頓。回覆大約提早 0.3 秒開始。",
+          },
+          speechNormalize: {
+            label: "把數字唸成文字",
+            description: "在語音朗讀前，把價格、時間、日期、分數、電話號碼和羅馬數字改寫成文字。僅限英文。",
+          },
+          heardCut: {
+            label: "只保留你聽到的",
+            description: "當你打斷回覆時，聊天模型只記住你插話前已說出的部分。",
+          },
+        },
+        turnEnding: {
+          label: "你的輪次結束",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "一個小型輪次結束模型會聽你何時說完，因此回覆比固定停頓大約早 0.3 秒開始。如果它沒聽出你說完，停頓結束後會檢查你的話：設定了決策模型就由它判斷，否則看內容是否像被截斷。",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + 決策模型",
+              description: "當 Smart Turn 聽出你說完時，也會請決策模型確認。在測試中，這保留了更多已結束的輪次，卻沒有捕捉到更多截斷。沒有決策模型時，效果與 Smart Turn 相同。",
+            },
+            wait: {
+              label: "固定停頓",
+              description: "一秒靜音即結束你的輪次。",
+            },
+          },
+          judgeBar: {
+            label: "決策模型需要的把握程度",
+            description: "數值越高，越會保留輪次讓你繼續說，回覆在你思考中途開始的情況更少，但已結束的輪次要等更久。",
+          },
+        },
+        decisionModel: {
+          label: "決策模型（選用）",
+          description: "在 Smart Turn 未判定為結束的停頓之後讀取你說的話，如果你還在思考中途，就保留你的輪次。它也會選擇填充語，以及你在回覆中插話時該怎麼做。",
+          noneDescription: "語音模式沒有它也能運作。停頓後，只有當轉寫內容看起來被截斷時才會保留你的輪次；決策模型能捕捉到更多句中停頓。",
+          none: "無",
+          loading: "正在載入決策模型",
+        },
+        replyInstruction: {
+          label: "回覆的說法",
+          options: {
+            conversation: {
+              label: "對話",
+              description: "簡短的口語回覆，先給答案。考慮到可能聽錯的詞，呼叫工具前先說一句話，只有在你要求時才顯示程式碼或連結。",
+            },
+            spoken: {
+              label: "口語回覆",
+              description: "用平實的口語說一到三句短句，答案較長時先給簡短版本。只有在你要求時才給出程式碼或清單。",
+            },
+            voice: {
+              label: "平實句子",
+              description: "不用 Markdown、清單、程式碼或連結的平實句子，一次只問一個問題，數字和日期依人說話的方式唸。",
+            },
+            custom: {
+              label: "自訂",
+              description: "你自己的指示，在語音模式運作時放在聊天指示之後傳送。",
+            },
+            none: {
+              label: "無",
+              description: "聊天模型不會收到關於說話的指示；回覆和打字聊天一樣長。",
+            },
+          },
+          custom: {
+            label: "你的指示",
+            placeholder: "例如：像朋友那樣用一句簡短的話回答。",
+            hint: "{n} / {max} 個字元",
+            empty: "在你寫下指示之前不會傳送任何內容。",
+          },
+        },
       },
     },
     general: {

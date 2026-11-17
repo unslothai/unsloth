@@ -868,7 +868,7 @@ export const cs = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Přerušeno — vysloveno po „…{words}“",
+      spokenUpTo: "Přerušeno po „…{words}“",
       none: "Přerušeno dřív, než zaznělo",
       useFull: "Použít celou odpověď",
       restoreFailed: "Celou odpověď se nepodařilo obnovit.",
@@ -888,6 +888,9 @@ export const cs = {
       speaking: "Mluví",
       paused: "Pozastaveno",
       muted: "Ztlumeno",
+      switching: "Přepínání modelu chatu…",
+      downloading: "Stahování přepisovače…",
+      needsDownload: "Pro mluvení stáhněte přepisovač",
     },
     help: {
       aria: "Co hlasový režim rozpoznává",
@@ -924,6 +927,7 @@ export const cs = {
     holdToFloat: "{action} · podržením uvolníte do plovoucího okna",
     synthFailed: "Řeč se nepodařilo syntetizovat",
     transcriptionFailed: "Přepis se nezdařil.",
+    setUp: "Hlasový režim: vyberte modely a začněte",
   },
   chatMenu: {
     more: "Možnosti chatu",
@@ -999,6 +1003,10 @@ export const cs = {
     chatModelCannotSpeak: "Chatovací model neumí odpovídat řečí. Načtěte LFM3-Audio-2B nebo LFM3-Omni-2B, nebo vyberte jiný hlas.",
     speakerFemale: "Ženský",
     speakerMale: "Mužský",
+    chatModelLoading: "přepínání modelu chatu…",
+    chatModelWaiting: "čeká se na model chatu",
+    downloadingTranscriber: "stahování přepisovače…",
+    thinkNeedsChatThinking: "Nejdřív zapněte Thinking v nabídce modelu",
   },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
@@ -2220,6 +2228,79 @@ export const cs = {
         clearConfirmDescription:
           "Z tohoto počítače se smažou řádky ({rows}) a jejich přepisy. Tuto akci nelze vrátit zpět.",
         clearFailed: "Hlasový záznam se nepodařilo vymazat.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Začít mluvit dřív",
+            description: "Pošle první část odpovědi hlasu dřív, než je věta hotová, a za ní krátkou pauzu. Odpovědi začnou asi o 0,3 s dřív.",
+          },
+          speechNormalize: {
+            label: "Číst čísla slovy",
+            description: "Přepíše ceny, časy, data, zlomky, telefonní čísla a římské číslice na slova, než je hlas přečte. Jen angličtina.",
+          },
+          heardCut: {
+            label: "Ponechat jen to, co jste slyšeli",
+            description: "Když odpověď přerušíte, model chatu si zapamatuje jen část, která zazněla, než jste vstoupili do řeči.",
+          },
+        },
+        turnEnding: {
+          label: "Konec vašeho tahu",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Malý model konce tahu poslouchá, kdy domluvíte, takže odpověď začne asi o 0,3 s dřív než s pevnou pauzou. Když nepozná, že jste domluvili, pauza vyprší a vaše slova se zkontrolují: rozhodovacím modelem, pokud je nastaven, jinak podle toho, zda působí useknutě.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + rozhodovací model",
+              description: "Také požádá rozhodovací model o souhlas, když Smart Turn pozná, že jste domluvili. V testech to podrželo víc dokončených tahů, aniž by zachytilo víc useknutí. Bez rozhodovacího modelu funguje jako Smart Turn.",
+            },
+            wait: {
+              label: "Pevná pauza",
+              description: "Sekunda ticha ukončí váš tah.",
+            },
+          },
+          judgeBar: {
+            label: "Takto si musí být rozhodovací model jistý",
+            description: "Vyšší hodnota podrží víc tahů, abyste mohli pokračovat, takže méně odpovědí začne uprostřed myšlenky, ale dokončené tahy čekají déle.",
+          },
+        },
+        decisionModel: {
+          label: "Rozhodovací model (volitelný)",
+          description: "Čte, co jste řekli po pauze, kterou Smart Turn nevyhodnotil jako konec, a podrží váš tah, pokud jste byli uprostřed myšlenky. Vybírá také vycpávkové věty a co dělat, když mluvíte do odpovědi.",
+          noneDescription: "Hlasový režim funguje i bez něj. Po pauze se váš tah podrží jen tehdy, když přepis působí useknutě; rozhodovací model zachytí víc pauz uprostřed věty.",
+          none: "Žádný",
+          loading: "Načítání rozhodovacího modelu",
+        },
+        replyInstruction: {
+          label: "Jak se odpovědi vyslovují",
+          options: {
+            conversation: {
+              label: "Konverzace",
+              description: "Krátké mluvené odpovědi, odpověď na začátku. Počítá se špatně slyšenými slovy, před voláním nástroje řekne jednu větu a kód nebo odkazy ukáže jen na požádání.",
+            },
+            spoken: {
+              label: "Mluvená odpověď",
+              description: "Jedna až tři krátké věty jednoduchou řečí, u dlouhé odpovědi nejdřív krátká verze. Kód nebo seznamy jen na požádání.",
+            },
+            voice: {
+              label: "Jednoduché věty",
+              description: "Jednoduché věty bez markdownu, seznamů, kódu a odkazů, jedna otázka po druhé, čísla a data vyslovená tak, jak by je řekl člověk.",
+            },
+            custom: {
+              label: "Vlastní",
+              description: "Váš vlastní pokyn, odesílaný po pokynech chatu, dokud běží hlasový režim.",
+            },
+            none: {
+              label: "Žádný",
+              description: "Model chatu nedostane žádný pokyn k mluvení; odpovědi jsou stejně dlouhé jako v psaném chatu.",
+            },
+          },
+          custom: {
+            label: "Váš pokyn",
+            placeholder: "Například: Odpovídej jednou krátkou větou, jako by to řekl kamarád.",
+            hint: "{n} z {max} znaků",
+            empty: "Nic se neodešle, dokud nenapíšete pokyn.",
+          },
+        },
       },
     },
     general: {

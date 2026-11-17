@@ -774,8 +774,8 @@ export const en = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Interrupted — spoken up to “…{words}”",
-      none: "Interrupted before it was spoken",
+      spokenUpTo: "Interrupted after “…{words}”",
+      none: "Interrupted before any of it was spoken",
       useFull: "Use the full reply",
       restoreFailed: "Couldn't restore the full reply.",
     },
@@ -2013,12 +2013,12 @@ export const en = {
           clauseFirstChunk: {
             label: "Start speaking sooner",
             description:
-              "Sends the first phrase of a reply to the voice before the sentence is finished, with a short pause after it. Replies start about 0.3 s sooner.",
+              "Starts speaking the first phrase of a reply before the sentence is finished, then pauses briefly. Replies start about 0.3 s sooner.",
           },
           speechNormalize: {
             label: "Read numbers as words",
             description:
-              "Rewrites prices, times, dates, fractions, phone numbers and Roman numerals into words before the voice reads them. English only.",
+              "Turns prices, times, dates, fractions, phone numbers and Roman numerals into words before they're read aloud. English only.",
           },
           heardCut: {
             label: "Keep only what you heard",
@@ -2032,12 +2032,12 @@ export const en = {
             smartTurn: {
               label: "Smart Turn",
               description:
-                "A small end-of-turn model listens for when you finish, so the reply starts about 0.3 s sooner than the fixed pause. When it doesn't hear you finish, the pause runs out and your words are checked: by the decision model if one is set, otherwise by whether they read cut off.",
+                "A small model listens for when you've finished, so replies start about 0.3 s sooner than with a fixed pause. If it can't tell you're done, it waits out the pause, then checks your words: with the decision model if you've set one, otherwise by whether they sound cut off.",
             },
             smartTurnJudge: {
               label: "Smart Turn + decision model",
               description:
-                "Also asks the decision model to agree when Smart Turn hears you finish. In testing this held more finished turns without catching more cut-offs. Without a decision model it works like Smart Turn.",
+                "Also asks the decision model to confirm when Smart Turn thinks you've finished. In testing, this held back more finished turns without catching more cut-offs. Without a decision model, it works like Smart Turn.",
             },
             wait: {
               label: "Fixed pause",
@@ -2045,17 +2045,17 @@ export const en = {
             },
           },
           judgeBar: {
-            label: "Decision model must be this sure",
+            label: "How sure the decision model must be",
             description:
-              "Higher holds more turns for you to go on, so fewer replies start while you're mid-thought, but finished turns wait longer.",
+              "Higher waits more often in case you keep going, so fewer replies cut in mid-thought, but you wait longer after you've finished.",
           },
         },
         decisionModel: {
           label: "Decision model (optional)",
           description:
-            "Reads what you said after a pause Smart Turn didn't call the end, and holds the turn if you were mid-thought. It also picks filler lines and what to do when you speak over the reply.",
+            "After a pause Smart Turn didn't treat as the end, it reads what you said and waits if you were mid-thought. It also picks filler lines and decides what happens when you talk over a reply.",
           noneDescription:
-            "Voice mode works without one. After a pause, your turn is held only when the transcript reads cut off; a decision model catches more mid-sentence pauses.",
+            "Voice mode works without one. After a pause, it waits only if your words seem cut off. A decision model catches more pauses mid-sentence.",
           none: "None",
           loading: "Loading the decision model",
         },
@@ -2065,25 +2065,25 @@ export const en = {
             conversation: {
               label: "Conversation",
               description:
-                "Short spoken answers, answer first. Expects misheard words, says one line before a tool call, and shows code or links only when you ask for them.",
+                "Short spoken answers that lead with the answer. Copes with misheard words, says a quick line before using a tool, and only shows code or links when you ask.",
             },
             spoken: {
               label: "Spoken reply",
               description:
-                "One to three short sentences of plain speech, with a short version first when the answer is long. Code or lists only when you ask for them.",
+                "One to three short sentences in plain speech, starting with the short version when there's more to say. Code or lists only when you ask.",
             },
             voice: {
               label: "Plain sentences",
               description:
-                "Plain sentences without markdown, lists, code or links, one question at a time, numbers and dates said the way a person would.",
+                "Plain sentences with no markdown, lists, code or links. Asks one question at a time and says numbers and dates the way a person would.",
             },
             custom: {
               label: "Custom",
-              description: "Your own instruction, sent after the chat's instructions while voice mode runs.",
+              description: "Your own instruction, sent after the chat's instructions while voice mode is on.",
             },
             none: {
               label: "None",
-              description: "The chat model gets no instruction about speaking; replies are as long as in a typed chat.",
+              description: "The chat model gets no speaking instruction, so replies run as long as they would in a typed chat.",
             },
           },
           custom: {

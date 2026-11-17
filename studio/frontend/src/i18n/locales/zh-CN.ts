@@ -769,7 +769,7 @@ export const zhCN = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "已打断 — 读到“…{words}”",
+      spokenUpTo: "在“…{words}”之后打断",
       none: "尚未朗读就被打断",
       useFull: "使用完整回复",
       restoreFailed: "无法恢复完整回复。",
@@ -789,6 +789,9 @@ export const zhCN = {
       speaking: "正在说话",
       paused: "已暂停",
       muted: "已静音",
+      switching: "正在切换聊天模型…",
+      downloading: "正在下载转写模型…",
+      needsDownload: "下载转写模型后即可说话",
     },
     help: {
       aria: "语音模式在检测什么",
@@ -821,6 +824,7 @@ export const zhCN = {
     holdToFloat: "{action} · 长按可分离",
     synthFailed: "无法合成语音",
     transcriptionFailed: "转写失败。",
+    setUp: "语音模式：选择模型并开始",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -894,6 +898,10 @@ export const zhCN = {
     ggufVoicesOnly: "语音模式只能用 GGUF 音频声音说话。",
     ggufDetectorsOnly: "语音模式只能用 GGUF 音频检测器检测语音。",
     cantListenWith: "语音模式暂时无法使用该模型聆听。",
+    chatModelLoading: "正在切换聊天模型…",
+    chatModelWaiting: "正在等待聊天模型",
+    downloadingTranscriber: "正在下载转写模型…",
+    thinkNeedsChatThinking: "请先在模型菜单中开启 Thinking",
   },
   welcome: {
     goodToSeeYou: "很高兴见到你",
@@ -2020,6 +2028,79 @@ export const zhCN = {
         clearConfirmTitle: "清除语音判定日志？",
         clearConfirmDescription: "将从这台电脑删除 {rows} 行及其转写。此操作无法撤销。",
         clearFailed: "无法清除语音日志。",
+        switches: {
+          clauseFirstChunk: {
+            label: "更早开始说话",
+            description: "在句子结束前就把回复的第一段发送给语音，之后稍作停顿。回复大约提前 0.3 秒开始。",
+          },
+          speechNormalize: {
+            label: "把数字读成文字",
+            description: "在语音朗读前，把价格、时间、日期、分数、电话号码和罗马数字改写成文字。仅限英语。",
+          },
+          heardCut: {
+            label: "只保留你听到的",
+            description: "当你打断回复时，聊天模型只记住你插话前已说出的部分。",
+          },
+        },
+        turnEnding: {
+          label: "你的轮次结束",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "一个小型轮次结束模型会听你何时说完，因此回复比固定停顿大约早 0.3 秒开始。如果它没听出你说完，停顿结束后会检查你的话：设置了决策模型就由它判断，否则看内容是否像被截断。",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + 决策模型",
+              description: "当 Smart Turn 听出你说完时，也会请决策模型确认。在测试中，这保留了更多已结束的轮次，却没有捕捉到更多截断。没有决策模型时，效果与 Smart Turn 相同。",
+            },
+            wait: {
+              label: "固定停顿",
+              description: "一秒静音即结束你的轮次。",
+            },
+          },
+          judgeBar: {
+            label: "决策模型需要的把握程度",
+            description: "数值越高，越会保留轮次让你继续说，回复在你思考中途开始的情况更少，但已结束的轮次要等更久。",
+          },
+        },
+        decisionModel: {
+          label: "决策模型（可选）",
+          description: "在 Smart Turn 未判定为结束的停顿之后读取你说的话，如果你还在思考中途，就保留你的轮次。它还会选择填充语，以及你在回复中插话时该怎么做。",
+          noneDescription: "语音模式没有它也能工作。停顿后，只有当转写内容看起来被截断时才会保留你的轮次；决策模型能捕捉到更多句中停顿。",
+          none: "无",
+          loading: "正在加载决策模型",
+        },
+        replyInstruction: {
+          label: "回复的说法",
+          options: {
+            conversation: {
+              label: "对话",
+              description: "简短的口语回复，先给答案。考虑到可能听错的词，调用工具前先说一句话，只有在你要求时才显示代码或链接。",
+            },
+            spoken: {
+              label: "口语回复",
+              description: "用平实的口语说一到三句短句，答案较长时先给简短版本。只有在你要求时才给出代码或列表。",
+            },
+            voice: {
+              label: "平实句子",
+              description: "不用 Markdown、列表、代码或链接的平实句子，一次只问一个问题，数字和日期按人说话的方式读。",
+            },
+            custom: {
+              label: "自定义",
+              description: "你自己的指令，在语音模式运行时放在聊天指令之后发送。",
+            },
+            none: {
+              label: "无",
+              description: "聊天模型不会收到关于说话的指令；回复和打字聊天一样长。",
+            },
+          },
+          custom: {
+            label: "你的指令",
+            placeholder: "例如：像朋友那样用一句简短的话回答。",
+            hint: "{n} / {max} 个字符",
+            empty: "在你写下指令之前不会发送任何内容。",
+          },
+        },
       },
     },
     general: {

@@ -769,8 +769,8 @@ export const de = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Unterbrochen – gesprochen bis „…{words}“",
-      none: "Unterbrochen, bevor es gesprochen wurde",
+      spokenUpTo: "Unterbrochen nach „…{words}“",
+      none: "Unterbrochen, bevor etwas davon gesprochen wurde",
       useFull: "Vollständige Antwort verwenden",
       restoreFailed: "Die vollständige Antwort konnte nicht wiederhergestellt werden.",
     },
@@ -789,6 +789,9 @@ export const de = {
       speaking: "Spricht",
       paused: "Pausiert",
       muted: "Stumm",
+      switching: "Chatmodell wird gewechselt…",
+      downloading: "Transkriptionsmodell wird heruntergeladen…",
+      needsDownload: "Laden Sie das Transkriptionsmodell herunter, um zu sprechen",
     },
     help: {
       aria: "Was der Sprachmodus erkennt",
@@ -821,6 +824,7 @@ export const de = {
     holdToFloat: "{action} · gedrückt halten zum Abkoppeln",
     synthFailed: "Sprache konnte nicht erzeugt werden",
     transcriptionFailed: "Transkription fehlgeschlagen.",
+    setUp: "Sprachmodus: Modelle wählen und starten",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -894,6 +898,10 @@ export const de = {
     ggufVoicesOnly: "Der Sprachmodus spricht nur mit den GGUF-Audiostimmen.",
     ggufDetectorsOnly: "Der Sprachmodus erkennt Sprache nur mit den GGUF-Audiodetektoren.",
     cantListenWith: "Mit diesem Modell kann der Sprachmodus noch nicht zuhören.",
+    chatModelLoading: "Chatmodell wird gewechselt…",
+    chatModelWaiting: "warte auf ein Chatmodell",
+    downloadingTranscriber: "Transkriptionsmodell wird heruntergeladen…",
+    thinkNeedsChatThinking: "Aktivieren Sie zuerst Thinking im Modellmenü",
   },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
@@ -2042,6 +2050,79 @@ export const de = {
         clearConfirmTitle: "Das Protokoll der Sprachentscheidungen löschen?",
         clearConfirmDescription: "{rows} Zeilen und ihre Transkripte werden von diesem Computer gelöscht. Dies kann nicht rückgängig gemacht werden.",
         clearFailed: "Das Sprachprotokoll konnte nicht gelöscht werden.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Früher anfangen zu sprechen",
+            description: "Schickt den ersten Teil einer Antwort an die Stimme, bevor der Satz fertig ist, mit einer kurzen Pause danach. Antworten beginnen etwa 0,3 s früher.",
+          },
+          speechNormalize: {
+            label: "Zahlen als Wörter vorlesen",
+            description: "Schreibt Preise, Uhrzeiten, Daten, Brüche, Telefonnummern und römische Zahlen in Wörter um, bevor die Stimme sie vorliest. Nur Englisch.",
+          },
+          heardCut: {
+            label: "Nur behalten, was Sie gehört haben",
+            description: "Wenn Sie eine Antwort unterbrechen, merkt sich das Chatmodell nur den Teil, der gesprochen wurde, bevor Sie dazwischengeredet haben.",
+          },
+        },
+        turnEnding: {
+          label: "Ende Ihrer Runde",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Ein kleines Redeende-Modell hört, wann Sie fertig sind, sodass die Antwort etwa 0,3 s früher beginnt als mit der festen Pause. Hört es Sie nicht fertig werden, läuft die Pause ab und Ihre Worte werden geprüft: vom Entscheidungsmodell, falls eines gesetzt ist, sonst danach, ob sie abgebrochen wirken.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + Entscheidungsmodell",
+              description: "Fragt zusätzlich das Entscheidungsmodell, ob es zustimmt, wenn Smart Turn Sie fertig hört. In Tests hielt das mehr beendete Runden, ohne mehr Abbrüche zu erkennen. Ohne Entscheidungsmodell funktioniert es wie Smart Turn.",
+            },
+            wait: {
+              label: "Feste Pause",
+              description: "Eine Sekunde Stille beendet Ihre Runde.",
+            },
+          },
+          judgeBar: {
+            label: "So sicher muss das Entscheidungsmodell sein",
+            description: "Ein höherer Wert hält mehr Runden offen, damit Sie weiterreden können, sodass weniger Antworten mitten im Gedanken beginnen; beendete Runden warten aber länger.",
+          },
+        },
+        decisionModel: {
+          label: "Entscheidungsmodell (optional)",
+          description: "Liest nach einer Pause, die Smart Turn nicht als Ende gewertet hat, was Sie gesagt haben, und hält die Runde, wenn Sie mitten im Gedanken waren. Es wählt auch Füllsätze und entscheidet, was passiert, wenn Sie in die Antwort hineinsprechen.",
+          noneDescription: "Der Sprachmodus funktioniert auch ohne. Nach einer Pause wird Ihre Runde nur gehalten, wenn das Transkript abgebrochen wirkt; ein Entscheidungsmodell erkennt mehr Pausen mitten im Satz.",
+          none: "Keines",
+          loading: "Entscheidungsmodell wird geladen",
+        },
+        replyInstruction: {
+          label: "Wie Antworten gesprochen werden",
+          options: {
+            conversation: {
+              label: "Gespräch",
+              description: "Kurze gesprochene Antworten, die Antwort zuerst. Rechnet mit falsch verstandenen Wörtern, sagt vor einem Tool-Aufruf einen Satz und zeigt Code oder Links nur, wenn Sie danach fragen.",
+            },
+            spoken: {
+              label: "Gesprochene Antwort",
+              description: "Ein bis drei kurze Sätze in einfacher Sprache, bei langen Antworten zuerst eine Kurzfassung. Code oder Listen nur, wenn Sie danach fragen.",
+            },
+            voice: {
+              label: "Einfache Sätze",
+              description: "Einfache Sätze ohne Markdown, Listen, Code oder Links, eine Frage nach der anderen, Zahlen und Daten so gesagt, wie ein Mensch sie sagen würde.",
+            },
+            custom: {
+              label: "Eigene Anweisung",
+              description: "Ihre eigene Anweisung, die im Sprachmodus nach den Anweisungen des Chats gesendet wird.",
+            },
+            none: {
+              label: "Keine",
+              description: "Das Chatmodell erhält keine Anweisung zum Sprechen; Antworten sind so lang wie in einem getippten Chat.",
+            },
+          },
+          custom: {
+            label: "Ihre Anweisung",
+            placeholder: "Zum Beispiel: Antworte in einem kurzen Satz, wie ein Freund es tun würde.",
+            hint: "{n} von {max} Zeichen",
+            empty: "Es wird nichts gesendet, bis Sie eine Anweisung schreiben.",
+          },
+        },
       },
     },
     general: {

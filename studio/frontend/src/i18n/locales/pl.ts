@@ -874,7 +874,7 @@ export const pl = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Przerwano — wypowiedziano do „…{words}”",
+      spokenUpTo: "Przerwano po „…{words}”",
       none: "Przerwano przed wypowiedzeniem",
       useFull: "Użyj pełnej odpowiedzi",
       restoreFailed: "Nie udało się przywrócić pełnej odpowiedzi.",
@@ -894,6 +894,9 @@ export const pl = {
       speaking: "Mówi",
       paused: "Wstrzymano",
       muted: "Wyciszono",
+      switching: "Przełączanie modelu czatu…",
+      downloading: "Pobieranie transkrybera…",
+      needsDownload: "Pobierz transkryber, aby mówić",
     },
     help: {
       aria: "Co wykrywa tryb głosowy",
@@ -930,6 +933,7 @@ export const pl = {
     holdToFloat: "{action} · przytrzymaj, aby odpiąć",
     synthFailed: "Nie udało się zsyntetyzować mowy",
     transcriptionFailed: "Transkrypcja nie powiodła się.",
+    setUp: "Tryb głosowy: wybierz modele i zacznij",
   },
   chatMenu: {
     more: "Opcje czatu",
@@ -1006,6 +1010,10 @@ export const pl = {
     chatModelCannotSpeak: "Model czatu nie potrafi odpowiadać mową. Załaduj LFM3-Audio-2B lub LFM3-Omni-2B albo wybierz inny głos.",
     speakerFemale: "Żeński",
     speakerMale: "Męski",
+    chatModelLoading: "przełączanie modelu czatu…",
+    chatModelWaiting: "czekanie na model czatu",
+    downloadingTranscriber: "pobieranie transkrybera…",
+    thinkNeedsChatThinking: "Najpierw włącz Thinking w menu modelu",
   },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
@@ -2233,6 +2241,79 @@ export const pl = {
         clearConfirmDescription:
           "Wiersze ({rows}) i ich transkrypcje zostaną usunięte z tego komputera. Tej operacji nie można cofnąć.",
         clearFailed: "Nie udało się wyczyścić dziennika głosowego.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Zaczynaj mówić wcześniej",
+            description: "Wysyła pierwszy fragment odpowiedzi do głosu, zanim zdanie się skończy, z krótką pauzą po nim. Odpowiedzi zaczynają się około 0,3 s wcześniej.",
+          },
+          speechNormalize: {
+            label: "Czytaj liczby słownie",
+            description: "Zamienia ceny, godziny, daty, ułamki, numery telefonów i liczby rzymskie na słowa, zanim głos je przeczyta. Tylko po angielsku.",
+          },
+          heardCut: {
+            label: "Zachowaj tylko to, co usłyszałeś",
+            description: "Gdy przerwiesz odpowiedź, model czatu zapamięta tylko część wypowiedzianą, zanim się wtrąciłeś.",
+          },
+        },
+        turnEnding: {
+          label: "Koniec twojej tury",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Mały model końca tury nasłuchuje, kiedy kończysz, więc odpowiedź zaczyna się około 0,3 s wcześniej niż przy stałej pauzie. Gdy nie usłyszy, że skończyłeś, pauza mija, a twoje słowa są sprawdzane: przez model decyzyjny, jeśli jest ustawiony, a w przeciwnym razie pod kątem tego, czy wyglądają na urwane.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + model decyzyjny",
+              description: "Prosi też model decyzyjny o zgodę, gdy Smart Turn usłyszy, że skończyłeś. W testach wstrzymywało to więcej zakończonych tur bez wychwytywania większej liczby urwań. Bez modelu decyzyjnego działa jak Smart Turn.",
+            },
+            wait: {
+              label: "Stała pauza",
+              description: "Sekunda ciszy kończy twoją turę.",
+            },
+          },
+          judgeBar: {
+            label: "Tak pewny musi być model decyzyjny",
+            description: "Wyższa wartość wstrzymuje więcej tur, abyś mógł mówić dalej, więc mniej odpowiedzi zaczyna się w połowie myśli, ale zakończone tury czekają dłużej.",
+          },
+        },
+        decisionModel: {
+          label: "Model decyzyjny (opcjonalny)",
+          description: "Odczytuje, co powiedziałeś po pauzie, której Smart Turn nie uznał za koniec, i wstrzymuje twoją turę, jeśli byłeś w połowie myśli. Wybiera też wtrącenia i decyduje, co zrobić, gdy mówisz w trakcie odpowiedzi.",
+          noneDescription: "Tryb głosowy działa bez niego. Po pauzie twoja tura jest wstrzymywana tylko wtedy, gdy transkrypcja wygląda na urwaną; model decyzyjny wychwytuje więcej pauz w środku zdania.",
+          none: "Brak",
+          loading: "Wczytywanie modelu decyzyjnego",
+        },
+        replyInstruction: {
+          label: "Jak wypowiadane są odpowiedzi",
+          options: {
+            conversation: {
+              label: "Rozmowa",
+              description: "Krótkie odpowiedzi mówione, najpierw sedno. Liczy się ze źle usłyszanymi słowami, mówi jedno zdanie przed użyciem narzędzia i pokazuje kod lub linki tylko na prośbę.",
+            },
+            spoken: {
+              label: "Odpowiedź mówiona",
+              description: "Od jednego do trzech krótkich zdań prostym językiem, z krótką wersją na początku, gdy odpowiedź jest długa. Kod lub listy tylko na prośbę.",
+            },
+            voice: {
+              label: "Proste zdania",
+              description: "Proste zdania bez markdownu, list, kodu i linków, jedno pytanie naraz, liczby i daty wypowiadane tak, jak powiedziałby je człowiek.",
+            },
+            custom: {
+              label: "Własna",
+              description: "Twoja własna instrukcja, wysyłana po instrukcjach czatu, gdy działa tryb głosowy.",
+            },
+            none: {
+              label: "Brak",
+              description: "Model czatu nie dostaje żadnej instrukcji o mówieniu; odpowiedzi są tak długie jak w czacie pisanym.",
+            },
+          },
+          custom: {
+            label: "Twoja instrukcja",
+            placeholder: "Na przykład: Odpowiadaj jednym krótkim zdaniem, jak przyjaciel.",
+            hint: "{n} z {max} znaków",
+            empty: "Nic nie zostanie wysłane, dopóki nie napiszesz instrukcji.",
+          },
+        },
       },
     },
     general: {

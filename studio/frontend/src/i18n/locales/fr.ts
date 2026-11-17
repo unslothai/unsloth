@@ -769,7 +769,7 @@ export const fr = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Interrompu — prononcé jusqu’à « …{words} »",
+      spokenUpTo: "Interrompu après « …{words} »",
       none: "Interrompu avant d’être prononcé",
       useFull: "Utiliser la réponse complète",
       restoreFailed: "Impossible de rétablir la réponse complète.",
@@ -789,6 +789,9 @@ export const fr = {
       speaking: "Parle",
       paused: "En pause",
       muted: "Muet",
+      switching: "Changement de modèle de chat…",
+      downloading: "Téléchargement du transcripteur…",
+      needsDownload: "Téléchargez le transcripteur pour parler",
     },
     help: {
       aria: "Ce que détecte le mode vocal",
@@ -821,6 +824,7 @@ export const fr = {
     holdToFloat: "{action} · maintenir pour détacher",
     synthFailed: "Impossible de synthétiser la voix",
     transcriptionFailed: "La transcription a échoué.",
+    setUp: "Mode vocal : choisir les modèles et démarrer",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -894,6 +898,10 @@ export const fr = {
     ggufVoicesOnly: "Le mode vocal ne parle qu’avec les voix audio GGUF.",
     ggufDetectorsOnly: "Le mode vocal ne détecte la parole qu’avec les détecteurs audio GGUF.",
     cantListenWith: "Le mode vocal ne peut pas encore écouter avec ce modèle.",
+    chatModelLoading: "changement de modèle de chat…",
+    chatModelWaiting: "en attente d’un modèle de chat",
+    downloadingTranscriber: "téléchargement du transcripteur…",
+    thinkNeedsChatThinking: "Activez d’abord Thinking dans le menu du modèle",
   },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
@@ -2041,6 +2049,79 @@ export const fr = {
         clearConfirmTitle: "Effacer le journal des décisions vocales ?",
         clearConfirmDescription: "{rows} lignes et leurs transcriptions seront supprimées de cet ordinateur. Cette action est irréversible.",
         clearFailed: "Impossible d'effacer le journal vocal.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Commencer à parler plus tôt",
+            description: "Envoie le premier segment d’une réponse à la voix avant la fin de la phrase, suivi d’une courte pause. Les réponses commencent environ 0,3 s plus tôt.",
+          },
+          speechNormalize: {
+            label: "Lire les nombres en toutes lettres",
+            description: "Réécrit en toutes lettres les prix, heures, dates, fractions, numéros de téléphone et chiffres romains avant que la voix les lise. Anglais uniquement.",
+          },
+          heardCut: {
+            label: "Ne garder que ce que vous avez entendu",
+            description: "Quand vous interrompez une réponse, le modèle de chat ne retient que la partie prononcée avant votre interruption.",
+          },
+        },
+        turnEnding: {
+          label: "Fin de votre tour",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Un petit modèle de fin de tour écoute quand vous terminez, et la réponse démarre environ 0,3 s plus tôt qu’avec la pause fixe. S’il ne vous entend pas terminer, la pause s’écoule et vos mots sont vérifiés : par le modèle de décision s’il y en a un, sinon selon qu’ils semblent coupés.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + modèle de décision",
+              description: "Demande aussi l’accord du modèle de décision quand Smart Turn vous entend terminer. En test, cela a retenu plus de tours terminés sans repérer plus de coupures. Sans modèle de décision, fonctionne comme Smart Turn.",
+            },
+            wait: {
+              label: "Pause fixe",
+              description: "Une seconde de silence termine votre tour.",
+            },
+          },
+          judgeBar: {
+            label: "Certitude exigée du modèle de décision",
+            description: "Plus la valeur est haute, plus de tours restent ouverts pour que vous continuiez : moins de réponses démarrent au milieu d’une idée, mais les tours terminés attendent plus longtemps.",
+          },
+        },
+        decisionModel: {
+          label: "Modèle de décision (facultatif)",
+          description: "Lit ce que vous avez dit après une pause que Smart Turn n’a pas jugée comme la fin, et garde votre tour si vous étiez au milieu d’une idée. Il choisit aussi les phrases d’attente et ce qu’il faut faire quand vous parlez par-dessus la réponse.",
+          noneDescription: "Le mode vocal fonctionne sans. Après une pause, votre tour n’est gardé que si la transcription semble coupée ; un modèle de décision repère plus de pauses en milieu de phrase.",
+          none: "Aucun",
+          loading: "Chargement du modèle de décision",
+        },
+        replyInstruction: {
+          label: "Façon de dire les réponses",
+          options: {
+            conversation: {
+              label: "Conversation",
+              description: "Réponses parlées courtes, la réponse d’abord. S’attend à des mots mal entendus, dit une phrase avant un appel d’outil et ne montre du code ou des liens que si vous le demandez.",
+            },
+            spoken: {
+              label: "Réponse parlée",
+              description: "Une à trois phrases courtes en langage simple, avec une version courte d’abord quand la réponse est longue. Du code ou des listes seulement si vous le demandez.",
+            },
+            voice: {
+              label: "Phrases simples",
+              description: "Des phrases simples sans markdown, listes, code ni liens, une question à la fois, nombres et dates dits comme le ferait une personne.",
+            },
+            custom: {
+              label: "Personnalisée",
+              description: "Votre propre instruction, envoyée après les instructions du chat pendant le mode vocal.",
+            },
+            none: {
+              label: "Aucune",
+              description: "Le modèle de chat ne reçoit aucune instruction sur la parole ; les réponses sont aussi longues que dans un chat écrit.",
+            },
+          },
+          custom: {
+            label: "Votre instruction",
+            placeholder: "Par exemple : Réponds en une phrase courte, comme le ferait un ami.",
+            hint: "{n} sur {max} caractères",
+            empty: "Rien n’est envoyé tant que vous n’avez pas écrit d’instruction.",
+          },
+        },
       },
     },
     general: {

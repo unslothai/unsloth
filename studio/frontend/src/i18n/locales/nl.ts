@@ -877,7 +877,7 @@ export const nl = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Onderbroken — uitgesproken tot ‘…{words}’",
+      spokenUpTo: "Onderbroken na ‘…{words}’",
       none: "Onderbroken voordat het werd uitgesproken",
       useFull: "Volledig antwoord gebruiken",
       restoreFailed: "Het volledige antwoord kon niet worden hersteld.",
@@ -897,6 +897,9 @@ export const nl = {
       speaking: "Spreekt",
       paused: "Gepauzeerd",
       muted: "Gedempt",
+      switching: "Chatmodel wisselen…",
+      downloading: "Transcriber downloaden…",
+      needsDownload: "Download de transcriber om te praten",
     },
     help: {
       aria: "Wat de spraakmodus detecteert",
@@ -933,6 +936,7 @@ export const nl = {
     holdToFloat: "{action} · ingedrukt houden om te laten zweven",
     synthFailed: "Kan geen spraak synthetiseren",
     transcriptionFailed: "Transcriptie mislukt.",
+    setUp: "Spraakmodus: kies modellen en start",
   },
   chatMenu: {
     more: "Chatopties",
@@ -1008,6 +1012,10 @@ export const nl = {
     chatModelCannotSpeak: "Het chatmodel kan niet met spraak antwoorden. Laad LFM3-Audio-2B of LFM3-Omni-2B, of kies een andere stem.",
     speakerFemale: "Vrouwelijk",
     speakerMale: "Mannelijk",
+    chatModelLoading: "chatmodel wisselen…",
+    chatModelWaiting: "wacht op een chatmodel",
+    downloadingTranscriber: "transcriber downloaden…",
+    thinkNeedsChatThinking: "Zet eerst Thinking aan in het modelmenu",
   },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
@@ -2238,6 +2246,79 @@ export const nl = {
         clearConfirmDescription:
           "{rows} rijen en hun transcripties worden van deze computer verwijderd. Dit kan niet ongedaan worden gemaakt.",
         clearFailed: "Kan het spraaklog niet wissen.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Eerder beginnen met spreken",
+            description: "Stuurt het eerste stuk van een antwoord naar de stem voordat de zin af is, met een korte pauze erna. Antwoorden beginnen zo'n 0,3 s eerder.",
+          },
+          speechNormalize: {
+            label: "Getallen als woorden voorlezen",
+            description: "Schrijft prijzen, tijden, datums, breuken, telefoonnummers en Romeinse cijfers uit in woorden voordat de stem ze voorleest. Alleen Engels.",
+          },
+          heardCut: {
+            label: "Alleen bewaren wat je hoorde",
+            description: "Als je een antwoord onderbreekt, onthoudt het chatmodel alleen het deel dat werd uitgesproken voordat je ertussen kwam.",
+          },
+        },
+        turnEnding: {
+          label: "Einde van je beurt",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Een klein einde-van-beurtmodel luistert wanneer je klaar bent, zodat het antwoord zo'n 0,3 s eerder begint dan met de vaste pauze. Hoort het je niet afronden, dan loopt de pauze af en worden je woorden gecontroleerd: door het beslismodel als er een is ingesteld, anders op of ze afgebroken lijken.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + beslismodel",
+              description: "Vraagt ook het beslismodel om akkoord als Smart Turn hoort dat je klaar bent. In tests hield dit meer afgeronde beurten vast zonder meer onderbrekingen te vangen. Zonder beslismodel werkt het als Smart Turn.",
+            },
+            wait: {
+              label: "Vaste pauze",
+              description: "Eén seconde stilte beëindigt je beurt.",
+            },
+          },
+          judgeBar: {
+            label: "Zo zeker moet het beslismodel zijn",
+            description: "Hoger houdt meer beurten open zodat je verder kunt praten, dus minder antwoorden beginnen midden in een gedachte, maar afgeronde beurten wachten langer.",
+          },
+        },
+        decisionModel: {
+          label: "Beslismodel (optioneel)",
+          description: "Leest wat je zei na een pauze die Smart Turn niet als einde zag, en houdt je beurt vast als je midden in een gedachte zat. Kiest ook opvullers en wat er gebeurt als je door het antwoord heen praat.",
+          noneDescription: "Spraakmodus werkt ook zonder. Na een pauze wordt je beurt alleen vastgehouden als de transcriptie afgebroken lijkt; een beslismodel vangt meer pauzes midden in een zin.",
+          none: "Geen",
+          loading: "Beslismodel laden",
+        },
+        replyInstruction: {
+          label: "Hoe antwoorden worden uitgesproken",
+          options: {
+            conversation: {
+              label: "Gesprek",
+              description: "Korte gesproken antwoorden, het antwoord eerst. Rekent op verkeerd verstane woorden, zegt één zin voor een toolaanroep en toont code of links alleen als je erom vraagt.",
+            },
+            spoken: {
+              label: "Gesproken antwoord",
+              description: "Eén tot drie korte zinnen in gewone taal, met eerst een korte versie als het antwoord lang is. Code of lijsten alleen als je erom vraagt.",
+            },
+            voice: {
+              label: "Gewone zinnen",
+              description: "Gewone zinnen zonder markdown, lijsten, code of links, één vraag tegelijk, met getallen en datums zoals een mens ze zegt.",
+            },
+            custom: {
+              label: "Aangepast",
+              description: "Je eigen instructie, verstuurd na de instructies van de chat zolang spraakmodus loopt.",
+            },
+            none: {
+              label: "Geen",
+              description: "Het chatmodel krijgt geen instructie over spreken; antwoorden zijn even lang als in een getypte chat.",
+            },
+          },
+          custom: {
+            label: "Je instructie",
+            placeholder: "Bijvoorbeeld: Antwoord in één korte zin, zoals een vriend zou doen.",
+            hint: "{n} van {max} tekens",
+            empty: "Er wordt niets verstuurd totdat je een instructie schrijft.",
+          },
+        },
       },
     },
     general: {

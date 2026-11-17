@@ -823,7 +823,7 @@ export const sv = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Avbrutet — uppläst till ”…{words}”",
+      spokenUpTo: "Avbrutet efter ”…{words}”",
       none: "Avbrutet innan det lästes upp",
       useFull: "Använd hela svaret",
       restoreFailed: "Det gick inte att återställa hela svaret.",
@@ -843,6 +843,9 @@ export const sv = {
       speaking: "Talar",
       paused: "Pausad",
       muted: "Ljud av",
+      switching: "Byter chattmodell…",
+      downloading: "Laddar ner transkriberaren…",
+      needsDownload: "Ladda ner transkriberaren för att prata",
     },
     help: {
       aria: "Vad röstläget känner av",
@@ -875,6 +878,7 @@ export const sv = {
     holdToFloat: "{action} · håll in för att lossa",
     synthFailed: "Det gick inte att syntetisera tal",
     transcriptionFailed: "Transkriberingen misslyckades.",
+    setUp: "Röstläge: välj modeller och starta",
   },
   chatMenu: {
     more: "Chattalternativ",
@@ -947,6 +951,10 @@ export const sv = {
     ggufVoicesOnly: "Röstläget talar bara med GGUF-ljudrösterna.",
     ggufDetectorsOnly: "Röstläget känner bara av tal med GGUF-ljuddetektorerna.",
     cantListenWith: "Röstläget kan inte lyssna med den modellen än.",
+    chatModelLoading: "byter chattmodell…",
+    chatModelWaiting: "väntar på en chattmodell",
+    downloadingTranscriber: "laddar ner transkriberaren…",
+    thinkNeedsChatThinking: "Slå först på Thinking i modellmenyn",
   },
   welcome: {
     goodToSeeYou: "Kul att se dig",
@@ -2138,6 +2146,79 @@ export const sv = {
         clearConfirmTitle: "Rensa loggen över röstbeslut?",
         clearConfirmDescription: "{rows} rader och deras transkript tas bort från den här datorn. Det går inte att ångra.",
         clearFailed: "Det gick inte att rensa röstloggen.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Börja tala tidigare",
+            description: "Skickar första delen av ett svar till rösten innan meningen är klar, med en kort paus efter. Svaren börjar ungefär 0,3 s tidigare.",
+          },
+          speechNormalize: {
+            label: "Läs tal som ord",
+            description: "Skriver om priser, tider, datum, bråk, telefonnummer och romerska siffror till ord innan rösten läser dem. Bara engelska.",
+          },
+          heardCut: {
+            label: "Behåll bara det du hörde",
+            description: "När du avbryter ett svar minns chattmodellen bara den del som hann sägas innan du avbröt.",
+          },
+        },
+        turnEnding: {
+          label: "Slutet på din tur",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "En liten modell för turslut lyssnar efter när du är klar, så svaret börjar ungefär 0,3 s tidigare än med den fasta pausen. När den inte hör att du är klar löper pausen ut och dina ord kontrolleras: av beslutsmodellen om en är vald, annars efter om de verkar avbrutna.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + beslutsmodell",
+              description: "Ber också beslutsmodellen att hålla med när Smart Turn hör att du är klar. I tester höll det fler färdiga turer utan att fånga fler avbrott. Utan beslutsmodell fungerar det som Smart Turn.",
+            },
+            wait: {
+              label: "Fast paus",
+              description: "En sekunds tystnad avslutar din tur.",
+            },
+          },
+          judgeBar: {
+            label: "Så säker måste beslutsmodellen vara",
+            description: "Högre håller fler turer öppna så att du kan fortsätta, så färre svar börjar mitt i en tanke, men färdiga turer väntar längre.",
+          },
+        },
+        decisionModel: {
+          label: "Beslutsmodell (valfri)",
+          description: "Läser vad du sa efter en paus som Smart Turn inte räknade som slutet, och håller din tur om du var mitt i en tanke. Väljer också utfyllnadsfraser och vad som ska hända när du pratar i svaret.",
+          noneDescription: "Röstläget fungerar utan. Efter en paus hålls din tur bara när transkriptionen verkar avbruten; en beslutsmodell fångar fler pauser mitt i en mening.",
+          none: "Ingen",
+          loading: "Läser in beslutsmodellen",
+        },
+        replyInstruction: {
+          label: "Hur svar sägs",
+          options: {
+            conversation: {
+              label: "Samtal",
+              description: "Korta talade svar, svaret först. Räknar med felhörda ord, säger en mening före ett verktygsanrop och visar kod eller länkar bara när du ber om det.",
+            },
+            spoken: {
+              label: "Talat svar",
+              description: "En till tre korta meningar i enkelt tal, med en kort version först när svaret är långt. Kod eller listor bara när du ber om det.",
+            },
+            voice: {
+              label: "Enkla meningar",
+              description: "Enkla meningar utan markdown, listor, kod eller länkar, en fråga i taget, med tal och datum sagda som en människa skulle säga dem.",
+            },
+            custom: {
+              label: "Egen",
+              description: "Din egen instruktion, skickad efter chattens instruktioner medan röstläget körs.",
+            },
+            none: {
+              label: "Ingen",
+              description: "Chattmodellen får ingen instruktion om tal; svaren blir lika långa som i en skriven chatt.",
+            },
+          },
+          custom: {
+            label: "Din instruktion",
+            placeholder: "Till exempel: Svara med en kort mening, som en vän skulle göra.",
+            hint: "{n} av {max} tecken",
+            empty: "Inget skickas förrän du skriver en instruktion.",
+          },
+        },
       },
     },
     general: {

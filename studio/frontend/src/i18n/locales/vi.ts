@@ -868,7 +868,7 @@ export const vi = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Đã ngắt — đọc đến “…{words}”",
+      spokenUpTo: "Đã ngắt sau “…{words}”",
       none: "Đã ngắt trước khi được đọc",
       useFull: "Dùng toàn bộ câu trả lời",
       restoreFailed: "Không thể khôi phục câu trả lời đầy đủ.",
@@ -888,6 +888,9 @@ export const vi = {
       speaking: "Đang nói",
       paused: "Đã tạm dừng",
       muted: "Đã tắt tiếng",
+      switching: "Đang chuyển mô hình trò chuyện…",
+      downloading: "Đang tải mô hình chép lời…",
+      needsDownload: "Tải mô hình chép lời xuống để nói",
     },
     help: {
       aria: "Chế độ giọng nói đang phát hiện gì",
@@ -924,6 +927,7 @@ export const vi = {
     holdToFloat: "{action} · giữ để thả nổi",
     synthFailed: "Không thể tổng hợp giọng nói",
     transcriptionFailed: "Chép lời thất bại.",
+    setUp: "Chế độ giọng nói: chọn mô hình và bắt đầu",
   },
   chatMenu: {
     more: "Tùy chọn cuộc trò chuyện",
@@ -1001,6 +1005,10 @@ export const vi = {
     chatModelCannotSpeak: "Mô hình chat không thể trả lời bằng giọng nói. Hãy tải LFM3-Audio-2B hoặc LFM3-Omni-2B, hoặc chọn giọng khác.",
     speakerFemale: "Nữ",
     speakerMale: "Nam",
+    chatModelLoading: "đang chuyển mô hình trò chuyện…",
+    chatModelWaiting: "đang chờ mô hình trò chuyện",
+    downloadingTranscriber: "đang tải mô hình chép lời…",
+    thinkNeedsChatThinking: "Hãy bật Thinking trong menu mô hình trước",
   },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
@@ -2222,6 +2230,79 @@ export const vi = {
         clearConfirmDescription:
           "{rows} hàng cùng bản chép lời của chúng sẽ bị xóa khỏi máy tính này. Không thể hoàn tác thao tác này.",
         clearFailed: "Không thể xóa nhật ký giọng nói.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Bắt đầu nói sớm hơn",
+            description: "Gửi phần đầu của câu trả lời tới giọng nói trước khi câu kết thúc, kèm một khoảng nghỉ ngắn sau đó. Câu trả lời bắt đầu sớm hơn khoảng 0,3 giây.",
+          },
+          speechNormalize: {
+            label: "Đọc số thành chữ",
+            description: "Viết lại giá, giờ, ngày, phân số, số điện thoại và số La Mã thành chữ trước khi giọng nói đọc. Chỉ tiếng Anh.",
+          },
+          heardCut: {
+            label: "Chỉ giữ phần bạn đã nghe",
+            description: "Khi bạn ngắt một câu trả lời, mô hình trò chuyện chỉ nhớ phần đã được nói trước khi bạn chen vào.",
+          },
+        },
+        turnEnding: {
+          label: "Kết thúc lượt của bạn",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Một mô hình nhỏ nhận biết kết thúc lượt nghe khi bạn nói xong, nên câu trả lời bắt đầu sớm hơn khoảng 0,3 giây so với khoảng dừng cố định. Khi nó không nhận ra bạn đã xong, khoảng dừng hết và lời bạn được kiểm tra: bằng mô hình quyết định nếu có, nếu không thì theo việc chúng có vẻ bị ngắt hay không.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + mô hình quyết định",
+              description: "Cũng hỏi mô hình quyết định có đồng ý không khi Smart Turn nhận ra bạn đã nói xong. Trong thử nghiệm, cách này giữ lại nhiều lượt đã xong hơn mà không bắt thêm được chỗ bị ngắt. Không có mô hình quyết định thì hoạt động như Smart Turn.",
+            },
+            wait: {
+              label: "Khoảng dừng cố định",
+              description: "Một giây im lặng sẽ kết thúc lượt của bạn.",
+            },
+          },
+          judgeBar: {
+            label: "Mức chắc chắn cần có của mô hình quyết định",
+            description: "Giá trị cao hơn giữ nhiều lượt hơn để bạn nói tiếp, nên ít câu trả lời bắt đầu khi bạn đang dở ý hơn, nhưng các lượt đã xong phải chờ lâu hơn.",
+          },
+        },
+        decisionModel: {
+          label: "Mô hình quyết định (tùy chọn)",
+          description: "Đọc những gì bạn nói sau một khoảng dừng mà Smart Turn không coi là kết thúc, và giữ lượt của bạn nếu bạn đang nói dở một ý. Mô hình này cũng chọn câu đệm và cách xử lý khi bạn nói chen vào câu trả lời.",
+          noneDescription: "Chế độ giọng nói vẫn hoạt động khi không có mô hình này. Sau một khoảng dừng, lượt của bạn chỉ được giữ khi bản ghi trông như bị ngắt; mô hình quyết định bắt được nhiều khoảng dừng giữa câu hơn.",
+          none: "Không có",
+          loading: "Đang tải mô hình quyết định",
+        },
+        replyInstruction: {
+          label: "Cách nói câu trả lời",
+          options: {
+            conversation: {
+              label: "Trò chuyện",
+              description: "Câu trả lời nói ngắn gọn, đưa đáp án trước. Tính đến từ bị nghe nhầm, nói một câu trước khi gọi công cụ và chỉ hiển thị mã hoặc liên kết khi bạn yêu cầu.",
+            },
+            spoken: {
+              label: "Trả lời bằng lời",
+              description: "Một đến ba câu ngắn bằng lời nói đơn giản, có bản tóm tắt trước khi câu trả lời dài. Chỉ có mã hoặc danh sách khi bạn yêu cầu.",
+            },
+            voice: {
+              label: "Câu đơn giản",
+              description: "Câu đơn giản không có markdown, danh sách, mã hay liên kết, mỗi lần một câu hỏi, số và ngày được nói như cách một người nói.",
+            },
+            custom: {
+              label: "Tùy chỉnh",
+              description: "Chỉ dẫn riêng của bạn, gửi sau chỉ dẫn của cuộc trò chuyện khi chế độ giọng nói đang chạy.",
+            },
+            none: {
+              label: "Không có",
+              description: "Mô hình trò chuyện không nhận chỉ dẫn nào về việc nói; câu trả lời dài như khi trò chuyện bằng chữ.",
+            },
+          },
+          custom: {
+            label: "Chỉ dẫn của bạn",
+            placeholder: "Ví dụ: Trả lời bằng một câu ngắn, như một người bạn.",
+            hint: "{n}/{max} ký tự",
+            empty: "Không gửi gì cho đến khi bạn viết một chỉ dẫn.",
+          },
+        },
       },
     },
     general: {

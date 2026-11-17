@@ -769,7 +769,7 @@ export const ko = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "중단됨 — “…{words}”까지 읽음",
+      spokenUpTo: "“…{words}” 다음에 중단됨",
       none: "읽기 전에 중단됨",
       useFull: "전체 답변 사용",
       restoreFailed: "전체 답변을 복원하지 못했습니다.",
@@ -789,6 +789,9 @@ export const ko = {
       speaking: "말하는 중",
       paused: "일시 정지됨",
       muted: "음소거",
+      switching: "채팅 모델 전환 중…",
+      downloading: "받아쓰기 모델 다운로드 중…",
+      needsDownload: "말하려면 받아쓰기 모델을 다운로드하세요",
     },
     help: {
       aria: "음성 모드가 감지하는 것",
@@ -821,6 +824,7 @@ export const ko = {
     holdToFloat: "{action} · 길게 눌러 분리",
     synthFailed: "음성을 합성하지 못했습니다",
     transcriptionFailed: "음성 인식에 실패했습니다.",
+    setUp: "음성 모드: 모델을 고르고 시작",
   },
   // The chat header's "…" menu.
   chatMenu: {
@@ -894,6 +898,10 @@ export const ko = {
     ggufVoicesOnly: "음성 모드는 GGUF 오디오 음성으로만 말합니다.",
     ggufDetectorsOnly: "음성 모드는 GGUF 오디오 감지기로만 음성을 감지합니다.",
     cantListenWith: "음성 모드는 아직 그 모델로 들을 수 없습니다.",
+    chatModelLoading: "채팅 모델 전환 중…",
+    chatModelWaiting: "채팅 모델 기다리는 중",
+    downloadingTranscriber: "받아쓰기 모델 다운로드 중…",
+    thinkNeedsChatThinking: "먼저 모델 메뉴에서 Thinking을 켜세요",
   },
   welcome: {
     goodToSeeYou: "반가워요",
@@ -2030,6 +2038,79 @@ export const ko = {
         clearConfirmTitle: "음성 판단 로그를 지울까요?",
         clearConfirmDescription: "{rows}개 행과 해당 전사본이 이 컴퓨터에서 삭제됩니다. 되돌릴 수 없습니다.",
         clearFailed: "음성 로그를 지울 수 없습니다.",
+        switches: {
+          clauseFirstChunk: {
+            label: "더 빨리 말하기 시작",
+            description: "문장이 끝나기 전에 답변의 첫 구절을 음성으로 보내고 그 뒤에 짧게 쉽니다. 답변이 약 0.3초 빨리 시작됩니다.",
+          },
+          speechNormalize: {
+            label: "숫자를 말로 읽기",
+            description: "음성이 읽기 전에 가격, 시간, 날짜, 분수, 전화번호, 로마 숫자를 말로 바꿉니다. 영어만 지원합니다.",
+          },
+          heardCut: {
+            label: "들은 부분만 남기기",
+            description: "답변을 끊으면 채팅 모델은 끊기 전에 말한 부분만 기억합니다.",
+          },
+        },
+        turnEnding: {
+          label: "내 차례의 끝",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "작은 차례 종료 모델이 말을 마치는 순간을 들어, 고정 멈춤보다 약 0.3초 빨리 답변이 시작됩니다. 마친 것을 듣지 못하면 멈춤 시간이 지난 뒤 말을 확인합니다. 판단 모델이 있으면 그것으로, 없으면 끊긴 것처럼 보이는지로 판단합니다.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + 판단 모델",
+              description: "Smart Turn이 말을 마친 것을 들었을 때 판단 모델에도 동의를 구합니다. 테스트에서는 끊김을 더 잡지 못한 채 끝난 차례를 더 많이 붙잡았습니다. 판단 모델이 없으면 Smart Turn과 같습니다.",
+            },
+            wait: {
+              label: "고정 멈춤",
+              description: "1초 동안 조용하면 차례가 끝납니다.",
+            },
+          },
+          judgeBar: {
+            label: "판단 모델에 요구하는 확신도",
+            description: "높을수록 계속 말할 수 있게 더 많은 차례를 붙잡아 두어 생각 중간에 시작하는 답변은 줄지만, 끝난 차례는 더 오래 기다립니다.",
+          },
+        },
+        decisionModel: {
+          label: "판단 모델(선택)",
+          description: "Smart Turn이 끝으로 보지 않은 멈춤 뒤에 한 말을 읽고, 생각 중간이었다면 차례를 붙잡아 둡니다. 채움 말과 답변 위로 말할 때 무엇을 할지도 정합니다.",
+          noneDescription: "음성 모드는 없어도 작동합니다. 멈춘 뒤에는 받아쓰기가 끊긴 것처럼 보일 때만 차례를 붙잡아 둡니다. 판단 모델은 문장 중간의 멈춤을 더 많이 잡아냅니다.",
+          none: "없음",
+          loading: "판단 모델 불러오는 중",
+        },
+        replyInstruction: {
+          label: "답변을 말하는 방식",
+          options: {
+            conversation: {
+              label: "대화",
+              description: "짧은 구어 답변, 답부터. 잘못 들린 단어를 감안하고, 도구를 쓰기 전에 한 문장으로 알리며, 코드나 링크는 요청할 때만 보여 줍니다.",
+            },
+            spoken: {
+              label: "구어 답변",
+              description: "쉬운 말로 된 짧은 문장 1~3개, 답이 길면 짧은 요약부터. 코드나 목록은 요청할 때만.",
+            },
+            voice: {
+              label: "쉬운 문장",
+              description: "Markdown, 목록, 코드, 링크 없는 쉬운 문장으로, 질문은 한 번에 하나, 숫자와 날짜는 사람이 말하듯 읽습니다.",
+            },
+            custom: {
+              label: "직접 입력",
+              description: "음성 모드가 켜져 있는 동안 채팅 지시 뒤에 보내는 나만의 지시입니다.",
+            },
+            none: {
+              label: "없음",
+              description: "채팅 모델에 말하기 관련 지시를 보내지 않습니다. 답변 길이는 입력 채팅과 같습니다.",
+            },
+          },
+          custom: {
+            label: "내 지시",
+            placeholder: "예: 친구처럼 짧은 한 문장으로 답해 줘.",
+            hint: "{n}/{max}자",
+            empty: "지시를 작성할 때까지 아무것도 보내지 않습니다.",
+          },
+        },
       },
     },
     general: {

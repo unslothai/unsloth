@@ -862,7 +862,7 @@ export const tr = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Kesildi — “…{words}” kısmına kadar okundu",
+      spokenUpTo: "“…{words}” kısmından sonra kesildi",
       none: "Okunmadan önce kesildi",
       useFull: "Yanıtın tamamını kullan",
       restoreFailed: "Yanıtın tamamı geri yüklenemedi.",
@@ -882,6 +882,9 @@ export const tr = {
       speaking: "Konuşuyor",
       paused: "Duraklatıldı",
       muted: "Sessize alındı",
+      switching: "Sohbet modeli değiştiriliyor…",
+      downloading: "Döküm modeli indiriliyor…",
+      needsDownload: "Konuşmak için döküm modelini indirin",
     },
     help: {
       aria: "Ses modu neleri algılıyor",
@@ -918,6 +921,7 @@ export const tr = {
     holdToFloat: "{action} · kayan pencere için basılı tutun",
     synthFailed: "Konuşma sentezlenemedi",
     transcriptionFailed: "Metne dönüştürme başarısız oldu.",
+    setUp: "Sesli mod: modelleri seçin ve başlayın",
   },
   chatMenu: {
     more: "Sohbet seçenekleri",
@@ -994,6 +998,10 @@ export const tr = {
     chatModelCannotSpeak: "Sohbet modeli sesli yanıt veremiyor. LFM3-Audio-2B veya LFM3-Omni-2B yükleyin ya da başka bir ses seçin.",
     speakerFemale: "Kadın",
     speakerMale: "Erkek",
+    chatModelLoading: "sohbet modeli değiştiriliyor…",
+    chatModelWaiting: "bir sohbet modeli bekleniyor",
+    downloadingTranscriber: "döküm modeli indiriliyor…",
+    thinkNeedsChatThinking: "Önce model menüsünden Thinking'i açın",
   },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
@@ -2211,6 +2219,79 @@ export const tr = {
         clearConfirmDescription:
           "{rows} satır ve metin dökümleri bu bilgisayardan silinir. Bu işlem geri alınamaz.",
         clearFailed: "Ses günlüğü temizlenemedi.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Daha erken konuşmaya başla",
+            description: "Yanıtın ilk bölümünü cümle bitmeden sese gönderir ve ardından kısa bir duraklama ekler. Yanıtlar yaklaşık 0,3 sn daha erken başlar.",
+          },
+          speechNormalize: {
+            label: "Sayıları kelime olarak oku",
+            description: "Ses okumadan önce fiyatları, saatleri, tarihleri, kesirleri, telefon numaralarını ve Roma rakamlarını kelimelere çevirir. Yalnızca İngilizce.",
+          },
+          heardCut: {
+            label: "Yalnızca duyduğunuzu tut",
+            description: "Bir yanıtı böldüğünüzde sohbet modeli yalnızca siz araya girmeden önce söylenen kısmı hatırlar.",
+          },
+        },
+        turnEnding: {
+          label: "Sıranızın sonu",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Küçük bir sıra sonu modeli bitirdiğinizi dinler; böylece yanıt sabit duraklamaya göre yaklaşık 0,3 sn daha erken başlar. Bitirdiğinizi duymazsa duraklama dolar ve sözleriniz kontrol edilir: ayarlıysa karar modeliyle, değilse yarım kalmış görünüp görünmedikleriyle.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + karar modeli",
+              description: "Smart Turn bitirdiğinizi duyduğunda karar modelinden de onay ister. Testlerde bu, daha fazla kesintiyi yakalamadan daha fazla biten sırayı tuttu. Karar modeli yoksa Smart Turn gibi çalışır.",
+            },
+            wait: {
+              label: "Sabit duraklama",
+              description: "Bir saniyelik sessizlik sıranızı bitirir.",
+            },
+          },
+          judgeBar: {
+            label: "Karar modeli bu kadar emin olmalı",
+            description: "Daha yüksek değer, devam edebilmeniz için daha fazla sırayı tutar; böylece daha az yanıt düşüncenizin ortasında başlar, ancak biten sıralar daha uzun bekler.",
+          },
+        },
+        decisionModel: {
+          label: "Karar modeli (isteğe bağlı)",
+          description: "Smart Turn'ün bitiş saymadığı bir duraklamadan sonra söylediklerinizi okur ve bir düşüncenin ortasındaysanız sıranızı tutar. Ayrıca dolgu cümlelerini ve yanıtın üzerine konuştuğunuzda ne yapılacağını seçer.",
+          noneDescription: "Sesli mod onsuz da çalışır. Bir duraklamadan sonra sıranız yalnızca döküm yarım kalmış görünüyorsa tutulur; karar modeli cümle ortasındaki daha fazla duraklamayı yakalar.",
+          none: "Yok",
+          loading: "Karar modeli yükleniyor",
+        },
+        replyInstruction: {
+          label: "Yanıtlar nasıl söylenir",
+          options: {
+            conversation: {
+              label: "Sohbet",
+              description: "Kısa sesli yanıtlar, önce cevap. Yanlış duyulan kelimeleri hesaba katar, bir araç çağrısından önce tek cümle söyler ve kodu ya da bağlantıları yalnızca siz isterseniz gösterir.",
+            },
+            spoken: {
+              label: "Sesli yanıt",
+              description: "Sade konuşmayla bir ila üç kısa cümle; yanıt uzunsa önce kısa bir özet. Kod veya listeler yalnızca siz isterseniz.",
+            },
+            voice: {
+              label: "Sade cümleler",
+              description: "Markdown, liste, kod ve bağlantı olmadan sade cümleler, bir seferde tek soru, sayılar ve tarihler bir insanın söyleyeceği gibi.",
+            },
+            custom: {
+              label: "Özel",
+              description: "Sesli mod çalışırken sohbetin talimatlarından sonra gönderilen kendi talimatınız.",
+            },
+            none: {
+              label: "Yok",
+              description: "Sohbet modeli konuşma hakkında talimat almaz; yanıtlar yazılı sohbetteki kadar uzun olur.",
+            },
+          },
+          custom: {
+            label: "Talimatınız",
+            placeholder: "Örneğin: Bir arkadaşın yapacağı gibi tek kısa cümleyle yanıt ver.",
+            hint: "{n} / {max} karakter",
+            empty: "Bir talimat yazana kadar hiçbir şey gönderilmez.",
+          },
+        },
       },
     },
     general: {

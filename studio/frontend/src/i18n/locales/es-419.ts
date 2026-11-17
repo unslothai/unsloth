@@ -873,8 +873,8 @@ export const es419 = {
   },
   voice: {
     interrupted: {
-      spokenUpTo: "Interrumpido: se dijo hasta «…{words}»",
-      none: "Interrumpido antes de decirse",
+      spokenUpTo: "Interrumpido tras «…{words}»",
+      none: "Interrumpido antes de decir nada",
       useFull: "Usar la respuesta completa",
       restoreFailed: "No se pudo restaurar la respuesta completa.",
     },
@@ -893,6 +893,9 @@ export const es419 = {
       speaking: "Hablando",
       paused: "En pausa",
       muted: "Silenciado",
+      switching: "Cambiando el modelo de chat…",
+      downloading: "Descargando el transcriptor…",
+      needsDownload: "Descarga el transcriptor para hablar",
     },
     help: {
       aria: "Qué está detectando el modo de voz",
@@ -929,6 +932,7 @@ export const es419 = {
     holdToFloat: "{action} · mantén presionado para hacerlo flotante",
     synthFailed: "No se pudo sintetizar la voz",
     transcriptionFailed: "La transcripción falló.",
+    setUp: "Modo de voz: elige los modelos y empieza",
   },
   chatMenu: {
     more: "Opciones del chat",
@@ -1004,6 +1008,10 @@ export const es419 = {
     chatModelCannotSpeak: "El modelo de chat no puede responder con voz. Carga LFM3-Audio-2B o LFM3-Omni-2B, o elige otra voz.",
     speakerFemale: "Femenina",
     speakerMale: "Masculina",
+    chatModelLoading: "cambiando el modelo de chat…",
+    chatModelWaiting: "esperando un modelo de chat",
+    downloadingTranscriber: "descargando el transcriptor…",
+    thinkNeedsChatThinking: "Activa primero Thinking en el menú del modelo",
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
@@ -2234,6 +2242,79 @@ export const es419 = {
         clearConfirmDescription:
           "Se eliminarán de esta computadora {rows} filas y sus transcripciones. Esta acción no se puede deshacer.",
         clearFailed: "No se pudo borrar el registro de voz.",
+        switches: {
+          clauseFirstChunk: {
+            label: "Empezar a hablar antes",
+            description: "Envía a la voz la primera parte de una respuesta antes de que termine la frase, con una pausa breve después. Las respuestas empiezan unos 0,3 s antes.",
+          },
+          speechNormalize: {
+            label: "Leer los números como palabras",
+            description: "Convierte en palabras precios, horas, fechas, fracciones, números de teléfono y números romanos antes de que la voz los lea. Solo en inglés.",
+          },
+          heardCut: {
+            label: "Conservar solo lo que oíste",
+            description: "Cuando interrumpes una respuesta, el modelo de chat solo recuerda la parte que se dijo antes de que hablaras.",
+          },
+        },
+        turnEnding: {
+          label: "Fin de tu turno",
+          options: {
+            smartTurn: {
+              label: "Smart Turn",
+              description: "Un pequeño modelo de fin de turno escucha cuándo terminas, así la respuesta empieza unos 0,3 s antes que con la pausa fija. Si no te oye terminar, la pausa se agota y se revisan tus palabras: con el modelo de decisión si hay uno, si no, según si parecen cortadas.",
+            },
+            smartTurnJudge: {
+              label: "Smart Turn + modelo de decisión",
+              description: "También pide al modelo de decisión que confirme cuando Smart Turn te oye terminar. En pruebas retuvo más turnos terminados sin detectar más cortes. Sin modelo de decisión funciona como Smart Turn.",
+            },
+            wait: {
+              label: "Pausa fija",
+              description: "Un segundo de silencio termina tu turno.",
+            },
+          },
+          judgeBar: {
+            label: "Seguridad exigida al modelo de decisión",
+            description: "Un valor más alto mantiene más turnos abiertos para que sigas, así que menos respuestas empiezan a mitad de una idea, pero los turnos terminados esperan más.",
+          },
+        },
+        decisionModel: {
+          label: "Modelo de decisión (opcional)",
+          description: "Lee lo que dijiste tras una pausa que Smart Turn no consideró el final y mantiene tu turno si estabas a mitad de una idea. También elige las frases de relleno y qué hacer cuando hablas encima de la respuesta.",
+          noneDescription: "El modo de voz funciona sin él. Tras una pausa, tu turno solo se mantiene si la transcripción parece cortada; un modelo de decisión detecta más pausas a mitad de frase.",
+          none: "Ninguno",
+          loading: "Cargando el modelo de decisión",
+        },
+        replyInstruction: {
+          label: "Cómo se dicen las respuestas",
+          options: {
+            conversation: {
+              label: "Conversación",
+              description: "Respuestas habladas cortas, primero la respuesta. Cuenta con palabras mal oídas, dice una frase antes de usar una herramienta y muestra código o enlaces solo si los pides.",
+            },
+            spoken: {
+              label: "Respuesta hablada",
+              description: "De una a tres frases cortas en lenguaje sencillo, con una versión breve primero cuando la respuesta es larga. Código o listas solo si los pides.",
+            },
+            voice: {
+              label: "Frases sencillas",
+              description: "Frases sencillas sin markdown, listas, código ni enlaces, una pregunta a la vez, con números y fechas dichos como lo haría una persona.",
+            },
+            custom: {
+              label: "Personalizada",
+              description: "Tu propia instrucción, enviada después de las instrucciones del chat mientras el modo de voz está activo.",
+            },
+            none: {
+              label: "Ninguna",
+              description: "El modelo de chat no recibe ninguna instrucción sobre hablar; las respuestas son tan largas como en un chat escrito.",
+            },
+          },
+          custom: {
+            label: "Tu instrucción",
+            placeholder: "Por ejemplo: Responde en una frase corta, como lo haría un amigo.",
+            hint: "{n} de {max} caracteres",
+            empty: "No se envía nada hasta que escribas una instrucción.",
+          },
+        },
       },
     },
     general: {
