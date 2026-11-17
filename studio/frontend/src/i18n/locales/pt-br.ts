@@ -767,6 +767,14 @@ export const ptBR = {
     usingTool: "Usando ferramenta: {tool}",
     more: "+{n} mais",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Interrompido — falado até “…{words}”",
+      none: "Interrompido antes de ser falado",
+      useFull: "Usar a resposta completa",
+      restoreFailed: "Não foi possível restaurar a resposta completa.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Aguardando você enviar",
     states: {

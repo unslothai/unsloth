@@ -864,6 +864,14 @@ export const id = {
     usingTool: "Menggunakan alat: {tool}",
     more: "+{n} lagi",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Terpotong — diucapkan sampai “…{words}”",
+      none: "Terpotong sebelum diucapkan",
+      useFull: "Gunakan balasan lengkap",
+      restoreFailed: "Tidak dapat memulihkan balasan lengkap.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Menunggu Anda mengirim",
     states: {

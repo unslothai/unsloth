@@ -767,6 +767,14 @@ export const ar = {
     usingTool: "يستخدم الأداة: {tool}",
     more: "+{n} أخرى",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "انقطع — نُطق حتى «…{words}»",
+      none: "انقطع قبل نطقه",
+      useFull: "استخدم الرد الكامل",
+      restoreFailed: "تعذّرت استعادة الرد الكامل.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "بانتظار إرسالك",
     states: {

@@ -871,6 +871,14 @@ export const uk = {
     usingTool: "Використовує інструмент: {tool}",
     more: "+{n} ще",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Перервано — вимовлено до «…{words}»",
+      none: "Перервано до того, як було вимовлено",
+      useFull: "Використати повну відповідь",
+      restoreFailed: "Не вдалося відновити повну відповідь.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Очікує, поки ви надішлете",
     states: {

@@ -866,6 +866,14 @@ export const vi = {
     usingTool: "Đang dùng công cụ: {tool}",
     more: "+{n} mục khác",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Đã ngắt — đọc đến “…{words}”",
+      none: "Đã ngắt trước khi được đọc",
+      useFull: "Dùng toàn bộ câu trả lời",
+      restoreFailed: "Không thể khôi phục câu trả lời đầy đủ.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Đang chờ bạn gửi",
     states: {

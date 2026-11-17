@@ -875,6 +875,14 @@ export const nl = {
     usingTool: "Tool gebruiken: {tool}",
     more: "+{n} meer",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Onderbroken — uitgesproken tot ‘…{words}’",
+      none: "Onderbroken voordat het werd uitgesproken",
+      useFull: "Volledig antwoord gebruiken",
+      restoreFailed: "Het volledige antwoord kon niet worden hersteld.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Wacht tot je verstuurt",
     states: {

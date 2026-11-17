@@ -3836,6 +3836,14 @@ export const it = {
     usingTool: "Uso dello strumento: {tool}",
     more: "+{n} altri",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Interrotto — pronunciato fino a «…{words}»",
+      none: "Interrotto prima di essere pronunciato",
+      useFull: "Usa la risposta completa",
+      restoreFailed: "Impossibile ripristinare la risposta completa.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "In attesa del tuo invio",
     states: {

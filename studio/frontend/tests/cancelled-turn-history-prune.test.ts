@@ -52,7 +52,7 @@ test("a turn that finished on reasoning alone keeps its prompt", () => {
 test("an abandoned turn is pruned with the user prompt that triggered it", () => {
   assert.match(
     adapter,
-    /if \(last && last\.role === "user"\) surviving\.pop\(\)/,
+    /if \(last && last\.role === "user"\) \{\s*surviving\.pop\(\);/,
   );
 });
 

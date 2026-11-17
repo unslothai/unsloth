@@ -821,6 +821,14 @@ export const sv = {
     usingTool: "Använder verktyg: {tool}",
     more: "+{n} till",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Avbrutet — uppläst till ”…{words}”",
+      none: "Avbrutet innan det lästes upp",
+      useFull: "Använd hela svaret",
+      restoreFailed: "Det gick inte att återställa hela svaret.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Väntar på att du skickar",
     states: {

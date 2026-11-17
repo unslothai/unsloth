@@ -862,6 +862,14 @@ export const fa = {
     usingTool: "در حال استفاده از ابزار: {tool}",
     more: "+{n} مورد دیگر",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "قطع شد — تا «…{words}» گفته شد",
+      none: "پیش از گفته شدن قطع شد",
+      useFull: "استفاده از پاسخ کامل",
+      restoreFailed: "بازگرداندن پاسخ کامل ممکن نشد.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "در انتظار ارسال شما",
     states: {

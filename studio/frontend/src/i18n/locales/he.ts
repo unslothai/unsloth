@@ -806,6 +806,14 @@ export const he = {
     usingTool: "משתמש בכלי: {tool}",
     more: "+{n} נוספים",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "נקטע — נאמר עד „…{words}”",
+      none: "נקטע לפני שנאמר",
+      useFull: "השתמש בתשובה המלאה",
+      restoreFailed: "לא ניתן לשחזר את התשובה המלאה.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "ממתין שתשלחו",
     states: {

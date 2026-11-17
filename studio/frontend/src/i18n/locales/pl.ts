@@ -872,6 +872,14 @@ export const pl = {
     usingTool: "Używa narzędzia: {tool}",
     more: "+{n} więcej",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Przerwano — wypowiedziano do „…{words}”",
+      none: "Przerwano przed wypowiedzeniem",
+      useFull: "Użyj pełnej odpowiedzi",
+      restoreFailed: "Nie udało się przywrócić pełnej odpowiedzi.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Czeka, aż wyślesz",
     states: {

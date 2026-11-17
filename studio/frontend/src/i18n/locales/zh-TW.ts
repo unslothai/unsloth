@@ -815,6 +815,14 @@ export const zhTW = {
     usingTool: "正在使用工具：{tool}",
     more: "還有 {n} 個",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "已打斷 — 唸到「…{words}」",
+      none: "尚未朗讀就被打斷",
+      useFull: "使用完整回覆",
+      restoreFailed: "無法還原完整回覆。",
+    },
+  },
   voiceOrb: {
     waitingForSend: "等待你傳送",
     states: {

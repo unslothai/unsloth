@@ -767,6 +767,14 @@ export const ru = {
     usingTool: "Использует инструмент: {tool}",
     more: "ещё {n}",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Прервано — произнесено до «…{words}»",
+      none: "Прервано до того, как было произнесено",
+      useFull: "Использовать полный ответ",
+      restoreFailed: "Не удалось восстановить полный ответ.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Ждёт вашей отправки",
     states: {

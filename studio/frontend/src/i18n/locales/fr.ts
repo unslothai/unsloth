@@ -767,6 +767,14 @@ export const fr = {
     usingTool: "Utilise l’outil : {tool}",
     more: "+{n} de plus",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Interrompu — prononcé jusqu’à « …{words} »",
+      none: "Interrompu avant d’être prononcé",
+      useFull: "Utiliser la réponse complète",
+      restoreFailed: "Impossible de rétablir la réponse complète.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "En attente de votre envoi",
     states: {

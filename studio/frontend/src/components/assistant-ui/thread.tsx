@@ -94,7 +94,7 @@ import {
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import { heardTail, isRewindCommand, savedHeardCut, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -185,6 +185,7 @@ import {
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
 import {
+  clearPendingHeardCut,
   loadVoiceMode,
   noteTypedSend,
   requestVoiceToggle,
@@ -530,7 +531,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import {
+  extractTaggedText,
+  setThreadMessageVoiceHeard,
+  updateThreadMessage,
+} from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -8341,6 +8346,53 @@ const DiffusionCanvas: FC = () => {
 
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
+/** Under a voice reply the user cut in on: what the model was told they heard, and a way to undo it. */
+const VoiceHeardNote: FC = () => {
+  const t = useT();
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const offset = useAuiState(({ message }) => savedHeardCut(message.metadata)?.offset ?? null);
+  const content = useAuiState(({ message }) => message.content);
+  const [saving, setSaving] = useState(false);
+  if (offset === null) return null;
+  const words = heardTail(content as readonly { type: string; text?: string }[], { offset });
+  const restoreFullReply = async () => {
+    setSaving(true);
+    clearPendingHeardCut(messageId);
+    try {
+      await setThreadMessageVoiceHeard({
+        thread: { export: () => aui.thread().export(), import: (data) => aui.thread().import(data) },
+        messageId,
+        remoteId:
+          aui.threadListItem().getState().remoteId ||
+          useChatRuntimeStore.getState().activeThreadId ||
+          undefined,
+        isIncognito: useChatRuntimeStore.getState().incognito,
+        heard: null,
+      });
+    } catch (error) {
+      // Rolled back, so the note stays: the cut still applies.
+      console.error("Could not restore the full voice reply.", error);
+      toast.error(t("voice.interrupted.restoreFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <p className="aui-voice-heard-note mt-1 text-sm text-foreground">
+      {words ? t("voice.interrupted.spokenUpTo", { words }) : t("voice.interrupted.none")}{" "}
+      <button
+        type="button"
+        className="font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60"
+        onClick={() => void restoreFullReply()}
+        disabled={saving}
+      >
+        {t("voice.interrupted.useFull")}
+      </button>
+    </p>
+  );
+};
+
 /** Edits use <THINK> and <TOOL> tags in a plain textarea while preserving tool-call metadata. */
 const AssistantMessage: FC = () => {
   const aui = useAui();
@@ -8490,6 +8542,8 @@ const AssistantMessage: FC = () => {
           </>
         )}
       </div>
+
+      <VoiceHeardNote />
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}

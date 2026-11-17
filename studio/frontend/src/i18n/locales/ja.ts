@@ -768,6 +768,14 @@ export const ja = {
     usingTool: "ツールを使用中: {tool}",
     more: "他 {n} 件",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "中断 — 「…{words}」まで読み上げ",
+      none: "読み上げ前に中断",
+      useFull: "全文の返答を使う",
+      restoreFailed: "完全な返答を復元できませんでした。",
+    },
+  },
   voiceOrb: {
     waitingForSend: "送信を待っています",
     states: {

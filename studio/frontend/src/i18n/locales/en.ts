@@ -772,6 +772,14 @@ export const en = {
     usingTool: "Using tool: {tool}",
     more: "+{n} more",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Interrupted — spoken up to “…{words}”",
+      none: "Interrupted before it was spoken",
+      useFull: "Use the full reply",
+      restoreFailed: "Couldn't restore the full reply.",
+    },
+  },
   // The voice orb's caption while a held voice turn waits for the user's own send.
   voiceOrb: {
     waitingForSend: "Waiting for you to send",

@@ -860,6 +860,14 @@ export const tr = {
     usingTool: "Araç kullanılıyor: {tool}",
     more: "+{n} tane daha",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Kesildi — “…{words}” kısmına kadar okundu",
+      none: "Okunmadan önce kesildi",
+      useFull: "Yanıtın tamamını kullan",
+      restoreFailed: "Yanıtın tamamı geri yüklenemedi.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Göndermeniz bekleniyor",
     states: {

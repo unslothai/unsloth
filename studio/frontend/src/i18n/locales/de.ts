@@ -767,6 +767,14 @@ export const de = {
     usingTool: "Verwendet Werkzeug: {tool}",
     more: "+{n} weitere",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Unterbrochen – gesprochen bis „…{words}“",
+      none: "Unterbrochen, bevor es gesprochen wurde",
+      useFull: "Vollständige Antwort verwenden",
+      restoreFailed: "Die vollständige Antwort konnte nicht wiederhergestellt werden.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Wartet, bis Sie senden",
     states: {

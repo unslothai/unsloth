@@ -819,6 +819,14 @@ export const th = {
     usingTool: "กำลังใช้เครื่องมือ: {tool}",
     more: "+อีก {n} รายการ",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "ถูกขัดจังหวะ — พูดถึง “…{words}”",
+      none: "ถูกขัดจังหวะก่อนได้พูด",
+      useFull: "ใช้คำตอบทั้งหมด",
+      restoreFailed: "ไม่สามารถกู้คืนคำตอบฉบับเต็มได้",
+    },
+  },
   voiceOrb: {
     waitingForSend: "รอให้คุณส่ง",
     states: {

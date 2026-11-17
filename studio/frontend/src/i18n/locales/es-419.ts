@@ -871,6 +871,14 @@ export const es419 = {
     usingTool: "Usando herramienta: {tool}",
     more: "+{n} más",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Interrumpido: se dijo hasta «…{words}»",
+      none: "Interrumpido antes de decirse",
+      useFull: "Usar la respuesta completa",
+      restoreFailed: "No se pudo restaurar la respuesta completa.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Esperando a que envíes",
     states: {

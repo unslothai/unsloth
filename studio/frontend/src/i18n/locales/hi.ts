@@ -767,6 +767,14 @@ export const hi = {
     usingTool: "टूल का उपयोग: {tool}",
     more: "+{n} और",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "बीच में रोका गया — “…{words}” तक बोला गया",
+      none: "बोले जाने से पहले रोका गया",
+      useFull: "पूरा जवाब इस्तेमाल करें",
+      restoreFailed: "पूरा जवाब वापस नहीं लाया जा सका।",
+    },
+  },
   voiceOrb: {
     waitingForSend: "आपके भेजने की प्रतीक्षा",
     states: {

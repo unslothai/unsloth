@@ -866,6 +866,14 @@ export const cs = {
     usingTool: "Používá nástroj: {tool}",
     more: "+{n} další",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "Přerušeno — vysloveno po „…{words}“",
+      none: "Přerušeno dřív, než zaznělo",
+      useFull: "Použít celou odpověď",
+      restoreFailed: "Celou odpověď se nepodařilo obnovit.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "Čeká se, až odešlete",
     states: {

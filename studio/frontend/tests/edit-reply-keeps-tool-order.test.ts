@@ -46,6 +46,12 @@ function harness() {
       import.meta.url,
     ),
     {
+      "../voice/voice-loop-bridge": {
+        clearPendingHeardCut: () => {},
+        noteWrittenHeardCut: () => {},
+        pendingHeardCut: () => null,
+        setPendingHeardCut: () => {},
+      },
       "../api/chat-api": {
         saveChatMessage: async (record: Record<string, unknown>) => {
           saved.push(record);

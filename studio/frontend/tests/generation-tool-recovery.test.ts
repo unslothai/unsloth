@@ -33,6 +33,7 @@ const { orderBySelectedBranch } = await import(
 const { contextUsageMarkers } = await import(
   "../src/features/chat/utils/saved-context-usage.ts"
 );
+const { keepVoiceHeard } = await import("../src/features/chat/voice/heard-cut.ts");
 const { readGenerationProgress } = await import(
   "../src/features/chat/lib/generation-progress.ts"
 );
@@ -496,6 +497,8 @@ async function recoverRun(
   options: {
     cursor?: number;
     viewContent?: unknown[];
+    /** The open thread's copy of the reply's custom metadata, as it stands when the follow starts. */
+    viewCustom?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
     stallBefore?: number;
     /** The real follower drops repeated seqs; a repeat would reach the publish a lone event skips. */
@@ -505,7 +508,13 @@ async function recoverRun(
   class ChatGenerationStalledError extends Error {}
   let shown = {
     messages: [
-      { message: { id: "msg", content: options.viewContent ?? content } },
+      {
+        message: {
+          id: "msg",
+          content: options.viewContent ?? content,
+          ...(options.viewCustom ? { metadata: { custom: options.viewCustom } } : {}),
+        },
+      },
     ],
   };
   const imports: unknown[][] = [];
@@ -553,6 +562,8 @@ async function recoverRun(
     createGenerationToolRecovery,
     contextUsageMarkers,
     readGenerationProgress,
+    keepVoiceHeard,
+    writtenHeardCustom: () => undefined,
     orderBySelectedBranch,
     providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
@@ -627,6 +638,7 @@ async function recoverRun(
   return {
     content: final.content,
     shown: shown.messages[0].message.content,
+    shownCustom: (shown.messages[0].message as { metadata?: { custom?: Record<string, unknown> } }).metadata?.custom,
     imports,
     replayFrom,
     snapshots,
@@ -1618,4 +1630,16 @@ test("recovery keeps a model note on the finished card it targets", () => {
   assert.equal(carried.length, 1);
   assert.equal(part.result, "ok");
   assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
+});
+
+test("a heard cut set on the open reply survives the follow that finishes it", async () => {
+  // Voice mode cut the reply where the user barged in; the follow began from a copy without the cut.
+  const cut = { offset: 148, at: 1 };
+  const { snapshots, shownCustom } = await recoverRun(
+    [],
+    [{ choices: [{ delta: { content: "Once upon a time. A long story." } }] }],
+    { viewCustom: { voiceHeard: cut } },
+  );
+  for (const snapshot of snapshots) assert.deepEqual(snapshot.metadata.voiceHeard, cut);
+  assert.deepEqual(shownCustom?.voiceHeard, cut);
 });

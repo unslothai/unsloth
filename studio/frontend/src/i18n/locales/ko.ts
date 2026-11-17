@@ -767,6 +767,14 @@ export const ko = {
     usingTool: "도구 사용 중: {tool}",
     more: "+{n}개 더",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "중단됨 — “…{words}”까지 읽음",
+      none: "읽기 전에 중단됨",
+      useFull: "전체 답변 사용",
+      restoreFailed: "전체 답변을 복원하지 못했습니다.",
+    },
+  },
   voiceOrb: {
     waitingForSend: "전송을 기다리는 중",
     states: {

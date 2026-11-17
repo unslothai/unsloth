@@ -767,6 +767,14 @@ export const zhCN = {
     usingTool: "正在使用工具：{tool}",
     more: "还有 {n} 个",
   },
+  voice: {
+    interrupted: {
+      spokenUpTo: "已打断 — 读到“…{words}”",
+      none: "尚未朗读就被打断",
+      useFull: "使用完整回复",
+      restoreFailed: "无法恢复完整回复。",
+    },
+  },
   voiceOrb: {
     waitingForSend: "等待你发送",
     states: {

@@ -28,6 +28,7 @@ import {
   type ImageDisclosure,
   modelVisibleMessage,
   toolOnlyImages,
+  withHeardCut,
 } from "./mcp-image";
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
@@ -1875,8 +1876,13 @@ function pruneOutboundHistory(
   includeReasoningContent: boolean,
 ): RunMessage[] {
   const history = [...messages];
+  // Cut first: a reply interrupted before any of it was heard is an abandoned turn.
   const abandoned = history.map((message) =>
-    isAbandonedAssistantTurn(message, includeReasoningContent),
+    isAbandonedAssistantTurn(withHeardCut(message), includeReasoningContent),
+  );
+  // Abandoned only by the cut: the user barged in before hearing any of it, so the question still stands.
+  const heardNothing = history.map(
+    (message, index) => abandoned[index] && !isAbandonedAssistantTurn(message, includeReasoningContent),
   );
   // A prompt is only stranded when something survives after it, so a trailing abandoned turn keeps its prompt.
   let lastSurviving = -1;
@@ -1894,13 +1900,39 @@ function pruneOutboundHistory(
     if (refused || abandoned[index]) {
       if (refused || index < lastSurviving) {
         const last = surviving.at(-1);
-        if (last && last.role === "user") surviving.pop();
+        if (last && last.role === "user") {
+          surviving.pop();
+          // A reply the user heard none of leaves its question standing: it joins the next prompt, which keeps
+          // user and assistant turns alternating. A refusal's prompt, or a Stop's, is dropped as before.
+          const next = refused || !heardNothing[index] ? -1 : nextSurvivor(history, abandoned, index);
+          if (next >= 0 && history[next].role === "user") history[next] = joinedPrompts(last, history[next]);
+        }
       }
       continue;
     }
     surviving.push(message);
   }
   return surviving;
+}
+
+function nextSurvivor(history: readonly RunMessage[], abandoned: readonly boolean[], after: number): number {
+  for (let index = after + 1; index < history.length; index += 1) {
+    if (!abandoned[index] && !isAnthropicRefusalMessage(history[index])) return index;
+  }
+  return -1;
+}
+
+/** Two prompts as one user turn: the earlier one's parts and attachments first. */
+function joinedPrompts(first: RunMessage, next: RunMessage): RunMessage {
+  const attachments = [
+    ...(("attachments" in first && first.attachments) || []),
+    ...(("attachments" in next && next.attachments) || []),
+  ];
+  return {
+    ...next,
+    content: [...first.content, ...next.content],
+    ...(attachments.length > 0 ? { attachments } : {}),
+  } as RunMessage;
 }
 
 function extractImageBase64(input: string): string | undefined {
