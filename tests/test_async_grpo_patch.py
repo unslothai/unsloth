@@ -42,6 +42,8 @@ NAMES = (
     "_dataset_has_images",
     "_start_async_grpo_vllm_server",
     "_check_async_grpo_fast_inference",
+    "_async_grpo_replays_sampling_masks",
+    "_pin_async_grpo_server_url",
     "_text_prepended_position_ids",
     "_packing_honored",
     "_align_vlm_text_config",
@@ -634,6 +636,144 @@ def test_a_reused_config_keeps_its_own_server_url(fast_inference_trl):
         mod.AsyncGRPOTrainer.lora_sync = True
     assert (config.vllm_server_base_url, config.max_inflight_tasks) == ("http://localhost:8000", -1)
     assert _FakeServer.started[1].stopped == 1
+
+
+class _Trl118Config:
+    # TRL 1.18 renamed max_inflight_tasks to max_concurrent_rollouts, a plain count (default 512).
+    def __init__(
+        self,
+        output_dir,
+        vllm_server_base_url = "http://localhost:8000",
+        max_concurrent_rollouts = 512,
+        top_k = 0,
+        top_p = 1.0,
+    ):
+        self.output_dir = output_dir
+        self.vllm_server_base_url = vllm_server_base_url
+        self.max_concurrent_rollouts = max_concurrent_rollouts
+        self.top_k = top_k
+        self.top_p = top_p
+
+
+def test_trl_118_config_without_max_inflight_tasks(fast_inference_trl):
+    mod, _ = fast_inference_trl
+    config = _Trl118Config("o")
+    trainer = mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())),
+        None,
+        args = config,
+        train_dataset = [{"prompt": "hi"}],
+    )
+    assert trainer.url_seen == _FakeServer.started[0].url
+    # TRL sizes this cap from the server's /metrics itself; the old field is not invented.
+    assert config.max_concurrent_rollouts == 512 and not hasattr(config, "max_inflight_tasks")
+    assert config.vllm_server_base_url == "http://localhost:8000"
+    mod.AsyncGRPOTrainer.lora_sync = False
+    try:
+        config = _Trl118Config("o")
+        with pytest.raises(ValueError, match = "plain LoRA adapter"):
+            mod.AsyncGRPOTrainer(_fast_inference_peft(CausalLM(FastBackbone())), None, args = config)
+    finally:
+        mod.AsyncGRPOTrainer.lora_sync = True
+    assert not hasattr(config, "max_inflight_tasks")
+    assert _FakeServer.started[1].stopped == 1
+
+
+def test_trl_118_rollout_worker_keeps_the_in_process_server_url(fake_trl):
+    # TRL 1.18 hands AsyncRolloutWorker the config object and pickles it at train start; by then Unsloth has put the
+    # user's URL back on it, so the rollout process would dial localhost:8000 instead of the in-process server.
+    mod, _ = fake_trl
+    mod.select_adapter_sync = lambda *a, **k: True
+    mod.AsyncGRPOConfig = _Trl118Config
+
+    class AsyncRolloutWorker:
+        def __init__(
+            self,
+            config,
+            loop_cls = None,
+            **kwargs,
+        ):
+            self.config = config
+
+    class AsyncGRPOTrainer:
+        def __init__(
+            self,
+            model,
+            reward_funcs = None,
+            args = None,
+            train_dataset = None,
+            **kw,
+        ):
+            self._lora_sync = True
+            self.rollout_worker = (
+                mod.AsyncRolloutWorker(args, loop_cls = None)
+                if kw.get("keyword") is None
+                else mod.AsyncRolloutWorker(config = args)
+            )
+
+    mod.AsyncRolloutWorker = AsyncRolloutWorker
+    mod.AsyncGRPOTrainer = AsyncGRPOTrainer
+    _FakeServer.started = []
+    ns = _load(fast_backbone_types = (FastBackbone,))
+    ns["_start_async_grpo_vllm_server"] = _FakeServer
+    ns["patch_trl_async_grpo"]()
+    for keyword in (None, True):
+        config = _Trl118Config("o")
+        trainer = mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())),
+            None,
+            args = config,
+            train_dataset = [{"prompt": "hi"}],
+            keyword = keyword,
+        )
+        server = _FakeServer.started[-1]
+        assert config.vllm_server_base_url == "http://localhost:8000"
+        assert trainer.rollout_worker.config.vllm_server_base_url == server.url
+        assert trainer.rollout_worker.config.max_concurrent_rollouts == 512
+    # An external server's config goes through untouched.
+    external = _Trl118Config("o", vllm_server_base_url = "http://gpu-box:8000")
+    trainer = mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = external
+    )
+    assert trainer.rollout_worker.config is external
+
+
+def test_top_k_and_top_p_refused_when_trl_replays_sampling_masks(fast_inference_trl):
+    mod, _ = fast_inference_trl
+
+    class AsyncRolloutLoop:
+        async def _check_sampling_replay(self):
+            pass
+
+    mod.AsyncRolloutLoop = AsyncRolloutLoop
+    for kwargs in ({"top_k": 20}, {"top_k": 50, "top_p": 0.9}):
+        with pytest.raises(ValueError, match = "return-sampling-mask"):
+            mod.AsyncGRPOTrainer(
+                _fast_inference_peft(CausalLM(FastBackbone())),
+                None,
+                args = _Trl118Config("o", **kwargs),
+            )
+    assert _FakeServer.started == []
+    mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o")
+    )
+    # TRL 1.17 keeps the check on the worker's private loop class.
+    del mod.AsyncRolloutLoop
+
+    class AsyncRolloutWorker:
+        _loop_cls = AsyncRolloutLoop
+
+    mod.AsyncRolloutWorker = AsyncRolloutWorker
+    with pytest.raises(ValueError, match = "return-sampling-mask"):
+        mod.AsyncGRPOTrainer(
+            _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o", top_k = 20)
+        )
+    # TRL <= 1.16 normalizes over the full vocabulary and never asks for the candidate set.
+    del mod.AsyncRolloutWorker
+    mod.AsyncGRPOTrainer(
+        _fast_inference_peft(CausalLM(FastBackbone())), None, args = _Trl118Config("o", top_k = 20)
+    )
+    assert len(_FakeServer.started) == 2
 
 
 def test_servable_check_reads_only_a_lone_default_adapter():

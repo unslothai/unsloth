@@ -36,10 +36,24 @@ class _Lora:
 class _FakeEngine:
     def __init__(self):
         lora_config = types.SimpleNamespace(max_lora_rank = 64)
-        model_config = types.SimpleNamespace(max_model_len = 2048, dtype = "torch.bfloat16")
+        # Unsloth's engines allow the sampled token's logprob only.
+        model_config = types.SimpleNamespace(
+            max_model_len = 2048, dtype = "torch.bfloat16", max_logprobs = 0
+        )
         scheduler_config = types.SimpleNamespace(max_num_seqs = 64)
+        cache_config = types.SimpleNamespace(kv_cache_size_tokens = 16384)
         self.vllm_config = types.SimpleNamespace(
-            model_config = model_config, lora_config = lora_config, scheduler_config = scheduler_config
+            model_config = model_config,
+            lora_config = lora_config,
+            scheduler_config = scheduler_config,
+            cache_config = cache_config,
+        )
+        # The in-process V1 layout the server reads its load from: LLMEngine -> InprocClient -> EngineCore.
+        scheduler = types.SimpleNamespace(
+            kv_cache_manager = types.SimpleNamespace(usage = 0.25), running = [1, 2], waiting = [3]
+        )
+        self.engine_core = types.SimpleNamespace(
+            engine_core = types.SimpleNamespace(scheduler = scheduler)
         )
         self.requests = {}
         self.added_loras = []
@@ -56,6 +70,12 @@ class _FakeEngine:
         params,
         lora_request = None,
     ):
+        # vLLM's own check (SamplingParams._validate_logprobs), made when a request is added.
+        top = getattr(params, "kwargs", {}).get("logprobs") or 0
+        if top > self.vllm_config.model_config.max_logprobs:
+            raise ValueError(
+                f"Requested sample logprobs of {top}, which is greater than max allowed"
+            )
         self.requests[request_id] = (prompt["prompt_token_ids"], params, lora_request)
 
     def step(self):
@@ -64,12 +84,17 @@ class _FakeEngine:
         for request_id, (prompt, params, lora) in list(self.requests.items()):
             del self.requests[request_id]
             tokens = [prompt[-1] + 1, prompt[-1] + 2]
+            top = int(getattr(params, "kwargs", {}).get("logprobs") or 0)
+            logprobs = []
+            for i, t in enumerate(tokens):
+                # Like vLLM: the sampled token first, then the top `logprobs` by rank (one may be -inf).
+                entry = {t: types.SimpleNamespace(logprob = -0.5 * (i + 1))}
+                for rank in range(top):
+                    value = float("-inf") if rank == top - 1 else -1.0 - rank
+                    entry[900 + rank] = types.SimpleNamespace(logprob = value)
+                logprobs.append(entry)
             completion = types.SimpleNamespace(
-                token_ids = tokens,
-                logprobs = [
-                    {t: types.SimpleNamespace(logprob = -0.5 * (i + 1))} for i, t in enumerate(tokens)
-                ],
-                finish_reason = "stop",
+                token_ids = tokens, logprobs = logprobs, finish_reason = "stop"
             )
             output = types.SimpleNamespace(
                 request_id = request_id, finished = True, outputs = [completion]
@@ -446,7 +471,13 @@ def test_trl_vllm_client_reads_this_server():
     pytest.importorskip("requests")
     try:
         from accelerate.state import PartialState
-        from trl.experimental.async_grpo.vllm_client import VLLMClient
+        try:
+            # TRL >= 1.18
+            from trl.generation.async_vllm_client import AsyncVLLMClient as VLLMClient
+            timeout = {"timeout": 10}
+        except ImportError:
+            from trl.experimental.async_grpo.vllm_client import VLLMClient
+            timeout = {"server_timeout": 10}
     except Exception:
         pytest.skip("TRL AsyncGRPO not installed")
     if not hasattr(VLLMClient, "load_lora_adapter"):
@@ -456,7 +487,7 @@ def test_trl_vllm_client_reads_this_server():
     llm = _FakeLLM()
     server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
     try:
-        client = VLLMClient(server.url, server_timeout = 10)
+        client = VLLMClient(server.url, **timeout)
         client.wait_for_server_ready(poll_interval_s = 0.1)
         assert client.get_max_model_len() == 2048
         assert client.get_dtype() == "torch.bfloat16"
@@ -468,3 +499,128 @@ def test_trl_vllm_client_reads_this_server():
         assert llm.llm_engine.added_loras and llm.llm_engine.removed_loras
     finally:
         server.stop()
+
+
+def _by_token_id(top_logprobs):
+    try:
+        from trl.trainer.async_grpo_trainer import _by_token_id as parse
+    except Exception:
+        try:
+            from trl.experimental.async_grpo.async_rollout_worker import _by_token_id as parse
+        except Exception:
+            # TRL's own parser (1.17+), for installs without it.
+            def parse(top_logprobs):
+                return [
+                    {int(token.removeprefix("token_id:")): value for token, value in top.items()}
+                    for top in top_logprobs
+                ]
+
+    return parse(top_logprobs)
+
+
+def test_top_logprobs_are_keyed_by_token_id_as_trl_reads_them(served):
+    server, llm = served
+    choice = _complete(server, [5], logprobs = 3)["choices"][0]
+    # The engine's max_logprobs=0 cap was raised to what was asked, as `vllm serve --max-logprobs` would allow.
+    assert llm.llm_engine.vllm_config.model_config.max_logprobs == 3
+    logprobs = choice["logprobs"]
+    parsed = _by_token_id(logprobs["top_logprobs"])
+    assert len(parsed) == len(choice["token_ids"]) == 2
+    for token_id, sampled, top in zip(choice["token_ids"], logprobs["token_logprobs"], parsed):
+        # The sampled token plus the top 3, -inf clamped to plain JSON like `vllm serve`.
+        assert top[token_id] == sampled
+        assert top[900] == -1.0 and top[901] == -2.0 and top[902] == -9999.0
+        assert len(top) == 4
+    # logprobs=0 (TRL <= 1.16) still gets the sampled token, as vLLM returns it.
+    zero = _complete(server, [5], logprobs = 0)["choices"][0]["logprobs"]["top_logprobs"]
+    assert [list(_by_token_id([t])[0]) for t in zero] == [[6], [7]]
+
+
+def test_metrics_report_kv_capacity_and_load_in_vllm_format(served):
+    import re
+
+    server, llm = served
+    with urllib.request.urlopen(server.url + "/metrics", timeout = 10) as response:
+        assert response.status == 200
+        text = response.read().decode()
+    # The exact patterns TRL's KV-cap control loop matches.
+    kv = re.findall(r'^vllm:cache_config_info\{.*kv_cache_size_tokens="(\d+)"', text, re.M)
+    assert kv == ["16384"]
+    assert re.findall(r"^vllm:kv_cache_usage_perc\{.*\} (\S+)", text, re.M) == ["0.25"]
+    assert re.findall(r"^vllm:num_requests_running\{.*\} (\S+)", text, re.M) == ["2.0"]
+    assert re.findall(r"^vllm:num_requests_waiting\{.*\} (\S+)", text, re.M) == ["1.0"]
+    # Without a reachable scheduler it still answers, from its own request counts.
+    del llm.llm_engine.engine_core
+    with urllib.request.urlopen(server.url + "/metrics", timeout = 10) as response:
+        text = response.read().decode()
+    assert "kv_cache_usage_perc" not in text and "num_requests_waiting" in text
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(server.url.rsplit("/", 1)[0] + "/wrong/metrics", timeout = 10)
+    assert error.value.code == 404
+
+
+def _trl_rollout_loop():
+    pytest.importorskip("aiohttp")
+    try:
+        from trl.trainer import async_grpo_trainer as trl_module
+    except Exception:
+        pytest.skip("TRL >= 1.18 AsyncGRPO not importable")
+    loop_class = getattr(trl_module, "AsyncRolloutLoop", None)
+    if loop_class is None or not hasattr(loop_class, "_init_kv_cap"):
+        pytest.skip("TRL AsyncGRPO without the KV-cap rollout loop")
+    return loop_class
+
+
+def _rollout_loop(loop_class, server, **config):
+    import collections
+
+    loop = loop_class.__new__(loop_class)
+    loop.config = types.SimpleNamespace(
+        max_completion_length = 8,
+        temperature = 1.0,
+        top_p = 1.0,
+        top_k = 0,
+        min_p = None,
+        vllm_server_timeout = 30.0,
+        max_concurrent_rollouts = 512,
+        **config,
+    )
+    loop.vllm_server_url = server.url
+    loop.model_name = "org/tiny"
+    loop.lora_name = None
+    loop.sampling_replay = False
+    loop.num_sampler_logprobs = 8
+    loop._model_version_value = types.SimpleNamespace(value = 0)
+    loop._counters = collections.defaultdict(int)
+    loop._kv_cap = 512
+    return loop
+
+
+def test_trl_rollout_loop_samples_and_sizes_its_kv_cap_from_this_server(served):
+    import asyncio
+
+    loop_class = _trl_rollout_loop()
+    import aiohttp
+    from accelerate.state import PartialState
+
+    PartialState()  # TRL logs through accelerate's logger
+
+    server, _ = served
+    loop = _rollout_loop(loop_class, server)
+
+    async def run():
+        async with aiohttp.ClientSession() as session:
+            loop.session = session
+            await loop._init_kv_cap()
+            return await loop.generate_one_turn([5])
+
+    turn = asyncio.run(run())
+    # TRL's own client code: score centering (the TRL 1.17+ default) reads top_logprobs.
+    assert turn.output_ids == [6, 7]
+    assert [entry[t] for entry, t in zip(turn.output_sampler_logprobs, turn.output_ids)] == [
+        -0.5,
+        -1.0,
+    ]
+    assert turn.output_log_probs == [-0.5, -1.0]
+    # 16384 KV tokens / max_model_len 2048, not the 512 fallback with a warning.
+    assert loop._kv_cap == 8

@@ -32,10 +32,31 @@ _SERVABLE_LORAS = 1 << 20
 _BATCH_WAIT_S = 0.0005
 
 
+def _logprob(value):
+    # vLLM's OpenAI server clamps -inf the same way, so the payload stays plain JSON.
+    return max(float(getattr(value, "logprob", value)), -9999.0)
+
+
 def _sampled_logprob(logprobs, position, token_id):
     entry = logprobs[position]
-    value = entry[token_id] if token_id in entry else next(iter(entry.values()))
-    return float(getattr(value, "logprob", value))
+    return _logprob(entry[token_id] if token_id in entry else next(iter(entry.values())))
+
+
+def _top_logprobs(entry, num_top_logprobs):
+    # As `vllm serve` with return_tokens_as_token_ids: the sampled token, then the top `num_top_logprobs`, keyed
+    # "token_id:<id>" (TRL's `_by_token_id` parses that key).
+    return {
+        f"token_id:{token_id}": _logprob(value)
+        for i, (token_id, value) in enumerate(entry.items())
+        if i <= num_top_logprobs
+    }
+
+
+def _scheduler(llm_engine):
+    # In-process V1 engine (Unsloth sets VLLM_ENABLE_V1_MULTIPROCESSING=0): LLMEngine -> InprocClient -> EngineCore.
+    core = getattr(llm_engine, "engine_core", None)
+    core = getattr(core, "engine_core", core)
+    return getattr(core, "scheduler", None)
 
 
 class _Engine:
@@ -242,6 +263,22 @@ class _Engine:
         self._maybe_remove(lora.lora_int_id)
         return True
 
+    def load(self):
+        # What TRL's KV-cap control loop reads off `/metrics`: KV usage plus running and waiting requests.
+        scheduler = _scheduler(self.engine)
+        waiting = len(self.pending)
+        usage = running = None
+        if scheduler is not None:
+            try:
+                usage = float(scheduler.kv_cache_manager.usage)
+                running = len(scheduler.running)
+                waiting += len(scheduler.waiting) + len(getattr(scheduler, "skipped_waiting", ()))
+            except Exception:
+                usage = running = None
+        if running is None:
+            running = len(self.active)
+        return {"usage": usage, "running": running, "waiting": waiting}
+
     def set_paused(self, paused):
         self.paused = paused
         return True
@@ -288,7 +325,20 @@ class _Handler(BaseHTTPRequestHandler):
         path = self._route()
         if path is None:
             return self._send(404, {"error": "not found"})
+        if path == "/metrics":
+            return self._send_text(*self.server.owner.metrics())
         self._send(*self.server.owner.get(path))
+
+    def _send_text(self, code, text):
+        body = text.encode()
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_POST(self):
         owner = self.server.owner
@@ -308,7 +358,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": f"bad JSON: {error}"})
         if path == "/v1/completions":
             try:
-                return self._send(200, owner.finish(owner.start(body).result()))
+                output = owner.start(body).result()
+                return self._send(200, owner.finish(output, body.get("logprobs")))
             except Exception as error:
                 return self._send(400, {"error": f"{type(error).__name__}: {error}"})
         self._send(*owner.post(path, body))
@@ -387,6 +438,36 @@ class UnslothAsyncVLLMServer:
             return 200, {"world_size": 1}
         return 404, {"error": f"unknown path {path}"}
 
+    def kv_cache_size_tokens(self):
+        cache_config = getattr(self.vllm_config, "cache_config", None)
+        tokens = getattr(cache_config, "kv_cache_size_tokens", None)
+        if tokens is None:
+            blocks = getattr(cache_config, "num_gpu_blocks", None)
+            block_size = getattr(cache_config, "block_size", None)
+            if blocks and block_size:
+                tokens = blocks * block_size
+        return tokens
+
+    def metrics(self):
+        # The Prometheus lines TRL >= 1.17 parses to size its rollout concurrency (KV cap); `vllm serve` labels.
+        try:
+            load = self.engine.call(self.engine.load)
+        except Exception as error:
+            return 503, f"# {type(error).__name__}: {error}\n"
+        name = str(self.model_name).replace("\\", "").replace('"', "")
+        labels = f'engine="0",model_name="{name}"'
+        lines = []
+        tokens = self.kv_cache_size_tokens()
+        if tokens:
+            lines.append(
+                f'vllm:cache_config_info{{{labels},kv_cache_size_tokens="{int(tokens)}"}} 1.0'
+            )
+        if load["usage"] is not None:
+            lines.append(f"vllm:kv_cache_usage_perc{{{labels}}} {load['usage']}")
+        lines.append(f"vllm:num_requests_running{{{labels}}} {float(load['running'])}")
+        lines.append(f"vllm:num_requests_waiting{{{labels}}} {float(load['waiting'])}")
+        return 200, "\n".join(lines) + "\n"
+
     def post(self, path, body):
         engine = self.engine
         commands = {
@@ -415,10 +496,20 @@ class UnslothAsyncVLLMServer:
                 params[name] = body[name]
         if body.get("logprobs") is not None:
             params["logprobs"] = int(body["logprobs"])
+            self._allow_logprobs(params["logprobs"])
         return self.engine.submit(prompt, params, body.get("model"))
 
+    def _allow_logprobs(self, num_logprobs):
+        # Unsloth builds its engine with max_logprobs=0 (the sampled token only). TRL >= 1.17 asks for the top
+        # `num_sampler_logprobs` (score centering), which `vllm serve` allows (20 by default). vLLM checks the cap
+        # only when a request is added, so raise it in process.
+        model_config = getattr(self.vllm_config, "model_config", None)
+        limit = getattr(model_config, "max_logprobs", None)
+        if limit is not None and limit != -1 and num_logprobs > limit:
+            model_config.max_logprobs = num_logprobs
+
     @staticmethod
-    def finish(output):
+    def finish(output, num_top_logprobs = None):
         completion = output.outputs[0]
         token_ids = list(completion.token_ids)
         logprobs = None
@@ -428,6 +519,12 @@ class UnslothAsyncVLLMServer:
                     _sampled_logprob(completion.logprobs, i, t) for i, t in enumerate(token_ids)
                 ]
             }
+            if num_top_logprobs is not None:
+                # TRL >= 1.17 reads them for score centering (`num_sampler_logprobs`).
+                logprobs["top_logprobs"] = [
+                    _top_logprobs(completion.logprobs[i], int(num_top_logprobs))
+                    for i in range(len(token_ids))
+                ]
         choice = {
             "index": 0,
             "text": "",

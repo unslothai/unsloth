@@ -5294,12 +5294,47 @@ def _dataset_has_images(dataset):
     return False
 
 
+# URLs of the in-process servers Unsloth started for AsyncGRPOTrainer (each carries a per-run secret).
+_ASYNC_GRPO_SERVER_URLS = set()
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
 
 
-def _check_async_grpo_fast_inference(async_module, model, train_dataset):
+def _pin_async_grpo_server_url(args, kwargs):
+    # TRL >= 1.18 hands the rollout worker the config object itself and pickles it into the rollout process at train
+    # start, after Unsloth's __init__ wrapper put the user's URL back; keep the in-process server's on a copy.
+    # TRL <= 1.17 pass the URL as a string, which needs nothing.
+    positional = len(args) > 0 and hasattr(args[0], "vllm_server_base_url")
+    config = args[0] if positional else kwargs.get("config")
+    if getattr(config, "vllm_server_base_url", None) not in _ASYNC_GRPO_SERVER_URLS:
+        return args, kwargs
+    config = copy.copy(config)
+    if positional:
+        return (config, *args[1:]), kwargs
+    return args, {**kwargs, "config": config}
+
+
+def _async_grpo_replays_sampling_masks(async_module):
+    # TRL >= 1.17 renormalizes top-k / top-p logprobs over the candidate set vLLM returns per token. The check lives
+    # on the rollout loop: public `AsyncRolloutLoop` in 1.18, the worker's private `_loop_cls` in 1.17.
+    worker = getattr(async_module, "AsyncRolloutWorker", None)
+    loops = (
+        getattr(async_module, "AsyncRolloutLoop", None),
+        worker,
+        getattr(worker, "_loop_cls", None),
+    )
+    return any(callable(getattr(loop, "_check_sampling_replay", None)) for loop in loops)
+
+
+def _check_async_grpo_fast_inference(
+    async_module,
+    model,
+    train_dataset,
+    config = None,
+):
     if not hasattr(async_module, "select_adapter_sync"):
         raise ValueError(
             "Unsloth: AsyncGRPOTrainer with fast_inference=True syncs a LoRA adapter, which needs TRL >= 1.14. "
@@ -5316,6 +5351,16 @@ def _check_async_grpo_fast_inference(async_module, model, train_dataset):
         raise ValueError(
             "Unsloth: TRL's AsyncGRPOTrainer sends token ids only to vLLM, so image prompts are not supported. "
             "Use GRPOTrainer for image prompts."
+        )
+    top_k = getattr(config, "top_k", None) or 0
+    top_p = getattr(config, "top_p", None)
+    truncated = top_k > 0 or (top_p is not None and top_p < 1.0)
+    if truncated and _async_grpo_replays_sampling_masks(async_module):
+        raise ValueError(
+            "Unsloth: with top_k / top_p, TRL's AsyncGRPOTrainer needs the candidate set of every sampled token "
+            "(a vLLM server started with --return-sampling-mask --enable-scale-out), which the in-process "
+            "fast_inference engine does not return. Set top_k = 0 and top_p = 1.0, or load with "
+            "fast_inference=False and run a separate vLLM server."
         )
 
 
@@ -5551,12 +5596,16 @@ def patch_trl_async_grpo():
         server = None
         if _async_grpo_uses_fast_inference(model, config, kwargs):
             train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
-            _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            _check_async_grpo_fast_inference(async_module, model, train_dataset, config)
             _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
-            saved_config = (config.vllm_server_base_url, config.max_inflight_tasks)
+            _ASYNC_GRPO_SERVER_URLS.add(server.url)
+            # TRL 1.14-1.17 call the rollout cap `max_inflight_tasks` (-1 = auto); 1.18 renamed it to
+            # `max_concurrent_rollouts`, a plain count that TRL sizes from the server's /metrics itself.
+            inflight = getattr(config, "max_inflight_tasks", None)
+            saved_config = (config.vllm_server_base_url, inflight)
             config.vllm_server_base_url = server.url
-            if getattr(config, "max_inflight_tasks", 0) < 0:
+            if inflight is not None and inflight < 0:
                 # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
@@ -5597,7 +5646,8 @@ def patch_trl_async_grpo():
         except BaseException:
             if server is not None:
                 server.stop()
-                config.max_inflight_tasks = saved_config[1]
+                if saved_config[1] is not None:
+                    config.max_inflight_tasks = saved_config[1]
             raise
         if server is not None:
             self._unsloth_vllm_server = server
@@ -5643,6 +5693,7 @@ def patch_trl_async_grpo():
                             f"Unsloth: Could not map the chat template for the rollout process: {e}"
                         )
                     kwargs["processing_class"] = processing_class
+                args, kwargs = _pin_async_grpo_server_url(args, kwargs)
                 super().__init__(*args, **kwargs)
 
         async_module.AsyncRolloutWorker = AsyncRolloutWorker
