@@ -261,10 +261,7 @@ def _lowered(text: str) -> str | None:
     return text.lower() if text.isascii() else None
 
 
-# JSON loggers can serialize a provider message that already contains JSON.
-# Work on string boundaries so escaped punctuation in a password cannot expose
-# its suffix. Leave the original record formatting alone outside edited spans.
-# Consume even an unterminated token in one pass on truncated log records.
+# _KV_RE cannot match across an escaped quote, so decode the JSON strings nested in a message. The optional closing quote takes a truncated token whole.
 _JSON_STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"?')
 _JSON_COLON = re.compile(r"\s*:\s*")
 _JSON_SECRET_KEY = re.compile(_KEY_START + r"(?:" + _SECRET_KEYS + r")$", re.IGNORECASE)
@@ -293,7 +290,7 @@ def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
                         parsed, end = _JSON_DECODER.raw_decode(text, colon.end())
                     except (ValueError, RecursionError):
                         continue
-                    # null, a flag or a count says whether a credential is set, not what it is; same rule as _redact_kv.
+                    # null, a flag or a count shows whether a credential is set, not its value (as in _redact_kv).
                     if parsed is None or isinstance(parsed, bool):
                         continue
                     is_number = isinstance(parsed, (int, float))
