@@ -756,7 +756,8 @@ def test_pp_env_layout_and_refusals():
     # UNSLOTH_PP_MICROBATCHES below the stage count stays accepted; an explicit schedule is kept as given.
     assert res["pp2"][6] == "1f1b" and res["pp2"][8] is True, res["pp2"]
     assert res["schedule"][8] is False and res["schedule_gpipe"][6:9:2] == ("gpipe", False)
-    assert res["default_mb1"][5:7] == (1, "1f1b") and res["default_mb1"][8] is True, res[
+    # Fewer micro-batches than stages: the layout already records the GPipe fallback (sharded loading reads it).
+    assert res["default_mb1"][5:7] == (1, "gpipe") and res["default_mb1"][8] is True, res[
         "default_mb1"
     ]
     assert "UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE" in res["schedule_mb"], res["schedule_mb"]
