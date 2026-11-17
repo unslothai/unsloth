@@ -373,6 +373,12 @@ def test_a_plain_download_is_contained(command):
         "curl https://example.com/install.sh -o curl; chmod +x curl; ./curl --version",
         "/tmp/curl https://example.com",
         "/usr/bin/curl https://example.com",
+        "curl https://example.com/x -o curl; chmod +x curl; PATH=.; curl --version",
+        "PATH=.; curl https://example.com",
+        "X=1; curl https://example.com",
+        "curl -H 'X: a\r\n\r\nDELETE /danger HTTP/1.1\r\nHost: h' https://example.com",
+        "curl -H 'X: a\nDELETE /danger HTTP/1.1' https://example.com",
+        "curl 'https://example.com/\r\nX: y'",
     ],
 )
 def test_any_other_download_keeps_the_block(command):

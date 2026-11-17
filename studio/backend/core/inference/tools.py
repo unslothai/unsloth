@@ -636,6 +636,8 @@ def _is_plain_download(command: str) -> bool:
         _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens))
         or any(
             (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
+            # A CR/LF in a header value smuggles a second request through the opaque CONNECT tunnel.
+            or (not is_operator and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in token))
             # Brace expansion builds words at run time: unset CURL_{HOME,X}.
             or (
                 not is_operator
@@ -655,7 +657,6 @@ def _is_plain_download(command: str) -> bool:
     copied = 0
     seen = 0
     at_start = True
-    assigned = False
     i = 0
     while i < len(tokens):
         token, is_operator, start, end_offset = tokens[i]
@@ -668,7 +669,6 @@ def _is_plain_download(command: str) -> bool:
             if is_redirect and at_start:
                 return False
             at_start = not is_redirect
-            assigned = False
             i += 1
             continue
         if at_start and "$" in token:
@@ -676,23 +676,17 @@ def _is_plain_download(command: str) -> bool:
         # The bare name, found on the sandbox PATH (writable dirs last): ./curl may be a downloaded script.
         name = token
         if not (at_start and name in ("curl", "wget")):
-            is_assignment = _SHELL_ASSIGNMENT_RE.match(token) is not None
             is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
-            # The command word itself, not its arguments: jq's . filter is not bash's . builtin.
-            if (
-                at_start
-                and not is_assignment
-                and not is_prefix
-                and token not in _DOWNLOAD_COMPANIONS
+            # No assignments at all (PATH=. picks another curl, NAME=value curl sets its environment), and only
+            # companion commands: the command word itself, not its arguments (jq's . filter is not bash's .).
+            if at_start and (
+                _SHELL_ASSIGNMENT_RE.match(token) is not None
+                or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
             ):
                 return False
-            assigned = assigned or (at_start and is_assignment)
-            at_start = at_start and (is_prefix or is_assignment)
+            at_start = at_start and is_prefix
             i += 1
             continue
-        # NAME=value curl ... sets the environment curl reads its config and proxy from.
-        if assigned:
-            return False
         end = i + 1
         while end < len(tokens) and not tokens[end][1]:
             end += 1
