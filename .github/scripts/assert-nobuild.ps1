@@ -12,7 +12,7 @@ if (-not (Test-Path -LiteralPath $LogPath)) {
 }
 
 # Pure-Python sdists; keep in sync with clean-machine-assert.sh. Drop diffusers once a release has the wheel pin.
-$allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'triton-kernels', 'diffusers')
+$allow = @('openai-whisper', 'argbind', 'randomname', 'antlr4-python3-runtime', 'claude-agent-sdk', 'triton-kernels', 'diffusers')
 if ($env:UNSLOTH_ALLOW_SDIST) {
     $allow += ($env:UNSLOTH_ALLOW_SDIST -split '\s+' | Where-Object { $_ })
 }

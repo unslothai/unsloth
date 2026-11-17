@@ -5,6 +5,7 @@ import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
+import { connectionModelLabel } from "../claude-agent";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
@@ -181,6 +182,7 @@ import {
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   externalModelTakesVideo,
   isExternalModelId,
   isPromptCacheTtl,
@@ -353,6 +355,7 @@ import {
   getStoredChatThreadReadResult,
   getStoredChatProject,
   isThreadIncognito,
+  noteStoppedByUser,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -6534,6 +6537,7 @@ export function createOpenAIStreamAdapter(
         generationStopRequested = true;
         // Override the provisional reason so a deliberate Stop persists as cancelled.
         incompleteReason = "cancelled";
+        noteStoppedByUser(unstable_assistantMessageId);
         const stopPlan = chatGenerationStopPlan(
           generationDecision,
           generationRunId,
@@ -6603,7 +6607,7 @@ export function createOpenAIStreamAdapter(
           modelId: params.checkpoint,
           modelLabel:
             (isExternalRequest || responseModelId !== params.checkpoint
-              ? responseModelId
+              ? connectionModelLabel(externalProvider?.providerType, responseModelId)
               : selectedModelSummary?.name || responseModelId) ||
             params.checkpoint ||
             "Unknown model",
@@ -6792,18 +6796,24 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              // Claude Code is a hard cap shared with thinking, so only a limit saved on the connection applies.
+              ...(externalProvider?.providerType === CLAUDE_AGENT_PROVIDER_TYPE
+                ? externalProvider.maxOutputTokens
+                  ? { max_tokens: externalProvider.maxOutputTokens }
+                  : {}
+                : {
+                    max_tokens: Math.min(
+                      Math.max(
+                        params.maxTokens,
+                        getExternalMinOutputTokens(externalProvider?.providerType),
+                      ),
+                      getExternalMaxOutputTokens(
+                        externalProvider?.providerType,
+                        externalSelection?.modelId,
+                        externalProvider?.maxOutputTokens,
+                      ),
+                    ),
+                  }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP
@@ -7278,8 +7288,22 @@ export function createOpenAIStreamAdapter(
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
             const stream = withTrailingPublish(sourceStream, canPublish);
+            // Each Claude Agent reply starts a `claude` process, which takes a few seconds.
+            let claudeStarting =
+              externalProvider?.providerType === CLAUDE_AGENT_PROVIDER_TYPE;
+            if (claudeStarting) {
+              runtime.setLiveStarting(liveThreadKey(serverCancel), true);
+            }
 
             for await (const chunk of stream) {
+              if (
+                claudeStarting &&
+                chunk !== TRAILING_PUBLISH &&
+                Array.isArray((chunk as { choices?: unknown }).choices)
+              ) {
+                claudeStarting = false;
+                runtime.setLiveStarting(liveThreadKey(serverCancel), false);
+              }
               if (chunk === TRAILING_PUBLISH) {
                 if (canPublish(streamedChars)) {
                   yield {

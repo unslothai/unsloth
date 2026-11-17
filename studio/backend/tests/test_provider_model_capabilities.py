@@ -485,7 +485,8 @@ def test_the_registry_never_fetches_and_is_never_empty_before_a_catalog_exists(l
     rows = asyncio.run(providers_route.list_registry(current_subject = "tester"))
     listed = {row["provider_type"] for row in rows if row["default_models"]}
     # Perplexity ships a fixed list: its /models names Agent API ids that /chat/completions does not take.
-    assert listed == set(MODELS_DEV_MODEL_LIST_SOURCES) | {"perplexity"}
+    # Claude Agent ships the CLI's own aliases.
+    assert listed == set(MODELS_DEV_MODEL_LIST_SOURCES) | {"perplexity", "claude_agent"}
     assert _FakeCatalogClient.calls == 0
 
 

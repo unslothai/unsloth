@@ -188,6 +188,7 @@ import {
 } from "./artifacts/store";
 import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import { McpServersDialogMount } from "./mcp-composer-button";
+import { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
@@ -355,7 +356,7 @@ import {
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "./components/export-format-items";
-import { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
+import { useModelDisplayNamesVersion } from "./model-display-names";
 import { syncThreadScroll, trackThreadScroll } from "./thread-scroll-flag";
 import { lazyWithoutSuspense, preloadWhenIdle } from "@/lib/lazy-without-suspense";
 
@@ -4589,6 +4590,7 @@ export function ChatPage({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  const claudeAgentNames = useClaudeAgentModelNames((s) => s.names);
   const modelNamesVersion = useModelDisplayNamesVersion();
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
@@ -4602,7 +4604,11 @@ export function ChatPage({
         .flatMap((provider) =>
           provider.models.map((model) => {
             // OpenRouter free router: show `openrouter:<chosen>` minus `/free` and the org prefix.
-            let displayName = providerModelDisplayName(provider.providerType, model);
+            let displayName = connectionModelLabel(
+              provider.providerType,
+              model,
+              claudeAgentNames,
+            );
             if (
               provider.providerType === "openrouter" &&
               model === "openrouter/free" &&
@@ -4624,7 +4630,12 @@ export function ChatPage({
             };
           }),
         ),
-    [externalProvidersForChat, lastOpenRouterChosenModel, modelNamesVersion],
+    [
+      externalProvidersForChat,
+      lastOpenRouterChosenModel,
+      claudeAgentNames,
+      modelNamesVersion,
+    ],
   );
   // An unticked model looks like a withdrawn one; the connection's cached catalog tells them apart.
   const externalConnections = useMemo<ExternalConnectionRef[]>(

@@ -76,6 +76,8 @@ import {
   subscribeModelCatalog,
 } from "./model-catalog";
 
+import { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
+import { ClaudeAgentSetup, ClaudeExperimentalBadge } from "./claude-agent-status";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -100,6 +102,7 @@ import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
   customProviderBaseUrlPlaceholder,
@@ -323,13 +326,17 @@ function endpointHost(baseUrl: string): string {
   }
 }
 
-function formatModelSummary(providerType: string, models: string[]): string {
+function formatModelSummary(
+  providerType: string,
+  models: string[],
+  claudeAgentNames: Record<string, string>,
+): string {
   if (models.length === 0) {
     return "No models enabled";
   }
   const visible = models
     .slice(0, 4)
-    .map((model) => providerModelDisplayName(providerType, model));
+    .map((model) => connectionModelLabel(providerType, model, claudeAgentNames));
   const remaining = models.length - visible.length;
   return `${visible.join(", ")}${remaining > 0 ? ` +${remaining}` : ""}`;
 }
@@ -519,10 +526,14 @@ export function ChatProvidersSettings({
   const usesOAuth = selectedProviderContract?.auth_kind === "chatgpt_oauth";
 
   const isCodexSubscription = usesOAuth;
+  const isClaudeAgent = providerType === CLAUDE_AGENT_PROVIDER_TYPE;
+  const claudeAgentOff =
+    registryByType.get(CLAUDE_AGENT_PROVIDER_TYPE)?.available_but_off === true;
+  const claudeAgentNames = useClaudeAgentModelNames((state) => state.names);
   const modelIdsEditable =
     selectedProviderContract?.model_ids_editable !== false;
   const showApiKeyField =
-    !usesOAuth && !customPresetSkipsApiKeyField(providerType);
+    !usesOAuth && !isClaudeAgent && !customPresetSkipsApiKeyField(providerType);
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
@@ -1267,6 +1278,7 @@ export function ChatProvidersSettings({
     if (
       !keyOptional &&
       selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
+      !isClaudeAgent &&
       !apiKey.trim()
     ) {
       toast.error("API key is required.");
@@ -1851,6 +1863,90 @@ export function ChatProvidersSettings({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openProviderId, providers, providersReady, onOpenProviderConsumed, registry]);
 
+  async function refreshAfterClaudeAgentTurnedOn() {
+    const [registryRows, synced] = await Promise.all([
+      listProviderRegistry(),
+      syncExternalProvidersFromBackend(providersRef.current),
+    ]);
+    setRegistry(registryRows.filter((entry) => !entry.hidden));
+    providersRef.current = synced;
+    onProvidersChange(synced);
+  }
+
+  async function saveClaudeAgent(models: string[], maxTokensDraft: string) {
+    const parseTime = (value: string) =>
+      Number.isFinite(Date.parse(value)) ? Date.parse(value) : Date.now();
+    setMutatingProvider(true);
+    try {
+      const maxOutputTokens = parseMaxOutputTokens(maxTokensDraft);
+      const existing = editingProviderId
+        ? useExternalProvidersStore
+            .getState()
+            .providers.find((provider) => provider.id === editingProviderId)
+        : undefined;
+      if (editingProviderId && !existing) throw new Error("Connection not found.");
+      let saved: ExternalProviderConfig;
+      if (existing) {
+        const updated = await updateProviderConfig(existing.id, {
+          models,
+          availableModels: [],
+          maxOutputTokens,
+        });
+        saved = {
+          ...existing,
+          models,
+          availableModels: [],
+          maxOutputTokens: updated.max_output_tokens ?? undefined,
+          updatedAt: parseTime(updated.updated_at),
+        };
+      } else {
+        const created = await createProviderConfig({
+          providerType: CLAUDE_AGENT_PROVIDER_TYPE,
+          displayName:
+            registryByType.get(CLAUDE_AGENT_PROVIDER_TYPE)?.display_name ??
+            t("claudeAgent.title"),
+          baseUrl: null,
+          models,
+          availableModels: [],
+          maxOutputTokens,
+          apiKey: "",
+        });
+        saved = {
+          id: created.id,
+          providerType: CLAUDE_AGENT_PROVIDER_TYPE,
+          backendProviderType: created.provider_type,
+          name: created.display_name,
+          baseUrl: "",
+          ...connectionApiFields(created.api_type),
+          models,
+          availableModels: [],
+          maxOutputTokens: created.max_output_tokens ?? undefined,
+          extraHeaders: created.extra_headers ?? {},
+          hasApiKey: created.has_api_key,
+          shared: false,
+          authKind: created.auth_kind,
+          authStatus: created.auth_status,
+          createdAt: parseTime(created.created_at),
+          updatedAt: parseTime(created.updated_at),
+        };
+      }
+      const current = useExternalProvidersStore.getState().providers;
+      onProvidersChange(
+        existing
+          ? current.map((provider) => (provider.id === saved.id ? saved : provider))
+          : [...current.filter((provider) => provider.id !== saved.id), saved],
+      );
+      toast.success(existing ? "Connection updated." : "Claude Agent connected.");
+      resetForm();
+      setPage("list");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to save connection: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
     try {
@@ -1898,6 +1994,7 @@ export function ChatProvidersSettings({
     if (
       !savedKey &&
       !provider.hasApiKey &&
+      provider.providerType !== CLAUDE_AGENT_PROVIDER_TYPE &&
       !supportsRemoteModelCatalog(provider.providerType)
     ) {
       if (!interactive) return;
@@ -2038,7 +2135,9 @@ export function ChatProvidersSettings({
                     Connection
                   </Label>
                   <p className="text-xs leading-snug text-muted-foreground">
-                    A provider or your own server.
+                    {isClaudeAgent
+                      ? t("claudeAgent.connectionHint")
+                      : "A provider or your own server."}
                   </p>
                 </div>
                 <Select
@@ -2082,6 +2181,9 @@ export function ChatProvidersSettings({
                                   title={item.name}
                                 />
                                 <span className="truncate">{item.name}</span>
+                                {item.providerType === CLAUDE_AGENT_PROVIDER_TYPE ? (
+                                  <ClaudeExperimentalBadge />
+                                ) : null}
                               </span>
                             </SelectItem>
                           ))}
@@ -2092,6 +2194,7 @@ export function ChatProvidersSettings({
                 </Select>
               </div>
 
+              {isClaudeAgent ? null : (<>
               {isOpenCodeProviderType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
@@ -2322,9 +2425,22 @@ export function ChatProvidersSettings({
                   />
                 </div>
               ) : null}
+              </>)}
             </div>
           </section>
 
+          {isClaudeAgent ? (
+            <ClaudeAgentSetup
+              key={editingProviderId ?? "new"}
+              savedModels={editingProvider ? editingProvider.models : null}
+              savedMaxOutputTokens={maxOutputTokensDraft}
+              off={claudeAgentOff}
+              saving={mutatingProvider}
+              onTurnedOn={refreshAfterClaudeAgentTurnedOn}
+              onSave={(models, maxTokens) => void saveClaudeAgent(models, maxTokens)}
+              onCancel={closeForm}
+            />
+          ) : (<>
           {supportsAutoCompactTokens ? (
             <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
               <div className="flex min-w-0 flex-col gap-0.5">
@@ -2619,7 +2735,6 @@ export function ChatProvidersSettings({
             </CollapsibleContent>
           </Collapsible>
 
-
           {isCodexSubscription ? (
             <OpenAICodexConnect
               providerId={editingProviderId}
@@ -2884,6 +2999,7 @@ export function ChatProvidersSettings({
               the provider. Risky code and terminal calls still ask first.
             </p>
           ) : null}
+          </>)}
         </div>
       </div>
     );
@@ -2992,6 +3108,7 @@ export function ChatProvidersSettings({
                   status={connectionStatus(provider, {
                     enabled: enabled && connectionsEnabled,
                     keyOptional:
+                      provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE ||
                       (isCustomProviderType(provider.providerType) &&
                         !isCloudPresetProviderType(provider.providerType)) ||
                       getExternalProviderApiKey(provider.id).trim().length > 0,
@@ -3000,7 +3117,11 @@ export function ChatProvidersSettings({
                     now,
                   })}
                   source={source}
-                  modelSummary={formatModelSummary(provider.providerType, provider.models)}
+                  modelSummary={formatModelSummary(
+                    provider.providerType,
+                    provider.models,
+                    claudeAgentNames,
+                  )}
                   badges={
                     <>
                       <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">

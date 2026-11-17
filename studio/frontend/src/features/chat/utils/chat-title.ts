@@ -12,6 +12,7 @@ import {
   normalizeCustomReasoningConfig,
 } from "../custom-reasoning";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -243,6 +244,7 @@ export function resolveExternalRouting(
   const keyOptional =
     Boolean(provider.hasApiKey) ||
     provider.authKind === "chatgpt_oauth" ||
+    provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE ||
     isCustomProviderType(provider.providerType) ||
     (provider.providerType === "gemini" &&
       isGeminiCustomOpenAICompatBase(provider.baseUrl));
@@ -503,6 +505,13 @@ export async function buildTitleRequest(
 ): Promise<OpenAIChatCompletionsRequest | null> {
   const routing = resolveExternalRouting(checkpoint);
   if (routing.kind === "unavailable") return null;
+  // Each request starts a whole Claude Code process, so its chats take the local title.
+  if (
+    routing.kind === "external" &&
+    routing.provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE
+  ) {
+    return null;
+  }
 
   // The backend forwards sampling fields verbatim, so gate them as the chat request does.
   const caps =

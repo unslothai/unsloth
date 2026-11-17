@@ -34,6 +34,7 @@ test("only the user's own navigation moves between the list and the form", () =>
     "addProvider:list",
     "saveProviderEdits:list",
     "editProvider:form",
+    "saveClaudeAgent:list",
   ]);
 });
 

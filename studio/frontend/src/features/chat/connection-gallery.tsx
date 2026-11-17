@@ -10,8 +10,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import { ApiProviderLogo } from "./api-provider-logo";
+import { ClaudeExperimentalBadge } from "./claude-agent-status";
 import type { ProviderRegistryEntry } from "./api/providers-api";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -223,10 +225,13 @@ export function ConnectionGallery({
                               }
                             />
                           </span>
-                          <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
                             <span className="truncate text-sm font-medium text-foreground">
                               {item.name}
                             </span>
+                            {item.providerType === CLAUDE_AGENT_PROVIDER_TYPE ? (
+                              <ClaudeExperimentalBadge />
+                            ) : null}
                           </span>
                           <span
                             className={cn(

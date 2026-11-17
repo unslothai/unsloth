@@ -20,7 +20,7 @@ import {
   type InferenceStatusResponse,
   buildExternalModelId,
   getInferenceStatus,
-  isDecisionConnection,
+  servesMediaRequests,
   syncKeepModelsLoaded,
   useExternalProvidersStore,
 } from "@/features/chat";
@@ -1453,7 +1453,7 @@ export function AudioPage({
     () =>
       connectionsEnabled
         ? connections
-            .filter((c) => !isDecisionConnection(c))
+            .filter((c) => servesMediaRequests(c))
             .flatMap((c) =>
               connectionTranscribeModels(
                 c,

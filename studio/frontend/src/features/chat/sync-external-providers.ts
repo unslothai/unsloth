@@ -12,6 +12,7 @@ import {
   type ProviderRegistryEntry,
   fetchCodexSubscriptionModels,
   fetchModelCatalog,
+  getClaudeAgentStatus,
   listProviderConfigs,
   listProviderModelCapabilities,
   listProviderModels,
@@ -19,6 +20,7 @@ import {
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import { rememberClaudeAgentModels } from "./claude-agent";
 import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 import {
   modelsDevCatalogFetchedAt,
@@ -28,6 +30,7 @@ import {
 } from "./model-catalog";
 import { learnModelDisplayNames } from "./model-display-names";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
@@ -225,6 +228,29 @@ export function mergeLocalProviderOptions(
 
 
 
+/** Claude Agent's saved connections stay unlisted while it is off or not offered. */
+export function connectionTypeListed(providerType: string, registryTypes: ReadonlySet<string>): boolean {
+  return providerType !== CLAUDE_AGENT_PROVIDER_TYPE || registryTypes.has(providerType);
+}
+
+export function usableRegistryTypes(rows: readonly ProviderRegistryEntry[]): Set<string> {
+  return new Set(rows.filter((entry) => !entry.available_but_off).map((entry) => entry.provider_type));
+}
+
+let claudeAgentNamesRequested = false;
+
+// Once per page load: the status starts the CLI, so focus re-syncs must not repeat it.
+function learnClaudeAgentModelNames(providers: readonly ExternalProviderConfig[]): void {
+  if (claudeAgentNamesRequested) return;
+  if (!providers.some((provider) => provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE)) return;
+  claudeAgentNamesRequested = true;
+  void getClaudeAgentStatus()
+    .then((status) => rememberClaudeAgentModels(status.models))
+    .catch(() => {
+      claudeAgentNamesRequested = false;
+    });
+}
+
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
   isCurrent?: () => boolean,
@@ -266,10 +292,14 @@ export async function syncExternalProvidersFromBackend(
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
-  const enabledIds = new Set(
-    configRows.filter((config) => config.is_enabled).map((config) => config.id),
+  const registryTypes = usableRegistryTypes(registryRows);
+  const listedRows = configRows.filter((config) =>
+    connectionTypeListed(config.provider_type, registryTypes),
   );
-  const syncedRows = configRows
+  const enabledIds = new Set(
+    listedRows.filter((config) => config.is_enabled).map((config) => config.id),
+  );
+  const syncedRows = listedRows
     .map((config) => {
       const existing = existingById.get(config.id);
       const uiProviderType = resolveUiProviderTypeFromConfig(
@@ -382,6 +412,7 @@ export async function syncExternalProvidersFromBackend(
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
+  learnClaudeAgentModelNames(syncedProviders);
   void tickNewlyListedModels(
     syncedProviders,
     registryRows.find((entry) => entry.provider_type === "openai_codex"),
@@ -444,7 +475,12 @@ export function autoTickLimit(providerId: string, limit?: number): number | unde
 }
 
 // Gateways list new third-party models every week; ticking each would flood the picker.
-const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface", "vercel"]);
+const NO_AUTO_TICK_PROVIDER_TYPES = new Set([
+  "openrouter",
+  "huggingface",
+  "vercel",
+  CLAUDE_AGENT_PROVIDER_TYPE,
+]);
 export const MAX_AUTO_TICKED_MODELS = 3;
 
 export function autoTicksNewlyListedModels(
