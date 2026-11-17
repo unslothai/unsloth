@@ -15,6 +15,7 @@ __all__ = [
     "launch",
     "relaunch",
     "tag_compile_cache",
+    "sync_compile_cache_tag_to_workers",
 ]
 
 # CPU-only torch builds have no CUDA stream binding.
@@ -129,6 +130,29 @@ except Exception:  # older unsloth_zoo: current thread only
         return value
 
 
+# Inductor's compile workers are separate processes that read the tag only from
+# TORCH_COMPILE_CACHE_KEY_TAG at start-up. With the tag set in this process alone, a worker keyed
+# each kernel's autotune result (.best_config) under the empty tag while warm runs look it up here
+# under the full tag, so every warm run re-benchmarked those kernels. _WORKER_TAG changes the FX
+# graph keys once, so cached entries whose save hook still carries the worker key are rebuilt.
+_WORKER_TAG = "unsloth/autotune-tag-v2"
+_TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
+
+
+def sync_compile_cache_tag_to_workers():
+    """Copy torch.compiler.config.cache_key_tag into the environment compile workers inherit."""
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not hasattr(config, "cache_key_tag"):
+        return None
+    try:
+        tag = config.cache_key_tag
+        if tag:
+            os.environ[_TAG_ENV] = tag
+        return tag
+    except Exception:
+        return None
+
+
 def tag_compile_cache(path):
     """Add a hash of a kernel file to torch.compile's cache key. Inductor's FX graph cache keys a
     torch.library.triton_op call without the Triton source behind it, so after an Unsloth upgrade
@@ -139,6 +163,8 @@ def tag_compile_cache(path):
     with open(path, "rb") as file:
         tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
     tags = [t for t in config.cache_key_tag.split(",") if t]
-    if tag not in tags:
+    new_tags = [t for t in (_WORKER_TAG, tag) if t not in tags]
+    if new_tags:
         # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
-        set_torch_config(config, "cache_key_tag", ",".join(tags + [tag]))
+        set_torch_config(config, "cache_key_tag", ",".join(tags + new_tags))
+    sync_compile_cache_tag_to_workers()
