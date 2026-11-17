@@ -10341,7 +10341,28 @@ def _alias_load_settings_met(fastapi_request) -> bool:
         "kv_cache_dtype": intent.cache_type_kv or "f16",
         "speculative_type": _canonicalize_spec_mode(intent.speculative_type) or "auto",
     }
-    wanted = dict(settings)
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+    )
+
+    # Blank alias fields mean the model's saved settings, not whatever another alias loaded.
+    _key, saved = resolve_override_for_load(
+        str(getattr(backend, "model_identifier", None) or intent.model_identifier),
+        getattr(backend, "_openai_advertised_id", None),
+        getattr(backend, "hf_variant", None),
+    )
+    saved = model_override_load_kwargs(saved, is_gguf = True)
+    wanted = {
+        name: saved.get(key)
+        for name, key in (
+            ("max_seq_length", "max_seq_length"),
+            ("kv_cache_dtype", "cache_type_kv"),
+            ("speculative_type", "speculative_type"),
+        )
+        if saved.get(key)
+    }
+    wanted.update(settings)
     if "speculative_type" in wanted:
         wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
     return all(launched[name] == value for name, value in wanted.items())

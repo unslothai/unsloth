@@ -327,10 +327,10 @@ def _loaded_with_other_settings(monkeypatch, *, enabled):
     return rec
 
 
-def _run_alias_hook():
+def _run_alias_hook(load_settings = _FAST_ALIAS):
     from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
 
-    alias = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": _FAST_ALIAS}
+    alias = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": load_settings}
     request = SimpleNamespace(
         scope = {"_unsloth_model_alias": alias},
         state = SimpleNamespace(**{KEYLESS_ADMISSION_STATE_KEY: False}),
@@ -345,6 +345,18 @@ def test_an_alias_reloads_the_loaded_model_with_its_own_load_settings_once(monke
     _run_alias_hook()
     assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
         (4096, "q4_0", "auto")
+    ]
+
+
+def test_a_blank_alias_field_reloads_with_the_saved_setting_not_another_alias(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    monkeypatch.setattr(settings, "get_model_override", lambda _id: {"max_seq_length": 8192})
+    _run_alias_hook()
+    _run_alias_hook({"kv_cache_dtype": "q4_0"})
+    _run_alias_hook({"kv_cache_dtype": "q4_0"})
+    assert [(c.max_seq_length, c.cache_type_kv) for c in rec.calls] == [
+        (4096, "q4_0"),
+        (8192, "q4_0"),
     ]
 
 
