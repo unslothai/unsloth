@@ -3313,6 +3313,7 @@ function ThreadAutoSwitch({
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const chatActive = useChatActive();
 
   useEffect(() => {
     // Paused too: the stop names every temporary queue on the page.
@@ -3388,6 +3389,19 @@ function ThreadAutoSwitch({
     syncActiveThreadId,
     threadId,
   ]);
+
+  // Leaving Chat clears activeThreadId but keeps this view mounted, so coming back to the same thread
+  // changes none of the deps above. Only fills that hole, never overwrites a live id.
+  useEffect(() => {
+    if (!chatActive || !syncActiveThreadId || isLoading || mainThreadId !== threadId) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.activeThreadId != null || isChatThreadDeleted(threadId)) {
+      return;
+    }
+    store.setActiveThreadId(threadId);
+  }, [chatActive, isLoading, mainThreadId, syncActiveThreadId, threadId]);
 
   return null;
 }
