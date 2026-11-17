@@ -2679,18 +2679,15 @@ def _ga_mode(model = None):
       fsdp_defer_gradient_reduction): no re-all-gather, gradients bitwise equal to "skip", the gathered
       weights stay resident (sharded layout: + one compute-dtype copy of the trainable weights);
     "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
-      accumulators held across micro-batches, the leanest and the slowest; the sharded gradient
-      accumulates in the parameter dtype, as one GPU's `.grad` does;
+      accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
-      backward, so keeping them gathered across micro-batches adds no peak memory); "each" for the
-      sharded layout when most parameter elements are trainable (full fine-tuning: "skip" would hold
-      every trainable weight's whole gradient in the reduce dtype, 4 bytes per element on every rank,
-      e.g. ~100 GiB per rank for a 27B model, against 2 / world_size bytes sharded); else "skip"."""
+      backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
     layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
-    if not isinstance(layout, dict):  # not sharded by shard_model
+    if not isinstance(layout, dict):
         return "skip"
     if layout.get("fits"):
         return "defer"
@@ -2698,7 +2695,6 @@ def _ga_mode(model = None):
 
 
 def _mostly_trainable(model):
-    """More trainable floating elements than frozen elements (full fine-tuning, not LoRA / QLoRA)."""
     trainable = frozen = 0
     for p in model.parameters():
         if p.requires_grad and _floating(p):

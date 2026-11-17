@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""AdamWBF16 (stochastic rounding) on sharded parameters, on a gloo CPU world of 2.
-
-* DTensor parameters sharded on dim 0 (fully_shard's layout, uneven and empty shards included) step
-  their local shard: every rank's weights and moments are bitwise the matching run of one unsharded
-  AdamWBF16 given the same gradients, including the stochastic rounding draws.
-* A whole (unsharded) saved state loads into the sharded optimizer and continues bitwise.
-* Under native FSDP2 (shard_model) on a bfloat16 model the sharded masters stay bfloat16. AdamWBF16 builds
-  over them and, at lr 1e-5, keeps the update float32 masters would make (in expectation), where plain
-  bfloat16 AdamW rounds most of it away."""
+"""AdamWBF16 on dim-0 sharded DTensors (gloo, world 2): bitwise equal to the unsharded run."""
 
 import multiprocessing
 import os
@@ -118,7 +110,6 @@ def _case_parity(rank):
     state = {"params": [p.detach() for p in params], "optimizer": part_opt.state_dict()}
     resumed, resumed_opt = _sharded(api, mesh, 1e-3, range(1, STEPS), state = state)
     _same(resumed, resumed_opt, ref, ref_opt)
-    # Its own (sharded) state dict round-trips too.
     again, again_opt = _sharded(api, mesh, 1e-3, [])
     again_opt.load_state_dict(opt.state_dict())
     for p, q in zip(again, sharded):
@@ -137,10 +128,7 @@ def _reference_partial(api):
 
 
 def _case_native(rank):
-    """bfloat16 model sharded by native FSDP2, AdamWBF16 built over its parameters. One gradient applied
-    for RETAIN steps at lr 1e-5: the bf16 weights' total move, projected on what float32 masters move
-    under torch AdamW with the same gradients. Plain bf16 AdamW rounds most moves away; stochastic
-    rounding keeps them in expectation."""
+    """At lr 1e-5 stochastic rounding keeps the fp32-master move that plain bf16 AdamW rounds away."""
     from test_fsdp2_native_units import _load_native
 
     native = _load_native()
@@ -229,9 +217,6 @@ def _has_real_cuda():
 @pytest.mark.skipif(not _has_real_cuda(), reason = "requires real CUDA")
 @pytest.mark.parametrize("compiled", [False, True])
 def test_gpu_shard_offset_matches_unsharded_run(compiled):
-    """The Triton update draws its rounding bits by the element's index in the whole tensor: a shard
-    stepped with its offset is bitwise the matching run of the unsharded update (small and large
-    buckets, eager and the compiled custom op)."""
     api = _api()
     if api.triton is None:
         pytest.skip("needs Triton")

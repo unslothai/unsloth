@@ -7,8 +7,7 @@ Four micro-batches, the first three under the no_sync context the Trainer enters
 * "skip" (default): no reduce-scatter on the non-final micro-batches (one per unit per step);
 * "defer": the same gradients bitwise, and fewer all-gathers (none in the fit layout) after the first;
 * "each": a reduce-scatter on every micro-batch, the same gradients up to fp32 summation order;
-* "auto" (default): "defer" for the fit layout, "each" for the sharded layout when most elements are
-  trainable (full fine-tuning: no whole-model reduce-dtype gradient held between micro-batches).
+* "auto" (default): "defer" for the fit layout, "each" for the sharded full fine-tune.
 For the sharded layout (full fine-tuning) and the fit layout (LoRA, root unit)."""
 
 import multiprocessing
@@ -82,8 +81,7 @@ def _run(native, perf, counts, layout, mode):
 
 
 def _unsharded_grad_bytes(model):
-    """Bytes of whole (unsharded) gradients FSDP2 keeps between backward passes: the reduce-dtype
-    accumulators and the unsharded parameters' own `.grad`."""
+    """Bytes of unsharded gradients FSDP2 holds between backward passes."""
     from torch.distributed.fsdp import FSDPModule
 
     total = 0
@@ -167,7 +165,6 @@ def _check(layout, res):
         assert all(m["ag"] == 0 for m in defer[1:-1]), defer
     # each: one reduce per unit per micro-batch.
     assert [m["rs"] for m in each] == [units] * MICRO, each
-    # auto (the default): defer for the fit layout, each for the sharded full fine-tune.
     assert res["auto"]["per_micro"] == (defer if layout == "lora" else each), res["auto"][
         "per_micro"
     ]

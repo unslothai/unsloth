@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_FSDP2_GA_SYNC=auto picks the gradient accumulation mode from the layout and the trainables:
-fit layout -> "defer"; sharded layout with full fine-tuning -> "each" (no whole-model reduce-dtype
-gradient held across micro-batches); sharded LoRA -> "skip"; an explicit mode always wins. CPU only."""
+"""UNSLOTH_FSDP2_GA_SYNC=auto: fit -> defer, sharded full fine-tune -> each, sharded LoRA -> skip."""
 
 import os
 import sys
@@ -45,7 +43,6 @@ def test_auto_fit_layout_defers(native):
 
 
 def test_auto_without_model_or_layout(native):
-    """A model not sharded by shard_model (a raw fully_shard one) keeps skip."""
     assert native._ga_mode(None) == "skip"
     for fraction in (0.0, 1.0):
         model = _model(fraction, fits = False)

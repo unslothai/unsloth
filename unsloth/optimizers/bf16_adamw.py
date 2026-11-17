@@ -223,7 +223,6 @@ def _is_dtensor(t):
 
 
 def _local(t):
-    """The tensor the update writes: a DTensor's local shard (same storage), else the tensor itself."""
     return t._local_tensor if _is_dtensor(t) else t
 
 
@@ -232,10 +231,7 @@ def _plain_parameter(p):
 
 
 def _dense_parameter(p):
-    """A plain strided tensor, or a DTensor (native FSDP2 / torch fully_shard) whose local shard is one
-    contiguous run of the whole tensor's flat elements: dim-0 sharding (fully_shard's default) over any
-    number of mesh dimensions, replicated dimensions included. The update is elementwise, so stepping
-    the local shard is the whole tensor's update restricted to it."""
+    """Plain strided tensor, or a DTensor whose local shard is one contiguous run (dim-0 sharding)."""
     if not _is_dtensor(p):
         return _plain_parameter(p)
     local = p._local_tensor
@@ -248,8 +244,7 @@ _SHARD_OFFSETS = None
 
 
 def _shard_offset(p):
-    """Flat index of a DTensor's first local element in the whole tensor (0 for a plain tensor), or None
-    when the local shard is not one contiguous run of it. Cached per parameter and layout."""
+    """Flat index of the local shard's first element in the whole tensor, None if not contiguous."""
     global _SHARD_OFFSETS
     if not _is_dtensor(p):
         return 0
@@ -310,16 +305,14 @@ def _cpu_update(p, g, m, v, step, lr, seed, offset, beta1, beta2, eps, weight_de
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & (2**64 - 1)
     generator.manual_seed((z ^ (z >> 31)) & 0xFFFFFFFF)
     gf = g.float()
-    # Not lerp_: CPU lerp fuses multiply-add in its vector body but not in its tail on MSVC, so a shard's
-    # rounding would depend on element position and miss the whole tensor's bits (Windows, 1 ulp).
+    # Not lerp_: MSVC CPU lerp rounds tail elements differently, so shards would miss unsharded bits.
     m.mul_(beta1).add_(gf * (1 - beta1))
     v.mul_(beta2).add_(gf.square() * (1 - beta2))
     t = int(step)
     value = p.float() * (1 - lr * weight_decay)
     value = value - lr * (m / (1 - beta1**t)) / ((v / (1 - beta2**t)).sqrt() + eps)
     bits = value.contiguous().view(torch.int32)
-    # A shard draws the whole tensor's stream up to its last element and keeps its own run, so every
-    # element gets the number it gets unsharded.
+    # Draw the whole stream up to this shard so each element matches its unsharded draw.
     random = torch.randint(
         65536, (int(offset) + bits.numel(),), generator = generator, dtype = torch.int32
     )
@@ -331,8 +324,6 @@ def _cpu_update(p, g, m, v, step, lr, seed, offset, beta1, beta2, eps, weight_de
 
 
 def _moment_like(value, p):
-    """An Adam moment laid out like its parameter: float32 on its device, sharded like a DTensor
-    parameter (a whole saved tensor keeps this rank's run), plain otherwise."""
     if not _is_dtensor(p):
         if _is_dtensor(value):
             value = value.full_tensor()
