@@ -7,6 +7,7 @@ scan root, never a loaded model."""
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -211,7 +212,7 @@ def test_delete_v2_pulled_tag_keeps_blobs_an_inline_list_child_uses(tmp_path, mo
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
 
-@pytest.mark.parametrize("unreadable", ["child", "tag"])
+@pytest.mark.parametrize("unreadable", ["child", "tag", "tag dir"])
 def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
     tmp_path, monkeypatch, unreadable
 ):
@@ -241,9 +242,17 @@ def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
             raise OSError(errno.EIO, "I/O error")
         return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "stat", flaky_stat)
-    ollama.delete_ollama_model_ref(ref)
-    monkeypatch.setattr(os, "stat", real_stat)
+    if unreadable == "tag dir":
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("needs a POSIX permission bit root does not bypass")
+        alias.parent.chmod(0)
+    else:
+        monkeypatch.setattr(os, "stat", flaky_stat)
+    try:
+        ollama.delete_ollama_model_ref(ref)
+    finally:
+        monkeypatch.setattr(os, "stat", real_stat)
+        alias.parent.chmod(0o755)
 
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 

@@ -716,6 +716,15 @@ def _is_file_or_missing(path: Path) -> bool:
         return False
 
 
+def _manifest_tree_files(root: Path) -> list[Path]:
+    """Files under *root*; raises when a directory cannot be listed (``rglob`` skips it silently)."""
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    return [Path(d) / name for d, _, files in os.walk(root, onerror = fail) for name in files]
+
+
 def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:
     """Digests *manifest* keeps alive, through manifest-list children and anchor layers.
     ``strict`` raises on an unreadable child (a retention read must not under-count)."""
@@ -818,10 +827,22 @@ def delete_ollama_model_ref(ref: str) -> None:
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         # v2 entries are compared by path: an ``ollama cp`` alias links the same manifest blob.
-        others = [
-            *(p for p in manifests_root.rglob("*") if os.path.realpath(p) != str(tag_file)),
-            *(p for p in (v2_root.rglob("*") if v2_root.is_dir() else ()) if p != v2_tag),
-        ]
+        try:
+            others = [
+                *(
+                    p
+                    for p in _manifest_tree_files(manifests_root)
+                    if os.path.realpath(p) != str(tag_file)
+                ),
+                *(
+                    p
+                    for p in (_manifest_tree_files(v2_root) if v2_root.is_dir() else ())
+                    if p != v2_tag
+                ),
+            ]
+        except OSError:
+            # A tree we cannot fully list may hold a tag that needs any blob.
+            others, owned = [], set()
         for other in others:
             try:
                 if not _is_file_or_missing(other):
