@@ -211,7 +211,10 @@ def test_delete_v2_pulled_tag_keeps_blobs_an_inline_list_child_uses(tmp_path, mo
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
 
-def test_delete_keeps_every_blob_when_a_retained_child_cannot_be_stat(tmp_path, monkeypatch):
+@pytest.mark.parametrize("unreadable", ["child", "tag"])
+def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
+    tmp_path, monkeypatch, unreadable
+):
     import errno
 
     from hub.services.models import ollama
@@ -231,7 +234,10 @@ def test_delete_keeps_every_blob_when_a_retained_child_cannot_be_stat(tmp_path, 
 
     # os.stat, not Path.is_file: Python 3.14's is_file returns False on EIO instead of raising.
     def flaky_stat(path, *args, **kwargs):
-        if os.fspath(path).endswith(f"sha256-{child_digest}"):
+        target = (
+            f"sha256-{child_digest}" if unreadable == "child" else os.path.join("alias", "latest")
+        )
+        if os.fspath(path).endswith(target):
             raise OSError(errno.EIO, "I/O error")
         return real_stat(path, *args, **kwargs)
 

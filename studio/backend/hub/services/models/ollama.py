@@ -707,6 +707,15 @@ def _manifest_digests(manifest: object) -> set[str]:
     }
 
 
+def _is_file_or_missing(path: Path) -> bool:
+    """``Path.is_file`` that raises on anything but a missing path (3.14's returns False on EIO):
+    a retention read must not take an unreadable manifest for an absent one."""
+    try:
+        return S_ISREG(path.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:
     """Digests *manifest* keeps alive, through manifest-list children and anchor layers.
     ``strict`` raises on an unreadable child (a retention read must not under-count)."""
@@ -735,11 +744,8 @@ def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -
             seen.add(entry["digest"])
             blob = _ollama_blob_path(blobs_dir, entry["digest"])
             try:
-                present = blob is not None and S_ISREG(blob.stat().st_mode)
-            except (FileNotFoundError, NotADirectoryError):
-                present = False
+                present = blob is not None and _is_file_or_missing(blob)
             except OSError:
-                # Strict must not read an unreadable child as "not downloaded" (Path.is_file would).
                 if strict:
                     raise
                 present = False
@@ -817,9 +823,9 @@ def delete_ollama_model_ref(ref: str) -> None:
             *(p for p in (v2_root.rglob("*") if v2_root.is_dir() else ()) if p != v2_tag),
         ]
         for other in others:
-            if not _safe_is_file(other):
-                continue
             try:
+                if not _is_file_or_missing(other):
+                    continue
                 data = other.read_bytes()
                 owned.discard(f"sha256:{hashlib.sha256(data).hexdigest()}")
                 owned -= _manifest_closure_digests(
