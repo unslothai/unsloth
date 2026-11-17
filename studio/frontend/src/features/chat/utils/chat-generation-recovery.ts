@@ -6,6 +6,7 @@ import {
   createThinkTagTracker,
   extractDeltaText,
   markLiteralThinkTags,
+  markPendingThinkTag,
   parseAssistantContent,
 } from "./parse-assistant-content";
 import type { ContextUsageMarkers } from "./saved-context-usage";
@@ -574,6 +575,14 @@ function mergeCarriedParts(
   ]);
 }
 
+/** A checkpoint cut mid-tag left its trailing fragment unmarked; a fuller split reply marked it. */
+function startsWithCheckpoint(text: string, checkpoint: string): boolean {
+  return (
+    text.startsWith(checkpoint) ||
+    text.startsWith(markPendingThinkTag(checkpoint))
+  );
+}
+
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,
@@ -582,13 +591,13 @@ export function recoveredContentToImport<TContent>(
   const recovered = generationRawContent(recoveredContent);
   if (
     recovered.raw.length < view.raw.length &&
-    view.raw.startsWith(recovered.raw)
+    startsWithCheckpoint(view.raw, recovered.raw)
   ) {
     return viewContent;
   }
   if (
     view.carried.length > 0 &&
-    recovered.raw.startsWith(view.raw) &&
+    startsWithCheckpoint(recovered.raw, view.raw) &&
     Array.isArray(recoveredContent)
   ) {
     const matches = carriedPartMatches(view.carried, recovered.carried);

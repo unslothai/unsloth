@@ -127,3 +127,26 @@ test("a continuation seed leaves a trailing inline opener resumable unless reaso
     { type: "text", text: "answer" },
   ]);
 });
+
+test("a checkpoint cut mid-tag is still a prefix of the live reply", async () => {
+  const { recoveredContentToImport } = await import(
+    "../src/features/chat/utils/chat-generation-recovery.ts"
+  );
+  const view = [{ type: "text", text: "Use <think>x</think> here." }];
+  assert.equal(recoveredContentToImport(view, [{ type: "text", text: "Use <thi" }]), view);
+  for (const [live, cut] of [
+    ["a < b", "a <"],
+    ["Use <table> here.", "Use <t"],
+  ]) {
+    const shown = [{ type: "text", text: live }];
+    assert.equal(recoveredContentToImport(shown, [{ type: "text", text: cut }]), shown);
+  }
+  const opened = [
+    { type: "reasoning", text: "Plan." },
+    { type: "text", text: "Answer" },
+  ];
+  assert.equal(recoveredContentToImport(opened, [{ type: "text", text: "<thi" }]), opened);
+  const edited = [{ type: "reasoning", text: "x" }];
+  const literal = [{ type: "text", text: "<think>x</think> is literal" }];
+  assert.equal(recoveredContentToImport(literal, edited), edited);
+});
