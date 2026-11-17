@@ -317,6 +317,15 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.rememberParamsPerModel = rememberParamsPerModel;
   }
   if (customPresets !== undefined) settings.customPresets = customPresets;
+  if (isRecord(value.editCustomPresets)) {
+    const edits: Record<string, PersistedChatPreset | null> = {};
+    for (const [name, preset] of Object.entries(value.editCustomPresets)) {
+      const [saved] = sanitizeCustomPresets([preset]) ?? [];
+      if (preset === null) edits[name] = null;
+      else if (saved?.name === name) edits[name] = saved;
+    }
+    if (hasKeys(edits)) settings.editCustomPresets = edits;
+  }
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
   }

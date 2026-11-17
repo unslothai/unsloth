@@ -604,6 +604,9 @@ class ChatSettingsPayload(BaseModel):
     ] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
+    editCustomPresets: Optional[dict[str, Optional[ChatPreset]]] = Field(
+        default = None, max_length = 1_000
+    )
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
     autoTitle: Optional[bool] = None
