@@ -396,6 +396,7 @@ export function ExportPage() {
     const match = models.find((m) => m.name === preselectRun);
     if (!match) return;
     appliedRunRef.current = preselectRun;
+    setExportTab("llm");
     setSourceMode("checkpoint");
     setSelectedModelIdx(match.name);
     setExportMethod("gguf");
@@ -1184,8 +1185,9 @@ export function ExportPage() {
             Export
           </h1>
           <p className="text-sm text-muted-foreground">
-            Export models and adapters for deployment, or convert GGUFs for AMD
-            NPUs
+            {hasNpu
+              ? "Export models and adapters for deployment, or convert GGUFs for AMD NPUs"
+              : "Export models and adapters for deployment"}
           </p>
         </header>
 

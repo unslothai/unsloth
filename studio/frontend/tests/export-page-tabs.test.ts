@@ -22,11 +22,28 @@ test("the Export page puts each flow behind its own tab", async () => {
     // Each tab owns a panel, kept mounted so a running export survives a switch.
     assert.match(
       page,
-      new RegExp(`<TabsContent value="${tab}" forceMount className=\\{TAB_PANEL\\}>`),
+      new RegExp(
+        `<TabsContent value="${tab}" forceMount className=\\{TAB_PANEL\\}>`,
+      ),
     );
   }
   assert.equal(page.match(/<ImageLoraExportCard /g)?.length, 1);
   assert.equal(page.match(/<Q4nxConvertCard /g)?.length, 1);
   // An image LoRA deep link opens on its tab.
   assert.match(page, /preselectImageLora \? "diffusion-lora" : "llm"/);
+  // A training run deep link fills the LLM form, so it opens that tab.
+  assert.match(
+    page,
+    /appliedRunRef\.current = preselectRun;\s*setExportTab\("llm"\);/,
+  );
+});
+
+test("the Export page names AMD NPUs only when one is detected", async () => {
+  const page = await readSrcAsync("features/export/export-page.tsx");
+  const npuMentions = page.match(/convert GGUFs for AMD NPUs/g) ?? [];
+  assert.equal(npuMentions.length, 1);
+  assert.match(
+    page,
+    /\{hasNpu\s*\?\s*"Export models and adapters for deployment, or convert GGUFs for AMD NPUs"/,
+  );
 });
