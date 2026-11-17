@@ -28,6 +28,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { startCharacterChat } from "../actions";
 import { updateCharacter, type ScenePatch } from "../api";
+import { profilePersona } from "../chat-runtime";
 import { Portrait } from "../components/portrait";
 import { useCharactersStore } from "../store";
 import type { Character, ReplyOrder } from "../types";
@@ -144,16 +145,14 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
       <div className="flex flex-col gap-1.5">
         <span className="text-ui-12 font-medium text-nav-fg-muted">{t("characters.panel.persona")}</span>
         <Select
-          value={scene.personaId ?? (personas.find((p) => p.isDefault)?.id ?? PROFILE_PERSONA)}
+          value={thread.persona.id ?? PROFILE_PERSONA}
           onValueChange={(value) => void patch({ personaId: value === PROFILE_PERSONA ? null : value })}
         >
           <SelectTrigger size="sm" className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {personas.length === 0 ? (
-              <SelectItem value={PROFILE_PERSONA}>{t("characters.panel.personaProfile", { name: thread.persona.name })}</SelectItem>
-            ) : null}
+            <SelectItem value={PROFILE_PERSONA}>{t("characters.panel.personaProfile", { name: profilePersona().name })}</SelectItem>
             {personas.map((persona) => (
               <SelectItem key={persona.id} value={persona.id}>
                 {persona.name}

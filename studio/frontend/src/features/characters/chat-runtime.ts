@@ -7,7 +7,7 @@ import { loginDisplayName } from "@/features/profile/hooks/use-effective-profile
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { getCharacter } from "./api";
-import { roleplayMetaOf } from "./meta";
+import { pickPersona, roleplayMetaOf } from "./meta";
 import {
   buildCharacterPrompt,
   replyNameOf,
@@ -55,12 +55,9 @@ export function toPromptCharacter(character: Character): PromptCharacter {
   };
 }
 
-/** The persona a chat speaks as: its own pick, the default persona, else the account's name. */
+/** The persona a chat speaks as (see pickPersona), else the account's name. */
 export function resolvePersona(scene: ChatScene | null, personas: Persona[]): ResolvedPersona {
-  const chosen =
-    (scene?.personaId && personas.find((p) => p.id === scene.personaId)) ||
-    personas.find((p) => p.isDefault) ||
-    null;
+  const chosen = pickPersona(scene, personas);
   if (chosen) {
     return {
       id: chosen.id,
@@ -70,6 +67,11 @@ export function resolvePersona(scene: ChatScene | null, personas: Persona[]): Re
       avatarRev: chosen.avatarRev,
     };
   }
+  return profilePersona();
+}
+
+/** The account speaking as itself, under the name the app addresses it by. */
+export function profilePersona(): ResolvedPersona {
   const profile = useUserProfileStore.getState();
   // Same order the app uses to address the user: nickname, first name, then the login.
   const name =

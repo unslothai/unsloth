@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { mergeCharacters } from "../src/features/characters/meta.ts";
-import type { Character } from "../src/features/characters/types.ts";
+import { mergeCharacters, pickPersona } from "../src/features/characters/meta.ts";
+import type { Character, ChatScene, Persona } from "../src/features/characters/types.ts";
 
 const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
 
@@ -67,4 +67,15 @@ test("the chat page loads the character panel and picker only when they open", (
   const thread = read("components/assistant-ui/thread.tsx");
   assert.doesNotMatch(thread, /^import [^;]*from "@\/features\/characters\/chat\/start-picker"/m);
   assert.match(thread, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/start-picker"\)/);
+});
+
+test("a saved chat keeps who it speaks as when a default persona appears later", () => {
+  const persona = (id: string, isDefault: boolean) => ({ id, name: id, isDefault }) as Persona;
+  const scene = (personaId: string | null) => ({ threadId: "t", personaId, settings: {}, cast: [] }) as ChatScene;
+  const personas = [persona("alex", true), persona("sam", false)];
+  assert.equal(pickPersona(null, personas)?.id, "alex", "a new chat takes the default");
+  assert.equal(pickPersona(scene(null), personas), null, "a chat saved as the account stays the account");
+  assert.equal(pickPersona(scene("sam"), personas)?.id, "sam");
+  assert.equal(pickPersona(scene("gone"), personas)?.id, "alex", "a missing pick falls back to the default");
+  assert.equal(pickPersona(null, []), null);
 });

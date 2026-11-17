@@ -337,6 +337,31 @@ def test_personas_keep_exactly_one_default(client):
     assert client.get("/api/characters/personas").json()["personas"][0]["isDefault"] is True
 
 
+def test_deleting_a_persona_moves_its_chats_to_the_default(client):
+    character = _import(client, _with_text(_png(), "chara", V2)).json()["character"]
+
+    def chat(persona_id):
+        body = {"characterIds": [character["id"]], "personaId": persona_id}
+        return client.post("/api/characters/chats", json = body).json()["threadId"]
+
+    def persona_of(thread_id):
+        return client.get(f"/api/characters/chats/{thread_id}").json()["personaId"]
+
+    as_account = chat(None)
+    alex = client.post("/api/characters/personas", json = {"name": "Alex"}).json()
+    sam = client.post("/api/characters/personas", json = {"name": "Sam"}).json()
+    as_alex, as_sam = chat(alex["id"]), chat(sam["id"])
+
+    assert client.delete(f"/api/characters/personas/{sam['id']}").status_code == 204
+    assert (
+        persona_of(as_sam) == alex["id"]
+    ), "a chat that spoke as a deleted persona takes the default"
+    assert persona_of(as_account) is None, "a chat saved as the account is left alone"
+
+    assert client.delete(f"/api/characters/personas/{alex['id']}").status_code == 204
+    assert persona_of(as_alex) is None and persona_of(as_sam) is None
+
+
 def _messages(thread_id: str) -> list[dict]:
     return studio_db.list_chat_messages(thread_id)
 

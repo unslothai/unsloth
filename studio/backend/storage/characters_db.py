@@ -443,12 +443,21 @@ def delete_persona(persona_id: str) -> bool:
         row = conn.execute("SELECT is_default FROM personas WHERE id = ?", (persona_id,)).fetchone()
         if row is None:
             return False
-        conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
         if row["is_default"]:
-            conn.execute(
-                "UPDATE personas SET is_default = 1 WHERE id ="
-                " (SELECT id FROM personas ORDER BY created_at LIMIT 1)"
-            )
+            successor = conn.execute(
+                "SELECT id FROM personas WHERE id != ? ORDER BY created_at LIMIT 1", (persona_id,)
+            ).fetchone()
+        else:
+            successor = conn.execute("SELECT id FROM personas WHERE is_default = 1").fetchone()
+        successor_id = successor["id"] if successor else None
+        # Its chats move to the default here: the foreign key's SET NULL would mean the account instead.
+        conn.execute(
+            "UPDATE chat_scene SET persona_id = ?, updated_at = ? WHERE persona_id = ?",
+            (successor_id, now_ms(), persona_id),
+        )
+        conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
+        if row["is_default"] and successor_id:
+            conn.execute("UPDATE personas SET is_default = 1 WHERE id = ?", (successor_id,))
     delete_image("personas", persona_id)
     return True
 

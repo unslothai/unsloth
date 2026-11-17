@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { Character, RoleplayMessageMeta } from "./types";
+import type { Character, ChatScene, Persona, RoleplayMessageMeta } from "./types";
+
+/**
+ * Who a chat speaks as. Only a new chat (no scene yet) takes the default persona: a saved chat keeps its
+ * own pick, and one saved without a persona keeps the account's name, so making a default later does
+ * not rename the user in chats already under way. Null means the account.
+ */
+export function pickPersona(scene: ChatScene | null, personas: Persona[]): Persona | null {
+  const fallback = personas.find((p) => p.isDefault) ?? null;
+  if (!scene) return fallback;
+  if (!scene.personaId) return null;
+  // A pick that no longer exists falls back as a persona delete does on the server.
+  return personas.find((p) => p.id === scene.personaId) ?? fallback;
+}
 
 type MessageLike = {
   role?: string;
