@@ -56,6 +56,16 @@ def _compute_dtype(linear: nn.Module) -> torch.dtype:
     declared = getattr(linear, "compute_dtype", None)
     if isinstance(declared, torch.dtype):
         return declared
+    # A layer kept at its stored dtype under diffusers' layerwise casting (the small-host route's dense denoiser)
+    # widens its weight in a pre-forward hook: the input has to arrive in that compute dtype, not the stored one.
+    get_hook = getattr(getattr(linear, "_diffusers_hook", None), "get_hook", None)
+    if callable(get_hook):
+        try:
+            hooked = getattr(get_hook("layerwise_casting"), "compute_dtype", None)
+        except Exception:  # noqa: BLE001
+            hooked = None
+        if isinstance(hooked, torch.dtype):
+            return hooked
     weight = getattr(linear, "weight", None)
     if weight is None:
         # The small-host route's ``Int8WeightLinear``: int8 ``qweight``, ``scale`` stored in the compute dtype.

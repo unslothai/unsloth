@@ -221,3 +221,25 @@ def test_route_int8_weights_run_the_moss_dit(monkeypatch):
     assert got.dtype == torch.float32 and torch.isfinite(got).all()
     rel = float((got - want).norm() / want.norm())
     assert rel < 0.05, rel
+
+
+def test_dense_route_layerwise_cast_runs_the_moss_dit():
+    """With ``transformer_quant`` off, the route keeps the DiT dense: bf16 Linears widened to float32 by a layerwise
+    casting hook. Inputs the DiT casts itself (the time embedding) must use that compute dtype, not the stored bf16."""
+    torch.manual_seed(0)
+    tiny = dict(dim = 256, ffn_dim = 512, num_heads = 2, num_layers = 4, text_dim = 64)
+    model = moss.MOSSImageTransformer(**tiny).to(torch.bfloat16).eval()
+    dense = moss.MOSSImageTransformer(**tiny).eval()
+    dense.load_state_dict({k: v.float() for k, v in model.state_dict().items()})
+    latents = torch.randn(1, 128, 4, 4)
+    text = torch.randn(1, 7, 64)
+    t = torch.tensor([500.0])
+    with torch.no_grad():
+        want = dense(latents, t, encoder_hidden_states = text).sample
+    assert sh.prepare_streamed_encoder_(model, torch.float32) > 0
+    lin = model.time_embedding[0]
+    assert lin.weight.dtype == torch.bfloat16 and moss._compute_dtype(lin) == torch.float32
+    with torch.no_grad():
+        got = model(latents, t, encoder_hidden_states = text).sample
+    assert got.dtype == torch.float32 and torch.isfinite(got).all()
+    assert float((got - want).norm() / want.norm()) < 1e-5
