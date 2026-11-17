@@ -2271,7 +2271,7 @@ DESKTOP_EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>ai.unsloth.studio</string>
+    <string>ai.unsloth.studio.launcher</string>
     <key>CFBundleName</key>
     <string>Unsloth Studio</string>
     <key>CFBundleDisplayName</key>
@@ -2342,6 +2342,9 @@ STUB_EOF
 
         # Touch so Finder indexes it
         touch "$_css_app"
+        # After the bundle id change, macOS 26 kept resolving Desktop's id here on touch alone.
+        _css_lsr="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+        [ -x "$_css_lsr" ] && "$_css_lsr" -f "$_css_app" >/dev/null 2>&1 || true
 
         # -n is required: without it a re-run creates the link inside the bundle.
         if [ -d "$HOME/Desktop" ]; then
