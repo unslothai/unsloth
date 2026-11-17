@@ -56,6 +56,41 @@ def _modules():
     return env, auto
 
 
+def _architecture_skip_modules():
+    """vision.py's _architecture_skip_modules, taken verbatim from the source (vision.py needs the GPU package)."""
+    import ast
+
+    path = os.path.join(REPO, "unsloth", "models", "vision.py")
+    tree = ast.parse(open(path, encoding = "utf-8").read())
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_architecture_skip_modules"
+    )
+    ns = {"_mamba_ssm_importable": lambda: False}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), path, "exec"), ns)
+    return ns["_architecture_skip_modules"]
+
+
+def _real_quant_skip_modules(model_types):
+    """parallel_auto._quant_skip_modules with the real lists: unsloth_zoo's and vision.py's (from source)."""
+    from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+    return list(SKIP_QUANTIZATION_MODULES) + list(_architecture_skip_modules()(model_types))
+
+
+def _stub_loader_facts(
+    auto,
+    setattr,
+    model_types = ("llama",),
+    supports_bf16 = True,
+    force_float32 = (),
+):
+    """What the loaders know about the GPU and the architecture, without importing them (GPU package)."""
+    setattr(auto, "_loader_precision", lambda: (supports_bf16, list(force_float32)), raising = False)
+    setattr(auto, "_model_types", lambda name, call, revision: list(model_types), raising = False)
+    setattr(auto, "_quant_skip_modules", _real_quant_skip_modules, raising = False)
+
+
 def _stub_device_type(allow_bitsandbytes = True):
     module = types.ModuleType("unsloth.device_type")
     module.ALLOW_BITSANDBYTES = allow_bitsandbytes
@@ -90,6 +125,7 @@ def clean(monkeypatch):
     # Hub names in these tests are fake: no PeftConfig probe over the network (the PEFT test restores it).
     monkeypatch.setattr(auto, "_peft_base_real", getattr(auto, "_peft_base", None), raising = False)
     monkeypatch.setattr(auto, "_peft_base", lambda name, call, revision: None, raising = False)
+    _stub_loader_facts(auto, monkeypatch.setattr)
     yield monkeypatch, env, auto
     auto._STATE.update(choice = None, reason = None)
 
@@ -178,7 +214,13 @@ def test_checkpoint_headers_size_the_load(clean):
         __import__("math").prod(shape) * min(auto._DTYPE_BYTES[dt], 2) for _, dt, shape in tensors
     )
     w16, lora16 = auto.checkpoint_estimate(tensors)
-    w4, lora4 = auto.checkpoint_estimate(tensors, load_in_4bit = True)
+    # Quantizing on load takes the loader's skip modules (none for this generic check).
+    takes_skip = (
+        "skip_modules" in __import__("inspect").signature(auto.checkpoint_estimate).parameters
+    )
+    w4, lora4 = auto.checkpoint_estimate(
+        tensors, load_in_4bit = True, **({"skip_modules": []} if takes_skip else {})
+    )
     wfull, train_full = auto.checkpoint_estimate(tensors, full_finetuning = True, load_in_4bit = True)
     assert w16 == raw16
     assert w4 < w16 and lora4 == lora16 > 0
@@ -311,6 +353,88 @@ def test_gather_uses_gloo_on_cuda_without_nccl(clean, monkeypatch):
     assert auto._gather({"fits": True}) == [{"fits": True}]
     ((args, kwargs),) = created
     assert (args[0] if args else kwargs.get("backend")) == "gloo", created
+
+
+def test_full_finetuning_counts_float32_master_weights(clean):
+    """Full finetuning on a float16 GPU keeps float32 master weights, grads and DDP buckets: 20 bytes per parameter."""
+    mp, _, auto = clean
+    _stub_loader_facts(auto, mp.setattr, supports_bf16 = False)  # a T4
+    tensors = [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))]  # 16 Mi parameters
+    # 16-bit sizing: 32 MiB + 192 MiB state fits 350 MiB (280 after the margin); float32 master: 64 + 256 does not.
+    _auto_env(mp, auto, budget_mib = 350)
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        full_finetuning = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("org/model",), {"full_finetuning": True})
+    assert got == "fsdp2", auto._STATE["reason"]
+    assert "weights 64.0 MiB + training state 0.25 GiB" in auto._STATE["reason"], auto._STATE[
+        "reason"
+    ]
+
+
+def test_quantize_on_load_keeps_the_loaders_dense_modules(clean):
+    """WavLM's attention projections stay dense under load_in_4bit (vision._architecture_skip_modules)."""
+    mp, _, auto = clean
+    _stub_loader_facts(auto, mp.setattr, model_types = ("wavlm",))
+    tensors = [
+        ("encoder.layers.0.attention.q_proj.weight", "BF16", (4096, 4096))
+    ]  # 32 MiB dense, ~8.5 MiB 4-bit
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("org/wavlm",), {})
+    assert got == "fsdp2", auto._STATE["reason"]
+    assert "weights 32.0 MiB" in auto._STATE["reason"], auto._STATE["reason"]
+
+
+def test_unmodelled_loads_decline_with_a_reason(clean):
+    """Conservative by construction: what the estimate does not model picks FSDP2 and says why."""
+    mp, _, auto = clean
+    _auto_env(mp, auto, budget_mib = 1024)
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: [("a.weight", "BF16", (64, 64))])
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        **kwargs,
+    ):
+        return model_name
+
+    cases = [
+        ({"fast_inference": True}, {}, "fast_inference"),
+        ({"dtype": "int8"}, {}, "dtype 'int8' is not sized"),
+        ({}, {"UNSLOTH_FORCE_FLOAT32": "1"}, "UNSLOTH_FORCE_FLOAT32"),
+    ]
+    for kwargs, env, why in cases:
+        auto._STATE.update(choice = None, reason = None)
+        for key, value in env.items():
+            mp.setenv(key, value)
+        assert auto.resolve_for_load(from_pretrained, ("org/model",), kwargs) == "fsdp2"
+        assert why in auto._STATE["reason"], auto._STATE["reason"]
+        for key in env:
+            mp.delenv(key)
+    auto._STATE.update(choice = None, reason = None)
+    _stub_loader_facts(
+        auto, mp.setattr, model_types = ("gemma3",), supports_bf16 = False, force_float32 = ("gemma3",)
+    )
+    assert (
+        auto.resolve_for_load(from_pretrained, ("org/model",), {"load_in_4bit": False}) == "fsdp2"
+    )
+    assert "forced float32" in auto._STATE["reason"], auto._STATE["reason"]
 
 
 def test_float_weights_count_at_the_loaded_dtype(clean):
@@ -469,6 +593,7 @@ def _decision_worker(rank, world, port, out, snapshot):
         sys.modules["unsloth.models.loader_utils"] = _stub_name_mapping()
         sys.modules["unsloth.device_type"] = _stub_device_type()
         _, auto = _modules()
+        _stub_loader_facts(auto, lambda obj, name, value, raising = False: setattr(obj, name, value))
 
         def from_pretrained(
             model_name = "unused",

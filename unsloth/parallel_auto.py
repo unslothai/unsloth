@@ -19,7 +19,12 @@ Fits means weights + training state + activation margin <= the memory this rank 
     parameter (LoRA r=16 on every linear weight before get_peft_model has run);
   * activation margin: _ACTIVATION_SHARE of the GPU. Activations are per rank under both layouts, so they only
     keep headroom for DDP's larger resident state.
-Anything that cannot be sized picks FSDP2, the launcher default.
+Conservative by construction: only the loads modelled exactly are sized, through the loader's own helpers
+(get_model_name, the -bf16 rule, PeftConfig base resolution, ALLOW_BITSANDBYTES, the bfloat16 check, the
+bitsandbytes skip lists, FastBaseModel's float32 master weights for full finetuning). Everything else declines
+and picks FSDP2, the launcher default, with the reason in the rank 0 line: a quantization_config or fp8 load,
+fast_inference (vLLM), UNSLOTH_FORCE_FLOAT32 / UNSLOTH_FORCE_CUSTOM_DTYPE, a FORCE_FLOAT32 architecture on
+float16, an unknown dtype, a Hub subfolder, and any config or header that cannot be read.
 """
 
 from __future__ import annotations
@@ -326,10 +331,14 @@ def _is_quantizable(key, shape):
 
 
 def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, full_finetuning = False,
-                        dtype_bytes = 2, lora_rank = _LORA_RANK):  # fmt: skip
-    """(weights bytes once loaded, trainable parameter count) for safetensors header entries."""
+                        dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None):  # fmt: skip
+    """(weights bytes once loaded, trainable parameter count) for safetensors header entries. Quantizing on
+    load needs `skip_modules`, the loader's llm_int8_skip_modules: a linear whose name contains one stays
+    dense (a substring match keeps at least what the loader keeps)."""
     packed = any(dt in _PACKED for _, dt, _ in tensors)
     quantize = not packed and not full_finetuning and (load_in_4bit or load_in_8bit)
+    if quantize and skip_modules is None:
+        raise ValueError("quantizing on load is not sized without the loader's skip modules")
     per_quant = 0.53 if load_in_4bit else 1.03  # packed codes + absmax / scales
     weights, numel_total, lora = 0, 0, 0
     for key, dt, shape in tensors:
@@ -351,7 +360,8 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
         numel_total += numel
         if _is_quantizable(key, shape):
             lora += lora_rank * (shape[0] + shape[1])
-            if quantize:
+            module = key[: -len(".weight")]
+            if quantize and not any(m in module for m in skip_modules):
                 weights += int(numel * per_quant)
                 continue
         weights += numel * loaded
@@ -377,6 +387,52 @@ def _peft_base(name, call, revision):
     return getattr(config, "base_model_name_or_path", None) or None
 
 
+def _loader_precision():
+    """(bfloat16 supported, FORCE_FLOAT32 model types): the loader's own values."""
+    from .models._utils import is_bfloat16_supported
+    from .models.loader import FORCE_FLOAT32
+
+    return bool(is_bfloat16_supported()), [str(x).lower() for x in FORCE_FLOAT32]
+
+
+def _model_types(name, call, revision):
+    """The loader's model types for `name` (config.json only, read as the loader reads it)."""
+    from transformers import AutoConfig
+    from unsloth_zoo.hf_utils import get_transformers_model_type
+
+    trust = bool(call.get("trust_remote_code"))
+    config = AutoConfig.from_pretrained(
+        name,
+        token = call.get("token"),
+        revision = revision,
+        trust_remote_code = trust,
+        local_files_only = call.get("local_files_only", False),
+        cache_dir = call.get("cache_dir", None),
+    )
+    return [str(t).lower() for t in get_transformers_model_type(config, trust_remote_code = trust)]
+
+
+def _quant_skip_modules(model_types):
+    """The modules the loaders keep out of bitsandbytes for these model types."""
+    from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+
+    from .models.vision import _architecture_skip_modules
+
+    return list(SKIP_QUANTIZATION_MODULES) + list(_architecture_skip_modules(model_types))
+
+
+def _loaded_dtype(dtype, supports_bf16):
+    """The dtype the loaders load float weights in: None / auto picks bfloat16 where supported, else
+    float16; bfloat16 without support drops to float16."""
+    text = "" if dtype is None else str(dtype).lower()
+    if dtype is None or text == "auto":
+        return "bfloat16" if supports_bf16 else "float16"
+    for name in ("float32", "bfloat16", "float16"):
+        if name in text:
+            return "float16" if name == "bfloat16" and not supports_bf16 else name
+    raise ValueError(f"dtype {dtype!r} is not sized")
+
+
 def resolve_for_load(loader, args, kwargs):
     """First Unsloth `from_pretrained` under UNSLOTH_PARALLEL=auto: size the checkpoint before it loads."""
     if _STATE["choice"] is not None or not auto_requested():
@@ -398,8 +454,14 @@ def resolve_for_load(loader, args, kwargs):
         ):
             # The loader's precision then depends on the config / the fp8 route: not sized here.
             raise ValueError("a quantization_config or load_in_fp8 load is not sized")
-        dtype = call.get("dtype") or call.get("torch_dtype")
-        dtype_bytes = 4 if "float32" in str(dtype) else 2
+        if call.get("fast_inference"):
+            raise ValueError("vLLM (fast_inference) memory is not sized")
+        for env in ("UNSLOTH_FORCE_FLOAT32", "UNSLOTH_FORCE_CUSTOM_DTYPE"):
+            if os.environ.get(env, "") not in ("", "0"):
+                raise ValueError(f"{env} changes the loaded dtype; not sized")
+        supports_bf16, force_float32 = _loader_precision()
+        loaded = _loaded_dtype(call.get("dtype") or call.get("torch_dtype"), supports_bf16)
+        dtype_bytes = 4 if loaded == "float32" else 2
         full = bool(call.get("full_finetuning"))
         load_in_8bit = bool(call.get("load_in_8bit"))
         load_in_4bit = bool(call.get("load_in_4bit")) and not (
@@ -446,12 +508,28 @@ def resolve_for_load(loader, args, kwargs):
         load_in_16bit = bool(call.get("load_in_16bit")) or bf16_repo_loads_16bit(
             name, call.get("load_in_16bit")
         )
+        model_types = _model_types(name, call, revision)
+        joined = ",".join(model_types) + ","
+        if loaded == "float16" and any(
+            f in joined or any(f == t.replace("-", "").replace("_", "") for t in model_types)
+            for f in force_float32
+        ):
+            raise ValueError(
+                f"{model_types[0]} loads in a forced float32 mode on float16; not sized"
+            )
+        if full:
+            # FastBaseModel.post_patch_model: float32 master weights (and so float32 grads and DDP buckets)
+            # unless the model loads in bfloat16 and float32_mixed_precision is not True.
+            fp32_master = loaded != "bfloat16" or call.get("float32_mixed_precision") is True
+            dtype_bytes = 4 if fp32_master else 2
+        quantize = (load_in_4bit or load_in_8bit) and not load_in_16bit
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
             load_in_8bit = load_in_8bit and not load_in_16bit,
             full_finetuning = full,
             dtype_bytes = dtype_bytes,
+            skip_modules = _quant_skip_modules(model_types) if quantize else None,
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
