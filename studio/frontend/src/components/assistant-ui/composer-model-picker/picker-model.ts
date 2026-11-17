@@ -396,15 +396,11 @@ export function chooseQuant<T extends QuantChoice>(
   return candidates[0];
 }
 
-/** An exported GGUF deletes per quant, so a row with no quant list to open deletes its one quant. */
-export function soleExportedQuant<T extends QuantChoice>(
-  lora: { source?: string; exportType?: string | null } | undefined,
+/** The quant a row's own menu acts on: its favorite, or its only one on disk. */
+export function soleOnDiskVariant<T extends QuantChoice>(
   onDisk: readonly T[],
   favoriteQuant: string | null | undefined,
 ): T | undefined {
-  if (lora?.source !== "exported" || lora.exportType !== "gguf") {
-    return undefined;
-  }
   if (favoriteQuant) {
     return onDisk.find((v) => norm(v.quant) === norm(favoriteQuant));
   }
