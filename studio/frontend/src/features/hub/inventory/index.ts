@@ -18,6 +18,7 @@ export {
   DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
   deleteLocalModel,
+  deleteUploadedDataset,
   revealLocalModel,
   fetchDeleteImpact,
   fetchOrphanCompanions,

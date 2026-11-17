@@ -1925,6 +1925,48 @@ def test_a_small_dit_kept_bf16_compiles_from_render_1(
 
 
 @pytest.mark.parametrize(
+    "reason, speed, expect_speed, expect_deferred",
+    [
+        ("eager measured host-bound", None, "default", False),
+        # an explicit speed request wins
+        ("eager measured host-bound", "off", "off", False),
+        # no measured reason: the deferred profile (eager for two images, compiled from the 3rd)
+        (None, None, "off", True),
+    ],
+)
+def test_a_family_measured_slow_eager_compiles_bf16_from_render_1(
+    fake_runtime, monkeypatch, reason, speed, expect_speed, expect_deferred
+):
+    backend, spy = _load_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "compile_from_render_one_reason", lambda _fam: reason)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *_a, **_k: True)
+    monkeypatch.setattr(dmod, "fp16_compile_explicit_only", lambda _t: False)
+    status = _load(
+        backend,
+        speed_mode = speed,
+        transformer_quant = "none",
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == [] and spy.seeds == []
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    assert backend._state.speed_mode == expect_speed
+    assert backend._state.speed_deferred is expect_deferred
+    if reason is not None and speed is None:
+        assert reason in status["resolved"]["speed_mode"]["reason"]
+
+
+def test_only_moss_image_carries_the_render_1_compile_reason():
+    from core.inference.diffusion_families import _FAMILIES
+    from core.inference.family_profile import compile_from_render_one_reason
+
+    carried = {f.name for f in _FAMILIES if compile_from_render_one_reason(f)}
+    assert carried == {"moss-image"}
+    assert compile_from_render_one_reason(None) is None
+
+
+@pytest.mark.parametrize(
     "repo, kept",
     [
         ("black-forest-labs/FLUX.2-klein-4B", True),

@@ -470,6 +470,24 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
+/** In on-screen px, so zoom does not flip the 380/420 choice. */
+export function pickerMinHeight(
+  innerWidth: number,
+  innerHeight: number,
+  zoomOut: number,
+): number {
+  const shortLandscape =
+    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
+  return shortLandscape ? 380 : 420;
+}
+
+export function pickerRoomBelow(
+  triggerBottom: number,
+  viewportHeight: number,
+): number {
+  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
+}
+
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
@@ -480,15 +498,39 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
+/** Mirrors --composer-picker-w in index.css. */
+export function pickerWidth(
+  viewportWidth: number,
+  scale: number,
+  zoomOut = 1,
+): number {
+  return Math.min(
+    520 * scale * zoomOut,
+    Math.max(360 * scale, viewportWidth * 0.3),
+  );
+}
+
+/** Browser zoom moves innerWidth but not outerWidth; the desktop app reports its webview zoom. */
+export function pickerZoomOut(
+  innerWidth: number,
+  outerWidth: number,
+  webviewZoom: number | null,
+): number {
+  const zoom =
+    webviewZoom ??
+    (innerWidth > 0 && outerWidth > 0 ? outerWidth / innerWidth : 1);
+  // Window borders and side-docked devtools read as a slight zoom; only a real step counts.
+  return zoom < 0.95 ? Math.min(4, 1 / zoom) : 1;
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,
   panelWidth: number,
   viewportWidth: number,
 ): number {
-  if (!trigger) {
+  if (!trigger || trigger.right <= trigger.left) {
     return 0;
   }
   // PopoverContent caps its width at the window less 32px.

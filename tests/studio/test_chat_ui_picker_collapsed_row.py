@@ -56,7 +56,9 @@ def test_a_loaded_model_still_opens_the_picker_collapsed():
     assert re.search(
         r"setExpanded\(\s*\([^;]*\)\s*\?\?\s*false,?\s*\)", PICKER
     ), "the load effect no longer collapses the picker; the drivers' expand click may be dead code"
-    assert "const isExpanded = expanded || !chosenName;" in PICKER
+    # Collapsed unless the user expanded it or nothing is chosen; more reasons to open expanded (a model with no
+    # thinking toggle, #18128) are fine, since expand_collapsed_model_picker clicks nothing on an expanded picker.
+    assert re.search(r"const isExpanded = expanded \|\| !chosenName(?: \|\| \w+)*;", PICKER)
 
 
 def test_every_picker_driver_imports_the_expand_helper():

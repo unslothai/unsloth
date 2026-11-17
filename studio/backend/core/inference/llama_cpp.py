@@ -133,6 +133,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     ctx_checkpoints_within_host_budget,
     effective_ctx_checkpoints,
+    selects_spec_type,
     parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
@@ -4112,7 +4113,17 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
             logger.warning("Failed to extract GGUF quant labels: %s", e)
 
     boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
-    return sorted(f for f in main_files if boundary.search(f.lower()))
+    loose = [f for f in main_files if boundary.search(f.lower())]
+    # A bare quant request must not resolve to a longer sibling quant: q6_k is inside UD-Q6_K_XL.
+    if (_quant_label_for_endian(variant_key) or "").lower() == variant_key:
+        # llama.cpp has no _XL type, so Q4_K_XL can only name UD-Q4_K_XL.
+        accepted = (
+            {variant_key, f"ud-{variant_key}"} if variant_key.endswith("_xl") else {variant_key}
+        )
+        loose = [
+            f for f in loose if (_quant_label_for_endian(f) or variant_key).lower() in accepted
+        ]
+    return sorted(loose)
 
 
 def _resolve_variant_gguf_files(
@@ -4594,7 +4605,7 @@ def _mla_mtp_auto_enabled() -> bool:
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
-    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+    return selects_spec_type(extra_args)
 
 
 # Shared with llama_server_args so detection and stripping cannot drift.
@@ -5902,6 +5913,36 @@ _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-o
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     """Matched via _flag_name: arg.cpp folds underscores to dashes, so --mmproj_offload counts too."""
     return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+
+
+def _spec_start_failure(output: str) -> tuple[str, str]:
+    """(log reason, spec_fallback_reason) for a llama-server that died with a drafter attached."""
+    lo = output.lower()
+    # Only an unknown arch proves the binary is outdated; a context that could not be created is usually memory.
+    if "unknown model architecture" in lo:
+        return (
+            "the prebuilt may predate it; retrying without speculative decoding -- run "
+            "`unsloth studio update` for this drafter",
+            "binary_outdated",
+        )
+    if any(
+        marker in lo
+        for marker in (
+            "failed to measure draft model memory",
+            "failed to measure mtp context memory",
+            "failed to create mtp context",
+            "failed to create llama_context",
+        )
+    ):
+        return (
+            "its context could not be created, usually too little memory for the drafter at "
+            "this context length and slot count; retrying without speculative decoding",
+            "runtime_error",
+        )
+    return (
+        "retrying without speculative decoding in case the drafter is the cause",
+        "runtime_error",
+    )
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -32576,7 +32617,8 @@ class LlamaCppBackend:
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
-                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
+                    # A probe that failed listed no device either, so its stall gets the same CPU replay.
+                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed", "error")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
                         _vk_outcome == "none"
@@ -33402,29 +33444,9 @@ class LlamaCppBackend:
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Launched without spec group; keep MTP only in requested state or the next Apply repeats the crash.
-                    _lo = "\n".join(self._stdout_lines).lower()
-                    # Only an unknown arch proves the binary is outdated; other failures are runtime.
-                    _arch_unsupported = "unknown model architecture" in _lo
-                    if (
-                        _arch_unsupported
-                        or "failed to measure draft model memory" in _lo
-                        or "failed to measure mtp context memory" in _lo
-                        or "failed to create mtp context" in _lo
-                        or "failed to create llama_context" in _lo
-                    ):
-                        _retry_reason = (
-                            "the prebuilt may predate it; retrying without "
-                            "speculative decoding -- run `unsloth studio "
-                            "update` for this drafter"
-                        )
-                        self._spec_fallback_reason = (
-                            "binary_outdated" if _arch_unsupported else "runtime_error"
-                        )
-                    else:
-                        _retry_reason = (
-                            "retrying without speculative decoding in case the drafter is the cause"
-                        )
-                        self._spec_fallback_reason = "runtime_error"
+                    _retry_reason, self._spec_fallback_reason = _spec_start_failure(
+                        "\n".join(self._stdout_lines)
+                    )
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -38553,6 +38575,11 @@ class LlamaCppBackend:
                                             reasoning_provenance.setdefault("wraps", []).append(
                                                 _prov_entry
                                             )
+                                        elif reasoning_provenance is not None:
+                                            _prov_entry = {"len": 0, "at": len(cumulative)}
+                                            reasoning_provenance.setdefault("later", []).append(
+                                                _prov_entry
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning
@@ -38875,6 +38902,14 @@ class LlamaCppBackend:
         # Enabled-name gate for the markerless Gemma strip (disabled/example
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
+        _lead_wrap = None
+
+        def _lead_think_span(text: str) -> int:
+            # The server's leading think block may quote </think>; markup stripping must not reach into it.
+            if _lead_wrap is None or not text.startswith("<think>"):
+                return 0
+            end = len("<think>") + _lead_wrap["len"]
+            return end + len("</think>") if text.startswith("</think>", end) else 0
 
         def _gemma_lead_promotable(text: str) -> bool:
             # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
@@ -38889,9 +38924,15 @@ class LlamaCppBackend:
             if not (auto_heal_tool_calls or force):
                 return text
             # Shared parser-side strip covers every family; tool_healing strip omits loop-only forms (python_tag, Mistral name) and would leak them into display.
-            return _shared_strip_tool_markup(
-                text, final = final, enabled_tool_names = _enabled_names_gate
+            span = _lead_think_span(text)
+            tail = text[span:]
+            cleaned = _shared_strip_tool_markup(
+                tail, final = final, enabled_tool_names = _enabled_names_gate
             )
+            if span and final and cleaned:
+                # A whole-text final strip never trimmed the answer's lead; streaming snapshots keep it.
+                cleaned = tail[: len(tail) - len(tail.lstrip())] + cleaned
+            return text[:span] + cleaned
 
         # Avoids quadratic rescans. Think blocks stay verbatim: a rehearsed call inside one must not be deleted.
         _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
@@ -38930,7 +38971,8 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return _streaming_stripper.strip(text)
+            span = _lead_think_span(text)
+            return text[:span] + _streaming_stripper.strip(text[span:])
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -38972,21 +39014,20 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display, _lead_wrap
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
                 _prov_entry = None
             elif reasoning_accum:
-                if (
-                    reasoning_provenance is not None
-                    and not cumulative_display
-                    and not _suppress_visible_output
-                ):
-                    reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
-                    reasoning_provenance.setdefault("wraps", []).append(
-                        {"len": len(reasoning_accum)}
-                    )
+                if reasoning_provenance is not None and not cumulative_display:
+                    wrap = {"len": len(reasoning_accum)}
+                    if _suppress_visible_output:
+                        _withheld_wraps.append(wrap)
+                    else:
+                        reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
+                        _lead_wrap = wrap
+                        reasoning_provenance.setdefault("wraps", []).append(_lead_wrap)
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
             # Not cleared: callers measure len(content_buffer) right after; recorded in _buffer_in_display so the cancel flush does not re-add it.
@@ -39564,7 +39605,8 @@ class LlamaCppBackend:
                 _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
-                _prov_entry = None
+                _prov_entry = _lead_wrap = None
+                _withheld_wraps = []
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
@@ -39901,18 +39943,32 @@ class LlamaCppBackend:
                                     reasoning_accum += reasoning
                                     if detect_state != _S_DRAINING:
                                         if not in_thinking:
-                                            # Suppressed iterations emit no content, so don't record
-                                            # their wraps.
+                                            # A suppressed pass's wraps are recorded only if the pass is released.
                                             if (
                                                 reasoning_provenance is not None
+                                                and _suppress_visible_output
+                                            ):
+                                                _prov_entry = {"len": 0}
+                                                if cumulative_display:
+                                                    _prov_entry["at"] = len(cumulative_display)
+                                                _withheld_wraps.append(_prov_entry)
+                                            elif (
+                                                reasoning_provenance is not None
                                                 and not cumulative_display
-                                                and not _suppress_visible_output
                                             ):
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif reasoning_provenance is not None:
+                                                _prov_entry = {
+                                                    "len": 0,
+                                                    "at": len(cumulative_display),
+                                                }
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative_display += "<think>"
@@ -40578,6 +40634,15 @@ class LlamaCppBackend:
                                 _stripped,
                                 _last_reprompt_text,
                             ):
+                                for _wrap in _withheld_wraps:
+                                    if "at" in _wrap:
+                                        reasoning_provenance.setdefault("later", []).append(_wrap)
+                                        continue
+                                    reasoning_provenance["wrapped"] = (
+                                        reasoning_provenance.get("wrapped", 0) + 1
+                                    )
+                                    reasoning_provenance.setdefault("wraps", []).append(_wrap)
+                                    _lead_wrap = _wrap
                                 if cumulative_display:
                                     forced_visible_text = _strip_tool_markup(
                                         cumulative_display,
@@ -42187,7 +42252,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         # Track content separately to preserve literal `</think>` in the answer.
         answer_text = ""
-        _prov_entry = None
+        _prov_entry = _lead_wrap = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
         _metadata_usage = None
@@ -42352,8 +42417,13 @@ class LlamaCppBackend:
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif reasoning_provenance is not None:
+                                                _prov_entry = {"len": 0, "at": len(cumulative)}
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative += "<think>"
@@ -42380,8 +42450,10 @@ class LlamaCppBackend:
                                             in_thinking = False
                                             _prov_entry = None
                                         cumulative += token
+                                        _span = _lead_think_span(cumulative)
                                         cleaned = (
-                                            _final_answer_stripper.strip(cumulative)
+                                            cumulative[:_span]
+                                            + _final_answer_stripper.strip(cumulative[_span:])
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
@@ -42399,8 +42471,11 @@ class LlamaCppBackend:
                             break  # exit outer for
                     if auto_heal_tool_calls and has_content_tokens and not in_thinking:
                         # Release an answer still held as a possible bare-JSON call.
+                        _span = _lead_think_span(cumulative)
                         _flushed = _final_answer_visible(
-                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                            cumulative[:_span] + _final_answer_stripper.strip(cumulative[_span:]),
+                            answer_text,
+                            at_end = True,
                         )
                         if len(_flushed) > len(_last_emitted):
                             _last_emitted = _flushed
