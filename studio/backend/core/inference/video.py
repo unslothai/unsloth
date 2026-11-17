@@ -6248,6 +6248,14 @@ class VideoBackend:
             )
             if lora_refusal:
                 raise ValueError(lora_refusal)
+        # Network, so after the cheap checks; before the worker, whose first step downloads the weights.
+        refuse_without_guardrail_access(
+            fam,
+            resolve_video_model_kind(gguf_filename, model_kind),
+            repo_id,
+            hf_token,
+            local_files_only,
+        )
         if auto_ordinal:
             # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
             gpu_ordinal = auto_cuda_ordinal_for_load()
@@ -9654,6 +9662,7 @@ class VideoBackend:
         )
         install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        refuse_without_guardrail_access(fam, kind, repo_id, hf_token, local_files_only)
         lora_specs = video_lora.active_specs(loras)
         baked_loras: tuple = ()
         if lora_specs:
@@ -14295,6 +14304,7 @@ class VideoBackend:
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
+                        memory_mode = getattr(state, "memory_mode", None),
                     )
                     # Key on the cache mode this request runs; corrected after the runner-aware toggle.
                     if state.cache_auto:
@@ -16152,6 +16162,20 @@ class VideoBackend:
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
+
+
+def refuse_without_guardrail_access(
+    fam: Any, kind: str, repo_id: str, hf_token: Any, local_files_only: bool
+) -> None:
+    """A Cosmos3 load with the safety checker turned on, whose token cannot fetch the gated guardrail, is refused
+    before its download (~33 GB for Nano)."""
+    if getattr(fam, "name", None) not in COSMOS3_FAMILIES or kind != "pipeline":
+        return
+    from .video_cosmos3 import guardrail_access_preflight
+
+    refusal = guardrail_access_preflight(str(repo_id), hf_token, local_files_only = local_files_only)
+    if refusal:
+        raise ValueError(refusal)
 
 
 def _custom_size_defaults(fam: Any) -> dict[str, Any]:

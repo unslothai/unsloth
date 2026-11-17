@@ -232,6 +232,41 @@ def test_pdf_result_discarded_after_fetch_deadline(monkeypatch):
     assert out == "Failed to fetch URL: timed out."
 
 
+def test_pdf_read_queued_behind_indexing_stops_on_cancel(monkeypatch):
+    from core.rag.parsers import MUPDF_LOCK
+
+    body = _pdf_bytes("Readable text")
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    monkeypatch.setattr(
+        tools.urllib.request,
+        "build_opener",
+        lambda *a, **k: _FakeOpener(_FakeResp(body, "application/pdf")),
+    )
+    monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("read while locked"))
+    held, release = threading.Event(), threading.Event()
+
+    def indexing():
+        with MUPDF_LOCK:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target = indexing)
+    holder.start()
+    held.wait(5)
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    started = time.monotonic()
+    try:
+        out = tools._fetch_page_text("https://example.com/a.pdf", timeout = 5, cancel_event = cancel)
+    finally:
+        release.set()
+        holder.join()
+    assert out == "Failed to fetch URL: cancelled."
+    assert time.monotonic() - started < 3
+
+
 def test_text_octet_stream_kept_after_sniffing(monkeypatch):
     body = b"level=info\nmessage=plain text artifact\n" * 100
     out = _fetch_with(monkeypatch, body, "application/octet-stream")

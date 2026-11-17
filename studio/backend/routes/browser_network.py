@@ -32,11 +32,21 @@ BROWSER_NETWORK_JS = r"""
         // through the panel to Unsloth's backend (POST /api/browser/request), which makes them as the
         // same-origin requests they are. Requests to other sites stay the browser's. When the page's
         // site answers any origin (cfg.anyOrigin), its writes and XHRs stay the browser's too, streamed
-        // and unbuffered; a fetch GET still falls back to the panel for an API that doesn't.
+        // and unbuffered, until the site has cookies; a fetch GET still falls back to the panel for an API that doesn't.
         const pageOrigin = (() => { try { return cfg.url ? new URL(cfg.url).origin : null; } catch { return null; } })();
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
         let lastRequest = 0;
+        // Newest store version seen, so an answer asked for earlier can't roll the routing back.
+        let routedVersion = null;
+        const routeBySiteCookies = (reply, writes) => {
+          if (typeof reply.siteCookies !== "boolean") return;
+          const version = Array.isArray(reply.cookiesVersion) ? reply.cookiesVersion : null;
+          const stale = version !== null && routedVersion !== null && version[0] === routedVersion[0] && version[1] < routedVersion[1];
+          if (version !== null && !stale) routedVersion = version;
+          // Wrongly on only costs the browser's streaming; wrongly off sends requests without the session.
+          if (reply.siteCookies || (!stale && writes === cfg.cookieWrites)) cfg.siteCookies = reply.siteCookies;
+        };
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (event.source !== parent || !data || data.type !== "unsloth:browser-command" || data.command !== "response") return;
@@ -47,24 +57,28 @@ BROWSER_NETWORK_JS = r"""
         const relay = (request, signal) => new Promise((resolve, reject) => {
           if (signal.aborted) { reject(signal.reason); return; }
           const id = "q" + ++lastRequest;
+          const writes = cfg.cookieWrites;
           const settle = () => { replies.delete(id); signal.removeEventListener("abort", onAbort); };
           const onAbort = () => { settle(); post({ type: "requestAbort", id }); reject(signal.reason); };
           signal.addEventListener("abort", onAbort);
           replies.set(id, (reply) => {
             settle();
+            routeBySiteCookies(reply, writes);
             if (reply.ok === true) resolve(reply);
             else reject(new TypeError("Failed to fetch"));
           });
           post({ type: "request", id, ...request });
         });
         const bodiless = (method) => method === "GET" || method === "HEAD";
+        // The sandbox's own request would go without the cookies the panel holds for the site.
+        const withCookies = (request) => cfg.siteCookies === true && request.credentials !== "omit";
         // A GET or HEAD tries the browser first: where the site already answers the sandbox's origin
         // (an API sending ACAO null or *), streams, long polls and large bodies stay as they were. One
         // the browser can't read goes to the panel, and that address goes there directly from then on.
         const needsRelay = new Set();
         const address = (url) => { const parts = new URL(url); return parts.origin + parts.pathname; };
         const fromBrowser = async (request) => {
-          if (!bodiless(request.method) || needsRelay.has(address(request.url))) return null;
+          if (!bodiless(request.method) || withCookies(request) || needsRelay.has(address(request.url))) return null;
           try { return await nativeFetch(request); }
           catch (error) {
             if (request.signal.aborted) throw error;
@@ -158,7 +172,7 @@ BROWSER_NETWORK_JS = r"""
           if (!ownSite(url)) return nativeFetch(input, init).finally(done);
           let request;
           try { request = new Request(input instanceof Request ? input : url, init); } catch (error) { done(); return Promise.reject(error); }
-          if (cfg.anyOrigin && !bodiless(request.method)) return nativeFetch(request).finally(done);
+          if (cfg.anyOrigin && !bodiless(request.method) && !withCookies(request)) return nativeFetch(request).finally(done);
           return fromBrowser(request).then((response) => response ?? relayFetch(request)).finally(done);
         };
 
@@ -197,7 +211,7 @@ BROWSER_NETWORK_JS = r"""
             super.open(...args);
             const url = args.length > 1 ? resolve(String(args[1])) : null;
             const async = args.length < 3 || Boolean(args[2]);
-            if (async && ownSite(url) && !cfg.anyOrigin) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
+            if (async && ownSite(url) && (!cfg.anyOrigin || cfg.siteCookies === true)) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
           }
           setRequestHeader(name, value) {
             super.setRequestHeader(name, value);

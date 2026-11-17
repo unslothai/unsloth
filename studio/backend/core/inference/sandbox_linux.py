@@ -22,7 +22,7 @@ from functools import lru_cache
 
 from loggers import get_logger
 
-from . import sandbox_landlock, sandbox_seccomp
+from . import sandbox_egress, sandbox_landlock, sandbox_seccomp
 from .os_sandbox import (
     CACHE_SCAN_SECONDS,
     PROFILE_VERSION,
@@ -540,6 +540,41 @@ def empty_proc_layout(bwrap: str | None = None) -> bool:
 def forget_proc_layout() -> None:
     _fresh_proc_answer.cache_clear()
     _inconclusive_until.clear()
+    _private_network_answers.clear()
+
+
+_EGRESS_INNER = "/run/unsloth-egress"
+_EGRESS_PORT = 3128
+_private_network_answers: "dict[tuple, bool]" = {}
+
+
+def _private_network_works(bwrap: str, empty_proc: bool) -> bool:
+    key = (_bwrap_file_identity(bwrap), empty_proc)
+    if key not in _private_network_answers:
+        if not _bwrap_supports(bwrap, "--unshare-net"):
+            return False
+        proc = ("--tmpfs", "/proc") if empty_proc else ("--proc", "/proc")
+        done = _preflight(bwrap, ("--unshare-net", *proc))
+        if done is None:
+            return False
+        _private_network_answers[key] = done.returncode == 0
+    return _private_network_answers[key]
+
+
+def _start_egress(bwrap: str, empty_proc: bool) -> "tuple[str, sandbox_egress.EgressProxy] | None":
+    """None leaves the launch unproxied, which tools.py refuses for the calls that asked."""
+    if not _private_network_works(bwrap, empty_proc):
+        return None
+    # /tmp keeps the socket path under the AF_UNIX length limit.
+    directory = tempfile.mkdtemp(prefix = "us-egress-", dir = "/tmp" if os.path.isdir("/tmp") else None)
+    try:
+        shutil.copyfile(sandbox_egress.RELAY_SCRIPT, os.path.join(directory, "relay.py"))
+        sandbox_egress.write_empty_rc_files(directory)
+        return directory, sandbox_egress.EgressProxy(os.path.join(directory, "proxy.sock"))
+    except Exception:
+        logger.warning("Could not start the sandbox egress proxy", exc_info = True)
+        shutil.rmtree(directory, ignore_errors = True)
+        return None
 
 
 def profile_id() -> str:
@@ -974,7 +1009,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except Exception:
         seccomp.close()
         raise
+    egress = None
     try:
+        egress = _start_egress(bwrap, empty_proc) if plan.egress_proxy else None
         argv: list[str] = [
             bwrap,
             "--die-with-parent",
@@ -985,6 +1022,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-cgroup",
+            # Proxied calls get loopback only: the relay below is their one way out.
+            *(("--unshare-net",) if egress else ()),
             # bwrap 0.6.1 lacks this; the seccomp filter refuses nested user namespaces there.
             *(("--disable-userns",) if disable_userns else ()),
             "--cap-drop",
@@ -1024,6 +1063,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--dir", workdir]
         if inner != workdir:
             argv += ["--dir", inner]
+        if egress:
+            argv += ["--ro-bind", egress[0], _EGRESS_INNER]
         argv += ["--remount-ro", "/"]
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
@@ -1064,8 +1105,21 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "--setenv",
             "PATH",
             _path(plan, packages),
-            "--",
         ]
+        egress_url = f"http://127.0.0.1:{_EGRESS_PORT}" if egress else None
+        if egress_url:
+            for name, value in sandbox_egress.proxy_environment(egress_url, _EGRESS_INNER).items():
+                argv += ["--setenv", name, value]
+        argv += ["--"]
+        if egress:
+            argv += [
+                sys.executable,
+                "-I",
+                "-S",
+                f"{_EGRESS_INNER}/relay.py",
+                f"{_EGRESS_INNER}/proxy.sock",
+                str(_EGRESS_PORT),
+            ]
         argv += list(plan.argv)
 
         return PreparedSandboxLaunch(
@@ -1077,15 +1131,20 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],
-            cleanup_paths = [identity_dir],
+            cleanup_paths = [identity_dir, *((egress[0],) if egress else ())],
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
+            cleanup_callbacks = [egress[1].close] if egress else [],
             launch_limitations = workdir_limitations,
+            egress_proxy = egress_url,
         )
     except Exception:
         seccomp.close()
         shutil.rmtree(identity_dir, ignore_errors = True)
+        if egress:
+            egress[1].close()
+            shutil.rmtree(egress[0], ignore_errors = True)
         raise
 
 

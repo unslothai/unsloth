@@ -20,6 +20,7 @@ const { useChatRuntimeStore } = await import(
 const {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   replayMaxTokensCap,
 } = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveQwenThinkingParams } = await import(
@@ -56,6 +57,7 @@ const commitPaneLoad = new Function(
   "mergeBackendRecommendedInference",
   "loadedContextForParams",
   "resolveQwenThinkingParams",
+  "recommendedValuesForPick",
   `let upgradeUnloadedActive; ${composer.slice(start, end)}`,
 );
 
@@ -78,6 +80,7 @@ function pickerLoad(model: string): void {
       response: response(model),
       modelId: model,
       presetSource: store.activePresetSource,
+      presetEditedKeys: store.presetEditedKeys,
       loadedContextLength: CONTEXT,
     }),
     { fromModelDefaults: true, maxTokensCap: CONTEXT },
@@ -97,6 +100,7 @@ function compareLoad(model: string, gguf = true): void {
     mergeBackendRecommendedInference,
     loadedContextForParams,
     resolveQwenThinkingParams,
+    recommendedValuesForPick,
   );
 }
 
@@ -163,6 +167,21 @@ test("a compare pane model keeps its remembered sampling over the recommendation
   compareLoad(QWEN);
   assert.deepEqual(sampling(), { temperature: 0.6, topP: 0.95, topK: 20 });
   assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.4);
+});
+
+test("an edited Default holds only the moved keys on a compare pane load", (t) => {
+  const store = useChatRuntimeStore.getState();
+  t.after(() => store.setActivePresetSource("builtin-default"));
+  pickerLoad(QWEN);
+  store.setActivePresetSource("modified");
+  compareLoad(GEMMA);
+  assert.deepEqual(sampling(), { temperature: 1, topP: 0.95, topK: 64 });
+
+  store.setActivePresetSource("modified", "temperature");
+  store.setParams({ ...useChatRuntimeStore.getState().params, temperature: 0.3 });
+  useChatRuntimeStore.setState({ paramsByModel: {} });
+  compareLoad(QWEN);
+  assert.deepEqual(sampling(), { temperature: 0.3, topP: 0.95, topK: 20 });
 });
 
 test("a non-GGUF compare pane load takes its sampling and context without filing an entry", async () => {

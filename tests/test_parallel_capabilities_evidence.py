@@ -655,3 +655,63 @@ def test_qwen3_moe_qlora_pp_keeps_its_refusal_with_the_micro_batch_evidence():
     with pytest.raises(NotImplementedError, match = "UNSLOTH_PP_MICROBATCHES=1") as e:
         caps.check(query)
     assert "qwen3_moe x qlora x aux on x pp" in str(e.value)
+
+
+def test_gemma4_moe_lora_under_pp_follows_its_gloo_evidence():
+    kw = dict(trainer = "sft", family = "gemma4", moe = True, mode = "lora", pp = 2, pp_schedule = "1f1b")
+    for extra in (
+        {},
+        {"multimodal": True},
+    ):  # the Trainer path trains a multimodal checkpoint on text
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "gemma4_moe" in cell.parity, (extra, cell)
+        caps.check(query)
+    for extra in ({"expert_lora": True}, {"router_aux_loss": True}):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+@pytest.mark.parametrize("memory", ["none", "gc", "unsloth_offload"])
+@pytest.mark.parametrize("expert_lora", [False, True])
+def test_deepseek_v41_lora_under_pp_follows_its_gloo_evidence(memory, expert_lora):
+    import re
+
+    # Release config keeps a vision_config; attention is windowed and eager.
+    kw = dict(
+        trainer = "sft",
+        family = "deepseek_v41",
+        moe = True,
+        mode = "lora",
+        multimodal = True,
+        windowed = True,
+        attention = "eager",
+        pp = 2,
+        pp_schedule = "gpipe",
+        memory = memory,
+        expert_lora = expert_lora,
+    )
+    status, cell = caps.cell_status(caps.Query(**kw))
+    assert status == "supported", cell
+    caps.check(caps.Query(**kw))
+    parity = pytest.importorskip("tests.test_parallel_deepseek_v41_gloo")
+    ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+    assert set(ids) <= set(parity.CELLS) and any("gc" in i for i in ids), ids
+    assert all(parity.CELLS[i]["mode"] == "pp" for i in ids)
+    for extra in (
+        {"mode": "qlora"},
+        {"mode": "full"},
+        {"attention": "sdpa"},
+        {"memory": "unsloth_gc"},
+        {"router_aux_loss": True},
+        {"cp": 2},
+    ):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+def test_native_port_attention_is_not_the_fast_kernels():
+    native = type("DeepseekV41Attention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    native.forward.__module__ = "unsloth.models.deepseek_v41.modeling"
+    fast = type("LlamaAttention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    fast.forward.__module__ = "unsloth.models.llama"
+    assert not caps._kernels(torch.nn.Sequential(native()))
+    assert caps._kernels(torch.nn.Sequential(fast()))

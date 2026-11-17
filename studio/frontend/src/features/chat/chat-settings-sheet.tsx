@@ -100,6 +100,7 @@ import {
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
+  editedSamplingKey,
   isSamePresetConfig,
   MAX_TOKENS_MIN,
   localMaxTokensCeiling,
@@ -113,6 +114,7 @@ import {
 } from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
+  externalMaxTokensUnboundedAtMax,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   modelCatalogVersion,
@@ -838,6 +840,13 @@ export function ChatSettingsPanel({
         activeExternalProvider?.maxOutputTokens,
       )
     : localMaxTokensCeiling(baseContext, params.maxSeqLength);
+  const maxTokensUnboundedAtMax =
+    isExternalModel &&
+    externalMaxTokensUnboundedAtMax(
+      externalProviderType,
+      externalSelection?.modelId,
+      activeExternalProvider?.maxOutputTokens,
+    );
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -868,7 +877,7 @@ export function ChatSettingsPanel({
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
-      setActivePresetSource(nextSource);
+      setActivePresetSource(nextSource, editedSamplingKey(key));
       setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
@@ -1615,7 +1624,10 @@ export function ChatSettingsPanel({
               step={64}
               onChange={set("maxTokens")}
               format={(v) =>
-                !isExternalModel && v >= maxTokensMax ? "Max" : undefined
+                (!isExternalModel || maxTokensUnboundedAtMax) &&
+                v >= maxTokensMax
+                  ? "Max"
+                  : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />

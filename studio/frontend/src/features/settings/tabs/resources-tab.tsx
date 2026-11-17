@@ -343,6 +343,7 @@ export function ResourcesTab() {
   });
   const storageSectionRef = useRef<HTMLElement | null>(null);
   const modelMemoryRef = useRef<HTMLElement | null>(null);
+  const enginesRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
     (s) => s.consumeScrollTarget,
@@ -400,7 +401,9 @@ export function ResourcesTab() {
         ? storageSectionRef
         : target === "resources-model-memory"
           ? modelMemoryRef
-          : null;
+          : target === "resources-engines"
+            ? enginesRef
+            : null;
     if (!target || !sectionRef) return;
     const frame = window.requestAnimationFrame(() => {
       sectionRef.current?.scrollIntoView({
@@ -1359,7 +1362,7 @@ export function ResourcesTab() {
 
       <LlamaBackendSection />
       <EngineVersionsSection />
-      <InferenceEnginesSection />
+      <InferenceEnginesSection ref={enginesRef} />
 
       <SettingsSection
         ref={storageSectionRef}

@@ -287,6 +287,13 @@ test("LoRA weight targets one row; 0 drops it; the prompt enhancer is off for ev
   const req = (i: number) =>
     buildCellRequest(p, i, base({ enhance_prompt: true }), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false });
   assert.deepEqual(req(0).loras, [{ id: "a/style", weight: 1 }]);
+  // Every weight at 0 sends [] (none), not an omitted list, which the server reads as the load's adapters.
+  const one = sdxl({ loraCapable: true, loras: [{ id: "a/style", weight: 1, label: "style" }] });
+  const off = plan([{ axisId: "lora:0", text: "0, 1" }], one);
+  assert.deepEqual(
+    buildCellRequest(off, 0, base(), one, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras,
+    [],
+  );
   assert.deepEqual(req(2).loras, [
     { id: "a/style", weight: 1 },
     { id: "b/detail", weight: 1 },
@@ -504,8 +511,8 @@ test("LoRA weight cells: every weighted cell runs before any adapter-free one, a
     ],
     ctx,
   );
-  const hasLora = p.order.map((i) =>
-    Boolean(buildCellRequest(p, i, base(), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras),
+  const hasLora = p.order.map(
+    (i) => (buildCellRequest(p, i, base(), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras?.length ?? 0) > 0,
   );
   const firstOff = hasLora.indexOf(false);
   assert.ok(firstOff > 0);

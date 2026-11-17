@@ -217,7 +217,13 @@ async def managed_tool_chat(
     from state.tool_policy import get_tool_policy
     from core.inference.sse_control_frames import sanitize_provider_sse_line
 
-    tools_on = bool(api._effective_enable_tools(payload))
+    info = backend.models.get(backend.active_model_name, {})
+    # Memory can still supply facts to a model that cannot execute its update tool.
+    tools_on = bool(
+        api._effective_enable_tools(payload)
+        if info.get("supports_tools")
+        else api._base_enable_tools(payload)
+    )
     ui_events = api._ui_stream_events_enabled(request)
     if tools_on and not api._launcher_tool_default_applies(payload, ui_events):
         tools_on = False
@@ -233,7 +239,6 @@ async def managed_tool_chat(
         and get_tool_policy() is not False
     )
     has_history = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    info = backend.models.get(backend.active_model_name, {})
     # A catalog sent with tool_choice "none" and no tool turns cannot produce a call, so a model
     # without a parser serves it as plain chat; one with a parser still renders the catalog.
     idle_catalog = payload.tool_choice == "none" and not has_history

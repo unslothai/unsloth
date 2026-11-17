@@ -18,7 +18,12 @@ How the values are quantised (ideas from the cited papers, written from scratch 
 * The probabilities are 8-bit integers too, rescaled per key tile so every tile uses the full range, and the softmax
   denominator is summed over the rounded values (INT-FlashAttention, arXiv 2409.16997).
 * V is centred and divided by a per-channel gain taken over every key (both undone on the output), with one scale per
-  key tile.
+  key tile. A head whose V has an attention sink (a few keys far from the rest in most channels: the first text
+  tokens of a joint sequence) takes the range without the stats chunk that holds it, clips that chunk in place and
+  adds the far-out parts back exactly in a launch after the kernel, so the sink no longer costs every other key its
+  resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
+  calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
+  with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -377,6 +382,8 @@ class Operands(dict):
             offset, shape = plan["layout"][key]
             base = self["i8"] if key in ("qi", "ki", "vt") else self["f32"]
             view = base[offset : offset + math.prod(shape)].view(shape)
+            if key in ("rcnt", "ridx"):
+                view = view.view(torch.int32)
         self[key] = view
         return view
 
@@ -403,13 +410,17 @@ def _device_index(device: Any) -> int:
     return device.index if device.index is not None else torch.cuda.current_device()
 
 
-def _functions(index: int, head_dim: int, config: dict) -> tuple:
-    """(attention kernel, quantiser kernels, shared bytes) for a device, head dim and config; compiled on first
-    use."""
+def _functions(
+    index: int,
+    head_dim: int,
+    config: dict,
+    sinks: bool = False,
+) -> tuple:
+    """(attention kernel, quantiser kernels, shared bytes), with or without the sink path; compiled on first use."""
     config = select_config(
         config, 0
     )  # a config with long overrides names its kernel for short sequences
-    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP)
+    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP, bool(sinks))
     found = _LOADED.get(key)
     if found is None:
         import torch
@@ -419,18 +430,19 @@ def _functions(index: int, head_dim: int, config: dict) -> tuple:
         capability = tuple(torch.cuda.get_device_capability(index))
         shared = shared_bytes(head_dim, config)
         group = min(int(ROT_GROUP), head_dim)
+        extra = {"SINKS": 1} if sinks else {}
         found = (
             cuda_kernel.load(
                 index,
                 capability,
-                kernel_defines(head_dim, config),
+                {**kernel_defines(head_dim, config), **extra},
                 config.get("max_registers"),
                 shared,
             ),
             cuda_kernel.load_quantisers(
                 index,
                 capability,
-                {"HD": head_dim, "BN": int(config["bn"]), "RGX": group.bit_length() - 5},
+                {"HD": head_dim, "BN": int(config["bn"]), "RGX": group.bit_length() - 5, **extra},
             ),
             shared,
         )
@@ -451,6 +463,32 @@ def _raw_stream(index: int) -> int:
 # A call's launch arithmetic (padded lengths, operand layout, grids, every argument that is not a pointer), keyed
 # by everything it depends on: a short call is mostly this glue, so it is done once per call signature.
 _PLAN_LIMIT = 512
+RESID_THREADS = 256  # NTR of the quantiser source
+RESID_BLOCKS = 128
+# A plan's first SINK_LEARN_CALLS calls learn whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT.
+# Both must precede CUDA graph capture (3 eager warm-ups): an undecided plan keeps the sink path in the graph.
+SINK_LEARN_CALLS = 32
+SINK_DECIDE_AT = 48
+# A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
+DECIDE_BUCKET = 256
+# Plain path wins only if its error vs torch is <= this x the sink path's (Qwen-Image-2.1 ~1.03, Z-Image-Turbo ~1.6).
+PLAIN_ERROR_SLACK = 1.15
+# MODE_MAIN: no sink path (non-SINK_DITS, probes). MODE_RACE: sink path raced vs torch (auto SINK_DITS route).
+# MODE_KERNELS: forced SINK_DITS request, races only the INT8 paths, never torch.
+MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
+SINK_DITS = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
+)
+_RACE = (
+    threading.local()
+)  # .path: the path _median_ms's timed calls take on this thread (None outside it)
 GRID_LIMIT = 65535  # blocks along y in one launch
 
 
@@ -462,6 +500,48 @@ def _plans() -> dict:
     return found
 
 
+def _decisions() -> dict:
+    """Sink decisions per ``plan["decision"]`` key."""
+    found = _LOADED.get("decisions")
+    if found is None:
+        found = _LOADED["decisions"] = {}
+    return found
+
+
+# Set once a CUDA graph records a sink-route call: no later race or route change, the graph replays what it recorded.
+_GRAPHED = [False]
+# (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
+_ROUTES: list = []
+
+
+def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
+    _ROUTES.append((int(index), int(head_dim), raise_floor))
+
+
+def _drop_routes(plan: dict) -> None:
+    _, Sq, Sk, _, D = plan["shape"]
+    floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    for index, head_dim, raise_floor in list(_ROUTES):
+        if index == plan["index"] and head_dim == D:
+            raise_floor(floor)
+
+
+def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
+    """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
+    its calls compile as they did before the install; any other raises its token floor."""
+
+    def raise_floor(tokens: int) -> None:
+        stock = getattr(proc, "_unsloth_stock", None)
+        if stock is not None and module is not None and getattr(module, "processor", None) is proc:
+            module.processor = stock
+            return
+        proc._unsloth_int8_min_tokens = max(
+            int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
+        )
+
+    return raise_floor
+
+
 def _config_key(config: dict) -> tuple:
     """``config`` by value, hashable (its ``long`` overrides are a dict)."""
     long = config.get("long")
@@ -470,7 +550,15 @@ def _config_key(config: dict) -> tuple:
     return tuple(sorted(config.items()))
 
 
-def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+def _plan_key(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> tuple:
     return (
         index,
         _config_key(config),
@@ -484,23 +572,47 @@ def _plan_key(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], inde
         v.stride(),
         scale,
         (K_MEAN_STEP, K_MEAN_KEYS, V_RANGE_STEP, V_RANGE_CHUNKS, GRID_LIMIT),
+        int(mode),
     )
 
 
-def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> dict:
-    """The launch plan for ``[B, S, H, D]`` q / k / v with aligned strides (``_aligned``) on device ``index``."""
+def _plan(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> dict:
+    """The launch plan for aligned ``[B, S, H, D]`` q / k / v on device ``index``."""
     from .diffusion_int8_attention_cuda import float_bits
 
-    key = _plan_key(q, k, v, config, scale, index)
+    key = _plan_key(q, k, v, config, scale, index, mode)
     plans = _plans()
     plan = plans.get(key)
     if plan is not None:
         return plan
+    decision = (
+        index,
+        _config_key(config),
+        q.shape[0],
+        q.shape[2],
+        q.shape[3],
+        q.dtype,
+        scale,
+        q.shape[1] // DECIDE_BUCKET,
+        k.shape[1] // DECIDE_BUCKET,
+        int(mode),
+    )
     B, Sq, H, D = q.shape
     Sk = k.shape[1]
     config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
-    fn, kernels, shared = _functions(index, D, config)
+    fn0, kernels0, shared = _functions(index, D, config, sinks = False)
+    fn, kernels = (
+        _functions(index, D, config, sinks = True)[:2] if mode != MODE_MAIN else (None, None)
+    )
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
     mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
     n_qpad = _pad(Sq, 16 * nq * wpc)
@@ -525,6 +637,11 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         ("vc", (BH, D)),
         ("vg", (BH, D)),
         ("vpart", (BH, nvc, 2, D)),
+        ("vsink", (BH, nvc, 2)),
+        ("rcnt", (BH,)),
+        ("ridx", (BH, vrows)),
+        ("rres", (BH, vrows, D)),
+        ("rml", (BH, n_qpad, 2)),
     ):
         layout[name] = (at, shape)
         at += math.prod(shape)
@@ -532,7 +649,20 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     off.update(
         {
             name: f32_at + 4 * layout[name][0]
-            for name in ("qs", "ks", "kc", "vs", "vc", "vg", "vpart")
+            for name in (
+                "qs",
+                "ks",
+                "kc",
+                "vs",
+                "vc",
+                "vg",
+                "vpart",
+                "vsink",
+                "rcnt",
+                "ridx",
+                "rres",
+                "rml",
+            )
         }
     )
     q_kind, k_kind, v_kind = (_OUT_KIND[str(x.dtype)] for x in (q, k, v))
@@ -556,7 +686,22 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
         "bytes": f32_at + 4 * at,
         "shape": (B, Sq, Sk, H, D),
         "pads": (n_qpad, n_kpad),
-        "kernels": (kernels["unsloth_i8stats_q"], kernels["unsloth_i8quant_kv"], fn),
+        "kernels": (
+            (
+                kernels["unsloth_i8stats_q"],
+                kernels["unsloth_i8quant_kv"],
+                fn,
+                kernels["unsloth_i8resid"],
+            )
+            if kernels is not None
+            else None
+        ),
+        "mode": int(mode),
+        "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
+        "calls": 0,
+        "sinks": None,
+        "decision": decision,
+        "checks": [],
         "shared": shared,
         "stats_grids": grids(stats_jobs),
         "stats_threads": stats_threads,
@@ -577,12 +722,16 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
             k_kind,
             v_kind,
         ),
-        "kv_grids": grids(kv_jobs),
+        "kv_grids": grids(kv_jobs + 1),
+        "kv_grids0": grids(kv_jobs),
         "kv_threads": kv_threads,
-        "kv_tail": (Sk, n_kpad, H, nvc, *kst[:3], *vst[:3], k_kind, v_kind),
+        "kv_tail": (Sk, n_kpad, H, nvc, vrows, vstep, *kst[:3], *vst[:3], k_kind, v_kind),
+        "kv_tail0": (Sk, n_kpad, H, nvc, *kst[:3], *vst[:3], k_kind, v_kind),
         "attn_grid": (n_qpad // (16 * nq * wpc), BH),
         "attn_threads": 32 * wpc,
         "attn_tail": (Sq, n_qpad, Sk, n_kpad, H, *out_stride, _OUT_KIND[str(v.dtype)]),
+        "resid_grid": (BH, max(1, min(RESID_BLOCKS, -(-Sq // (RESID_THREADS // 32 * 4))))),
+        "resid_tail": (Sq, n_qpad, n_kpad, H, vrows, *out_stride, _OUT_KIND[str(v.dtype)]),
         "out_shape": (B, Sq, H, D),
     }
     if len(plans) >= _PLAN_LIMIT:
@@ -591,43 +740,63 @@ def _plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: i
     return plan
 
 
-def _find_plan(q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int) -> tuple:
+def forget_plans() -> None:
+    """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
+    _plans().clear()
+    _decisions().clear()
+    _ROUTES.clear()
+    _GRAPHED[0] = False
+
+
+def _find_plan(
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
+) -> tuple:
     """(plan, q, k, v): the call's launch plan and its operands with aligned strides (copies only where needed)."""
     # a plan is only ever made for aligned strides: finding one leaves the first rows' alignment to check
     plan = None
     if not (q.data_ptr() | k.data_ptr() | v.data_ptr()) & 15:
-        plan = _plans().get(_plan_key(q, k, v, config, scale, index))
+        plan = _plans().get(_plan_key(q, k, v, config, scale, index, mode))
     if plan is None:
         q, k, v = _aligned(q), _aligned(k), _aligned(v)
-        plan = _plan(q, k, v, config, scale, index)
+        plan = _plan(q, k, v, config, scale, index, mode)
     return plan, q, k, v
 
 
-def _launch_quantisers(plan: dict, q: Any, k: Any, v: Any, base: int, stream: int) -> None:
+def _launch_quantisers(
+    plan: dict, q: Any, k: Any, v: Any, base: int, stream: int, sinks: bool
+) -> None:
     qp, kp, vp = q.data_ptr(), k.data_ptr(), v.data_ptr()
     off = plan["off"]
-    stats_q, quant_kv, _ = plan["kernels"]
-    kc, vpart = base + off["kc"], base + off["vpart"]
-    args = (qp, kp, vp, kc, vpart, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
+    stats_q, quant_kv = plan["kernels" if sinks else "kernels0"][:2]
+    kc, vpart, vsink = base + off["kc"], base + off["vpart"], base + off["vsink"]
+    sink = (vsink,) if sinks else ()
+    args = (qp, kp, vp, kc, vpart, *sink, base + off["qi"], base + off["qs"]) + plan["stats_tail"]
     for grid, job in plan["stats_grids"]:
         stats_q.launch(grid, plan["stats_threads"], args + (job,), 0, stream)
-    args = (
-        kp,
-        vp,
-        kc,
-        vpart,
+    tile_args = (
         base + off["ki"],
         base + off["ks"],
         base + off["vt"],
         base + off["vs"],
         base + off["vc"],
         base + off["vg"],
-    ) + plan["kv_tail"]
-    for grid, job in plan["kv_grids"]:
+    )
+    if sinks:
+        args = (kp, vp, kc, vpart, vsink) + tile_args
+        args += (base + off["rcnt"], base + off["ridx"], base + off["rres"]) + plan["kv_tail"]
+    else:
+        args = (kp, vp, kc, vpart) + tile_args + plan["kv_tail0"]
+    for grid, job in plan["kv_grids" if sinks else "kv_grids0"]:
         quant_kv.launch(grid, plan["kv_threads"], args + (job,), 0, stream)
 
 
-def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
+def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: bool) -> None:
     off = plan["off"]
     args = (
         base + off["qi"],
@@ -640,7 +809,209 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int) -> None:
         base + off["vc"],
         out_ptr,
     ) + plan["attn_tail"]
+    if not sinks:
+        plan["kernels0"][2].launch(
+            plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream
+        )
+        return
+    args += (base + off["rcnt"], base + off["rml"])
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
+    args = (
+        base + off["qi"],
+        base + off["ki"],
+        base + off["qs"],
+        base + off["ks"],
+        base + off["vg"],
+        base + off["rcnt"],
+        base + off["ridx"],
+        base + off["rres"],
+        base + off["rml"],
+        out_ptr,
+    ) + plan["resid_tail"]
+    plan["kernels"][3].launch(plan["resid_grid"], RESID_THREADS, args, 0, stream)
+
+
+def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
+    """(path, call index) for this call of ``plan``: True the attention-sink path, False the kernels without it, or
+    "native" torch's attention. Every call takes the sink path until the plan's SINK_DECIDE_AT-th; from then on a
+    plan none of whose first SINK_LEARN_CALLS calls had a head that clipped V (an attention sink) runs the kernels
+    without the path, instruction for instruction the ones from before it, with no residual launch (a head without
+    sinks gets the same bits either way; one that would still clip takes the full range, as before). A plan with
+    sinks keeps the path where ``race`` (timed on the deciding call's own inputs) finds it still faster than torch's
+    attention by RACE_MARGIN, and runs torch's attention otherwise (no race: it keeps the path). The races and the
+    early calls aside, the same calls in the same order take the same paths. Called on the device of the plan; a CUDA
+    graph capture keeps what the plan has decided."""
+    import torch
+
+    forced = getattr(_RACE, "path", None)
+    if forced is not None:
+        return forced, None
+    if plan.get("mode", MODE_RACE) == MODE_MAIN:
+        return False, None
+    if torch.cuda.is_current_stream_capturing():
+        _GRAPHED[0] = True
+        return (True if plan["sinks"] is None else plan["sinks"]), None
+    n = plan["calls"]
+    plan["calls"] = n + 1
+    if plan["sinks"] is None and n >= SINK_DECIDE_AT:
+        # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
+        with _outside_capture() as safe:
+            if safe:
+                seen = False
+                for event, host in plan["checks"]:
+                    event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
+                    seen = seen or bool(host.any())
+                plan["checks"] = []
+                # the bucket's verdict for plans that, like this one, had sinks (or none: no race either way)
+                key = plan["decision"] + (seen,) if "decision" in plan else None
+                known = _decisions().get(key) if key is not None else None
+                if not seen:
+                    plan["sinks"] = (
+                        False  # the same bits as the sink path a graph may have recorded
+                    )
+                elif _GRAPHED[0]:
+                    # after a capture: the path the graph recorded for an undecided plan, no race, no route change
+                    plan["sinks"] = True
+                elif known is not None:
+                    plan["sinks"] = known
+                else:
+                    plan["sinks"] = True if race is None else race()
+                    if key is not None:
+                        _decisions()[key] = plan["sinks"]
+                        if plan["sinks"] == "native":
+                            _drop_routes(plan)
+    return (True if plan["sinks"] is None else plan["sinks"]), n
+
+
+def _outside_capture() -> Any:
+    """``hold_off_capture``: True while no other thread records a CUDA graph."""
+    from .diffusion_cuda_graph import hold_off_capture
+    return hold_off_capture()
+
+
+def _sink_race(
+    plan: dict,
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float],
+    index: int,
+    forced: bool = False,
+) -> Any:
+    """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
+    the faster of the sink path and the kernels without it (only where their error against torch's attention here is
+    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native".
+    ``forced`` (a forced request): the INT8 paths only, torch's attention neither timed nor taken. The verdict is
+    logged."""
+    import torch
+
+    stream = _raw_stream(index)
+
+    def kernels(sinks: bool) -> Callable:
+        def run() -> Any:
+            i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = q.device)
+            out = torch.empty(plan["out_shape"], dtype = v.dtype, device = q.device)
+            _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, sinks)
+            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, sinks)
+            return out
+
+        return run
+
+    def torch_attention() -> Any:
+        return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
+
+    fns = {"sinks": kernels(True), "plain": kernels(False)}
+    if not forced:
+        fns = {"incumbent": torch_attention, **fns}
+    try:
+        ref = torch_attention().float()
+        norm = float(ref.norm())
+        err = {
+            name: float((fns[name]().float() - ref).norm()) / max(norm, 1e-30)
+            for name in ("sinks", "plain")
+        }
+        ref = None
+        ms = _median_ms(fns)
+    except torch.OutOfMemoryError:
+        return False if forced else "native"
+    path = _pick_path(ms, err, forced)
+    _log().info(
+        "diffusion.int8_attention: attention sinks in %s keys x %s heads, sink path %.4f ms (error %.4g), without it "
+        "%.4f ms (error %.4g), torch %.4f ms: %s",
+        plan["shape"][2],
+        plan["shape"][3],
+        ms["sinks"],
+        err["sinks"],
+        ms["plain"],
+        err["plain"],
+        ms.get("incumbent", float("nan")),
+        {True: "the sink path", False: "the kernels without it"}.get(
+            path, "torch's attention from here on"
+        ),
+    )
+    plan["sink_race"] = {name: round(value, 4) for name, value in ms.items()}
+    plan["sink_error"] = {name: round(value, 6) for name, value in err.items()}
+    return path
+
+
+def _pick_path(
+    ms: dict,
+    err: dict,
+    forced: bool = False,
+) -> Any:
+    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
+    kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
+    sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
+    taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
+    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite.
+    ``forced``: the first of those INT8 paths, never torch's attention (the kernels without the sink path where
+    neither error is finite: the ones a forced request ran before the path)."""
+    finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
+    if not finite["sinks"]:
+        order = ["plain"] if finite["plain"] else []
+    elif finite["plain"] and err["plain"] <= PLAIN_ERROR_SLACK * err["sinks"]:
+        order = (
+            ["sinks", "plain"] if ms["sinks"] < RACE_MARGIN * ms["plain"] else ["plain", "sinks"]
+        )
+    else:
+        order = ["sinks"]
+    paths = {"sinks": True, "plain": False}
+    if forced:
+        return paths[order[0]] if order else False
+    for name in order:
+        if ms[name] < RACE_MARGIN * ms["incumbent"]:
+            return paths[name]
+    return "native"
+
+
+def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
+    """For one of the plan's first SINK_LEARN_CALLS calls: its clipped-key counts (rcnt) copied to pinned host memory
+    behind the quantisers, read when the plan decides (_choose_path); no wait here."""
+    import torch
+
+    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
+        return
+    # an event record is prohibited while another thread records a graph: that call goes unread
+    with _outside_capture() as safe:
+        if not safe:
+            return
+        at, (BH,) = plan["off"]["rcnt"], plan["layout"]["rcnt"][1]
+        host = torch.empty(BH, dtype = torch.int32, pin_memory = True)
+        host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
+        event = torch.cuda.Event()
+        event.record()
+        plan["checks"].append((event, host))
+
+
+def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
+    """The quantiser launches of one call on the current device and stream (``quantise``: no race, a plan with sinks
+    keeps the path); whether it took the sink path."""
+    path, n = _choose_path(plan)
+    sinks = path is not False
+    _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(plan["index"]), sinks)
+    if sinks:
+        _check_sinks(plan, i8, n)
+    return sinks
 
 
 def quantise(
@@ -649,19 +1020,21 @@ def quantise(
     v: Any,
     config: dict,
     scale: Optional[float] = None,
+    mode: int = MODE_MAIN,
 ) -> dict:
-    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims)."""
+    """The kernel's inputs from ``[B, S, H, D]`` q / k / v (any strides on the first three dims); ``mode`` as for
+    ``int8_attention_call``."""
     import torch
 
     dev = q.device
     index = _device_index(dev)
-    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index, mode)
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
     if torch.cuda.current_device() == index:
-        _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
+        sinks = _quantise_on_device(plan, q, k, v, i8)
     else:
         with torch.cuda.device(index):
-            _launch_quantisers(plan, q, k, v, i8.data_ptr(), _raw_stream(index))
+            sinks = _quantise_on_device(plan, q, k, v, i8)
     return Operands(
         i8 = i8,
         plan = plan,
@@ -669,39 +1042,67 @@ def quantise(
         pads = plan["pads"],
         dtype = v.dtype,
         config = plan["config"],
+        sinks = sinks,
         inputs = (q, k, v),  # kept alive until the launches that read them are done
     )
 
 
 def _cuda_attention(
-    q: Any, k: Any, v: Any, config: dict, scale: Optional[float], index: int
+    q: Any,
+    k: Any,
+    v: Any,
+    config: dict,
+    scale: Optional[float],
+    index: int,
+    mode: int = MODE_MAIN,
 ) -> Any:
-    """``attend(quantise(q, k, v, config, scale))`` in one pass: one plan lookup, one stream lookup, no operand
-    views. The scratch buffer and any aligned copies are freed on return; the caching allocator hands their memory
-    out again only in stream order, after the launches that read it."""
+    """``attend(quantise(q, k, v, config, scale))`` in one pass, on the path the plan takes (_choose_path, with the
+    sink race): one plan lookup, one stream lookup, no operand views. The scratch buffer and any aligned copies are
+    freed on return; the caching allocator hands their memory out again only in stream order, after the launches that
+    read it."""
     import torch
 
-    plan, q, k, v = _find_plan(q, k, v, config, scale, index)
+    plan, q, k, v = _find_plan(q, k, v, config, scale, index, mode)
+    if torch.cuda.current_device() == index:
+        return _attention_on_device(plan, q, k, v, scale, index)
+    with torch.cuda.device(index):
+        return _attention_on_device(plan, q, k, v, scale, index)
+
+
+def _attention_on_device(
+    plan: dict, q: Any, k: Any, v: Any, scale: Optional[float], index: int
+) -> Any:
+    """One call of ``plan`` on the current stream."""
+    import torch
+
+    path, n = _choose_path(
+        plan,
+        race = lambda: _sink_race(
+            plan, q, k, v, scale, index, forced = plan.get("mode") == MODE_KERNELS
+        ),
+    )
+    if path == "native":
+        return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
     dev = q.device
     i8 = torch.empty(plan["bytes"], dtype = torch.int8, device = dev)
     out = torch.empty(plan["out_shape"], dtype = v.dtype, device = dev)
-    base = i8.data_ptr()
-    if torch.cuda.current_device() == index:
-        stream = _raw_stream(index)
-        _launch_quantisers(plan, q, k, v, base, stream)
-        _launch_attention(plan, base, out.data_ptr(), stream)
-    else:
-        with torch.cuda.device(index):
-            stream = _raw_stream(index)
-            _launch_quantisers(plan, q, k, v, base, stream)
-            _launch_attention(plan, base, out.data_ptr(), stream)
+    stream = _raw_stream(index)
+    _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, path)
+    if path:
+        _check_sinks(plan, i8, n)
+    _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, path)
     return out
 
 
-def kernel_function(device: Any, head_dim: int, config: dict) -> Any:
-    """The loaded CUDA kernel for this device and config (compiled on first use)."""
+def kernel_function(
+    device: Any,
+    head_dim: int,
+    config: dict,
+    sinks: bool = False,
+) -> Any:
+    """The loaded CUDA kernel, with or without the sink path."""
     import torch
-    return _functions(_device_index(torch.device(device)), head_dim, config)[0]
+    return _functions(_device_index(torch.device(device)), head_dim, config, sinks)[0]
 
 
 def attend(p: dict) -> Any:
@@ -711,11 +1112,12 @@ def attend(p: dict) -> Any:
     plan, i8 = p["plan"], p["i8"]
     index = plan["index"]
     out = torch.empty(plan["out_shape"], dtype = p["dtype"], device = i8.device)
+    sinks = p.get("sinks", False)
     if torch.cuda.current_device() == index:
-        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
+        _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index), sinks)
     else:
         with torch.cuda.device(index):
-            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index))
+            _launch_attention(plan, i8.data_ptr(), out.data_ptr(), _raw_stream(index), sinks)
     return out
 
 
@@ -795,8 +1197,10 @@ def _run(
     impl: Optional[str],
     config: Optional[dict] = None,
     scale: Optional[float] = None,
+    mode: int = MODE_MAIN,
 ) -> Any:
-    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted. Without an explicit ``config``, a call long
+    """The kernels of ``impl`` on a call ``unsupported_reason`` accepted (``mode``: the CUDA kernel's, as for
+    ``int8_attention_call``). Without an explicit ``config``, a call long
     enough for the card's long variant runs it only where that variant passed its own check; elsewhere it runs the
     short config (a valid kernel at any length, only slower there)."""
     import torch
@@ -814,7 +1218,7 @@ def _run(
         with torch.no_grad(), torch.cuda.device(q.device):
             return triton_kernel._int8_attention(q, k, v, config, scale = scale)
     with torch.no_grad():
-        return attend(quantise(q, k, v, config, scale))
+        return attend(quantise(q, k, v, config, scale, mode))
 
 
 def int8_attention(
@@ -823,6 +1227,7 @@ def int8_attention(
     v: Any,
     scale: Optional[float] = None,
     config: Optional[dict] = None,
+    mode: int = MODE_MAIN,
 ) -> Any:
     """``softmax(q k^T * scale) v`` with int8 products. ``[B, Sq, H, D]``, ``[B, Sk, H, D]`` x 2 -> ``[B, Sq, H, D]``
     in the dtype of V. Raises where ``unsupported_reason`` says so; ``int8_attention_impl`` is the guarded form."""
@@ -832,21 +1237,35 @@ def int8_attention(
     if reason is not None:
         raise ValueError(f"INT8 attention cannot take this call: {reason}")
     index = q.device.index if q.device.index is not None else torch.cuda.current_device()
-    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale)
+    return _run(q, k, v, implementation(index, int(q.shape[-1])), config, scale, mode)
 
 
-def native_attention(q: Any, k: Any, v: Any) -> Any:
+def native_attention(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
     """torch's attention on the same ``[B, S, H, D]`` views."""
     import torch.nn.functional as F
 
     out = F.scaled_dot_product_attention(
-        q.to(v.dtype).permute(0, 2, 1, 3), k.to(v.dtype).permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)
+        q.to(v.dtype).permute(0, 2, 1, 3),
+        k.to(v.dtype).permute(0, 2, 1, 3),
+        v.permute(0, 2, 1, 3),
+        scale = scale,
     )
     return out.permute(0, 2, 1, 3)
 
 
-def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
-    """The kernel where it can run, native attention elsewhere and after any failure."""
+def int8_attention_impl(
+    q: Any,
+    k: Any,
+    v: Any,
+    mode: int = MODE_MAIN,
+) -> Any:
+    """The kernel where it can run, native attention elsewhere and after any failure (``mode``: as for
+    ``int8_attention_call``)."""
     import torch
 
     reason, index, impl, config = _call_route(q, k, v)
@@ -862,9 +1281,9 @@ def int8_attention_impl(q: Any, k: Any, v: Any) -> Any:
                 out = _run(q, k, v, impl, config)
             elif torch.is_grad_enabled():
                 with torch.no_grad():
-                    out = _cuda_attention(q, k, v, config, None, index)
+                    out = _cuda_attention(q, k, v, config, None, index, mode)
             else:
-                out = _cuda_attention(q, k, v, config, None, index)
+                out = _cuda_attention(q, k, v, config, None, index, mode)
             STATS["int8"] += 1
             if impl == "triton":
                 STATS["triton"] += 1
@@ -903,10 +1322,17 @@ def _tracing() -> bool:
     return bool((stack is not None and stack()) or (functorch is not None and functorch()))
 
 
-def int8_attention_call(q: Any, k: Any, v: Any) -> Any:
+def int8_attention_call(
+    q: Any,
+    k: Any,
+    v: Any,
+    mode: int = MODE_MAIN,
+) -> Any:
     """What a processor calls: the custom op while torch.compile traces (opaque, with a fake), and in eager the op's
     body directly, which skips the dispatcher's per-call cost (about a fifth of a short call's CPU time). Tensor
-    subclasses, dispatch modes and functorch transforms always go through the op."""
+    subclasses, dispatch modes and functorch transforms always go through the op. ``mode`` (the route's): MODE_MAIN
+    the kernels as before the attention-sink path, else the sink path with its race (a constant of the graph: another
+    op)."""
     import torch
 
     if (
@@ -916,7 +1342,9 @@ def int8_attention_call(q: Any, k: Any, v: Any) -> Any:
         and not torch.compiler.is_compiling()
         and not _tracing()
     ):
-        return int8_attention_impl(q, k, v)
+        return int8_attention_impl(q, k, v, mode) if mode else int8_attention_impl(q, k, v)
+    if mode != MODE_MAIN:
+        return torch.ops.unsloth_studio.int8_attention_nhd_sinks(q, k, v, int(mode))
     return torch.ops.unsloth_studio.int8_attention_nhd(q, k, v)
 
 
@@ -943,6 +1371,17 @@ def int8_attention_op() -> Any:
     @int8_attention_nhd.register_fake
     def _(q, k, v):
         # contiguous [B, S, H, D] in V's dtype: the layout every real output above has
+        return v.new_empty(q.shape)
+
+    # the attention-sink routes (``mode``): another op, so the main one keeps its schema and its graphs
+    @torch.library.custom_op(
+        _OP + "_sinks", mutates_args = (), schema = "(Tensor q, Tensor k, Tensor v, int mode) -> Tensor"
+    )
+    def int8_attention_nhd_sinks(q, k, v, mode):
+        return int8_attention_impl(q, k, v, int(mode)).contiguous()
+
+    @int8_attention_nhd_sinks.register_fake
+    def _(q, k, v, mode):
         return v.new_empty(q.shape)
 
     return int8_attention_nhd
@@ -992,21 +1431,27 @@ def accuracy(got: Any, ref: Any) -> dict:
 
 
 def _median_ms(fns: dict, rounds: int = 5) -> dict:
-    """Median milliseconds per callable, timed with CUDA events in interleaved rounds after two warm calls each."""
+    """Median milliseconds per callable, timed with CUDA events in interleaved rounds after two warm calls each. The
+    races time on probe inputs, which have no attention sinks: the kernel calls in here take the path a plan without
+    sinks runs (_choose_path), and count toward no plan's decision."""
     import torch
 
-    for fn in fns.values():
-        fn()
-        fn()
-    times: dict = {name: [] for name in fns}
-    for _ in range(rounds):
-        for name, fn in fns.items():
-            a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
-            a.record()
+    _RACE.path = False
+    try:
+        for fn in fns.values():
             fn()
-            b.record()
-            b.synchronize()
-            times[name].append(a.elapsed_time(b))
+            fn()
+        times: dict = {name: [] for name in fns}
+        for _ in range(rounds):
+            for name, fn in fns.items():
+                a, b = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+                a.record()
+                fn()
+                b.record()
+                b.synchronize()
+                times[name].append(a.elapsed_time(b))
+    finally:
+        _RACE.path = None
     return {name: sorted(ts)[len(ts) // 2] for name, ts in times.items()}
 
 
@@ -1250,6 +1695,14 @@ def _secondary_cards(primary: int, transformer: Any = None) -> tuple:
         return ()
 
 
+def sink_mode(dit_name: str, forced: bool) -> int:
+    """The ``mode`` a route of DiT class ``dit_name`` runs the kernel in: the attention-sink path only for SINK_DITS,
+    the families it was measured on."""
+    if dit_name not in SINK_DITS:
+        return MODE_MAIN
+    return MODE_KERNELS if forced else MODE_RACE
+
+
 def install_int8_attention(
     transformer: Any,
     *,
@@ -1259,6 +1712,7 @@ def install_int8_attention(
     incumbent: Optional[tuple] = None,
     force: bool = False,
     logger: Any = None,
+    floor: Optional[Callable] = None,
 ) -> int:
     """Route strided attention processors to the INT8 kernel. Returns how many now run it.
 
@@ -1266,9 +1720,11 @@ def install_int8_attention(
     ``incumbent`` is ``(name, callable(q, k, v))`` for what those modules run now (default: their native backend).
     The kernel must match fp32 attention on this card; unless ``force`` (or the env switch is ``1``) it must also be
     more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
-    must be faster also under ``force`` (not under the env switch). Never raises."""
+    must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
+    name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
+    dispatch route's races and token floor). Never raises."""
     try:
-        return _install(transformer, device, dtype, modules, incumbent, force, logger)
+        return _install(transformer, device, dtype, modules, incumbent, force, logger, floor)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors stay as they were
         if logger is not None:
             logger.info("diffusion.int8_attention: skipped (%s)", exc)
@@ -1283,6 +1739,7 @@ def _install(
     incumbent: Optional[tuple],
     force: bool,
     logger: Any,
+    floor: Optional[Callable] = None,
 ) -> int:
     import torch
 
@@ -1317,6 +1774,24 @@ def _install(
             if incumbent is not None
             else _sdpa_incumbent(getattr(proc, "_attention_backend", None))
         )
+        if floor is not None and not force:
+            found, minimum = floor(dev, dtype, int(m.heads), head_dim, fn, name)
+            report[(int(m.heads), head_dim, name)] = found
+            proc._unsloth_int8_impl = found.get("impl")
+            if minimum is None:
+                continue
+            proc._unsloth_int8 = True
+            proc._unsloth_int8_min_tokens = int(minimum)
+            proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, False)
+            register_route(index, head_dim, _raise_processor_floor(proc, m))
+            engaged += 1
+            for card in _secondary_cards(index, transformer):
+                if implementation(card, head_dim) is None:
+                    continue
+                report[(card, int(m.heads), head_dim, name)] = verdict(
+                    torch.device("cuda", card), dtype, int(m.heads), head_dim, fn, name, timed = False
+                )
+            continue
         found = verdict(dev, dtype, int(m.heads), head_dim, fn, name, timed = not force)
         # a Triton stand-in races even when requested by name (only the env switch or IMPL=triton skip it)
         stand_in = (
@@ -1339,6 +1814,9 @@ def _install(
             minimum = int(found["min_tokens"])
         proc._unsloth_int8 = True
         proc._unsloth_int8_min_tokens = minimum
+        proc._unsloth_int8_sinks = sink_mode(type(transformer).__name__, force)
+        if not force:
+            register_route(index, head_dim, _raise_processor_floor(proc, m))
         engaged += 1
         # A layer split or CFG replica runs this processor on the selection's other cards too: the op runs the kernel
         # only on a card whose own accuracy check passed, so check each of them here (the race stays the primary's).
@@ -1353,7 +1831,7 @@ def _install(
             card, heads, head_dim, name = key if len(key) == 4 else (index, *key)
             logger.info(
                 "diffusion.int8_attention: cuda:%d heads=%d head_dim=%d vs %s: impl=%s ok=%s cos=%s ms=%s "
-                "min_tokens=%s%s%s",
+                "min_tokens=%s%s%s%s",
                 card,
                 heads,
                 head_dim,
@@ -1364,6 +1842,13 @@ def _install(
                 found.get("ms"),
                 found.get("min_tokens"),
                 f" long_ok={found['long'].get('ok')}" if "long" in found else "",
+                f" long race min_tokens={found['long_min_tokens']}"
+                if "long_min_tokens" in found
+                else (
+                    f" 2048 race min_tokens={found['mid_min_tokens']}"
+                    if "mid_min_tokens" in found
+                    else ""
+                ),
                 " (forced)" if force else "",
             )
         if engaged:
@@ -1411,6 +1896,88 @@ def install_requested(
     return install_int8_attention(
         transformer, device = device, dtype = dtype, force = True, logger = logger
     )
+
+
+def install_auto(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+    speed_active: bool = True,
+    speed_unset_only: bool = False,
+) -> int:
+    """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
+    ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
+    ``MIN_TOKENS`` floor). Off with speed off (bit-identical), on ROCm, and off CUDA. Returns the count."""
+    import torch
+
+    if mode() != "auto" or not speed_active:
+        return 0
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return 0
+    try:
+        from . import diffusion_int8_attention_dispatch as dispatch
+    except Exception:  # noqa: BLE001
+        return 0
+    if not dispatch.enabled() or type(transformer).__name__ not in dispatch.AUTO_DITS:
+        return 0
+    if speed_unset_only and type(transformer).__name__ not in dispatch.SPEED_UNSET_DITS:
+        return 0
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
+    if not device.startswith("cuda") or not torch.cuda.is_available() or _is_rocm():
+        return 0
+    dtype = getattr(target, "dtype", None)
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        index = _device_index(torch.device(device))
+        dtype = (
+            torch.bfloat16 if torch.cuda.get_device_capability(index) >= (8, 0) else torch.float16
+        )
+    try:
+        from .diffusion_flux3_attn import ensure_strided_processors
+        ensure_strided_processors(pipe, target, logger)
+    except Exception:  # noqa: BLE001 -- other families bring their own strided processors
+        pass
+
+    cuda_only = type(transformer).__name__ in dispatch.AUTO_CUDA_ONLY
+
+    def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
+        if cuda_only and implementation(_device_index(dev), head_dim) != "cuda":
+            return {
+                "ok": False,
+                "impl": implementation(_device_index(dev), head_dim),
+                "error": "CUDA kernel only",
+            }, None
+        found, minimum = dispatch._card_floor(dev, dt, heads, head_dim, fn, name, False, False)
+        # an untried CUDA kernel reads "cuda" above; one that failed in the check falls back to Triton in the verdict
+        if cuda_only and found.get("impl") != "cuda":
+            return {**found, "ok": False, "error": "CUDA kernel only"}, None
+        return found, minimum
+
+    engaged = install_int8_attention(
+        transformer, device = device, dtype = dtype, logger = logger, floor = floor
+    )
+    _give_back_unengaged(transformer)
+    return engaged
+
+
+def _give_back_unengaged(transformer: Any) -> None:
+    """A strided processor ``install_auto`` put in for the race (``_unsloth_stock``) that did not engage gives the
+    module the processor it replaced, so a lost race leaves the module as base had it (FLUX.3: its fused Q/K swap
+    follows). That processor is marked raced: the dispatch route does not race it again."""
+    for m in int8_processors(transformer):
+        proc = m.processor
+        stock = getattr(proc, "_unsloth_stock", None)
+        if stock is None or getattr(proc, "_unsloth_int8", False):
+            continue
+        try:
+            stock._unsloth_int8_raced = True
+        except Exception:  # noqa: BLE001 -- a slotted processor: the route's cached verdict decides alike
+            pass
+        setter = getattr(m, "set_processor", None)
+        if callable(setter):
+            setter(stock)
+        else:
+            m.processor = stock
 
 
 def remove_int8_attention(transformer: Any) -> int:

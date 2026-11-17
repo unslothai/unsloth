@@ -2925,6 +2925,13 @@ def _normalize_sandbox_level(value: Any) -> Any:
     return value
 
 
+def _canonical_tool_names(value: Optional[list[str]]) -> Optional[list[str]]:
+    # The curl guide published ``bash`` for the built-in shell tool, whose real name is ``terminal``.
+    if value is None:
+        return None
+    return ["terminal" if name == "bash" else name for name in value]
+
+
 _SANDBOX_LEVEL_DESCRIPTION = (
     "[x-unsloth] Sandbox level for the Python and Terminal tools. 'high' (default) runs them "
     "in the OS sandbox when it works and on software safeguards otherwise. 'low' runs them on "
@@ -3162,6 +3169,7 @@ class ChatCompletionRequest(BaseModel):
             "server-side tools are forwarded."
         ),
     )
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
@@ -3704,6 +3712,7 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         None,
         description = "[x-unsloth] List of enabled built-in tool names",
     )
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
@@ -4607,6 +4616,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
+    _canonical_enabled_tools = field_validator("enabled_tools")(_canonical_tool_names)
     thinking: Optional[AnthropicThinkingConfig] = None
     # These win over `thinking` when both are present.
     enable_thinking: Optional[bool] = None
@@ -4917,7 +4927,8 @@ class DiffusionLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM "
-        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "cut), low_vram (stream the transformer and text encoders block by block, tiled VAE "
+        "decode; lowest VRAM, slowest). "
         "Overrides cpu_offload when set.",
     )
     allow_oversized_load: bool = Field(
@@ -4929,7 +4940,9 @@ class DiffusionLoadRequest(BaseModel):
     )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
-        description = "Opt-in speed optims (default off -> bit-identical output): "
+        description = "Speed optims. Unset: off for a dense load, default for a GGUF load "
+        "(near-lossless compile profile). off: bit-identical output (a quantized transformer "
+        "still compiles). "
         "eager (channels_last + cudnn + attention + fused RMSNorm/AdaLayerNorm patches, "
         "NO torch.compile -> fast first image, no compile tax), "
         "default (also regional torch.compile where eligible), "
@@ -5552,8 +5565,9 @@ class DiffusionGenerateRequest(BaseModel):
         None,
         max_length = 8,
         description = "LoRA adapters to apply for this generation (by discovery id + weight). "
-        "Omitted/empty applies none and behaves exactly as before. Rejected with a clear "
-        "message when the loaded model or its quantisation can't apply LoRA.",
+        "Omitted: the adapters the model was loaded with (baked in, or named on a dense load), at "
+        "their load weights; none for a load that named none. An empty list applies none. "
+        "Rejected with a clear message when the loaded model or its quantisation can't apply LoRA.",
     )
     controlnet: Optional[ControlNetSpec] = Field(
         None,
@@ -7545,7 +7559,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
-        "(offload every component, lowest VRAM, slower).",
+        "(stream the transformer and text encoders block by block, tiled VAE decode; lowest "
+        "VRAM, slowest).",
     )
     allow_oversized_load: bool = Field(
         False,
@@ -7566,11 +7581,12 @@ class VideoLoadRequest(BaseModel):
     )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
-        description = "Opt-in speed optims (default off -> bit-identical output): "
+        description = "Speed optims. Unset: default for every video load, dense or GGUF (regional "
+        "torch.compile where eligible; output is close to, not bit-identical with, off). "
+        "off (bit-identical output; a quantized transformer still compiles), "
         "eager (channels_last + cudnn + attention + fused norm patches, NO torch.compile), "
         "default (also regional torch.compile where eligible), "
-        "max (also TF32 + fused QKV). GGUF video loads default to the near-lossless "
-        "compile profile.",
+        "max (also TF32 + fused QKV).",
     )
     attention_backend: Optional[
         Literal[

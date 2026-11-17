@@ -34,16 +34,47 @@ import threading
 from typing import Any, Optional
 
 from . import diffusion_int8_attention as _I8
+from . import diffusion_qwenimage21_attn as _Q21
 
 DISPATCH_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_DISPATCH"
 _DIFFUSERS_DISPATCH = "diffusers.models.attention_dispatch"
 _ROUTED_ATTR = "_unsloth_int8_dispatch"
-# DiTs the unset switch races on: per-step error with the kernel within that of their shipped INT8 weights. Left out
-# (name or env switch only): Z-Image-Turbo (rel L2 0.035 vs 0.024) and LTX-2 (audio 0.010 vs 0.008).
+# DiTs the unset switch races: kernel per-step error within their shipped INT8 weights' (rel L2 vs bf16; Z-Image-Turbo
+# 0.022/0.048 vs 0.024/0.073). LTX-2 left out: audio stream 0.010 vs 0.008, no sink to fix. Qwen-Image left out: max
+# 0.031 vs 0.013, 50-step images LPIPS 0.14 from native. HunyuanImage-2.1 and Krea-2 mask every call (nothing to route).
 AUTO_DITS = frozenset(
     {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "MOSSImageTransformer",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
+        "ZImageTransformer2DModel",
+    }
+)
+# AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
+# INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
+AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
+# Also race with speed unset and no profile (e.g. offloaded INT8 DiT on T4): only the families measured that way.
+SPEED_UNSET_DITS = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
+)
+# Accuracy measured on the CUDA kernel only: with the switch unset a Triton stand-in keeps the incumbent.
+AUTO_CUDA_ONLY = frozenset(
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "ZImageTransformer2DModel",
     }
 )
 # processors that already run the kernel themselves
@@ -78,6 +109,12 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
+def _race_name(incumbent: Any) -> str:
+    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
+    name = f"dispatch:{_backend_name(incumbent)}"
+    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+
+
 class Int8Route(str):
     """Routing backend equal to the incumbent's name. ``cards`` maps each passing CUDA index to its token floor (a
     layer split or CFG replica runs the processor on a second card); ``min_tokens`` is the lowest, ``index`` the
@@ -105,6 +142,7 @@ class Int8Route(str):
         route.index = int(index)
         route.head_dim = int(head_dim)
         route.impl = impl
+        route.sinks = 0  # the kernel's mode (diffusion_int8_attention.sink_mode), set by _install
         return route
 
     @property
@@ -116,6 +154,7 @@ class Int8Route(str):
         return str(getattr(self.incumbent, "name", None) or self.value).upper()
 
     def __reduce__(self) -> tuple:
+        # the state dict carries what the constructor does not take: a CFG replica (deepcopy) keeps the sink mode
         return (
             Int8Route,
             (
@@ -127,6 +166,7 @@ class Int8Route(str):
                 self.impl,
                 self.cards,
             ),
+            {"sinks": self.sinks},
         )
 
     def __repr__(self) -> str:
@@ -266,6 +306,17 @@ def _cached_reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]
 _MISSING = object()
 
 
+def _raise_route_floor(route: Int8Route, card: int):
+    """For ``register_route``: a plan on ``card`` that decided torch's attention raises the route's floor there."""
+
+    def raise_floor(tokens: int) -> None:
+        route.cards[card] = max(route.cards.get(card, route.min_tokens), int(tokens))
+        route.min_tokens = min(route.cards.values())
+        _DECISIONS.clear()
+
+    return raise_floor
+
+
 def _note(outcome: str) -> None:
     ROUTE_STATS[outcome] = ROUTE_STATS.get(outcome, 0) + 1
 
@@ -284,11 +335,18 @@ def routed_dispatch_attention_fn(*args: Any, **kwargs: Any) -> Any:
             reason = _cached_reason(backend, args, kwargs)
             _note(reason or "int8")
         if reason is None:
-            return _I8.int8_attention_call(
+            qkv = (
                 _arg(args, kwargs, 0, "query"),
                 _arg(args, kwargs, 1, "key"),
                 _arg(args, kwargs, 2, "value"),
             )
+            mode = backend.sinks
+            return _I8.int8_attention_call(*qkv, mode) if mode else _I8.int8_attention_call(*qkv)
+        backend = kwargs["backend"]
+    if isinstance(backend, _Q21.StridedCudnn):
+        out = _Q21.maybe_strided(backend, args, kwargs)
+        if out is not None:
+            return out
     return _STATE["original"](*args, **kwargs)
 
 
@@ -340,7 +398,10 @@ def install_dispatch_route() -> int:
 
 def _calls_dispatch(proc: Any) -> bool:
     """Whether the processor's ``__call__`` calls ``dispatch_attention_fn`` (directly, or through a module attribute
-    or a function-level import of it)."""
+    or a function-level import of it), or its class declares that its blocks do (``_calls_dispatch_attention_fn``:
+    MOSS-Image's in-tree blocks call their module's ``dispatch_attention_fn`` with the processor's backend)."""
+    if getattr(type(proc), "_calls_dispatch_attention_fn", False) is True:
+        return True
     call = getattr(type(proc), "__call__", None)
     code = getattr(call, "__code__", None)
     if code is None:
@@ -371,6 +432,30 @@ def routable_modules(dit: Any) -> list:
             continue
         out.append(m)
     return out
+
+
+def quantized_weights(dit: Any) -> bool:
+    """Whether a Linear of ``dit`` holds a quantized weight: a tensor subclass (torchao INT8 / FP8) or 8-bit storage."""
+    import torch
+
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return False
+    low = {
+        torch.int8,
+        torch.uint8,
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    }
+    for m in modules():
+        if not isinstance(m, torch.nn.Linear):
+            continue
+        w = getattr(m, "weight", None)
+        if w is None:
+            continue
+        if type(w) not in (torch.nn.Parameter, torch.Tensor) or w.dtype in low:
+            return True
+    return False
 
 
 def _dits(pipe: Any) -> list:
@@ -430,13 +515,14 @@ def install(
     requested: Any = None,
     logger: Any = None,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> int:
     """Route the pipeline's DiT attention dispatch calls to the INT8 kernel where this card and the switch allow it
     (module docstring). ``speed_active=False`` (speed off) keeps the automatic route off so output stays
     bit-identical; a request by name or the env switch still routes. Returns the number of modules routed; never
     raises."""
     try:
-        return _install(pipe, target, requested, logger, speed_active)
+        return _install(pipe, target, requested, logger, speed_active, speed_unset_only)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
         remove(pipe)
         if logger is not None:
@@ -592,6 +678,7 @@ def _install(
     requested: Any,
     logger: Any,
     speed_active: bool = True,
+    speed_unset_only: bool = False,
 ) -> int:
     import torch
 
@@ -618,10 +705,25 @@ def _install(
             torch.bfloat16 if torch.cuda.get_device_capability(index) >= (8, 0) else torch.float16
         )
     candidates = []
+    cuda_only = set()
+    family: dict = {}
     for dit in _dits(pipe):
-        if not forced and type(dit).__name__ not in AUTO_DITS:
+        if not forced and (
+            type(dit).__name__ not in AUTO_DITS
+            or (speed_unset_only and type(dit).__name__ not in SPEED_UNSET_DITS)
+            or (type(dit).__name__ in AUTO_QUANTIZED_ONLY and not quantized_weights(dit))
+        ):
             continue
-        candidates.extend(routable_modules(dit))
+        mods = [
+            m
+            for m in routable_modules(dit)
+            # a processor the strided race already lost for (install_auto) stays as it was
+            if forced or not getattr(m.processor, "_unsloth_int8_raced", False)
+        ]
+        candidates.extend(mods)
+        family.update((id(m), type(dit).__name__) for m in mods)
+        if not forced and type(dit).__name__ in AUTO_CUDA_ONLY:
+            cuda_only.update(id(m) for m in mods)
     if not candidates or install_dispatch_route() == 0:
         return 0
     I8.int8_attention_op()
@@ -636,7 +738,7 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = f"dispatch:{_backend_name(incumbent)}"
+        name = _race_name(incumbent)
 
         def run(
             q: Any,
@@ -644,12 +746,15 @@ def _install(
             v: Any,
             backend: Any = incumbent,
         ) -> Any:
-            return original(q, k, v, backend = backend)
+            # the incumbent as the processor runs it (a strided cuDNN pin races without diffusers' copies)
+            out = _Q21.maybe_strided(backend, (q, k, v), {"backend": backend})
+            return out if out is not None else original(q, k, v, backend = backend)
 
         floors: dict = {}
         impl = None
         for card in cards:
-            if I8.implementation(card, head_dim) is None:
+            impl_here = I8.implementation(card, head_dim)
+            if impl_here is None or (id(m) in cuda_only and impl_here != "cuda"):
                 continue
             found, minimum = _card_floor(
                 torch.device("cuda", card),
@@ -661,13 +766,16 @@ def _install(
                 forced,
                 env_force,
             )
+            if id(m) in cuda_only and found.get("impl") != "cuda":
+                # the verdict ran on Triton (the untried CUDA kernel failed in the check): not the measured path
+                found, minimum = {**found, "ok": False, "error": "CUDA kernel only"}, None
             report[(card, int(m.heads), head_dim, name)] = found
             if minimum is not None:
                 floors[card] = minimum
                 impl = impl or found.get("impl")
         if not floors:
             continue
-        proc._attention_backend = Int8Route(
+        proc._attention_backend = route = Int8Route(
             incumbent,
             floors.get(index, min(floors.values())),
             dtype,
@@ -676,6 +784,10 @@ def _install(
             impl,
             cards = floors,
         )
+        route.sinks = I8.sink_mode(family.get(id(m), ""), forced)
+        if not forced:
+            for card in floors:
+                I8.register_route(card, head_dim, _raise_route_floor(route, card))
         routed += 1
     if logger is not None:
         for (card, heads, head_dim, name), found in report.items():

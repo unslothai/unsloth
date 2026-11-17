@@ -5639,7 +5639,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:
@@ -6227,7 +6228,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}

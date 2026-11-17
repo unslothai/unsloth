@@ -10,17 +10,21 @@ import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { getHfToken, hfApiToken } from "@/features/hub";
 import {
   cancelVideoRestyle,
+  cancelVideoRestyleSetup,
   fetchVideoRestyleClip,
   fetchVideoRestyleProgress,
   fetchVideoRestyleStatus,
   previewVideoRestyle,
   startVideoRestyle,
+  startVideoRestyleSetup,
   type VideoRestylePreview,
   type VideoRestyleProgress,
   type VideoRestyleStatus,
 } from "./api";
+import { restyleSetupView } from "./restyle-setup";
 
 const POLL_MS = 1000;
 const MAX_FRAMES = 121;
@@ -96,6 +100,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const running = progress?.active === true || progress?.pending === true;
   if (!running && cancelling) setCancelling(false);
   const unavailable = status !== null && !status.available;
+  const setupView = restyleSetupView(status);
+  const settingUp = setupView?.kind === "running";
+  const [setupError, setSetupError] = useState<string | null>(null);
+  // An error from an earlier start or cancel is stale once a setup runs or Restyle is ready.
+  if (setupError && (settingUp || status?.available)) setSetupError(null);
+  const [setupStarting, setSetupStarting] = useState(false);
 
   const refresh = useCallback(async () => {
     // Taken before the progress request: a clip chosen while it is in flight voids its result.
@@ -146,6 +156,42 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       .then(setStatus)
       .catch(() => setStatus(null));
   }, [active]);
+
+  // Setup runs on the server; the status carries its progress until it ends.
+  useEffect(() => {
+    if (!active || !settingUp) return;
+    const timer = window.setInterval(() => {
+      fetchVideoRestyleStatus()
+        .then(setStatus)
+        .catch(() => undefined);
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [active, settingUp]);
+
+  const startSetup = async () => {
+    if (setupStarting) return;
+    setSetupStarting(true);
+    setSetupError(null);
+    try {
+      setStatus(await startVideoRestyleSetup(hfApiToken(getHfToken())));
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+      // A setup already running (another tab) answers 409: pick up its progress instead of a dead button.
+      fetchVideoRestyleStatus().then(setStatus).catch(() => undefined);
+    } finally {
+      setSetupStarting(false);
+    }
+  };
+
+  const cancelSetup = async () => {
+    try {
+      await cancelVideoRestyleSetup();
+      setStatus(await fetchVideoRestyleStatus());
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+      fetchVideoRestyleStatus().then(setStatus).catch(() => undefined);
+    }
+  };
 
   const choose = async (next: { video: File | null; frames: File[] }) => {
     if (running || submitting) return;
@@ -248,12 +294,57 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           </p>
         </div>
 
-        {unavailable && (
+        {(setupView?.kind === "refused" || setupView?.kind === "blocked") && (
           <Alert data-testid="restyle-unavailable">
-            <AlertTitle>Restyle is not set up here</AlertTitle>
-            <AlertDescription>
-              {status?.reason} It needs an NVIDIA GPU with about 40 GB of memory and has only been
-              tested on Linux.
+            <AlertTitle>
+              {setupView.kind === "refused" ? "Restyle cannot run here" : "Restyle is not set up here"}
+            </AlertTitle>
+            <AlertDescription>{setupView.message}</AlertDescription>
+          </Alert>
+        )}
+
+        {setupView?.kind === "offer" && (
+          <Alert data-testid="restyle-setup-offer">
+            <AlertTitle>Restyle is not set up yet</AlertTitle>
+            <AlertDescription className="grid gap-2">
+              <span>{setupView.message}</span>
+              {(setupError ?? setupView.error) && (
+                <span className="text-destructive" data-testid="restyle-setup-error">
+                  {setupError ?? setupView.error}
+                </span>
+              )}
+              <span>
+                <Button
+                  size="sm"
+                  onClick={() => void startSetup()}
+                  disabled={setupStarting}
+                  data-testid="restyle-setup-start"
+                >
+                  {setupStarting ? <Spinner className="size-3.5" /> : null}
+                  Set up Restyle
+                </Button>
+              </span>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {setupView?.kind === "running" && (
+          <Alert data-testid="restyle-setup-progress">
+            <AlertTitle>Setting up Restyle</AlertTitle>
+            <AlertDescription className="grid gap-2">
+              <span data-testid="restyle-setup-phase">{setupView.label}</span>
+              {setupView.percent != null ? <Progress value={setupView.percent} /> : <Spinner className="size-4" />}
+              <span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void cancelSetup()}
+                  disabled={setupView.cancelling}
+                  data-testid="restyle-setup-cancel"
+                >
+                  {setupView.cancelling ? "Stopping after the current step" : "Cancel"}
+                </Button>
+              </span>
             </AlertDescription>
           </Alert>
         )}
