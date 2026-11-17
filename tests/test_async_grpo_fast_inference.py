@@ -36,7 +36,6 @@ class _Lora:
 class _FakeEngine:
     def __init__(self):
         lora_config = types.SimpleNamespace(max_lora_rank = 64)
-        # Unsloth's engines allow the sampled token's logprob only.
         model_config = types.SimpleNamespace(
             max_model_len = 2048, dtype = "torch.bfloat16", max_logprobs = 0
         )
@@ -482,7 +481,6 @@ def test_trl_vllm_client_reads_this_server():
     try:
         from accelerate.state import PartialState
         try:
-            # TRL >= 1.18
             from trl.generation.async_vllm_client import AsyncVLLMClient as VLLMClient
             timeout = {"timeout": 10}
         except ImportError:
@@ -518,7 +516,7 @@ def _by_token_id(top_logprobs):
         try:
             from trl.experimental.async_grpo.async_rollout_worker import _by_token_id as parse
         except Exception:
-            # TRL's own parser (1.17+), for installs without it.
+
             def parse(top_logprobs):
                 return [
                     {int(token.removeprefix("token_id:")): value for token, value in top.items()}

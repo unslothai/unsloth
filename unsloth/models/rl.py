@@ -5304,9 +5304,7 @@ def _start_async_grpo_vllm_server(model):
 
 
 def _pin_async_grpo_server_url(args, kwargs):
-    # TRL >= 1.18 hands the rollout worker the config object itself and pickles it into the rollout process at train
-    # start, after Unsloth's __init__ wrapper put the user's URL back; keep the in-process server's on a copy.
-    # TRL <= 1.17 pass the URL as a string, which needs nothing.
+    # TRL >= 1.18 pickles the config at train start, after the user's URL is restored: use a copy.
     positional = len(args) > 0 and hasattr(args[0], "vllm_server_base_url")
     config = args[0] if positional else kwargs.get("config")
     if getattr(config, "vllm_server_base_url", None) not in _ASYNC_GRPO_SERVER_URLS:
@@ -5600,8 +5598,7 @@ def patch_trl_async_grpo():
             _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
             _ASYNC_GRPO_SERVER_URLS.add(server.url)
-            # TRL 1.14-1.17 call the rollout cap `max_inflight_tasks` (-1 = auto); 1.18 renamed it to
-            # `max_concurrent_rollouts`, a plain count that TRL sizes from the server's /metrics itself.
+            # TRL 1.14-1.17 `max_inflight_tasks`; 1.18 `max_concurrent_rollouts` (sized by TRL).
             inflight = getattr(config, "max_inflight_tasks", None)
             saved_config = (config.vllm_server_base_url, inflight)
             config.vllm_server_base_url = server.url

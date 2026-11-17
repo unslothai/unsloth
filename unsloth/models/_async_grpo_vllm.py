@@ -34,16 +34,12 @@ _BATCH_WAIT_S = 0.0005
 
 
 def _inplace_lora():
-    # Overwrite one adapter slot on each sync instead of loading every version under a new id. vLLM admits a waiting
-    # request only while its adapter fits in max_loras (Unsloth engines hold 1), so with a new id per sync the next
-    # version's requests sit idle until every straggler of the previous one finishes. In place, requests in flight
-    # continue on the new weights from their next token; the logprobs they return are still those of the weights
-    # that sampled each token, which is what TRL's importance ratio needs.
+    # One slot overwritten per sync: with max_loras=1 a new id per sync stalls new requests behind stragglers.
     return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
 
 
 def _logprob(value):
-    # vLLM's OpenAI server clamps -inf the same way, so the payload stays plain JSON.
+    # Clamp -inf like vLLM's OpenAI server (plain JSON).
     return max(float(getattr(value, "logprob", value)), -9999.0)
 
 
@@ -53,8 +49,7 @@ def _sampled_logprob(logprobs, position, token_id):
 
 
 def _top_logprobs(entry, num_top_logprobs):
-    # As `vllm serve` with return_tokens_as_token_ids: the sampled token, then the top `num_top_logprobs`, keyed
-    # "token_id:<id>" (TRL's `_by_token_id` parses that key).
+    # Keyed "token_id:<id>" as TRL's `_by_token_id` parses.
     return {
         f"token_id:{token_id}": _logprob(value)
         for i, (token_id, value) in enumerate(entry.items())
@@ -195,8 +190,7 @@ class _Engine:
         lora = self._lora_for(model)
         prompt = {"prompt_token_ids": prompt_ids}
         if lora is not None and lora.lora_int_id == self.slot_id:
-            # vLLM keys cached prefix blocks on the adapter name, which an overwritten slot keeps: salt by version so
-            # a new version never reuses KV computed by the previous weights.
+            # Prefix cache keys on adapter name; salt by version so old-weight KV is never reused.
             prompt["cache_salt"] = f"unsloth-lora-{self.slot_id}-v{self.slot_version}"
         try:
             sampling = self.sampling_params(**{**self._default_kwargs(), **params})
@@ -271,8 +265,7 @@ class _Engine:
         return lora.lora_int_id
 
     def _reload_slot(self, lora, previous):
-        # Unsloth's LoRA manager skips an id it already holds, so drop it and add it back: both run here, between
-        # engine steps, so no step sees the slot empty.
+        # Manager skips held ids, so drop and re-add between engine steps (no step sees it empty).
         loaded = self.slot_id in self.lora_holds
         if loaded:
             self.engine.remove_lora(self.slot_id)
@@ -292,7 +285,6 @@ class _Engine:
         self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
         self.loras[name] = lora
         self.newest = name
-        # Re-arm a removal deferred for in-flight requests: the slot is in use again.
         self.lora_holds.setdefault(self.slot_id, [False, 0])[0] = False
         return self.slot_id
 
@@ -304,8 +296,7 @@ class _Engine:
         if was_newest:
             self.newest = next(reversed(self.loras), None)
         if lora.lora_int_id == self.slot_id and self.loras:
-            # Every remaining name is served by the one slot; it holds the removed version's weights only if that
-            # was the newest (TRL only ever unloads stale versions), so put the newest remaining one back.
+            # One slot serves every name; restore the newest remaining version.
             if was_newest:
                 self._reload_slot(self.loras[self.newest], lora)
             return True
@@ -315,7 +306,6 @@ class _Engine:
         return True
 
     def load(self):
-        # What TRL's KV-cap control loop reads off `/metrics`: KV usage plus running and waiting requests.
         scheduler = _scheduler(self.engine)
         waiting = len(self.pending)
         usage = running = None
@@ -500,7 +490,7 @@ class UnslothAsyncVLLMServer:
         return tokens
 
     def metrics(self):
-        # The Prometheus lines TRL >= 1.17 parses to size its rollout concurrency (KV cap); `vllm serve` labels.
+        # Prometheus lines TRL >= 1.17 parses for its KV cap.
         try:
             load = self.engine.call(self.engine.load)
         except Exception as error:
@@ -551,9 +541,7 @@ class UnslothAsyncVLLMServer:
         return self.engine.submit(prompt, params, body.get("model"))
 
     def _allow_logprobs(self, num_logprobs):
-        # Unsloth builds its engine with max_logprobs=0 (the sampled token only). TRL >= 1.17 asks for the top
-        # `num_sampler_logprobs` (score centering), which `vllm serve` allows (20 by default). vLLM checks the cap
-        # only when a request is added, so raise it in process.
+        # Engine is built with max_logprobs=0; TRL >= 1.17 asks for top-k (checked only at add_request).
         model_config = getattr(self.vllm_config, "model_config", None)
         limit = getattr(model_config, "max_logprobs", None)
         if limit is not None and limit != -1 and num_logprobs > limit:

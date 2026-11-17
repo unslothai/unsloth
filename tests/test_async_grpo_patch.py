@@ -680,8 +680,7 @@ def test_trl_118_config_without_max_inflight_tasks(fast_inference_trl):
 
 
 def test_trl_118_rollout_worker_keeps_the_in_process_server_url(fake_trl):
-    # TRL 1.18 hands AsyncRolloutWorker the config object and pickles it at train start; by then Unsloth has put the
-    # user's URL back on it, so the rollout process would dial localhost:8000 instead of the in-process server.
+    # TRL 1.18 pickles the config after the user's URL is restored.
     mod, _ = fake_trl
     mod.select_adapter_sync = lambda *a, **k: True
     mod.AsyncGRPOConfig = _Trl118Config
@@ -730,7 +729,6 @@ def test_trl_118_rollout_worker_keeps_the_in_process_server_url(fake_trl):
         assert config.vllm_server_base_url == "http://localhost:8000"
         assert trainer.rollout_worker.config.vllm_server_base_url == server.url
         assert trainer.rollout_worker.config.max_concurrent_rollouts == 512
-    # An external server's config goes through untouched.
     external = _Trl118Config("o", vllm_server_base_url = "http://gpu-box:8000")
     trainer = mod.AsyncGRPOTrainer(
         _fast_inference_peft(CausalLM(FastBackbone())), None, args = external
