@@ -225,8 +225,16 @@ def tensor_parallel_env_load(fn):
                 # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load; a
                 # pre-quantized bitsandbytes 4-bit checkpoint loads sharded.
                 four_bit = _four_bit(values, fn)
+                # A large frozen input embedding get_peft_model's apply_tensor_parallel serves from host
+                # memory is read straight there (full finetuning trains it: it stays on the GPU).
+                host_embed = not values.get("full_finetuning")
                 with _sharded_from_pretrained(
-                    {"mesh": mesh, "plan": None, "prequantized_only": four_bit}
+                    {
+                        "mesh": mesh,
+                        "plan": None,
+                        "prequantized_only": four_bit,
+                        "materialize_kwargs": {"host_embed": host_embed},
+                    }
                 ) as state:
                     out = fn(*args, **kwargs)
             except ValueError as exc:

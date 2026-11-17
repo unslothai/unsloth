@@ -737,6 +737,24 @@ def _hook_no_placement_ancestors(model):
     return hooked
 
 
+def _host_read_tensor_names(model):
+    """Names of the CPU-resident input embedding tensors tensor parallel sharded loading read into host
+    memory (tp_native._mark_host_loaded): marked on the weight, or the input embedding of a model marked so."""
+    names = set()
+    try:
+        marked_model = bool(model.__dict__.get("_unsloth_tp_host_load_model", False))
+        embed = model.get_input_embeddings() if marked_model else None
+        for name, p in model.named_parameters(remove_duplicate = False):
+            if p.device.type == "cpu" and (
+                p.__dict__.get("_unsloth_tp_host_loaded", False)
+                or (embed is not None and any(p is q for q in embed.parameters()))
+            ):
+                names.add(name)
+    except Exception:
+        return set()
+    return names
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -771,6 +789,9 @@ def _attach_bnb_multidevice_hooks(
         _unplaced = no_placement_tensor_names(model)
     except Exception:
         _unplaced = set()
+    # Tensor parallel sharded loading reads a large frozen input embedding straight into host memory, where
+    # apply_tensor_parallel serves it from: not a placement to dispatch (dispatch would meta-offload it).
+    _unplaced = set(_unplaced) | _host_read_tensor_names(model)
     try:
         all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
@@ -1090,7 +1111,8 @@ def _pin_device_to_decoder(model):
         def _unsloth_device(self):
             if getattr(self, "_unsloth_embedding_offloaded", False):
                 for param in self.parameters():
-                    if param.device.type != "cpu":
+                    # Storage-free meta parameters (a model may hold some) are not where it runs.
+                    if param.device.type not in ("cpu", "meta"):
                         return param.device
             return original.fget(self)
 
