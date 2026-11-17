@@ -34316,7 +34316,7 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
-                turn_mark = _think_ledger_mark(_gguf_think_prov)
+                turn_mark = snapshot_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
@@ -34335,13 +34335,15 @@ async def produce_openai_chat_completions(
                                 context_truncation, event
                             )
                         elif event.get("type") == "content":
+                            # Taken with the snapshot: a terminal empty status would move the mark past it.
+                            snapshot_mark = turn_mark
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
                             # turn's text. As in the safetensors drain, a visible
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
-                    provenance = {**_gguf_think_prov, **turn_mark}
+                    provenance = {**_gguf_think_prov, **snapshot_mark}
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
                         span = _ResponsesReasoningExtractor(

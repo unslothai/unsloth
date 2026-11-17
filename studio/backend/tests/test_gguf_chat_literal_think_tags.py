@@ -132,6 +132,7 @@ class _ScriptedToolLoop(_ThinkingGguf):
             yield {"type": "content", "text": f"<think>{trace}"}
             yield {"type": "content", "text": f"<think>{trace}</think>"}
         yield {"type": "content", "text": f"<think>{self._turns[-1]}</think>{self._answer}"}
+        yield {"type": "status", "text": ""}
         yield {"type": "metadata", "finish_reason": "stop"}
 
 

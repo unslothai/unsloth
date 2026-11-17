@@ -38993,14 +38993,14 @@ class LlamaCppBackend:
                 in_thinking = False
                 _prov_entry = None
             elif reasoning_accum:
-                if (
-                    reasoning_provenance is not None
-                    and not cumulative_display
-                    and not _suppress_visible_output
-                ):
-                    reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
-                    _lead_wrap = {"len": len(reasoning_accum)}
-                    reasoning_provenance.setdefault("wraps", []).append(_lead_wrap)
+                if reasoning_provenance is not None and not cumulative_display:
+                    wrap = {"len": len(reasoning_accum)}
+                    if _suppress_visible_output:
+                        _withheld_wraps.append(wrap)
+                    else:
+                        reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
+                        _lead_wrap = wrap
+                        reasoning_provenance.setdefault("wraps", []).append(_lead_wrap)
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
             # Not cleared: callers measure len(content_buffer) right after; recorded in _buffer_in_display so the cancel flush does not re-add it.
@@ -39579,6 +39579,7 @@ class LlamaCppBackend:
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
                 _prov_entry = _lead_wrap = None
+                _withheld_wraps = []
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
@@ -39915,12 +39916,18 @@ class LlamaCppBackend:
                                     reasoning_accum += reasoning
                                     if detect_state != _S_DRAINING:
                                         if not in_thinking:
-                                            # Suppressed iterations emit no content, so don't record
-                                            # their wraps.
+                                            # A suppressed pass's wraps are recorded only if the pass is released.
                                             if (
                                                 reasoning_provenance is not None
+                                                and _suppress_visible_output
+                                            ):
+                                                _prov_entry = {"len": 0}
+                                                if cumulative_display:
+                                                    _prov_entry["at"] = len(cumulative_display)
+                                                _withheld_wraps.append(_prov_entry)
+                                            elif (
+                                                reasoning_provenance is not None
                                                 and not cumulative_display
-                                                and not _suppress_visible_output
                                             ):
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
@@ -39929,10 +39936,7 @@ class LlamaCppBackend:
                                                 reasoning_provenance.setdefault("wraps", []).append(
                                                     _prov_entry
                                                 )
-                                            elif (
-                                                reasoning_provenance is not None
-                                                and not _suppress_visible_output
-                                            ):
+                                            elif reasoning_provenance is not None:
                                                 _prov_entry = {
                                                     "len": 0,
                                                     "at": len(cumulative_display),
@@ -40603,6 +40607,15 @@ class LlamaCppBackend:
                                 _stripped,
                                 _last_reprompt_text,
                             ):
+                                for _wrap in _withheld_wraps:
+                                    if "at" in _wrap:
+                                        reasoning_provenance.setdefault("later", []).append(_wrap)
+                                        continue
+                                    reasoning_provenance["wrapped"] = (
+                                        reasoning_provenance.get("wrapped", 0) + 1
+                                    )
+                                    reasoning_provenance.setdefault("wraps", []).append(_wrap)
+                                    _lead_wrap = _wrap
                                 if cumulative_display:
                                     forced_visible_text = _strip_tool_markup(
                                         cumulative_display,
