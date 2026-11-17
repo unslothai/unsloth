@@ -56,12 +56,30 @@ def _modules():
     return env, auto
 
 
+def _stub_name_mapping(mapping = None, calls = None):
+    """unsloth.models.loader_utils stand-in: the real one needs the GPU package. Identity unless mapped."""
+    module = types.ModuleType("unsloth.models.loader_utils")
+
+    def get_model_name(
+        model_name,
+        load_in_4bit = True,
+        **kwargs,
+    ):
+        if calls is not None:
+            calls.append((model_name, load_in_4bit))
+        return (mapping or {}).get((model_name, load_in_4bit), model_name)
+
+    module.get_model_name = get_model_name
+    return module
+
+
 @pytest.fixture
 def clean(monkeypatch):
     for key in _ENV:
         monkeypatch.delenv(key, raising = False)
     env, auto = _modules()
     auto._STATE.update(choice = None, reason = None)
+    monkeypatch.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping())
     yield monkeypatch, env, auto
     auto._STATE.update(choice = None, reason = None)
 
@@ -156,6 +174,69 @@ def test_checkpoint_headers_size_the_load(clean):
     assert w4 < w16 and lora4 == lora16 > 0
     assert wfull == w16  # full finetuning does not quantize
     assert train_full == sum(__import__("math").prod(s) for _, _, s in tensors)
+
+
+def test_load_sizing_reads_the_repo_the_loader_maps_to(clean):
+    """unsloth/mistral-7b-bnb-4bit with load_in_4bit = False loads unsloth/mistral-7b in 16-bit: size that one."""
+    mp, _, auto = clean
+    calls, fetched = [], []
+    mapping = {("unsloth/mistral-7b-bnb-4bit", False): "unsloth/mistral-7b"}
+    mp.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping(mapping, calls))
+    headers = {
+        # 4096 x 4096 linear: 8 MiB packed 4-bit codes vs 32 MiB in 16-bit
+        "unsloth/mistral-7b-bnb-4bit": [("model.layers.0.mlp.up_proj.weight", "U8", (8388608, 1))],
+        "unsloth/mistral-7b": [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))],
+    }
+
+    def tensors(name, **kwargs):
+        fetched.append(name)
+        return headers[name]
+
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(
+        from_pretrained, ("unsloth/mistral-7b-bnb-4bit",), {"load_in_4bit": False}
+    )
+    assert calls == [("unsloth/mistral-7b-bnb-4bit", False)] and fetched == ["unsloth/mistral-7b"]
+    assert got == "fsdp2", auto._STATE["reason"]  # 32 MiB of 16-bit weights do not fit 25 MiB
+
+
+def test_float_weights_count_at_the_loaded_dtype(clean):
+    _, _, auto = clean
+    n = 4096 * 4096
+    bf16 = [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))]
+    fp32 = [("model.layers.0.mlp.up_proj.weight", "F32", (4096, 4096))]
+    assert (
+        auto.checkpoint_estimate(bf16, dtype_bytes = 4)[0] == 4 * n
+    )  # bf16 checkpoint, float32 load
+    assert auto.checkpoint_estimate(bf16, dtype_bytes = 2)[0] == 2 * n
+    assert auto.checkpoint_estimate(fp32, dtype_bytes = 2)[0] == 2 * n  # fp32 checkpoint, 16-bit load
+    # bitsandbytes quant state beside packed codes keeps its stored float32
+    packed = [("a.weight", "U8", (1024, 1)), ("a.weight.absmax", "F32", (256,))]
+    assert auto.checkpoint_estimate(packed, dtype_bytes = 2)[0] == 1024 + 4 * 256
+
+
+def _auto_env(mp, auto, budget_mib):
+    mp.setattr(auto, "_world", lambda environ: 2)
+    mp.setattr(auto, "_gather", lambda entry: [entry, entry])
+    utils = types.ModuleType("unsloth.models._utils")
+    utils.patch_gradient_accumulation_fix = lambda cls: None
+    mp.setitem(sys.modules, "unsloth.models._utils", utils)
+    for key in ("UNSLOTH_FSDP2", "UNSLOTH_PARALLEL_AUTO_RESOLVED"):
+        mp.setenv(key, "")
+        mp.delenv(key)
+    mp.setenv("UNSLOTH_PARALLEL", "auto")
+    mp.setenv("UNSLOTH_PARALLEL_AUTO_GB", str(budget_mib / 1024))
+    mp.setenv("WORLD_SIZE", "2")
 
 
 def test_budget_measures_the_local_rank_gpu(clean, monkeypatch):
@@ -282,6 +363,7 @@ def _decision_worker(rank, world, port, out, snapshot):
         utils = types.ModuleType("unsloth.models._utils")
         utils.patch_gradient_accumulation_fix = lambda cls: None
         sys.modules["unsloth.models._utils"] = utils
+        sys.modules["unsloth.models.loader_utils"] = _stub_name_mapping()
         _, auto = _modules()
 
         def from_pretrained(

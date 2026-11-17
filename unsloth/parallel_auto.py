@@ -339,7 +339,12 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
                 # packed [n / 2, 1]: in + out of a square layer of 2 n parameters
                 lora += lora_rank * 2 * int(math.sqrt(2 * numel))
             continue
-        loaded = min(stored, dtype_bytes) if dt.startswith(("F", "BF")) else stored
+        # Floating-point weights load in the model dtype (an fp32 load upcasts a bf16 checkpoint); bitsandbytes
+        # quant state beside packed weights keeps its stored dtype.
+        quant_state = packed and any(
+            t in key for t in ("absmax", "quant_map", "quant_state", "nested_")
+        )
+        loaded = dtype_bytes if dt.startswith(("F", "BF")) and not quant_state else stored
         numel_total += numel
         if _is_quantizable(key, shape):
             lora += lora_rank * (shape[0] + shape[1])
@@ -374,20 +379,36 @@ def resolve_for_load(loader, args, kwargs):
             raise ValueError("a quantization_config or load_in_fp8 load is not sized")
         dtype = call.get("dtype") or call.get("torch_dtype")
         dtype_bytes = 4 if "float32" in str(dtype) else 2
+        full = bool(call.get("full_finetuning"))
+        load_in_4bit = bool(call.get("load_in_4bit")) and not (
+            call.get("load_in_8bit") or call.get("load_in_16bit") or full
+        )
+        if not call.get("use_exact_model_name"):
+            # The repo the loader loads: get_model_name maps a 4-bit mirror to its float repo and back.
+            from .models.loader_utils import get_model_name
+            name = get_model_name(
+                name,
+                load_in_4bit = load_in_4bit,
+                load_in_fp8 = False,
+                token = call.get("token"),
+                trust_remote_code = bool(call.get("trust_remote_code")),
+                local_files_only = call.get("local_files_only", False),
+                cache_dir = call.get("cache_dir", None),
+                revision = call.get("revision"),
+            )
         tensors = _checkpoint_tensors(
             name, token = call.get("token"), revision = call.get("revision"),
             subfolder = call.get("subfolder") or "",
         )  # fmt: skip
-        full = bool(call.get("full_finetuning"))
         from .models.mapper import bf16_repo_loads_16bit
 
-        # The loader's own rule: a -bf16 Hub repo turns 4bit / 8bit off.
+        # The loader's own rule, on the mapped name as the loader applies it: a -bf16 Hub repo turns 4bit / 8bit off.
         load_in_16bit = bool(call.get("load_in_16bit")) or bf16_repo_loads_16bit(
             name, call.get("load_in_16bit")
         )
         weights, trainable = checkpoint_estimate(
             tensors,
-            load_in_4bit = bool(call.get("load_in_4bit")) and not load_in_16bit,
+            load_in_4bit = load_in_4bit and not load_in_16bit,
             load_in_8bit = bool(call.get("load_in_8bit")) and not load_in_16bit,
             full_finetuning = full,
             dtype_bytes = dtype_bytes,
