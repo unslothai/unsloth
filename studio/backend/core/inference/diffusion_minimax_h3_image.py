@@ -1537,7 +1537,9 @@ LAYOUT_PARKED_VAE = "parked+vae"
 # Multiply-adds of one DiT block per token (attention 154M + feed-forward 231M; the AdaLN rows are a table lookup).
 BLOCK_PARAMS = 385e6
 # One block's compute / the probe-priced FLOPs at the card's int8 GEMM rate: A100 11.6 ms per block at 2048x2048
-# resident (0.578 s/step) against 7.8 ms priced at its 406 TOPS.
+# resident (0.578 s/step) against 7.8 ms priced at its 406 TOPS. L4 runs slower than priced (~41 ms against 29 at its
+# 165 TOPS), which only overstates what parking saves there: a parked layout costs one refiner upload per render
+# (plus the VAE's and an ungraphed decode for parked+vae) and never streams more blocks.
 INT8_BLOCK_EFFICIENCY = 0.67
 # Extra decode seconds per 4 MP without tile graphs, the parked VAE's upload aside (A100 at 2048x2048: 0.47 against
 # 0.33 s).
