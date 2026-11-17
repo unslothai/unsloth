@@ -5,6 +5,7 @@
 import { encodeWav } from "@/features/chat/adapters/pcm-recorder";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
+  bargeOnset,
   createBargeGate,
   stepBargeGate,
 } from "@/features/chat/voice/barge-gate";
@@ -109,6 +110,10 @@ const MIN_SPEECH_MS = 350;
 const ZERO_RUN_TRACE_MS = 200;
 // Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
 const BARGE_PREROLL_MS = 600;
+// Held while the reply plays so a barge-in keeps the words before the gate fired (bargeOnset).
+const BARGE_LOOKBACK_MS = 2500;
+// A pause inside an interruption ("Wait, stop. Make it ...") is still the same interruption.
+const BARGE_GAP_MS = 350;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
 
@@ -430,6 +435,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
     const preroll: Float32Array[] = [];
+    // Per preroll frame: it was over the barge-in bar.
+    const prerollLoud: boolean[] = [];
     // The utterance going to a transcriber that follows along as it is spoken (live-transcript.ts):
     // `fed` is the next chunk it has not been given.
     let live: { session: LiveTranscript; modelId: string | undefined; fed: number } | null = null;
@@ -1200,10 +1207,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           if (!bargedIn && (isVoicePlaybackActive() || bargeConfirming)) {
             preroll.push(new Float32Array(input));
             // While the detector is asked, keep every frame: the probe's audio opens the utterance.
-            if (!bargeConfirming) while (preroll.length * frameMs > BARGE_PREROLL_MS) preroll.shift();
+            if (!bargeConfirming) {
+              while (preroll.length * frameMs > BARGE_LOOKBACK_MS) {
+                preroll.shift();
+                prerollLoud.shift();
+              }
+            }
             startedAt = now;
             lastVoiceAt = now;
             const cut = stepBargeGate(bargeGate, rms, frameMs);
+            prerollLoud.push(bargeGate.wasLoud);
             if (bargeConfirming) bargePeakMs = Math.max(bargePeakMs, bargeGate.loudMs);
             const rt = useChatRuntimeStore.getState();
             const hint = hearingHint.step(
@@ -1224,6 +1237,16 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               hearingHint.commit();
               voiceTrace("barge.commit", { loudMs: bargeGate.loudMs });
               requestVoiceBargeIn();
+              const onset = bargeOnset(
+                prerollLoud,
+                Math.ceil(BARGE_GAP_MS / frameMs),
+                Math.ceil(BARGE_PREROLL_MS / frameMs),
+              );
+              voiceTrace("barge.onset", {
+                keptMs: Math.round((preroll.length - onset) * frameMs),
+              });
+              preroll.splice(0, onset);
+              prerollLoud.length = 0;
               for (const frame of preroll.splice(0)) {
                 chunks.push(frame);
                 chunkVoiced.push(true);
@@ -1246,10 +1269,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (bargeConfirming) return;
             bargeConfirming = true;
             bargePeakMs = bargeGate.loudMs;
-            const total = preroll.reduce((n, c) => n + c.length, 0);
+            // The detector hears only the burst: the older lookback is mostly the reply's own echo.
+            const recent = preroll.slice(
+              -Math.ceil(BARGE_PREROLL_MS / frameMs),
+            );
+            const total = recent.reduce((n, c) => n + c.length, 0);
             const probe = new Float32Array(total);
             let at = 0;
-            for (const c of preroll) {
+            for (const c of recent) {
               probe.set(c, at);
               at += c.length;
             }
@@ -1268,6 +1295,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             return;
           }
           // Playback ended before the barge-in gate fired: the preroll is this utterance's opening.
+          preroll.splice(
+            0,
+            Math.max(0, preroll.length - Math.ceil(BARGE_PREROLL_MS / frameMs)),
+          );
+          prerollLoud.length = 0;
           for (const frame of preroll.splice(0)) {
             let sq = 0;
             for (let i = 0; i < frame.length; i++) sq += frame[i] * frame[i];

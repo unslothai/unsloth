@@ -1,17 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBargeGate, stepBargeGate } from "../src/features/chat/voice/barge-gate.ts";
+import {
+  bargeOnset,
+  createBargeGate,
+  stepBargeGate,
+} from "../src/features/chat/voice/barge-gate.ts";
 
 const FRAME_MS = 85;
 
-function feed(gate: ReturnType<typeof createBargeGate>, rms: number, frames: number) {
+function feed(
+  gate: ReturnType<typeof createBargeGate>,
+  rms: number,
+  frames: number,
+) {
   let fired = false;
-  for (let i = 0; i < frames; i++) fired = stepBargeGate(gate, rms, FRAME_MS) || fired;
+  for (let i = 0; i < frames; i++)
+    fired = stepBargeGate(gate, rms, FRAME_MS) || fired;
   return fired;
 }
 
@@ -48,4 +56,43 @@ test("a shorter hold applies when a detector confirms the burst afterwards", () 
   let fired = false;
   for (let i = 0; i < 3; i++) fired = stepBargeGate(gate, 0.2, 93);
   assert.equal(fired, true);
+});
+
+test("a barge-in keeps the words before the gate fired, across a short pause", () => {
+  // "Wait, stop. Make it about a cat instead." at 85 ms frames, measured from the test clip:
+  // the gate only fires three frames into "Make it", after "Wait, stop." has passed.
+  const rms = [
+    0, 0, 0, 0.034, 0.113, 0.072, 0.013, 0.027, 0.063, 0.057, 0.03, 0.003,
+    0.001, 0, 0.07, 0.095, 0.079,
+  ];
+  const gate = createBargeGate(250);
+  const loud: boolean[] = [];
+  let firedAt = -1;
+  rms.forEach((r, i) => {
+    const fired = stepBargeGate(gate, r, FRAME_MS);
+    loud.push(gate.wasLoud);
+    if (fired && firedAt < 0) firedAt = i;
+  });
+  assert.equal(firedAt, 16);
+  // 350 ms of pause is 5 frames; the last 600 ms (8 frames) would start at "stop".
+  assert.equal(bargeOnset(loud, 5, 8), 3);
+});
+
+test("the lookback never reaches past a long pause, and keeps the usual preroll at least", () => {
+  const loud = [
+    true,
+    true,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+  ];
+  assert.equal(bargeOnset(loud, 5, 3), 7);
+  assert.equal(bargeOnset([false, false, false, false], 2, 2), 2);
+  assert.equal(bargeOnset([true, true], 2, 8), 0);
 });

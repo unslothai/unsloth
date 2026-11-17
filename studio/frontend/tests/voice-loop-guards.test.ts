@@ -61,7 +61,10 @@ test("a fragment held from a barge-in keeps listening as that barge-in, so its f
 });
 
 test("the barge-in preroll is not trimmed while the detector is asked", () => {
-  assert.match(loop, /if \(!bargeConfirming\) while \(preroll\.length \* frameMs > BARGE_PREROLL_MS\) preroll\.shift\(\);/);
+  assert.match(
+    loop,
+    /if \(!bargeConfirming\) \{\s*while \(preroll\.length \* frameMs > BARGE_LOOKBACK_MS\) \{\s*preroll\.shift\(\);\s*prerollLoud\.shift\(\);/,
+  );
 });
 
 test("a barge-in pause latches even before the first clip is queued", () => {
