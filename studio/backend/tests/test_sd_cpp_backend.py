@@ -1568,8 +1568,10 @@ def _mint_host(
     monkeypatch.setattr(small_host, "host_ram_mib", lambda: (max(15 * 1024, ram_mib), ram_mib))
     monkeypatch.setattr(
         h3,
-        "amdgpu_vram_free_bytes",
-        lambda *_a, **_k: None if card_free_mib is None else card_free_mib << 20,
+        "amdgpu_vram_reading",
+        lambda *_a, **_k: (None, None)
+        if card_free_mib is None
+        else (card_free_mib << 20, 16_304 << 20),
     )
     return paths
 
@@ -1609,6 +1611,20 @@ def test_cpu_torch_vulkan_offload_respects_host_ram(
     assert b._state.device == "vulkan"
     assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
     assert b.status()["cpu_offload"] is offloads
+
+
+@pytest.mark.parametrize("fraction,offloads", [(1.0, False), (0.7, True)])
+def test_cpu_torch_offload_drop_keeps_the_vram_budget_reserve(
+    monkeypatch, tmp_path, fraction, offloads
+):
+    # A VRAM Budget lowered to 70% keeps 4.8 GiB of the 16 GB card free, so the 11.8 GiB DiT no longer fits.
+    import core.inference.diffusion_memory as dm
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = 15_800)
+    monkeypatch.setattr(dm, "_vram_budget_fraction", lambda: fraction)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths)
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
 
 
 @pytest.mark.parametrize("gpu_ordinal,offloads", [(None, False), (0, False), (1, True)])
