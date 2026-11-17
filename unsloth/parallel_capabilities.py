@@ -1670,19 +1670,21 @@ def _aux_loss_on(model, args, trainer_kind) -> bool:
     moe, configured = _moe(model)
     if not moe:
         return False
-    if configured:
-        return True
-    if (
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    trl_args = (
         trainer_kind in ("sft", "dpo", "grpo", "other_rl")
         and args is not None
         and hasattr(args, "router_aux_loss_coef")
-    ):
-        config = getattr(model, "config", None)
-        text = getattr(config, "text_config", None) or config
-        coef = args.router_aux_loss_coef
-        if coef is None:
-            coef = getattr(text, "router_aux_loss_coef", 0.0) or 0.0
-        return bool(coef) and hasattr(text, "output_router_logits")
+    )
+    coef = args.router_aux_loss_coef if trl_args else None
+    if coef is None:
+        coef = getattr(text, "router_aux_loss_coef", None)
+    if configured:
+        # Router logits on with a zero coefficient adds nothing: the pipeline split trains it as aux off.
+        return coef is None or bool(coef)
+    if trl_args:
+        return bool(coef or 0.0) and hasattr(text, "output_router_logits")
     return False
 
 

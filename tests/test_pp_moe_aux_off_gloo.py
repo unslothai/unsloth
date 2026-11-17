@@ -346,3 +346,28 @@ def test_split_time_rule():
             ok = False
         assert ok is allowed, (kw, ok)
         assert (ppn._uncarried_moe_owner(model) is not None) is True
+
+
+@pytest.mark.parametrize(
+    "kw, trainer, trl_coef, aux_on",
+    [
+        (
+            dict(aux = True, coef = 0.0),
+            "Trainer",
+            None,
+            False,
+        ),  # logits on, zero coefficient: adds nothing
+        (dict(aux = True), "Trainer", None, True),
+        (dict(aux = True), "SFTTrainer", 0.0, False),  # TRL turns it off again
+        (dict(aux = True, coef = 0.0), "SFTTrainer", None, False),
+        (dict(), "SFTTrainer", None, True),  # TRL >= 1.x enables the architecture's coefficient
+        (dict(), "Trainer", None, False),
+    ],
+)
+def test_capability_query_classifies_the_effective_coefficient(kw, trainer, trl_coef, aux_on):
+    from unsloth import parallel_capabilities as pc
+
+    model = build(**kw)
+    args = types.SimpleNamespace(router_aux_loss_coef = trl_coef) if trainer == "SFTTrainer" else None
+    query = pc.query_from(trainer_cls = type(trainer, (), {}), model = model, args = args)
+    assert query.router_aux_loss is aux_on, (kw, trainer, trl_coef, query.router_aux_loss)
