@@ -911,18 +911,19 @@ test("the picker slides back inside a narrow window instead of hanging off its e
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
 });
 
-test("the picker's width follows the window between 360px and 520px", () => {
+test("the picker keeps 30% of the window at any zoom, never under 360px", () => {
   assert.equal(pickerWidth(390, 1), 360);
   assert.equal(pickerWidth(1440, 1), 432);
-  assert.equal(pickerWidth(2560, 1), 520);
-  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves both bounds.
+  // Zoomed out to 67%, a 1440px window is 2150 CSS px and the picker grows with it.
+  assert.equal(pickerWidth(2150, 1), 645);
+  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves the floor.
   assert.equal(pickerWidth(960, 1), 360);
-  assert.equal(pickerWidth(2560, 1.25), 650);
+  assert.equal(pickerWidth(960, 1.25), 450);
   // The CSS twin uses the same bounds, or alignOffset would slide by the wrong width.
   const css = readSrc("index.css");
   assert.match(
     css,
-    /--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\)\)\);/,
+    /--composer-picker-w: max\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw\);/,
   );
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",

@@ -5134,8 +5134,8 @@ export function ComposerModelPicker({
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
           openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
+            ? "max-h-[calc(100dvh-16px)]"
+            : "max-h-(--radix-popover-content-available-height)",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
