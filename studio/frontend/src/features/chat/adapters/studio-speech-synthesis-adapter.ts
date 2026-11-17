@@ -464,6 +464,7 @@ function speakWithBackendAudio(
   handleEnd: (
     reason: "finished" | "error" | "cancelled",
     error?: unknown,
+    unplayed?: string,
   ) => void,
   markRunning: () => void,
 ): { cancel: () => void } {
@@ -516,10 +517,11 @@ function speakWithBackendAudio(
     });
 
   void (async () => {
+    let i = 0;
     try {
       let pendingChunk = synth(0);
       next = pendingChunk;
-      for (let i = 0; i < chunks.length; i++) {
+      for (; i < chunks.length; i++) {
         const url = await pendingChunk;
         next = null;
         if (cancelled) {
@@ -545,7 +547,7 @@ function speakWithBackendAudio(
       cleanup();
       controller.abort();
       next?.then(releaseTtsAudioUrl, () => {});
-      handleEnd("error", error);
+      handleEnd("error", error, chunks.slice(i).join(" "));
     }
   })();
 
@@ -630,8 +632,8 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       handleEnd("finished");
       return res;
     }
-    const speakWithSystemVoice = () => {
-      const utterance = createConfiguredUtterance(text, lang);
+    const speakWithSystemVoice = (spoken = text) => {
+      const utterance = createConfiguredUtterance(spoken, lang);
       utterance.addEventListener("end", () => handleEnd("finished"));
       utterance.addEventListener("error", (e) => handleEnd("error", e.error));
 
@@ -653,7 +655,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         ttsEngine === "custom"
           ? generateCustomTtsAudio
           : generateStudioTtsAudio;
-      const onEnd: typeof handleEnd = (reason, error) => {
+      const onEnd = (
+        reason: "finished" | "error" | "cancelled",
+        error?: unknown,
+        unplayed?: string,
+      ) => {
         if (
           reason === "error" &&
           options?.systemFallback &&
@@ -666,7 +672,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
           toast.info(
             "No Unsloth speech model is loaded, so this device's voice is reading.",
           );
-          speakWithSystemVoice();
+          speakWithSystemVoice(unplayed);
           for (const handler of subscribers) handler();
           return;
         }
