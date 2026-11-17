@@ -148,8 +148,7 @@ _NAMED_MODEL_WAIT_SECONDS = 60.0
 # Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
-# FastFlowLM serves one request at a time behind headers Lemonade sends at once, so the first-output
-# clock also runs while a chat reply holds the NPU (8192 tokens at ~17 tok/s is ~8 min) and during prefill.
+# FastFlowLM serves one request at a time and Lemonade sends headers at once, so a queued call's wait counts.
 _NPU_FIRST_OUTPUT_TIMEOUT_SECONDS = 900.0
 # Cancellation is cooperative, so bound the unwind; a stuck iterator keeps a timed-out call open.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
