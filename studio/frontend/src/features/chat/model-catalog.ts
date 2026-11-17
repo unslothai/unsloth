@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ModelCatalogResponse, ProviderModelCapabilityInfo } from "./api/providers-api";
+import type {
+  ModelCatalogResponse,
+  ProviderModelCapabilityInfo,
+  ProviderModelInfo,
+} from "./api/providers-api";
 import {
   MODEL_CATALOG_SNAPSHOT,
   type ModelCatalogSnapshotEntry,
@@ -249,6 +253,52 @@ export function setProviderModelCatalog(
   LIVE_CATALOG.set(providerType, { fetchedAt, models: entries });
   persistLiveCatalog();
   notifyCatalogChange();
+}
+
+// Not LIVE_CATALOG (would shadow snapshot reasoning, feed compaction); not persisted: a restarted
+// server's stale window would stick, since the Max Tokens clamp only lowers.
+const servedWindows = new Map<string, { endpoint: string; windows: Record<string, number> }>();
+
+/** Replaces a connection's windows with what its server lists now. */
+export function learnServedContextWindows(
+  connectionId: string | null | undefined,
+  models: readonly ProviderModelInfo[],
+  baseUrl: string,
+): void {
+  if (!connectionId) return;
+  const windows: Record<string, number> = {};
+  for (const model of models) {
+    const id = model.id?.trim().toLowerCase();
+    const served = model.served_context_window;
+    if (!id || typeof served !== "number" || !Number.isFinite(served) || served <= 0) continue;
+    windows[id] = Math.floor(served);
+  }
+  const previous = servedWindows.get(connectionId);
+  servedWindows.set(connectionId, { endpoint: baseUrl, windows });
+  // A first or moved listing settles the cap even when it reports no windows.
+  if (
+    previous?.endpoint !== baseUrl ||
+    JSON.stringify(windows) !== JSON.stringify(previous.windows)
+  ) {
+    notifyCatalogChange();
+  }
+}
+
+export function forgetServedContextWindows(connectionId: string): void {
+  if (servedWindows.delete(connectionId)) notifyCatalogChange();
+}
+
+export function servedWindowsListedFrom(connectionId: string): string | undefined {
+  return servedWindows.get(connectionId)?.endpoint;
+}
+
+export function servedContextWindow(
+  connectionId: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  const id = modelId?.trim().toLowerCase();
+  if (!connectionId || !id) return null;
+  return servedWindows.get(connectionId)?.windows[id] ?? null;
 }
 
 export function clearProviderModelCatalog(providerType: string): void {

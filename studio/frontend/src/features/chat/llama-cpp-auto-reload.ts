@@ -10,6 +10,7 @@ import {
   getExternalProviderApiKey,
   type ExternalProviderConfig,
 } from "./external-providers";
+import { learnServedContextWindows } from "./model-catalog";
 import {
   providerSavesInFlight,
   useExternalProvidersStore,
@@ -57,6 +58,11 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         baseUrl: provider.baseUrl || null,
         apiKey: provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
       });
+      const live = autoReloadConnections().find((p) => p.id === provider.id);
+      // A restarting server lists nothing; keep the last known windows like the catalog below.
+      if (!stopped && listed.length > 0 && live && endpoint(live) === endpoint(provider)) {
+        learnServedContextWindows(provider.id, listed, provider.baseUrl);
+      }
       const catalog = [...new Set(listed.map((m) => m.id.trim()).filter(Boolean))];
       const key = `${endpoint(provider)}|${catalog.join("\n")}`;
       // A server still starting can list nothing: keep the last good selection.
