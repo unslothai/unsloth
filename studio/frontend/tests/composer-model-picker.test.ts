@@ -24,6 +24,7 @@ import {
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
+  pickerWidth,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -650,7 +651,7 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(420px\*var\(--ui-space-scale,1\)\)\]"/,
+    /\(isExpanded \|\| configTarget\) &&\s+"h-\(--composer-picker-h\)"/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -908,6 +909,26 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+});
+
+test("the picker's width follows the window between 360px and 520px", () => {
+  assert.equal(pickerWidth(390, 1), 360);
+  assert.equal(pickerWidth(1440, 1), 432);
+  assert.equal(pickerWidth(2560, 1), 520);
+  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves both bounds.
+  assert.equal(pickerWidth(960, 1), 360);
+  assert.equal(pickerWidth(2560, 1.25), 650);
+  // The CSS twin uses the same bounds, or alignOffset would slide by the wrong width.
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\)\)\);/,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /w-\(--composer-picker-w\)/);
+  assert.match(picker, /pickerWidth\(window\.innerWidth, scale\)/);
 });
 
 test("the Connected tab lists every connection's models, favorites then newest first", () => {

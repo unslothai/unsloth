@@ -474,8 +474,12 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
+/** --composer-picker-w in index.css: 30vw between 360px and 520px, both times --ui-space-scale. */
+export function pickerWidth(viewportWidth: number, scale: number): number {
+  return Math.min(520 * scale, Math.max(360 * scale, viewportWidth * 0.3));
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,

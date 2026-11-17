@@ -207,7 +207,7 @@ import {
   type ListSection,
   PICKER_EDGE,
   PICKER_GAP,
-  PICKER_WIDTH,
+  pickerWidth,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -3325,7 +3325,12 @@ export function ComposerModelPicker({
           ) || 1
         : 1;
       setAlignOffset(
-        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
+        pickerAlignOffset(
+          align,
+          rect,
+          pickerWidth(window.innerWidth, scale),
+          window.innerWidth,
+        ),
       );
       resetView();
       setActive(0);
@@ -5123,9 +5128,8 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
-          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) &&
-            "h-[calc(420px*var(--ui-space-scale,1))]",
+          "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          (isExpanded || configTarget) && "h-(--composer-picker-h)",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
           // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
