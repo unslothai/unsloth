@@ -6,7 +6,10 @@ import {
   isSilencedDesktopUpdateFailure,
 } from "../../../lib/desktop-update-activity.ts";
 import { PinnedChatsBlockedError } from "./pinned-chats-sync.ts";
-import { isAbortOrTimeout } from "./settings-retry.ts";
+import {
+  ChatSettingsRequestError,
+  isAbortOrTimeout,
+} from "./settings-retry.ts";
 
 // Judged when the request fails: the queue reports after a recovery read, by when the flag may be gone.
 const failedUnderUpdate = new WeakSet<object>();
@@ -37,4 +40,26 @@ export function isPinFailureUnderDesktopUpdate(error: unknown): boolean {
     return true;
   }
   return unreachable(error, isBackendDownForDesktopUpdate());
+}
+
+/** Background pin reconciliation retries these failures without interrupting the user. */
+export function isExpectedPinSyncInterruption(error: unknown): boolean {
+  if (error instanceof PinnedChatsBlockedError) {
+    return (
+      error.cause !== undefined && isExpectedPinSyncInterruption(error.cause)
+    );
+  }
+  if (isAbortOrTimeout(error)) return true;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { unslothTransportFailure?: unknown }).unslothTransportFailure ===
+      true
+  ) {
+    return true;
+  }
+  return (
+    error instanceof ChatSettingsRequestError &&
+    (error.status === 408 || error.status === 429 || error.status >= 500)
+  );
 }

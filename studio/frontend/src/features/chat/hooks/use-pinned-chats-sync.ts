@@ -24,13 +24,18 @@ const loadRuntime = () =>
     throw error;
   }));
 
+const MAX_RETRY_DELAY_MS = 30_000;
+
 /** Keep pins current across clients, and discard in-flight work at session boundaries. */
 export function usePinnedChatsSync(): void {
   useEffect(() => {
     let sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
-    const refresh = () => {
+    let retryNotBefore = 0;
+    let retryDelayMs = 1_000;
+    const refresh = (force = false) => {
       // The update screen stops the backend; the poll after it drops picks the pins back up.
       if (isBackendDownForDesktopUpdate()) return;
+      if (!force && Date.now() < retryNotBefore) return;
       if (hasAuthToken() && document.visibilityState === "visible") {
         void loadRuntime()
           .then((sync) => {
@@ -39,7 +44,16 @@ export function usePinnedChatsSync(): void {
             sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
             return refreshed;
           })
-          .catch(() => undefined);
+          .then(
+            () => {
+              retryNotBefore = 0;
+              retryDelayMs = 1_000;
+            },
+            () => {
+              retryNotBefore = Date.now() + retryDelayMs;
+              retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS);
+            },
+          );
         sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
       }
     };
@@ -50,7 +64,7 @@ export function usePinnedChatsSync(): void {
         .then((sync) => sync.resetPinnedChats({ clearPending: true }))
         .catch(() => undefined);
       sessionMark = localStorage.getItem(AUTH_SESSION_MARK_KEY);
-      refresh();
+      refresh(true);
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key?.startsWith(PIN_JOURNAL_PREFIX)) refresh();
@@ -66,9 +80,12 @@ export function usePinnedChatsSync(): void {
     window.addEventListener(AUTH_SESSION_CLEARED_EVENT, reconcileSession);
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcileSession);
     window.addEventListener("storage", onStorage);
-    window.addEventListener("focus", refresh);
-    window.addEventListener("online", refresh);
-    document.addEventListener("visibilitychange", refresh);
+    const refreshOnFocus = () => refresh();
+    window.addEventListener("focus", refreshOnFocus);
+    const refreshOnOnline = () => refresh(true);
+    window.addEventListener("online", refreshOnOnline);
+    const refreshOnVisibilityChange = () => refresh();
+    document.addEventListener("visibilitychange", refreshOnVisibilityChange);
     const timer = window.setInterval(refresh, 30_000);
     refresh();
     return () => {
@@ -76,9 +93,9 @@ export function usePinnedChatsSync(): void {
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcileSession);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcileSession);
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("online", refresh);
-      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("online", refreshOnOnline);
+      document.removeEventListener("visibilitychange", refreshOnVisibilityChange);
       const clearPending =
         !hasAuthToken() ||
         localStorage.getItem(AUTH_SESSION_MARK_KEY) !== sessionMark;

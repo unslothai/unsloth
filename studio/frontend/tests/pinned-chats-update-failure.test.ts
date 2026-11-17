@@ -20,7 +20,10 @@ const {
   PinnedChatsValidationError,
   createPinnedChatsSync,
 } = await import("../src/features/chat/utils/pinned-chats-sync.ts");
-const { isPinFailureUnderDesktopUpdate } = await import(
+const {
+  isExpectedPinSyncInterruption,
+  isPinFailureUnderDesktopUpdate,
+} = await import(
   "../src/features/chat/utils/pinned-chats-update-failure.ts"
 );
 const { ChatSettingsRequestError, isRetryablePinError } = await import(
@@ -107,7 +110,7 @@ function pinsServer() {
   return server;
 }
 
-/** The runtime as sync-pinned-chats wires it, toasting what isPinFailureUnderDesktopUpdate lets through. */
+/** The runtime as sync-pinned-chats wires it, toasting only actionable failures. */
 function pinRuntime() {
   const api = createChatPinsApi(new AbortController().signal);
   const raised: unknown[] = [];
@@ -120,7 +123,12 @@ function pinRuntime() {
     publish: () => {},
     onError: (error) => {
       raised.push(error);
-      if (!isPinFailureUnderDesktopUpdate(error)) toasted.push(error);
+      if (
+        !isPinFailureUnderDesktopUpdate(error) &&
+        !isExpectedPinSyncInterruption(error)
+      ) {
+        toasted.push(error);
+      }
     },
   });
   return { api, sync, raised, toasted };
@@ -150,6 +158,38 @@ test("only failures from the stopped backend are pin update failures", () => {
   } finally {
     leave();
   }
+});
+
+test("background pin sync treats transient interruptions as retryable noise", () => {
+  assert.equal(isExpectedPinSyncInterruption(transport()), true);
+  assert.equal(
+    isExpectedPinSyncInterruption(new DOMException("Timed out", "TimeoutError")),
+    true,
+  );
+  assert.equal(
+    isExpectedPinSyncInterruption(
+      new ChatSettingsRequestError("Unavailable", 503, null),
+    ),
+    true,
+  );
+  assert.equal(
+    isExpectedPinSyncInterruption(new ChatSettingsRequestError("Bad", 400, null)),
+    false,
+  );
+  assert.equal(
+    isExpectedPinSyncInterruption(new PinnedChatsValidationError("Invalid")),
+    false,
+  );
+  assert.equal(
+    isExpectedPinSyncInterruption(new PinnedChatsBlockedError("No known cause")),
+    false,
+  );
+  assert.equal(
+    isExpectedPinSyncInterruption(
+      new PinnedChatsBlockedError("Waiting", { cause: transport() }),
+    ),
+    true,
+  );
 });
 
 test("a pin read whose body the shutdown cut off is an update failure", async () => {
@@ -317,10 +357,10 @@ test("a queued write that times out after 200 headers stays silent with the edit
   assert.deepEqual(server.pins, []);
 });
 
-test("the same pin failures still toast outside an update", async () => {
+test("transient pin failures stay silent outside an update", async () => {
   const server = pinsServer();
   const runtime = pinRuntime();
   await queueTwoEditsWhileDown(runtime, server);
   assert.ok(runtime.raised.length > 0);
-  assert.equal(runtime.toasted.length, runtime.raised.length);
+  assert.deepEqual(runtime.toasted, []);
 });
