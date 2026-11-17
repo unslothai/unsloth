@@ -1560,6 +1560,21 @@ def _float8_params(model):
 _GENERATE_DEPTH = [0]
 
 
+def _eager_decode_scope(stream):
+    """Decode without CUDA graphs while generate streams blocks. A streamed decode step all-gathers each
+    block (FSDP2's pre-forward unshard), so a captured decode graph holds NCCL collectives. FastModel's
+    generic decode graphs captured them and kept the graph for the next generate; while that graph was
+    alive, `destroy_process_group()` blocked until the NCCL watchdog aborted the process (2x T4).
+    Unsloth's own decode loops already refuse graphs under block swap (`_decode_graphs._eligible`)."""
+    if not stream:
+        return contextlib.nullcontext()
+    try:
+        from ._decode_graphs import eager_scope
+    except ImportError:
+        return contextlib.nullcontext()
+    return eager_scope()
+
+
 def _wrap_generate(model):
     """Run `generate` (the root's and every inner module's that has one) inside native_fsdp2_unsharded."""
     import weakref
@@ -1583,7 +1598,11 @@ def _wrap_generate(model):
             _GENERATE_DEPTH[0] += 1
             try:
                 stream = _generate_streams_blocks(target)
-                with native_fsdp2_unsharded(target, stream_blocks = stream), torch.no_grad():
+                with (
+                    native_fsdp2_unsharded(target, stream_blocks = stream),
+                    torch.no_grad(),
+                    _eager_decode_scope(stream),
+                ):
                     return _generate(*args, **kwargs)
             finally:
                 _GENERATE_DEPTH[0] -= 1
