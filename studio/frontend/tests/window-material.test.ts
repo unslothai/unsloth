@@ -111,6 +111,10 @@ test("pinned Run settings rows frost a glass menu instead of painting its fill t
 		css,
 		/\[data-glass-motion\] \[data-glass-moving\] \.composer-run-settings :is\(\[data-config-header-row\], \[data-pinned-footer\]\)::before \{\n  background: color-mix\(in srgb, var\(--glass-page-popover\) 96%, transparent\);/,
 	);
+	assert.match(
+		css,
+		/\[data-glass-clear\]\[data-glass-menus\] [^{]*:is\(\.sticky, \[data-sticky-bar\], \.composer-run-settings \[data-config-header-row\]\) \{\n  --background: var\(--glass-page-bg\);/,
+	);
 });
 
 test("glass strength repairs malformed persisted data", () => {
