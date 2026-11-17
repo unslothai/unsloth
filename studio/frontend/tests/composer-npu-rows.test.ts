@@ -22,7 +22,7 @@ const api = loadWithStubs<typeof NpuApi>(
     "./runtime-versions": runtimeVersions,
   },
 );
-const { npuPickerRows } = loadWithStubs<typeof NpuRows>(
+const { npuMarkOwner, npuPickerRows } = loadWithStubs<typeof NpuRows>(
   new URL(
     "../src/components/assistant-ui/composer-model-picker/npu-rows.ts",
     import.meta.url,
@@ -130,4 +130,21 @@ test("On Device's Recent sort keeps never-loaded NPU rows in the Hub's order", (
     )[0].id,
     loaded,
   );
+});
+
+test("an NPU row is marked by its repo's Hugging Face org, not a letter", () => {
+  const rows = npuPickerRows(backend, true);
+  const named = rows.find((row) => row.npu.hf_repo);
+  assert.equal(npuMarkOwner(named), "FastFlowLM");
+  assert.equal(npuMarkOwner({ kind: "npu", npu: { hf_repo: null } }), "FastFlowLM");
+  assert.equal(
+    npuMarkOwner({ kind: "npu", npu: { hf_repo: "amd/Some-Model-NPU2" } }),
+    "amd",
+  );
+  // The chip's loaded model has only its `lemonade:` path.
+  assert.equal(
+    npuMarkOwner({ kind: "loaded", id: "lemonade:qwen3.6-moe-35b-a3b-FLM" }),
+    "FastFlowLM",
+  );
+  assert.equal(npuMarkOwner({ kind: "hub", id: "unsloth/Qwen3-4B-GGUF" }), null);
 });
