@@ -109,6 +109,8 @@ def _connect(proxy_url: str, target: str) -> bytes:
         "::ffff:169.254.169.254",
         "2002:a9fe:a9fe::",
         "64:ff9b::a9fe:a9fe",
+        "64:ff9b:1::a9fe:a9fe",
+        "64:ff9b:1::7f00:1",
         "fd00:ec2::254",
         "100.100.100.200",
         "127.0.0.1",
@@ -256,7 +258,9 @@ def test_seatbelt_reaches_only_its_proxy(tmp_path, monkeypatch):
         assert proxied.env["no_proxy"] == proxied.env["NO_PROXY"] == sandbox_egress.NO_PROXY
         rc_dir = proxied.env["CURL_HOME"]
         assert os.path.getsize(os.path.join(rc_dir, ".curlrc")) == 0
-        assert proxied.env["WGETRC"] == os.path.join(rc_dir, "wgetrc")
+        assert (
+            proxied.env["WGETRC"] == proxied.env["SYSTEM_WGETRC"] == os.path.join(rc_dir, "wgetrc")
+        )
         with open(proxied.env["WGETRC"]) as f:
             assert f.read() == "netrc = off\n"
         assert rc_dir in proxied.argv[2] and "CURL_HOME" not in plain.env
@@ -422,3 +426,27 @@ def test_the_proxy_stops_when_the_call_ends(monkeypatch):
     monkeypatch.setattr(sandbox_egress, "EgressProxy", tracked)
     _bash("curl --version")
     assert len(started) == 1 and started[0]._closed and not started[0]._thread.is_alive()
+
+
+@pytest.mark.skipif(shutil.which("wget") is None, reason = "wget is not installed")
+def test_a_global_wgetrc_cannot_turn_a_download_into_an_upload(
+    tmp_path, origin, loopback_origin_allowed
+):
+    hostile = tmp_path / "hostile"
+    hostile.write_text("post_data = LEAKED\n", encoding = "utf-8")
+    env = dict(os.environ, SYSTEM_WGETRC = str(hostile))
+    env.update(sandbox_egress.proxy_environment("http://127.0.0.1:9", str(tmp_path)))
+    sandbox_egress.write_empty_rc_files(str(tmp_path))
+    for name in (
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ):
+        env.pop(name)
+    out = subprocess.run(
+        ["wget", "-qO-", "--no-proxy", f"{origin}/"], env = env, capture_output = True, text = True
+    )
+    assert out.stdout == "hello from the host", out

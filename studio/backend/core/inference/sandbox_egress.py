@@ -26,6 +26,8 @@ _CONNECT_TIMEOUT_SECONDS = 15.0
 _IDLE_TIMEOUT_SECONDS = 600.0
 _MAX_CONNECTIONS = 64
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+# RFC 8215 local-use translation: where the IPv4 sits depends on the site's prefix length, so refuse it all.
+_LOCAL_NAT64 = ipaddress.ip_network("64:ff9b:1::/48")
 _THIS_NETWORK = ipaddress.ip_network("0.0.0.0/8")
 _HOP_HEADERS = frozenset({"connection", "keep-alive", "proxy-connection", "proxy-authorization"})
 
@@ -55,7 +57,9 @@ def proxy_environment(url: str, rc_dir: str) -> dict[str, str]:
         )
     }
     env.update(no_proxy = NO_PROXY, NO_PROXY = NO_PROXY)
-    env.update(CURL_HOME = rc_dir, WGETRC = os.path.join(rc_dir, "wgetrc"))
+    # wget reads its global rc before WGETRC and keeps its settings (post_file), so replace both.
+    wgetrc = os.path.join(rc_dir, "wgetrc")
+    env.update(CURL_HOME = rc_dir, WGETRC = wgetrc, SYSTEM_WGETRC = wgetrc)
     return env
 
 
@@ -65,6 +69,8 @@ def refused_address(address: str) -> bool:
     try:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
+        return True
+    if ip.version == 6 and ip in _LOCAL_NAT64:
         return True
     candidates = [ip]
     if ip.version == 6:
