@@ -6534,6 +6534,14 @@ const clearChatFullAccessOnAuthChange = () => useChatRuntimeStore.getState().cle
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
   window.addEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);
+  window.addEventListener("storage", (event) => {
+    if (event.key === CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY || event.key === null) {
+      useChatRuntimeStore.setState({ researchWebsitePolicy: loadResearchWebsitePolicy() });
+    }
+    if (event.key === CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY || event.key === null) {
+      useChatRuntimeStore.setState({ researchMcpSources: loadResearchMcpSources() });
+    }
+  });
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
