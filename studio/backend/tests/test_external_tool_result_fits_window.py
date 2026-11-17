@@ -342,3 +342,52 @@ def test_a_local_model_at_the_same_window_does_not_price_the_connection(monkeypa
     (result,) = _results(messages)
     rest = [message for message in messages if message.get("role") != "tool"]
     assert len(result) + estimate_messages_tokens_conservative(rest) < 8192
+
+
+def _custom_request_body(monkeypatch, window):
+    import sys
+    import time
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_external_provider_sampling_over_the_wire import _run, _Server
+    from core.inference import external_provider as provider_mod
+
+    with _Server() as server:
+        client = provider_mod.ExternalProviderClient(
+            provider_type = "custom", base_url = server.base_url, api_key = ""
+        )
+        key = ("custom", client.base_url, client._credential_digest(), "a-model")
+        monkeypatch.setitem(provider_mod._served_windows, key, (time.monotonic() + 60, window))
+
+        async def go():
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "a-model"
+            ):
+                pass
+
+        _run(go)
+        return server.bodies[-1]
+
+
+def test_a_custom_server_that_reports_a_window_is_asked_for_its_token_count(monkeypatch):
+    body = _custom_request_body(monkeypatch, 8192)
+
+    assert body["stream_options"] == {"include_usage": True}
+
+
+def test_a_custom_server_that_reports_no_window_is_not_asked(monkeypatch):
+    assert "stream_options" not in _custom_request_body(monkeypatch, None)
+
+
+def test_the_window_is_read_before_the_first_turn():
+    transport = FakeTransport([_ANSWER_TURN])
+    reads = []
+
+    async def _read():
+        reads.append(len(transport.requests))
+        return 8192
+
+    _forwarded(transport, served_window = _read)
+
+    assert reads[0] == 0
