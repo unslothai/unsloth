@@ -206,6 +206,8 @@ import {
 } from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
+  markLiteralThinkTags,
+  markPendingThinkTag,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
 import {
@@ -1535,6 +1537,9 @@ function scheduleGenerationRecovery(
     // Settled before disarmAll so an arm cannot land after the run is over.
     let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
+    let splitReasoningSeen = metadata.splitReasoningSeen === true;
+    // The live stream marked a trailing tag fragment only when reasoning arrived split out.
+    if (splitReasoningSeen) raw = markPendingThinkTag(raw);
     let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:
@@ -1894,14 +1899,22 @@ function scheduleGenerationRecovery(
                 parseThink = true;
                 currentMetadata = { ...currentMetadata, parseThinkTags: true };
               }
+              // Marked as the live stream marks them, so a recovered reply parses the same way.
               if (reasoning) {
                 if (!reasoningOpen) raw += "<think>";
-                raw += reasoning;
+                raw += markLiteralThinkTags(reasoning);
                 reasoningOpen = true;
+                if (!splitReasoningSeen) {
+                  splitReasoningSeen = true;
+                  currentMetadata = { ...currentMetadata, splitReasoningSeen: true };
+                }
               }
               if (delta) {
                 if (reasoningOpen) raw += "</think>";
-                raw += delta;
+                raw +=
+                  splitReasoningSeen && typeof deltaRecord?.content === "string"
+                    ? markLiteralThinkTags(delta)
+                    : delta;
                 reasoningOpen = false;
               }
             }

@@ -8070,6 +8070,10 @@ function useContinuation() {
     const request: ContinuationRequest = {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
+      ...((metadata as { custom?: { splitReasoningSeen?: unknown } } | undefined)?.custom
+        ?.splitReasoningSeen === true
+        ? { splitReasoningSeen: true }
+        : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
       ...(answerParts.length > 0 ? { answerParts } : {}),

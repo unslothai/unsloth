@@ -33473,12 +33473,20 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_think_prov: dict = {"wrapped": 0}
+        if _continue_final_message(payload) and getattr(
+            payload.messages[-1], "reasoning_content", None
+        ):
+            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            _gguf_think_prov["split"] = True
+
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
                 parse_think_markers = _responses_should_parse_think_markers(
                     payload,
                     llama_backend,
-                )
+                ),
+                think_provenance = _gguf_think_prov,
             )
 
         _gguf_monitor_callback = (
@@ -33708,6 +33716,7 @@ async def produce_openai_chat_completions(
                     permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    reasoning_provenance = _gguf_think_prov,
                     live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
@@ -33919,9 +33928,12 @@ async def produce_openai_chat_completions(
 
                     def _release_held_mention():
                         nonlocal prev_text, _gguf_turn_raw
+                        span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw, _gguf_auto_heal_tool_calls
+                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
                         )
+                        if clean is not None:
+                            clean = _gguf_turn_raw[:span] + clean
                         _gguf_turn_raw = ""
                         if clean is None:
                             return []
@@ -34115,8 +34127,9 @@ async def produce_openai_chat_completions(
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
                         _gguf_turn_raw = raw_cumulative
-                        clean_cumulative = _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
+                        span = reasoning_extractor.server_wrap_span(raw_cumulative)
+                        clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
+                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -34355,10 +34368,16 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                turn_mark = snapshot_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
                             break
+                        if event.get("type") == "tool_start" or (
+                            event.get("type") == "status" and not event.get("text")
+                        ):
+                            # A new turn opens its own leading wrap, as in the streaming route.
+                            turn_mark = _think_ledger_mark(_gguf_think_prov)
                         if event.get("type") == "metadata":
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
@@ -34368,20 +34387,26 @@ async def produce_openai_chat_completions(
                                 context_truncation, event
                             )
                         elif event.get("type") == "content":
+                            # Taken with the snapshot: a terminal empty status would move the mark past it.
+                            snapshot_mark = turn_mark
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
                             # turn's text. As in the safetensors drain, a visible
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
+                    provenance = {**_gguf_think_prov, **snapshot_mark}
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
-                        full_text = _strip_tool_xml_for_display(
-                            raw_text,
+                        span = _ResponsesReasoningExtractor(
+                            think_provenance = provenance
+                        ).server_wrap_span(raw_text)
+                        full_text = raw_text[:span] + _strip_tool_xml_for_display(
+                            raw_text[span:],
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation
+                    return full_text, usage, finish, timings, context_truncation, provenance
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -34455,6 +34480,7 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
+                        think_provenance,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -34463,6 +34489,7 @@ async def produce_openai_chat_completions(
                     parse_think_markers = _responses_should_parse_think_markers(
                         payload, llama_backend
                     ),
+                    think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:
@@ -34581,6 +34608,7 @@ async def produce_openai_chat_completions(
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
+                reasoning_provenance = _gguf_think_prov,
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 temperature = payload.temperature,
@@ -35092,6 +35120,7 @@ async def produce_openai_chat_completions(
                         completion_usage = None
                         completion_finish = None
                         _choice_context_truncation = None
+                        _choice_mark = _think_ledger_mark(_gguf_think_prov)
                         for token in gguf_generate(_idx):
                             if isinstance(token, dict):
                                 if token.get("type") == "metadata":
@@ -35120,6 +35149,7 @@ async def produce_openai_chat_completions(
                                 payload,
                                 llama_backend,
                             ),
+                            think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
                         if reasoning_text:
@@ -40467,13 +40497,20 @@ class _ResponsesReasoningExtractor:
         parse_think_markers: bool = False,
         reasoning_prefilled: bool = False,
         single_block: bool = False,
+        think_provenance: Optional[dict] = None,
     ) -> None:
         self._buffer = ""
         # Prefilled template opens an unclosed <think>, so start in reasoning.
         self._in_reasoning = reasoning_prefilled and not single_block
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
-        self._single_block = single_block
+        self._single_block = single_block or think_provenance is not None
+        self._provenance = think_provenance
+        self._wrap = None
+        self._wrap_taken = 0
+        self._after_lead = False
+        self._fed = 0
+        self._lead = None
 
     def feed(
         self,
@@ -40487,12 +40524,54 @@ class _ResponsesReasoningExtractor:
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
+            self._fed += len(text)
         if not self._parse_think_markers:
             visible_parts.append(self._buffer)
             self._buffer = ""
             return "".join(reasoning_parts), "".join(visible_parts)
 
         while self._buffer:
+            if self._wrap is not None:
+                take = int(self._wrap.get("len", 0)) - self._wrap_taken
+                if take > 0:
+                    reasoning_parts.append(self._buffer[:take])
+                    self._wrap_taken += min(take, len(self._buffer))
+                    self._buffer = self._buffer[take:]
+                    continue
+                if self._buffer.startswith(_RESPONSES_THINK_CLOSE):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_CLOSE) :]
+                elif _RESPONSES_THINK_CLOSE.startswith(self._buffer):
+                    break
+                self._wrap = None
+                self._after_lead = True
+                continue
+
+            if self._after_lead:
+                # Only a server wrapper recorded at this exact offset is reasoning; any other tag is answer text.
+                later = self._next_later_wrap()
+                gap = None if later is None else later["at"] - (self._fed - len(self._buffer))
+                if gap is None or gap >= len(self._buffer):
+                    visible_parts.append(self._buffer)
+                    self._buffer = ""
+                    break
+                if gap > 0:
+                    visible_parts.append(self._buffer[:gap])
+                    self._buffer = self._buffer[gap:]
+                    continue
+                if _RESPONSES_THINK_OPEN.startswith(self._buffer):
+                    break
+                self._provenance["later_claimed"] = self._provenance.get("later_claimed", 0) + 1
+                if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
+                    self._wrap = later
+                    self._wrap_taken = 0
+                continue
+
+            if not (self._single_block or self._in_reasoning) and self._server_splits():
+                # The server split reasoning out after inline text: its recorded wraps take over.
+                self._after_lead = True
+                continue
+
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
@@ -40515,11 +40594,25 @@ class _ResponsesReasoningExtractor:
 
             if self._single_block:
                 if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    wrap = self._claim_wrap()
+                    if wrap is None and self._server_splits():
+                        # Not the server's leading block: a later wrap at this offset or literal text.
+                        self._after_lead = True
+                        continue
                     self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
-                    self._in_reasoning = True
+                    self._wrap = self._lead = wrap
+                    self._wrap_taken = 0
+                    self._in_reasoning = wrap is None
                     continue
                 if _RESPONSES_THINK_OPEN.startswith(self._buffer):
                     break  # still short of the opener; it may yet arrive
+                if self._server_splits():
+                    self._after_lead = True
+                    continue
+                if self._provenance is not None:
+                    # The server left reasoning inline, so read the tags as before.
+                    self._single_block = False
+                    continue
                 self._parse_think_markers = False
                 visible_parts.append(self._buffer)
                 self._buffer = ""
@@ -40549,13 +40642,61 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
+    def _server_splits(self) -> bool:
+        # Once the server has split reasoning out in this request, only its recorded wraps are reasoning.
+        prov = self._provenance
+        return prov is not None and bool(
+            prov.get("split") or prov.get("wraps") or prov.get("later")
+        )
+
+    def _claim_wrap(self):
+        # The recorded length keeps a literal </think> inside the trace from ending it early.
+        if self._provenance is None:
+            return None
+        claimed = self._provenance.get("claimed", 0)
+        wraps = self._provenance.get("wraps") or []
+        if claimed >= len(wraps):
+            return None
+        self._provenance["claimed"] = claimed + 1
+        return wraps[claimed]
+
+    def server_wrap_span(self, text: str) -> int:
+        # Length of the leading server-made <think> block in text, so display sanitizing can leave it alone.
+        lead = self._lead
+        if (
+            lead is None
+            and self._provenance is not None
+            and not self._after_lead
+            and not self._in_reasoning
+            and text.startswith(_RESPONSES_THINK_OPEN)
+        ):
+            wraps = self._provenance.get("wraps") or []
+            claimed = self._provenance.get("claimed", 0)
+            lead = wraps[claimed] if claimed < len(wraps) else None
+        if lead is None:
+            return 0
+        return len(_RESPONSES_THINK_OPEN) + int(lead.get("len", 0)) + len(_RESPONSES_THINK_CLOSE)
+
+    def _next_later_wrap(self):
+        later = self._provenance.get("later") or []
+        claimed = self._provenance.get("later_claimed", 0)
+        offset = self._fed - len(self._buffer)
+        while claimed < len(later) and later[claimed]["at"] < offset:
+            claimed += 1
+        self._provenance["later_claimed"] = claimed
+        return later[claimed] if claimed < len(later) else None
+
     def finish(self) -> tuple[str, str]:
         if not self._buffer:
             return "", ""
         remaining = self._buffer
         self._buffer = ""
-        if not self._parse_think_markers:
+        if not self._parse_think_markers or (self._after_lead and self._wrap is None):
             return "", remaining
+        if self._wrap is not None:
+            # Only an unfinished closing tag is ever left over.
+            self._wrap = None
+            return "", ""
         if self._in_reasoning:
             self._in_reasoning = False
             return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""
@@ -40569,15 +40710,25 @@ def _extract_responses_reasoning(
     parse_think_markers: bool = False,
     reasoning_prefilled: bool = False,
     single_block: bool = False,
+    think_provenance: Optional[dict] = None,
 ) -> tuple[str, str]:
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = parse_think_markers,
         reasoning_prefilled = reasoning_prefilled,
         single_block = single_block,
+        think_provenance = think_provenance,
     )
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
     return reasoning + final_reasoning, visible + final_visible
+
+
+def _think_ledger_mark(provenance: dict) -> dict:
+    # Claim cursors for an extractor over {**ledger, **mark}, so it skips the wraps recorded so far.
+    return {
+        "claimed": len(provenance.get("wraps") or []),
+        "later_claimed": len(provenance.get("later") or []),
+    }
 
 
 def _responses_should_parse_think_markers(
