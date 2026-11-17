@@ -365,7 +365,9 @@ def test_memory_does_not_restore_unsafe_launcher_tools(db, monkeypatch, ui_event
     monkeypatch.setattr(inf, "_enabled_agent_skills", lambda: [])
     monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda _: False)
     payload = ChatCompletionRequest(
-        model = "test", thread_id = "chat", stream = True,
+        model = "test",
+        thread_id = "chat",
+        stream = True,
         studio_tool_history = replay,
         messages = [
             *(_history("update_memory") if replay else []),
@@ -374,9 +376,14 @@ def test_memory_does_not_restore_unsafe_launcher_tools(db, monkeypatch, ui_event
     )
     try:
         assert inf._launcher_tool_default_applies(payload, ui_events)
-        tools = asyncio.run(inf._select_request_tools(
-            payload, tools_on = True, mcp_allowed = False, ui_events = ui_events,
-        ))
+        tools = asyncio.run(
+            inf._select_request_tools(
+                payload,
+                tools_on = True,
+                mcp_allowed = False,
+                ui_events = ui_events,
+            )
+        )
         names = inf._catalog_names(tools)
         assert "update_memory" in names
         if ui_events and not replay:
