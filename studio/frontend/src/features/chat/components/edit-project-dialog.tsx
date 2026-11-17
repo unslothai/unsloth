@@ -18,6 +18,7 @@ import {
   WorkingFolderPicker,
 } from "./working-folder-picker";
 import { LinkedFoldersManager } from "@/features/rag/components/linked-folders-manager";
+import { SOURCE_FOLDER_DESCRIPTION } from "@/features/rag/components/source-folder-copy";
 import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -251,8 +252,7 @@ export function EditProjectDialog({
             Source folders
           </h3>
           <p className="text-ui-13 text-muted-foreground">
-            Keep supported documents in sync for chats to search. Linking does
-            not grant access to edit the original files.
+            {SOURCE_FOLDER_DESCRIPTION}
           </p>
           <div className="mt-0.5">
             <LinkedFoldersManager
