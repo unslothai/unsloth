@@ -88,6 +88,7 @@ def _stub_loader_facts(
     """What the loaders know about the GPU and the architecture, without importing them (GPU package)."""
     setattr(auto, "_loader_precision", lambda: (supports_bf16, list(force_float32)), raising = False)
     setattr(auto, "_model_types", lambda name, call, revision: list(model_types), raising = False)
+    setattr(auto, "_hidden_size", lambda name, call, revision: None, raising = False)
     setattr(auto, "_quant_skip_modules", _real_quant_skip_modules, raising = False)
 
 
@@ -419,6 +420,39 @@ def test_fresh_lora_counts_its_adapter_parameters(clean):
 
     auto.resolve_for_load(from_pretrained, ("org/model",), {"load_in_4bit": False})
     assert "weights 32.5 MiB" in auto._STATE["reason"], auto._STATE["reason"]
+
+
+def test_packed_lora_uses_the_hidden_size_side():
+    """A packed rectangular layer (18944 x 3584) sizes its r = 16 adapter from hidden_size, not a square guess."""
+    from unsloth import parallel_auto as auto
+
+    tensors = [("model.layers.0.mlp.up_proj.weight", "U8", (18944 * 3584 // 2, 1))]
+    _, square = auto.checkpoint_estimate(tensors)
+    _, exact = auto.checkpoint_estimate(tensors, hidden_size = 3584)
+    assert exact == 16 * (18944 + 3584) == 360448
+    assert square < exact
+
+
+def test_trainer_sizing_keeps_each_trainable_dtype(clean):
+    """Mixed trainable dtypes: a float32 parameter keeps 4-byte grads and buckets even when a float16 one follows."""
+    _, _, auto = clean
+    model = torch.nn.Module()
+    model.a = torch.nn.Parameter(torch.zeros(1_000_000, dtype = torch.float32))
+    model.b = torch.nn.Parameter(torch.zeros(1, dtype = torch.float16))
+    captured = {}
+
+    def fake_resolve(estimate, install_trainer_init):
+        captured["value"] = estimate()
+        return "ddp"
+
+    import unittest.mock as um
+
+    with (
+        um.patch.object(auto, "_resolve", fake_resolve),
+        um.patch.object(auto, "auto_requested", lambda: True),
+    ):
+        auto.resolve_for_trainer(model)
+    assert captured["value"][1] == 1_000_000 * (2 * 4 + 8) + 1 * (2 * 2 + 8)
 
 
 def test_quantize_on_load_keeps_the_loaders_dense_modules(clean):

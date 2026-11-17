@@ -333,7 +333,8 @@ def _is_quantizable(key, shape):
 
 
 def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, full_finetuning = False,
-                        dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None):  # fmt: skip
+                        dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None,
+                        hidden_size = None):  # fmt: skip
     """(weights bytes once loaded, trainable parameter count) for safetensors header entries. Quantizing on
     load needs `skip_modules`, the loader's llm_int8_skip_modules: a linear whose name contains one stays
     dense (a substring match keeps at least what the loader keeps)."""
@@ -350,8 +351,13 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
             weights += numel * stored
             numel_total += 2 * numel  # two 4-bit codes per byte
             if key.lower().endswith(".weight") and len(shape) >= 1:
-                # packed [n / 2, 1]: in + out of a square layer of 2 n parameters
-                lora += lora_rank * 2 * int(math.sqrt(2 * numel))
+                # packed [n / 2, 1] holds 2 n parameters; one side is hidden_size for the decoder's linears
+                # (a square guess undercounts rectangular MLP / GQA layers), else square.
+                params = 2 * numel
+                if hidden_size and params % hidden_size == 0:
+                    lora += lora_rank * (hidden_size + params // hidden_size)
+                else:
+                    lora += lora_rank * 2 * int(math.sqrt(params))
             continue
         # Floating-point weights load in the model dtype (an fp32 load upcasts a bf16 checkpoint); bitsandbytes
         # quant state beside packed weights keeps its stored dtype.
@@ -397,21 +403,36 @@ def _loader_precision():
     return bool(is_bfloat16_supported()), [str(x).lower() for x in FORCE_FLOAT32]
 
 
-def _model_types(name, call, revision):
-    """The loader's model types for `name` (config.json only, read as the loader reads it)."""
+def _config(name, call, revision):
     from transformers import AutoConfig
-    from unsloth_zoo.hf_utils import get_transformers_model_type
-
-    trust = bool(call.get("trust_remote_code"))
-    config = AutoConfig.from_pretrained(
+    return AutoConfig.from_pretrained(
         name,
         token = call.get("token"),
         revision = revision,
-        trust_remote_code = trust,
+        trust_remote_code = bool(call.get("trust_remote_code")),
         local_files_only = call.get("local_files_only", False),
         cache_dir = call.get("cache_dir", None),
     )
+
+
+def _model_types(name, call, revision):
+    """The loader's model types for `name` (config.json only, read as the loader reads it)."""
+    from unsloth_zoo.hf_utils import get_transformers_model_type
+
+    trust = bool(call.get("trust_remote_code"))
+    config = _config(name, call, revision)
     return [str(t).lower() for t in get_transformers_model_type(config, trust_remote_code = trust)]
+
+
+def _hidden_size(name, call, revision):
+    """The text model's hidden_size, or None."""
+    try:
+        config = _config(name, call, revision)
+        config = config.get_text_config() if hasattr(config, "get_text_config") else config
+        value = getattr(config, "hidden_size", None)
+        return int(value) if value else None
+    except Exception:
+        return None
 
 
 def _quant_skip_modules(model_types):
@@ -535,6 +556,7 @@ def resolve_for_load(loader, args, kwargs):
             full_finetuning = full,
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
+            hidden_size = _hidden_size(name, call, revision),
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
@@ -560,7 +582,7 @@ def resolve_for_trainer(model, training_args = None):
         return _STATE["choice"]
 
     def estimate():
-        seen, weights, trainable, grad_itemsize, on_cuda = set(), 0, 0, 4, 0
+        seen, weights, trainable, on_cuda = set(), 0, 0, 0
         for p in list(model.parameters()) + list(model.buffers()):
             if id(p) in seen:
                 continue
@@ -569,11 +591,11 @@ def resolve_for_trainer(model, training_args = None):
             if getattr(p, "is_cuda", False):
                 on_cuda += p.numel() * p.element_size()
             if getattr(p, "requires_grad", False):
-                trainable += p.numel()
-                grad_itemsize = p.element_size()
-        state = training_state_bytes(
-            trainable, grad_itemsize, getattr(training_args, "optim", None)
-        )
+                # Per parameter: mixed trainable dtypes each keep their own gradient and bucket width.
+                trainable += training_state_bytes(
+                    p.numel(), p.element_size(), getattr(training_args, "optim", None)
+                )
+        state = trainable
         # Already resident: on CPU it is out of the available RAM _budget reads (CUDA counts reserved).
         held = weights
         return weights, state, held, on_cuda
