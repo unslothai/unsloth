@@ -12,6 +12,7 @@ import importlib
 import importlib.util
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -115,7 +116,48 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
         return None
     if not checkpoint_enables_safety_checker(repo_id, index):
         return None
-    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: pip install cosmos-guardrail, restart, {_GUARDRAIL_STEPS}"
+    from .cosmos_guardrail_install import manual_install_command
+
+    return (
+        f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail. Install it with Install guardrail on the Video page "
+        f"or run `{manual_install_command()}`, then {_GUARDRAIL_STEPS}"
+    )
+
+
+def refresh_guardrail_import() -> bool:
+    """Point an already-imported Diffusers at a guardrail installed after it was imported, so no restart is needed.
+
+    Diffusers reads ``cosmos_guardrail``'s presence once at import, and a Cosmos pipeline module imported before the
+    install keeps a stub ``CosmosSafetyChecker`` that raises; the pipeline also gates its checks on that class."""
+    importlib.invalidate_caches()
+    if not guardrail_installed():
+        return False
+    utils = sys.modules.get("diffusers.utils.import_utils")
+    stale_flag = utils is not None and not getattr(utils, "_cosmos_guardrail_available", True)
+    stale = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith("diffusers.pipelines.cosmos.")
+        and module is not None
+        and str(getattr(getattr(module, "CosmosSafetyChecker", None), "__module__", "")).startswith(
+            "diffusers."
+        )
+    ]
+    if not stale_flag and not stale:
+        return True
+    real = getattr(importlib.import_module(GUARDRAIL_PACKAGE), "CosmosSafetyChecker", None)
+    if real is None:
+        return False
+    if stale_flag:
+        try:
+            from importlib.metadata import version
+            utils._cosmos_guardrail_version = version("cosmos-guardrail")
+        except Exception:  # noqa: BLE001
+            pass
+        utils._cosmos_guardrail_available = True
+    for module in stale:
+        module.CosmosSafetyChecker = real
+    return True
 
 
 # Small files the guardrail fetches on its first build (blocklist/*, face_blur_filter/*); all of them gated.
@@ -285,6 +327,11 @@ def guardrail_hub_token(token: Any):
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
     """``from_pretrained`` kwargs: no sound tokenizer; guardrail off only on the explicit opt-out."""
     kwargs: dict[str, Any] = dict.fromkeys(NONE_COMPONENTS)
+    if not safety_checker_opted_out() and checkpoint_enables_safety_checker(repo_id, index):
+        try:
+            refresh_guardrail_import()
+        except Exception as exc:  # noqa: BLE001 -- the pipeline's own import error names the package
+            logger.info("video.cosmos3: could not refresh the guardrail import: %s", exc)
     if safety_checker_opted_out():
         kwargs["enable_safety_checker"] = False
         if checkpoint_enables_safety_checker(repo_id, index):

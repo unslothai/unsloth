@@ -5,6 +5,7 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
+import type { CosmosGuardrailStatus } from "./cosmos-guardrail";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -484,6 +485,14 @@ export interface VideoRestylePreview {
   height: number;
   frame_jpeg: string;
   edges_jpeg: string;
+}
+
+export async function fetchCosmosGuardrailStatus(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail"));
+}
+
+export async function startCosmosGuardrailInstall(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail/install", { method: "POST" }));
 }
 
 export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {

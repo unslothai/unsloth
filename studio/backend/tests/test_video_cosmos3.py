@@ -404,13 +404,16 @@ def test_the_checkpoints_index_decides_the_safety_checker(
 def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     _hub_cache(monkeypatch, None)
     _set_guardrail(monkeypatch, guardrail)
+    from core.inference import cosmos_guardrail_install
+
+    monkeypatch.setattr(cosmos_guardrail_install, "_uv", lambda: "/opt/uv/bin/uv")
     log = _Log()
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
     if repo == NANO and guardrail == "absent":
         for part in (
             f"'{NANO}'",
-            "pip install cosmos-guardrail",
+            f"pip install --python {sys.executable} cosmos-guardrail",
             f"https://huggingface.co/{_GUARDRAIL_REPO}",
             "token in Settings",
             f"{_OPT_OUT_ENV}=0",
@@ -905,7 +908,7 @@ def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_ru
     with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
-    with pytest.raises(ValueError, match = "pip install cosmos-guardrail"):
+    with pytest.raises(ValueError, match = "Install guardrail on the Video page"):
         backend.load_pipeline(NANO, model_kind = "pipeline")
     assert _FakeCosmos3Pipeline.loads == []
     with pytest.raises(ValueError, match = "limited to"):

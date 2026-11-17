@@ -3070,3 +3070,32 @@ def _flow_shift_check_engine(engine, audio_flow_shift):
     from core.inference.sd_cpp_engine import find_sd_cpp_binary
 
     return None if sd_cpp_supports_flag(find_sd_cpp_binary(), "--audio-flow-shift") else engine
+
+
+async def _require_guardrail_installer(
+    current_subject: str = Depends(get_current_subject),
+) -> None:
+    """Installing into Studio's own environment is the installation owner's call, from the Unsloth UI (an API key
+    only where full API access is enabled, as for every other full-access action)."""
+    from auth import policy
+
+    await policy.require_owner()
+    if not policy.full_access_permitted() or policy.api_full_access_refused():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Install cosmos-guardrail from the Unsloth UI as the installation owner.",
+        )
+
+
+@router.get("/video/cosmos-guardrail", dependencies = [Depends(_require_guardrail_installer)])
+async def cosmos_guardrail_status():
+    from core.inference import cosmos_guardrail_install
+    return await asyncio.to_thread(cosmos_guardrail_install.status)
+
+
+@router.post(
+    "/video/cosmos-guardrail/install", dependencies = [Depends(_require_guardrail_installer)]
+)
+async def cosmos_guardrail_install_start():
+    from core.inference import cosmos_guardrail_install
+    return await asyncio.to_thread(cosmos_guardrail_install.start_install)

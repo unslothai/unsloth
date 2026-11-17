@@ -314,7 +314,11 @@ import {
   getVideoStatus,
   loadVideoModel,
   unloadVideoModel,
+  fetchCosmosGuardrailStatus,
+  startCosmosGuardrailInstall,
 } from "./api";
+import { isGuardrailInstallRefusal, runGuardrailInstall } from "./cosmos-guardrail";
+import { isAccountOwner } from "@/features/auth";
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
@@ -781,7 +785,38 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
+  if (isGuardrailInstallRefusal(text)) {
+    // Owner only: the install writes into Studio's own environment.
+    toast.error(COSMOS_GUARDRAIL_TITLE, {
+      description: text,
+      action: isAccountOwner()
+        ? { label: "Install guardrail", onClick: () => void installCosmosGuardrail() }
+        : undefined,
+    });
+    return;
+  }
   toast.error(text || fallback);
+}
+
+const COSMOS_GUARDRAIL_TITLE = "Cosmos3 Nano needs cosmos-guardrail";
+
+async function installCosmosGuardrail(): Promise<void> {
+  const id = "cosmos-guardrail-install";
+  toast.loading("Installing cosmos-guardrail", {
+    id,
+    description: "Adding NVIDIA's guardrail package to Studio's environment. Nothing already installed changes.",
+  });
+  try {
+    const result = await runGuardrailInstall(
+      startCosmosGuardrailInstall,
+      fetchCosmosGuardrailStatus,
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
+    if (result.ok) toast.success("cosmos-guardrail installed", { id, description: result.message });
+    else toast.error("Could not install cosmos-guardrail", { id, description: result.message });
+  } catch (err) {
+    toast.error("Could not install cosmos-guardrail", { id, description: failureMessage(err) });
+  }
 }
 
 function AdvancedSelect({

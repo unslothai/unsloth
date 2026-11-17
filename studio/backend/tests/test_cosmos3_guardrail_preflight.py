@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cosmos3-Nano: the gated guardrail's access is checked before any model download."""
+"""Cosmos3-Nano: the gated guardrail's access is checked before any model download, and the guardrail package can be
+installed into Studio's own environment."""
 
 from __future__ import annotations
 
 import importlib.machinery
+import subprocess
 import sys
 import types
 
 import pytest
 
+from core.inference import cosmos_guardrail_install as cgi
 from core.inference import video_cosmos3 as vc3
 
 NANO, EDGE = "nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"
@@ -235,3 +238,151 @@ def test_refuse_without_access_passes_the_family_default(guardrail, monkeypatch)
             types.SimpleNamespace(name = name), "pipeline", "me/ft", None, False
         )
     assert seen == [True, False]
+
+
+# ── install ──────────────────────────────────────────────────────────────────
+
+
+def test_the_manual_command_targets_this_studio_environment(monkeypatch):
+    monkeypatch.setattr(cgi.shutil, "which", lambda name: "/usr/local/bin/uv")
+    assert cgi.manual_install_command("/usr/local/bin/uv") == (
+        f"uv pip install --python {sys.executable} cosmos-guardrail"
+    )
+    assert cgi.manual_install_command("/home/me/.local/bin/uv") == (
+        f"/home/me/.local/bin/uv pip install --python {sys.executable} cosmos-guardrail"
+    )
+    assert cgi.manual_install_command(None) == f"{sys.executable} -m pip install cosmos-guardrail"
+
+
+def test_the_windows_command_runs_in_powershell(monkeypatch):
+    # Studio installs on Windows through PowerShell, which runs a quoted executable path only via &.
+    monkeypatch.setattr(cgi.os, "name", "nt")
+    line = cgi._quote(
+        [r"C:\Program Files\Unsloth\python.exe", "-m", "pip", "install", "cosmos-guardrail"]
+    )
+    assert line == '& "C:\\Program Files\\Unsloth\\python.exe" -m pip install cosmos-guardrail'
+    assert cgi._quote(["uv", "pip", "install"]) == "uv pip install"
+
+
+def test_the_refusal_names_the_command(monkeypatch):
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail", None)
+    monkeypatch.delenv(OPT_OUT, raising = False)
+    monkeypatch.setattr(cgi, "_uv", lambda: None)
+    message = vc3.guardrail_refusal(NANO, index = {"enable_safety_checker": True})
+    assert f"`{sys.executable} -m pip install cosmos-guardrail`" in message
+    assert "Install guardrail on the Video page" in message and f"{OPT_OUT}=0" in message
+
+
+def test_the_install_holds_every_installed_package(monkeypatch, tmp_path):
+    import core.inference.diffusion_nvfp4_install as nv
+
+    present = {"torch": "2.10.0+cu128", "transformers": "5.5.4"}
+    after = dict(present, **{"cosmos-guardrail": "0.3.2", "retinaface-py": "0.0.2"})
+    snapshots = [present, after]
+    monkeypatch.setattr(nv, "installed_distributions", lambda: snapshots.pop(0))
+    monkeypatch.setattr(nv, "_installer_config", lambda uv, run: {"refusal": None})
+    monkeypatch.setattr(cgi, "_uv", lambda: "/usr/bin/uv")
+    installed = {"now": False}
+    monkeypatch.setattr(vc3, "guardrail_installed", lambda: installed["now"])
+    monkeypatch.setattr(vc3, "refresh_guardrail_import", lambda: True)
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["constraints"] = open(cmd[cmd.index("-c") + 1]).read()
+        installed["now"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout = "Installed 2 packages")
+
+    cgi._state.update(state = "running", error = None, added = [])
+    result = cgi.run_install(run)
+    assert seen["cmd"][:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
+    assert seen["cmd"][-1] == "cosmos-guardrail"
+    assert "torch==2.10.0+cu128\n" in seen["constraints"]
+    assert "transformers==5.5.4\n" in seen["constraints"]
+    assert result["state"] == "done" and result["installed"] is True
+    assert result["added"] == ["cosmos-guardrail", "retinaface-py"]
+
+
+def test_a_failed_install_reports_the_installer_output(monkeypatch):
+    import core.inference.diffusion_nvfp4_install as nv
+
+    monkeypatch.setattr(nv, "installed_distributions", lambda: {"transformers": "4.57.6"})
+    monkeypatch.setattr(nv, "_installer_config", lambda uv, run: {"refusal": None})
+    monkeypatch.setattr(cgi, "_uv", lambda: None)
+    monkeypatch.setattr(vc3, "guardrail_installed", lambda: False)
+
+    def run(cmd, **kwargs):
+        assert cmd[:4] == [sys.executable, "-m", "pip", "install"] and "--no-input" in cmd
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout = "cosmos-guardrail depends on transformers>=5.0.0"
+        )
+
+    result = cgi.run_install(run)
+    assert result["state"] == "failed" and "transformers>=5.0.0" in result["error"]
+
+
+def test_the_install_routes_are_owner_only_and_ui_only(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from auth import policy
+    from routes import video as video_routes
+
+    async def owner():
+        return None
+
+    async def not_owner():
+        raise HTTPException(status_code = 403, detail = "Only the installation owner can do this")
+
+    def check(require, full, api_refused):
+        monkeypatch.setattr(policy, "require_owner", require)
+        monkeypatch.setattr(policy, "full_access_permitted", lambda: full)
+        monkeypatch.setattr(policy, "api_full_access_refused", lambda: api_refused)
+        try:
+            asyncio.run(video_routes._require_guardrail_installer("subject"))
+        except HTTPException as exc:
+            return exc.status_code
+        return 200
+
+    assert check(owner, True, False) == 200
+    assert check(not_owner, True, False) == 403
+    assert check(owner, False, False) == 403
+    assert check(owner, True, True) == 403
+    paths = {
+        (route.path, tuple(sorted(route.methods)))
+        for route in video_routes.router.routes
+        if "cosmos-guardrail" in getattr(route, "path", "")
+    }
+    assert paths == {
+        ("/video/cosmos-guardrail", ("GET",)),
+        ("/video/cosmos-guardrail/install", ("POST",)),
+    }
+    for route in video_routes.router.routes:
+        if "cosmos-guardrail" in getattr(route, "path", ""):
+            deps = [d.call for d in route.dependant.dependencies]
+            assert video_routes._require_guardrail_installer in deps
+
+
+def test_refresh_points_a_stale_diffusers_at_the_installed_guardrail(monkeypatch):
+    real_cls = type("CosmosSafetyChecker", (), {"__module__": "cosmos_guardrail.cosmos_guardrail"})
+    module = types.ModuleType("cosmos_guardrail")
+    module.__spec__ = importlib.machinery.ModuleSpec("cosmos_guardrail", None)
+    module.CosmosSafetyChecker = real_cls
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail", module)
+    utils = types.ModuleType("diffusers.utils.import_utils")
+    utils._cosmos_guardrail_available = False
+    stub = type(
+        "CosmosSafetyChecker",
+        (),
+        {"__module__": "diffusers.pipelines.cosmos.pipeline_cosmos3_omni"},
+    )
+    pipeline = types.ModuleType("diffusers.pipelines.cosmos.pipeline_cosmos3_omni")
+    pipeline.CosmosSafetyChecker = stub
+    for name in [n for n in sys.modules if n.startswith("diffusers.pipelines.cosmos.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "diffusers.utils.import_utils", utils)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.cosmos.pipeline_cosmos3_omni", pipeline)
+    assert vc3.refresh_guardrail_import() is True
+    assert utils._cosmos_guardrail_available is True
+    assert pipeline.CosmosSafetyChecker is real_cls
