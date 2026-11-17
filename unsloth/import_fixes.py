@@ -7642,8 +7642,9 @@ def fix_flex_attention_eager_saved_tensor_hooks():
     except Exception:
         return
     original = getattr(flex_hop, "create_fw_bw_graph", None)
+    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
     top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
-    if original is None or top_hooks is None:
+    if original is None:
         return
     if getattr(original, "_unsloth_saved_hooks_free", False):
         return
@@ -7651,7 +7652,7 @@ def fix_flex_attention_eager_saved_tensor_hooks():
     @functools.wraps(original)
     def create_fw_bw_graph(*args, **kwargs):
         try:
-            active = top_hooks(False) is not None
+            active = top_hooks is None or top_hooks(False) is not None
         except Exception:
             active = False
         if not active:

@@ -46,8 +46,10 @@ def _apply_fix(monkeypatch):
 def test_trace_runs_under_identity_hooks_only_when_hooks_are_active(monkeypatch):
     seen = []
 
+    top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
+
     def fake_create_fw_bw_graph(*args, **kwargs):
-        seen.append(torch._C._autograd._top_saved_tensors_default_hooks(False))
+        seen.append(top_hooks(False) if top_hooks is not None else None)
         return "graphs"
 
     flex_hop = pytest.importorskip(_HOP)
@@ -61,6 +63,8 @@ def test_trace_runs_under_identity_hooks_only_when_hooks_are_active(monkeypatch)
     assert getattr(wrapped, "_unsloth_original", None) is fake_create_fw_bw_graph
 
     assert wrapped() == "graphs"
+    if top_hooks is None:
+        return  # torch < 2.7: always wrapped, the active hooks cannot be read
     assert seen[-1] is None
 
     def pack(t):
