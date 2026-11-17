@@ -109,7 +109,7 @@ def test_external_body_message_is_not_read_as_an_inline_forward(tmp_path):
 
 def test_uploaded_inline_forward_is_lexically_searchable(rag_home, stub_embeddings, tmp_path):
     if not rag_db.rag_available():
-        pytest.skip("sqlite-vec unavailable here")
+        pytest.skip(reason = "sqlite-vec unavailable here, so there is no lexical index to search")
     source = _save(tmp_path / "searchable.eml", _forward(_original()))
     stored, filename, _ = _save_upload(
         UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
