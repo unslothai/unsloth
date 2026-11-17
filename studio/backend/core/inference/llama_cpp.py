@@ -32616,7 +32616,8 @@ class LlamaCppBackend:
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
-                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
+                    # A probe that failed listed no device either, so its stall gets the same CPU replay.
+                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed", "error")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
                         _vk_outcome == "none"
