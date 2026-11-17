@@ -59,6 +59,7 @@ import {
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
 import { createTurnAudio } from "@/features/chat/voice/turn-audio";
+import { TURN_THRESHOLDS, fuseTurn } from "@/features/chat/voice/turn-fuser";
 import {
   TURN_ASK_AFTER_MS,
   TURN_END_AFTER_MS,
@@ -155,7 +156,10 @@ function isHallucinatedTranscript(text: string): boolean {
   return new Set(words).size / words.length < 0.3;
 }
 
-let heldTurn: { text: string; at: number } | null = null;
+let heldTurn: { text: string; at: number; turnId: string | null } | null = null;
+// Not randomUUID alone: Studio on a LAN address is not a secure context.
+const newTurnId = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 // The fragment cut into the reply: the next session keeps listening as that barge-in,
 // not as the paused reply's barge gate, which never records and never times out.
 let heldFromBarge = false;
@@ -255,11 +259,19 @@ const sttKey = (modelId: string | undefined) => modelId ?? "";
 const readsCutOff = (text: string, modelId: string | undefined) =>
   readsUnfinished(text, punctuatingStt === sttKey(modelId));
 
-async function turnUnfinished(text: string, modelId: string | undefined): Promise<boolean> {
+// soundedP: Smart Turn called the turn finished with this probability, and the judge must agree too
+// (the "Smart Turn + judge" lane, fuseTurn); null asks the judge alone.
+async function turnUnfinished(
+  text: string,
+  modelId: string | undefined,
+  soundedP: number | null = null,
+  judgeBar: number = TURN_THRESHOLDS.text,
+): Promise<boolean> {
   const r = await judgeTurnComplete(text);
   // No decision model to ask: a transcript that reads cut off is still held for the rest.
   if (r === null) return readsCutOff(text, modelId);
-  const unfinished = !r.finished;
+  const unfinished =
+    soundedP === null ? !r.finished : fuseTurn({ pText: r.p, pAudio: soundedP }, { text: judgeBar, audio: TURN_THRESHOLDS.audio }) !== "confirmed";
   heldJudgeId = unfinished ? (r?.id ?? null) : null;
   if (r?.id && !unfinished) watchFinished(r.id);
   return unfinished;
@@ -391,9 +403,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       finish("cancelled");
       if (getVoiceMode() === "active") setTimeout(() => requestVoiceResume(), 0);
     };
-    const submitLater = (text: string) =>
+    const submitLater = (text: string, meta?: { turnId?: string; confirmedEarly?: boolean }) =>
       setTimeout(() => {
-        if (!switchedOff() && epoch === heldEpoch) requestVoiceSubmit(text);
+        if (!switchedOff() && epoch === heldEpoch) requestVoiceSubmit(text, meta);
       }, 0);
     let prerollVoicedMs = 0;
     const bargeGate = createBargeGate(
@@ -403,6 +415,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The end-of-turn model is up, and it called this turn finished.
     let turnReady = false;
     let soundedFinished = false;
+    // Smart Turn's last answer for this turn, for the "Smart Turn + judge" lane.
+    let turnP: number | null = null;
+    // One id per turn for the voice trace; a continuation keeps the id of the fragment it joins.
+    let turnId: string | null = null;
+    const startTurn = () => {
+      turnId ??= heldTurn?.turnId ?? newTurnId();
+    };
     let bargeConfirming = false;
     // The gate resets on the first quiet frame, so a word ending before the answer would otherwise count as none.
     let bargePeakMs = 0;
@@ -671,7 +690,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     };
     const turnEnd = createTurnEndCheck(
       (wav, signal) => askTurnEnd(wav, signal, useVoiceSettingsStore.getState().dictationLanguage),
-      (answer, ms) => voiceTrace("turn.end", { ...answer, ms }),
+      (answer, ms) => {
+        turnP = answer.p;
+        voiceTrace("turn.end", { ...answer, ms, turnId });
+      },
     );
     // Words spoken over a reply that ask nothing of it: the reply carries on.
     const nothingToActOn = (text: string): boolean => {
@@ -736,12 +758,14 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // The rest never came: the fragment was the whole turn after all (the
         // submit cuts the reply it barged into, so no abort here).
         const text = heldTurn.text;
+        const heldId = heldTurn.turnId ?? undefined;
         heldTurn = null;
         reportLayaOutcome(heldJudgeId, "flushed", { text });
         heldJudgeId = null;
         emitSpeech(text, true);
         finish("stopped", text);
-        submitLater(text);
+        voiceTrace("turn.confirmed", { turnId: heldId, flushed: true });
+        submitLater(text, { turnId: heldId });
         return;
       }
       if (bargedIn) requestVoiceBargeAbort();
@@ -762,6 +786,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       }
     };
     const finalizeHeard = async () => {
+      // Speech ended this long before this mark; a continuation records another, and the last counts.
+      voiceTrace("turn.speechEnd", { turnId, silenceMs: Math.round(performance.now() - lastVoiceAt) });
       turnEnd.clear();
 
       // A barge-in already passed its own bar: a quick "stop" is shorter than a turn.
@@ -790,7 +816,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       const ready = early.take(key);
       const analysis = ready ?? analyseClip(span);
       voiceTrace("stt.clip", { early: ready !== null });
-      if (publishVad(await analysis.vad) === false) {
+      const vadResult = await analysis.vad;
+      voiceTrace("turn.vadDone", { turnId, kept: vadResult?.kept ?? null });
+      if (publishVad(vadResult) === false) {
         if (ended) return;
         endWithoutSpeech();
         return;
@@ -890,12 +918,17 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         // A turn that sounded finished is sent unless its words read cut off; the text judge is asked
         // only about one that trailed off.
+        voiceTrace("turn.transcript", { turnId, chars: transcript.length });
+        const judged = Boolean(transcript) && !editing;
+        const { turnEnding, turnJudgeBar } = useVoiceSettingsStore.getState();
         const unfinished =
-          Boolean(transcript) &&
-          !editing &&
+          judged &&
           (soundedFinished
-            ? readsCutOff(transcript, modelId)
+            ? turnEnding === "smartTurnJudge"
+              ? await turnUnfinished(transcript, modelId, turnP, turnJudgeBar)
+              : readsCutOff(transcript, modelId)
             : await turnUnfinished(transcript, modelId));
+        if (judged) voiceTrace("turn.judgeDone", { turnId, unfinished, soundedFinished });
         // The user may claim the held fragment while the judge decides: their edit is never auto-sent,
         // and the box already holds the fragment, so only the new words join it.
         if (!editing && !heldEdit.autoSend()) {
@@ -904,6 +937,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         if (epoch !== heldEpoch) {
           voiceTrace("stt.drop", { transcript, why: "cleared" });
+          // A dropped barge-in cut nothing: the reply it paused plays on, as after any other drop.
+          if (bargedIn) requestVoiceBargeAbort();
           finish("stopped");
           // The clear's own re-arm found this session still live and skipped.
           setTimeout(() => requestVoiceResume(), 0);
@@ -918,6 +953,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           heldTurn = {
             text: transcript,
             at: heldTurn?.at ?? performance.now(),
+            turnId,
           };
           heldFromBarge = bargedIn;
           requestVoiceEarlyInterject(transcript);
@@ -953,6 +989,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           if (epoch !== heldEpoch) {
             // A Stop or reset during the reveal let this turn go.
             voiceTrace("stt.drop", { transcript, why: "cleared" });
+            if (bargedIn) requestVoiceBargeAbort();
             finish("stopped");
             setTimeout(() => requestVoiceResume(), 0);
             return;
@@ -964,7 +1001,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             voiceTrace("hold.userEditAppend", { transcript });
             setTimeout(() => requestVoiceResume(), 0);
           } else {
-            submitLater(transcript);
+            voiceTrace("turn.confirmed", { turnId, early: soundedFinished });
+            submitLater(transcript, { turnId: turnId ?? undefined, confirmedEarly: soundedFinished });
           }
         } else {
           if (bargedIn) {
@@ -1096,9 +1134,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               if (!downloading) requestSttDownload(sttPick);
             });
         }
-        void loadTurnModel().then((ready) => {
-          turnReady = ready;
-        });
+        // Off in Settings > Voice > Voice mode: the fixed silence wait alone ends a turn.
+        if (useVoiceSettingsStore.getState().turnEnding !== "wait") {
+          void loadTurnModel().then((ready) => {
+            turnReady = ready;
+          });
+        }
         if (!vadDisabled) {
           const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
           void loadVadModel(vadPick)
@@ -1187,6 +1228,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               voicedMs = Math.max(bargeGate.loudMs, bargePeakMs);
               bargePeakMs = 0;
               heardSpeech = true;
+              startTurn();
               utteranceInFlight = true;
               noteSpeechStart();
               useChatRuntimeStore.getState().setVoiceHearing(true);
@@ -1263,6 +1305,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               voicedMs += prerollVoicedMs;
               prerollVoicedMs = 0;
               heardSpeech = true;
+              startTurn();
               utteranceInFlight = true;
               noteSpeechStart();
               useChatRuntimeStore.getState().setVoiceHearing(true);

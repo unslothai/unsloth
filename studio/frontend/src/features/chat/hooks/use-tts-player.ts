@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { generateStudioTtsAudio } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
+import { generateStudioTtsClip, type TtsTiming } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { translate } from "@/i18n";
+import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { speakableReply, splitIntoSentences, splitStreaming, stripForSpeech } from "../voice/speech-text";
+import { splitSpoken, splitStreaming, splitStreamingSpans, stripForSpeech, type SpokenSentence } from "../voice/speech-text";
+import type { PlayedChunk, PlayedEntry } from "../voice/heard-cut";
 import { cleanTtsClip } from "../voice/tts-clip-clean";
-import { planTtsChunk } from "../voice/tts-chunk-plan";
-import { getVoicePlayContext } from "../voice/voice-loop-bridge";
+import { firstClauseCut, pauseAfterChunk, planTtsChunk, spokenChunk } from "../voice/tts-chunk-plan";
+import { useVoiceSettingsStore } from "../../settings/stores/voice-settings-store";
+import { normalizeForSpeech } from "../voice/speech-normalize";
+import { getVoicePlayContext, settleVoiceTurn } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTrace } from "../voice/voice-trace";
 import {
@@ -52,12 +55,91 @@ function envelopeOf(buffer: AudioBuffer): Float32Array {
   return env;
 }
 
-interface Stream {
+/** When a sample scheduled at context time `start` reaches the speaker, on the performance.now() clock. */
+export function audibleAt(
+  start: number,
+  ctx: Pick<AudioContext, "currentTime"> &
+    Partial<Pick<AudioContext, "outputLatency" | "baseLatency" | "getOutputTimestamp">>,
+  now: number,
+): number {
+  const stamp = ctx.getOutputTimestamp?.();
+  // A suspended or unsupported context reports zeros: count from now plus the output latency instead.
+  if (stamp?.contextTime && stamp.performanceTime) {
+    return stamp.performanceTime + (start - stamp.contextTime) * 1000;
+  }
+  return now + (start - ctx.currentTime + (ctx.outputLatency ?? 0) + (ctx.baseLatency ?? 0)) * 1000;
+}
+
+/** One requested piece of text and where it sits in splitter sentence `source`. */
+export interface SentenceEntry {
+  text: string;
+  source: number;
+  from: number;
+  to: number;
+}
+
+export interface SentenceQueue {
+  sentences: SentenceEntry[];
+  /** Splitter sentences queued so far. */
+  sources: number;
+  /** The clause sent ahead of sentence 0, until that sentence settles. */
+  head: string | null;
+}
+
+/**
+ * Queues newly settled splitter sentences, counted by source so a clause sent early never
+ * skips one. With `clause` and nothing queued, the head of the unsettled first sentence goes now.
+ */
+export function queueSentences(
+  q: SentenceQueue,
+  settled: readonly string[],
+  partial: string,
+  clause: boolean,
+): { mismatch: boolean; head: string | null } {
+  let mismatch = false;
+  while (q.sources < settled.length) {
+    const source = q.sources++;
+    const text = settled[source] ?? "";
+    if (source === 0 && q.head !== null) {
+      const head = q.head;
+      q.head = null;
+      if (text.startsWith(head)) {
+        const from = text.length - text.slice(head.length).trimStart().length;
+        if (from < text.length) q.sentences.push({ text: text.slice(from), source, from, to: text.length });
+        continue;
+      }
+      // The sentence settled differently: say it whole, repeating a few words.
+      mismatch = true;
+    }
+    q.sentences.push({ text, source, from: 0, to: text.length });
+  }
+  if (!clause || q.sources > 0 || q.sentences.length > 0) return { mismatch, head: null };
+  const cut = firstClauseCut(partial);
+  if (cut === null) return { mismatch, head: null };
+  const head = partial.slice(0, cut).trimEnd();
+  q.head = head;
+  q.sentences.push({ text: head, source: 0, from: 0, to: head.length });
+  return { mismatch, head };
+}
+
+interface Stream extends SentenceQueue {
   reqId: number;
-  sentences: string[];
+  /** Where this stream's text starts in the reply: 0, or the old length on the run-flicker path. */
+  base: number;
+  /** Settled sentences by source, with their offsets into the stream's text. */
+  spans: SpokenSentence[];
+  /** Every clip scheduled for this stream, on the AudioContext clock; never pruned. */
+  log: PlayedChunk[];
+  /** The chat model spoke the reply (feedClip): its clips carry no text timing. */
+  untimed: boolean;
+  /** The voice turn this reply answers, for the turn.* trace; null outside one. */
+  turnId: string | null;
+  /** A reply clip has been scheduled, so the turn has its first audio. */
+  audible: boolean;
+  /** Read once per stream, so a clause already sent is always followed by its remainder. */
+  clause: boolean;
   next: number;
   final: boolean;
-  extra: number;
   /** Spoken-reply chunks (feedClip) still decoding; the stream ends only once they are scheduled. */
   decoding: number;
   clips: Promise<void>;
@@ -73,8 +155,8 @@ const ASIDE_MAX_LATE_MS = 4000;
 export function useTtsPlayer(onPlaybackEnd?: () => void): {
   isSpeaking: boolean;
   isPlaying: boolean;
-  speak(text: string): void;
-  beginStream(): void;
+  speak(text: string, meta?: StreamMeta): void;
+  beginStream(meta?: StreamMeta): void;
   feedText(text: string): void;
   endStream(finalText: string): void;
   feedClip(wavBase64: string): void;
@@ -87,6 +169,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   /** Survives stop(), so a reply that starts while held stays silent until holdPlayback(false). */
   holdPlayback(held: boolean): void;
   primeAudio(): void;
+  playbackPosition(): number;
+  playedLog(): { log: PlayedChunk[]; base: number } | null;
 } {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -179,18 +263,29 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   }, []);
 
   const synthesize = useCallback(
-    async (sentence: string, reqId: number): Promise<AudioBuffer | null> => {
+    async (
+      sentence: string,
+      reqId: number,
+      onResponse?: (timing?: TtsTiming) => void,
+    ): Promise<AudioBuffer | null> => {
       const ctx = getPlayCtx();
       if (!ctx) return null;
-      const request = () => {
+      const request = async () => {
         const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker, params } =
           useChatRuntimeStore.getState();
-        return generateStudioTtsAudio(sentence, abortRef.current?.signal, {
+        // The request text only: what the reply shows, and what Phase 4 records, stay as written.
+        const { speechNormalize, dictationLanguage } = useVoiceSettingsStore.getState();
+        // "auto" names no language: the app's own stands in, so the default setting is not a no-op.
+        const language = dictationLanguage === "auto" ? getLocale() : dictationLanguage;
+        const spoken = speechNormalize ? normalizeForSpeech(sentence, language) : sentence;
+        const clip = await generateStudioTtsClip(spoken, abortRef.current?.signal, {
           // The chat model's voice is the selected chat model, which may sit in a kept slot.
           model: isChatModelVoice(selectedVoiceModelId) ? params.checkpoint : selectedVoiceModelId,
           voiceId: voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "",
           speaker: selectedVoiceSpeaker,
         });
+        onResponse?.(clip.timing);
+        return clip.url;
       };
       // A named generation lets "switch model by request" swap the chat model out for the voice: own the slot first.
       const { voiceSlotLoaded, ensureVoiceSlotLoaded } = useChatRuntimeStore.getState();
@@ -238,9 +333,9 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   );
 
   const schedule = useCallback(
-    (buffer: AudioBuffer, text: string) => {
+    (buffer: AudioBuffer, text: string, entries: readonly PlayedEntry[] = []): number | null => {
       const ctx = getPlayCtx();
-      if (!ctx) return;
+      if (!ctx) return null;
       // WebKit parks the context when another surface takes the audio session; start() on it is silent.
       if (ctx.state !== "running" && !pausedRef.current && !heldRef.current)
         void ctx.resume().catch(() => {});
@@ -253,11 +348,27 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         seconds: Math.round(buffer.duration * 1000) / 1000,
       });
       clipsRef.current.add({ source, start, duration: buffer.duration, text, env: envelopeOf(buffer) });
+      streamRef.current?.log.push({ entries, start, duration: buffer.duration });
       playHeadRef.current = start + buffer.duration;
       if (rafRef.current === null) rafRef.current = requestAnimationFrame(meter);
+      return start;
     },
     [meter],
   );
+
+  // The first reply clip on the timeline ends the voice turn; asides do not count.
+  const markAudible = useCallback((st: Stream, start: number | null) => {
+    const ctx = getPlayCtx();
+    if (st.audible || start === null || !ctx) return;
+    st.audible = true;
+    if (!st.turnId) return;
+    voiceTrace("turn.firstAudible", {
+      turnId: st.turnId,
+      at: Math.round(audibleAt(start, ctx, performance.now())),
+      held: pausedRef.current || heldRef.current,
+    });
+    settleVoiceTurn(st.turnId);
+  }, []);
 
   const run = useCallback(
     async (reqId: number) => {
@@ -273,7 +384,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             await sleep(40);
             continue;
           }
-          const pending = st.sentences.slice(st.next).map(stripForSpeech);
+          const pending = st.sentences.slice(st.next).map((s) => stripForSpeech(s.text));
           const take = planTtsChunk({
             pending,
             first,
@@ -289,22 +400,29 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           waitSince = null;
           const i = st.next;
           st.next += take;
-          const text = pending.slice(0, take).filter(Boolean).join(" ");
+          const text = spokenChunk(pending.slice(0, take));
           if (!text) continue;
+          const entries = st.sentences.slice(i, i + take).map((piece, k) => playedEntry(st, piece, pending[k].length));
           first = false;
           try {
             voiceTrace("tts.sentence", { i, sentences: take, chars: text.length, text });
+            if (st.turnId) voiceTrace("turn.ttsSent", { turnId: st.turnId, i });
             realSynthRef.current = true;
             let buffer: AudioBuffer | null;
             try {
-              buffer = await synthesize(text, reqId);
+              buffer = await synthesize(text, reqId, (timing) => {
+                if (st.turnId) voiceTrace("turn.ttsReceived", { turnId: st.turnId, i, timing });
+              });
             } finally {
               realSynthRef.current = false;
             }
             if (!live()) return;
             if (buffer) {
               voiceTrace("tts.clip", { i, sentences: take, seconds: Math.round(buffer.duration * 100) / 100 });
-              schedule(buffer, text);
+              const start = schedule(buffer, text, entries);
+              // A clause head is followed by the comma pause it lost by being sent alone.
+              if (start !== null) playHeadRef.current += pauseAfterChunk(text) / 1000;
+              markAudible(st, start);
             }
           } catch (error) {
             if (!live()) return;
@@ -337,24 +455,37 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       voiceTrace("tts.streamDone", { latencyMs: Math.round(latencyMs) });
       await sleep(Math.max(250, latencyMs + 150));
       if (!live()) return;
+      const done = streamRef.current;
+      if (done?.turnId && !done.audible) {
+        voiceTrace("turn.end", { turnId: done.turnId, reason: "noTts" });
+        settleVoiceTurn(done.turnId);
+      }
       streamRef.current = null;
       setIsSpeaking(false);
       setIsPlaying(false);
       onEndRef.current?.();
     },
-    [synthesize, schedule],
+    [synthesize, schedule, markAudible],
   );
 
-  const beginStream = useCallback(() => {
+  const beginStream = useCallback((meta?: StreamMeta) => {
     stop();
     const reqId = reqRef.current;
     abortRef.current = new AbortController();
     streamRef.current = {
       reqId,
+      turnId: meta?.turnId ?? null,
+      base: meta?.base ?? 0,
+      spans: [],
+      log: [],
+      untimed: false,
+      audible: false,
+      clause: useVoiceSettingsStore.getState().clauseFirstChunk,
       sentences: [],
+      sources: 0,
+      head: null,
       next: 0,
       final: false,
-      extra: 0,
       decoding: 0,
       clips: Promise.resolve(),
     };
@@ -365,10 +496,13 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const feedText = useCallback((text: string) => {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
-    const { complete } = splitStreaming(text);
-    while (st.sentences.length - st.extra < complete.length) {
-      st.sentences.push(complete[st.sentences.length - st.extra] ?? "");
-    }
+    const { complete, partial } = splitStreamingSpans(text);
+    st.spans = complete;
+    queueAndTrace(
+      st,
+      complete.map((s) => s.text),
+      partial,
+    );
   }, []);
 
   // Asides used to queue behind sentences and came out late: one plays only on an empty timeline, from cache.
@@ -466,10 +600,12 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const endStream = useCallback((finalText: string) => {
     const st = streamRef.current;
     if (!st || st.reqId !== reqRef.current) return;
-    const all = splitIntoSentences(speakableReply(finalText));
-    while (st.sentences.length - st.extra < all.length) {
-      st.sentences.push(all[st.sentences.length - st.extra] ?? "");
-    }
+    st.spans = splitSpoken(finalText);
+    queueAndTrace(
+      st,
+      st.spans.map((s) => s.text),
+      "",
+    );
     st.final = true;
     voiceTrace("tts.streamEnd", { sentences: st.sentences.length, tail: finalText.slice(-60) });
   }, []);
@@ -480,6 +616,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const ctx = getPlayCtx();
       if (!st || st.reqId !== reqRef.current || st.final || !ctx) return;
       const reqId = st.reqId;
+      st.untimed = true;
       st.decoding += 1;
       // Decoded off the chain, scheduled on it, so a chunk never jumps the one before.
       const decoded = ctx
@@ -493,14 +630,14 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
           const buffer = await decoded;
           if (buffer && reqRef.current === reqId) {
             voiceTrace("tts.spokenClip", { seconds: Math.round(buffer.duration * 100) / 100 });
-            schedule(buffer, "");
+            markAudible(st, schedule(buffer, ""));
           }
         } finally {
           st.decoding -= 1;
         }
       });
     },
-    [schedule],
+    [schedule, markAudible],
   );
 
   const endClips = useCallback(() => {
@@ -511,8 +648,8 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   }, []);
 
   const speak = useCallback(
-    (text: string) => {
-      beginStream();
+    (text: string, meta?: StreamMeta) => {
+      beginStream(meta);
       endStream(text);
     },
     [beginStream, endStream],
@@ -541,6 +678,18 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     if (!ctx) return;
     if (held) void ctx.suspend().catch(() => {});
     else if (!pausedRef.current) void ctx.resume().catch(() => {});
+  }, []);
+
+  // The audible position, not the scheduled one: the same latency correction the stream's end uses.
+  const playbackPosition = useCallback((): number => {
+    const ctx = getPlayCtx();
+    return ctx ? ctx.currentTime - ((ctx.outputLatency ?? 0) + (ctx.baseLatency ?? 0)) : 0;
+  }, []);
+
+  /** This stream's playback log; null with no stream, or when the chat model spoke the reply. */
+  const playedLog = useCallback((): { log: PlayedChunk[]; base: number } | null => {
+    const st = streamRef.current;
+    return st && !st.untimed ? { log: [...st.log], base: st.base } : null;
   }, []);
 
   useEffect(() => stop, [stop]);
@@ -574,8 +723,32 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     resumePlayback,
     holdPlayback,
     primeAudio,
+    playbackPosition,
+    playedLog,
   };
-}export interface AsideOptions {
+}
+
+// Only a piece that ends its sentence carries the sentence's end, the one offset a cut lands on.
+function playedEntry(st: Stream, piece: SentenceEntry, chars: number): PlayedEntry {
+  const span = st.spans[piece.source];
+  const start = span?.start ?? 0;
+  const whole = span !== undefined && piece.to === span.text.length;
+  return { source: piece.source, from: start + piece.from, to: whole ? span.end : start + piece.to, chars };
+}function queueAndTrace(st: Stream, settled: readonly string[], partial: string): void {
+  const had = st.sentences.length;
+  const { mismatch, head } = queueSentences(st, settled, partial, st.clause && !st.final);
+  if (head !== null) voiceTrace("tts.clauseHead", { chars: head.length });
+  if (mismatch) voiceTrace("tts.clauseMismatch", { sentence: settled[0]?.slice(0, 80) });
+  if (had === 0 && st.sentences.length > 0 && st.turnId) voiceTrace("turn.firstChunk", { turnId: st.turnId });
+}
+
+export interface StreamMeta {
+  turnId?: string;
+  /** Offset in the reply where the streamed text starts (the run-flicker path speaks only what was added). */
+  base?: number;
+}
+
+export interface AsideOptions {
   standIns?: readonly string[];
   patient?: boolean;
 }

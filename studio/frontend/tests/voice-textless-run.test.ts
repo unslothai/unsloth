@@ -16,7 +16,7 @@ const branch = end.slice(start, end.indexOf("const endMsgs", start));
 
 test("a run that ends with no answer text closes the playback stream it opened", () => {
   // Left open, the player polls forever: isSpeaking stays true and queued turns never send.
-  assert.match(branch, /if \(!streamBegun\) \{\s*resumeListen\(\);\s*return;\s*\}/);
+  assert.match(branch, /if \(!streamBegun\) \{\s*endTurns\("noTts", true\);\s*resumeListen\(\);\s*return;\s*\}/);
   assert.match(branch, /endStreamRef\.current\(late\);/);
 });
 

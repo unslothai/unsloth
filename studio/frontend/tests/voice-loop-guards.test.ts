@@ -18,12 +18,12 @@ test("voice mode takes the mic before the model-bound clip recorder", () => {
 
 test("a session dropped by a clear re-arms the listener", () => {
   const drop = loop.slice(loop.indexOf('why: "cleared"'));
-  assert.match(drop.slice(0, 300), /finish\("stopped"\);[\s\S]*?requestVoiceResume\(\)[\s\S]*?return;/);
+  assert.match(drop.slice(0, 400), /finish\("stopped"\);[\s\S]*?requestVoiceResume\(\)[\s\S]*?return;/);
 });
 
 test("a transcript revealed across a Stop is dropped, not sent", () => {
   const reveal = loop.slice(loop.indexOf("const mine = { shown: shown(transcript), rush: false };"));
-  const submit = reveal.indexOf("submitLater(transcript)");
+  const submit = reveal.indexOf("submitLater(transcript,");
   const guard = reveal.indexOf("if (epoch !== heldEpoch) {");
   assert.ok(guard > 0 && guard < submit);
 });
@@ -374,7 +374,7 @@ test("the since-last-export cutoff is taken before the request, not after the sa
 
 test("a deferred submit is dropped when the turn was reset first; a sent transcript stops claiming later drafts", () => {
   assert.doesNotMatch(loop, /setTimeout\(\(\) => requestVoiceSubmit\(\), 0\)/);
-  assert.match(loop, /const submitLater = \(text: string\) =>\s*setTimeout\(\(\) => \{\s*if \(!switchedOff\(\) && epoch === heldEpoch\) requestVoiceSubmit\(text\);\s*\}, 0\);/);
+  assert.match(loop, /const submitLater = \(text: string, meta\?: \{ turnId\?: string; confirmedEarly\?: boolean \}\) =>\s*setTimeout\(\(\) => \{\s*if \(!switchedOff\(\) && epoch === heldEpoch\) requestVoiceSubmit\(text, meta\);\s*\}, 0\);/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   const clear = engine.slice(engine.indexOf("const releaseVoiceText = voiceTextReleaser();"));
   assert.ok(clear.length > 0 && clear.indexOf("releaseVoiceText();") < clear.indexOf("// First message"));

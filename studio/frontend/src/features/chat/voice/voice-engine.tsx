@@ -74,6 +74,9 @@ import {
   registerToolCallDescriber,
   registerVoiceBargeAbort,
   registerVoiceBargeIn,
+  clearPendingHeardCut,
+  pendingHeardCut,
+  setPendingHeardCut,
   registerVoiceEarlyInterject,
   registerVoiceListen,
   registerVoiceParkedText,
@@ -89,6 +92,14 @@ import {
   registerVoiceTypedSubmit,
   registerVoiceTypedSend,
   setVoiceMode as setLoopVoiceMode,
+  type VoiceSubmitMeta,
+  type VoiceTurnEnd,
+  dropUnsentVoiceTurn,
+  dropVoiceTurn,
+  endVoiceTurns,
+  liveVoiceTurn,
+  noteVoiceTurn,
+  sendVoiceTurn,
   voiceRunToStop,
 } from "@/features/chat/voice/voice-loop-bridge";
 import {
@@ -102,6 +113,10 @@ import { voiceServing } from "@/features/chat/voice/voice-slot";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { pauseOutputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
+import { ChatMessageProtectedError } from "../api/chat-api";
+import { setThreadMessageVoiceHeard } from "../utils/update-thread-message";
+import { type PlayedChunk, heardCut, joinTextParts, laterCut, savedHeardCut } from "./heard-cut";
+import { splitSpoken } from "./speech-text";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
@@ -126,8 +141,32 @@ import {
 import { isRevealPrefix, isTypedVoiceSubmit } from "./typed-send";
 
 let _prevRunning = false;
+// The first reply token seen for this turn id, so it is marked once.
+let _firstTokenTurn: string | null = null;
+
+function endTurns(reason: VoiceTurnEnd, liveOnly = false): void {
+  for (const turnId of endVoiceTurns(liveOnly)) voiceTrace("turn.end", { turnId, reason });
+}
+
+/** No run will answer the waiting utterance: its trace ends, and the next utterance starts a turn of its own. */
+function dropUnsentTurn(): void {
+  const turnId = dropUnsentVoiceTurn();
+  if (turnId) voiceTrace("turn.end", { turnId, reason: "cancelled" });
+}
+
+/** A run is about to answer: the waiting spoken turn becomes the live one. */
+function markChatSent(): void {
+  const before = liveVoiceTurn();
+  const turnId = sendVoiceTurn();
+  if (!turnId) return;
+  // A turn still live here never got its first audio: closed, so every traced turn ends once.
+  if (before && before !== turnId) voiceTrace("turn.end", { turnId: before, reason: "superseded" });
+  voiceTrace("turn.chatSent", { turnId });
+}
 // Module-level: New Chat remounts VoiceEngine, and the reset after it must still find the run to stop.
 let _voicedThreadId: string | null = null;
+// Replies with a heard-cut save loop running.
+const _heardSaving = new Set<string>();
 
 // Filtered as the floating orb does: a Compare pane or background chat's card is not voice mode's to speak.
 function voicedApprovalCount(s: ReturnType<typeof useChatRuntimeStore.getState>): number {
@@ -156,6 +195,8 @@ const VOICE_RUN_SETTLE_MAX_MS = 6000;
 const VOICE_RUN_SETTLE_POLL_MS = 150;
 // Clip swaps at sentence boundaries stay under this, so only a real synth stall turns the orb lilac.
 const SYNTH_GAP_MS = 350;
+// How long a heard cut keeps trying to reach the server: its thread back on screen, or a failed save.
+const HEARD_SAVE_PATIENCE_MS = 30 * 60_000;
 
 export { VoiceOrb };
 export { VoicePanel } from "@/components/assistant-ui/voice-panel";
@@ -164,6 +205,8 @@ export { loadVoice, servedVoice, unloadVoice, voiceServing } from "@/features/ch
 registerVoiceListen(() =>
   StudioVoiceLoopAdapter.isSupported() ? new StudioVoiceLoopAdapter().listen() : null,
 );
+
+type HeardSnapshot = { messageId: string; position: number; log: PlayedChunk[]; base: number };
 
 export const VoiceEngine: FC = () => {
   const aui = useAui();
@@ -296,6 +339,8 @@ export const VoiceEngine: FC = () => {
     pausePlayback,
     resumePlayback,
     holdPlayback,
+    playbackPosition,
+    playedLog,
   } = useTtsPlayer(onPlaybackEnd);
   const pausedForHold = useChatRuntimeStore((s) => s.voicePaused);
   isSpeakingRef.current = isSpeaking;
@@ -321,6 +366,12 @@ export const VoiceEngine: FC = () => {
   feedClipRef.current = feedClip;
   const endClipsRef = useRef(endClips);
   endClipsRef.current = endClips;
+  const playbackPositionRef = useRef(playbackPosition);
+  playbackPositionRef.current = playbackPosition;
+  const playedLogRef = useRef(playedLog);
+  playedLogRef.current = playedLog;
+  const heardSnapshotRef = useRef<HeardSnapshot | null>(null);
+  const heardCutRecorderRef = useRef<() => void>(() => {});
   const spokenRunRef = useRef(false);
   const spokenClipsRef = useRef(0);
   const streamBegunRef = useRef(false);
@@ -425,16 +476,15 @@ export const VoiceEngine: FC = () => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.role !== "assistant") continue;
-      let text = "";
-      for (const part of msg.content as Array<{ type: string; text?: string }>) {
-        if (part.type === "text" && part.text) text += part.text;
-      }
-      return withoutAudioPlayer(text);
+      // "\n" between parts, so "check" + tool + "The…" is not read as "checkThe…"; trimmed at the
+      // end only, so offsets into the reply stay valid.
+      const { text } = joinTextParts(msg.content as Array<{ type: string; text?: string }>);
+      return withoutAudioPlayer(text).trimEnd();
     }
     return "";
   }, []);
 
-  const commitUtterance = useCallback((said: string) => {
+  const commitUtterance = useCallback((said: string, confirmedEarly = false) => {
     const composer = auiRef.current.composer();
     // A barge-in cuts playback without its end firing, so held utterances go now or surface later as a stale prompt.
     // A first message still inside its window is the start of this one. A cleared timer means voice
@@ -472,9 +522,15 @@ export const VoiceEngine: FC = () => {
         : null;
     // Cover the tail clip (isPlaying) too, not just an active streaming session (isSpeaking).
     voiceTrace("engine.commitUtterance", { text, speaking: isSpeakingRef.current, playing: isPlayingRef.current });
-    if (isSpeakingRef.current || isPlayingRef.current) stop();
     const thread = auiRef.current.thread();
     const cutRun = thread.getState().isRunning;
+    // A barge-in takes effect here, so an ignored or queued one cuts nothing: the cut is in memory before the
+    // request is built. A send that cuts nothing drops a snapshot an earlier barge-in left.
+    if (cutRun || isSpeakingRef.current || isPlayingRef.current) heardCutRecorderRef.current();
+    else heardSnapshotRef.current = null;
+    // The reply this cuts never got its first audio out.
+    if (cutRun || isSpeakingRef.current || isPlayingRef.current) endTurns("barged", true);
+    if (isSpeakingRef.current || isPlayingRef.current) stop();
     if (cutRun) {
       const f = fillerRef.current;
       if (f?.logId) {
@@ -506,6 +562,7 @@ export const VoiceEngine: FC = () => {
     };
     const sendNow = () => {
       composer.setText(text);
+      markChatSent();
       composer.send();
       composer.setText("");
       setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
@@ -635,6 +692,8 @@ export const VoiceEngine: FC = () => {
             () => fireCoalescedRun(attempt + 1),
             VOICE_COALESCE_POLL_MS,
           );
+        } else {
+          dropUnsentTurn();
         }
         return;
       }
@@ -645,7 +704,10 @@ export const VoiceEngine: FC = () => {
         return;
       }
       const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
-      if (!last || last.role !== "user") return;
+      if (!last || last.role !== "user") {
+        dropUnsentTurn();
+        return;
+      }
       // A new run while the old one is still "cancelling" is refused outright: ask the server, not the local state.
       const threadId = useChatRuntimeStore.getState().activeThreadId;
       const turn = voiceNotesEpoch();
@@ -654,8 +716,13 @@ export const VoiceEngine: FC = () => {
         if (voiceNotesEpoch() !== turn || coalesceSeqRef.current !== seq) return;
         if (useChatRuntimeStore.getState().activeThreadId !== threadId) return;
         const now = t.getState();
-        if (now.isRunning || now.messages[now.messages.length - 1]?.id !== last.id) return;
+        // Another run took the thread, or the tail moved: this utterance is not answered here.
+        if (now.isRunning || now.messages[now.messages.length - 1]?.id !== last.id) {
+          dropUnsentTurn();
+          return;
+        }
         try {
+          markChatSent();
           t.startRun({ parentId: last.id });
         } catch {
         }
@@ -688,7 +755,14 @@ export const VoiceEngine: FC = () => {
     if (holdOn) voiceTrace("engine.holdOn", { text: said });
     voiceCoalesceTimerRef.current = setTimeout(
       () => fireCoalescedRun(0),
-      holdOn ? VOICE_HOLD_COALESCE_MS : cutRun ? VOICE_RESTART_COALESCE_MS : VOICE_COALESCE_MS,
+      // An early-confirmed turn already answered "did they keep talking?"; restart and hold keep their windows.
+      holdOn
+        ? VOICE_HOLD_COALESCE_MS
+        : cutRun
+          ? VOICE_RESTART_COALESCE_MS
+          : confirmedEarly
+            ? 0
+            : VOICE_COALESCE_MS,
     );
   }, [resumeListen, stop]);
 
@@ -730,12 +804,12 @@ export const VoiceEngine: FC = () => {
     return parts.join("\n");
   }, []);
 
-  const sendTranscriptRef = useRef<(text: string, typed?: boolean) => void>(() => {});
+  const sendTranscriptRef = useRef<(text: string, typed?: boolean, meta?: VoiceSubmitMeta) => void>(() => {});
   const sendTranscript = useCallback(
-    (text: string, typed?: boolean) => sendTranscriptRef.current(text, typed),
+    (text: string, typed?: boolean, meta?: VoiceSubmitMeta) => sendTranscriptRef.current(text, typed, meta),
     [],
   );
-  const submitTranscript = useCallback((spoken?: string, typed?: boolean) => {
+  const submitTranscript = useCallback((spoken?: string, typed?: boolean, meta?: VoiceSubmitMeta) => {
     if (voiceModeRef.current !== "active") return;
     const composer = auiRef.current.composer();
     // A typed send is the whole box already, draft included.
@@ -749,6 +823,8 @@ export const VoiceEngine: FC = () => {
       return;
     }
     voiceTrace("engine.submit", { text });
+    if (typed) endTurns("typed");
+    else if (text) noteVoiceTurn(meta?.turnId);
     const pending = pendingForVoiceRef.current;
     // A reply sent now would land before the voice can speak it: park the turn until the slot loads.
     if (useChatRuntimeStore.getState().voiceSlotLoading) {
@@ -771,7 +847,7 @@ export const VoiceEngine: FC = () => {
     // The store can think the voice is loaded after the backend dropped it (idle unload): one status read settles it.
     const store = useChatRuntimeStore.getState();
     const ensure = store.ensureVoiceSlotLoaded;
-    const sendNow = () => sendTranscript(text, typed);
+    const sendNow = () => sendTranscript(text, typed, meta);
     if (!ensure || isSpeakingRef.current) {
       sendNow();
       return;
@@ -797,7 +873,7 @@ export const VoiceEngine: FC = () => {
     );
   }, [resumeListen, sendTranscript]);
 
-  function sendTranscriptImpl(text: string, typed?: boolean) {
+  function sendTranscriptImpl(text: string, typed?: boolean, meta?: VoiceSubmitMeta) {
     const composer = auiRef.current.composer();
     // Decided now so the run's request can tell the model; a reply ending in a question gets no filler.
     const prevReply = latestAssistantText().trimEnd();
@@ -882,8 +958,13 @@ export const VoiceEngine: FC = () => {
             queuedUtteranceRef.current.push(text);
           }
           if (action === "queue") parkVoiceTurnAudio();
-          else dropVoiceUtteranceAudio();
+          else {
+            dropVoiceUtteranceAudio();
+            if (dropVoiceTurn(meta?.turnId)) voiceTrace("turn.end", { turnId: meta?.turnId, reason: "cancelled" });
+          }
           composer.setText("");
+          // The reply plays on, so the barge-in heard nothing to cut.
+          heardSnapshotRef.current = null;
           // Nothing cut the reply the barge-in held: without this playback stayed suspended and the loop looked stuck.
           resumePlayback();
           resumeListen();
@@ -894,7 +975,7 @@ export const VoiceEngine: FC = () => {
       });
       return;
     }
-    commitUtterance(text);
+    commitUtterance(text, meta?.confirmedEarly);
   }
   sendTranscriptRef.current = sendTranscriptImpl;
 
@@ -941,6 +1022,7 @@ export const VoiceEngine: FC = () => {
   function cutEarly({ gapMs, kind }: { fragment: string; kind: string | null; gapMs: number }) {
     if (voiceModeRef.current !== "active") return;
     voiceTrace("engine.cancelRun", { early: true, gapMs, kind });
+    endTurns("barged", true);
     if (isSpeakingRef.current || isPlayingRef.current) stop();
     const f = fillerRef.current;
     if (f?.logId) {
@@ -1213,7 +1295,7 @@ export const VoiceEngine: FC = () => {
       if (voiceModeRef.current === "active") {
         const composer = auiRef.current.composer();
         if (composer.getState().dictation) composer.stopDictation();
-        beginStreamRef.current();
+        beginStreamRef.current({ turnId: liveVoiceTurn() ?? undefined });
         streamBegunRef.current = true;
         streamGenRef.current++;
         spokenRunRef.current =
@@ -1243,6 +1325,12 @@ export const VoiceEngine: FC = () => {
         streamPollRef.current = setInterval(() => {
           const f = fillerRef.current;
           const text = latestAssistantText();
+          const live = liveVoiceTurn();
+          // Sampled at this poll's 150 ms, the first text part (thinking is not text).
+          if (live && text && _firstTokenTurn !== live) {
+            _firstTokenTurn = live;
+            voiceTrace("turn.firstToken", { turnId: live, approxMs: 150 });
+          }
           if (f && !f.queued) {
           } else if (!spokenRunRef.current) {
             feedTextRef.current(text);
@@ -1316,7 +1404,7 @@ export const VoiceEngine: FC = () => {
       if (!spoken || now === spoken.text) return;
       const added = now.startsWith(spoken.text) ? now.slice(spoken.text.length) : now;
       spokenReplyRef.current = { ...spoken, text: now };
-      if (voiceModeRef.current === "active" && added.trim()) speakRef.current(added);
+      if (voiceModeRef.current === "active" && added.trim()) speakRef.current(added, { base: now.length - added.length });
       return;
     }
     setIsReasoning(false);
@@ -1359,6 +1447,7 @@ export const VoiceEngine: FC = () => {
     }
     if (!text) {
       if (!streamBegun) {
+        endTurns("noTts", true);
         resumeListen();
         return;
       }
@@ -1393,7 +1482,7 @@ export const VoiceEngine: FC = () => {
         endStreamRef.current(said);
       }, 150);
     } else {
-      speakRef.current(text);
+      speakRef.current(text, { turnId: liveVoiceTurn() ?? undefined });
     }
   }, [
     isThreadRunning,
@@ -1429,10 +1518,12 @@ export const VoiceEngine: FC = () => {
     const wasActive = voiceModeRef.current === "active";
     _voicedThreadId = null;
     spokenRunRef.current = false;
+    endTurns("cancelled");
     setLoopVoiceMode("off");
     voiceModeRef.current = "off";
     setVoiceModeState("off");
     useChatRuntimeStore.getState().setVoiceMode("off");
+    heardSnapshotRef.current = null;
     if (voiceCoalesceTimerRef.current) {
       clearTimeout(voiceCoalesceTimerRef.current);
       voiceCoalesceTimerRef.current = null;
@@ -1489,6 +1580,7 @@ export const VoiceEngine: FC = () => {
       useChatRuntimeStore.getState().runningByThreadId,
     );
     voiceTrace("engine.threadReset", { prevThreadId, stopped: oldRun, paused: useChatRuntimeStore.getState().voicePaused });
+    endTurns("cancelled");
     if (oldRun) stopChatThread(oldRun);
     _voicedThreadId = null;
     spokenRunRef.current = false;
@@ -1568,6 +1660,7 @@ export const VoiceEngine: FC = () => {
     registerVoiceStopSpeaking(() => {
       if (voiceModeRef.current !== "active") return;
       voiceTrace("engine.stopSpeaking", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      endTurns("cancelled");
       // The hold effect releases the player.
       if (useChatRuntimeStore.getState().voicePaused) useChatRuntimeStore.getState().setVoicePaused(false);
       if (voiceCoalesceTimerRef.current) {
@@ -1624,15 +1717,116 @@ export const VoiceEngine: FC = () => {
     };
   }, [resumeOrFlush]);
 
+  // Taken as a barge-in lands: what had played, and where the speaker was.
+  const takeHeardSnapshot = useCallback((): HeardSnapshot | null => {
+    if (!useVoiceSettingsStore.getState().heardCut) return null;
+    const played = playedLogRef.current();
+    const msgs = auiRef.current.thread().getState().messages;
+    const tail = msgs.length ? msgs[msgs.length - 1] : null;
+    if (!played || tail?.role !== "assistant") return null;
+    return { messageId: tail.id, position: playbackPositionRef.current(), ...played };
+  }, []);
+
+  // Saved once no run is live (a thread import must not land mid-run); until then the cut applies from memory.
+  // With another thread open it waits for its own, and a failed save is tried again, for up to half an hour.
+  // One loop per reply: each pass saves the latest pending cut, so a second barge-in joins the first's loop.
+  const saveHeardCut = useCallback((messageId: string) => {
+    if (_heardSaving.has(messageId)) return;
+    _heardSaving.add(messageId);
+    let waited = 0;
+    let failures = 0;
+    const done = () => _heardSaving.delete(messageId);
+    const later = (ms: number) => {
+      waited += ms;
+      if (waited <= HEARD_SAVE_PATIENCE_MS) setTimeout(tick, ms);
+      else {
+        // The cut still applies from memory until reload; the trace says it never reached the server.
+        voiceTrace("voice.heardSaveGaveUp", { messageId });
+        done();
+      }
+    };
+    const tick = () => {
+      const thread = auiRef.current.thread();
+      const cut = pendingHeardCut(messageId);
+      if (!cut) {
+        done();
+        return;
+      }
+      if (!thread.getState().messages.some((m) => m.id === messageId)) {
+        later(5000);
+        return;
+      }
+      if (thread.getState().isRunning) {
+        later(500);
+        return;
+      }
+      void setThreadMessageVoiceHeard({
+        thread: { export: () => thread.export(), import: (data) => thread.import(data) },
+        messageId,
+        remoteId:
+          auiRef.current.threadListItem().getState().remoteId ||
+          useChatRuntimeStore.getState().activeThreadId ||
+          undefined,
+        isIncognito: useChatRuntimeStore.getState().incognito,
+        heard: { offset: cut.offset, at: Date.now() },
+      }).then(
+        () => {
+          // A later cut taken while this one saved goes next.
+          if (pendingHeardCut(messageId) !== cut) return tick();
+          clearPendingHeardCut(messageId);
+          done();
+        },
+        (error: unknown) => {
+          const refused = error instanceof ChatMessageProtectedError;
+          voiceTrace(refused ? "voice.heardSaveRefused" : "voice.heardSaveFailed", {
+            messageId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          // A protected row stays protected (chat-api.ts): no retry, the cut keeps applying from memory.
+          if (!refused) later(2000 * 2 ** Math.min(failures++, 6));
+          else done();
+        },
+      );
+    };
+    tick();
+  }, []);
+
+  // A confirmed barge-in: the cut is in memory before the next turn's request is built.
+  const recordHeardCut = useCallback(() => {
+    const snap = heardSnapshotRef.current;
+    heardSnapshotRef.current = null;
+    if (!snap) return;
+    const msgs = auiRef.current.thread().getState().messages;
+    // Only the reply still being cut: a snapshot older than the tail heard some other reply.
+    const msg = msgs.length ? msgs[msgs.length - 1] : null;
+    if (!msg || msg.id !== snap.messageId) return;
+    const text = withoutAudioPlayer(joinTextParts(msg.content as Array<{ type: string; text?: string }>).text);
+    const cut = laterCut(
+      laterCut(savedHeardCut(msg.metadata), pendingHeardCut(msg.id)),
+      heardCut(splitSpoken(text), snap.log, snap.position, snap.base),
+    );
+    const settled = !("status" in msg) || msg.status?.type !== "running";
+    voiceTrace("voice.heardCut", { messageId: msg.id, offset: cut?.offset ?? null, chars: text.trimEnd().length });
+    // Heard to the end of a finished reply: nothing to cut.
+    if (!cut || (settled && cut.offset >= text.trimEnd().length)) return;
+    setPendingHeardCut(msg.id, cut);
+    saveHeardCut(msg.id);
+  }, [saveHeardCut]);
+  heardCutRecorderRef.current = recordHeardCut;
+
   useEffect(() => {
     registerVoiceBargeIn(() => {
       voiceTrace("engine.bargeIn", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
       if (voiceModeRef.current !== "active") return;
       if (!isSpeakingRef.current && !isPlayingRef.current) return;
+      // Before the pause, which stops the clock the position is read from.
+      heardSnapshotRef.current = takeHeardSnapshot();
       pausePlayback();
     });
     registerVoiceBargeAbort(() => {
       voiceTrace("engine.bargeAbort", { speaking: isSpeakingRef.current, playing: isPlayingRef.current });
+      // A false interruption cuts nothing.
+      heardSnapshotRef.current = null;
       if (voiceModeRef.current !== "active") return;
       resumePlayback();
     });
@@ -1640,11 +1834,14 @@ export const VoiceEngine: FC = () => {
       registerVoiceBargeIn(null);
       registerVoiceBargeAbort(null);
     };
-  }, [pausePlayback, resumePlayback]);
+  }, [pausePlayback, resumePlayback, takeHeardSnapshot]);
 
   submitRef.current = submitTranscript;
   useEffect(() => {
-    registerVoiceSubmit(submitTranscript);
+    // Not submitTranscript itself: the bridge's second argument is the turn, not `typed`.
+    registerVoiceSubmit((text, meta) => {
+      submitTranscript(text, false, meta);
+    });
     return () => {
       registerVoiceSubmit(null);
     };
@@ -1726,11 +1923,13 @@ export const VoiceMuteButton: FC = () => {
 // release is swallowed so a hold never also opens the full orb.
 function useOrbWidgetHold() {
   const firedRef = useRef(false);
-  const holdRef = useRef<HoldToStop | null>(null);
   // Screen coordinates are already logical (CSS) pixels, so no scale factor applies.
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
-  if (isTauri && !holdRef.current) {
-    holdRef.current = createHoldToStop(
+  const holdRef = useRef<HoldToStop | null>(null);
+  // Made on the first press, never during render (refs are read only from handlers and effects).
+  const pressHold = () => {
+    if (!isTauri) return;
+    holdRef.current ??= createHoldToStop(
       (phase) => {
         if (phase !== "armed") return;
         firedRef.current = true;
@@ -1745,7 +1944,8 @@ function useOrbWidgetHold() {
       ORB_WIDGET_LONG_PRESS_MS,
       ORB_WIDGET_LONG_PRESS_MS,
     );
-  }
+    holdRef.current.press();
+  };
   useEffect(() => () => holdRef.current?.dispose(), []);
   const cancel = () => holdRef.current?.cancel();
   return {
@@ -1754,7 +1954,7 @@ function useOrbWidgetHold() {
         if (e.button !== 0) return;
         firedRef.current = false;
         cursorRef.current = { x: e.screenX, y: e.screenY };
-        holdRef.current?.press();
+        pressHold();
       },
       onPointerMove: (e: React.PointerEvent) => {
         cursorRef.current = { x: e.screenX, y: e.screenY };
