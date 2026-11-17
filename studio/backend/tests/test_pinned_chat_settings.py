@@ -315,7 +315,6 @@ def test_repeated_legacy_migration_answers_while_another_writer_holds_the_lock(m
     writer = studio_db.get_connection()
     try:
         writer.execute("BEGIN IMMEDIATE")
-        # Every client refresh re-sends the same legacy pins; that must not queue behind a writer.
         assert _migrate(["b", "a"]) == {"pinnedIds": ["a", "b"]}
         assert _migrate([]) == {"pinnedIds": ["a", "b"]}
         with pytest.raises(Exception):
