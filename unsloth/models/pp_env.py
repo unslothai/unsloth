@@ -781,6 +781,54 @@ def pp_trainer_refusals(
             + hint
         )
     _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, train_dataset, eval_dataset)
+    _refuse_uncarried_router_aux_at_init(trainer_cls, args, model)
+
+
+def _refuse_uncarried_router_aux_at_init(trainer_cls, args, model):
+    """Refuse a Trainer that turns on an uncarried MoE router aux loss. TRL >= 1.x sets it later in __init__
+    (coef None = architecture's), so the stage forward re-checks."""
+    if not isinstance(model, nn.Module):
+        return
+    from ..parallel_capabilities import _trainer_kind
+    from .pp_native import (
+        _router_aux_coef_of,
+        _text_config,
+        _uncarried_moe_owner,
+        _uncarried_router_aux_message,
+    )
+
+    try:
+        inner = _uncarried_moe_owner(model)
+    except Exception:
+        return  # the split reports what it cannot find
+    if inner is None:
+        return
+    text = _text_config(model)
+    on = bool(getattr(text, "output_router_logits", False))
+    trl = (
+        args is not None
+        and _trainer_kind(trainer_cls) in ("sft", "dpo", "grpo", "other_rl")
+        and hasattr(args, "router_aux_loss_coef")
+        and hasattr(text, "router_aux_loss_coef")
+    )
+    if trl:
+        coef = args.router_aux_loss_coef
+        coef = (getattr(text, "router_aux_loss_coef", 0) or 0) if coef is None else coef
+        on = hasattr(text, "output_router_logits") and bool(coef)
+    if not on or _router_aux_coef_of(inner, text) == 0:
+        return
+    raise NotImplementedError(
+        _uncarried_router_aux_message(
+            inner,
+            "this Trainer turns it on"
+            + (
+                f" (router_aux_loss_coef = {args.router_aux_loss_coef!r} in {type(args).__name__})"
+                if trl
+                else " (config.output_router_logits = True)"
+            ),
+        )
+        + _hint()
+    )
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
