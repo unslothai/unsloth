@@ -6884,6 +6884,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "web_search",
         "search_knowledge_base",
         "search_conversation",
+        "update_memory",
         "read_skill",
         "deep_research",
         "mcp_tool_search",
@@ -6899,7 +6900,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 
 def never_needs_approval(name: str) -> bool:
     """search_conversation only reads this chat's own compacted turns (#11671)."""
-    return name == "search_conversation"
+    return name in {"search_conversation", "update_memory"}
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -14892,6 +14893,10 @@ def execute_tool(
             website_policy = website_policy,
             timeout = effective_timeout,
         )
+    if name == "update_memory":
+        from core.chat_memory import execute
+        return execute(arguments, thread_id)
+
     if is_computer_tool(name):
         return execute_computer_tool(
             arguments,

@@ -293,7 +293,8 @@ def _qk_rope_kernel() -> Any:
         D: tl.constexpr,  # hd
         HB: tl.constexpr,  # heads per program
     ):
-        row = tl.program_id(0)
+        # int64: s * sqs passes 2**31 past 233k tokens of a 9216-wide fused-QKV row
+        row = tl.program_id(0).to(tl.int64)
         b = row // S
         s = row % S
         h = tl.program_id(1) * HB + tl.arange(0, HB)[:, None]

@@ -254,8 +254,9 @@ def test_race_margin_keeps_todays_path_on_a_tie(monkeypatch):
     assert r["tile"] == 0
 
 
-def _burst_vs_sustained(monkeypatch):
-    """Short interleaved timings say tile 0 wins by 20%; run back to back it is 25% slower (L4 at its power cap)."""
+def _burst_vs_sustained(monkeypatch, today_sustained = 100.0):
+    """Short interleaved timings say tile 0 wins by 20%; run back to back it is 25% slower (L4 at its power cap).
+    ``today_sustained``: today's path back to back (100 = the clock it ran at in the short timings)."""
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = None: (8, 9))
     monkeypatch.setattr(cut, "probed_tiles", lambda i: (0, 1))
     monkeypatch.setattr(cut, "has_kernel", lambda *a: True)
@@ -268,7 +269,7 @@ def _burst_vs_sustained(monkeypatch):
 
     def fake_sustained(fns, **k):
         sustained.append(sorted(map(str, fns)))
-        return {n: {0: 125.0, 1: 110.0, "today": 100.0}[n] for n in fns}
+        return {n: {0: 125.0, 1: 110.0, "today": today_sustained}[n] for n in fns}
 
     monkeypatch.setattr(cut, "time_sustained_us", fake_sustained)
     w = torch.zeros(64, 64, dtype = torch.int8)
@@ -292,6 +293,44 @@ def test_smaller_races_and_the_kill_switch_keep_short_timings(monkeypatch):
     monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
     r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, 64)
     assert r["tile"] == 0 and not sustained
+
+
+def test_the_4096_row_race_is_decided_on_sustained_timings_when_the_clock_moves(monkeypatch):
+    """1024x1024 images run at about 4096 rows: on a card whose clock follows the load (today's own path 12% off its
+    short timing back to back), the race must not pick a tile whose short-burst win turns into a loss."""
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 88.0)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] is None and sustained == [["0", "1", "today"]]
+    assert r["sustained"] is True and r["clock_drift"] == pytest.approx(-0.12)
+    assert r["short_us"]["0"] == 80.0
+
+
+def test_the_4096_row_race_keeps_short_timings_on_a_steady_clock(monkeypatch):
+    """A100: today's path runs back to back as fast as in the short timings, so the short ranking decides (the
+    sustained one dropped a tile that is faster in the denoiser)."""
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 102.0)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] == 0 and r["sustained"] is False and sustained
+
+
+def test_the_huge_race_stays_sustained_on_a_steady_clock(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 101.0)
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, cut._RACE_M_HUGE)
+    assert r["tile"] is None and r["sustained"] is True
+
+
+def test_sustained_huge_restores_short_timings_below_the_huge_race(monkeypatch):
+    w, ws, sustained = _burst_vs_sustained(monkeypatch, today_sustained = 88.0)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
+    r = cut.race(0, w, ws, None, torch.bfloat16, lambda *a: None, max(cut._RACE_M))
+    assert r["tile"] == 0 and not sustained
+    assert cut.sustained_for(cut._RACE_M_HUGE) and not cut.sustained_for(max(cut._RACE_M))
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    assert not cut.sustained_for(cut._RACE_M_HUGE)
+    monkeypatch.delenv(cut.SUSTAINED_ENV)
+    assert cut.sustained_for(cut._LARGE_M) and not cut.sustained_for(min(cut._RACE_M))
 
 
 def _load_build():
@@ -594,3 +633,6 @@ def test_race_cache_key_tracks_the_sustained_timing_mode(monkeypatch):
     assert default and off and default != off
     monkeypatch.setenv(cut.SUSTAINED_ENV, "1")
     assert g8._cut_cache_key(0) == default
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "huge")
+    huge = g8._cut_cache_key(0)
+    assert huge and huge not in (default, off)

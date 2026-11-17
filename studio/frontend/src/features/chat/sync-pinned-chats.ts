@@ -18,10 +18,7 @@ import {
 import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
-import {
-  isExpectedPinSyncInterruption,
-  isPinFailureUnderDesktopUpdate,
-} from "./utils/pinned-chats-update-failure";
+import { shouldReportPinSyncFailure } from "./utils/pinned-chats-update-failure";
 import { isRetryablePinError } from "./utils/settings-retry";
 import { onChatThreadsDeleted } from "./utils/chat-thread-tombstones";
 
@@ -66,9 +63,8 @@ function createRuntime(sessionScope: string) {
     writePending: journal.writePending,
     isRetryable: isRetryablePinError,
     publish: (pinnedIds) => usePinnedChatsStore.setState({ pinnedIds }),
-    onError: (error) => {
-      if (isPinFailureUnderDesktopUpdate(error)) return;
-      if (isExpectedPinSyncInterruption(error)) return;
+    onError: (error, editLost) => {
+      if (!shouldReportPinSyncFailure(error, editLost)) return;
       toast.error("Could not sync pinned chats. Try again when connected.", {
         id: "pinned-chats-sync-error",
       });

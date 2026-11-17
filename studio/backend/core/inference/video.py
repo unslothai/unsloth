@@ -12539,7 +12539,11 @@ class VideoBackend:
             for name, source in mirrored_sources.items()
             if _base_fetch_revision and source == fetch_base
         }
-        pipe.load_components(
+        # Strict: diffusers logs a failed component and registers None, which then fails at the first render.
+        from .diffusion_component_fetch import load_components_strict
+
+        load_components_strict(
+            pipe,
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),
@@ -14304,6 +14308,7 @@ class VideoBackend:
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
+                        memory_mode = getattr(state, "memory_mode", None),
                     )
                     # Key on the cache mode this request runs; corrected after the runner-aware toggle.
                     if state.cache_auto:

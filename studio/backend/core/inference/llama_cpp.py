@@ -133,6 +133,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     ctx_checkpoints_within_host_budget,
     effective_ctx_checkpoints,
+    selects_spec_type,
     parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
@@ -4604,7 +4605,7 @@ def _mla_mtp_auto_enabled() -> bool:
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
-    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+    return selects_spec_type(extra_args)
 
 
 # Shared with llama_server_args so detection and stripping cannot drift.
@@ -5912,6 +5913,36 @@ _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-o
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     """Matched via _flag_name: arg.cpp folds underscores to dashes, so --mmproj_offload counts too."""
     return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+
+
+def _spec_start_failure(output: str) -> tuple[str, str]:
+    """(log reason, spec_fallback_reason) for a llama-server that died with a drafter attached."""
+    lo = output.lower()
+    # Only an unknown arch proves the binary is outdated; a context that could not be created is usually memory.
+    if "unknown model architecture" in lo:
+        return (
+            "the prebuilt may predate it; retrying without speculative decoding -- run "
+            "`unsloth studio update` for this drafter",
+            "binary_outdated",
+        )
+    if any(
+        marker in lo
+        for marker in (
+            "failed to measure draft model memory",
+            "failed to measure mtp context memory",
+            "failed to create mtp context",
+            "failed to create llama_context",
+        )
+    ):
+        return (
+            "its context could not be created, usually too little memory for the drafter at "
+            "this context length and slot count; retrying without speculative decoding",
+            "runtime_error",
+        )
+    return (
+        "retrying without speculative decoding in case the drafter is the cause",
+        "runtime_error",
+    )
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -32586,7 +32617,8 @@ class LlamaCppBackend:
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
-                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
+                    # A probe that failed listed no device either, so its stall gets the same CPU replay.
+                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed", "error")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
                         _vk_outcome == "none"
@@ -33412,29 +33444,9 @@ class LlamaCppBackend:
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Launched without spec group; keep MTP only in requested state or the next Apply repeats the crash.
-                    _lo = "\n".join(self._stdout_lines).lower()
-                    # Only an unknown arch proves the binary is outdated; other failures are runtime.
-                    _arch_unsupported = "unknown model architecture" in _lo
-                    if (
-                        _arch_unsupported
-                        or "failed to measure draft model memory" in _lo
-                        or "failed to measure mtp context memory" in _lo
-                        or "failed to create mtp context" in _lo
-                        or "failed to create llama_context" in _lo
-                    ):
-                        _retry_reason = (
-                            "the prebuilt may predate it; retrying without "
-                            "speculative decoding -- run `unsloth studio "
-                            "update` for this drafter"
-                        )
-                        self._spec_fallback_reason = (
-                            "binary_outdated" if _arch_unsupported else "runtime_error"
-                        )
-                    else:
-                        _retry_reason = (
-                            "retrying without speculative decoding in case the drafter is the cause"
-                        )
-                        self._spec_fallback_reason = "runtime_error"
+                    _retry_reason, self._spec_fallback_reason = _spec_start_failure(
+                        "\n".join(self._stdout_lines)
+                    )
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path

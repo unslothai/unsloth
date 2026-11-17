@@ -243,6 +243,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -1504,6 +1505,8 @@ export function ComposerModelPicker({
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
+  const browseOnly = source?.browseOnly === true;
+  const hiddenIds = source?.hiddenIds;
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -2027,21 +2030,7 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2128,19 +2117,18 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    const npuOffers: Row[] = npuPickerRows(npuModels, false);
+    const all = [...marked, ...npuOffers, ...hub, ...external];
+    return browseOnly
+      ? all.filter(
+          (row) =>
+            !hiddenIds?.has(row.id.toLowerCase()) &&
+            mediaPageForTask(mediaTaskById.get(row.id.toLowerCase())) === null,
+        )
+      : all;
   }, [
+    browseOnly,
+    hiddenIds,
     inventory.cachedGguf,
     inventory.cachedModels,
     npuModels,
@@ -2479,15 +2467,16 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  const chosenName =
-    shown?.label ??
-    (checkpoint
-      ? (missingExternalModel(
-          checkpoint,
-          externalModels ?? [],
-          source?.externalConnections ?? [],
-        )?.modelName ?? modelDisplayName(checkpoint))
-      : null);
+  const chosenName = browseOnly
+    ? undefined
+    : (shown?.label ??
+      (checkpoint
+        ? (missingExternalModel(
+            checkpoint,
+            externalModels ?? [],
+            source?.externalConnections ?? [],
+          )?.modelName ?? modelDisplayName(checkpoint))
+        : null));
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -2499,13 +2488,38 @@ export function ComposerModelPicker({
     !inventory.cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
+  const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
+  const [browseDevice, setBrowseDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!browseOnly) return;
+    if (!open) {
+      setBrowseDevice(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setBrowseDevice((known) => known ?? false),
+      2000,
+    );
+    return () => clearTimeout(timer);
+  }, [browseOnly, open]);
+  useEffect(() => {
+    if (browseOnly && open && inventory.cachedReady) {
+      setBrowseDevice((known) => known ?? hasDeviceRows);
+    }
+  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
-    (hasModels
-      ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
-        (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
-        DEVICE_TAB)
-      : RECOMMENDED_TAB);
+    (browseOnly
+      ? browseDevice
+        ? DEVICE_TAB
+        : RECOMMENDED_TAB
+      : hasModels
+        ? ((lastTab && tabs.some((t) => t.value === lastTab)
+            ? lastTab
+            : null) ??
+          (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
+          DEVICE_TAB)
+        : RECOMMENDED_TAB);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);

@@ -18,6 +18,7 @@ import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import {
   mergeBackendRecommendedInference,
   recommendedValuesForPick,
@@ -819,7 +820,8 @@ export async function tryAdoptServerActiveModel(options?: {
   if (
     !status.active_model ||
     (status.loading?.length ?? 0) > 0 ||
-    isSpeechOnlyStatus(status)
+    isSpeechOnlyStatus(status) ||
+    isTranslationHeldSlot(status.active_model, null)
   ) {
     return false;
   }
