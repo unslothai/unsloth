@@ -146,3 +146,78 @@ def test_token_classification_labels_are_not_shifted_targets():
     before = batch["labels"].clone()
     args, kwargs = _utils._with_pad_target_masking(trainer, (iter([batch]), 1), {})
     assert torch.equal(next(args[0])["labels"], before)
+
+
+def _flash_attn_usable():
+    from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
+    if not has_real_cuda() or torch.cuda.get_device_capability()[0] < 8:
+        return False
+    try:
+        import flash_attn  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("padding", ["left", "interior"])
+def test_flash_attention_padded_rows_train_like_eager(padding):
+    if not _flash_attn_usable():
+        pytest.skip("needs flash-attn on an sm80+ GPU")
+    config = transformers.Qwen3Config(
+        vocab_size = 512,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        max_position_embeddings = 128,
+    )
+    torch.manual_seed(0)
+    state = transformers.Qwen3ForCausalLM(config).state_dict()
+    L, lengths = 32, (32, 24, 14, 6)
+    mask = torch.zeros(len(lengths), L, dtype = torch.long)
+    for i, n in enumerate(lengths):
+        if padding == "left":
+            mask[i, L - n :] = 1
+        else:
+            mask[i, : n // 2] = 1
+            mask[i, L - (n - n // 2) :] = 1
+    input_ids = torch.randint(3, 512, mask.shape, generator = torch.Generator().manual_seed(1))
+    input_ids = input_ids.masked_fill(mask == 0, 0)
+    batch = {
+        "input_ids": input_ids,
+        "attention_mask": mask,
+        "labels": input_ids.masked_fill(mask == 0, -100),
+    }
+
+    model = transformers.Qwen3ForCausalLM(config)
+    model.load_state_dict(state)
+    trainer = _trainer(model)
+    dispatch = _utils._make_seq2seq_aware_get_batch_samples(lambda self, *a, **k: None)
+    (batch,), _ = dispatch(trainer, iter([batch]), 1)
+
+    def grads(attn_implementation, dtype):
+        config._attn_implementation = attn_implementation
+        m = transformers.Qwen3ForCausalLM(config).to(dtype)
+        m.load_state_dict(state)
+        m = m.cuda().train()
+        embeds = m.model.embed_tokens(batch["input_ids"].cuda()).detach().requires_grad_(True)
+        loss = m(
+            inputs_embeds = embeds,
+            attention_mask = batch["attention_mask"].cuda(),
+            labels = batch["labels"].cuda(),
+        ).loss
+        loss.backward()
+        flat = torch.cat([p.grad.float().flatten() for p in m.parameters() if p.grad is not None])
+        return flat, embeds.grad.float()
+
+    ref, ref_embeds = grads("eager", torch.float32)
+    flash, flash_embeds = grads("flash_attention_2", torch.bfloat16)
+    pads = batch["attention_mask"].cuda() == 0
+    # No loss term reads a pad position, so nothing flows back into one.
+    assert flash_embeds[pads].abs().max() == 0
+    assert ref_embeds[pads].abs().max() == 0
+    assert float((flash - ref).norm() / ref.norm()) < 0.05
