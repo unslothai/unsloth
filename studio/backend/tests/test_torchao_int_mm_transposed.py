@@ -118,3 +118,25 @@ def test_cuda_transposed_int_mm_is_exact(monkeypatch, m, k, n):
     torch.cuda.synchronize()
     ref = (x.double() @ w.double().t()).to(torch.int64)
     assert torch.equal(got.to(torch.int64), ref)
+
+
+def test_off_grid_fallback_returns_on_the_operand_card(monkeypatch):
+    fn, _seen = _patched(monkeypatch)
+    moved = []
+
+    class _Result:
+        def to(self, device):
+            moved.append(device)
+            return self
+
+    class _Operand:
+        def __init__(self, shape):
+            self.shape = shape
+            self.device = torch.device("cuda", 1)
+
+        def cpu(self):
+            return torch.zeros(self.shape, dtype = torch.int8)
+
+    monkeypatch.setattr(torch, "matmul", lambda a, b: _Result())
+    fn(_Operand((16, 65)), _Operand((65, 32)))
+    assert moved == [torch.device("cuda", 1)]
