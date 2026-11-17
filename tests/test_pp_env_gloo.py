@@ -98,6 +98,7 @@ def _case_units(rank, world, tmp):
                 got.microbatches,
                 got.schedule,
                 repr(got),
+                got.schedule_auto,
             )
         )
 
@@ -115,6 +116,8 @@ def _case_units(rank, world, tmp):
     out["mb_text"] = layout(UNSLOTH_PP_SIZE = 2, UNSLOTH_PP_MICROBATCHES = "x", WORLD_SIZE = 2)
     out["schedule"] = layout(UNSLOTH_PP_SIZE = 2, UNSLOTH_PP_SCHEDULE = "1F1B", WORLD_SIZE = 2)
     out["schedule_bad"] = layout(UNSLOTH_PP_SIZE = 2, UNSLOTH_PP_SCHEDULE = "zb", WORLD_SIZE = 2)
+    out["schedule_gpipe"] = layout(UNSLOTH_PP_SIZE = 2, UNSLOTH_PP_SCHEDULE = "gpipe", WORLD_SIZE = 2)
+    out["default_mb1"] = layout(UNSLOTH_PP_SIZE = 2, UNSLOTH_PP_MICROBATCHES = 1, WORLD_SIZE = 2)
     out["schedule_mb"] = layout(
         UNSLOTH_PP_SIZE = 4, UNSLOTH_PP_SCHEDULE = "1f1b", UNSLOTH_PP_MICROBATCHES = 2, WORLD_SIZE = 4
     )
@@ -385,6 +388,9 @@ def _case_env(
     stage = pp_native.pipeline_stage_of(trainer.model)
     if stage is not None:
         res["stage"] = stage.stage_index
+        res["schedule"] = (stage.schedule, stage.schedule_auto)
+        # The torch schedules the training steps actually ran (eval / later cells come after this).
+        res["step_schedules"] = sorted({type(s).__name__ for s in stage._shapes.values()})
         # Every stage seeds its train sampler per dp replica (LengthGroupedSampler would draw from the global RNG).
         res["sampler_hooked"] = "_get_train_sampler" in trainer.__dict__
         res["owned"] = sorted(n for n, p in trainer.model.named_parameters() if p.requires_grad)
@@ -746,6 +752,14 @@ def test_pp_env_layout_and_refusals():
     assert "must be >= 1" in res["zero"] and "must be an integer" in res["text"]
     assert res["mb"][5] == 3 and "UNSLOTH_PP_MICROBATCHES" in res["mb_text"]
     assert res["schedule"][6] == "1f1b" and "UNSLOTH_PP_SCHEDULE" in res["schedule_bad"]
+    # Default schedule: 1F1B, marked automatic (a step with fewer micro-batches than stages runs as GPipe), so
+    # UNSLOTH_PP_MICROBATCHES below the stage count stays accepted; an explicit schedule is kept as given.
+    assert res["pp2"][6] == "1f1b" and res["pp2"][8] is True, res["pp2"]
+    assert res["schedule"][8] is False and res["schedule_gpipe"][6:9:2] == ("gpipe", False)
+    # Fewer micro-batches than stages: the layout already records the GPipe fallback (sharded loading reads it).
+    assert res["default_mb1"][5:7] == (1, "gpipe") and res["default_mb1"][8] is True, res[
+        "default_mb1"
+    ]
     assert "UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE" in res["schedule_mb"], res["schedule_mb"]
     assert (
         "native FSDP2 only" in res["accelerate_fsdp"]
@@ -887,6 +901,59 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         # _close already pins every loss and grad norm. The trained adapter after several steps carries
         # more of the reduction-order noise: GitHub runners put gemma3_ga1_bs4's lora_A 1.6e-5 from the
         # reference on two PRs (1 of 64 elements), against at most 3.7e-6 here.
+        _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
+
+
+def test_pp_default_schedule_plan():
+    _import_checkout_unsloth()
+    from unsloth import parallel_env
+    from unsloth.models import pp_env
+
+    assert parallel_env.DEFAULT_PP_SCHEDULE == "1f1b"
+    # Default 2 x pp micro-batches is unchanged: only the schedule default moved.
+    stage = type(
+        "S", (), {"env_layout": None, "n_microbatches": 4, "num_stages": 2, "schedule": "1f1b"}
+    )()
+    stage.schedule_auto = True
+    assert pp_env.resolve_microbatches(stage, 8) == (4, 0)
+    if pp_env._gpipe_needs_stage_count():
+        return  # torch 2.10: GPipe needs >= stages micro-batches too, so both pad
+    # A 1-row batch: the default 1F1B runs that step as GPipe (no filler row); an explicit 1F1B pads.
+    assert pp_env._plan_microbatches(4, None, 2, "1f1b", 1, True, auto = True) == (1, 0)
+    assert pp_env._plan_microbatches(4, None, 2, "1f1b", 1, True, auto = False) == (2, 1)
+
+
+@needs_pipelining
+@pytest.mark.parametrize(
+    "bs,ga,schedule,expect",
+    [
+        (4, 1, None, ["Schedule1F1B"]),
+        (4, 1, "gpipe", ["ScheduleGPipe"]),
+        (2, 2, None, ["Schedule1F1B"]),
+        (1, 2, None, ["ScheduleGPipe"]),
+    ],
+    ids = ["default_bs4", "gpipe_bs4", "default_bs2_ga2", "default_bs1_falls_back"],
+)
+def test_pp_env_default_schedule_same_loss(bs, ga, schedule, expect):
+    # The default schedule moved from GPipe to 1F1B: same micro-batches, same per-token loss normalisation, so
+    # every logged loss, grad norm and the trained adapter equal the one-process run (and so each other).
+    _import_checkout_unsloth()
+    from unsloth.models import pp_env
+
+    if bs < 2 and pp_env._gpipe_needs_stage_count():
+        pytest.skip(
+            "torch 2.10's GPipe needs micro-batches >= stages: a 1-row batch pads either way"
+        )
+    ref = _ref(bs, ga = ga, evaluate = False, post = False)
+    env = {"UNSLOTH_PP_SIZE": "2"}
+    if schedule:
+        env["UNSLOTH_PP_SCHEDULE"] = schedule
+    for rank, res in enumerate(_spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False)):
+        assert res["schedule"] == ("1f1b" if schedule is None else schedule, schedule is None), res[
+            "schedule"
+        ]
+        assert res["step_schedules"] == expect, res["step_schedules"]
+        _close(res, ref, what = rank)
         _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
 
 
