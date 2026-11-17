@@ -28,8 +28,7 @@ const { npuPickerRows } = loadWithStubs<typeof NpuRows>(
     import.meta.url,
   ),
   {
-    "@/features/npu/api": api,
-    "@/features/npu/display-name": displayName,
+    "@/features/npu": { ...api, ...displayName },
     "./picker-model": pickerModel,
   },
 );

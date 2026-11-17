@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type NpuModel, npuRowsFor } from "@/features/npu/api";
-import { npuDisplayName } from "@/features/npu/display-name";
+import { type NpuModel, npuDisplayName, npuRowsFor } from "@/features/npu";
 import { DEVICE_TAB, type PickerRow, RECOMMENDED_TAB } from "./picker-model";
 
 export type NpuPickerRow = PickerRow & { npu: NpuModel };
