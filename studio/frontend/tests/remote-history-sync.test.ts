@@ -88,6 +88,32 @@ test("a busy view keeps the change pending until it is idle", async () => {
   assert.equal(recovered, 1);
 });
 
+test("a failed re-read keeps the change pending for the next poll", async () => {
+  const { sync, server } = harness({ revision: 1, threads: { a: 1 } });
+  let readOk = false;
+  let recovered = 0;
+  sync.watch({
+    threadId: () => "a",
+    onThreadChanged: async () => {
+      recovered += 1;
+      return readOk;
+    },
+  });
+  await sync.poll();
+  server.value = { revision: 2, threads: { a: 2 } };
+  await sync.poll();
+  assert.equal(recovered, 1);
+  readOk = true;
+  await sync.poll();
+  assert.equal(
+    recovered,
+    2,
+    "the unchanged revision is retried after a failed read",
+  );
+  await sync.poll();
+  assert.equal(recovered, 2);
+});
+
 test("switching threads takes a new baseline instead of re-reading", async () => {
   const { sync, server } = harness({ revision: 1, threads: { a: 1, b: 9 } });
   let open = "a";

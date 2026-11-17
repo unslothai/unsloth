@@ -14,7 +14,8 @@ export type RemoteHistoryWatcher = {
   threadId?: () => string | null | undefined;
   /** False while the view must not be rewritten (a run here, an open edit): the change waits. */
   isIdle?: () => boolean;
-  onThreadChanged?: () => void;
+  /** Resolving false (the read failed) keeps the change pending for the next poll. */
+  onThreadChanged?: () => Promise<boolean> | undefined;
 };
 
 export type RemoteHistorySyncDeps = {
@@ -78,7 +79,16 @@ export function createRemoteHistorySync(
       if (seen.revision === revision) continue;
       if (watcher.isIdle && !watcher.isIdle()) continue;
       watchers.set(watcher, { threadId: id, revision });
-      watcher.onThreadChanged?.();
+      const applied = watcher.onThreadChanged?.();
+      // Not awaited: a hung read must not stall the polls that drive the sidebar.
+      void applied
+        ?.catch(() => false)
+        .then((ok) => {
+          const now = watchers.get(watcher);
+          if (!ok && now?.threadId === id && now.revision === revision) {
+            watchers.set(watcher, seen);
+          }
+        });
     }
   };
 
