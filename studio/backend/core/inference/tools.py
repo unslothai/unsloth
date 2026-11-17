@@ -288,9 +288,10 @@ _APPROVED_RM_REFUSED = (
 )
 
 # rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside the sandbox.
+# macOS pkill lists processes through sysmond, which Seatbelt does not grant: it would only fail there.
 _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
     {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
-)
+) - ({"pkill"} if sys.platform == "darwin" else set())
 # The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
 _OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})

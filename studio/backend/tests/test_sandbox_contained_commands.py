@@ -131,7 +131,20 @@ needs_os_sandbox = pytest.mark.skipif(not _isolated(), reason = "needs a working
         ("printf 'X=sourced\\n' > env.sh; source env.sh && echo $X", "sourced"),
         ("printf 'X=dotted\\n' > env.sh; . ./env.sh && echo $X", "dotted"),
         ("sleep 30 & kill $! && echo killed", "killed"),
-        ("sleep 30 & sleep 0.2; pkill -x sleep && echo pkilled", "pkilled"),
+        pytest.param(
+            "sleep 30 & sleep 0.2; pkill -x sleep && echo pkilled",
+            "pkilled",
+            marks = pytest.mark.skipif(
+                sys.platform == "darwin", reason = "pkill stays blocked on macOS"
+            ),
+        ),
+        pytest.param(
+            "sleep 30 & sleep 0.2; killall sleep && echo killalled",
+            "killalled",
+            marks = pytest.mark.skipif(
+                shutil.which("killall") is None, reason = "killall (psmisc) is not installed"
+            ),
+        ),
     ],
 )
 def test_contained_commands_run_inside_the_os_sandbox(command, expected):
@@ -142,8 +155,8 @@ def test_contained_commands_run_inside_the_os_sandbox(command, expected):
 @needs_os_sandbox
 @pytest.mark.parametrize("name", ["curl", "wget"])
 def test_downloaders_run_inside_the_os_sandbox(name):
-    if shutil.which(name) is None:
-        pytest.skip(f"{name} is not installed")
+    if not tools._on_safe_path(name):
+        pytest.skip(f"{name} is not installed on the sandbox PATH")
     out = tools._bash_exec(f"{name} --version", None, 60, _SESSION)
     assert "Blocked" not in out and name.lower() in out.lower(), out
 
@@ -424,6 +437,7 @@ def test_builtins_need_no_path_lookup(monkeypatch):
     assert tools._is_plain_download("cd d && echo ok; curl -s https://example.com -o x; true")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "the OS sandbox exemption is POSIX only")
 def test_on_safe_path_skips_the_writable_package_bin(tmp_path, monkeypatch):
     planted = tmp_path / "jq"
     planted.write_text("#!/bin/sh\n")
@@ -443,3 +457,10 @@ def test_on_safe_path_skips_the_writable_package_bin(tmp_path, monkeypatch):
 )
 def test_grouped_and_commented_uploads_still_need_confirmation(command):
     assert tools._terminal_is_high_risk(command)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "macOS pkill needs sysmond")
+def test_pkill_stays_blocked_on_macos():
+    assert tools._bash_exec("pkill -x sleep", None, 60, _SESSION).startswith(
+        "Blocked command(s) for safety: pkill"
+    )

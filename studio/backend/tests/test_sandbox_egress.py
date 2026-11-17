@@ -77,8 +77,14 @@ def proxy(monkeypatch):
     running.close()
 
 
+class _AlwaysProxy(urllib.request.ProxyHandler):
+    # urllib skips the proxy for macOS's system bypass list, which holds 169.254/16; curl does not.
+    def proxy_open(self, req, proxy, type):
+        req.set_proxy(proxy.split("//", 1)[1], "http")
+
+
 def _get(url: str, proxy_url: str) -> tuple[int, str]:
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url}))
+    opener = urllib.request.build_opener(_AlwaysProxy({"http": proxy_url}))
     try:
         with opener.open(url, timeout = 10) as response:
             return response.status, response.read().decode()
@@ -286,6 +292,8 @@ def _plans(monkeypatch) -> list:
     ],
 )
 def test_only_the_downloader_exemption_asks_for_the_proxy(monkeypatch, command, proxied):
+    # Runners may lack wget on the sandbox PATH; that check has its own tests.
+    monkeypatch.setattr(tools, "_on_safe_path", lambda name: True)
     plans = _plans(monkeypatch)
     tools._bash_exec(command, None, 60, _SESSION)
     assert [plan.egress_proxy for plan in plans] == [proxied]
