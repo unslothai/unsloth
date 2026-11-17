@@ -1611,6 +1611,26 @@ def test_cpu_torch_vulkan_offload_respects_host_ram(
     assert b.status()["cpu_offload"] is offloads
 
 
+@pytest.mark.parametrize("gpu_ordinal,offloads", [(None, False), (0, False), (1, True)])
+def test_cpu_torch_cuda_offload_probes_the_pinned_card(
+    monkeypatch, tmp_path, gpu_ordinal, offloads
+):
+    # Card 0 holds the DiT, card 1 does not: the probe reads the card the load pins, not always card 0.
+    import core.inference.diffusion_device as dd
+
+    paths = _mint_host(monkeypatch, tmp_path, ram_mib = 12 * 1024, card_free_mib = None)
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda")
+    monkeypatch.setattr(
+        bk, "sd_cpp_listed_device", lambda *_a, **_k: ("cuda", "NVIDIA GeForce RTX 4080")
+    )
+    free = {0: 15_800, 1: 7_800}
+    monkeypatch.setattr(dd, "smi_free_total_mib", lambda ordinal: (free.get(ordinal), 16_376))
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu", asset_paths = paths, gpu_ordinal = gpu_ordinal)
+    assert b._state.device == "cuda"
+    assert ("--offload-to-cpu" in b._state.offload_flags) is offloads
+
+
 @pytest.mark.parametrize("lands", [True, False])
 def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, lands):
     # The deferred upgrade may land the Vulkan build or keep the resident CPU one; place for what runs.

@@ -3111,13 +3111,16 @@ def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     return OFFLOAD_NONE
 
 
-def _unmeasured_card_free_mib(klass: Optional[str], description: Optional[str]) -> Optional[int]:
+def _unmeasured_card_free_mib(
+    klass: Optional[str], description: Optional[str], ordinal: Optional[int]
+) -> Optional[int]:
     """Free MiB of the card a CPU torch never measured, read without a device context: amdgpu sysfs for an AMD
-    Vulkan device (sole card only), nvidia-smi for CUDA. None when unsure."""
+    Vulkan device (sole card only), nvidia-smi for the CUDA card the load pins (sd.cpp's first when unpinned).
+    None when unsure."""
     try:
         if klass == "cuda":
             from core.inference.diffusion_device import smi_free_total_mib
-            return smi_free_total_mib(0)[0]
+            return smi_free_total_mib(0 if ordinal is None else int(ordinal))[0]
         from core.inference.video_minimax_h3 import amdgpu_vram_free_bytes, vulkan_device_is_amd
         if klass == "vulkan" and vulkan_device_is_amd(description):
             free = amdgpu_vram_free_bytes()
@@ -3128,7 +3131,10 @@ def _unmeasured_card_free_mib(klass: Optional[str], description: Optional[str]) 
 
 
 def _offload_would_exhaust_host_ram(
-    files: Any, klass: Optional[str], description: Optional[str]
+    files: Any,
+    klass: Optional[str],
+    description: Optional[str],
+    ordinal: Optional[int] = None,
 ) -> bool:
     """--offload-to-cpu forces every weight into anonymous host RAM (``*=cpu`` params, which also turns off sd.cpp's
     auto-fit). When RAM cannot hold them, auto drops it as long as the card holds the diffusion model: auto-fit then
@@ -3141,7 +3147,7 @@ def _offload_would_exhaust_host_ram(
     total, available = host_ram_mib()
     if not dit or available is None or weights <= available - host_reserve_mib(total):
         return False
-    free = _unmeasured_card_free_mib(klass, description)
+    free = _unmeasured_card_free_mib(klass, description, ordinal)
     if free is None or dit + CARD_RESERVE_MIB > free:
         return False
     logger.info(
@@ -3973,7 +3979,10 @@ class SdCppDiffusionBackend:
                 if placed == "cpu":
                     return placed, ()
                 if unmeasured and _offload_would_exhaust_host_ram(
-                    files, klass, sd_cpp_listed_device(binary)[1] if binary else None
+                    files,
+                    klass,
+                    sd_cpp_listed_device(binary)[1] if binary else None,
+                    gpu_ordinal,
                 ):
                     unmeasured = False
                 return placed, tuple(
