@@ -241,7 +241,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
-          pip install 'transformers>=4.51,<=5.17.0'
+          pip install 'transformers>=4.51,<=5.18.0'
           # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
           # Install after CPU torch; version from extras-no-deps.txt.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
@@ -500,7 +500,7 @@ jobs:
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.17.0' sentence-transformers
+          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
           pip install 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.

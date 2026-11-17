@@ -51561,7 +51561,15 @@ async def _generate_diffusion_image_run(
         if request.loras is None:
             # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
             if status is None:
-                status = await asyncio.to_thread(backend.status)
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no load adapters: the engine's default stands
+                    logger.debug(
+                        "images.generate: status read for the omitted loras failed: %s", exc
+                    )
+        if request.loras is None and status is not None:
             loaded = bool(status.get("loaded"))
             pairs = _load_lora_defaults(status) if loaded else []
             # The pin above is repo / base / family only: a same-model reload with other adapters must retry too.

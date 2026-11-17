@@ -9,6 +9,7 @@ path so the test stays CPU-only and does not import ``unsloth``.
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 import types
@@ -105,8 +106,9 @@ def test_env_opt_out(ddp_env, monkeypatch):
     [
         # MoE: unrouted experts get no gradient.
         lambda: _lora(_llama(num_local_experts = 4)),
-        # modules_to_save: a full trainable copy Unsloth's fused paths may bypass.
-        lambda: _lora(_llama(), modules_to_save = ["lm_head"]),
+        # modules_to_save beyond the embeddings: a full trainable copy a step may not reach.
+        lambda: _lora(_llama(), modules_to_save = ["lm_head", "norm"]),
+        # LoRA on the head or the embedding: Unsloth's fused paths may read the base weight directly.
         lambda: _lora(_llama(), target_modules = ["q_proj", "lm_head"]),
         lambda: _lora(_llama(), target_modules = ["q_proj", "embed_tokens"]),
         # Full fine-tuning goes through transformers' own rule.
@@ -238,10 +240,78 @@ def test_sequence_classification_head_defaults_to_false(ddp_env):
 
 
 def test_sequence_classification_extra_modules_to_save_keep_default(ddp_env):
+    model = _lora(_llama_classifier(), task_type = "SEQ_CLS", modules_to_save = ["score", "norm"])
+    assert _helper()(_args(), model) is None
+
+
+def test_sequence_classification_trainable_embeddings_default_to_false(ddp_env):
     model = _lora(
         _llama_classifier(), task_type = "SEQ_CLS", modules_to_save = ["score", "embed_tokens"]
     )
-    assert _helper()(_args(), model) is None
+    assert _helper()(_args(), model) is False
+
+
+@pytest.mark.parametrize(
+    "modules_to_save", [["embed_tokens", "lm_head"], ["lm_head"], ["embed_tokens"]]
+)
+def test_trainable_embeddings_default_to_false(ddp_env, modules_to_save):
+    # Continued pretraining: embed_tokens / lm_head become modules_to_save; True crashed reentrant checkpointing.
+    model = _lora(_llama(), modules_to_save = modules_to_save)
+    assert any(".modules_to_save." in n and p.requires_grad for n, p in model.named_parameters())
+    assert _helper()(_args(), model) is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "torchrun's rendezvous needs libuv, which Windows torch builds lack",
+)
+def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
+    # Two gloo ranks: before the fix the first backward raised "mark a variable ready only once".
+    import json
+    import subprocess
+    import sys
+
+    worker = Path(__file__).with_name("_ddp_trainable_embeddings_worker.py")
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
+    env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
+    single = subprocess.run(
+        [sys.executable, str(worker), str(tmp_path / "single")],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert single.returncode == 0, (single.stdout + single.stderr)[-4000:]
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node",
+            "2",
+            "--master_port",
+            str(_free_port()),
+            str(worker),
+            str(tmp_path / "ddp"),
+        ],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-4000:]
+    assert out.count("RANK_OK find_unused=False") == 2, out[-4000:]
+    ref = json.loads((tmp_path / "single" / "result_0.json").read_text())
+    for rank in (0, 1):
+        got = json.loads((tmp_path / "ddp" / f"result_{rank}.json").read_text())
+        assert got["names"] == ref["names"]
+        assert any("embed_tokens.modules_to_save" in n for n in got["names"])
+        assert any("lm_head.modules_to_save" in n for n in got["names"])
+        for a, b in zip(got["losses"], ref["losses"]):
+            assert abs(a - b) <= 1e-5 * max(1.0, abs(b)), (got["losses"], ref["losses"])
+        for name, a, b in zip(got["names"], got["grad_norms"], ref["grad_norms"]):
+            assert abs(a - b) <= 1e-4 * max(1.0, abs(b)), (name, a, b)
 
 
 def test_lora_on_linear_embedding_projection_keeps_default(ddp_env):

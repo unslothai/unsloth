@@ -1339,13 +1339,15 @@ def test_every_diffusers_pipeline_family_has_a_lora_loader_or_is_gated_off():
 def test_lora_loader_check_exceptions_hold():
     """Each allowed exception is true: in-tree MOSS carries the loader, and FLUX.3 has one wherever it imports."""
     from core.inference.diffusion_families import _FAMILIES
-    from core.inference.diffusion_moss_image import MOSSImagePipeline
 
     names = {fam.name for fam in _FAMILIES}
     assert set(_LORA_LOADER_CHECK_EXCEPTIONS) <= names
+    # The in-tree MOSS pipeline subclasses diffusers' mixins, so it imports only where diffusers does.
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
     for method in ("load_lora_weights", "set_adapters", "unload_lora_weights"):
         assert callable(getattr(MOSSImagePipeline, method, None)), method
-    diffusers = pytest.importorskip("diffusers")
     for fam in _FAMILIES:
         if fam.name.startswith("flux.3"):
             cls = getattr(diffusers, fam.pipeline_class, None)

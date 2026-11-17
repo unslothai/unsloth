@@ -899,10 +899,9 @@ def _refuse_split_router_aux(stage, n_microbatches):
     moe = getattr(getattr(stage, "ctx", None), "moe", None)
     if n_microbatches <= 1 or moe is None:
         return
-    owner = moe.owner
-    if not getattr(owner.config, "output_router_logits", False) or not getattr(
-        owner, "router_aux_loss_coef", 0
-    ):
+    from .pp_native import _router_aux_coef
+
+    if not getattr(moe.config, "output_router_logits", False) or not _router_aux_coef(moe):
         return
     raise NotImplementedError(_split_router_aux_message(_env_vars(stage), n_microbatches))
 
