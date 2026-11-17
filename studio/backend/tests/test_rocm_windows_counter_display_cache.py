@@ -40,6 +40,7 @@ def _tagged(tag, body):
 @pytest.fixture
 def counters(monkeypatch):
     monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(gpu_query, "enabled", lambda: True)
     monkeypatch.setattr(gpu_query, "ttl_for", lambda kind: 3.0)
@@ -82,6 +83,14 @@ def _read_all():
     )
 
 
+def _read_display_counters():
+    return (
+        hw._rocm_windows_perf_counter_vram_by_adapter(),
+        hw._rocm_windows_perf_counter_vram_by_adapter("Shared Usage"),
+        hw._rocm_windows_perf_counter_gpu_util_pct(),
+    )
+
+
 def test_back_to_back_display_polls_spawn_once(counters):
     fresh = _read_all()
     assert len(counters.calls) == 4 and not _combined(counters.calls)
@@ -105,7 +114,7 @@ def test_reading_outlives_its_own_probe(counters):
         spawned_at = []
         for poll in range(20):
             before = len(counters.calls)
-            _read_all()
+            _read_display_counters()
             if len(counters.calls) > before:
                 spawned_at.append(poll)
             counters.clock.now += 1.0
@@ -116,22 +125,22 @@ def test_reading_outlives_its_own_probe(counters):
 def test_window_is_the_ttl_for_fast_spawns_and_capped_for_slow_ones(counters):
     counters.spawn_s = 0.1
     with gpu_query.display_reads(max_stale = 0):
-        _read_all()
+        _read_display_counters()
         counters.clock.now += 2.9
-        _read_all()
+        _read_display_counters()
         assert len(counters.calls) == 1
         counters.clock.now += 0.1
-        _read_all()
+        _read_display_counters()
         assert len(counters.calls) == 2
         counters.spawn_s = 4.5
         counters.clock.now += 3.0
-        _read_all()
+        _read_display_counters()
         assert len(counters.calls) == 3
         counters.clock.now += 9.9
-        _read_all()
+        _read_display_counters()
         assert len(counters.calls) == 3
         counters.clock.now += 0.1
-        _read_all()
+        _read_display_counters()
         assert len(counters.calls) == 4
 
 
@@ -215,8 +224,9 @@ def test_a_counter_missing_from_the_combined_reading_reads_its_own(counters):
     combined = _combined(counters.calls)
     own_util = [c for c in counters.calls[4:] if c not in combined and "GPU Engine" in c]
     assert len(combined) == 1
-    assert len(own_util) == 4
-    assert len(counters.calls) == 4 + 1 + 4
+    # The unscoped fallback is retried, while the successful per-LUID probe is served by its short cache.
+    assert len(own_util) == 2
+    assert len(counters.calls) == 4 + 1 + 2
 
 
 def test_concurrent_display_polls_share_one_spawn(counters, monkeypatch):
@@ -241,7 +251,8 @@ def test_concurrent_display_polls_share_one_spawn(counters, monkeypatch):
     for t in threads:
         t.join(10)
     assert len(results) == 4 and len(set(map(repr, results))) == 1
-    assert len(counters.calls) == 1
+    # Display counters share one combined read; the adapter-scoped utilization has its own serialized probe.
+    assert len(counters.calls) == 2
 
 
 def test_combined_script_keeps_each_counter_path_and_format():

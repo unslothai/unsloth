@@ -130,6 +130,7 @@ def win_rocm(monkeypatch):
     # Force the capacity-ranking path: a Windows dev box would otherwise query its own HIP/registry.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
+    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
@@ -419,9 +420,11 @@ def test_single_gpu_reports_used_instead_of_unknown(win_rocm_solo):
 
 def test_single_gpu_train_page_reports_used(win_rocm_solo):
     """Same figure on get_gpu_utilization, the Train page's GPU Monitor."""
+    win_rocm_solo.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 82.0)
     (device,) = hw.get_gpu_utilization()["devices"]
     assert device["vram_used_gb"] == pytest.approx(3.0, abs = 0.01)
     assert device["gpu_utilization_pct"] == 12.0
+    assert device["temperature_c"] == 82.0
 
 
 def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
@@ -1896,13 +1899,12 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
 
 
 def test_the_adapter_is_matched_here_and_the_engine_type_in_the_path(win_rocm, monkeypatch):
-    """A LUID in the path would hand adapter selection to PDH, which no test here can run; the
-    engine type stays in the path to keep one type per process."""
+    """The LUID-scoped query lets PDH select one adapter while the parser handles every engine type."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
-    assert "\\GPU Engine(*engtype_3D*)\\Utilization Percentage" in query
-    assert "luid_" not in query
+    assert "\\GPU Engine(*luid_0x00000000_0x00015369*)\\Utilization Percentage" in query
+    assert "engtype_3D" not in query
     assert "InstanceName" in query
 
 
@@ -1936,8 +1938,8 @@ def test_engtype_spelled_in_lower_case_is_still_a_3d_engine(win_rocm, monkeypatc
     assert device["gpu_utilization_pct"] == 17.0
 
 
-def test_only_3d_engines_count(win_rocm, monkeypatch):
-    """A compute engine is not the 3D reading, and no 3D instance is unknown, not zero."""
+def test_busiest_engine_type_counts(win_rocm, monkeypatch):
+    """Compute workloads are visible even when the 3D engine is idle."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     (device,), _ = _engine_query(
@@ -1948,7 +1950,7 @@ def test_only_3d_engines_count(win_rocm, monkeypatch):
             ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_Copy", 3.0),
         ],
     )
-    assert device["gpu_utilization_pct"] is None
+    assert device["gpu_utilization_pct"] == 88.0
 
 
 def test_an_idle_engine_reads_zero_rather_than_unknown(win_rocm, monkeypatch):

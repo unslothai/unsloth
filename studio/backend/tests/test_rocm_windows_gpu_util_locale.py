@@ -13,6 +13,10 @@ _ENGINES = (
     ("pid_42_luid_0x00000000_0x0000d1a2_phys_0_eng_0_engtype_3D", "12.5"),
     ("pid_43_luid_0x00000000_0x0000d1a2_phys_0_eng_0_engtype_3D", "25.25"),
 )
+_ALL_ENGINE_TYPES = _ENGINES + (
+    ("pid_44_luid_0x00000000_0x0000d1a2_phys_0_eng_0_engtype_Compute", "48.0"),
+    ("pid_45_luid_0x00000000_0x0000d1a2_phys_0_eng_0_engtype_Copy", "7.0"),
+)
 
 
 def _de_de_powershell(samples):
@@ -37,6 +41,7 @@ def _de_de_powershell(samples):
 def windows(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
 
     def use(samples, combined):
         monkeypatch.setattr(gpu_query, "enabled", lambda: combined)
@@ -62,6 +67,16 @@ def test_de_de_host_sums_only_the_selected_adapter(windows):
     )
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.8
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xBEEF) == 50.5
+
+
+def test_luid_query_uses_the_busiest_engine_type_and_short_cache(windows):
+    calls = windows(_ALL_ENGINE_TYPES, False)
+
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 48.0
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 48.0
+    assert len(calls) == 1
+    assert "luid_0x00000000_0x0000d1a2" in calls[0]
+    assert "engtype_3D" not in calls[0]
 
 
 def test_comma_decimal_output_is_skipped_not_misread():
