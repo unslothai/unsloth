@@ -399,3 +399,31 @@ def test_wrap_preference_trainer_scopes_model_methods():
     dps.wrap_preference_trainer(Base)
     assert Base._compute_loss is first
     assert Base()._compute_loss("m", {}, False) == 1 and calls == [("loss", "m")]
+
+
+def test_flex_compile_failure_reruns_the_forward_unshared():
+    # The first shared call raises PrefixGrouperCompileError from inside the forward (flex failed its
+    # first-call check, compile_check_failed() is now set); the wrapper must rerun it, not crash.
+    calls = []
+
+    class Trainer:
+        def _compute_loss(
+            self,
+            model,
+            inputs,
+            return_outputs = False,
+        ):
+            calls.append(model)
+            if len(calls) == 1:
+                raise pgk.PrefixGrouperCompileError("flex does not compile")
+            return 7
+
+    class Other:
+        def _compute_loss(self, model, inputs):
+            raise ValueError("unrelated")
+
+    dps.wrap_preference_trainer(Trainer)
+    dps.wrap_preference_trainer(Other)
+    assert Trainer()._compute_loss("m", {}) == 7 and calls == ["m", "m"]
+    with pytest.raises(ValueError):
+        Other()._compute_loss("m", {})

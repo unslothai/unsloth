@@ -582,7 +582,13 @@ def _wrap_method(function):
 
     @functools.wraps(function)
     def wrapped(self, model, *args, **kwargs):
-        with preference_prefix_share(self, model):
+        from ..utils.prefix_grouper_kernel import PrefixGrouperCompileError
+        try:
+            with preference_prefix_share(self, model):
+                return function(self, model, *args, **kwargs)
+        except PrefixGrouperCompileError:
+            # The flex kernel failed its first-call check inside the forward (nothing backpropagated
+            # yet); compile_check_failed() now declines every backbone, so this rerun is unshared.
             return function(self, model, *args, **kwargs)
 
     wrapped._unsloth_dpo_prefix_share = True

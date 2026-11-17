@@ -349,3 +349,55 @@ def test_leaky_mask_is_caught(loaded, monkeypatch):
         for attr in (dps._UNSAFE,):
             if hasattr(backbone, attr):
                 delattr(backbone, attr)
+
+
+_NON_REENTRANT_FIRST_CALL = r"""
+import importlib.util, sys, types, torch
+root, sub = sys.argv[1], "_dps_nr_pkg"
+for name, path in ((sub, root), (sub + ".utils", root + "/utils")):
+    m = types.ModuleType(name); m.__path__ = [path]; sys.modules[name] = m
+spec = importlib.util.spec_from_file_location(sub + ".utils.pgk", root + "/utils/prefix_grouper_kernel.py")
+pgk = importlib.util.module_from_spec(spec); sys.modules[spec.name] = pgk; spec.loader.exec_module(pgk)
+seg, _ = pgk.build_seg_info_multigroup([(150, [40, 50]), (90, [30, 20])], torch.device("cuda"))
+g = torch.Generator(device = "cuda").manual_seed(0)
+q, k, v = (torch.randn(1, seg.T, 4, 64, device = "cuda", generator = g, dtype = torch.bfloat16).requires_grad_(True) for _ in range(3))
+def attn(q, k, v):
+    return pgk.flex_shared_prefix_attention(q, k, v, seg).float().square().sum()
+# Cold first call inside a non-reentrant checkpoint (DDP / use_reentrant=False layers).
+loss = torch.utils.checkpoint.checkpoint(attn, q, k, v, use_reentrant = False)
+grads = torch.autograd.grad(loss, (q, k, v))
+ref = torch.autograd.grad(attn(q, k, v), (q, k, v))
+err = max(float((a - b).abs().max()) for a, b in zip(grads, ref))
+print("NR_FIRST_CALL failure=%s err=%.3e" % (pgk.compile_check_failed(), err))
+assert pgk.compile_check_failed() is None and err == 0.0
+"""
+
+
+def test_first_call_check_inside_non_reentrant_checkpoint(tmp_path):
+    # Fresh process: the first-call compile check must be cold, and run inside the checkpoint.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import torch
+
+    if not pgk_supported():
+        pytest.skip("PrefixGrouper needs torch >= 2.7")
+    script = tmp_path / "nr_first_call.py"
+    script.write_text(_NON_REENTRANT_FIRST_CALL)
+    root = str(Path(__file__).resolve().parents[1] / "unsloth")
+    out = subprocess.run(
+        [sys.executable, str(script), root], capture_output = True, text = True, timeout = 900
+    )
+    print(out.stdout[-2000:], out.stderr[-4000:])
+    assert out.returncode == 0, out.stderr[-4000:]
+    assert "NR_FIRST_CALL failure=None err=0.000e+00" in out.stdout
+
+
+def pgk_supported():
+    import re
+
+    import torch
+
+    match = re.match(r"(\d+)\.(\d+)", torch.__version__)
+    return match is None or (int(match.group(1)), int(match.group(2))) >= (2, 7)
