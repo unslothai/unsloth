@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Successful retrieval keeps user text out of shareable server logs."""
-
 import json
 import sys
 from pathlib import Path
@@ -47,7 +45,6 @@ def test_successful_retrieval_logs_counts_without_user_text(monkeypatch, tmp_pat
             )
             expected = "RAG auto-inject: 1 passage(s)"
 
-    # Retrieval still passes the original query to the model's tool exchange.
     assert built is not None
     args = built["messages"][0]["tool_calls"][0]["function"]["arguments"]
     assert json.loads(args)["query"] == query
