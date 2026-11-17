@@ -73,6 +73,10 @@ class SummaryCutOff(SummaryFailed):
     pass
 
 
+class SummaryTimedOut(SummaryFailed):
+    pass
+
+
 _OVERFLOW_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -395,7 +399,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
     try:
         text = await asyncio.wait_for(_read(), timeout = timeout)
     except asyncio.TimeoutError as exc:
-        raise SummaryFailed("the summary call timed out") from exc
+        raise SummaryTimedOut("the summary call timed out") from exc
     except SummaryFailed:
         raise
     except Exception as exc:  # noqa: BLE001 -- any transport failure means "fall back"
