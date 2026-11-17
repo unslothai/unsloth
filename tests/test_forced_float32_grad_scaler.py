@@ -220,3 +220,23 @@ def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
     over = res["overflow"]["on"]
     assert over["skipped"] and not any(over["delta"]), over
     assert over["scale"] == 2.0**39, over
+
+
+def test_forced_float32_init_scale_rule(monkeypatch):
+    """CPU: 2**8 on one process, divided by the data parallel loss multiplier, env override wins."""
+    import types
+
+    import unsloth.models.fsdp2_native as fsdp2_native
+    from unsloth.models._utils import _unsloth_forced_float32_init_scale
+
+    monkeypatch.delenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", raising = False)
+    one = types.SimpleNamespace(accelerator = types.SimpleNamespace(num_processes = 1))
+    assert _unsloth_forced_float32_init_scale(one) == 2.0**8
+    assert _unsloth_forced_float32_init_scale(types.SimpleNamespace()) == 2.0**8
+    two = types.SimpleNamespace(accelerator = types.SimpleNamespace(num_processes = 2))
+    monkeypatch.setattr(fsdp2_native, "_loss_scale_ranks", lambda trainer: 2)
+    assert _unsloth_forced_float32_init_scale(two) == 2.0**7
+    monkeypatch.setenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "4096")
+    assert _unsloth_forced_float32_init_scale(two) == 4096.0
+    monkeypatch.setenv("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "bogus")
+    assert _unsloth_forced_float32_init_scale(two) == 2.0**7
