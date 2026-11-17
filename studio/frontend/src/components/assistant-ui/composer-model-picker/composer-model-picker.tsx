@@ -2716,7 +2716,21 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName;
+  // A model with no thinking controls has nothing to collapse to, whatever its quants.
+  const noThinking =
+    !(pane || modelLoading) &&
+    !(
+      reasoning.supportsReasoning ||
+      reasoning.supportsPreserve ||
+      reasoning.supportsFast
+    );
+  const isExpanded = expanded || !chosenName || noThinking;
+  // Stored too, so the next pick from this list does not load into the collapsed view.
+  useEffect(() => {
+    if (noThinking && !expanded) {
+      setExpanded(true);
+    }
+  }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -2775,6 +2789,13 @@ export function ComposerModelPicker({
   // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  // Read after the load settles, when the store already holds the new model's reasoning.
+  const closeIfNoThinking = useRef(() => {});
+  closeIfNoThinking.current = () => {
+    if (noThinking) {
+      setOpen(false);
+    }
+  };
   useEffect(() => {
     if (modelLoading) {
       if (loadingFresh) {
@@ -2793,6 +2814,9 @@ export function ComposerModelPicker({
       setExpanded(
         (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
       );
+      if (fresh) {
+        closeIfNoThinking.current();
+      }
     } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
       writeModelExpanded(prev, null);
       setExpanded(true);
@@ -5325,7 +5349,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName ? (
+              {chosenName && !noThinking ? (
                 <Hint label="Collapse">
                   <button
                     type="button"

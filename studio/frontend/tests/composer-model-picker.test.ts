@@ -237,6 +237,21 @@ test("a loaded row ejects from its menu and the collapsed view, never its dot", 
   assert.match(page, /eject: handleEject,/);
 });
 
+test("a model with no thinking skips the collapsed view and closes once loaded", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const isExpanded = expanded \|\| !chosenName \|\| noThinking;/,
+  );
+  assert.match(picker, /if \(fresh\) \{\s+closeIfNoThinking\.current\(\);/);
+  assert.match(
+    picker,
+    /\{chosenName && !noThinking \? \(\s+<Hint label="Collapse">/,
+  );
+});
+
 test("Run settings open inside the composer picker, not the header picker", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
