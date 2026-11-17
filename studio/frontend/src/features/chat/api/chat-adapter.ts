@@ -40,6 +40,7 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
 import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
@@ -2909,6 +2910,7 @@ function applyAutoLoadRuntimeState(
 
 /** Whether a cache row is chattable. Every field is optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
+  repo_id?: string;
   partial?: boolean;
   task?: string | null;
   model_format?: string | null;
@@ -2920,7 +2922,9 @@ function isChattableCachedRepo(repo: {
     // Adapters fetch base weights from the Hub, and can_chat is true on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion and speech repos report can_chat true on file format alone.
-    !NON_CHAT_TASKS.has(repo.task ?? "")
+    !NON_CHAT_TASKS.has(repo.task ?? "") &&
+    // Translate's models are tagged text-generation, but would translate the user's prompt.
+    !isTranslationOnlyRepo(repo.repo_id)
   );
 }
 
@@ -2960,6 +2964,7 @@ function isAutoLoadableLocalRow(
     // Allowlist: backends send "unknown" or omit the field, so a denylist admitted pickles.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !NON_CHAT_TASKS.has(row.task ?? "") &&
+    !isTranslationOnlyRepo(row.model_id) &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -4465,8 +4470,9 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
         };
       }
       const status = settled.status;
-      // A speech model is not one chat can queue against, so read the slot as empty.
-      const checkpoint = isSpeechOnlyStatus(status)
+      // A speech or Translate-held model is not one chat can queue against, so read the slot as empty.
+      const checkpoint =
+        isSpeechOnlyStatus(status) || isTranslationHeldSlot(status.active_model, null)
         ? null
         : resolveInferenceCheckpointId(status);
       if (checkpoint) {

@@ -820,6 +820,13 @@ async function loadModel(payload: any) {
 // studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
 // neutral stub: a stub that always answered false would keep every scenario green if the
 // queued path's guard were removed.
+// No scenario serves a translation model, so both read as "not one".
+export function isTranslationOnlyRepo(_id: any): boolean {
+  return false;
+}
+export function isTranslationHeldSlot(_active: any, _selection: any): boolean {
+  return false;
+}
 export function isSpeechOnlyStatus(status: any): boolean {
   return (
     Boolean(status?.is_audio) &&
