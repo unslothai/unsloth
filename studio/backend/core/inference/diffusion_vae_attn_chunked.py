@@ -114,21 +114,17 @@ def windows_rocm(torch: Any = None) -> bool:
 
 def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     import sys
-
     return sys.platform == "win32" and _rocm_untrusted_head(q, torch)
 
 
 def _non_windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     import sys
-
     return sys.platform != "win32" and _rocm_untrusted_head(q, torch)
 
 
 def _rocm_untrusted_head(q: Any, torch: Any) -> bool:
     shape = getattr(q, "shape", None) or ()
-    return (
-        len(shape) > 0 and int(shape[-1]) > ROCM_FUSED_MAX_HEAD_DIM and is_rocm_torch(torch)
-    )
+    return len(shape) > 0 and int(shape[-1]) > ROCM_FUSED_MAX_HEAD_DIM and is_rocm_torch(torch)
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:

@@ -51,9 +51,7 @@ def test_windows_cuda_is_unaffected(monkeypatch):
     assert C.fused_sdpa_available(q, q, q) is True
 
 
-def test_linux_rocm_wide_head_uses_fp32_math_when_fused_dispatch_is_unavailable(
-    monkeypatch, rocm
-):
+def test_linux_rocm_wide_head_uses_fp32_math_when_fused_dispatch_is_unavailable(monkeypatch, rocm):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(C, "fused_sdpa_available", lambda q, k, v: False)
     monkeypatch.setattr(C, "_rocm_untrusted_head", lambda q, torch: True)
