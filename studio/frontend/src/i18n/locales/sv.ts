@@ -2227,7 +2227,7 @@ export const sv = {
       modelAliases: {
         sectionTitle: "Modellalias (OpenAI API)",
         description:
-          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+          "Korta namn som API-klienter kan använda i stället för modellens fullständiga namn.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Aliasnamn",
         modelAriaLabel: "Modell som aliaset pekar på",
@@ -2242,7 +2242,7 @@ export const sv = {
         savedSetting: "Sparad inställning",
         loadSettings: "Inläsningsinställningar",
         loadSettingsHint:
-          "Valfritt, endast GGUF-modeller. En begäran som anger det här aliaset läser in modellen med dessa inställningar ovanpå modellens sparade inläsningsinställningar och läser in den på nytt när en annan konfiguration körs.",
+          "Endast GGUF-modeller. Tomma fält använder modellens sparade inställningar.",
       },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",

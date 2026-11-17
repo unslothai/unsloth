@@ -2295,7 +2295,7 @@ export const id = {
       modelAliases: {
         sectionTitle: "Alias model (API OpenAI)",
         description:
-          "Nama tetap untuk klien API, seperti fast-chat atau code. Permintaan yang menyebut alias akan dilayani oleh model yang dituju alias tersebut, sehingga aplikasi yang terhubung tetap berfungsi saat Anda mengganti model. Aktifkan Ganti model sesuai permintaan agar alias dapat memuat modelnya.",
+          "Nama pendek yang dapat digunakan klien API sebagai pengganti nama lengkap model.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nama alias",
         modelAriaLabel: "Model yang dituju alias",
@@ -2310,7 +2310,7 @@ export const id = {
         savedSetting: "Pengaturan tersimpan",
         loadSettings: "Pengaturan pemuatan",
         loadSettingsHint:
-          "Opsional, hanya untuk model GGUF. Permintaan yang menyebut alias ini memuat model dengan pengaturan ini di atas pengaturan pemuatan tersimpan milik model, dan memuatnya ulang jika konfigurasi lain sedang berjalan.",
+          "Hanya untuk model GGUF. Kolom kosong memakai pengaturan tersimpan milik model.",
       },
       previewSharing: {
         sectionTitle: "Berbagi pratinjau",

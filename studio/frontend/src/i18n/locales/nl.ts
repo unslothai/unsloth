@@ -2327,7 +2327,7 @@ export const nl = {
       modelAliases: {
         sectionTitle: "Modelaliassen (OpenAI API)",
         description:
-          "Vaste namen voor API-clients, zoals fast-chat of code. Een verzoek dat een alias noemt, wordt verwerkt door het model waarnaar die verwijst, zodat verbonden apps blijven werken wanneer je van model wisselt. Schakel Model wisselen per verzoek in zodat een alias zijn model kan laden.",
+          "Korte namen die API-clients kunnen gebruiken in plaats van de volledige modelnaam.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Aliasnaam",
         modelAriaLabel: "Model waarnaar de alias verwijst",
@@ -2342,7 +2342,7 @@ export const nl = {
         savedSetting: "Opgeslagen instelling",
         loadSettings: "Laadinstellingen",
         loadSettingsHint:
-          "Optioneel, alleen voor GGUF-modellen. Een verzoek dat deze alias noemt, laadt het model met deze instellingen bovenop de opgeslagen laadinstellingen van het model en laadt het opnieuw wanneer een andere configuratie actief is.",
+          "Alleen voor GGUF-modellen. Lege velden gebruiken de opgeslagen instellingen van het model.",
       },
       previewSharing: {
         sectionTitle: "Voorbeelden delen",

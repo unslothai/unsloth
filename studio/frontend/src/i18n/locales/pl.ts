@@ -2321,7 +2321,7 @@ export const pl = {
       modelAliases: {
         sectionTitle: "Aliasy modeli (OpenAI API)",
         description:
-          "Stałe nazwy dla klientów API, np. fast-chat lub code. Żądanie wskazujące alias jest obsługiwane przez model, na który alias wskazuje, więc podłączone aplikacje nadal działają po zmianie modelu. Włącz opcję Przełączaj model według żądania, aby alias mógł wczytać swój model.",
+          "Krótkie nazwy, których klienci API mogą używać zamiast pełnej nazwy modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Nazwa aliasu",
         modelAriaLabel: "Model, na który wskazuje alias",
@@ -2336,7 +2336,7 @@ export const pl = {
         savedSetting: "Zapisane ustawienie",
         loadSettings: "Ustawienia wczytywania",
         loadSettingsHint:
-          "Opcjonalne, tylko dla modeli GGUF. Żądanie wskazujące ten alias wczytuje model z tymi ustawieniami nałożonymi na zapisane ustawienia wczytywania modelu i wczytuje go ponownie, gdy działa inna konfiguracja.",
+          "Tylko dla modeli GGUF. Puste pola korzystają z zapisanych ustawień modelu.",
       },
       previewSharing: {
         sectionTitle: "Udostępnianie podglądu",

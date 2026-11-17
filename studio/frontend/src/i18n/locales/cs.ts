@@ -2308,7 +2308,7 @@ export const cs = {
       modelAliases: {
         sectionTitle: "Aliasy modelů (OpenAI API)",
         description:
-          "Stálé názvy pro klienty API, například fast-chat nebo code. Požadavek s aliasem obslouží model, na který alias odkazuje, takže připojené aplikace fungují i po výměně modelů. Zapněte možnost Přepínat model podle požadavku, aby alias mohl načíst svůj model.",
+          "Krátké názvy, které mohou klienti API používat místo celého názvu modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Název aliasu",
         modelAriaLabel: "Model, na který alias odkazuje",
@@ -2323,7 +2323,7 @@ export const cs = {
         savedSetting: "Uložené nastavení",
         loadSettings: "Nastavení načtení",
         loadSettingsHint:
-          "Volitelné, jen pro modely GGUF. Požadavek s tímto aliasem načte model s těmito nastaveními nad rámec uložených nastavení načtení modelu a načte ho znovu, pokud běží jiná konfigurace.",
+          "Jen pro modely GGUF. Prázdná pole použijí uložená nastavení modelu.",
       },
       previewSharing: {
         sectionTitle: "Sdílení náhledů",

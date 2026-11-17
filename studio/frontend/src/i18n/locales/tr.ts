@@ -2290,7 +2290,7 @@ export const tr = {
       modelAliases: {
         sectionTitle: "Model takma adları (OpenAI API)",
         description:
-          "API istemcileri için fast-chat veya code gibi sabit adlar. Bir takma adı belirten istek, takma adın işaret ettiği modelle yanıtlanır; böylece model değiştirdiğinizde bağlı uygulamalar çalışmaya devam eder. Bir takma adın modelini yükleyebilmesi için Modeli isteğe göre değiştir seçeneğini açın.",
+          "API istemcilerinin modelin tam adı yerine kullanabileceği kısa adlar.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Takma ad",
         modelAriaLabel: "Takma adın işaret ettiği model",
@@ -2305,7 +2305,7 @@ export const tr = {
         savedSetting: "Kayıtlı ayar",
         loadSettings: "Yükleme ayarları",
         loadSettingsHint:
-          "İsteğe bağlı, yalnızca GGUF modelleri için. Bu takma adı belirten bir istek, modeli kayıtlı yükleme ayarlarının üzerine bu ayarlarla yükler ve başka bir yapılandırma çalışıyorsa yeniden yükler.",
+          "Yalnızca GGUF modelleri için. Boş bırakılan alanlar modelin kayıtlı ayarlarını kullanır.",
       },
       previewSharing: {
         sectionTitle: "Önizleme paylaşımı",

@@ -2183,8 +2183,7 @@ export const zhTW = {
       },
       modelAliases: {
         sectionTitle: "模型別名（OpenAI API）",
-        description:
-          "供 API 用戶端使用的固定名稱，例如 fast-chat 或 code。指定別名的請求會由該別名指向的模型處理，因此切換模型時，已連線的應用程式仍可正常運作。開啟「依請求切換模型」，別名才能載入其模型。",
+        description: "供 API 用戶端使用的簡短名稱，可代替完整的模型名稱。",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "別名名稱",
         modelAriaLabel: "別名指向的模型",
@@ -2198,8 +2197,7 @@ export const zhTW = {
         speculativeDecoding: "推測解碼",
         savedSetting: "已儲存的設定",
         loadSettings: "載入設定",
-        loadSettingsHint:
-          "選用，僅適用於 GGUF 模型。指定此別名的請求會在模型已儲存的載入設定之上套用這些設定來載入模型，並在執行的是其他組態時重新載入。",
+        loadSettingsHint: "僅適用於 GGUF 模型。留空的欄位使用模型已儲存的設定。",
       },
       previewSharing: {
         sectionTitle: "預覽分享",

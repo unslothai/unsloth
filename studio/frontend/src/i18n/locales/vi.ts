@@ -2300,7 +2300,7 @@ export const vi = {
       modelAliases: {
         sectionTitle: "Bí danh mô hình (OpenAI API)",
         description:
-          "Tên cố định cho các ứng dụng khách API, chẳng hạn fast-chat hoặc code. Yêu cầu dùng một bí danh sẽ được phục vụ bởi mô hình mà bí danh trỏ tới, nên các ứng dụng đã kết nối vẫn hoạt động khi bạn đổi mô hình. Hãy bật “Chuyển mô hình theo yêu cầu” để bí danh có thể nạp mô hình của nó.",
+          "Tên ngắn mà các ứng dụng khách API có thể dùng thay cho tên đầy đủ của mô hình.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Tên bí danh",
         modelAriaLabel: "Mô hình mà bí danh trỏ tới",
@@ -2315,7 +2315,7 @@ export const vi = {
         savedSetting: "Cài đặt đã lưu",
         loadSettings: "Cài đặt nạp",
         loadSettingsHint:
-          "Không bắt buộc, chỉ dành cho mô hình GGUF. Yêu cầu nêu bí danh này sẽ nạp mô hình với các cài đặt này chồng lên cài đặt nạp đã lưu của mô hình, và nạp lại khi một cấu hình khác đang chạy.",
+          "Chỉ dành cho mô hình GGUF. Các trường để trống dùng cài đặt đã lưu của mô hình.",
       },
       previewSharing: {
         sectionTitle: "Chia sẻ bản xem trước",
