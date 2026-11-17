@@ -2099,7 +2099,7 @@ export function ExportPage() {
                                       {destination !== "local"
                                         ? "Local destination only."
                                         : q4nxSourceSelected
-                                          ? "Adds a Q4NX copy next to the GGUFs. Only supported on AMD NPUs."
+                                          ? "Adds a Q4NX copy next to the GGUFs, from the first selected quant that fits the model. Only supported on AMD NPUs."
                                           : "Needs Q4_0, Q4_1 or Q4_K_M."}
                                     </div>
                                   </div>
