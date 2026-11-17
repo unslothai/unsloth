@@ -100,9 +100,9 @@ def test_pdfs_with_mupdf_errors_indexed_together_do_not_crash_the_process(tmp_pa
         env = env,
         timeout = 300,
     )
-    assert "MuPDF error" in proc.stdout + proc.stderr
     assert proc.returncode == 0, f"exit {proc.returncode}: {proc.stderr[-2000:]}"
     assert "INDEXED" in proc.stdout
+    assert "MuPDF error" in proc.stdout + proc.stderr
 
 
 @requires_sqlite_vec
