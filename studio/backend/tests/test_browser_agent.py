@@ -778,6 +778,10 @@ def test_a_code_file_named_like_a_domain_opens_only_when_the_workspace_has_it(wo
     assert _request("browser_navigate", {"url": "main.go"})["path"] == "main.go"
     assert _request("browser_navigate", {"url": "nb.ipynb"})["path"] == "nb.ipynb"
     assert _request("browser_navigate", {"url": "example.go"})["op"] == "navigate"
+    assert _request("browser_navigate", {"url": "example.com/../script.py"}) == {
+        "op": "navigate",
+        "url": "https://example.com/../script.py",
+    }
     assert _request("browser_navigate", {"url": "script.py"})["path"] == "script.py"
     assert _request("browser_navigate", {"url": "notes.md"})["content_type"] == "text/markdown"
     with pytest.raises(ValueError, match = "no file app.ts in the workspace"):

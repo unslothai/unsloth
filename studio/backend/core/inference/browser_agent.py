@@ -619,8 +619,8 @@ def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[st
     from .tools import _get_workdir
 
     path = re.split(r"[?#]", target, maxsplit = 1)[0]
-    first = re.split(r"[/\\]", path, maxsplit = 1)[0]
-    if not path or "://" in path or path.startswith("//") or ":" in first:
+    # A bare name only: `example.com/../run.py` is a web address that would resolve onto the file.
+    if not path or ":" in path or re.search(r"[/\\]", path):
         return None
     try:
         workdir = os.path.realpath(_get_workdir(session_id))
