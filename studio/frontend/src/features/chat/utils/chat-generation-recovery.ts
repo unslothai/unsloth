@@ -5,6 +5,7 @@ import type { ChatGenerationStatus } from "../api/chat-generation-api";
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
   parseAssistantContent,
 } from "./parse-assistant-content";
 import type { ContextUsageMarkers } from "./saved-context-usage";
@@ -307,7 +308,9 @@ export function generationRawContent(content: unknown): {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
-    const text = typeof record.text === "string" ? record.text : "";
+    // Saved parts are already parsed: a tag inside one is literal text.
+    const text =
+      typeof record.text === "string" ? markLiteralThinkTags(record.text) : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
       else raw += `${THINK_OPEN}${text}`;

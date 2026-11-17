@@ -9,6 +9,10 @@ import {
   parseGeminiContinuationReplayTurns,
   parseGeminiThoughtReplayParts,
 } from "../gemini-thought-replay.ts";
+import {
+  markLiteralThinkTags,
+  unmarkLiteralThinkTags,
+} from "./parse-assistant-content.ts";
 import type { ProviderCompactionContentPart } from "../types/api";
 import { type PriorPassTiming, readPriorPassTiming } from "./continued-timing.ts";
 import { providerCompactionPart } from "./provider-compaction.ts";
@@ -157,9 +161,12 @@ export function stripContinuationOverlap(
   if (partial.length === 0 || continuation.length === 0) {
     return continuation;
   }
+  // The seed may carry literal-tag marks the replayed text lacks; marking keeps lengths, so cut the original.
+  const seed = unmarkLiteralThinkTags(partial);
+  const replay = unmarkLiteralThinkTags(continuation);
   const limit = Math.min(partial.length, continuation.length, MAX_OVERLAP);
   for (let size = limit; size >= MIN_OVERLAP; size -= 1) {
-    if (continuation.startsWith(partial.slice(partial.length - size))) {
+    if (replay.startsWith(seed.slice(seed.length - size))) {
       return continuation.slice(size);
     }
   }
@@ -167,11 +174,11 @@ export function stripContinuationOverlap(
 }
 
 export function isRestart(partial: string, continuation: string): boolean {
-  const head = partial.trimStart().slice(0, RESTART_PROBE);
+  const head = unmarkLiteralThinkTags(partial).trimStart().slice(0, RESTART_PROBE);
   if (head.length < RESTART_PROBE) {
     return false;
   }
-  return continuation.trimStart().startsWith(head);
+  return unmarkLiteralThinkTags(continuation).trimStart().startsWith(head);
 }
 
 export function joinContinuation(
@@ -289,10 +296,13 @@ export function carriedThought(
     : "";
 }
 
+/** Both come from saved parts, so any tag inside them is literal text. */
 export function continuationSeed(partial: string, thought: string): string {
+  partial = markLiteralThinkTags(partial);
   if (!thought) {
     return partial;
   }
+  thought = markLiteralThinkTags(thought);
   return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
@@ -354,6 +364,8 @@ export type ContinuationRequest = {
   partial: string;
   reasoning?: string;
   reasoningDuration?: number;
+  /** The resumed reply's reasoning arrived split out, so tags in its continuation are literal. */
+  splitReasoningSeen?: boolean;
   /** The sibling run drops the original message, so replaying this keeps history signed. */
   thoughtSignature?: string;
   /** Signed Gemini thought-summary parts from the turn being resumed. */
@@ -436,6 +448,7 @@ export function readContinuationRequest(
         partial?: unknown;
         reasoning?: unknown;
         reasoningDuration?: unknown;
+        splitReasoningSeen?: unknown;
         thoughtSignature?: unknown;
         thoughtParts?: unknown;
         answerParts?: unknown;
@@ -479,6 +492,7 @@ export function readContinuationRequest(
     duration >= 0
       ? { reasoningDuration: duration }
       : {}),
+    ...(request?.splitReasoningSeen === true ? { splitReasoningSeen: true } : {}),
     ...(typeof signature === "string" && signature
       ? { thoughtSignature: signature }
       : {}),

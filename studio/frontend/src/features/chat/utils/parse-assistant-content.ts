@@ -7,17 +7,18 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
-// A noncharacter after "<" keeps a literal tag (or one split across deltas) from parsing as a marker.
+// A noncharacter stands in for the "<" of a literal tag (or one split across deltas) so it cannot
+// parse as a marker; one char for one keeps offsets into the raw text aligned with the parts.
 const LITERAL_TAG_MARK = "\uFDD0";
 const LITERAL_TAG_START = /<(?=\/?(?:think>|t(?:h(?:i(?:nk?)?)?)?$|$))/g;
 
 export function markLiteralThinkTags(text: string): string {
-  return text.replace(LITERAL_TAG_START, `<${LITERAL_TAG_MARK}`);
+  return text.replace(LITERAL_TAG_START, LITERAL_TAG_MARK);
 }
 
-function unmarkLiteralThinkTags(text: string): string {
+export function unmarkLiteralThinkTags(text: string): string {
   return text.includes(LITERAL_TAG_MARK)
-    ? text.replaceAll(LITERAL_TAG_MARK, "")
+    ? text.replaceAll(LITERAL_TAG_MARK, "<")
     : text;
 }
 
@@ -90,7 +91,7 @@ export function extractDeltaText(delta: unknown): {
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const thinking = extractReasoningText(obj);
       if (thinking) {
-        text += `${THINK_OPEN_TAG}${thinking}${THINK_CLOSE_TAG}`;
+        text += `${THINK_OPEN_TAG}${markLiteralThinkTags(thinking)}${THINK_CLOSE_TAG}`;
         structuredReasoningContinues = true;
         hasStructuredReasoning = true;
       }

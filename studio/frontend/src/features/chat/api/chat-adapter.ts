@@ -5721,8 +5721,11 @@ export function createOpenAIStreamAdapter(
       // Both this stream and recovery followers persist it, or reload blocks the composer again.
       let generationStalled = false;
       let parseThink = true;
-      const generationCustom = () =>
-        generationRunId
+      // Recovery and Continue mark tags as this stream does only if they know reasoning arrived split out.
+      let reasoningContentSeen = false;
+      const generationCustom = () => ({
+        ...(reasoningContentSeen ? { splitReasoningSeen: true } : {}),
+        ...(generationRunId
           ? {
               generationRunId,
               generationSeq,
@@ -5738,7 +5741,8 @@ export function createOpenAIStreamAdapter(
               serverManaged: true,
               parseThinkTags: parseThink,
             }
-          : {};
+          : {}),
+      });
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5989,7 +5993,8 @@ export function createOpenAIStreamAdapter(
       }
       // Keep the <think> block open across reasoning deltas; answer content closes it.
       let reasoningContentOpen = resumesInsideThought;
-      let reasoningContentSeen = resumesInsideThought;
+      reasoningContentSeen =
+        resumesInsideThought || continuation?.splitReasoningSeen === true;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;

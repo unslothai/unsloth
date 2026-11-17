@@ -43,15 +43,73 @@ test("literal tags in split-out reasoning and answer stay as written", () => {
 });
 
 test("a tag split across arrivals is still literal", () => {
-  const raw = `<think>plan</think>${markLiteralThinkTags("a <")}${markLiteralThinkTags("/think> b")}`;
-  assert.deepEqual(parseAssistantContent(raw), [
-    { type: "reasoning", text: "plan" },
-    { type: "text", text: "a </think> b" },
-  ]);
+  for (const cut of ["a <", "a <th"]) {
+    const rest = "a <think> b".slice(cut.length);
+    const raw = `<think>plan</think>${markLiteralThinkTags(cut)}${markLiteralThinkTags(rest)}`;
+    assert.deepEqual(parseAssistantContent(raw), [
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "a <think> b" },
+    ]);
+  }
 });
 
 test("text without tags is left alone", () => {
   for (const text of ["a < b", "<div>", "x <thinking>", "<tool_call>"]) {
     assert.equal(markLiteralThinkTags(text), text);
   }
+});
+
+const { generationRawContent, restoreCarriedPartsFromRaw, restoreCarriedParts } =
+  await import("../src/features/chat/utils/chat-generation-recovery.ts");
+const { continuationSeed } = await import("../src/features/chat/utils/continuation.ts");
+const { extractDeltaText } = await import(
+  "../src/features/chat/utils/parse-assistant-content.ts"
+);
+
+const SAVED = [
+  { type: "reasoning", text: TRACE },
+  { type: "text", text: "See " },
+  { type: "tool-call", toolCallId: "c1" },
+  { type: "text", text: ANSWER },
+];
+
+test("saved parts rebuilt for recovery keep their literal tags", () => {
+  const { raw, carried } = generationRawContent(SAVED);
+  assert.deepEqual(restoreCarriedPartsFromRaw(raw, carried), SAVED);
+  assert.deepEqual(
+    restoreCarriedParts(
+      SAVED.filter((part) => part.type !== "tool-call"),
+      carried,
+    ),
+    SAVED,
+  );
+});
+
+test("a continuation seed keeps the saved thought and answer as written", () => {
+  assert.deepEqual(parseAssistantContent(continuationSeed(ANSWER, TRACE)), [
+    { type: "reasoning", text: TRACE },
+    { type: "text", text: ANSWER },
+  ]);
+  assert.deepEqual(parseAssistantContent(`${continuationSeed("", TRACE)}more`), [
+    { type: "reasoning", text: `${TRACE}more` },
+  ]);
+});
+
+test("a structured thinking part keeps a literal closing tag inside it", () => {
+  const { text } = extractDeltaText([{ type: "thinking", thinking: TRACE }]);
+  assert.deepEqual(parseAssistantContent(text), [{ type: "reasoning", text: TRACE }]);
+});
+
+test("a replay overlapping or restarting a marked continuation seed is still recognised", async () => {
+  const { joinContinuation } = await import("../src/features/chat/utils/continuation.ts");
+  const partial = "Use literal <think> tags to find the block you want removed.";
+  const seed = continuationSeed(partial, "");
+  assert.equal(
+    joinContinuation(seed, "<think> tags to find the block you want removed. Then", {
+      streaming: true,
+    }),
+    markLiteralThinkTags(`${partial} Then`),
+  );
+  const restart = markLiteralThinkTags(`${partial.slice(0, 52)}rewritten.`);
+  assert.equal(joinContinuation(seed, restart), restart);
 });
