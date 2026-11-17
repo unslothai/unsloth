@@ -37630,6 +37630,8 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_end":
+                            _sf_tool_progress.round_ended()
                         if event["type"] == "tool_start":
                             # Gated with the card: the stamp is set once.
                             if _ui_events:
@@ -38200,6 +38202,7 @@ async def produce_openai_chat_completions(
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
                 images = [image] if image is not None else None,
+                on_compacting = _sf_progress.compacting,
             )
             fitted_kwargs = {
                 **gen_kwargs,

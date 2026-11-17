@@ -3239,12 +3239,14 @@ class InferenceOrchestrator:
         force_reset: bool = False,
         keeps_boundary: bool = False,
         images: Optional[list] = None,
+        on_compacting: Optional[Callable[[], None]] = None,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
         A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
         one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
         ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
+        ``on_compacting`` is called once if the fit starts dropping turns, as on GGUF.
         Never raises: a failed fit returns the request unchanged.
         """
         unchanged = {
@@ -3392,7 +3394,10 @@ class InferenceOrchestrator:
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(
-                conversation, context_length = context_length, **fit_kwargs
+                conversation,
+                context_length = context_length,
+                on_compacting = on_compacting,
+                **fit_kwargs,
             )
             # The bound overprices, so its refusal is served as a rescue: the irreducible suffix, judged by the engine.
             if (
@@ -3831,6 +3836,7 @@ class InferenceOrchestrator:
     ):
         """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
         GGUF's."""
+        from core.inference.llama_cpp import _compaction_reporter
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
@@ -3972,6 +3978,7 @@ class InferenceOrchestrator:
                 live_branch = live_branch,
                 keeps_boundary = _loop_cut,
                 images = loop_images,
+                on_compacting = _compaction_reporter(perf_callback),
             )
             _loop_cut = _loop_cut or any(
                 event.get("dropped_messages") for event in result.get("events") or ()
