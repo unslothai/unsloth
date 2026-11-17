@@ -63,11 +63,12 @@ export interface GpuInfo {
     Record<string, readonly ReportedOffloadFitTier[]>
   >;
   name: string;
+  /** GPUs this view's engine can run (llama.cpp for inference_gpu, torch for gpu). */
   memoryTotalGb: number;
   memorySharedGb: number;
   /** Without shared-memory devices: VRAM beside system RAM, not a view of it. */
   dedicatedMemoryTotalGb: number;
-  /** VRAM of the GPUs a run gets by default: no iGPU or kernel-less card beside a discrete one. */
+  /** VRAM of the GPUs a training run gets by default: no iGPU beside a discrete card, no card torch cannot run. */
   defaultMemoryTotalGb: number;
   /** Image/video loads live on ONE device, so their fit math must not use the multi-GPU sum. */
   maxDeviceMemoryGb: number;

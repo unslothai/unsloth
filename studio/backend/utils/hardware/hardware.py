@@ -7432,7 +7432,7 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 for td in torch_devices
             ]
             if IS_ROCM:
-                # Flagged so the UI neither counts nor pre-ticks GPUs training already skips (#8792).
+                # Flagged so the UI neither counts nor offers GPUs training already skips (#8792).
                 uncovered = rocm_gpu_ids_without_torch_kernels()
                 for dev in devices:
                     if dev["index"] in uncovered:
