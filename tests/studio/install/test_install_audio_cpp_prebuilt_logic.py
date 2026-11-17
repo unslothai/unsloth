@@ -2725,3 +2725,30 @@ def test_wheels_installable_only_on_linux_x86_64_without_torch(
     monkeypatch.setattr(M.platform, "machine", lambda: machine)
     monkeypatch.setattr(M, "torch_cuda_major", lambda: torch_major)
     assert M._cuda_runtime_wheels_installable() is installable
+
+
+def test_an_old_chat_only_cpu_install_kept_after_a_failed_wheel_install_is_marked(
+    monkeypatch, tmp_path
+):
+    release = _release(tmp_path, CPU_ZIP)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    monkeypatch.setattr(M, "_install_linux_cuda_runtime_wheels", lambda major: None)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: False)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    target = tmp_path / "audio.cpp"
+    assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
+    record_path = target / M.INSTALL_RECORD
+    old = json.loads(record_path.read_text())
+    old.pop("cuda_runtime_wheels_tried")  # written by a release before the wheel step
+    record_path.write_text(json.dumps(old))
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
+    asked.clear()
+    assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
+    assert asked == ["cuda", "cpu"]  # looked up once, wheels failed, same CPU asset kept
+    assert json.loads(record_path.read_text())["cuda_runtime_wheels_tried"] is True
+    monkeypatch.setattr(
+        M, "resolve", lambda *a, **k: pytest.fail("a marked rerun must not look up")
+    )
+    assert M.main(["--install-dir", str(target)]) == M.EXIT_OK

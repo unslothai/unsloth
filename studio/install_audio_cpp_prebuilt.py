@@ -1095,6 +1095,28 @@ def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
         print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
 
 
+def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
+    return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
+
+
+def _mark_runtime_wheels_tried(
+    target: Path, record: dict, requested: str, detected: Optional[str]
+) -> None:
+    """A kept install that came through the wheel step records it too, so the next run does not try again."""
+    if (
+        record.get("accelerator") != "cpu"
+        or record.get("cuda_runtime_wheels_tried")
+        or not _runtime_wheels_marker(requested, detected)
+    ):
+        return
+    try:
+        (target / INSTALL_RECORD).write_text(
+            json.dumps({**record, "cuda_runtime_wheels_tried": True}, indent = 2), encoding = "utf-8"
+        )
+    except OSError:
+        pass
+
+
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
     """Whether the CUDA libraries a line-``major`` Linux bundle links but does not ship (cudart,
     cuBLAS, cuFFT) are in torch's nvidia-* wheels or on the system loader path. True off Linux,
@@ -1328,6 +1350,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
+        _mark_runtime_wheels_tried(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1340,6 +1363,7 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
+        _mark_runtime_wheels_tried(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
@@ -1411,9 +1435,7 @@ def _install_locked(
             "accelerator_request": requested,
             "detected_accelerator": detected,
             # This install already had its chance to fetch the CUDA runtime wheels (_record_fits_request).
-            "cuda_runtime_wheels_tried": requested == "auto"
-            and detected == "cuda"
-            and _cuda_runtime_wheels_installable(),
+            "cuda_runtime_wheels_tried": _runtime_wheels_marker(requested, detected),
             "espeak": (server.parent / "espeak-ng-data.bin").is_file(),
             "server_relpath": server.relative_to(tree).as_posix(),
             "server_sha256": core.sha256_file(server),
