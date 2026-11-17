@@ -98,9 +98,13 @@ class FSDP2Config:
     # parameters get their own unit (Gemma4 / Gemma3n `embed_tokens_per_layer`: ~40% of an E-model would sit
     # gathered in the root for the whole step). 0 disables.
     split_large_root_embeddings: float = 0.05
-    # Frozen, untied embed / head tables >= this device fraction stay replicated, out of the never-resharding
-    # root (UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 / 0 forces; UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps embed on GPU).
-    replicate_io_tables: float = 0.15
+    # Frozen, untied embed / head tables outside every unit stay whole on every rank instead of in the root
+    # unit. The root never reshards after forward, so a gathered table costs its full size for the whole step
+    # plus its shard (and a same-size copy while gathering); kept whole it costs at most its full size, and the
+    # input embedding is served from CPU. True = always (on an accelerator), a float = only when both tables
+    # hold at least that fraction of the device, False / 0 = never. UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 / 0
+    # forces; UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps the input embedding on the GPU.
+    replicate_io_tables: Union[bool, float] = True
     # Wrap `generate` so it runs inside native_fsdp2_unsharded (Unsloth's decode loops read layer weights
     # without calling the blocks; PeftModel.generate skips the root's hooks). Collective: every rank generates.
     wrap_generate: bool = True
@@ -1416,11 +1420,19 @@ def _frozen_root_io_tables(
     param_dtype = None,
 ):
     """[embed, head] to replicate instead of keeping in the root unit, or []. Both must be outside every
-    unit, frozen, untied (fused CE reads lm_head.weight, so a tied table stays) and >= `fraction` of device."""
+    unit, frozen and untied (fused CE reads lm_head.weight, so a tied table stays). `fraction` True: always
+    when the device size is known (an accelerator); a number: only when both together are >= that fraction of
+    the device; False / 0: never. The root unit is gathered for the whole step (reshard_after_forward=False),
+    so keeping a frozen table whole never needs more device memory than gathering it there."""
     from .fsdp2_perf import _env_tristate
 
     forced = _env_tristate("UNSLOTH_FSDP2_REPLICATE_IO_TABLES")
-    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+    always = fraction is True
+    if forced is False or (
+        forced is None
+        and not always
+        and (not fraction or isinstance(fraction, bool) or fraction <= 0)
+    ):
         return []
     embed, head = _io_embedding_modules(model)
     if embed is None or head is None or embed is head:
@@ -1458,8 +1470,10 @@ def _frozen_root_io_tables(
     if any(len(owners.get(i, ())) > 1 for i in ids[0] | ids[1]):  # shared with another module
         return []
     if forced is None:
+        if not device_bytes:  # CPU mesh: no device to relieve, layout unchanged
+            return []
         nbytes = sum(p.numel() * p.element_size() for group in params for p in group)
-        if not device_bytes or nbytes < fraction * device_bytes:
+        if not always and nbytes < fraction * device_bytes:
             return []
     return [embed, head]
 

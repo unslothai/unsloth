@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 keeps large frozen, untied input / output embeddings out of the root unit (which never
-reshards, so its gather of both OOMed a T4 on Qwen3.8-27B 4-bit)."""
+"""Native FSDP2 keeps frozen, untied input / output embeddings out of the root unit (which never reshards,
+so its gather of both OOMed a T4 on Qwen3.8-27B 4-bit and on gpt-oss-20b 4-bit)."""
 
 import multiprocessing
 import os
@@ -75,6 +75,45 @@ def test_frozen_untied_io_tables_are_picked_by_size():
     assert native._frozen_root_io_tables(model, units, nbytes, 0) == []
 
 
+# gpt-oss-20b on a T4: untied embed + lm_head bytes vs the device (14.56 GiB). 14.8% < the old 0.15 floor.
+GPTOSS_TABLES = 2_316_533_760
+T4_BYTES = 15_636_037_632
+
+
+def test_default_keeps_tables_whole_below_the_old_fraction(monkeypatch):
+    # Flip: at gpt-oss's table share of a T4 the old 0.15 floor kept both tables in the never-resharding root
+    # (gathered for the whole step: OOM in the first forward); the default keeps them whole at any size.
+    monkeypatch.delenv("UNSLOTH_FSDP2_REPLICATE_IO_TABLES", raising = False)
+    native = _load_native()
+    model = _model()
+    units = native.find_shard_units(model)
+    nbytes = 2 * VOCAB * HIDDEN * 4
+    device = nbytes * T4_BYTES // GPTOSS_TABLES
+    assert nbytes < 0.15 * device
+    embed, head = model.get_input_embeddings(), model.get_output_embeddings()
+    default = native.FSDP2Config().replicate_io_tables
+    assert default is True
+    assert native._frozen_root_io_tables(model, units, device, default) == [embed, head]
+    assert native._frozen_root_io_tables(model, units, device, 0.15) == []  # old rule: missed
+    assert native._frozen_root_io_tables(model, units, nbytes * 1000, default) == [embed, head]
+    # The size floor, when one is passed, flips exactly at the boundary.
+    assert native._frozen_root_io_tables(model, units, nbytes * 4, 0.25) == [embed, head]
+    assert native._frozen_root_io_tables(model, units, nbytes * 4 + 1, 0.25) == []
+    # Never on a CPU mesh (no device size), nor when off.
+    assert native._frozen_root_io_tables(model, units, 0, default) == []
+    assert native._frozen_root_io_tables(model, units, device, False) == []
+    assert native._frozen_root_io_tables(model, units, device, 0) == []
+    # Tied / trainable tables still stay in the root under the default.
+    tied = _model(tied = True)
+    assert native._frozen_root_io_tables(tied, native.find_shard_units(tied), device, default) == []
+    trained = _model()
+    trained.lm_head.weight.requires_grad_(True)
+    assert (
+        native._frozen_root_io_tables(trained, native.find_shard_units(trained), device, default)
+        == []
+    )
+
+
 def test_trainable_or_tied_io_tables_stay_in_the_root(monkeypatch):
     native = _load_native()
     monkeypatch.setenv("UNSLOTH_FSDP2_REPLICATE_IO_TABLES", "1")
@@ -105,6 +144,8 @@ def _worker(
     out,
     replicate,
     gather = "float32",
+    device_bytes = None,
+    fraction = None,
 ):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -113,8 +154,11 @@ def _worker(
         WORLD_SIZE = str(world),
         LOCAL_RANK = str(rank),
         UNSLOTH_FSDP2 = "1",
-        UNSLOTH_FSDP2_REPLICATE_IO_TABLES = replicate,
     )
+    if replicate is None:
+        os.environ.pop("UNSLOTH_FSDP2_REPLICATE_IO_TABLES", None)
+    else:
+        os.environ["UNSLOTH_FSDP2_REPLICATE_IO_TABLES"] = replicate
     import datetime
 
     import torch.distributed as dist
@@ -126,10 +170,17 @@ def _worker(
         from torch.distributed.tensor import DTensor
 
         native = _load_native()
+        if device_bytes is not None:
+            # A CPU mesh has no device size; give it a T4's so the default rule sees an accelerator.
+            import importlib
+            perf = importlib.import_module("unsloth.models.fsdp2_perf")
+            perf._device_bytes = lambda device = None: device_bytes
         ref, model = _model(), _model()
         config = native.FSDP2Config(
             param_dtype = getattr(torch, gather), device = "cpu", fit_layout = False
         )
+        if fraction is not None:
+            config.replicate_io_tables = fraction
         native.shard_model(model, config)
         units = list(model._unsloth_fsdp2_units)
         unit_bytes = [_group_bytes(u) for u in units]
@@ -186,14 +237,19 @@ def _worker(
         dist.destroy_process_group()
 
 
-def _run(replicate, gather = "float32"):
+def _run(
+    replicate,
+    gather = "float32",
+    device_bytes = None,
+    fraction = None,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     mp.start_processes(
         _worker,
-        args = (2, _free_port(), out, replicate, gather),
+        args = (2, _free_port(), out, replicate, gather, device_bytes, fraction),
         nprocs = 2,
         join = True,
         start_method = "spawn",
@@ -213,6 +269,32 @@ def test_root_gathers_no_io_table_when_replicated_and_matches_one_process():
         assert max([r["root_bytes"], *r["unit_bytes"]]) < tables // 2, r
         assert not r["missing"], r
         assert r["loss_diff"] < 1e-5 and r["grad_diff"] < 1e-5, r
+
+
+def _gptoss_share_device():
+    return 2 * VOCAB * HIDDEN * 4 * T4_BYTES // GPTOSS_TABLES
+
+
+def test_default_keeps_gptoss_share_tables_out_of_the_root_and_matches_one_process():
+    # No env var: tables at gpt-oss's share of a T4 leave the root (flip of the old 0.15 floor below).
+    tables = 2 * VOCAB * HIDDEN * 4
+    for r in _run(None, device_bytes = _gptoss_share_device()):
+        assert r["sharded"] == {"embed": False, "head": False}, r
+        assert r["root_bytes"] < tables // 8, r
+        assert not r["missing"], r
+        assert r["loss_diff"] < 1e-5 and r["grad_diff"] < 1e-5, r
+
+
+def test_old_fraction_keeps_gptoss_share_tables_in_the_root():
+    for r in _run(None, device_bytes = _gptoss_share_device(), fraction = 0.15):
+        assert r["sharded"] == {"embed": True, "head": True}, r
+        assert r["root_bytes"] >= 2 * VOCAB * HIDDEN * 4, r
+        assert r["loss_diff"] < 1e-5 and r["grad_diff"] < 1e-5, r
+
+
+def test_default_on_a_cpu_mesh_keeps_the_layout():
+    for r in _run(None):
+        assert r["sharded"] == {"embed": True, "head": True}, r
 
 
 def test_root_still_gathers_io_tables_when_disabled():
