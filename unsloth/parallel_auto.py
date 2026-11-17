@@ -24,6 +24,7 @@ Anything that cannot be sized picks FSDP2, the launcher default.
 
 from __future__ import annotations
 
+import importlib
 import math
 import os
 
@@ -185,10 +186,12 @@ def _gather(entry):
     import torch.distributed as dist
 
     if not dist.is_initialized():
+        # Native FSDP2's own default group: NCCL on CUDA, gloo where NCCL is missing (Windows CUDA builds).
+        from .models.fsdp2_native import _ensure_process_group
+
         cuda = torch.cuda.is_available()
-        if cuda:
-            torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
-        dist.init_process_group("nccl" if cuda else "gloo")
+        device = torch.device("cuda", _local_cuda_device(torch)) if cuda else torch.device("cpu")
+        _ensure_process_group(device)
     out = [None] * dist.get_world_size()
     dist.all_gather_object(out, entry)
     return out
@@ -356,6 +359,24 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
     return int(weights), int(trainable)
 
 
+def _peft_base(name, call, revision):
+    """peft_config.base_model_name_or_path when `name` is a PEFT adapter, found the way the loaders find it
+    (PeftConfig.from_pretrained; a failure means not an adapter), else None."""
+    if os.path.isdir(name) and not os.path.isfile(os.path.join(name, "adapter_config.json")):
+        return None
+    try:
+        from peft import PeftConfig
+        config = PeftConfig.from_pretrained(
+            name,
+            token = call.get("token"),
+            revision = revision,
+            local_files_only = call.get("local_files_only", False),
+        )
+    except Exception:
+        return None
+    return getattr(config, "base_model_name_or_path", None) or None
+
+
 def resolve_for_load(loader, args, kwargs):
     """First Unsloth `from_pretrained` under UNSLOTH_PARALLEL=auto: size the checkpoint before it loads."""
     if _STATE["choice"] is not None or not auto_requested():
@@ -380,25 +401,44 @@ def resolve_for_load(loader, args, kwargs):
         dtype = call.get("dtype") or call.get("torch_dtype")
         dtype_bytes = 4 if "float32" in str(dtype) else 2
         full = bool(call.get("full_finetuning"))
+        load_in_8bit = bool(call.get("load_in_8bit"))
         load_in_4bit = bool(call.get("load_in_4bit")) and not (
-            call.get("load_in_8bit") or call.get("load_in_16bit") or full
+            load_in_8bit or call.get("load_in_16bit") or full
         )
-        if not call.get("use_exact_model_name"):
+        if not importlib.import_module("unsloth.device_type").ALLOW_BITSANDBYTES:
+            # The loaders' own gate: bitsandbytes unusable here, so 4bit / 8bit are off before the name maps.
+            load_in_4bit = load_in_8bit = False
+        exact = bool(call.get("use_exact_model_name"))
+        revision = call.get("revision")
+
+        def mapped(repo, revision):
+            if exact:
+                return repo
             # The repo the loader loads: get_model_name maps a 4-bit mirror to its float repo and back.
             from .models.loader_utils import get_model_name
-            name = get_model_name(
-                name,
+            return get_model_name(
+                repo,
                 load_in_4bit = load_in_4bit,
                 load_in_fp8 = False,
                 token = call.get("token"),
                 trust_remote_code = bool(call.get("trust_remote_code")),
                 local_files_only = call.get("local_files_only", False),
                 cache_dir = call.get("cache_dir", None),
-                revision = call.get("revision"),
+                revision = revision,
             )
+
+        original, name = name, mapped(name, revision)
+        if name.lower() != original.lower():
+            revision = None  # a remapped repo does not carry the caller's ref
+        adapter = []
+        base = _peft_base(name, call, revision)
+        if base is not None:
+            # A PEFT adapter: the loaders load peft_config.base_model_name_or_path (mapped, no ref) and the adapter.
+            adapter = _checkpoint_tensors(name, token = call.get("token"), revision = revision)
+            name, revision = mapped(base, None), None
         tensors = _checkpoint_tensors(
-            name, token = call.get("token"), revision = call.get("revision"),
-            subfolder = call.get("subfolder") or "",
+            name, token = call.get("token"), revision = revision,
+            subfolder = "" if base is not None else call.get("subfolder") or "",
         )  # fmt: skip
         from .models.mapper import bf16_repo_loads_16bit
 
@@ -409,10 +449,15 @@ def resolve_for_load(loader, args, kwargs):
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
-            load_in_8bit = bool(call.get("load_in_8bit")) and not load_in_16bit,
+            load_in_8bit = load_in_8bit and not load_in_16bit,
             full_finetuning = full,
             dtype_bytes = dtype_bytes,
         )
+        if adapter:
+            # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
+            numel = sum(math.prod(shape) if shape else 1 for _, _, shape in adapter)
+            weights += 4 * numel
+            trainable = trainable if full else numel
         state = training_state_bytes(trainable, grad_itemsize = dtype_bytes if full else 4)
         return weights, state, 0
 

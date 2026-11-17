@@ -56,6 +56,12 @@ def _modules():
     return env, auto
 
 
+def _stub_device_type(allow_bitsandbytes = True):
+    module = types.ModuleType("unsloth.device_type")
+    module.ALLOW_BITSANDBYTES = allow_bitsandbytes
+    return module
+
+
 def _stub_name_mapping(mapping = None, calls = None):
     """unsloth.models.loader_utils stand-in: the real one needs the GPU package. Identity unless mapped."""
     module = types.ModuleType("unsloth.models.loader_utils")
@@ -80,6 +86,10 @@ def clean(monkeypatch):
     env, auto = _modules()
     auto._STATE.update(choice = None, reason = None)
     monkeypatch.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping())
+    monkeypatch.setitem(sys.modules, "unsloth.device_type", _stub_device_type())
+    # Hub names in these tests are fake: no PeftConfig probe over the network (the PEFT test restores it).
+    monkeypatch.setattr(auto, "_peft_base_real", getattr(auto, "_peft_base", None), raising = False)
+    monkeypatch.setattr(auto, "_peft_base", lambda name, call, revision: None, raising = False)
     yield monkeypatch, env, auto
     auto._STATE.update(choice = None, reason = None)
 
@@ -208,6 +218,99 @@ def test_load_sizing_reads_the_repo_the_loader_maps_to(clean):
     )
     assert calls == [("unsloth/mistral-7b-bnb-4bit", False)] and fetched == ["unsloth/mistral-7b"]
     assert got == "fsdp2", auto._STATE["reason"]  # 32 MiB of 16-bit weights do not fit 25 MiB
+
+
+def test_peft_adapter_dir_sizes_its_base(clean, tmp_path):
+    """A local adapter dir loads peft_config.base_model_name_or_path too: size the base plus the adapter."""
+    pytest.importorskip("peft")
+    from peft import LoraConfig
+    from safetensors.torch import save_file
+
+    mp, _, auto = clean
+    mp.setattr(auto, "_peft_base", auto._peft_base_real)
+    adapter = tmp_path / "adapter"
+    LoraConfig(r = 4, target_modules = ["up_proj"], base_model_name_or_path = "org/base").save_pretrained(
+        adapter
+    )
+    save_file(
+        {"base_model.model.up_proj.lora_A.weight": torch.zeros(4, 4096)},
+        adapter / "adapter_model.safetensors",
+    )
+    real, fetched = auto._checkpoint_tensors, []
+
+    def tensors(name, **kwargs):
+        fetched.append(name)
+        if name == "org/base":
+            return [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))]  # 32 MiB in 16-bit
+        return real(name, **kwargs)
+
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, (str(adapter),), {"load_in_4bit": False})
+    assert fetched == [str(adapter), "org/base"], fetched
+    assert got == "fsdp2", auto._STATE["reason"]
+
+
+def test_no_bitsandbytes_turns_4bit_off_before_mapping(clean):
+    """ALLOW_BITSANDBYTES false: the loaders clear load_in_4bit first, so a -bnb-4bit name loads its float repo."""
+    mp, _, auto = clean
+    calls, fetched = [], []
+    mapping = {("unsloth/mistral-7b-bnb-4bit", False): "unsloth/mistral-7b"}
+    mp.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping(mapping, calls))
+    mp.setitem(sys.modules, "unsloth.device_type", _stub_device_type(allow_bitsandbytes = False))
+    headers = {
+        "unsloth/mistral-7b-bnb-4bit": [("model.layers.0.mlp.up_proj.weight", "U8", (8388608, 1))],
+        "unsloth/mistral-7b": [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))],
+    }
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", lambda name, **k: fetched.append(name) or headers[name])
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("unsloth/mistral-7b-bnb-4bit",), {})
+    assert calls == [("unsloth/mistral-7b-bnb-4bit", False)] and fetched == ["unsloth/mistral-7b"]
+    assert got == "fsdp2", auto._STATE["reason"]
+
+
+def test_gather_uses_gloo_on_cuda_without_nccl(clean, monkeypatch):
+    """A Windows CUDA build has no NCCL: the decision's process group falls back to gloo."""
+    import torch.distributed as dist
+
+    for name in ("unsloth.fsdp2_launch", "unsloth.models.fsdp2_native"):
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name))
+    _load_native()
+    created = []
+    monkeypatch.setattr(dist, "is_initialized", lambda: bool(created))
+    monkeypatch.setattr(dist, "is_nccl_available", lambda: False)
+    monkeypatch.setattr(dist, "init_process_group", lambda *a, **k: created.append((a, k)))
+    monkeypatch.setattr(dist, "get_world_size", lambda *a: 1)
+    monkeypatch.setattr(
+        dist, "all_gather_object", lambda out, obj, *a, **k: out.__setitem__(0, obj)
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "set_device", lambda d: None)
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    _, _, auto = clean
+    assert auto._gather({"fits": True}) == [{"fits": True}]
+    ((args, kwargs),) = created
+    assert (args[0] if args else kwargs.get("backend")) == "gloo", created
 
 
 def test_float_weights_count_at_the_loaded_dtype(clean):
@@ -364,6 +467,7 @@ def _decision_worker(rank, world, port, out, snapshot):
         utils.patch_gradient_accumulation_fix = lambda cls: None
         sys.modules["unsloth.models._utils"] = utils
         sys.modules["unsloth.models.loader_utils"] = _stub_name_mapping()
+        sys.modules["unsloth.device_type"] = _stub_device_type()
         _, auto = _modules()
 
         def from_pretrained(
