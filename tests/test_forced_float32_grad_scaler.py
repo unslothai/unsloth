@@ -13,11 +13,8 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Forced float32 (a float16 Gemma-4 / Gemma-3 / ... load, or a GPU without bfloat16) turns mixed precision off,
-yet the frozen weights and sub-layer activations stay float16 and the fused CE saves d(loss)/d(hidden) as float16.
-Without loss scaling those gradients underflow once the loss falls and training diverges, so the trainer must carry
-a GradScaler there, hand it to the fused CE, and unscale before clipping; never on a bfloat16 run. Each case runs in
-a fresh interpreter: the forced float32 patches are process wide."""
+"""Forced float32 on float16 weights must carry a GradScaler (handed to the fused CE, unscaled before
+clipping); bfloat16 runs must not. Each case runs in a fresh interpreter: the patches are process wide."""
 
 import json
 import math
@@ -96,7 +93,7 @@ def _finite(x):
 def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
     on = _run(tmp_path, "float16")
     assert on["forced"], "a float16 Gemma-4 load must take the forced float32 path"
-    assert on["mixed_precision"] == "no", on  # still no autocast: the forced patches own the dtypes
+    assert on["mixed_precision"] == "no", on
     assert (
         on["scaler"] == "GradScaler"
     ), "forced float32 on float16 weights trains without loss scaling"
@@ -105,8 +102,7 @@ def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
     ], "the fused CE must receive the GradScaler (it saves d(hidden) in its forward)"
     off = _run(tmp_path, "float16", UNSLOTH_FORCED_FLOAT32_GRAD_SCALER = "0")
     assert off["scaler"] is None
-    # Unscaled before clipping: a finite logged norm is the true one, not the loss scale times it. A step the
-    # scaler skips on overflow logs inf / nan, so compare the steps both runs took.
+    # Overflow-skipped steps log inf / nan; compare steps both runs took.
     pairs = [
         (a, b) for a, b in zip(on["grad_norms"], off["grad_norms"]) if _finite(a) and _finite(b)
     ]
@@ -127,9 +123,7 @@ def test_bfloat16_training_has_no_extra_grad_scaler(tmp_path):
     assert res["scaler"] is None
 
 
-# One SGD (lr = 1) step through a real Trainer on a tiny model whose frozen layers are float16 and whose trainable
-# layer is float32, so the applied update is minus the clipped gradient. The scaler is attached where the patched
-# trainers attach it (after Trainer.__init__, before Trainer.train prepares the optimizer).
+# One SGD lr=1 step: the applied update is minus the clipped gradient.
 _OPT_SCRIPT = textwrap.dedent(
     """
     import json, os, sys, tempfile
@@ -217,13 +211,10 @@ def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
         assert on["scaler"] and not ref["scaler"], res
         assert on["same_scaler"], "the prepared optimizer must step through the attached GradScaler"
         assert not on["skipped"], res
-        # Clipping and the logged norm see unscaled gradients, and the applied update is the unscaled one.
         assert abs(on["grad_norm"] - ref["grad_norm"]) <= 1e-2 * ref["grad_norm"], res
         assert rel(on["delta"], ref["delta"]) < 1e-2, (regime, rel(on["delta"], ref["delta"]))
-    # Clipped to max_grad_norm in unscaled units, not max_grad_norm / scale.
     clipped = torch.tensor(res["clip"]["on"]["delta"]).norm().item()
     assert abs(clipped - 1e-3) < 1e-5, clipped
-    # An overflowing step is skipped: weights unchanged, scale backed off.
     over = res["overflow"]["on"]
     assert over["skipped"] and not any(over["delta"]), over
     assert over["scale"] == 2.0**39, over

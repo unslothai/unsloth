@@ -3310,7 +3310,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         accelerator_check = (
             "if hasattr(self, 'accelerator'):\n"
-            # Forced float32 keeps float16 weights / activations with mixed precision off: add the missing loss scaling.
             "    from unsloth.models._utils import _unsloth_forced_float32_grad_scaler\n"
             "    _unsloth_forced_float32_grad_scaler(self, model)\n"
             "    scaler = self.accelerator.scaler\n"

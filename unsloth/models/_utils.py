@@ -6083,15 +6083,8 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
 
 
 def _unsloth_forced_float32_grad_scaler(trainer, model):
-    """Give forced float32 training on float16 weights a dynamic GradScaler (no autocast).
-
-    Forced float32 (Gemma-4 / Gemma-3 / ... on a float16 request or a GPU without bfloat16) turns mixed precision
-    off, yet the frozen weights and the sub-layer activations stay float16, so their backward runs in float16 with
-    nothing scaling the loss. The fused CE also saves d(loss)/d(hidden) as float16 in its forward. Once the loss
-    falls, per-token gradients drop into float16's subnormal range and many round to zero: the update stops
-    following the loss and training diverges (E2B 2.5 -> 9.5 over 60 steps). A GradScaler is the standard float16
-    fix; the fused CE already reads it from `accelerator_scaler`. UNSLOTH_FORCED_FLOAT32_GRAD_SCALER=0 turns it off.
-    """
+    """Dynamic GradScaler for forced float32 on float16 weights: without it gradients underflow and
+    training diverges (E2B 2.5 -> 9.5 over 60 steps). UNSLOTH_FORCED_FLOAT32_GRAD_SCALER=0 disables."""
     if os.environ.get("UNSLOTH_FORCED_FLOAT32_GRAD_SCALER", "1") == "0":
         return None
     accelerator = getattr(trainer, "accelerator", None)
@@ -6126,8 +6119,7 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
             has_half = True
     if not has_half or not trainable_fp32:
         return None
-    # The AMP default (65536) overflows Gemma-4 E2B's first four steps before settling at 4096, which costs a
-    # short run its warmup; start there and let the dynamic scaler move.
+    # AMP default 65536 overflows Gemma-4 E2B's first four steps; it settles at 4096.
     init_scale = 2.0**12
     try:
         scaler = torch.amp.GradScaler(device_type, init_scale = init_scale)
@@ -6135,8 +6127,7 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
         scaler = torch.cuda.amp.GradScaler(init_scale = init_scale)
     accelerator.scaler = scaler
 
-    # accelerate only unscales under native float16 AMP, so clip_grad_norm_ / clip_grad_value_ would clip scaled
-    # gradients: unscale here, once per optimizer and step (AcceleratedOptimizer.step then skips the unscale).
+    # accelerate only unscales under native fp16 AMP; else clipping would see scaled gradients.
     def unscale_gradients(optimizer = None):
         from accelerate.optimizer import AcceleratedOptimizer
         if optimizer is None:
