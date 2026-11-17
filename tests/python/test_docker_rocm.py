@@ -1057,7 +1057,7 @@ class TestRocmEntrypoint:
             lines = meta["with"]["tags"].splitlines()
             alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
             assert len(alias) == 1, (job, alias)
-            assert "github.ref == format('refs/heads/{0}', github.event" in alias[0]
+            assert "startsWith(github.ref, 'refs/tags/v')" in alias[0]
 
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
         """A dispatch that bakes another notebooks ref is an experiment like any

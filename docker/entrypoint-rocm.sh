@@ -182,8 +182,10 @@ if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DE
         esac
     done
     if [[ ${#_gfx103x[@]} -gt 0 ]]; then
-        _gfx_other+=("${_gfx_igpu[@]}")
-    elif [[ ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
+        if [[ ${#_gfx_igpu[@]} -gt 0 ]]; then
+            _gfx_other+=("${_gfx_igpu[@]}")
+        fi
+    elif [[ ${#_gfx_igpu[@]} -gt 0 && ${#_gfx_igpu[@]} -eq ${#_gfx_all[@]} ]]; then
         _gfx103x=("${_gfx_igpu[@]}")
     fi
     if [[ ${#_gfx103x[@]} -gt 0 ]]; then
