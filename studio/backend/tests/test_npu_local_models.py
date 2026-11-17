@@ -242,6 +242,21 @@ def test_a_text_only_conversion_drops_the_vision_tower():
     assert "vision_model_weight" not in config
 
 
+def test_a_text_only_gemma4_conversion_drops_the_audio_tower():
+    # FastFlowLM/Gemma4-E2B-IT-NPU2's config.json names both towers; FastFlowLM 1.0.12 opens any it names.
+    _converted()
+    [local] = nlm.account_local_models()
+    config = nlm.local_config(
+        {
+            "flm_version": "1.0.12",
+            "vision_model_weight": "vision_weight.q4nx",
+            "audio_model_weight": "audio_weight.q4nx",
+        },
+        local,
+    )
+    assert "audio_model_weight" not in config and "vision_model_weight" not in config
+
+
 def test_the_conversion_records_the_source_geometry(tmp_path, monkeypatch):
     import utils.models.gguf_metadata as gm
 

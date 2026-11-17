@@ -311,7 +311,8 @@ def link_files(model: LocalQ4nx, staged: Path) -> None:
 
 def local_config(base_config: dict[str, Any], model: LocalQ4nx) -> dict[str, Any]:
     config = copy.deepcopy(base_config)
-    # FastFlowLM turns its vision tower on from this key; a text-only conversion has no weights.
+    # FastFlowLM loads a tower whenever its key is set; the converter writes no audio weights.
+    config.pop("audio_model_weight", None)
     vision_file = next((name for name in VISION_FILES if name in model.files), None)
     if vision_file is None:
         config.pop("vision_model_weight", None)
