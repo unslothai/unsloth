@@ -7623,6 +7623,7 @@ const ComposerRightControls: FC<{
   const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
   const voiceActive = useChatRuntimeStore((s) => s.voiceMode === "active");
   const voiceRequested = useVoiceRequested();
+  const voiceAvailable = useVoiceAvailable();
   return (
     <div
       ref={controlsRef}
@@ -7666,6 +7667,19 @@ const ComposerRightControls: FC<{
             </TooltipIconButton>
           )}
         </ComposerPrimitive.If>
+        {/* Voice mode gets its own button beside Dictate: in the plus menu alone, nobody found it. */}
+        {voiceAvailable && (
+          <TooltipIconButton
+            tooltip={t("voiceControls.start")}
+            aria-label={t("voiceControls.start")}
+            type="button"
+            variant="ghost"
+            className="size-9 rounded-full text-foreground"
+            onClick={() => requestVoiceToggle()}
+          >
+            <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-5" />
+          </TooltipIconButton>
+        )}
       </div>
       {/* Voice mode owns the send slot: one button the whole time, in place of the
           arrow, the run's stop and the stop-speaking button, so the controls never
