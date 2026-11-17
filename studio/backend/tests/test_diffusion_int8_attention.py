@@ -1370,8 +1370,7 @@ def test_checkpoint_race_decision_does_not_follow_a_clock_step(monkeypatch, afte
 
 
 class _StreamedAttention(_ClockedAttention):
-    """A DiT block's attention whose weights live on the host (every block streams): it times only while
-    ``_weights_on`` has put them on the card, and fails if called without them."""
+    """Host-resident attention that only runs while ``_weights_on`` has staged it."""
 
     COST = {"native": 10.0, "sage": 10.0}
 
@@ -1438,10 +1437,7 @@ def _streamed_race(monkeypatch, device):
 
 
 def test_a_fully_streamed_dit_races_its_first_block_on_the_card(monkeypatch):
-    """Every DiT block streams (0 resident, an A100 under a 12 GB cap): the race still runs, on the first block's
-    attention copied to the card, and decides as a resident layout does (SageAttention ties native on sm80 and stays
-    off). Skipping it kept SageAttention there and rendered different images than every layout with a resident
-    block."""
+    """A fully streamed DiT still races (staged block) and decides as a resident layout: a tie keeps native."""
     found, attn = _streamed_race(monkeypatch, "cuda")
     assert found is not None and found["staged"] and not found["keep"]
     assert found["ms"] == [10.0 * 4396 / 4396] * 2
@@ -1459,8 +1455,7 @@ def test_a_fully_streamed_dit_races_its_first_block_on_the_card(monkeypatch):
 
 
 def test_streamed_weights_come_back_to_the_host_after_the_race():
-    """``_weights_on`` swaps a block's host parameters and buffers for device copies and puts the very same host
-    tensors back after, also when the race raises (the streamers keep pointing at them)."""
+    """``_weights_on`` restores the same host tensors, also when the body raises."""
     H = _h3_image()
     m = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.LayerNorm(4))
     m[0].register_buffer("scale", torch.ones(4))
@@ -1479,8 +1474,7 @@ def test_streamed_weights_come_back_to_the_host_after_the_race():
 
 
 def test_install_races_a_fully_streamed_dit_on_its_device(monkeypatch):
-    """``install_checkpoint_attention`` hands the race the load device, so a DiT with no resident block is timed
-    (and keeps native where SageAttention does not win) instead of keeping SageAttention untimed."""
+    """``install_checkpoint_attention`` passes the load device so a fully streamed DiT is raced."""
     H = _h3_image()
     seen: list = []
 

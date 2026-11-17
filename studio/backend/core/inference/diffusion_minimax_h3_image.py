@@ -4054,9 +4054,7 @@ def _paired_ratio(times: list, first: int, second: int) -> float:
 
 @contextlib.contextmanager
 def _weights_on(module: Any, device: Any) -> Any:
-    """``module``'s parameters and buffers swapped for copies on ``device`` while the block runs, the host originals put
-    back after: the swap the DiT streamers make around a streamed block's forward (they hold the host tensors, which
-    stay untouched)."""
+    """Swap ``module``'s host tensors for ``device`` copies, restoring the same host tensors after (streamers hold them)."""
     import torch
 
     swapped: list = []
@@ -4087,10 +4085,8 @@ def race_checkpoint_attention(
 ) -> Optional[dict]:
     """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
     (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
-    With no block's attention on the card (every block streams) and a CUDA ``device``, the first block's attention
-    weights are copied there for the race and dropped after, so a fully streamed DiT takes the same decision as one
-    with a resident block (skipping the race kept SageAttention where a resident layout turns it down: different
-    images by layout). None when nothing could be timed (the caller keeps the INT8 route).
+    A fully streamed DiT stages the first block's attention on CUDA ``device`` for the race, so it decides as a resident
+    layout would (else images differ by layout). None when nothing could be timed (the caller keeps the INT8 route).
 
     ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
     count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
