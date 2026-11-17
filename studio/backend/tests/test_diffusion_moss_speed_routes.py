@@ -38,6 +38,7 @@ def _clean(monkeypatch):
     monkeypatch.delenv(D.DISPATCH_ENV, raising = False)
     monkeypatch.delenv(fused.MOSS_SHARED_QKV_ENV, raising = False)
     monkeypatch.delenv(fused.MOSS_FUSED_ENV, raising = False)
+    monkeypatch.delenv(fused.MOSS_SITU_FUSED_ENV, raising = False)
     stats = dict(I.STATS)
     D.ROUTE_STATS.clear()
     D._DECISIONS.clear()
@@ -262,3 +263,85 @@ def test_shared_rotq_declines_unswapped_linears():
 
     lins = tuple(torch.nn.Linear(256, 256, bias = False) for _ in range(3))
     assert shared_rotq_linears(torch.randn(32, 256), lins) is None
+
+
+# ----------------------------------------------------------------------------------------------- SiTU-GLU down projection
+
+
+def test_the_situ_down_hook_replaces_the_stock_product_and_projection():
+    dit = _tiny(torch.float32)
+    x, t, e = _inputs(torch.float32)
+    seen = []
+
+    def situ_down(down, gate, value):
+        seen.append((down.in_features, tuple(gate.shape)))
+        return down(moss._situ(value, gate))
+
+    with torch.no_grad():
+        ref = dit(x, t, e, return_dict = False)[0]
+        for block in fused._blocks(dit):
+            block.__dict__[moss.SITU_DOWN_ATTR] = situ_down
+        a, b = _compiling()
+        with a, b:
+            out = dit(x, t, e, return_dict = False)[0]
+        eager = dit(x, t, e, return_dict = False)[0]
+        # declined (None): the stock product and projection
+        for block in fused._blocks(dit):
+            block.__dict__[moss.SITU_DOWN_ATTR] = lambda down, gate, value: None
+        with a, b:
+            declined = dit(x, t, e, return_dict = False)[0]
+    # gate / value are the [B, S, ffn] halves of ffn_up_gate's output
+    assert seen == [(512, (1, 23, 512))] * 3
+    assert torch.equal(out, ref) and torch.equal(eager, ref) and torch.equal(declined, ref)
+
+
+def test_install_arms_the_situ_down_on_rotated_down_projections(monkeypatch):
+    from core.inference import diffusion_int8_fused
+    from core.inference.diffusion_int8_gemm import situ_linear
+
+    monkeypatch.setattr(
+        diffusion_int8_fused, "resident_cuda_device", lambda root: torch.device("cuda", 0)
+    )
+    armed = []
+    monkeypatch.setattr(
+        fused, "_arm_situ_cards", lambda root, logger = None: armed.append(root) or [0]
+    )
+    dit = _tiny(torch.float32)
+    assert fused.install_modules(dit)["situ_down"] == 0 and armed == []
+    _rotate_qkv(dit, ("ffn_down",))
+    assert fused.install_modules(dit)["situ_down"] == 3 and armed == [dit]
+    assert all(b.__dict__[moss.SITU_DOWN_ATTR] is situ_linear for b in fused._blocks(dit))
+    monkeypatch.setenv(fused.MOSS_SITU_FUSED_ENV, "0")
+    assert fused.install_modules(dit)["situ_down"] == 0
+    assert all(moss.SITU_DOWN_ATTR not in b.__dict__ for b in fused._blocks(dit))
+
+
+def test_situ_linear_declines_unswapped_linears():
+    from core.inference.diffusion_int8_gemm import situ_linear
+
+    down = torch.nn.Linear(256, 64, bias = False)
+    g = torch.randn(32, 256)
+    assert situ_linear(down, g, g) is None
+
+
+def test_situ_reference_matches_the_port_in_fp32():
+    from core.inference.diffusion_convrot_quant import producer_reference, situ_reference
+
+    g = torch.Generator().manual_seed(3)
+    gate = (torch.randn(8, 256, generator = g) * 8).to(torch.bfloat16)
+    value = (torch.randn(8, 256, generator = g) * 60).to(torch.bfloat16)
+    want = moss._situ(value.float(), gate.float()).to(torch.bfloat16)
+    assert torch.equal(situ_reference(gate, value), want)
+    assert torch.equal(producer_reference(None, gate, value, 1), want)
+    # act 0 keeps the SwiGLU product
+    assert torch.equal(
+        producer_reference(None, gate, value), torch.nn.functional.silu(gate) * value
+    )
+
+
+def test_the_situ_entry_point_declines_an_unarmed_card():
+    from core.inference import diffusion_convrot_quant as Q
+
+    g = torch.zeros(32, 256, dtype = torch.bfloat16)
+    assert Q.convrot_situ_act_quant(g, g, 256, True) is None
+    assert Q.convrot_situ_act_quant(g, g, 128, True) is None

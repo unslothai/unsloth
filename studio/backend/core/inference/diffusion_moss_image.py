@@ -35,6 +35,8 @@ LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
 QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
 # q / k / v on one ConvRot rotation + act quant (``diffusion_int8_gemm.shared_rotq_linears``)
 SHARED_QKV_ATTR = "_unsloth_moss_shared_qkv"
+# SiTU-GLU product + ConvRot rotation + act quant of the down projection in one kernel (``int8_gemm.situ_linear``)
+SITU_DOWN_ATTR = "_unsloth_moss_situ_down"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
@@ -270,7 +272,11 @@ class _Block(nn.Module, _AttentionMixin):
         x = x + self._linear("o", attn) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self._linear("ffn_up_gate", y.to(dtype)).chunk(2, -1)
-        return x + self._linear("ffn_down", _situ(hidden, gate)) * gate_f[:, None]
+        situ_down = self.__dict__.get(SITU_DOWN_ATTR) if torch.compiler.is_compiling() else None
+        down = situ_down(self.proj["ffn_down"], gate, hidden) if situ_down is not None else None
+        if down is None:
+            down = self._linear("ffn_down", _situ(hidden, gate))
+        return x + down * gate_f[:, None]
 
 
 class _RoPE(nn.Module):

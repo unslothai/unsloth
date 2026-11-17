@@ -132,12 +132,14 @@ def test_uninstall_and_kill_switch_clear_the_blocks(mods, monkeypatch):
     for block in fused._blocks(transformer):
         block.__dict__[moss.QK_ROPE_ATTR] = object()
         block.__dict__[moss.SHARED_QKV_ATTR] = object()
+        block.__dict__[moss.SITU_DOWN_ATTR] = object()
     monkeypatch.setenv(fused.MOSS_FUSED_ENV, "0")
     assert fused.install(transformer) == {
         "fused_qkv": 0,
         "int8_runner": 0,
         "qk_rope": 0,
         "shared_qkv": 0,
+        "situ_down": 0,
     }
     for block in fused._blocks(transformer):
         assert not {
@@ -145,13 +147,14 @@ def test_uninstall_and_kill_switch_clear_the_blocks(mods, monkeypatch):
             moss.LINEAR_RUNNER_ATTR,
             moss.QK_ROPE_ATTR,
             moss.SHARED_QKV_ATTR,
+            moss.SITU_DOWN_ATTR,
         } & set(block.__dict__)
 
 
 def test_other_denoisers_and_offload_are_left_alone(mods):
     torch, moss, fused = mods
     transformer = _tiny(torch, moss)
-    empty = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0}
+    empty = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0, "situ_down": 0}
     assert fused.install(torch.nn.Linear(2, 2)) == empty
     assert fused.install(transformer, offload_active = True) == empty
 
@@ -171,6 +174,7 @@ def test_bf16_keeps_three_gemms_and_rope_is_opt_in(mods, monkeypatch):
         "int8_runner": 0,
         "qk_rope": 0,
         "shared_qkv": 0,
+        "situ_down": 0,
     }
     monkeypatch.setenv(fused.MOSS_QK_ROPE_ENV, "1")
     assert (
