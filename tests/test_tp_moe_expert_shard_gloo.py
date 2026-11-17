@@ -40,6 +40,14 @@ def _require_fused_experts():
         pytest.skip(f"experts stay replicated with this transformers: {_FUSED[0]}")
 
 
+def _randomize_lora_b(model, seed = 1234):
+    g = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if "lora_B" in name:
+                p.copy_(torch.randn(p.shape, generator = g) * 0.02)
+
+
 def _overrides(experts, aux = False):
     out = {"mlp_only_layers": [1], "num_experts": experts}
     if aux:
@@ -70,8 +78,18 @@ def _case_parity(
     overrides = _overrides(experts, aux)
     ref = build(QWEN3_MOE, overrides, **MOE_LORA)
     model = build(QWEN3_MOE, overrides, **MOE_LORA)
+    for m in (ref, model):
+        _randomize_lora_b(
+            m
+        )  # lora_B = 0 would leave every lora_A grad of the first step at exactly 0
+    zoo_before = {k for k in sys.modules if k.startswith("unsloth_zoo")}
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     tpn.apply_tensor_parallel(model, mesh["tp"])
+    ref_dir0, tp_dir0 = os.path.join(tmp, f"ref0_{rank}"), os.path.join(tmp, "tp0")
+    ref.save_pretrained(ref_dir0)
+    tpn.save_tp_adapter(
+        model, tp_dir0
+    )  # before any step: the gather / unpermute / padding trim must be exact
     plan = model._unsloth_tp_plan
     hooked = [
         any(getattr(h, "__name__", "") == "_moe_post_hook" for h in b._forward_hooks.values())
@@ -95,6 +113,13 @@ def _case_parity(
     ref.save_pretrained(ref_dir)
     tpn.save_tp_adapter(model, tp_dir)
     return {
+        "zoo_imported": sorted(
+            {k for k in sys.modules if k.startswith("unsloth_zoo")} - zoo_before
+        ),
+        "saved0_ref": load_file(os.path.join(ref_dir0, "adapter_model.safetensors")),
+        "saved0_tp": load_file(os.path.join(tp_dir0, "adapter_model.safetensors"))
+        if rank == 0
+        else None,
         "ref": ref_out,
         "tp": tp_out,
         "moe_blocks": len(plan.moe_blocks),
@@ -175,6 +200,15 @@ def _check_parity(results):
     for rank, res in enumerate(results):
         ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
         logits, grads, losses, norms = res["tp"]
+        # apply_tensor_parallel must not import unsloth_zoo: its import patches transformers process-wide
+        # (empty training logits on Windows / ROCm), which a plain transformers model must never get.
+        assert not res[
+            "zoo_imported"
+        ], f"apply_tensor_parallel / training imported {res['zoo_imported'][:5]}"
+        assert logits.numel() and logits.shape == ref_logits.shape, (
+            tuple(logits.shape),
+            tuple(ref_logits.shape),
+        )
         torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
         assert set(grads) == set(ref_grads), sorted(set(grads) ^ set(ref_grads))[:6]
         assert any("experts" in n and "lora_" in n for n in ref_grads), sorted(ref_grads)[:8]
@@ -183,15 +217,23 @@ def _check_parity(results):
         assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-5), (rank, losses, ref_losses)
         assert norms[0] == pytest.approx(ref_norms[0], rel = 1e-5), (rank, norms, ref_norms)
         # Steps 2-3 norms follow AdamW (eps 1e-8), which turns fp32 reduction-order noise on near-zero grads into
-        # ~1e-4 relative here; the replicated path (UNSLOTH_TP_MOE_SHARD=0) shows the same gap at 5 experts.
-        assert norms == pytest.approx(ref_norms, rel = 3e-4), (rank, norms, ref_norms)
+        # 1e-4 .. 5e-4 relative depending on the CPU; the replicated path (UNSLOTH_TP_MOE_SHARD=0) shows the same
+        # gap. A missed or doubled reduction is caught by the first-step grads / norm above (1e-5).
+        assert norms == pytest.approx(ref_norms, rel = 2e-3), (rank, norms, ref_norms)
         assert res["generated"] == (1, 4)
         worst = tuple(max(a, b) for a, b in zip(worst, _diffs(res)))
-    saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
+    # Before any step the saved adapter is the same tensors: gather, lora_B unpermute and padding trim are exact.
+    saved_tp, saved_ref = results[0]["saved0_tp"], results[0]["saved0_ref"]
     assert set(saved_tp) == set(saved_ref)
     for key in saved_ref:
         assert saved_tp[key].shape == saved_ref[key].shape, key  # padding experts dropped on save
-        torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 1e-3, atol = 2e-4, msg = key)
+        torch.testing.assert_close(saved_tp[key], saved_ref[key], rtol = 0, atol = 0, msg = key)
+    # After 3 AdamW steps only the layout is compared: AdamW's g / sqrt(v) turns fp32 reduction-order noise on
+    # near-zero grads into up to ~lr changes (seen at 2-3e-4 on gfx1151 / x86 CPUs, replicated path included).
+    saved_tp, saved_ref = results[0]["saved_tp"], results[0]["saved_ref"]
+    assert set(saved_tp) == set(saved_ref)
+    for key in saved_ref:
+        assert saved_tp[key].shape == saved_ref[key].shape, key
     print(f"max |diff| logits {worst[0]:.3g} grads {worst[1]:.3g} losses {worst[2]:.3g}")
     return worst
 

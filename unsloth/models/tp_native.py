@@ -1750,13 +1750,21 @@ def expert_shard_problem(block):
     return None
 
 
+def _loaded_zoo_module(name):
+    """unsloth_zoo.<name> if an Unsloth run already imported it, else None. Never import it from here: zoo imports
+    patch transformers process-wide (e.g. causal LM forwards that return empty training logits), which a plain
+    transformers / PEFT model under apply_tensor_parallel must not get as a side effect."""
+    import sys
+    return sys.modules.get("unsloth_zoo." + name)
+
+
 def _lora_b_layout():
-    """How fused expert lora_B columns pack experts: zoo's mode, else PEFT's (expert index fastest)."""
-    try:
-        from unsloth_zoo.temporary_patches.moe_utils import moe_lora_b_layout
-        return moe_lora_b_layout()
-    except Exception:
-        return "rank_major"
+    """How fused expert lora_B columns pack experts: zoo's mode in an Unsloth run, else PEFT's (expert index fastest)."""
+    moe_utils = _loaded_zoo_module("temporary_patches.moe_utils")
+    layout = getattr(moe_utils, "moe_lora_b_layout", None)
+    if callable(layout):
+        return layout()
+    return "rank_major"
 
 
 def _trim_expert_pad(full, dim, groups, experts, padded, per):
@@ -1820,17 +1828,9 @@ def _expert_locals(shard):
             owner._parameters[name] = current
 
 
-_MOE_ROUTING = []
-
-
 def _moe_checkpoint_routing():
-    if not _MOE_ROUTING:
-        try:
-            from unsloth_zoo.gradient_checkpointing import moe_checkpoint_routing
-        except Exception:
-            moe_checkpoint_routing = None
-        _MOE_ROUTING.append(moe_checkpoint_routing)
-    return _MOE_ROUTING[0]
+    """Unsloth gradient checkpointing's MoE routing reuse, when an Unsloth run loaded it (see _loaded_zoo_module)."""
+    return getattr(_loaded_zoo_module("gradient_checkpointing"), "moe_checkpoint_routing", None)
 
 
 def _expert_call_args(args, kwargs):
