@@ -127,3 +127,23 @@ def test_overlapping_wide_head_calls_restore_the_callers_backends_once():
     threads["b"].join(5)
     assert seen == {"a": {attention.SDPBackend.MATH}, "b": {attention.SDPBackend.MATH}}
     assert set(attention._cur_sdpa_kernel_backends()) == before
+
+
+@pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+def test_guarded_wide_head_compiles_fullgraph(monkeypatch, backend):
+    # Studio installs this guard before unsloth's, which then keeps it: its wide-head branch must trace with no break
+    F = torch.nn.functional
+    monkeypatch.setattr(G, "_wide_cuda_head", lambda q: q.shape[-1] > G.WIDEST_FUSED_HEAD_DIM)
+    guarded = G.guard_sdpa(F.scaled_dot_product_attention)
+    q, k, v = (torch.randn(1, 2, 8, 512) for _ in range(3))
+    before = attention._cur_sdpa_kernel_backends()
+    want = guarded(q, k, v, is_causal = True)
+    torch._dynamo.reset()
+    try:
+        got = torch.compile(
+            lambda q, k, v: guarded(q, k, v, is_causal = True), backend = backend, fullgraph = True
+        )(q, k, v)
+    finally:
+        torch._dynamo.reset()
+    assert torch.allclose(got, want, atol = 1e-6)
+    assert attention._cur_sdpa_kernel_backends() == before and G._HELD == [0, None]
