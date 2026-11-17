@@ -267,7 +267,10 @@ def test_offered_memory_scopes_follow_the_chat_without_mutating_other_offers(db)
     project = memory.offer("project-chat")[0]["function"]
     assert personal["parameters"]["properties"]["scope"]["enum"] == ["personal"]
     assert project["parameters"]["properties"]["scope"]["enum"] == ["personal", "project"]
-    assert memory.TOOL["function"]["parameters"]["properties"]["scope"]["enum"] == ["personal", "project"]
+    assert memory.TOOL["function"]["parameters"]["properties"]["scope"]["enum"] == [
+        "personal",
+        "project",
+    ]
     assert memory.execute(
         {"scope": "project", "key": "stack", "value": "Kotlin"}, "project-chat"
     ).startswith("Memory updated:")
