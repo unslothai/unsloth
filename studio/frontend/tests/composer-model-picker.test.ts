@@ -24,6 +24,8 @@ import {
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
+  pickerWidth,
+  pickerZoomOut,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -223,7 +225,10 @@ test("a loaded row ejects from its menu and the collapsed view, never its dot", 
   // The dot is only a mark: hovering it never turns it into Eject.
   assert.match(picker, /<LoadedDot \/>/);
   assert.doesNotMatch(picker, /Loaded\. Click to eject/);
-  assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
+  assert.match(
+    picker,
+    /\.\.\.\(\(row\.loaded \|\|\s+\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
@@ -323,7 +328,10 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
-  assert.match(picker, /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/);
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/,
+  );
   assert.match(
     picker,
     /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
@@ -644,13 +652,19 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
-test("the open picker is one height on every tab, loaded model or not", () => {
+test("the open picker fits its rows, capped by the window share and the room", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
+  // Only Run settings keeps a fixed height; the list view is a cap plus a floor for empty tabs.
+  assert.match(picker, /configTarget\s+\? "h-\(--composer-picker-h\)"/);
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(420px\*var\(--ui-space-scale,1\)\)\]"/,
+    /isExpanded &&\s+"min-h-\[min\(calc\(240px\*var\(--ui-space-scale,1\)\),var\(--radix-popover-content-available-height\)\)\]"/,
+  );
+  assert.match(
+    picker,
+    /: "max-h-\[min\(var\(--composer-picker-h\),var\(--radix-popover-content-available-height\)\)\]"/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -660,8 +674,8 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
 });
 
-test("a panel opening down rides up over the composer when the room below is short", () => {
-  // Room below: the usual 8px gap.
+test("a panel opening down rides up over the composer only when its rows do not fit below", () => {
+  // Room below: the usual 8px gap under Select model.
   assert.equal(pickerDropOffset(400, 300, 900), 8);
   // 100px short: up by that much, over the composer.
   assert.equal(pickerDropOffset(500, 492, 900), -100);
@@ -671,6 +685,15 @@ test("a panel opening down rides up over the composer when the room below is sho
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+  // Measured from the fitted panel, so a short tab stays under the button.
+  assert.match(
+    picker,
+    /pickerDropOffset\(rect\.bottom, panel\.offsetHeight, window\.innerHeight\)/,
+  );
+  assert.match(
+    picker,
+    /"max-h-\[min\(var\(--composer-picker-h\),calc\(100dvh-16px\)\)\]"/,
+  );
 });
 
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
@@ -908,6 +931,39 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+});
+
+test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
+  assert.equal(pickerWidth(390, 1), 360);
+  assert.equal(pickerWidth(1440, 1), 432);
+  // A 2560px monitor at 100% stays capped.
+  assert.equal(pickerWidth(2560, 1), 520);
+  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves both bounds.
+  assert.equal(pickerWidth(960, 1), 360);
+  assert.equal(pickerWidth(960, 1.25), 450);
+  // Zoomed out to 50%, a 1512px window is 3024 CSS px: the cap doubles, so it shows at 454 screen px.
+  const zoomOut = pickerZoomOut(3024, 1512, null);
+  assert.equal(zoomOut, 2);
+  assert.equal(Math.round(pickerWidth(3024, 1, zoomOut) / zoomOut), 454);
+  // 100%, zoomed in, and side-docked devtools (a slightly narrower page) leave the caps alone.
+  assert.equal(pickerZoomOut(1512, 1512, null), 1);
+  assert.equal(pickerZoomOut(1008, 1512, null), 1);
+  assert.equal(pickerZoomOut(1500, 1512, null), 1);
+  // The desktop app reports its webview zoom directly.
+  assert.equal(pickerZoomOut(2257, 1512, 0.5), 2);
+  assert.equal(pickerZoomOut(1512, 1512, 1.25), 1);
+  // The CSS twin uses the same bounds on the panel itself, where --picker-zoom-out is set.
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.composer-model-picker \{\s+--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\)\);/,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /w-\(--composer-picker-w\)/);
+  assert.match(picker, /"--picker-zoom-out": pickerZoomOutState/);
+  assert.match(picker, /pickerWidth\(window\.innerWidth, scale, zoomOut\)/);
 });
 
 test("the Connected tab lists every connection's models, favorites then newest first", () => {
@@ -1530,7 +1586,7 @@ test("a model with no logo of its own shows no icon", () => {
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
   assert.match(mark, /return null;\s*\}\s*$/);
   assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
-  assert.equal(picker.match(/chosenName && chosenLoaded \? \(/g)?.length, 2);
+  assert.equal(picker.match(/chosenName && chosenEjectable \? \(/g)?.length, 2);
   assert.equal(
     picker.match(
       /: "-my-0\.5 -mr-1\.5 w-0 overflow-hidden group-hover\/chip:-mx-0\.5 group-hover\/chip:w-\[calc\(18px\*var\(--ui-space-scale,1\)\)\]"/g,
@@ -1600,5 +1656,29 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
   assert.match(
     picker,
     /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
+  );
+});
+
+test("a connected model in use offers eject, which clears the pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const chosenExternal =\s+!pane && Boolean\(checkpoint && isExternalModelId\(checkpoint\)\);\s+const chosenEjectable = chosenLoaded \|\| chosenExternal;/,
+  );
+  // The chip's hover eject (both trigger variants), the panel's Eject, and the collapsed row's Eject.
+  assert.equal(picker.match(/chosenName && chosenEjectable \?/g)?.length, 2);
+  assert.match(picker, /\(chosenEjectable \|\| loadedModels\.length > 0\)/);
+  assert.match(picker, /!pending && chosenEjectable && !modelLoading/);
+  assert.match(
+    picker,
+    /\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
+  // The runtime treats an eject of a connected model as clearing the selection.
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /if \(isExternalModelId\(checkpoint\)\) \{\s+clearCheckpoint\(\);/,
   );
 });

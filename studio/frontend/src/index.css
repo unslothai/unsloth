@@ -3403,7 +3403,7 @@ html[data-chat-font] .aui-root {
 		width: 100%;
 		height: var(
 			--composer-editor-height,
-			calc(40px * var(--ui-space-scale, 1))
+			calc(64px * var(--ui-space-scale, 1))
 		);
 		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
@@ -3453,7 +3453,7 @@ html[data-chat-font] .aui-root {
 	/* --composer-fill-height: useExpandedComposerFill; the clamp is the first-frame fallback. */
 	[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
-			var(--composer-editor-height, calc(40px * var(--ui-space-scale, 1))),
+			var(--composer-editor-height, calc(64px * var(--ui-space-scale, 1))),
 			var(--composer-fill-height, clamp(8rem, calc(80svh - 12rem), 42rem))
 		);
 		/* Instant: easing in read as the bottom edge creeping. */
@@ -3664,6 +3664,14 @@ html[data-chat-font] .aui-root {
 		padding-right: var(--composer-dock-inset-right, 1.25rem);
 	}
 
+	/* Too short to centre: the new-chat composer drops to the foot. */
+	@media (max-height: 34rem) {
+		.aui-thread-welcome-center > .aui-thread-welcome-spacer:last-child {
+			flex-grow: 0 !important;
+			flex-basis: calc(1rem * var(--ui-space-scale, 1));
+		}
+	}
+
 	/* Pull back into the viewport's gutter, or the empty state is 40px narrower than the thread. */
 	:where(.aui-thread-root[data-thread-narrow]) .aui-thread-welcome-message {
 		padding-left: 0;
@@ -3863,6 +3871,13 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
+
+	/* Caps grow by --picker-zoom-out so zooming out keeps the on-screen size; on the panel, not :root, which
+	   would resolve the var before the panel sets it. pickerWidth mirrors the width. */
+	.composer-model-picker {
+		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+		--composer-picker-h: clamp(calc(320px * var(--ui-space-scale, 1)), 56dvh, calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
 		padding-top: calc(6px * var(--ui-space-scale, 1));

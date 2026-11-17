@@ -464,7 +464,7 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** Short of room below, a downward panel rides up over the composer, never past the window top. */
+/** Rows that do not fit below ride up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
   panelHeight: number,
@@ -474,8 +474,32 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
+/** --composer-picker-w in index.css: 30vw between 360px and 520px, the cap times the zoom-out. */
+export function pickerWidth(
+  viewportWidth: number,
+  scale: number,
+  zoomOut = 1,
+): number {
+  return Math.min(
+    520 * scale * zoomOut,
+    Math.max(360 * scale, viewportWidth * 0.3),
+  );
+}
+
+/** Zoom-out factor (1 at 100% or zoomed in): browser zoom moves innerWidth but not outerWidth; the app zooms its webview. */
+export function pickerZoomOut(
+  innerWidth: number,
+  outerWidth: number,
+  webviewZoom: number | null,
+): number {
+  const zoom =
+    webviewZoom ??
+    (innerWidth > 0 && outerWidth > 0 ? outerWidth / innerWidth : 1);
+  // Window borders and side-docked devtools read as a slight zoom; only a real step counts.
+  return zoom < 0.95 ? Math.min(4, 1 / zoom) : 1;
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,

@@ -138,6 +138,10 @@ import {
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
+import {
+  interfaceScaleToZoom,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -146,6 +150,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -207,7 +212,9 @@ import {
   type ListSection,
   PICKER_EDGE,
   PICKER_GAP,
-  PICKER_WIDTH,
+  pickerDropOffset,
+  pickerWidth,
+  pickerZoomOut,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -224,7 +231,6 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -2777,6 +2783,10 @@ export function ComposerModelPicker({
       setExpanded(true);
     }
   }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
+  // Never loaded, but ejectModel clears a connected pick.
+  const chosenExternal =
+    !pane && Boolean(checkpoint && isExternalModelId(checkpoint));
+  const chosenEjectable = chosenLoaded || chosenExternal;
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
@@ -3281,9 +3291,11 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
+  const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const dropsDown = open && openSide === "bottom";
+  // Re-placed as the panel fits new rows, so only a list too long for the room below rides up.
   useEffect(() => {
     if (!(dropsDown && panel)) {
       setDropOffset(PICKER_GAP);
@@ -3324,8 +3336,21 @@ export function ComposerModelPicker({
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
           ) || 1
         : 1;
+      const zoomOut = pickerZoomOut(
+        window.innerWidth,
+        window.outerWidth,
+        isTauri
+          ? interfaceScaleToZoom(useInterfaceScaleStore.getState().scale)
+          : null,
+      );
+      setPickerZoomOutState(zoomOut);
       setAlignOffset(
-        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
+        pickerAlignOffset(
+          align,
+          rect,
+          pickerWidth(window.innerWidth, scale, zoomOut),
+          window.innerWidth,
+        ),
       );
       resetView();
       setActive(0);
@@ -4185,7 +4210,9 @@ export function ComposerModelPicker({
                         : undefined
                     }
                     items={[
-                      ...(row.loaded && canEject
+                      ...((row.loaded ||
+                        (chosenExternal && row.id === checkpoint)) &&
+                      canEject
                         ? [
                             {
                               key: "eject",
@@ -4975,7 +5002,7 @@ export function ComposerModelPicker({
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-                ) : chosenName && chosenLoaded ? (
+                ) : chosenName && chosenEjectable ? (
                   <Hint label="Eject model">
                     {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                     <span
@@ -5049,7 +5076,7 @@ export function ComposerModelPicker({
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : chosenName && chosenLoaded ? (
+            ) : chosenName && chosenEjectable ? (
               <Hint label="Eject model">
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                 <span
@@ -5104,14 +5131,15 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
+        ref={setPanel}
         sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
+        style={{ "--picker-zoom-out": pickerZoomOutState } as CSSProperties}
         data-tour="chat-model-selector-popover"
         data-list-last={
           isExpanded && !hasFoot && !configTarget ? "" : undefined
@@ -5123,15 +5151,18 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
-          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) &&
-            "h-[calc(420px*var(--ui-space-scale,1))]",
+          "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          // The list view fits its rows; useAnimatedListHeight glides tab changes.
+          configTarget
+            ? "h-(--composer-picker-h)"
+            : isExpanded &&
+                "min-h-[min(calc(240px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
+          // Opening down, the height is not held to the room below: pickerDropOffset lifts it instead.
           openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
+            ? "max-h-[min(var(--composer-picker-h),calc(100dvh-16px))]"
+            : "max-h-[min(var(--composer-picker-h),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
@@ -5229,7 +5260,7 @@ export function ComposerModelPicker({
                 ))}
               </div>
               {(!pane || pane.loaded) &&
-              (chosenLoaded || loadedModels.length > 0) &&
+              (chosenEjectable || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
                 <Button
@@ -5239,7 +5270,7 @@ export function ComposerModelPicker({
                     ejectsAll
                       ? "Eject all models"
                       : `Eject ${
-                          chosenLoaded
+                          chosenEjectable
                             ? (chosenName ?? "model")
                             : modelDisplayName(loadedModels[0]?.id ?? "model")
                         }`
@@ -5247,7 +5278,7 @@ export function ComposerModelPicker({
                   onClick={() => {
                     if (ejectsAll) {
                       source?.ejectAll();
-                    } else if (!chosenLoaded && loadedModels[0]) {
+                    } else if (!chosenEjectable && loadedModels[0]) {
                       source?.eject(
                         loadedModels[0].checkpoint ?? loadedModels[0].id,
                       );
@@ -5572,7 +5603,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </button>
-            {!pending && chosenLoaded && !modelLoading ? (
+            {!pending && chosenEjectable && !modelLoading ? (
               <Button
                 variant="destructive"
                 size="xs"
