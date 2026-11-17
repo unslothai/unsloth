@@ -951,6 +951,7 @@ export const ko = {
     error: "오류",
     export: "내보내기",
     help: "도움말",
+    hide: "숨기기",
     todayAt: "오늘 {time}",
     yesterdayAt: "어제 {time}",
     loading: "로딩 중...",

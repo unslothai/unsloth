@@ -1060,6 +1060,7 @@ export const uk = {
     error: "Помилка",
     export: "Експортувати",
     help: "Довідка",
+    hide: "Приховати",
     todayAt: "Сьогодні, {time}",
     yesterdayAt: "Учора, {time}",
     loading: "Завантаження...",

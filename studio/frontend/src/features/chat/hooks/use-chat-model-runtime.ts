@@ -361,8 +361,6 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
-  cancelButton:
-    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;

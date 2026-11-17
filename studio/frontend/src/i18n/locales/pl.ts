@@ -1060,6 +1060,7 @@ export const pl = {
     error: "Błąd",
     export: "Eksportuj",
     help: "Pomoc",
+    hide: "Ukryj",
     todayAt: "Dzisiaj, {time}",
     yesterdayAt: "Wczoraj, {time}",
     loading: "Wczytywanie...",

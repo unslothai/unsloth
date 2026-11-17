@@ -988,6 +988,7 @@ export const he = {
     error: "שגיאה",
     export: "ייצוא",
     help: "עזרה",
+    hide: "הסתרה",
     todayAt: "היום, {time}",
     yesterdayAt: "אתמול, {time}",
     loading: "טוען...",

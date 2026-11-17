@@ -1065,6 +1065,7 @@ export const nl = {
     error: "Fout",
     export: "Exporteren",
     help: "Help",
+    hide: "Verbergen",
     todayAt: "Vandaag, {time}",
     yesterdayAt: "Gisteren, {time}",
     loading: "Laden...",

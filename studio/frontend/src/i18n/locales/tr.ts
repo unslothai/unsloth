@@ -1049,6 +1049,7 @@ export const tr = {
     error: "Hata",
     export: "Dışa aktar",
     help: "Yardım",
+    hide: "Gizle",
     todayAt: "Bugün, {time}",
     yesterdayAt: "Dün, {time}",
     loading: "Yükleniyor...",
