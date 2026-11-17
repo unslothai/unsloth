@@ -3528,6 +3528,7 @@ export function AppSidebar() {
     translate: {
       icon: AiTranslateIcon,
       label: t("shell.navigation.translate"),
+      badge: t("shell.beta"),
       active: pathname === "/translate",
       onClick: () => {
         navigateFromRow({ to: "/translate" });

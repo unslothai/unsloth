@@ -6,6 +6,7 @@ import {
   ComposerModelPickerContext,
   type ComposerModelPickerSource,
 } from "@/components/assistant-ui/composer-model-picker/context";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -1209,9 +1210,17 @@ export function TranslatePage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-10 4xl:max-w-6xl">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-          {t("translate.title")}
-        </h1>
+        <div className="flex items-center gap-2.5">
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+            {t("translate.title")}
+          </h1>
+          <Badge
+            variant="secondary"
+            className="h-4 px-1.5 text-ui-10 text-muted-foreground"
+          >
+            {t("shell.beta")}
+          </Badge>
+        </div>
         <div className="flex items-center gap-1">
           <ModelMenu
             value={prefs.modelId}
