@@ -6488,6 +6488,13 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            if os.environ.get("UNSLOTH_PARALLEL", "").strip().lower() == "auto":
+                # No Unsloth from_pretrained chose DDP / FSDP2 yet: size the model handed in (once).
+                from ..parallel_auto import resolve_for_trainer
+                resolve_for_trainer(
+                    model,
+                    kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None),
+                )
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)

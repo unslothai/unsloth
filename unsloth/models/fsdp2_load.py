@@ -288,6 +288,10 @@ def sharded_load_env(loader):
     def wrapper(*args, **kwargs):
         if _ACTIVE[0]:
             return loader(*args, **kwargs)
+        if os.environ.get("UNSLOTH_PARALLEL", "").strip().lower() == "auto":
+            # Before anything below (or inside the load) reads UNSLOTH_FSDP2: DDP or FSDP2 by size.
+            from ..parallel_auto import resolve_for_load
+            resolve_for_load(loader, args, kwargs)
         if fsdp2_sharded_load_requested():
             with fsdp2_sharded_loading():
                 return loader(*args, **kwargs)
