@@ -1050,9 +1050,8 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
 
 
 def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
-    """torch.mps.is_available() only exists from torch 2.5 and the supported floor is 2.4.
-    Probing the accelerators under one shared try/except turned that AttributeError into
-    "no block", so the very hosts the gate exists for (CPU-only) sailed through it."""
+    """torch.mps.is_available() is absent before torch 2.5 but the floor is 2.4; a shared try/except
+    would turn that AttributeError into no block, letting CPU-only hosts pass."""
     import torch
 
     from core.training.diffusion_train_common import dit_accelerator_missing_reason

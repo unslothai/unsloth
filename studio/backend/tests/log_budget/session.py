@@ -35,6 +35,8 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     # Hub's 5s vLLM availability retry while the GPU probe still answers "Checking...". A path sits in one scenario
     # only, and every 2xx read is dropped by _QUIET_SUCCESS_PATHS, so the faster cadences cost no lines either.
     "/api/engines": (30.0, "declared"),
+    # The Images page's queue panel: every 5s idle, every 1s while jobs wait (use-image-queue.ts).
+    "/api/inference/images/queue": (5.0, "declared"),
 }
 
 # Polls only while an operation is in flight; separate so the idle envelope is not averaged.
@@ -46,8 +48,7 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
-    # The Images page reads it once, then every second only while the FLUX.3 prompt upsampler
-    # downloads (prompt-enhance-panel.tsx, usePromptUpsamplerStatus).
+    # Polled every second only while FLUX.3 prompt upsampler downloads; read once otherwise.
     "/api/inference/images/prompt-upsampler/status": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
     "/api/export/logs": (1.0, "declared"),

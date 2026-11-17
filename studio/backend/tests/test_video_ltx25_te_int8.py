@@ -203,11 +203,15 @@ def test_worker_load_quantizes_only_when_asked(monkeypatch):
 
 
 def test_te_quant_tristate(monkeypatch):
+    from core.inference.diffusion_precision import AutoTeQuant
+
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
-    assert v25.ltx25_te_quant_scheme(None) is None
-    assert v25.ltx25_te_quant_scheme("auto") is None
-    assert v25.ltx25_te_quant_scheme("") is None
+    # Unset / auto is an automatic int8 pick, which only the hosted file serves.
+    for mode in (None, "auto", ""):
+        picked = v25.ltx25_te_quant_scheme(mode)
+        assert picked == "int8" and isinstance(picked, AutoTeQuant)
     assert v25.ltx25_te_quant_scheme("int8") == "int8"
+    assert not isinstance(v25.ltx25_te_quant_scheme("int8"), AutoTeQuant)
     assert v25.ltx25_te_quant_scheme("none") is None
     assert v25.ltx25_te_quant_scheme("off") is None
     for scheme in ("fp8", "fp8_dynamic"):
@@ -215,10 +219,13 @@ def test_te_quant_tristate(monkeypatch):
             v25.ltx25_te_quant_scheme(scheme)
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert v25.ltx25_te_quant_scheme(None) == "int8"
+    assert not isinstance(v25.ltx25_te_quant_scheme(None), AutoTeQuant)
     assert v25.ltx25_te_quant_scheme("auto") == "int8"
     assert v25.ltx25_te_quant_scheme("off") is None
+    # The kill switch: the bf16 auto from before the hosted file.
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
     assert v25.ltx25_te_quant_scheme(None) is None
+    assert v25.ltx25_te_quant_scheme("auto") is None
     assert v25.ltx25_te_quant_scheme("int8") == "int8"
 
 
@@ -226,15 +233,23 @@ def test_budget_prices_the_int8_encoder(monkeypatch):
     from core.inference.diffusion_te_prequant import te_prequant_budget_scale
     from core.inference.video_families import detect_video_family
 
+    from core.inference import diffusion_te_prequant as tpq
+
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: False)
     fam = detect_video_family("Lightricks/LTX-2.5-Diffusers")
     bf16_gb = fam.bf16_components_gb[1]
     kw = {"target": None, "base": "Lightricks/LTX-2.5-Diffusers"}
     scale = te_prequant_budget_scale(fam, te_quant_mode = "int8", **kw)
     assert scale == pytest.approx(v25.LTX25_TE_INT8_GB / bf16_gb)
     assert scale < 0.6
+    assert v25.LTX25_TE_INT8_GB * 1e9 >= 13_028_751_080
     assert te_prequant_budget_scale(fam, te_quant_mode = "none", **kw) == 1.0
+    # Auto prices the hosted file only when it is confirmed, else the bf16 encoder it then loads.
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == 1.0
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda *a, **k: True)
+    assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == scale
+    assert te_prequant_budget_scale(fam, te_quant_mode = "off", **kw) == 1.0
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == scale
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")

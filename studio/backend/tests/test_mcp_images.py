@@ -383,8 +383,7 @@ def test_the_data_url_history_is_capped_too():
 
 
 def test_a_live_image_turn_merges_into_a_trailing_nudge():
-    """append_deferred_nudges leaves a role=user turn; a second one in a row is
-    what a strict VLM template rejects."""
+    """append_deferred_nudges leaves a user turn; strict VLM templates reject two in a row."""
     conversation = [
         {"role": "user", "content": "take a screenshot"},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c"}]},
@@ -425,8 +424,7 @@ def test_a_marker_turn_still_opens_its_own_turn_after_a_tool_result():
 
 
 def test_a_non_mcp_tool_never_has_its_output_read_as_images():
-    """The envelope is a plain text suffix, so terminal output or a fetched page
-    can end in a syntactically valid one. Only an mcp__ call is trusted."""
+    """Terminal or web output can end in a valid envelope, so only mcp__ results are trusted."""
     from core.inference.tool_loop_controller import ToolCallCompletion, ToolCallDecision
 
     payload = _envelope("$ cat notes.txt", _image())
@@ -478,9 +476,8 @@ def test_image_parts_are_dropped_for_a_text_only_fallback():
 
 
 def test_a_replay_only_turn_takes_the_vision_render():
-    """The reasoning-channel markers follow the vision render, and #10092 made that
-    unconditional on the vision path -- so what this PR has to keep true is that a
-    replay-only turn reaches that path at all, with no attachment to trigger it."""
+    """Reasoning-channel markers follow the vision render, which #10092 made unconditional; a
+    replay-only turn must still reach that path with no attachment to trigger it."""
     import inspect
 
     from core.inference import inference as inference_module
@@ -494,9 +491,8 @@ def test_a_replay_only_turn_takes_the_vision_render():
 
 
 def test_a_named_non_mcp_tool_result_is_not_promoted_on_replay():
-    """The live loop checks the call's tool name; the replay path reads the
-    message's own `name`. Terminal output ending in a valid envelope must not
-    become image input on the next request either."""
+    """The live loop checks the call's tool name, while replay reads the message's own name;
+    terminal output ending in a valid envelope must not become image input on replay."""
     history = [
         {
             "role": "tool",
@@ -529,8 +525,7 @@ def test_an_mcp_named_result_is_still_promoted_on_replay():
 
 
 def test_an_unnamed_tool_result_keeps_working():
-    """Older stored turns carry no name; the envelope only ever came from an MCP
-    server, so an absent name is not evidence against it."""
+    """Older turns carry no name; an absent name is no evidence against a genuine envelope."""
     history = [{"role": "tool", "content": _envelope("[1 image returned]", _image())}]
 
     out = promote_history(history, vision = True)
@@ -583,8 +578,7 @@ def test_stripping_is_unconditional_and_only_promotion_is_gated():
 
 
 def test_a_parallel_batch_keeps_each_result_its_own_quota():
-    """Two calls returning four images each deliver eight, not four: flattening
-    first hands the whole per-result allowance to the first call."""
+    """Per-result quotas: flattening first would hand the first call the whole allowance."""
     from core.inference.mcp_images import content_parts_per_result
 
     one = [_image() for _ in range(MAX_MODEL_IMAGES)]
@@ -602,8 +596,7 @@ def test_a_parallel_batch_still_stops_at_the_conversation_cap():
 
 
 def test_an_emptied_image_turn_is_dropped_not_left_blank():
-    """content: [] is an empty user message, which strict provider APIs and chat
-    templates reject rather than serving the newer images."""
+    """Emptied turns are dropped: content [] is an empty user message strict providers reject."""
     conversation = [
         {"role": "user", "content": [{"type": "image"}]},
         {"role": "user", "content": [{"type": "image"}]},
@@ -617,8 +610,7 @@ def test_an_emptied_image_turn_is_dropped_not_left_blank():
 
 
 def test_replayed_markers_sit_ahead_of_the_attachment_marker():
-    """Pixels go history-first with the attachment last, and a positional VLM
-    processor binds them in document order."""
+    """Replayed pixels come before the attachment; positional VLMs bind in document order."""
     messages = [
         {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "this one"}]},
     ]
@@ -664,8 +656,7 @@ def test_without_an_ordinal_the_newest_user_turn_still_takes_it():
 
 
 def test_the_provenance_name_survives_local_extraction():
-    """promote_history reads message['name'] to decide whether an envelope came
-    from an MCP server; an extraction that drops it bypasses the check."""
+    """Provenance is message['name'] in promote_history; dropping the name bypasses the check."""
     import inspect
 
     import routes.inference as inference_route
@@ -740,8 +731,7 @@ def test_a_synthetic_image_turn_is_recognised():
 
 
 def test_undecodable_entries_are_not_counted_as_images():
-    """_flatten_result accepts formats Pillow cannot read, and promotion drops
-    them, so charging their KV reserves cache for images never sent."""
+    """Undecodable formats are dropped by promotion, so charging them reserves KV for nothing."""
     svg = {
         "data": base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode(),
         "mimeType": "image/svg+xml",
@@ -755,8 +745,7 @@ def test_undecodable_entries_are_not_counted_as_images():
 
 
 def test_the_replay_cap_never_deletes_a_callers_own_attachments():
-    """promote_history runs on every request now, so an unscoped cap silently
-    dropped the oldest attachments of a caller that simply sent many images."""
+    """The replay cap must never delete the caller's own attachments, even when many are sent."""
     attachments = [
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}}
         for _ in range(mcp_images.MAX_TOTAL_MODEL_IMAGES + 4)
@@ -782,9 +771,8 @@ def test_the_replay_cap_still_bounds_what_promotion_adds():
 
 
 def test_the_sniff_charges_every_format_promotion_can_decode():
-    """A deny list, not an allow list: a format Pillow gains that an allow list
-    missed would be promoted and reserved nothing for, which overcommits the KV
-    cache. Guessing the other way only over-reserves."""
+    """A deny list, not an allow list: a format Pillow gains that an allow list missed would be
+    promoted unreserved, overcommitting KV; guessing the other way only over-reserves."""
     for fmt in ("PNG", "JPEG", "GIF", "BMP", "TIFF", "WEBP", "ICO"):
         buffer = io.BytesIO()
         Image.new("RGB", (8, 8), (1, 2, 3)).save(buffer, format = fmt)
@@ -797,8 +785,7 @@ def test_the_sniff_charges_every_format_promotion_can_decode():
 
 
 def test_the_live_cap_also_leaves_callers_attachments_alone():
-    """The replay cap was scoped first; the live loops kept the unscoped one, so a
-    tool loop that starts from caller attachments still deleted them."""
+    """Live loops must scope the cap too, or caller attachments get deleted by the tool loop."""
     attachments = [
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}}
         for _ in range(6)
@@ -870,9 +857,8 @@ def test_the_vision_streamer_resolves_markers_for_a_replay_only_turn():
 
 
 def test_the_gguf_loop_caps_images_across_iterations_not_per_batch():
-    """A per-iteration ownership list only ever sees the current batch, so three
-    sequential four-image results leave twelve images in the conversation against
-    a cap of eight."""
+    """The ownership list must span iterations; a per-batch one lets three sequential four-image
+    results leave twelve images against a cap of eight."""
     import inspect
 
     from core.inference import llama_cpp
@@ -887,8 +873,7 @@ def test_the_gguf_loop_caps_images_across_iterations_not_per_batch():
 
 
 def test_promotion_reports_the_parts_it_created():
-    """A resumed chat already carries promoted images; a loop starting its cap at
-    zero lets the whole history through and then adds a batch on top."""
+    """A resumed chat carries images already; a cap starting at zero admits the whole history."""
     history = [
         {"role": "tool", "name": "mcp__a__s", "content": _envelope("[1]", _image())},
         {"role": "assistant", "content": "noted"},
@@ -909,9 +894,8 @@ def test_promotion_reports_the_parts_it_created():
 
 
 def test_the_plain_vision_path_marks_the_turn_that_supplied_the_attachment():
-    """messages_with_attached_image returns early when markers exist, so the top-up
-    placed the attachment's marker on the newest turn -- showing a later text-only
-    question as carrying an older image."""
+    """messages_with_attached_image returns early when markers exist, so the top-up put the
+    attachment marker on the newest turn, showing an older image on a later text question."""
     conversation = [
         {"role": "user", "content": "here it is"},
         {"role": "assistant", "content": "ok"},
@@ -941,9 +925,8 @@ def test_the_attachment_is_not_the_one_the_cap_drops():
 
 
 def test_a_client_marked_attachment_still_gets_its_pixel():
-    """A marker that predates the top-up is history's only while history has
-    pixels left. When the client marked the attachment itself, the top-up adds
-    nothing and that pre-existing marker is the attachment's."""
+    """A pre-existing marker belongs to history only while history has pixels left; when the client
+    marked the attachment itself, the top-up adds nothing and the marker is its."""
     conversation = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "x"}]}]
     prior = mcp_images.image_marker_parts(conversation)
 
@@ -965,9 +948,8 @@ def test_history_still_takes_its_own_markers_first():
 
 
 def test_the_gguf_loop_starts_its_cap_from_the_replayed_parts():
-    """The list is seeded from the conversation, not from zero: a resumed chat whose
-    history already carries the allowance would otherwise get a second one for this
-    run and send both."""
+    """The list is seeded from the conversation, not zero: a resumed chat whose history already
+    carries the allowance would otherwise get a second one and send both."""
     import inspect
 
     from core.inference import llama_cpp
@@ -993,9 +975,8 @@ def test_the_gguf_route_hands_the_loop_what_promotion_created():
 
 
 def test_a_replayed_history_is_not_decoded_past_what_the_cap_can_keep():
-    """A permitted raster is 40 megapixels and a few hundred bytes of base64 can ask
-    for one, so decoding every envelope in a caller-supplied history before the trim
-    let the request choose how much Pillow work it cost."""
+    """A permitted raster is 40 megapixels, and a few hundred base64 bytes can request one, so
+    decoding every envelope before the trim let the request choose the Pillow cost."""
     decoded: list = []
     real = _png()
 
@@ -1036,8 +1017,7 @@ def test_a_replayed_history_is_not_decoded_past_what_the_cap_can_keep():
 
 
 def test_the_eligible_pass_keeps_candidates_behind_an_undecodable_result():
-    """It cannot decode either, so a newest result of formats Pillow rejects must not
-    starve the valid pictures behind it."""
+    """A newest result in formats Pillow rejects must not starve valid pictures behind it."""
     history = [
         {
             "role": "tool",
@@ -1068,8 +1048,7 @@ def test_the_eligible_pass_keeps_candidates_behind_an_undecodable_result():
 
 
 def test_an_oversized_parallel_batch_keeps_its_newest_results():
-    """Everything else that bounds these keeps the newest, so filling the batch from
-    the front showed the model results 1-2 on this turn and 2-3 on the next."""
+    """Like every other bound, an oversized batch keeps the newest results, not the first."""
     results = [
         [{"data": _png(size = (4 + index, 4 + index)), "mimeType": "image/png"} for _ in range(4)]
         for index in range(3)
@@ -1116,8 +1095,7 @@ def test_a_partially_trimmed_turn_stops_claiming_the_images_it_lost():
 
 
 def test_the_owned_list_drops_evicted_parts_before_it_counts():
-    """A rolling-context fitter evicts whole turns mid-loop without telling this list.
-    Counting parts that already left over-trims the ones still in it."""
+    """Rolling-context fitters evict turns unseen; counting evicted parts over-trims the rest."""
     owned: list = []
     conversation: list = []
     mcp_images.append_image_turn(
@@ -1154,9 +1132,8 @@ def test_the_owned_list_drops_evicted_parts_before_it_counts():
 
 
 def test_a_live_result_of_unreadable_entries_bounds_its_decode_attempts():
-    """The payload-byte budget caps how BIG a result is, never how many entries it
-    holds, so a server answering with thousands of tiny unreadable ones could hold an
-    inference worker open on Pillow for a turn that can show four pictures at most."""
+    """The payload-byte budget caps result size, not entry count, so thousands of tiny unreadable
+    entries could hold a worker on Pillow for a turn that shows four pictures at most."""
     attempts: list = []
 
     def _counting_url(data):
@@ -1179,8 +1156,7 @@ def test_a_live_result_of_unreadable_entries_bounds_its_decode_attempts():
 
 
 def test_the_allowance_still_looks_past_a_run_of_rejects():
-    """The bound must not defeat what it is bounding: the whole reason entries are not
-    sliced first is that valid PNGs sit behind formats Pillow rejects."""
+    """The bound must still look past rejects: valid PNGs sit behind formats Pillow rejects."""
     seen: list = []
 
     def _url(data):
@@ -1203,8 +1179,7 @@ def test_the_allowance_still_looks_past_a_run_of_rejects():
 
 
 def test_the_note_never_claims_the_survivors_are_the_first_ones():
-    """An oversized parallel batch keeps its NEWEST results, so a note reading
-    'first 8 of 12' names images the model was never shown."""
+    """An oversized batch keeps its newest results, so a note must not say 'first 8 of 12'."""
     results = [
         [{"data": _png(size = (4 + index, 4 + index)), "mimeType": "image/png"} for _ in range(4)]
         for index in range(3)
@@ -1243,8 +1218,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
 
 
 def test_the_shared_budget_still_reaches_a_good_result_behind_bad_ones():
-    """The bound must not defeat what it protects: the newest result failing must
-    still leave enough attempts to find the real pictures behind it."""
+    """The shared decode budget must still reach real pictures behind a failing newest result."""
 
     def _url(data):
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
@@ -1283,9 +1257,8 @@ def test_a_complete_turn_keeps_its_total_when_the_cap_first_trims_it():
 
 
 def test_a_transparent_screenshot_is_composited_rather_than_flattened_to_black():
-    """convert("RGB") keeps whatever colour sits UNDER the alpha, and a tool that
-    never painted a background leaves that black -- so a transparent screenshot's
-    dark text converted to black on black and the model saw a blank rectangle."""
+    """convert('RGB') keeps the colour under the alpha, which is black when a tool never painted a
+    background, so transparent screenshots must be composited, not flattened."""
     import base64 as _b64
     import io as _io
 
@@ -1406,9 +1379,8 @@ def test_the_route_trims_replay_before_marking_the_attachment():
 
 
 def test_a_live_result_leaves_room_for_the_pictures_the_caller_attached():
-    """owned holds only what the loop appended, so the cap allowed the attachment
-    PLUS a full eight tool images. A provider keeping the first eight in document
-    order then drops the newest result -- the one the model just asked for."""
+    """owned holds only what the loop appended, so the cap allowed the attachment plus eight tool
+    images; a provider keeping the first eight in document order drops the newest result."""
     conversation = [
         {
             "role": "user",
@@ -1506,9 +1478,8 @@ def test_an_unnamed_tool_result_is_judged_by_the_call_that_made_it():
 
 
 def test_the_note_reports_what_the_tool_returned_not_what_admission_allowed():
-    """The admission pass slices the candidates before promotion sees them, so
-    summing those made a 100-image result read as a handful -- the note describing
-    the admission pass rather than the tool, next to a result saying 100."""
+    """Admission slices candidates before promotion sees them, so summing those made a 100-image
+    result read as a handful; the note must describe the tool's result, not admission."""
     history = [
         {
             "role": "tool",
@@ -1558,9 +1529,8 @@ def _call(call_id, name):
 
 
 def test_repeated_call_ids_pair_each_result_with_its_own_call():
-    """The backend restarts ids like call_0 every response. A conversation-wide
-    last-wins lookup let a later non-MCP call_0 rename an earlier MCP result -- and
-    the reverse -- so an earlier picture was suppressed or a later envelope trusted."""
+    """The backend restarts ids like call_0 every response, so a conversation-wide last-wins lookup
+    let a later non-MCP call_0 rename an earlier MCP result, and the reverse."""
     history = [
         _call("call_0", "mcp__shot__capture"),
         {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
@@ -1605,8 +1575,7 @@ def test_a_batch_with_a_later_text_result_does_not_say_the_tool_call_above():
 
 
 def test_the_note_honours_a_returned_count_the_frontend_left_on_the_envelope():
-    """The frontend bounds the envelope before it is ever seen here; it records the
-    length it started from on the first entry so the note can still say so."""
+    """The frontend bounds the envelope but records its starting length on the first entry."""
     images = [_image() for _ in range(2)]
     images[0]["returned"] = 100
     history = [{"role": "tool", "name": "mcp__s__shot", "content": _envelope("[100]", *images)}]
@@ -1678,9 +1647,8 @@ def test_the_monitor_prompt_never_retains_envelope_bytes():
 
 
 def test_eligibility_is_not_spent_on_results_a_non_mcp_call_produced():
-    """The preselection read only the explicit name, so two newer unnamed results
-    correlated to non-MCP calls took the allowance and a genuine older MCP result was
-    left an eligibility of zero -- nothing useful replayed with capacity to spare."""
+    """Preselection read only the explicit name, so newer unnamed results correlated to non-MCP
+    calls took the allowance and a genuine older MCP result got zero eligibility."""
     history = [
         _call("call_0", "mcp__shot__capture"),
         {
@@ -1709,8 +1677,7 @@ def test_eligibility_is_not_spent_on_results_a_non_mcp_call_produced():
 
 
 def test_a_detached_image_turn_is_synthetic_too():
-    """Counting the detached block as a real user turn put the attachment's marker on
-    it instead of on the question that supplied the picture."""
+    """A detached image turn is synthetic, so counting it as a user turn misplaces the marker."""
     detached = mcp_images.placeholder_turn(1, 1, mcp_images.DETACHED_IMAGE_TURN_TEXT)
     assert mcp_images.is_synthetic_image_turn(detached)
 
@@ -1813,8 +1780,7 @@ def test_the_attachment_displaces_a_replay_marker_merged_into_its_turn():
 
 
 def test_pixels_follow_their_own_marker_not_a_queue():
-    """Two replay markers, the first displaced: its payload must vanish, not bind to
-    the second marker."""
+    """A displaced marker's payload must vanish, not bind to the second replay marker."""
     a = {"type": "image"}
     b = {"type": "image"}
     conversation = [{"role": "user", "content": [b, {"type": "text", "text": "x"}]}]
@@ -1839,9 +1805,8 @@ def test_the_local_batch_shares_one_decode_attempt_budget():
 
 
 def test_the_dispatch_check_never_parses_the_envelope():
-    """has_images json-loads the whole array; the async wrappers only need to know
-    whether to leave the event loop, and a 12 MB parse on the loop to decide that
-    stalled everything beside it."""
+    """has_images json-loads the whole array, but async wrappers only need to know whether to leave
+    the event loop; a 12 MB parse there stalls everything beside it."""
     import inspect
 
     from routes import inference
@@ -1930,9 +1895,8 @@ def _one_marker_per_turn(conversation: list) -> list[int]:
 
 
 def test_local_replay_keeps_every_picture_the_live_loop_kept():
-    """Eight rounds of four valid PNGs. The live loop keeps one per round, eight in
-    all; budgeting four per result for a path that sends one spent the allowance on
-    the newest two rounds and replayed three of the eight."""
+    """The live loop keeps one picture per round; budgeting four per result on a path sending one
+    spent the allowance on the newest two rounds and replayed three of eight."""
     history = _rounds(8, 4)
     live = min(
         sum(
@@ -1956,8 +1920,7 @@ def test_local_replay_keeps_every_picture_the_live_loop_kept():
 
 
 def test_local_replay_charges_a_parallel_batch_once():
-    """Three parallel results land as one turn carrying one picture, so the batch is
-    charged one, not three: eight such rounds still replay eight pictures."""
+    """A parallel batch is one turn with one picture, so it is charged once, not per result."""
     history = _rounds(8, 2, parallel = 3)
     out, payloads = mcp_images.promote_history_local(history, vision = True)
     assert len(payloads) == 8
@@ -2074,9 +2037,8 @@ def _no_adjacent_user_turns(messages: list) -> None:
 
 
 def test_the_client_tool_rebuild_keeps_one_picture_per_turn(monkeypatch):
-    """Two historical image results and a comparison question, with client tools:
-    the rebuilt history carries one marker per result at its own position, never two
-    on the final user message -- the shape the route refuses on a non-GGUF target."""
+    """Rebuilt client-tool history keeps one image marker per result at its own position, never two
+    on the final user message, the shape the route refuses on non-GGUF targets."""
     call = _client_tool_route(
         monkeypatch,
         [
@@ -2125,9 +2087,8 @@ def test_the_client_tool_rebuild_leaves_the_attachment_to_the_backend(monkeypatc
 
 
 def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
-    """llama-server is bounded by its context window, not a per-request image cap:
-    the live GGUF loop never reserved the attachment's slot, so the replay of the
-    same conversation must not lose a picture to it. A provider reserves it."""
+    """llama-server's limit is its context window, not an image cap; the live GGUF loop never
+    reserved the attachment's slot, so replay must not lose a picture to it."""
     history = [{"role": "user", "content": "start"}]
     for r in range(9):
         history += [
@@ -2166,9 +2127,8 @@ def test_a_gguf_replay_keeps_its_allowance_beside_the_attachment():
 
 
 def test_a_legacy_attachment_displaces_a_merged_replay_marker():
-    """No ordinal (the top-level image field has no part to locate) and a replay
-    marker already merged into the newest user turn: appending built a two-image
-    message. The attachment takes the turn, as the ordinal branch does."""
+    """With no ordinal (a top-level image has no part to locate) and a replay marker merged into the
+    newest user turn, appending built two images; the attachment takes that turn."""
     conversation = [
         {"role": "user", "content": "read a.png"},
         {"role": "tool", "content": "[1 image returned]"},
@@ -2189,8 +2149,7 @@ def test_a_legacy_attachment_displaces_a_merged_replay_marker():
 
 
 def test_a_legacy_attachment_skips_a_synthetic_turn():
-    """The newest user turn can be a replay's own placeholder; the attachment goes on
-    the question, not on the replay's turn."""
+    """The newest user turn may be a replay placeholder, so attach to the real question."""
     conversation = [
         {"role": "user", "content": "the question"},
         {"role": "tool", "content": "[1 image returned]"},
@@ -2202,8 +2161,7 @@ def test_a_legacy_attachment_skips_a_synthetic_turn():
 
 
 def test_the_catalog_predicate_never_parses_the_envelope():
-    """The dispatch predicate runs on the event loop; the exact check json-loads a
-    12 MB envelope. The substring form must not touch the parser."""
+    """Dispatch predicate runs on the event loop: its substring form must never json-parse."""
     import routes.inference as inference_route
     from models.inference import ChatCompletionRequest, ChatMessage
 
@@ -2282,9 +2240,8 @@ def test_the_local_loops_detach_the_note_for_a_multi_result_batch():
 
 
 def test_the_caller_reservation_is_taken_before_any_replay_decode(monkeypatch):
-    """Eight attachments leave a provider no room for replay; the eligibility budget
-    says so before a single candidate is decoded, instead of decoding eight rasters
-    for the trim at the bottom to drop them all."""
+    """Eight attachments leave no room for replay; the eligibility budget must say so before any
+    candidate is decoded, not decode eight rasters just for the trim to drop them."""
     decoded: list = []
     original = mcp_images._png_data_url
 
@@ -2313,8 +2270,7 @@ def test_the_caller_reservation_is_taken_before_any_replay_decode(monkeypatch):
 
 
 def test_every_async_promotion_wrapper_hops_on_the_marker_alone():
-    """Stripping an envelope for a text-only target parses the same 12 MB array as
-    promoting it, so the hop off the loop cannot be gated on vision."""
+    """Stripping parses the 12 MB array as promotion does, so the hop cannot depend on vision."""
     import inspect
 
     import routes.inference as inference_route
@@ -2386,9 +2342,8 @@ def test_the_monitor_prompt_never_parses_the_envelope(monkeypatch):
 
 
 def test_the_gguf_admission_estimate_parses_off_the_loop():
-    """reserve() binds a waiter to the running loop, so only the ESTIMATE can move: it
-    strips every replayed envelope. Every route reservation goes through the async
-    form, which hops on the marker."""
+    """reserve() binds a waiter to the running loop, so only the estimate can move off the loop;
+    route reservations take the async form, which hops on the marker."""
     import inspect
 
     import routes.inference as inference_route
@@ -2408,8 +2363,7 @@ def test_the_gguf_admission_estimate_parses_off_the_loop():
 
 
 def test_a_sixteen_bit_picture_is_scaled_not_clipped():
-    """convert("RGB") on I;16 clips 0..65535 to 8 bits, so ordinary 16-bit imagery came
-    out nearly white while the tool card showed the real picture."""
+    """convert('RGB') on I;16 clips 0..65535 to 8 bits, so 16-bit imagery must be scaled."""
     from PIL import Image
 
     source = Image.new("I;16", (4, 4))
@@ -2470,8 +2424,7 @@ def test_the_anthropic_server_tool_gate_reads_caller_attachments_only():
 
 
 def test_the_safetensors_loop_stamps_a_round_id_on_every_decision():
-    """Replay groups consecutive results as one batch; the frontend keeps them
-    consecutive only when the cards share a round_id."""
+    """Replay batches consecutive results; cards need a shared round_id to stay consecutive."""
     import inspect
 
     from core.inference import safetensors_agentic
@@ -2481,9 +2434,8 @@ def test_the_safetensors_loop_stamps_a_round_id_on_every_decision():
 
 
 def test_a_merge_into_a_trailing_nudge_still_says_where_the_pictures_came_from():
-    """A deferred no-op nudge is a trailing user turn the batch's pictures merge into
-    (two user turns in a row is what a strict template rejects). Merged bare, they read
-    as attachments to the nudge; the note names the tool they came from."""
+    """A deferred nudge is a trailing user turn that pictures merge into, and strict templates
+    reject two user turns in a row; the note names the source tool."""
     nudge = {"role": "user", "content": "Tool `lookup` is not available; continue."}
 
     conversation = [dict(nudge)]
@@ -2545,9 +2497,8 @@ def test_a_camera_jpeg_is_shown_the_way_up_its_exif_says():
 
 
 def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeypatch):
-    """An MCP tool's own text can contain the marker line with no envelope behind it, so
-    the strip is the exact split for every result -- and the awaited callers take the
-    async form, which runs that split in a worker whenever the marker is present."""
+    """An MCP tool's text can contain the marker line with no envelope, so the strip is the exact
+    split; awaited callers use the async form, which hops when the marker is present."""
     import asyncio
     import inspect
 
@@ -2597,8 +2548,7 @@ def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeyp
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():
-    """Five caller attachments beside a four-picture result trimmed to three: the note
-    must read (3 of 4), not (8 of 9) -- the attachments are not the tool's."""
+    """Caller attachments are not the tool's, so the note must read (3 of 4), not (8 of 9)."""
     attachments = [
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,A{i}"}} for i in range(5)
     ]
@@ -2656,9 +2606,8 @@ def test_a_replay_batch_of_two_picture_results_is_detached():
     "mark, count", [(mcp_images.top_up_image_markers, 2), (mcp_images.mark_last_user_turn, 1)]
 )
 def test_a_displaced_replay_marker_takes_its_note_with_it(mark, count):
-    """The replay merged its marker and note into the question that also owns the
-    attachment; the attachment displaces the marker, and the note must go too, or it
-    says the caller's own picture was returned by the tool."""
+    """A displaced replay marker takes its note with it, or the note claims the tool returned the
+    caller's own picture."""
     question = {
         "role": "user",
         "content": [
@@ -2681,9 +2630,8 @@ def test_a_displaced_replay_marker_takes_its_note_with_it(mark, count):
 
 
 def test_the_note_counts_a_result_the_allowance_left_nothing_of():
-    """Three results of three in one batch on the marker path: one picture is shown and
-    the note must say (1 of 9), not (1 of 6) -- the result with no admitted candidate
-    is still part of what the batch returned."""
+    """Three results of three on the marker path show one picture, so the note must say (1 of 9),
+    not (1 of 6); a result with no admitted candidate still counts toward the batch."""
     history = [
         {
             "role": "tool",

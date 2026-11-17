@@ -67,8 +67,7 @@ def _redirected_hub_cache(tmp_path):
 
 
 def test_purge_state_preserves_active_legacy_when_deleting_inactive_cache(monkeypatch, tmp_path):
-    """A scoped delete of an inactive cache must not erase the unscoped legacy
-    state, which _legacy_state_applies attributes to the active cache."""
+    """Deleting an inactive cache must keep the unscoped legacy state the active cache owns."""
     active = tmp_path / "active" / "hub"
     previous = tmp_path / "previous" / "hub"
     for path in (active, previous):
@@ -230,8 +229,7 @@ def test_pre_resolve_digest_cancel_marker_is_cleared_by_a_new_attempt(monkeypatc
 
 
 def test_repo_delete_clears_variant_state_under_a_redirected_cache(monkeypatch, tmp_path):
-    """Repo delete must clear every variant manifest under a redirected cache, not only the spelled
-    scope."""
+    """Repo delete must clear all variant manifests under a redirected cache."""
     spelled = _shared_setup_2(monkeypatch, tmp_path)
 
     assert download_manifest.write_manifest(

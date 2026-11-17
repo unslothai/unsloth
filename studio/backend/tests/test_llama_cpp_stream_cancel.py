@@ -85,9 +85,7 @@ def test_generate_chat_completion_swallows_internal_stream_cancel(monkeypatch):
 
 
 class _StallUpstream:
-    """Raw HTTP/1.1 server that streams one chunked SSE chunk, then holds the
-    socket open and silent so the client's next read blocks in recv() until its
-    side is torn down. Reproduces a mid-stream stall (llama-server goes quiet)."""
+    """Raw HTTP/1.1 server that sends one SSE chunk, then goes silent, so the client's next read blocks."""
 
     def __init__(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

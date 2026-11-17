@@ -78,6 +78,29 @@ def settle(page, ms: int = SETTLE_MS) -> None:
     page.wait_for_timeout(ms)
 
 
+def click_open(
+    page,
+    name: str,
+    timeout_ms: int = 5_000,
+) -> None:
+    """Click a trigger and wait, bounded, until it reports open.
+
+    A fixed sleep after two back-to-back clicks lost the second one on a loaded runner: the first
+    card's 200ms expansion was still moving the second trigger. A card that never opens still fails,
+    because the caller reads aria-expanded afterwards.
+    """
+    selector = f'[data-probe="{name}-trigger"]'
+    page.click(selector)
+    try:
+        page.wait_for_function(
+            "(sel) => document.querySelector(sel)?.getAttribute('aria-expanded') === 'true'",
+            arg = selector,
+            timeout = timeout_ms,
+        )
+    except Exception:  # noqa: BLE001 - the probe below records the failure
+        pass
+
+
 def open_page(
     page,
     base_url: str,
@@ -143,8 +166,8 @@ def run(base_url: str, pw) -> dict:
         p.append("2: the answer did not move up when activity collapsed")
 
     # --- 3 manual expansion ----------------------------------------------
-    page.click('[data-probe="controlled-trigger"]')
-    page.click('[data-probe="uncontrolled-trigger"]')
+    click_open(page, "controlled")
+    click_open(page, "uncontrolled")
     settle(page)
     after_expand = probe(page)
     page.evaluate("() => window.__setHasText(true)")
@@ -291,8 +314,7 @@ def run(base_url: str, pw) -> dict:
     if scene["uncontrolled"]["aria_expanded"] != "false":
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
-    # --- 12 storage denied -------------------------------------------------
-    # Safari private browsing and blocked cookies make localStorage throw.
+    # Storage denied: Safari private browsing and blocked cookies make localStorage throw.
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {

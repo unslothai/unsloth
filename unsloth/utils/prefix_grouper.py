@@ -51,8 +51,9 @@ _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
 
-def prefix_grouper_enabled() -> bool:
-    """Needs seq-packing, torch >= 2.7 and a flex kernel that passed its compile check."""
+def prefix_grouper_enabled(model = None) -> bool:
+    """Needs seq-packing, torch >= 2.7 and a flex kernel that passed its compile check; given the
+    model that will run the shared-prefix forward, also that its forward applies prefix_seg_info."""
     global _OFF_LOGGED
     if _ENV_ENABLED and not _ENABLED and not _OFF_LOGGED:
         _OFF_LOGGED = True
@@ -62,7 +63,76 @@ def prefix_grouper_enabled() -> bool:
             "does not compile there); using the packed path.",
             flush = True,
         )
-    return _ENABLED and compile_check_failed() is None
+    if not (_ENABLED and compile_check_failed() is None):
+        return False
+    return model is None or prefix_seg_info_applied(model)
+
+
+# attention_dispatch.APPLIES_PREFIX_SEG_INFO; spelled out so this module loads without attention_dispatch.
+APPLIES_PREFIX_SEG_INFO = "_unsloth_applies_prefix_seg_info"
+_APPLIED_CACHE = "_unsloth_prefix_seg_info_applied"
+
+
+def _running_forward(module):
+    """llama.running_forward without importing the model code: the class forward, and for a method
+    pre_patch gated, the wrapped fast forward only on modules marked by mark_unsloth_fast_path."""
+    method = getattr(type(module), "forward", None)
+    method = getattr(method, "__func__", method)
+    if getattr(method, "_unsloth_gated", False):
+        if not getattr(module, "_unsloth_fast_path", False):
+            return None
+        return getattr(method, "__wrapped__", None)
+    return method
+
+
+def _decoder_layer_count(model):
+    config = getattr(model, "config", None)
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        try:
+            config = get_text_config()
+        except Exception:
+            pass
+    layers = getattr(config, "num_hidden_layers", None)
+    return layers if isinstance(layers, int) and not isinstance(layers, bool) else None
+
+
+def prefix_seg_info_applied(model) -> bool:
+    """True only when the forward that runs on ``model`` applies ``prefix_seg_info``.
+
+    Other forwards drop it via ``**kwargs`` and leak completions across a group (0.02-0.04 nats, under
+    the 0.7-nat self-verify), so every decoder layer must run a forward marked by ``applies_prefix_seg_info``.
+    """
+    if model is None:
+        return False
+    declared = getattr(model, APPLIES_PREFIX_SEG_INFO, None)
+    if isinstance(declared, bool):
+        return declared
+    cached = getattr(model, _APPLIED_CACHE, None)
+    if isinstance(cached, bool):
+        return cached
+    applied = False
+    try:
+        layers = _decoder_layer_count(model)
+        if layers is not None and layers > 0:
+            marked = sum(
+                bool(getattr(_running_forward(module), APPLIES_PREFIX_SEG_INFO, False))
+                for module in model.modules()
+            )
+            applied = marked >= layers
+    except Exception:
+        applied = False
+    try:
+        setattr(model, _APPLIED_CACHE, applied)
+    except Exception:
+        pass
+    if not applied and os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in ("1", "True", "true"):
+        print(
+            f"Unsloth: GRPO PrefixGrouper is off for {type(model).__name__}: its forward does not "
+            "apply prefix_seg_info; using the packed path.",
+            flush = True,
+        )
+    return applied
 
 
 def verify_on() -> bool:
@@ -135,11 +205,7 @@ class GroupLayout:
 
 
 def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows):
-    """CPU-side grouping mirroring the packed _pk_* partition, or None.
-
-    Prompt = real columns < cstart_r = (L - logits_to_keep) - left_pad_r; every row of a group
-    must have a byte-identical prompt. Suffix tokens scatter exactly like the packed path.
-    """
+    """CPU mirror of the packed _pk_* partition; None unless each group has byte-identical prompts."""
     G = num_generations
     if G is None or G < 2 or total_rows % G != 0:
         return None
@@ -204,10 +270,7 @@ def _build_group_layout_reference(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Token-by-token shared-prefix GroupLayout (build_group_layout's fallback), or None.
-
-    input_ids [B, L]: prompt left-padded, completion right-padded.
-    """
+    """Token-level GroupLayout fallback for build_group_layout; prompts left-, completions right-padded."""
     device = input_ids.device
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
@@ -337,17 +400,8 @@ def build_group_layout(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
-
-    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
-        the completion. Real tokens of a row are a contiguous run not necessarily
-        starting at column 0.
-    logits_to_keep : int
-    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
-
-    Same result as _build_group_layout_reference, with one device->host and one
-    host->device copy instead of per-token loops.
-    """
+    """Shared-prefix GroupLayout, or None to fall back to the packed path; input_ids [B, L] with
+    left-padded prompts and right-padded completions; same result as the reference."""
     args = (input_ids, logits_to_keep, pad_id, num_generations, left_pad_tokens_per_prompt)
     kwargs = dict(apply_tokr_gate = apply_tokr_gate, max_segment_cap = max_segment_cap)
     lp = left_pad_tokens_per_prompt
@@ -502,6 +556,7 @@ __all__ = [
     "GroupLayout",
     "build_group_layout",
     "prefix_grouper_enabled",
+    "prefix_seg_info_applied",
     "verify_on",
     "tokr_threshold",
     "tol_ok",

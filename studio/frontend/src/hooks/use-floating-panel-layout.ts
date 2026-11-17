@@ -5,6 +5,10 @@ import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-s
 import {
   type FrameBox,
   type PanelIntent,
+  type PanelResizeOptions,
+  type ResizeEdges,
+  readPanelWidth,
+  resizedWidth,
   clearPanelIntent,
   isDegenerateBox,
   liftAboveObstacle,
@@ -85,6 +89,23 @@ function naturalWidth(monitor: HTMLDivElement): number {
   return width;
 }
 
+interface ResizeSession {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  constraintsWidth: number;
+  constraintsHeight: number;
+  hx: -1 | 1;
+  vy: -1 | 1;
+  edges: ResizeEdges;
+  moved: boolean;
+  last: { width: number; left: number; top: number };
+}
+
 export function useFloatingPanelLayout(
   constraintsElement: HTMLDivElement | null,
   narrowed: boolean,
@@ -95,6 +116,7 @@ export function useFloatingPanelLayout(
   ) => { left: number; top: number },
   storageKey?: string,
   restingObstacle?: FrameBox | null,
+  resize?: PanelResizeOptions,
 ) {
   // Per instance: a panel unmounting mid-exit clears only its own frame.
   const publisher = useMemo(() => ({}), []);
@@ -102,7 +124,6 @@ export function useFloatingPanelLayout(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
-  const dragFrameRef = useRef(0);
   // User's spot, never rewritten by a clamp.
   const [storedIntent] = useState(() => readPanelIntent(storageKey));
   const intentRef = useRef<PanelIntent>(storedIntent ?? { left: null, top: null });
@@ -118,6 +139,13 @@ export function useFloatingPanelLayout(
   const initializedRef = useRef(false);
   const obstacleRef = useRef(restingObstacle ?? null);
   const restRef = useRef({ left: 0, top: 0, maxLeft: 0, maxTop: 0 });
+  const resizeRef = useRef(resize);
+  const resizeSessionRef = useRef<ResizeSession | null>(null);
+  const [width, setWidth] = useState<number | null>(() => readPanelWidth(resize));
+  const widthRef = useRef(width);
+  if (resize) {
+    preferredWidthRef.current = resize.minWidth;
+  }
 
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
@@ -131,7 +159,7 @@ export function useFloatingPanelLayout(
         return;
       }
       surfaceWidthRef.current = surfaceWidth;
-      if (monitor.style.width || remeasureRef.current) {
+      if (resizeRef.current || monitor.style.width || remeasureRef.current) {
         return;
       }
       remeasureRef.current = requestAnimationFrame(() => {
@@ -155,7 +183,9 @@ export function useFloatingPanelLayout(
 
       scheduleWidthRemeasure(constraintsBox.width);
       const desiredWidth = Math.max(
-        monitorBox.width,
+        resizeRef.current
+          ? (widthRef.current ?? resizeRef.current.defaultWidth())
+          : monitorBox.width,
         preferredWidthRef.current ?? monitorBox.width,
       );
 
@@ -171,6 +201,11 @@ export function useFloatingPanelLayout(
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
       const session = dragSessionRef.current;
+      if (resizeSessionRef.current) {
+        // Mid-resize the resize handler owns position; only refresh the content floor.
+        preferredHeightRef.current = desiredHeight;
+        return;
+      }
       // Mid-drag the pointer owns the spot: the measured box can be a frame behind it.
       let left = session
         ? clamp(session.left, 0, maxLeft)
@@ -270,10 +305,6 @@ export function useFloatingPanelLayout(
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;
       }
-      if (dragFrameRef.current) {
-        cancelAnimationFrame(dragFrameRef.current);
-        dragFrameRef.current = 0;
-      }
     };
   }, [constraintsElement, publisher, storedIntent]);
 
@@ -320,7 +351,12 @@ export function useFloatingPanelLayout(
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
-    if (event.button !== 0 || !(monitor && constraintsElement)) {
+    if (
+      event.button !== 0 ||
+      !(monitor && constraintsElement) ||
+      dragSessionRef.current ||
+      resizeSessionRef.current
+    ) {
       return;
     }
 
@@ -330,10 +366,11 @@ export function useFloatingPanelLayout(
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
 
-    // Sync inline size where max-width/height clipped a native resize.
+    // Sync inline size where max-width/height clipped a native resize; a state-held width is left alone.
     const inlineWidth = Number.parseFloat(monitor.style.width);
     const inlineHeight = Number.parseFloat(monitor.style.height);
     if (
+      !resizeRef.current &&
       Number.isFinite(inlineWidth) &&
       Math.abs(inlineWidth - monitorBox.width) > 0.5
     ) {
@@ -362,9 +399,8 @@ export function useFloatingPanelLayout(
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  // One transform per frame: left/top moves re-sample the backdrop blur.
+  // A transform, never left/top: those re-layout and re-sample the backdrop blur.
   function paintDrag() {
-    dragFrameRef.current = 0;
     const session = dragSessionRef.current;
     const monitor = monitorRef.current;
     if (!(session && monitor)) {
@@ -393,19 +429,14 @@ export function useFloatingPanelLayout(
       0,
       session.maxTop,
     );
-    if (!dragFrameRef.current) {
-      dragFrameRef.current = requestAnimationFrame(paintDrag);
-    }
+    // Paint now: a rAF left the card a frame behind a fast pointer.
+    paintDrag();
   }
 
   function finishDrag(event: PointerEvent<HTMLDivElement>) {
     const session = dragSessionRef.current;
     if (session?.pointerId !== event.pointerId) {
       return;
-    }
-    if (dragFrameRef.current) {
-      cancelAnimationFrame(dragFrameRef.current);
-      dragFrameRef.current = 0;
     }
     const {
       left,
@@ -486,7 +517,11 @@ export function useFloatingPanelLayout(
   function nudge(event: KeyboardEvent<HTMLElement>): boolean {
     const delta = nudgeDelta(event.key, event.shiftKey);
     const monitor = monitorRef.current;
-    if (!(delta && monitor && constraintsElement) || dragSessionRef.current) {
+    if (
+      !(delta && monitor && constraintsElement) ||
+      dragSessionRef.current ||
+      resizeSessionRef.current
+    ) {
       return false;
     }
     event.preventDefault();
@@ -513,6 +548,137 @@ export function useFloatingPanelLayout(
     return true;
   }
 
+
+  function startResize(event: PointerEvent<HTMLElement>, edges: ResizeEdges) {
+    const monitor = monitorRef.current;
+    const options = resizeRef.current;
+    if (
+      event.button !== 0 ||
+      !(monitor && constraintsElement && options) ||
+      dragSessionRef.current ||
+      resizeSessionRef.current
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const constraintsBox = constraintsElement.getBoundingClientRect();
+    const box = monitor.getBoundingClientRect();
+    const intent = intentRef.current;
+    resizeSessionRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: box.left - constraintsBox.left,
+      top: box.top - constraintsBox.top,
+      width: box.width,
+      height: box.height,
+      constraintsWidth: constraintsBox.width,
+      constraintsHeight: constraintsBox.height,
+      hx: edges.x !== 0 ? edges.x : intent.left === null ? -1 : 1,
+      vy: edges.y !== 0 ? edges.y : intent.top === null ? -1 : 1,
+      edges,
+      moved: false,
+      last: {
+        width: box.width,
+        left: box.left - constraintsBox.left,
+        top: box.top - constraintsBox.top,
+      },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function updateResize(event: PointerEvent<HTMLElement>) {
+    const session = resizeSessionRef.current;
+    const monitor = monitorRef.current;
+    const options = resizeRef.current;
+    if (!(session && monitor && options) || session.pointerId !== event.pointerId) {
+      return;
+    }
+    const right = session.left + session.width;
+    const bottom = session.top + session.height;
+    const room = session.hx === -1 ? right : session.constraintsWidth - session.left;
+    const next = resizedWidth(session, event.clientX - session.startX, {
+      min: options.minWidth,
+      max: Math.min(options.maxWidth, room),
+    });
+    if (!session.moved && Math.abs(next - session.width) < 0.5) {
+      return;
+    }
+    session.moved = true;
+    const left = session.hx === -1 ? right - next : session.left;
+    // Write the node first: motion.div style lands a frame late, and text rewraps at the new width.
+    monitor.style.maxWidth = `${session.constraintsWidth - left}px`;
+    monitor.style.width = `${next}px`;
+    monitor.style.left = `${left}px`;
+    const height = desiredPanelHeight(
+      monitor.offsetHeight,
+      scrollRef.current,
+      contentRef.current,
+    );
+    const top = clamp(
+      session.vy === -1 ? bottom - height : session.top,
+      0,
+      Math.max(0, session.constraintsHeight - height),
+    );
+    monitor.style.top = `${top}px`;
+    monitor.style.minHeight = `${height}px`;
+    monitor.style.maxHeight = `${session.constraintsHeight - top}px`;
+    session.last = { width: next, left, top };
+    widthRef.current = next;
+    setWidth(next);
+    setLayout((current) =>
+      current
+        ? {
+            ...current,
+            left,
+            top,
+            minHeight: height,
+            maxWidth: session.constraintsWidth - left,
+            maxHeight: session.constraintsHeight - top,
+          }
+        : current,
+    );
+  }
+
+  function finishResize(event: PointerEvent<HTMLElement>) {
+    const session = resizeSessionRef.current;
+    const options = resizeRef.current;
+    if (!(session && options) || session.pointerId !== event.pointerId) {
+      return;
+    }
+    resizeSessionRef.current = null;
+    // A click (or the double-click that resets) must not turn an anchored corner into a fixed spot.
+    if (session.moved) {
+      const { width: last, left, top } = session.last;
+      const previous = intentRef.current;
+      intentRef.current = {
+        left: previous.left === null && session.hx === -1 ? null : left,
+        top: previous.top === null && session.vy === -1 ? null : top,
+      };
+      storePanelIntent(storageKey, intentRef.current);
+      try {
+        localStorage.setItem(options.storageKey, String(Math.round(last)));
+      } catch {
+        // Storage blocked: the width still applies this session.
+      }
+    }
+    reconcileRef.current?.();
+  }
+
+  function resetWidth() {
+    const options = resizeRef.current;
+    if (!options) return;
+    try {
+      localStorage.removeItem(options.storageKey);
+    } catch {
+      // Nothing stored.
+    }
+    widthRef.current = null;
+    setWidth(null);
+    reconcileRef.current?.();
+  }
+
   return {
     publisher,
     monitorRef,
@@ -524,5 +690,10 @@ export function useFloatingPanelLayout(
     finishDrag,
     resetPosition,
     nudge,
+    width,
+    startResize,
+    updateResize,
+    finishResize,
+    resetWidth,
   };
 }

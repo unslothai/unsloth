@@ -287,8 +287,7 @@ def _starve_the_budget(monkeypatch):
 
 
 def test_a_short_result_that_fit_is_not_called_starved(monkeypatch):
-    """A short result that fit is not starved: the budget reports what the window allowed, not the
-    output."""
+    """A result that fit is not starved: the budget reports the window size, not the output."""
     _starve_the_budget(monkeypatch)
     streams = [[_call("make the file", 0), _done()], [_sse({"content": "Done."}), _done()]]
     payloads: list[dict] = []

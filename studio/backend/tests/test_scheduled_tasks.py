@@ -392,6 +392,32 @@ def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
     assert create(client).json()["archiveSuccessful"] is False
 
 
+def test_web_search_is_off_unless_the_task_turns_it_on(client):
+    assert create(client).json()["webSearch"] is False
+    task = create(client, webSearch = True).json()
+    assert task["webSearch"] is True
+    renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"})
+    assert renamed.json()["webSearch"] is True
+    off = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"webSearch": False})
+    assert off.json()["webSearch"] is False
+
+
+def test_an_older_database_gains_the_web_search_column_once(tmp_path):
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.execute(
+        "CREATE TABLE scheduled_tasks (id TEXT NOT NULL PRIMARY KEY, owner_subject TEXT NOT NULL,"
+        " title TEXT NOT NULL, prompt TEXT NOT NULL, schedule_json TEXT NOT NULL,"
+        " timezone TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, next_run_at INTEGER,"
+        " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO scheduled_tasks VALUES ('t', 'unsloth', 'T', 'P', '{}', 'UTC', 1, NULL, 1, 1)"
+    )
+    studio_db._ensure_schema(conn)
+    studio_db._ensure_schema(conn)
+    assert conn.execute("SELECT web_search FROM scheduled_tasks").fetchall() == [(0,)]
+
+
 def test_create_list_and_read(client, monkeypatch):
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T12:00:00+00:00"))
     response = create(client, title = "  Morning brief  ")
@@ -1038,6 +1064,34 @@ def generate(
     return asyncio.run(generate_answer(app, task, run, cancel_event or threading.Event()))
 
 
+def test_a_web_search_task_may_search_and_run_nothing_else(monkeypatch):
+    producer = FakeProducer(completion("Today's headlines."))
+    monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
+
+    answer = generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert answer.content == "Today's headlines."
+    payload = producer.payload
+    assert payload.enable_tools is True and payload.enabled_tools == ["web_search"]
+    assert payload.tool_choice != "none"
+    # Nobody can answer an approval prompt, and a non-streaming request with a confirm gate is refused.
+    assert payload.permission_mode == "off" and payload.confirm_tool_calls is False
+    assert not inference_routes._confirm_gate_needs_stream(payload)
+    assert payload.bypass_permissions is False
+    assert payload.run_tools_locally is True
+
+
+def test_disable_tools_keeps_a_web_search_task_text_only(monkeypatch):
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: False)
+    producer = FakeProducer(completion("Text only."))
+
+    generate(monkeypatch, producer, task = make_task(webSearch = True))
+
+    assert producer.payload.tool_choice == "none" and producer.payload.enabled_tools == []
+
+
 def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     producer = FakeProducer(completion("Dawn light.", reasoning = "Short."))
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T06:00:00+00:00"))
@@ -1630,11 +1684,18 @@ class SwapWorld:
         from utils import openai_auto_switch_settings
 
         self.loaded = earlier
-        self.unloaded, self.stashed, self.reloads = [], [], []
+        self.unloaded, self.stashed, self.reloads, self.launches = [], [], [], []
+        self.launch = None
         self.idle = idle
         monkeypatch.setattr(llama_keepwarm, "idle_for", lambda seconds: self.idle)
         monkeypatch.setattr(llama_keepwarm, "loaded_identity", lambda: self.loaded)
-        monkeypatch.setattr(llama_keepwarm, "stash_for_reload", self.stashed.append)
+        monkeypatch.setattr(llama_keepwarm, "launch_to_replay", lambda: self.launch)
+
+        def stash(identity, launch = None):
+            self.stashed.append(identity)
+            self.launches.append(launch)
+
+        monkeypatch.setattr(llama_keepwarm, "stash_for_reload", stash)
         monkeypatch.setattr(
             inference_routes,
             "_loaded_satisfies",
@@ -1709,6 +1770,14 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
     assert world.stashed == [SwapWorld.EARLIER]
     assert world.reloads == [(inference_routes._RELOAD_ONLY_MODEL, True)]
     assert world.loaded == SwapWorld.EARLIER
+
+
+def test_a_scheduled_run_restores_the_earlier_model_with_its_launch_settings(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    world.launch = {"kwargs": {"max_seq_length": 8192, "cache_type_kv": "q8_0"}}
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
+    assert world.stashed == [SwapWorld.EARLIER]
+    assert world.launches == [world.launch]
 
 
 def test_a_scheduled_run_stays_off_a_model_the_user_loaded_while_it_waited(monkeypatch):

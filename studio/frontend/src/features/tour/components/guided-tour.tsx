@@ -13,6 +13,7 @@ import {
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { cssEscape, toRect } from "../lib/dom";
 import { fireConfettiFireworks } from "../lib/confetti-fireworks";
 import { computeCardPos, padded, pickPlacement } from "../lib/layout";
@@ -41,6 +42,7 @@ export function GuidedTour({
     top: 12,
   });
   const cardRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   const closeLockRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastRectRef = useRef<Rect | null>(null);
@@ -241,6 +243,7 @@ export function GuidedTour({
             <>
               <DialogPrimitive.Overlay asChild>
                 <motion.div
+                  ref={overlayRef}
                   // The shared slot, so modal checks see the tour.
                   data-slot="dialog-overlay"
                   data-viewport-backdrop={true}

@@ -6,18 +6,29 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 
 const MCP_ACCESS_PATH = "/api/settings/mcp-access";
 
+export type McpToolSetting = {
+  name: string;
+  /** the tool's module, used to group rows */
+  area: string;
+  enabled: boolean;
+  chat?: boolean;
+};
+
 export type McpAccessSettings = {
   enabled: boolean;
   /** UNSLOTH_STUDIO_ENABLE_MCP=1 forces this on and disables the switch */
   forcedByEnv: boolean;
   /** backend-reported URL used as the snippet fallback */
   url: string;
+  /** null when an older backend sends no tool list */
+  tools: McpToolSetting[] | null;
 };
 
 type ApiMcpAccessSettings = {
   enabled: boolean;
   forced_by_env: boolean;
   url: string;
+  tools?: McpToolSetting[];
 };
 
 export function mcpAccessFromApi(
@@ -27,18 +38,34 @@ export function mcpAccessFromApi(
     enabled: settings.enabled,
     forcedByEnv: settings.forced_by_env,
     url: settings.url,
+    tools: Array.isArray(settings.tools)
+      ? settings.tools.map(({ name, area, enabled, chat }) => ({
+          name,
+          area,
+          enabled,
+          ...(typeof chat === "boolean" ? { chat } : {}),
+        }))
+      : null,
   };
 }
 
-async function request(
+// One request at a time, page-wide: the server may finish two in-flight writes in either order,
+// and a read sent during a write can answer with the value before it.
+let queue: Promise<unknown> = Promise.resolve();
+
+function request(
   fallback: string,
   init?: RequestInit,
 ): Promise<McpAccessSettings> {
-  const res = await authFetch(MCP_ACCESS_PATH, init);
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res, fallback));
-  }
-  return mcpAccessFromApi(await res.json());
+  const run = queue.then(async () => {
+    const res = await authFetch(MCP_ACCESS_PATH, init);
+    if (!res.ok) {
+      throw new Error(await readFastApiError(res, fallback));
+    }
+    return mcpAccessFromApi(await res.json());
+  });
+  queue = run.catch(() => undefined);
+  return run;
 }
 
 export function loadMcpAccess(): Promise<McpAccessSettings> {
@@ -50,5 +77,16 @@ export function updateMcpAccess(enabled: boolean): Promise<McpAccessSettings> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
+  });
+}
+
+/** Turns tools on or off by name; the server merges them into the stored list. */
+export function updateMcpTools(
+  states: Readonly<Record<string, boolean>>,
+): Promise<McpAccessSettings> {
+  return request("Failed to update agent access tools", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool_states: states }),
   });
 }

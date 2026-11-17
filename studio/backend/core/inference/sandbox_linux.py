@@ -739,9 +739,8 @@ def _inspect_cache_component(
 CACHE_MISSING = "does not exist"
 CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
 
-# Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
-# path -> (worker, its answer list, give-up time): a later launch joins the same check instead of giving up,
-# but only until the give-up time, so a wedged mount costs two waits in total, not one per launch.
+# Keeps timed-out workers until they finish, to prevent a thread leak on a wedged path; a later
+# launch joins one only until its give-up time.
 _cache_scan_pending: "dict[str, tuple[threading.Thread, list, float]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()

@@ -13,6 +13,13 @@ import pytest
 from core.inference import audio_cpp_failures as af
 from core.inference.audio_cpp_models import AudioCppModel, AudioCppVariant, RepoFile
 
+_REAL_RUNTIME_BACKEND = af._runtime_backend
+
+
+@pytest.fixture(autouse = True)
+def _cuda_audio_runtime(monkeypatch):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
+
 
 def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
     variants = tuple(
@@ -24,7 +31,7 @@ def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
         repo_id = "audio-cpp/audio.cpp-gguf",
         folder = "M-GGUF",
         display_name = "Model M",
-        family = "qwen3_tts",
+        family = "neutts",
         task = "tts",
         server_task = "tts",
         variant = variants[current],
@@ -123,46 +130,144 @@ def test_studio_runtime_messages_classify(tmp_path, monkeypatch):
     assert newer.code == "family_unknown_to_runtime" and "Model M" in newer.message
 
 
-def test_estimate_uses_the_measured_family_profile():
+def test_estimate_uses_the_measured_family_profile(monkeypatch):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
     gb = 1024**3
     generic = af.estimate_resident_gb(3 * gb)
-    assert generic == af.estimate_resident_gb(3 * gb, "qwen3_tts") == 9.0
+    assert generic == af.estimate_resident_gb(3 * gb, "neutts") == 9.0
     assert af.estimate_resident_gb(3 * gb, None) == generic
     assert af.estimate_resident_gb(3 * gb, "new") == generic
     # Peak grows with the input, so it keeps the generic formula.
     assert af.estimate_resident_gb(3 * gb, "vibevoice") == generic
     # Measured below the generic formula.
-    assert af.estimate_resident_gb(3 * gb, "chatterbox") == 6.5
+    assert af.estimate_resident_gb(3 * gb, "chatterbox") == 6.13
     assert af.estimate_resident_gb(int(4.4 * gb), "voxtral_tts") == 6.4
-    # Measured above it: Kokoro q8 peaks at 2.7 GB, VoxCPM2 q8 at 9.7 GB and bf16 at 13.3 GB.
-    assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
-    assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
-    assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
-    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.22 / 15.31 GiB.
-    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.17 > 11.22 + 0.9
-    assert af.estimate_resident_gb(10090406336, "ace_step") == 16.36 > 15.31 + 0.9
+    # Measured above it (#16514, whole device): Kokoro q8 2.74 GiB, VoxCPM2 q8 9.66 and bf16 13.31.
+    assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.65 >= 2.74 + 0.9
+    assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 >= 9.66 + 0.9
+    assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 >= 13.31 + 0.9
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.19 / 14.74 GiB on CUDA.
+    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.11 > 11.19 + 0.9
+    assert af.estimate_resident_gb(10090406336, "ace_step") == 15.67 > 14.74 + 0.9
+
+
+GIB = 1024**3
+# family, package bytes, worst CUDA peak, worst Vulkan peak (GiB) for every measured variant.
+MEASURED_PEAKS = [
+    ("ace_step", 6185468096, 11.19, 11.22),
+    ("ace_step", 10090406336, 14.74, 15.31),
+    ("breeze_tts", int(3.534 * GIB), 5.5, 6.83),
+    ("breeze_tts", int(4.153 * GIB), 6.12, 8.39),
+    ("breeze_tts", int(4.731 * GIB), 6.87, 11.18),
+    ("breeze_tts", int(6.839 * GIB), 8.0, 9.79),
+    ("chatterbox", int(1.945 * GIB), 5.16, 4.82),
+    ("chatterbox", int(3.487 * GIB), 5.23, 5.19),
+    ("cosyvoice3", int(2.103 * GIB), 3.08, 4.73),
+    ("cosyvoice3", int(6.515 * GIB), 5.81, 7.36),
+    ("heartmula", 7659762592, 18.4, 19.58),
+    ("higgs_audio_tts", int(4.745 * GIB), 6.19, 6.47),
+    ("higgs_audio_tts", int(7.918 * GIB), 9.4, 9.55),
+    ("kokoro_tts", int(0.177 * GIB), 2.41, 2.99),
+    ("kokoro_tts", int(0.197 * GIB), 2.39, 2.12),
+    ("kokoro_tts", int(0.869 * GIB), 2.41, 3.05),
+    ("midashenglm_gen", 3381370752, 3.93, 4.42),
+    ("minimax_music3", int(7.866 * GIB), 13.08, 14.0),
+    ("minimax_music3", int(12.609 * GIB), 16.35, 17.26),
+    ("moss_tts_v15", int(8.622 * GIB), 7.79, 10.34),
+    ("moss_tts_v15", int(12.279 * GIB), 11.25, 12.6),
+    ("moss_tts_v15", int(19.134 * GIB), 18.0, 20.58),
+    ("omnivoice", int(1.258 * GIB), 4.44, 6.82),
+    ("omnivoice", int(1.527 * GIB), 3.96, 4.92),
+    ("qwen3_tts", int(1.854 * GIB), 5.88, 9.18),
+    ("qwen3_tts", int(2.343 * GIB), 6.36, 9.66),
+    ("qwen3_tts", int(2.510 * GIB), 6.73, 9.5),
+    ("qwen3_tts", int(2.624 * GIB), 7.47, 10.84),
+    ("qwen3_tts", int(3.892 * GIB), 8.85, 12.2),
+    ("qwen3_tts", int(3.915 * GIB), 8.11, 12.06),
+    ("qwen3_tts", int(4.232 * GIB), 8.2, 11.49),
+    ("stable_audio", 1683576608, 2.24, 2.01),
+    ("stable_audio", 2358473088, 2.8, 2.54),
+    ("stable_audio", 3582601408, 5.27, 5.34),
+    ("stable_audio", 5834365856, 7.3, 9.48),
+    ("voxcpm2", int(2.752 * GIB), 8.62, 8.94),
+    ("voxcpm2", int(4.445 * GIB), 11.09, 11.15),
+    ("voxcpm2", int(4.620 * GIB), 11.09, 13.11),
+    ("voxcpm2", int(8.889 * GIB), 19.06, 22.36),
+    ("voxtral_tts", int(4.399 * GIB), 5.31, 5.92),
+    ("voxtral_tts", int(7.479 * GIB), 8.38, 11.15),
+    ("yue2", 2933424181, 6.78, 6.52),
+    ("yue2", 4531978293, 8.27, 8.58),
+    ("yue2", 7529267253, 11.19, 11.87),
+]
+
+
+@pytest.mark.parametrize("family, size_bytes, cuda_peak, vulkan_peak", MEASURED_PEAKS)
+@pytest.mark.parametrize("backend", ["cuda", "vulkan"])
+def test_each_runtime_profile_covers_its_measured_peak(
+    monkeypatch, family, size_bytes, cuda_peak, vulkan_peak, backend
+):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
+    monkeypatch.setattr(af, "_may_have_pre_ampere_nvidia_card", lambda: False)
+    peak = cuda_peak if backend == "cuda" else vulkan_peak
+    assert af.estimate_resident_gb(size_bytes, family) >= peak + 0.9
 
 
 @pytest.mark.parametrize(
-    "family, size_bytes, peak_gib, expected",
+    "family, size_bytes, cuda, vulkan",
     [
-        ("stable_audio", 1683576608, 2.24, 3.47),
-        ("stable_audio", 2358473088, 2.80, 4.60),
-        ("stable_audio", 3582601408, 5.34, 6.66),
-        ("stable_audio", 5834365856, 9.48, 10.43),
-        ("midashenglm_gen", 3381370752, 4.42, 5.40),
-        ("heartmula", 7659762592, 19.58, 20.53),
+        # #16627's 10 GB card (about 9.4 GiB free) fits these two on CUDA.
+        ("yue2", 4531978293, 9.23, 9.51),
+        ("stable_audio", 5834365856, 9.32, 10.43),
+        ("qwen3_tts", int(1.854 * GIB), 7.22, 10.91),
+        ("chatterbox", int(1.945 * GIB), 6.08, 5.74),
     ],
 )
-def test_music_profiles_cover_their_measured_peak(family, size_bytes, peak_gib, expected):
-    estimate = af.estimate_resident_gb(size_bytes, family)
-    assert estimate == expected and estimate >= peak_gib + 0.9
+def test_the_runtime_backend_picks_the_profile(monkeypatch, family, size_bytes, cuda, vulkan):
+    monkeypatch.setattr(af, "_may_have_pre_ampere_nvidia_card", lambda: False)
+    either = max(cuda, vulkan)
+    for backend, expected in (("cuda", cuda), ("vulkan", vulkan), (None, either), ("hip", either)):
+        monkeypatch.setattr(af, "_runtime_backend", lambda b = backend: b)
+        assert af.estimate_resident_gb(size_bytes, family) == expected, backend
+
+
+@pytest.mark.parametrize(
+    "backend, at_3, at_9_5",
+    [
+        ("cuda", 9.0, 25.25),
+        ("vulkan", 10.05, 22.07),
+        (None, 10.05, 25.25),
+        ("hip", 10.05, 25.25),
+    ],
+)
+def test_the_fallback_follows_the_runtime_backend(monkeypatch, backend, at_3, at_9_5):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
+    gb = 1024**3
+    assert af.estimate_resident_gb(3 * gb, "neutts") == at_3
+    assert af.estimate_resident_gb(int(9.5 * gb), "neutts") == at_9_5
+    assert af.estimate_resident_gb(3 * gb, "vibevoice") == 9.0
+    assert af.estimate_resident_gb(int(9.85 * gb), "vibevoice") == 26.12
+
+
+def test_the_runtime_backend_is_the_installed_servers(monkeypatch):
+    from core.inference import audio_cpp_server as srv
+
+    monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: None)
+    assert _REAL_RUNTIME_BACKEND() is None
+    monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: "/opt/audiocpp_server")
+    monkeypatch.setattr(
+        srv, "select_backend", lambda binary, force_cpu: f"vulkan:{binary}:{force_cpu}"
+    )
+    assert _REAL_RUNTIME_BACKEND() == "vulkan:/opt/audiocpp_server:False"
 
 
 # YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16.
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
+# MEASURED is the Vulkan profile, which also wins with no runtime installed.
 MEASURED = (7.73, 9.51, 12.86)
+MEASURED_CUDA = (7.69, 9.23, 12.1)
 GENERIC = (8.33, 12.05, 19.03)
+GENERIC_VULKAN = (9.55, 12.31, 17.47)
+GENERIC_EITHER = (9.55, 12.31, 19.03)
 
 
 def _cards(
@@ -182,22 +287,31 @@ def _yue2():
 
 
 @pytest.mark.parametrize(
-    "capabilities, driver, expected",
+    "capabilities, driver, profiled",
     [
-        ({0: (8, 6)}, True, MEASURED),
-        ({0: (8, 9)}, True, MEASURED),
-        ({0: (12, 0)}, True, MEASURED),
-        ({}, False, MEASURED),
-        ({0: (7, 5)}, True, GENERIC),
-        ({0: (8, 9), 1: (7, 5)}, True, GENERIC),
-        ({}, True, GENERIC),
+        ({0: (8, 6)}, True, True),
+        ({0: (8, 9)}, True, True),
+        ({0: (12, 0)}, True, True),
+        ({}, False, True),
+        ({0: (7, 5)}, True, False),
+        ({0: (8, 9), 1: (7, 5)}, True, False),
+        ({}, True, False),
+    ],
+)
+@pytest.mark.parametrize(
+    "backend, measured, generic",
+    [
+        (None, MEASURED, GENERIC_EITHER),
+        ("vulkan", MEASURED, GENERIC_VULKAN),
+        ("cuda", MEASURED_CUDA, GENERIC),
     ],
 )
 def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
-    monkeypatch, capabilities, driver, expected
+    monkeypatch, capabilities, driver, profiled, backend, measured, generic
 ):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
     _cards(monkeypatch, capabilities, driver = driver)
-    assert _yue2() == expected
+    assert _yue2() == (measured if profiled else generic)
 
 
 @pytest.mark.parametrize(
@@ -214,7 +328,7 @@ def test_an_nvidia_host_is_told_from_one_without_nvidia(monkeypatch, smi, procfs
 
 def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
     _cards(monkeypatch, {0: (8, 6)}, {0: (8, 6), 1: (7, 5)}, {0: (8, 6)})
-    assert (_yue2(), _yue2(), _yue2()) == (MEASURED, GENERIC, MEASURED)
+    assert (_yue2(), _yue2(), _yue2()) == (MEASURED_CUDA, GENERIC, MEASURED_CUDA)
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
@@ -222,14 +336,15 @@ def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile()
     # A bigger model of a family measured low: the generic formula.
     assert af.estimate_resident_gb(8 * gb, "voxtral_tts") == af.estimate_resident_gb(8 * gb) == 21.5
     # A bigger model of a family measured high: its own profile.
-    assert af.estimate_resident_gb(int(8.8887 * gb), "voxcpm2") == 24.26
-    assert af.estimate_resident_gb(int(8.8887 * gb)) == 23.72
+    assert af.estimate_resident_gb(int(9.5 * gb), "voxcpm2") == 25.6
+    assert af.estimate_resident_gb(int(9.5 * gb)) == 25.25
 
 
 def test_smaller_variants_estimate_with_the_family(monkeypatch):
-    model = replace(_model(sizes = (6, 3, 1), current = 0), family = "chatterbox")
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
+    model = replace(_model(sizes = (6, 3, 1), current = 0), family = "higgs_audio_tts")
     rows = af.smaller_variants(model)
-    assert [(row["label"], row["estimate_gb"]) for row in rows] == [("Q3", 6.5), ("Q1", 4.5)]
+    assert [(row["label"], row["estimate_gb"]) for row in rows] == [("Q3", 5.4), ("Q1", 3.4)]
     assert [row["label"] for row in af.smaller_variants(model, free_gb = 7.3)] == ["Q3", "Q1"]
 
 

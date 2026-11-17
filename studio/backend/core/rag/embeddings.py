@@ -143,6 +143,37 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
     """The picker activated a model whose explicit transfer is still pending."""
 
 
+# Shared by the raise sites and is_download_required_error: a document job keeps only the error text.
+DOWNLOAD_REQUIRED_HINT = "Finish its Settings download before indexing documents."
+
+
+def download_required_message(name: str) -> str:
+    return f"Embedding model {name!r} is not downloaded yet. {DOWNLOAD_REQUIRED_HINT}"
+
+
+def is_download_required_error(error: str | None) -> bool:
+    """A stored error text from EmbeddingModelDownloadRequiredError: a wait, not a bad file."""
+    return bool(error) and DOWNLOAD_REQUIRED_HINT in error
+
+
+def download_required(model_name: str | None = None) -> bool:
+    """True while ``model_name``'s Settings transfer is pending and the cache-only loader still cannot load it."""
+    name = model_name or config.effective_embedding_model()
+    try:
+        from utils.embedding_model_settings import get_stored_download_pending
+        if not get_stored_download_pending(name):
+            return False
+    except Exception:  # noqa: BLE001 - old/unavailable settings store
+        return False
+    try:
+        warm(name)
+    except EmbeddingModelDownloadRequiredError:
+        return True
+    except Exception:  # noqa: BLE001 - any other load failure stays the per-document error it was
+        logger.debug("embedding model %s failed to warm", name, exc_info = True)
+    return False
+
+
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
@@ -604,19 +635,13 @@ def _get(model_name: str | None = None):
                 if download_pending and st_source is None:
                     # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
                     # still a pending model.
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             # Scan only after load_target is settled, so the scanned commit is the loaded one.
@@ -1336,6 +1361,17 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
+def batches_across_documents(model_name: str | None = None) -> bool:
+    """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
+    CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
+    if active_backend_is_llama(model_name):
+        return True
+    model = _model
+    # A loaded model's device counts: a GPU choice can still have fallen back to CPU at load.
+    device = getattr(model, "device", None) if model is not None else None
+    return (str(device) if device is not None else _device()).split(":")[0] != "cpu"
+
+
 def _llama_pooling(name: str, served = None) -> str | None:
     try:
         from .embed_llama_server import LlamaServerBackend, _gguf_pooling
@@ -1489,6 +1525,31 @@ def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
     return text[:lo], True
 
 
+def clip_many_to_limit(texts, count, limit: int | None) -> list[tuple[str, bool]]:
+    """``clip_to_limit`` per text, bisecting every over-limit text in lockstep: one ``count.many`` per round."""
+    texts = list(texts)
+    if not limit or getattr(count, "many", None) is None or len(texts) < 2:
+        return [clip_to_limit(t, count, limit) for t in texts]
+    out = [(t, False) for t in texts]
+    bounds = {
+        i: [0, len(t)] for i, (t, n) in enumerate(zip(texts, _many(count, texts))) if n > limit
+    }
+    active = list(bounds)
+    while active:
+        mids = [(bounds[i][0] + bounds[i][1] + 1) // 2 for i in active]
+        for i, mid, n in zip(
+            active, mids, _many(count, [texts[i][:m] for i, m in zip(active, mids)])
+        ):
+            if n <= limit:
+                bounds[i][0] = mid
+            else:
+                bounds[i][1] = mid - 1
+        active = [i for i in active if bounds[i][0] < bounds[i][1]]
+    for i, (lo, _) in bounds.items():
+        out[i] = (texts[i][:lo], True)
+    return out
+
+
 def chunk_tokens(model_name: str | None = None) -> int:
     limit = max_tokens(model_name)
     return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS
@@ -1530,7 +1591,7 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
         texts = list(texts)
         return _served(lambda count: _many(count, texts))
 
-    # Only a batching backend (sentence-transformers) changes how chunking asks for counts.
+    # Only a batching backend (sentence-transformers, llama-server) changes how chunking asks for counts.
     if getattr(state[1], "many", None) is not None:
         _count.many = _count_many
     return _count

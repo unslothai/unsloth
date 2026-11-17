@@ -217,8 +217,7 @@ def test_kl_vae_takes_the_wide_tiles_for_an_edge_sliver():
     assert vt.stock_layout_ok(vt.stock_tiles(vae), 100, 100) is False
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert wide_err < stock_err / 3, (stock_err, wide_err)
-    # two 60-latent tiles per side (120 decoded latents, as many as the stock 64 + 52 + 4, in 2 calls instead of 3),
-    # not two 64s with a 28-latent overlap (128)
+    # Two 60-latent tiles per side: 120 latents in 2 calls, beating stock 64+52+4 in 3.
     assert vae._unsloth_last_decode_tile[:2] == (60, 60)
 
 
@@ -586,21 +585,37 @@ def test_geometry_and_blend_weights_are_cached_per_vae(monkeypatch):
 
 
 def _image_family_vae_classes():
-    """Every image family's VAE class, from the diffusers pipeline's own ``vae`` annotation."""
+    """Every image family's VAE class: the diffusers pipeline's own ``vae`` annotation, else (a modular or
+    Studio-built pipeline: FLUX.3, Anima, MOSS-Image, MiniMax-H3-Image) the pinned vae/config.json in the seam guard's
+    fixture. A family with neither is missing from the result, which the caller fails on."""
+    import json
+    from pathlib import Path
+
     from core.inference.diffusion_families import _FAMILIES
 
+    fixture = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "vae_tile_configs.json").read_text(
+            encoding = "utf-8"
+        )
+    )["families"]
     out = {}
     for fam in _FAMILIES:
         pipe = getattr(diffusers, fam.pipeline_class, None)
-        if pipe is None:
-            continue
-        ann = inspect.signature(pipe.__init__).parameters.get("vae")
-        if ann is None:
-            continue
-        hint = ann.annotation
-        name = hint if isinstance(hint, str) else getattr(hint, "__name__", str(hint))
-        out[fam.name] = name.split(".")[-1].split("|")[0].strip()
+        ann = inspect.signature(pipe.__init__).parameters.get("vae") if pipe is not None else None
+        if ann is not None and ann.annotation is not inspect.Parameter.empty:
+            hint = ann.annotation
+            name = hint if isinstance(hint, str) else getattr(hint, "__name__", str(hint))
+            out[fam.name] = name.split(".")[-1].split("|")[0].strip()
+        elif fam.name in fixture:
+            out[fam.name] = fixture[fam.name]["config"]["_class_name"]
     return out
+
+
+# VAEs that tile with their own release layout instead of the rule's, with the measurement that keeps them.
+OWN_TILER = {
+    "AutoencoderKLMiniMaxH3Image": "the release's 256 px tiles / 64 px overlaps (its decoder works at that tile; "
+    "untiled is out of distribution): test_vae_tile_geometry.SMALLER_GEOMETRY_OK, seam audit at 2048",
+}
 
 
 def test_every_image_family_vae_is_covered_or_kept_stock_on_purpose():
@@ -613,10 +628,15 @@ def test_every_image_family_vae_is_covered_or_kept_stock_on_purpose():
         "AutoencoderKLQwenImage21",
         "AutoencoderKLHunyuanImage",
     }
+    from core.inference.diffusion_families import _FAMILIES
+
     found = _image_family_vae_classes()
-    assert found, "no image family resolved its VAE class"
+    missing = [f.name for f in _FAMILIES if f.name not in found]
+    assert (
+        not missing
+    ), f"image families whose VAE class resolved nowhere (skipped silently before): {missing}"
     for fam, cls in found.items():
-        assert cls in readable or cls in vt.KEEP_STOCK, (fam, cls)
+        assert cls in readable or cls in vt.KEEP_STOCK or cls in OWN_TILER, (fam, cls)
 
 
 def test_load_installs_for_every_image_family():

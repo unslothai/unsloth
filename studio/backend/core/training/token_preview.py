@@ -190,8 +190,7 @@ class _TokenPreviewService:
         return reply
 
     def stop(self) -> None:
-        # Never waits behind a preview in flight (a first one can take minutes): ending its worker
-        # makes that request fail at once instead.
+        # Never waits behind an in-flight preview; ending its worker fails the request at once.
         if self._lock.acquire(blocking = False):
             try:
                 self._stop_locked()

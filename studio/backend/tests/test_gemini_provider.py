@@ -336,8 +336,7 @@ def test_gemini25_pro_thinking_disabled_uses_small_budget(monkeypatch):
 
 
 def test_gemini3_pro_thinking_disabled_uses_low_level(monkeypatch):
-    """Gemini 3 Pro uses thinkingLevel and rejects 'minimal' (Pro tier), so
-    'off' coerces to 'low' (lowest the API accepts)."""
+    """Gemini 3 Pro's thinkingLevel rejects 'minimal', so 'off' coerces to 'low'."""
     for model in (
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
@@ -938,9 +937,8 @@ def test_tool_message_translates_to_function_response_part(monkeypatch):
 
 
 def test_parallel_function_calls_get_distinct_tool_call_indices(monkeypatch):
-    """Each emitted functionCall in one assistant turn needs its own
-    tool_calls[*].index. Hardcoding index=0 collapses parallel calls onto one
-    slot in OpenAI-style reassemblers."""
+    """Each functionCall in one turn needs its own tool_calls index, since hardcoded index=0 merges
+    parallel calls into one slot in OpenAI-style reassemblers."""
     sse = [
         _event(
             [
@@ -1314,9 +1312,8 @@ def test_google_hosted_gemini_still_uses_native_dispatch():
 
 
 def test_invalid_gemini_model_id_rejected_before_request(monkeypatch):
-    """Path-traversal model ids must be rejected before the URL is
-    interpolated, so the configured API key isn't sent to unintended Gemini
-    endpoints."""
+    """Path-traversal model ids must be rejected before URL interpolation, so the configured API key
+    never reaches unintended Gemini endpoints."""
 
     captured: list[httpx.Request] = []
 
@@ -1426,9 +1423,8 @@ def test_answer_part_boundaries_surface_even_when_unsigned(monkeypatch):
 
 
 def test_enable_prompt_caching_false_string_coerces_to_bool():
-    """Pre-PR the field was Optional[bool]; widening to Union[bool,str] must
-    preserve historical coercion so callers sending `"false"` still opt out of
-    caching."""
+    """Widening the field to Union[bool,str] must keep coercing 'false' to False so existing callers
+    still opt out of caching."""
     from models.inference import ChatCompletionRequest
 
     msg = {"role": "user", "content": "hi"}
@@ -1471,9 +1467,8 @@ def test_legacy_google_openai_base_url_is_rewritten():
 
 
 def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
-    """Round 14: arbitrary public HTTPS image URLs cannot be sent as Gemini
-    fileData (reserved for Files API URIs and YouTube). The translator must
-    fetch the bytes server-side and inline them as base64 inlineData."""
+    """Arbitrary public HTTPS image URLs cannot go out as Gemini fileData, which is reserved for
+    Files API URIs and YouTube; fetch and inline as base64."""
     image_bytes = b"FAKEPNGBYTES"
 
     async def fake_fetch(
@@ -1511,9 +1506,8 @@ def test_remote_image_url_downloads_and_inlines_as_base64(monkeypatch):
 
 
 def test_remote_image_url_dropped_when_fetch_returns_none(monkeypatch):
-    """Round 15: if the SSRF guard rejects the URL (private host, non-https,
-    oversize, non-image), the helper returns None and the image part is
-    silently dropped, not forwarded as raw bytes or a fileData fallback."""
+    """If the SSRF guard rejects an image URL (private host, non-https, oversize, non-image), the
+    part is silently dropped, not sent as raw bytes or a fileData fallback."""
 
     async def fake_fetch_reject(
         url,
@@ -1552,8 +1546,7 @@ def test_safe_fetch_image_rejects_non_https():
 
 
 def test_safe_fetch_image_rejects_loopback_ip_literal():
-    """SSRF guard: refuse loopback / private IP literals before any network
-    call."""
+    """SSRF guard refuses loopback and private IP literals before any network call."""
     for url in (
         "https://127.0.0.1/x.png",
         "https://[::1]/x.png",
@@ -2279,9 +2272,8 @@ def test_function_declarations_inline_local_refs_in_anyof_and_items(monkeypatch)
 
 
 def test_function_declarations_self_referential_schema_terminates(monkeypatch):
-    """Self-referential / cyclic JSON Schemas (a `Node` with `children:
-    [Node]`) must not infinite-loop. The inliner tracks the set of refs in
-    flight and short-circuits to `{}` on a cycle."""
+    """Cyclic JSON Schemas must not infinite-loop: the inliner tracks refs in flight and
+    short-circuits a cycle to {}."""
     captured = _capture_body(
         monkeypatch,
         tools = [
@@ -2555,8 +2547,7 @@ def test_chat_message_extra_content_round_trips_through_validation():
 
 
 def test_metadata_only_gemini_assistant_turn_survives_external_message_build():
-    """Gemini can finish with a signed thought summary and no visible answer.
-    Preserve that metadata-only assistant turn for the next native Gemini request."""
+    """Signed thought-only Gemini turns must survive into the next native request."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
@@ -2840,8 +2831,7 @@ def test_safe_fetch_image_carries_the_addresses_only_on_a_direct_request(
 
 
 def test_safe_fetch_image_redirect_to_private_host_rejected(monkeypatch):
-    """Round 17: each redirect hop must re-validate the new host. A public hop
-    that redirects to an internal address must be dropped."""
+    """Each redirect hop is re-validated, so a public hop redirecting internally is dropped."""
     import socket
     import urllib.error
 
@@ -3095,8 +3085,7 @@ def test_user_function_named_with_server_tool_arg_not_dropped(monkeypatch):
 
 
 def test_builtin_named_with_server_tool_marker_dropped(monkeypatch):
-    """Round 17 control: a builtin (web_search) tagged with `_server_tool:
-    true` continues to be filtered from outbound history."""
+    """Builtins tagged _server_tool, like web_search, are still filtered from outbound history."""
     items = _capture_responses_input(
         monkeypatch,
         [
@@ -3157,9 +3146,8 @@ def test_schema_anyof_multitype_with_null_keeps_anyof_and_nullable(monkeypatch):
 
 
 def test_safe_fetch_image_redirect_malformed_url_no_crash(monkeypatch):
-    """Round 18: when the upstream 302 Location is a malformed bracketed-IPv6
-    URL, the helper must return None instead of letting a urlparse ValueError
-    abort the chat stream."""
+    """A malformed bracketed-IPv6 redirect Location must make the helper return None, not let a
+    urlparse ValueError abort the chat stream."""
     import socket
     import urllib.error
 
@@ -3613,9 +3601,8 @@ def test_native_part_code_execution_treated_as_server_side():
 
 
 def test_remote_image_fetch_attempt_cap_includes_failures(monkeypatch):
-    """Round 19: the per-request image fetch count cap must count ATTEMPTS,
-    not just successes. Otherwise a request with 100 failing/slow URLs runs 100
-    fetches each up to the 15s timeout."""
+    """The per-request image fetch cap must count ATTEMPTS, not just successes, or 100 failing URLs
+    each run up to the 15s timeout."""
     fetch_calls: list[str] = []
 
     async def fake_fetch(
@@ -3825,9 +3812,8 @@ def test_role_tool_dropped_when_matching_synthetic_call_filtered():
 
 
 def test_openrouter_no_synthetic_web_search_event_on_tool_choice_none(monkeypatch):
-    """Round 20: OpenRouter dispatcher must not emit synthetic web_search
-    tool_start / tool_end events when tool_choice="none"; otherwise the chat UI
-    shows a search card for a search that never happened."""
+    """OpenRouter must not emit synthetic web_search tool_start or tool_end events when tool_choice
+    is none, or the UI shows a search that never ran."""
     captured_events: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4035,8 +4021,7 @@ def test_gemini_forced_function_tool_choice_drops_hosted_builtins(monkeypatch):
 
 
 def test_gemini_forced_function_tool_choice_drops_image_generation(monkeypatch):
-    """Round 21: forced-function `tool_choice` must also flip the implicit
-    image-generation hosted tool off on image-tier models."""
+    """Forced function tool_choice must also disable implicit image_generation on image models."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -4193,8 +4178,7 @@ def test_gemini_role_tool_list_content_flattens_to_result_text(monkeypatch):
 
 
 def test_safe_fetch_image_threads_per_request_byte_budget(monkeypatch):
-    """The per-request byte budget reaches the image fetch so an oversize Content-Length is refused
-    early."""
+    """The byte budget reaches the image fetch, so oversize Content-Length is refused early."""
     import socket
 
     captured: dict = {"reads": 0, "content_length_seen": None}
@@ -4312,9 +4296,7 @@ def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
 
 
 def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):
-    """Round 22: forced-function tool_choice must drop the OpenRouter web
-    plugin too — caller pinned a user function, so OpenRouter must not attach
-    the hosted web-search plugin."""
+    """A forced function tool_choice must also drop the OpenRouter web plugin: no hosted web search."""
     captured: dict = {"body": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4604,9 +4586,7 @@ def test_strip_provider_synthetic_tool_history_drops_synthetic_only():
 
 
 def test_strip_provider_synthetic_tool_history_drops_empty_assistant():
-    """If every tool_call was synthetic and the assistant turn had no content,
-    the entire turn must be dropped (llama-server rejects empty assistant
-    messages with no tool_calls)."""
+    """Drop an all-synthetic tool turn with no content: llama-server rejects empty assistant messages."""
     from routes.inference import _strip_provider_synthetic_tool_history
 
     messages = [

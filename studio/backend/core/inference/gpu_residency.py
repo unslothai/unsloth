@@ -95,10 +95,17 @@ def media_held_mib() -> dict[int, int]:
 
 
 def media_owner_held_mib(owner: str) -> Optional[int]:
-    """MiB admitted for one resident media owner across its GPUs, or None when unpriced. Never raises."""
+    """MiB one resident media owner holds across its GPUs: its admitted need less the generation headroom
+    it is not using while idle (as media_unallocated_mib counts it). None when unpriced or loading. Never raises."""
     try:
         need = _media_records().get(owner)
-        total = sum(int(mib) for mib in need.values()) if need else 0
+        if not need:
+            return None
+        loading, generating = _media_busy(owner)
+        if loading:
+            return None
+        headroom = 0 if generating else int(getattr(need, "headroom_mib", 0))
+        total = sum(max(0, int(mib) - headroom) for mib in need.values())
         return total or None
     except Exception:  # noqa: BLE001
         return None
@@ -166,10 +173,8 @@ def summarize_resident_media() -> dict[str, Any]:
 
 
 def media_load_need_mib(kind: str, request: Any, gpu_ordinal: Optional[int]) -> Optional[MediaNeed]:
-    """What a new image or video load will hold, priced from files already on disk. None when unknown.
-
-    ``gpu_ordinal`` is the visible torch ordinal the route resolved; None (automatic) is only priceable on a single
-    visible GPU. Never touches the network and never raises."""
+    """MiB a new image or video load will hold, from files on disk; None if unknown, or automatic on
+    several GPUs."""
     try:
         from utils.hardware.hardware import get_parent_visible_gpu_ids
 
@@ -556,8 +561,7 @@ def can_load_alongside(owner: str, need_mib: Optional[dict]) -> tuple[bool, dict
 
 
 def chat_load_in_flight() -> bool:
-    """Whether a chat load (or swap) is running. Its GPUs aren't known before it launches, so callers treat it as
-    overlapping every GPU."""
+    """Chat load or swap running; its GPUs are unknown before launch, so it overlaps all GPUs."""
     try:
         from core.inference import llama_keepwarm, model_slots
         from core.inference.llama_cpp import chat_load_active
@@ -783,13 +787,9 @@ def _free_steps(
     acting: Optional[str] = None,
     media_only: bool = False,
 ) -> list[str]:
-    """Free the cheapest residents on ``gpu_ids`` first, re-checking after each step. Caller holds the arbiter lock.
-
-    Order: anything still loading, idle video servers, the idle image or video model, idle chat models kept
-    alongside, then the active chat model. Residents on other GPUs are never touched. With ``need_mib`` it stops once
-    the load fits; without one (a chat launch prices itself) it stops after the first step that freed something.
-    ``media_only`` stops before any chat model. "Keep model in GPU memory" does not protect a model here, as with Off.
-    """
+    """Caller holds the arbiter lock; frees cheapest residents on gpu_ids only (never other GPUs),
+    stopping once the load fits (or after one step when unpriced); active chat model last;
+    media_only spares chat models; keep-in-memory does not protect."""
     target = set(gpu_ids) if gpu_ids is not None else None
     freed: list[str] = []
 
@@ -932,9 +932,8 @@ def refuse_unless_fits(
     need_mib: Optional[dict] = None,
     cancel: Any = None,
 ) -> None:
-    """acquire_for(allow_evict=False)'s check for an owner already holding its claim; mutates nothing.
-
-    For loads inside a generation (MLX diffusers fallback). Gives up on ``cancel``: a lock-holding evictor awaits our drain."""
+    """acquire_for(allow_evict=False) check for loads inside a generation; mutates nothing; gives up
+    on cancel because a lock-holding evictor awaits our drain."""
     from utils.account_context import current_account_id
 
     while not arb._lock.acquire(timeout = 0.05):
@@ -1009,12 +1008,8 @@ def coreside_locked(
     acting: Optional[str],
     evicted: Optional[list],
 ) -> None:
-    """Make room for ``owner`` under When they fit / Always, evicting only what has to go. Caller holds the lock.
-
-    Residents on other GPUs stay. A chat load joins priced image and video models and lets its launch price them. An
-    image or video load joins when it fits, else When they fit frees the cheapest residents and Always refuses.
-    Anything that can't be priced is evicted first under When they fit, as with Off.
-    """
+    """Makes room for owner under When they fit / Always; under When they fit, unpriceable residents
+    are evicted first."""
     target = (
         arb.physical_gpu_ids(gpu_ids)
         if gpu_ids is not None

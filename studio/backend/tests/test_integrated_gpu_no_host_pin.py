@@ -473,6 +473,7 @@ _REACHED_THROUGH_A_GATE = {
         "_pin_host_tensor",
     ): "_H3BlockPinner._run only, built by defer_streamed_block_pins behind _background_pin_enabled / "
     "_fast_pin_supported / h3_te_pin_allowed (the admit too), all on the target device",
+    ("core/inference/diffusion_lora_fuse.py", "fuse"): "_host_backup_pinned",
     ("core/inference/diffusion_preview.py", "_device_map"): "exempt: tiny, async preview",
     (
         "core/inference/diffusion_preview.py",
@@ -699,6 +700,8 @@ def test_only_deviceless_sites_ask_the_predicate_without_a_device():
         # device == "cuda" (the current device) is checked first
         ("core/training/diffusion_dit_trainer.py", "_build_latent_cache"),
         ("core/training/diffusion_dit_trainer.py", "_load_warm_conditioning"),
+        ("core/training/diffusion_dit_trainer.py", "_pin_caption_embeds"),
+        ("core/training/diffusion_h3_trainer.py", "_train_h3"),
         ("core/training/diffusion_lora_trainer.py", "_build_sdxl_latent_cache"),
     }
     bare = set()

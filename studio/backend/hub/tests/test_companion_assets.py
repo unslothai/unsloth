@@ -125,8 +125,7 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
 
 
 def test_shared_base_cannot_be_deleted_while_a_quant_is_installed(monkeypatch):
-    """The whole point of the issue: this delete succeeded before the guard, and silently
-    left both installed quants unloadable."""
+    """A base cannot be deleted while its quants are installed, or both are left unloadable."""
     _install(monkeypatch, _gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES)), _base_repo())
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(deletion.delete_cached_model_response(BASE_REPO))
@@ -158,9 +157,7 @@ def test_shared_base_delete_is_blocked_through_the_ungated_mirror_identity(monke
 
 
 def test_a_base_reached_only_through_a_card_tag_is_still_protected(monkeypatch):
-    """A GGUF pick caches no model card, so family detection alone answers the family DEFAULT
-    base. The checkpoint's own identity names the variant it needs, and the link the resolver
-    recorded at load time confirms it."""
+    """A GGUF caches no model card, so family alone gives the default base; the link confirms it."""
     gguf = _repo("unsloth/FLUX.2-klein-9B-GGUF", [("flux-2-klein-9b-Q4_K_M.gguf", Q4_K_M_BYTES)])
     other_base = "black-forest-labs/FLUX.2-klein-9B"
     _install(monkeypatch, gguf, _base_repo(other_base))
@@ -286,8 +283,7 @@ def test_recording_a_link_keeps_the_ones_already_there():
 
 
 def test_orphan_listing_reports_one_row_per_cache(monkeypatch):
-    """A delete is scoped to a single cache, so two copies must not be pooled into one row that
-    promises bytes one removal cannot deliver."""
+    """Copies in two caches stay separate rows, since a delete is scoped to one cache."""
     first = _base_repo()
     second = _repo(
         BASE_REPO,
@@ -394,13 +390,7 @@ def test_reusing_an_existing_link_still_refreshes_its_recency(monkeypatch):
 
 
 def test_a_cached_community_repack_is_a_companion_identity_too(monkeypatch):
-    """prefer_cached_legacy_source deliberately sends the native fetch back to a repack an
-    upgraded install already holds, so on those machines the bytes protecting an installed GGUF
-    sit under the OLD repo key. Expanding only the upstream/mirror pair left that copy
-    unprotected: deletable after unload, and the GGUF stranded.
-
-    Synthetic mirror -> repack row: no image asset is a repack any more, but the mechanism is
-    generic and still serves the video rows."""
+    """A cached legacy repack must count as a companion id, or deleting it strands the GGUF."""
     from core.inference.diffusion_families import legacy_source_repo
 
     repack, mirror = _synthetic_legacy_row(monkeypatch)
@@ -429,9 +419,7 @@ def test_a_native_component_repo_is_offered_once_nothing_needs_it(monkeypatch):
 
 
 def test_a_chat_model_borrowed_as_an_encoder_is_never_offered(monkeypatch):
-    """That table deliberately includes repos that are perfectly good chat models sd.cpp also
-    borrows. Offering one as an unused asset would take away a model the user downloaded on
-    purpose; holding a GGUF is what keeps it out."""
+    """Offering it as unused would take away a chat model the user chose; a held GGUF keeps it out."""
     borrowed = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
     _install(monkeypatch, _repo(borrowed, [("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)]))
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
@@ -439,9 +427,7 @@ def test_a_chat_model_borrowed_as_an_encoder_is_never_offered(monkeypatch):
 
 
 def test_a_family_named_only_by_the_cached_filename_still_pins_its_base(monkeypatch):
-    """Both loaders detect a family from the filename as well as the repo id, so a runnable repo
-    whose name says nothing was invisible to the dependency probe. That matters most on an
-    upgraded install, where no links have been recorded yet and the probe is the whole guard."""
+    """Family is read from the filename too, so a repo whose name says nothing must still pin its base."""
     _install(
         monkeypatch,
         _repo("some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)]),
@@ -454,9 +440,7 @@ def test_a_family_named_only_by_the_cached_filename_still_pins_its_base(monkeypa
 
 
 def test_one_full_copy_does_not_hide_an_orphaned_copy_in_another_cache(monkeypatch):
-    """A delete is scoped to one cache root, which is why the listing emits one row per root.
-    Pooling the denoiser test across roots let a full pipeline copy in one suppress a
-    companion-only copy in another that nothing else can reclaim."""
+    """The denoiser test runs per cache root; a full copy in one must not hide an orphan copy elsewhere."""
     full = _repo(
         BASE_REPO,
         [("transformer/diffusion_pytorch_model.safetensors", 5_000_000)],
@@ -555,9 +539,7 @@ def _synthetic_legacy_row(
 
 
 def _synthetic_flux2_dev_components(monkeypatch):
-    """Point flux.2-dev's sd-cli VAE and encoder at made-up single-file component repos whose ids
-    carry the family keyword. The real assets now live in a vendor base and an encoder GGUF, neither
-    of which reads as a FLUX.2 checkpoint, so this keeps the keyword trap these tests guard covered."""
+    """Points flux.2-dev's VAE and encoder at synthetic repos whose ids carry the family keyword."""
     import dataclasses
 
     from core.inference import diffusion_families
@@ -578,10 +560,7 @@ def _synthetic_flux2_dev_components(monkeypatch):
 
 
 def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
-    """A component repo is a companion, not a checkpoint. Several of those ids carry a family
-    keyword of their own, so the derivation read a bare text-encoder fetch as an installed model
-    and recorded the sibling VAE as still required: the pair survived every cleanup pass until the
-    user happened to remove one of them by hand."""
+    """Component repos are companions, not checkpoints: orphaned encoder and VAE must not pin each other."""
     _synthetic_flux2_dev_components(monkeypatch)
     encoder, vae = _EXAMPLE_ENCODER, _EXAMPLE_VAE
     _install(
@@ -598,8 +577,7 @@ def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
 
 
 def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch):
-    """The exclusion above is denoiser-gated, so a curated component id the user really did
-    install a GGUF from keeps pinning what it needs."""
+    """Denoiser-gated exclusion: a curated id with an installed GGUF still pins what it needs."""
     _synthetic_flux2_dev_components(monkeypatch)
     encoder, vae = _EXAMPLE_ENCODER, _EXAMPLE_VAE
     _install(
@@ -687,9 +665,7 @@ def test_a_hosted_checkpoint_and_encoder_are_freed_with_the_last_dependent(monke
 
 
 def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
-    """The delete preview must point only at rows Free up space will really show. A borrowed chat
-    GGUF repo is a curated companion id but holds a denoiser, so the orphan listing skips it;
-    naming it here sent the user to remove something that is never on that list."""
+    """A delete preview must name only rows Free up space shows; a borrowed chat GGUF is never listed."""
     borrowed = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
     checkpoint = "some-owner/qwen-image"
     _install(
@@ -707,18 +683,14 @@ def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
 
 
 def test_an_sdxl_single_file_install_is_never_offered_as_a_leftover(monkeypatch):
-    """A single_file_is_pipeline family caches its whole checkpoint as ONE top-level file, so
-    there is no denoiser folder to recognise. Its repo is also a curated companion base whose
-    self-dependency is dropped, so the listing called an installed SDXL an unused leftover."""
+    """single_file_is_pipeline checkpoints are one top-level file; an installed SDXL is not an orphan."""
     sdxl = "stabilityai/stable-diffusion-xl-base-1.0"
     _install(monkeypatch, _repo(sdxl, [("sd_xl_base_1.0.safetensors", 6_900_000_000)]))
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
 
 
 def test_a_variant_named_by_an_alias_spelling_still_pins_its_base(monkeypatch):
-    """Family detection accepts ``flux1-dev`` for the flux.1 family, so the curated name
-    ``FLUX.1-dev`` has to be matched with punctuation folded away. One dot apart, the dev base was
-    offerable while the dev checkpoint was installed."""
+    """Punctuation is folded so flux1-dev and FLUX.1-dev match; a dot apart left the base offerable."""
     dev = "black-forest-labs/FLUX.1-dev"
     _install(
         monkeypatch,
@@ -792,9 +764,7 @@ def test_copies_in_two_cache_roots_are_probed_together(monkeypatch):
 
 
 def test_a_single_file_safetensors_pick_pins_its_base(monkeypatch):
-    """The loader hands a top-level single-file .safetensors to detect_family_for_pick exactly
-    like a GGUF, so a cache holding only that file has a family. Probing GGUFs alone left the
-    checkpoint's base reclaimable, and deleting it broke the installed pick offline."""
+    """Single-file .safetensors picks get a family like GGUFs, so their base must be pinned too."""
     dev = "black-forest-labs/FLUX.2-dev"
     _install(
         monkeypatch,
@@ -806,10 +776,7 @@ def test_a_single_file_safetensors_pick_pins_its_base(monkeypatch):
 
 
 def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
-    """An upgraded install holds the component under the repack id the native fetch fell back to.
-    That id matches its family just as literally, so without expanding the exclusion through the
-    same mirror identities the orphaned pair kept holding each other on disk. Synthetic component
-    repos and repack row, as above."""
+    """Upgraded installs hold components under the repack id, so the exclusion must expand mirror ids."""
     _synthetic_flux2_dev_components(monkeypatch)
     legacy, _mirror = _synthetic_legacy_row(monkeypatch, _EXAMPLE_ENCODER, _EXAMPLE_REPACK)
     vae = _EXAMPLE_VAE
@@ -851,9 +818,7 @@ def test_the_orphan_precondition_lets_a_real_orphan_through(monkeypatch):
 
 
 def test_a_transformer_only_single_file_in_its_own_base_repo_is_a_checkpoint(monkeypatch):
-    """Not only whole-pipeline families cache a root weight. A transformer-only single_file pick
-    of a curated base repo does too, and its self-dependency is dropped, so the listing called an
-    installed checkpoint a leftover and the orphan precondition would happily delete it."""
+    """Transformer-only single_file picks of a base repo cache a root weight, so they are checkpoints."""
     from hub.services.models import deletion
 
     dev = "black-forest-labs/FLUX.2-dev"
@@ -865,9 +830,7 @@ def test_a_transformer_only_single_file_in_its_own_base_repo_is_a_checkpoint(mon
 
 
 def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatch):
-    """The listing emits one row per cache root because a delete is scoped to one. A full pipeline
-    copy in another remembered cache must not veto removing the companion-only copy that was
-    listed, or that row 409s forever."""
+    """A full copy in another cache must not veto deleting the listed companion-only row, or it 409s."""
     from hub.services.models import deletion
 
     dev = "black-forest-labs/FLUX.2-dev"
@@ -889,9 +852,8 @@ def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatc
 
 
 def test_one_checkpoints_recorded_bases_are_bounded(monkeypatch):
-    """_MAX_LINKS counts checkpoints, not their bases, so a checkpoint resolved against a new
-    explicit base each load grew the state file on its own, and every delete check parses and
-    mirror-expands the whole list."""
+    """_MAX_LINKS counts checkpoints, not bases; a checkpoint resolved against a new base each load
+    grew the state file, so the bases of one checkpoint are capped separately"""
     for i in range(companion_assets._MAX_BASES_PER_CHECKPOINT + 5):
         companion_assets.record_companion_link(GGUF_REPO, f"some-vendor/base-{i}")
     bases = companion_assets.read_companion_links()[GGUF_REPO.lower()]
@@ -901,8 +863,7 @@ def test_one_checkpoints_recorded_bases_are_bounded(monkeypatch):
 
 
 def test_re_resolving_a_base_refreshes_its_place_in_the_list(monkeypatch):
-    """The cap is by recency, so a base still in use must not be evicted ahead of one nothing has
-    resolved since."""
+    """Eviction is by recency, so re-resolving a base refreshes its place in the cap."""
     companion_assets.record_companion_link(GGUF_REPO, "some-vendor/a")
     companion_assets.record_companion_link(GGUF_REPO, "some-vendor/b")
     companion_assets.record_companion_link(GGUF_REPO, "some-vendor/a")
@@ -913,9 +874,7 @@ def test_re_resolving_a_base_refreshes_its_place_in_the_list(monkeypatch):
 
 
 def test_the_orphan_precondition_refuses_when_the_target_root_is_not_in_the_scan(monkeypatch):
-    """An empty scoped match means the target root was not scanned, and the delete below can
-    still purge that directory by path. Concluding "orphan" from copies we did not look at is the
-    fail-open this precondition exists to prevent."""
+    """An empty scoped match means the root was never scanned; refuse rather than call it an orphan."""
     from hub.services.models import deletion
 
     dev = "black-forest-labs/FLUX.2-dev"
@@ -928,9 +887,8 @@ def test_the_orphan_precondition_refuses_when_the_target_root_is_not_in_the_scan
 
 
 def test_the_preview_reads_a_path_qualified_variant(monkeypatch):
-    """The inventory and the delete identify a row by gguf_variant_key, which for a checkpoint in
-    its own directory is not the bare quant label. Comparing labels reported 0 B reclaimed and
-    described the last checkpoint's companions as retained rather than freed."""
+    """Rows are keyed by gguf_variant_key; for a checkpoint in its own directory that is not the
+    bare quant label, or the preview reports 0 B reclaimed"""
     repo = "unsloth/LTX-2.3-22B-GGUF"
     variant = "distilled/ltx-2.3-22b-distilled-Q6_K"
     _install(
@@ -1004,9 +962,7 @@ def test_an_artifact_mirror_checkpoint_still_protects_its_cached_upstream_base()
 def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_cleanup(
     monkeypatch, retired
 ):
-    """Released builds fetched the sd-cli VAEs and encoders from ComfyUI-built repacks. This build never reads them
-    again, so on an upgraded install they are pure leftovers: they must stay recognised as companions (hidden from the
-    pickers) and be offered by Free up space, not stranded."""
+    """Retired ComfyUI repacks stay companion ids, hidden from pickers and offered by Free up space."""
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 
     assert retired.lower() in sd_cpp_companion_only_repo_ids()
@@ -1017,9 +973,7 @@ def test_a_retired_comfy_companion_left_by_a_released_build_is_offered_for_clean
 
 
 def test_a_link_to_a_retired_sd_cli_repack_no_longer_pins_it(monkeypatch):
-    """A released sd.cpp load recorded the repos it fetched its VAE / encoders from. This build never reads them, so a
-    still-installed GGUF must not keep them required: they are offered by Free up space, and the next write drops
-    them from the file."""
+    """Stale sd-cli repack links must not pin their repos; the next write drops them from the file."""
     gguf = "unsloth/Z-Image-Turbo-GGUF"
     retired = "unsloth/Z-Image-Turbo-ComfyUI"
     repack = "Comfy-Org/z_image_turbo"

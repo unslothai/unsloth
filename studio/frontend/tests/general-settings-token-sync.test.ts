@@ -209,6 +209,7 @@ function generalTab(initialToken: string) {
     "../components/desktop-update-control": componentStub,
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
+    "../components/download-speed-limit-row": componentStub,
     "../components/download-transport-row": componentStub,
     "../components/developer-mode-section": componentStub,
     "../components/engine-versions-section": componentStub,

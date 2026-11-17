@@ -53,7 +53,7 @@ export function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <FieldLabel
         className="text-ui-13 font-medium text-foreground"
         htmlFor={htmlFor}
@@ -63,7 +63,7 @@ export function Field({
       </FieldLabel>
       {children}
       {hint ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {hint}
         </p>
       ) : null}

@@ -4,8 +4,7 @@
 // Import-free so it is testable: app-sidebar.tsx pulls in the whole shell.
 
 /**
- * Coalesces sidebar clicks: while the last pushed entry has not rendered, the next goes out as a
- * replace so a burst leaves one history entry.
+ * While the last push has not rendered, the next click replaces it, so a burst leaves one entry.
  */
 export function createNavigationCoalescer<T>({
   navigate,

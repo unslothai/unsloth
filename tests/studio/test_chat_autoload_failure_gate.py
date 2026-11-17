@@ -65,6 +65,32 @@ def _load_request_source() -> str:
     return source
 
 
+# Inlined, not stubbed: auto-load admits another cache's snapshot rows by this picker rule.
+LOCAL_PATH = _source_path("studio/frontend/src/lib/local-path.ts")
+LOCAL_CACHE_SNAPSHOT = _source_path(
+    "studio/frontend/src/features/model-picker/inventory/local-cache-snapshot.ts"
+)
+
+
+def _local_cache_snapshot_source() -> str:
+    """looksLikeLocalPath and isOtherCacheSnapshot, as shipped."""
+    path_source = "\n".join(
+        line
+        for line in LOCAL_PATH.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith("import ")
+    )
+    assert "export function looksLikeLocalPath(" in path_source
+    match = re.search(
+        r"^export function isOtherCacheSnapshot\(.*?^}\n",
+        LOCAL_CACHE_SNAPSHOT.read_text(encoding = "utf-8"),
+        re.S | re.M,
+    )
+    assert (
+        match
+    ), "isOtherCacheSnapshot is no longer a top-level function in local-cache-snapshot.ts"
+    return path_source + "\n" + match.group(0)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -434,6 +460,9 @@ function offloadWarning(counts: any) {
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
   return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
+}
+function expertSpillNote(_counts: any) {
+  return null;
 }
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
@@ -932,7 +961,13 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
+    preamble = (
+        PREAMBLE
+        + PONYFILLS
+        + _wait_gate_source()
+        + _load_request_source()
+        + _local_cache_snapshot_source()
+    )
     missing = sorted(
         name
         for name in imported
@@ -1271,8 +1306,7 @@ def test_a_local_model_wins_over_the_default_even_when_the_cache_is_empty():
 
 
 def test_the_smallest_on_device_model_wins_across_inventories():
-    """Cached and local rows compete in one size-ordered cascade, not one list
-    then the other."""
+    """Cached and local rows compete in one size-ordered cascade, not one list and then the other."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
         " localModels: [LOCAL_GGUF] })"
@@ -1297,9 +1331,8 @@ def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
 
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
 def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
-    """A failure is one unknown source, not a verdict on the other two.
-    Promise.all rejected the batch, discarding lists that had already arrived,
-    so a broken local scan left a loadable model unused."""
+    """A failure is one unknown source, not a verdict on the other two; Promise.all rejected the
+    whole batch and discarded lists already received, leaving a loadable model unused."""
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
     extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
@@ -1408,9 +1441,8 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
-    """Diffusion rows carry an image/video task while can_chat stays true on
-    file format alone. The picker routes them to the Images page on click; a
-    background load has no routing step, so it has to skip them."""
+    """Diffusion rows carry an image or video task while can_chat stays true on file format alone;
+    the picker routes them to Images on click, so a background load must skip them."""
     for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
         rows = (
             f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
@@ -1596,8 +1628,7 @@ def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
 
 
 def test_a_failed_cancel_does_not_latch_the_toast_action_off():
-    """The retry latch must clear once the request settles, or every later
-    Cancel click is swallowed."""
+    """The retry latch must clear once the request settles, or every later Cancel click is swallowed."""
     src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
         encoding = "utf-8"
     )
@@ -1808,9 +1839,8 @@ def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
 
 
 def test_a_cached_adapter_repo_is_never_auto_loaded():
-    """A cached LoRA has no weights of its own: /load fetches the base from the
-    Hub when it is not cached, which is why the local twin is dropped too.
-    Adapters are tiny, so the size order puts one first."""
+    """A cached LoRA has no weights of its own: /load fetches the base from the Hub when uncached,
+    which is why the local twin is dropped too; the size order would put it first."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
         " size_bytes: 40000000, model_format: 'adapter',"
@@ -1854,9 +1884,8 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
 
 
 def test_an_admitted_hf_cache_row_is_not_attempted_twice():
-    """The surviving cached list may name the same model as the admitted
-    hf_cache row, so the load-target dedupe has to collapse them or the pair
-    spends two of the three attempts on one model."""
+    """The surviving cached list may name the same model as the admitted hf_cache row, so the
+    load-target dedupe must collapse them or the pair spends two of three attempts on one model."""
     row = (
         "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
     )

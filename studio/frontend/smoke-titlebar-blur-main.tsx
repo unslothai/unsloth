@@ -76,7 +76,7 @@ function Scene() {
             </p>
             <div className="mb-6 flex gap-3">
               {["media", "dialog", "alert", "sheet", "tour", "scoped"].map((k) => (
-                <Button key={k} onClick={() => setKind(k)}>
+                <Button key={k} variant="dark" onClick={() => setKind(k)}>
                   Open {k}
                 </Button>
               ))}
@@ -129,7 +129,7 @@ function Scene() {
             <DialogDescription>
               Check the title bar while this dialog is open.
             </DialogDescription>
-            <Button onClick={() => setNested(true)}>Open nested</Button>
+            <Button variant="dark" onClick={() => setNested(true)}>Open nested</Button>
           </DialogContent>
         </Dialog>
         <AlertDialog

@@ -59,10 +59,8 @@ _LEAF_TYPES = (
 class FSDP2Config:
     param_dtype: Optional[torch.dtype] = None  # None = model compute dtype (bf16; fp16 on T4)
     reduce_dtype: torch.dtype = torch.float32
-    # None = auto: when the whole model fits on one GPU (fsdp2_perf.plan_fsdp2_layout), frozen weights stay
-    # replicated (never gathered), only trainable ones are sharded, kept gathered from forward to backward
-    # (False) with next-block prefetch, and a small trainable set (LoRA) is one root unit; otherwise every
-    # block reshards after forward (True). An explicit bool / int is used as is. Last block always False.
+    # None = auto: fit-on-one-GPU models keep frozen weights replicated; otherwise reshard every
+    # block but the last.
     reshard_after_forward: Optional[Union[bool, int]] = None
     cpu_offload: bool = False  # CPUOffloadPolicy
     mesh: Optional[object] = None  # DeviceMesh; None = 1-D over WORLD_SIZE
@@ -348,6 +346,36 @@ def _is_block_list(container, no_split):
         if _leafish(child) or not _has_params(child):
             return False
     return True
+
+
+def _frozen_table_params(model) -> set:
+    """Frozen tensors named by a model's `_no_placement_params` (Qwen4Exp's PLE n-gram table, DeepSeek-V4.1's engram
+    tables when loaded as parameters). Same rule as loader_utils.no_placement_matcher (not imported here: it pulls in
+    the whole package): a dotted name matches by suffix, a bare one only a direct tensor of a `_no_split_modules`
+    module."""
+    out = set()
+    for owner in model.modules():
+        names = getattr(type(owner), "_no_placement_params", None)
+        if not names or not hasattr(owner, "config"):
+            continue
+        dotted = [n for n in names if "." in n]
+        bare = {n for n in names if "." not in n}
+        no_split = set(getattr(owner, "_no_split_modules", None) or [])
+        roots = (
+            {path for path, m in owner.named_modules() if type(m).__name__ in no_split}
+            if bare
+            else set()
+        )
+        for name, p in owner.named_parameters():
+            if p.requires_grad:
+                continue
+            base = name.replace(".base_layer.", ".")
+            owner_path, _, leaf = base.rpartition(".")
+            if any(base == n or base.endswith("." + n) for n in dotted) or (
+                leaf in bare and owner_path in roots
+            ):
+                out.add(p)
+    return out
 
 
 def find_shard_units(model, ignored_params = ()) -> list:
@@ -742,8 +770,18 @@ _NCCL2_WARNED = False
 _NCCL2_WARN_MAX_BYTES = 24 * 2**30
 
 
+def _torch_nccl2_is_default():
+    """torch 2.15 builds backend "nccl" as ProcessGroupNCCL2 unless TORCH_DIST_USE_NCCL2=0; 2.14 only
+    with TORCH_DIST_USE_NCCL2=1."""
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+    except Exception:
+        return False
+    return (major, minor) >= (2, 15)
+
+
 def _uses_nccl2(dist, device):
-    """torch 2.14's nccl2 backend; TORCH_DIST_USE_NCCL2=1 still reports "nccl", so check the object."""
+    """The nccl2 backend (ProcessGroupNCCL2). get_backend() reports "nccl" for it, so check the object."""
     try:
         group = dist.distributed_c10d._get_default_group()
         impl = type(group._get_backend(device)).__name__
@@ -754,16 +792,22 @@ def _uses_nccl2(dist, device):
         name = str(dist.get_backend()).lower()
     except Exception:
         return False
-    return name == "nccl2" or (
-        name == "nccl" and os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
-    )
+    if name == "nccl2":
+        return True
+    if name != "nccl":
+        return False
+    # Mirrors torch's _register_builtin_nccl_backend.
+    if _torch_nccl2_is_default():
+        return os.environ.get("TORCH_DIST_USE_NCCL2") != "0"
+    return os.environ.get("TORCH_DIST_USE_NCCL2", "").strip() == "1"
 
 
 def _warn_nccl2_memory(dist, device):
-    """Under nccl2 every rank seeing GPU 0 makes a CUDA context there (torch 2.14.1, 2 x T4: 102 MiB
-    per rank, plain nccl none), so small GPU 0 runs out first."""
+    """Under torch 2.14's opt-in nccl2 every rank seeing GPU 0 makes a CUDA context there (2 x T4: 102
+    MiB per rank, plain nccl none), so small GPU 0 runs out first. torch 2.15's nccl2 is the default
+    "nccl" and makes none (2 x T4: 207 / 207 MiB, 2.14 nccl2 309 / 207), so it is not warned about."""
     global _NCCL2_WARNED
-    if _NCCL2_WARNED or device.type != "cuda":
+    if _NCCL2_WARNED or device.type != "cuda" or _torch_nccl2_is_default():
         return
     try:
         if dist.get_world_size() < 2 or torch.cuda.device_count() < 2:
@@ -830,9 +874,8 @@ def _resolve_param_dtype(model, config):
     if compute == torch.float16 and any(
         p.requires_grad and p.dtype == torch.float32 for p in model.parameters()
     ):
-        # float16 gathers of float32 masters move the embedding / norm / lm_head backward into
-        # float16, where scaled gradients overflow and the GradScaler skips steps one GPU takes;
-        # gather the masters as they are and let autocast cast like one GPU does.
+        # Gather fp32 masters as they are: a float16 gather overflows scaled grads and GradScaler
+        # skips steps.
         return None
     return compute
 
@@ -1617,6 +1660,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     leftovers). Pass the outermost module the loop calls (the PeftModel for LoRA). Idempotent."""
     if getattr(model, _NATIVE_FLAG, False):
         return model
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # adapter saves write frozen_tables.json when the model has frozen tables
     _refuse_block_swap(model)
     FSDPModule, MixedPrecisionPolicy, fully_shard = _fsdp_api()
     if isinstance(model, FSDPModule):
@@ -1733,6 +1779,17 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     ignored_params = set(config.ignored_params or ())
     if layout.replicate_frozen and _supports_ignored_params(fully_shard):
         ignored_params.update(p for p in model.parameters() if not p.requires_grad)
+    tables = _frozen_table_params(model)
+    if tables:
+        # A frozen lookup table (UNSLOTH_FROZEN_TABLE=gpu) stays whole on every rank in every layout: sharding it
+        # would all-gather the whole table each step. Disk / ram tables hold no parameter and never get here.
+        if not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: native FSDP2 keeps frozen lookup tables (_no_placement_params) out of sharding with "
+                f"fully_shard(ignored_params) (torch 2.7+); this is torch {torch.__version__}. Load with "
+                "UNSLOTH_FROZEN_TABLE=disk (or ram) instead."
+            )
+        ignored_params.update(tables)
     units = (
         list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
     )
@@ -1741,6 +1798,22 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         if config.units is None
         else []
     )
+    frozen_split = []
+    if (
+        extra_units
+        and config.shard_frozen is not True
+        and not config.cpu_offload
+        and _env_tristate("UNSLOTH_FSDP2_REPLICATE_FROZEN") is not False
+        and _supports_ignored_params(fully_shard)
+    ):
+        # A frozen split table (Gemma4 / Gemma3n per-layer embeddings, 4.4 GiB) would be all-gathered whole
+        # every step: keep it whole on every rank like a frozen lookup table, as on 1 GPU.
+        frozen_split = [m for m in extra_units if not any(p.requires_grad for p in m.parameters())]
+        if frozen_split:
+            extra_units = [m for m in extra_units if not any(m is f for f in frozen_split)]
+            tables = set(tables)
+            for m in frozen_split:
+                tables.update(m.parameters())
     if extra_units:
         check_shard_units(model, units + extra_units, ignored_params = None)
     gather_dtype = param_dtype
@@ -1750,9 +1823,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         and param_dtype in (torch.bfloat16, torch.float16)
         and _all_trainable_float32(model)
     ):
-        # Fit layout: FSDP2 manages only trainable parameters. One GPU keeps float32 masters (LoRA) and
-        # lets autocast cast them at each op; a 16-bit gather casts them first, which moved Gemma4's step-0
-        # grad norm 0.2% off 1 GPU (A/A 0.01%). Gather them as they are; the 4-bit storage stays 16-bit.
+        # Fit layout: only trainable params are sharded; gather float32 LoRA masters as they are (a
+        # 16-bit gather moves grad norms off one GPU); the 4-bit storage stays 16-bit.
         gather_dtype = None
         mp_policy = MixedPrecisionPolicy(param_dtype = None, reduce_dtype = config.reduce_dtype)
     if not units and not layout.root_only:
@@ -1769,8 +1841,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         ignored, _ = _unify_dtypes(
             model,
             # Root only: every trainable param is in the root group. Otherwise the split root
-            # embedding tables are units of their own, not part of the root's dtype group.
-            [] if layout.root_only else units + list(extra_units),
+            # embedding tables are units of their own, not part of the root's dtype group; so are the
+            # frozen ones kept whole (never upcast with the root).
+            ([] if layout.root_only else units + list(extra_units)) + frozen_split,
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )
@@ -1784,6 +1857,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 "Upgrade torch, or load the model in 4-bit or 16-bit."
             )
         ignored.update(int8)
+        ignored.update(
+            tables
+        )  # frozen lookup tables: whole on every rank, never sharded / gathered / reduced
         if config.ignored_params:
             ignored.update(config.ignored_params)
         replicated = set(ignored)
@@ -1845,6 +1921,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
 
     install_vision_dummy(model)  # mixed image / text ranks
     _patch_accumulated_grad_guard()
+    from .fsdp2_save import install_dcp_frozen_table_state_dict
+
+    install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
     if qlora is not None:
         # Trainer / DCP checkpoints of the sharded 4-bit weights (fsdp2_save).
         from .fsdp2_save import install_dcp_bnb_state_dict
@@ -1995,6 +2074,48 @@ def native_clip_grad_norm_(
     return total
 
 
+def _frozen_table_modules(model):
+    """(name, module) of every bound parameter-free frozen lookup table (unsloth_zoo UnslothFrozenTableEmbedding:
+    UNSLOTH_FROZEN_TABLE=ram / disk)."""
+    return [
+        (name, m)
+        for name, m in model.named_modules()
+        if type(m).__name__ == "UnslothFrozenTableEmbedding"
+        and getattr(m, "frozen_table_store", None) is not None
+    ]
+
+
+def _no_table_export(destination, prefix, keep_vars):
+    return None
+
+
+@contextlib.contextmanager
+def frozen_tables_hidden(model):
+    """While collecting a state dict with torch.distributed.checkpoint.state_dict: a frozen table exports zero-copy
+    views of its checkpoint files under the checkpoint's names, which are not attributes of its module, so
+    get_model_state_dict (which resolves every key to an attribute) raises, and a DCP save would write the whole table.
+    Inside, the tables export nothing; full_frozen_table_state adds them back where a full save needs them."""
+    tables = [m for _, m in _frozen_table_modules(model)]
+    for m in tables:
+        m.__dict__["_save_to_state_dict"] = _no_table_export
+    try:
+        yield tables
+    finally:
+        for m in tables:
+            m.__dict__.pop("_save_to_state_dict", None)
+
+
+def full_frozen_table_state(model):
+    """The frozen tables' exported views (no copy) under the model's state dict names, for a full save."""
+    out = {}
+    for name, m in _frozen_table_modules(model):
+        name = _clean_fqn(
+            name
+        )  # the names get_model_state_dict gives the other weights (no `_orig_mod.`)
+        m._save_to_state_dict(out, f"{name}." if name else "", False)
+    return out
+
+
 def native_full_state_dict(
     model,
     trainable_only = False,
@@ -2012,8 +2133,20 @@ def native_full_state_dict(
         cpu_offload = cpu_offload and writer_rank == 0,
         ignore_frozen_params = bool(trainable_only),
     )
-    state = get_model_state_dict(model, options = options)
-    return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
+    with frozen_tables_hidden(model):
+        state = get_model_state_dict(model, options = options)
+    if writer_rank != 0:
+        state = _gather_to_writer(state, writer_rank)
+    if not trainable_only:
+        # The tables, read from their own files where the full state dict is (never gathered): the writer, or
+        # every rank without cpu_offload (full_state_dict then returns the whole state everywhere).
+        dist = torch.distributed
+        is_writer = (
+            not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == writer_rank
+        )
+        if is_writer or not cpu_offload:
+            state.update(full_frozen_table_state(model))
+    return state
 
 
 def _gather_to_writer(state, writer_rank):
@@ -2102,6 +2235,17 @@ def _rebind_swapped_modules(model, units):
                 )
 
 
+def _lazy_init_root(root, units):
+    """FSDP2 roots at the first unit to run forward; a decode loop calling blocks would make a block root."""
+    top = root if isinstance(root, _fsdp_module_class()) else next(iter(units), None)
+    state = getattr(top, "_get_fsdp_state", None)
+    if not callable(state):
+        return
+    state = state()
+    if getattr(state, "_is_root", None) is None:
+        state._lazy_init()
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -2126,6 +2270,7 @@ def native_fsdp2_unsharded(model):
     saved = {}
     try:
         _rebind_swapped_modules(root, units)
+        _lazy_init_root(root, units)
         # Unshard before clearing reshard_after_forward: FSDP2 all-gathers a post-forward sharded unit over that mesh.
         for unit in units:
             unit.unshard()
@@ -2377,8 +2522,7 @@ def _install_accelerate_hooks():
             _refuse_bnb_optimizer_instance(optimizer)
         if native and _mixed_param_groups(optimizer):
             if getattr(_inner_optimizer(optimizer), "state", None):
-                # The split carries no per-parameter state over; a mixed group stepping a foreach /
-                # fused kernel over DTensor and plain tensors fails.
+                # Split drops per-parameter state; a mixed group breaks foreach / fused steps.
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if native and _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer)):
             _print_rank0(
@@ -2691,8 +2835,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
     unstepped = _match_saved_optimizer_keys(state, directory, root)
-    # Hyperparameter keys the checkpoint lacks (another optimizer class, or an older torch) keep this
-    # optimizer's values; dcp.load would refuse them as missing.
+    # Missing hyperparameter keys keep this optimizer's values; dcp.load would refuse them.
     unsaved = _drop_unsaved_group_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
     for index, key, value in unsaved:
@@ -2717,12 +2860,28 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     return state
 
 
+def _read_dcp_metadata(directory):
+    """state_dict_metadata of a torch.distributed.checkpoint directory. torch 2.15 records tensor strides
+    in it (TensorProperties pickles 6 fields), which torch <= 2.14 cannot unpickle ("too many values to
+    unpack (expected 5)"), so name the cause instead of the raw error."""
+    from torch.distributed.checkpoint import FileSystemReader
+    try:
+        return FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    except ValueError as exc:
+        if "unpack" not in str(exc):
+            raise
+        raise RuntimeError(
+            f"Unsloth: cannot read the sharded optimizer checkpoint {directory} with torch "
+            f"{torch.__version__}: it was written by a newer torch (2.15+ stores tensor strides in "
+            "the checkpoint metadata, which older torch cannot read). Resume with torch 2.15 or newer, "
+            "or save with UNSLOTH_FSDP2_DCP_OPTIM=0 (the full optimizer.pt, readable by any torch)."
+        ) from exc
+
+
 def _drop_unsaved_group_keys(state, directory):
     """Removes (and returns as (group index, key, value)) the param group entries of the dcp.load
     target that the checkpoint does not hold."""
-    from torch.distributed.checkpoint import FileSystemReader
-
-    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    metadata = _read_dcp_metadata(directory)
     dropped = []
     for index, group in enumerate(state.get("param_groups") or []):
         prefix = f"param_groups.{index}."
@@ -2750,9 +2909,7 @@ def _match_saved_optimizer_keys(
       state, or the parameter (same sharding), when the global shape matches, else a plain tensor
       read whole.
     Returns the parameters left without state."""
-    from torch.distributed.checkpoint import FileSystemReader
-
-    metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
+    metadata = _read_dcp_metadata(directory)
     per_param = state.setdefault("state", {})
     unstepped = []
     for fqn in list(per_param):
@@ -2915,7 +3072,8 @@ def _native_load_hf_sharded(root, checkpoint):
 
             reader = reader_cls(checkpoint, thread_count = max(1, min(4, os.cpu_count() or 1)))
             metadata = reader.read_metadata().state_dict_metadata
-            state = get_model_state_dict(root, options = StateDictOptions(full_state_dict = False))
+            with frozen_tables_hidden(root):  # read from their own files, never loaded through DCP
+                state = get_model_state_dict(root, options = StateDictOptions(full_state_dict = False))
             state = _match_hf_state(root, state, metadata)
     except Exception:
         state = None
@@ -2932,8 +3090,7 @@ def _native_load_hf_sharded(root, checkpoint):
     try:
         dcp.load(state, storage_reader = reader, process_group = group)
     except (Exception, CheckpointException) as exc:
-        # A read error reaches every rank as a CheckpointException (a BaseException, so `except
-        # Exception` alone would let it abort the resume).
+        # CheckpointException is a BaseException, so `except Exception` alone would miss it.
         error = exc
     # The fallback is voted on too: the full load rewrites every tensor this one may have touched.
     if not _all_ranks_agree(error is None, group):
@@ -3065,6 +3222,35 @@ def _persistent_buffers(root):
     return out
 
 
+def _check_checkpoint_tables(root, checkpoint):
+    """Collective: the frozen table provenance of a Trainer checkpoint's adapters (frozen_tables.json at the
+    checkpoint for "default", in <checkpoint>/<name> for the others) against the model's tables, before anything is
+    read. A mismatch warns (UNSLOTH_FROZEN_TABLE_PROVENANCE=strict: raises on every rank, nothing loaded)."""
+    from .frozen_table_provenance import check_provenance
+
+    directories = [checkpoint]
+    peft_config = getattr(root, "peft_config", None) if _is_peft(root) else None
+    if isinstance(peft_config, dict):
+        directories += [
+            os.path.join(checkpoint, name)
+            for name in peft_config
+            if name != "default" and os.path.isdir(os.path.join(checkpoint, name))
+        ]
+    error = None
+    try:
+        for directory in directories:
+            check_provenance(root, directory)
+    except ValueError as exc:
+        error = str(exc)
+    group, usable = _dcp_group(root)
+    if usable and not _all_ranks_agree(error is None, group):
+        raise ValueError(
+            error or "Unsloth: another rank refused this checkpoint's frozen lookup tables."
+        )
+    if error is not None:
+        raise ValueError(error)
+
+
 def native_load_model_checkpoint(model, checkpoint):
     """Collective: load a Trainer checkpoint's weights (PEFT adapter or full model, as save_model wrote
     them) into a natively sharded model with `set_model_state_dict(full_state_dict)`. PEFT's saved keys
@@ -3073,6 +3259,9 @@ def native_load_model_checkpoint(model, checkpoint):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
     root = _native_root(model)
+    _check_checkpoint_tables(
+        root, checkpoint
+    )  # before any read: a refused checkpoint changes nothing
     n_loaded = _native_load_hf_sharded(root, checkpoint)
     if n_loaded is not None:
         _print_rank0(
@@ -3214,9 +3403,8 @@ def _install_trainer_hooks():
             return original_save_model(self, output_dir, _internal_call = _internal_call)
         if output_dir is None:
             output_dir = self.args.output_dir
-        # Collective gather on every rank (the Trainer would only call _save on rank 0). The sharded
-        # root, not a torch.compile (`_orig_mod`) / DDP-style (`.module`) wrapper around it: a
-        # compiled PeftModel is still an adapter checkpoint, and its state dict keys carry no prefix.
+        # Gather on every rank from the sharded root, not a compile or DDP wrapper, so keys carry no
+        # prefix.
         root = _native_root(model)
         if _is_peft(root):
             # The adapter save also writes frozen tensors (resized embeddings, inactive adapters,
@@ -3279,8 +3467,7 @@ def _install_trainer_hooks():
         if is_native_fsdp2(getattr(self, "model", None)):
             # Before the LR scheduler records one base LR per group.
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
-            # Localized, or refused here (a bitsandbytes optimizer that cannot step local shards
-            # would otherwise fail inside the first step).
+            # A bnb optimizer that cannot step local shards is refused here, not in step one.
             _refuse_bnb_optimizer_instance(optimizer)
         return optimizer
 
@@ -3368,9 +3555,8 @@ def _install_trainer_hooks():
         ]
         group, usable = _dcp_group(_native_root(model))
         if usable:
-            # What each rank sees on (possibly node-local) storage is voted on, so all ranks read
-            # the same format or skip together: [all see dcp, all see .pt, all see the scheduler,
-            # none sees an optimizer, none sees the scheduler].
+            # Each rank's view of node-local storage is voted on, so all ranks read one format or
+            # skip together.
             sharded, full, scheduler, none_saved, no_scheduler = _all_ranks_agree(
                 local + [not (local[0] or local[1]), not local[2]], group
             )
@@ -4244,10 +4430,8 @@ def native_fsdp2_trainer_setup(
         )
         _refuse_bnb_optimizer_instance(optimizer)
         if is_native_fsdp2(model) and optimizer is not None and _mixed_param_groups(optimizer):
-            # The Trainer would split the groups after a scheduler recorded one base LR (and lambda)
-            # per group (the new groups keep their initial LR; a resumed scheduler state no longer
-            # matches), and a split cannot carry loaded per-parameter state, so it is skipped and the
-            # mixed group reaches a foreach / fused kernel. Only a fresh optimizer alone is split.
+            # Split only a fresh optimizer: a late split breaks the scheduler's base LRs or loaded
+            # state.
             if scheduler is not None or getattr(_inner_optimizer(optimizer), "state", None):
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if is_native_fsdp2(model):

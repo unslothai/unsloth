@@ -19,8 +19,7 @@ async (page) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.waitForFunction(() => window.__reasoning);
   await page.evaluate(() => window.__reasoning.run({ size: 250000, kind: "code", chunk: 512, gap: 12 }));
-  // The options are the THIRD argument; in second place they are the page function's arg and the
-  // 60 s timeout was silently ignored (default 30 s).
+  // Options are the THIRD arg; in second place the 60 s timeout is silently ignored.
   await page.waitForFunction(() => window.__reasoning.stats().done, null, { timeout: 60000 });
   await page.waitForTimeout(400);
   const streaming = await page.evaluate(() => ({ ...window.__reasoning.stats(), transfers: window.__fenceTransfers }));

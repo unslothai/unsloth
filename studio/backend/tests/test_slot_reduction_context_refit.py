@@ -197,8 +197,7 @@ class TestTheRealEstimatorStillReduces:
         assert (direct["slots"], direct["ctx"]) == (slots, ctx)
 
     def test_a_sliding_window_split_reprices_its_masks_per_candidate(self, tmp_path):
-        """A layer split's sliding-window masks scale with slots, so each candidate
-        prices its own count rather than the one asked for."""
+        """Sliding-window masks scale with slots, so each candidate prices its own count."""
         plans = [
             _plan(
                 tmp_path,
@@ -230,8 +229,7 @@ class TestTheRealEstimatorStillReduces:
 
 
 class TestTheRefitStaysOnTheCardsTheReductionChose:
-    """A 12 GiB primary next to a 1.25 GiB card: the reduced plan fits on the primary
-    alone, and only the small card can hold a longer context."""
+    """The refit keeps the reduction's cards; the 1.25 GiB card is only for a longer context."""
 
     def test_the_refit_does_not_pull_in_another_card(self, tmp_path):
         got = _plan(
@@ -303,8 +301,7 @@ class TestWhatMustNotMove:
         assert (got["slots"], got["fit"], got["ctx"]) == (4, "off", 51_456)
 
     def test_weights_that_fit_nowhere_still_offload(self, tmp_path):
-        """Oversized weights fall back to offload at the Auto offload context, read rather than
-        hardcoded."""
+        """Oversized weights offload at the Auto offload context, read rather than hardcoded."""
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
         offload_ctx = min(llama_cpp._AUTO_OFFLOAD_CTX, NATIVE_CTX)
         assert (got["fit"], got["ctx"], got["ceiling"]) == ("on", offload_ctx, offload_ctx)
@@ -361,8 +358,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
         assert got["slots"] < 4
 
     def test_weights_past_the_band_still_offload(self, tmp_path):
-        """Weights past the band must still offload, so the RESCUED rows cannot pass for the wrong
-        reason."""
+        """Past-band weights must offload, so rescued rows cannot pass for the wrong reason."""
         got = _plan(tmp_path, weights_mib = 11_400, n_parallel = 4, spec = "off")
         assert (got["fit"], got["slots"]) == ("on", 4)
 
@@ -455,8 +451,7 @@ class TestAGgufWithNoNativeContext:
     def test_the_reduction_still_pins_without_a_native_context(
         self, tmp_path, vram_mib, weights_mib, asked
     ):
-        """Without native-context metadata the reduction pins at _FIT_MIN_CTX; the exact slot count
-        is free."""
+        """With no native context, the reduction pins to _FIT_MIN_CTX; slot count is free."""
         got = _plan(
             tmp_path,
             weights_mib = weights_mib,

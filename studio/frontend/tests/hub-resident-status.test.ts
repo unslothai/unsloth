@@ -223,14 +223,20 @@ test("an empty status does not fight a load this tab started", () => {
 test("coming back to the window re-reads inference status", () => {
   // An API request can auto-switch at any time and the Hub only reads on mount.
   const targets = fakeTargets();
+  let clock = 0;
   let reads = 0;
-  subscribeResidentStatusRefresh(() => {
-    reads += 1;
-  }, targets);
+  subscribeResidentStatusRefresh(
+    () => {
+      reads += 1;
+    },
+    targets,
+    () => clock,
+  );
 
   assert.equal(reads, 0, "subscribing must not read on its own");
   targets.fire("window", "focus");
   assert.equal(reads, 1);
+  clock += 5_000;
   targets.fire("document", "visibilitychange");
   assert.equal(reads, 2);
 });

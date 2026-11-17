@@ -178,10 +178,7 @@ def test_a_hung_suspect_launch_replays_on_cpu(monkeypatch, tmp_path, outcome):
 
 
 def test_a_user_chosen_vulkan_install_is_not_routed(monkeypatch, tmp_path):
-    """A Vulkan bundle picked in Settings is not auto-selected, so not eligible.
-
-    The helper forces auto-selection True, so the eligibility gate it feeds is
-    what this patches (the marker reading itself is covered elsewhere)."""
+    """A user-chosen Vulkan bundle is not auto-selected, so it is ineligible for the CPU fallback."""
     _route_env(monkeypatch, "none")
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -277,8 +274,7 @@ def test_a_suspect_launch_cut_off_by_the_ceiling_fails_without_a_cpu_replay(monk
 
 
 def test_a_recovered_stall_is_not_remembered(monkeypatch, tmp_path):
-    """The next load re-probes and launches Vulkan again; one bad start never pins a
-    build to CPU."""
+    """Re-probing on the next load means one bad start never pins a build to CPU."""
     _route_env(monkeypatch, "timeout")
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -400,8 +396,7 @@ def _wait(
     max_total_s = None,
     healthy_at = None,
 ):
-    """A live child that burns CPU (and optionally allocates); returns whether the
-    wait gave up."""
+    """Live child that burns CPU (optionally allocating); returns whether the wait gave up."""
     clock = _Clock()
     monkeypatch.setattr(llama_cpp.time, "monotonic", clock.monotonic)
 
@@ -456,8 +451,7 @@ def test_cpu_only_activity_still_renews_the_default_wait(monkeypatch):
 
 
 def test_a_driver_that_keeps_allocating_still_hits_the_ceiling(monkeypatch):
-    """Shader compilation touches fresh pages, so RSS alone renews the stall window;
-    only the ceiling ends it."""
+    """Shader work touches new pages so RSS renews the stall window; only the ceiling ends it."""
     healthy, elapsed, backend = _wait(
         monkeypatch, cpu_counts = False, rss_growth = 1 << 20, max_total_s = 120.0
     )
@@ -470,8 +464,7 @@ def test_a_driver_that_keeps_allocating_still_hits_the_ceiling(monkeypatch):
 
 @pytest.mark.parametrize("max_total_s", [None, 30.0, 120.0])
 def test_a_child_doing_no_loading_work_reads_no_progress(monkeypatch, max_total_s):
-    """Including a ceiling no longer than the window: nothing renewed, so it never cut
-    anything off."""
+    """A ceiling no longer than the window: nothing renewed, so it never cut anything off."""
     healthy, elapsed, backend = _wait(monkeypatch, cpu_counts = False, max_total_s = max_total_s)
     assert healthy is False
     assert backend._health_wait_stalled is True
@@ -560,8 +553,7 @@ def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
 def test_a_reload_after_a_vulkan_cpu_route_leaves_the_decision_to_its_own_probe(
     monkeypatch, tmp_path, reason
 ):
-    """No probe here: the load's single memoised probe decides, so a hung driver costs one
-    timeout and a device that appeared since is seen."""
+    """Only the load's probe decides: a hung driver costs one timeout; a new device is seen."""
     from core.inference.llama_cpp import GgufLoadIntent
 
     gguf = tmp_path / "model.gguf"

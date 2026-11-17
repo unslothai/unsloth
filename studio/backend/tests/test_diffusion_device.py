@@ -414,8 +414,7 @@ def test_force_float32_rope_tolerates_non_module_components():
 
 
 def test_the_video_loader_demotes_rope():
-    # Guards that the call site exists and is unconditional (the helper no-ops on float64 devices);
-    # checked via AST so `and` / ternary guards are caught too.
+    # Call must be unconditional (helper no-ops on float64); AST catches and/ternary guards.
     import ast
     from pathlib import Path
 
@@ -749,8 +748,7 @@ def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
     assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
     assert seen == [1]
 
-    # No selection probes with NO argument: a stub or older build that takes none would
-    # otherwise raise into the fp16 fallback.
+    # Never probe with no argument: a stub or older build would raise into the fp16 fallback.
     seen.clear()
     assert dd.resolve_diffusion_device_target().dtype == FP16
     assert seen == [_NOTHING]
@@ -1003,3 +1001,87 @@ def test_mps_cap_failure_keeps_target(monkeypatch):
     _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
+
+
+_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _fake_xpu_torch(has_fp64 = None, raises = False):
+    import torch
+
+    def props(index):
+        if raises:
+            raise RuntimeError("no device properties")
+        return (
+            types.SimpleNamespace()
+            if has_fp64 is None
+            else types.SimpleNamespace(has_fp64 = has_fp64)
+        )
+
+    xpu = types.SimpleNamespace(
+        is_bf16_supported = lambda: True,
+        current_device = lambda: 0,
+        get_device_properties = props,
+    )
+    return types.SimpleNamespace(xpu = xpu, bfloat16 = torch.bfloat16, float16 = torch.float16)
+
+
+@pytest.mark.parametrize(
+    "has_fp64, raises, env, want",
+    [
+        (False, False, None, False),  # Arc A-series
+        (True, False, None, True),
+        (None, False, None, True),
+        (False, True, None, True),
+        (False, False, "0", True),
+    ],
+)
+def test_xpu_target_reports_the_devices_float64(monkeypatch, has_fp64, raises, env, want):
+    if env is None:
+        monkeypatch.delenv(_PROBE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_PROBE_ENV, env)
+    target = dd._xpu_target(_fake_xpu_torch(has_fp64, raises))
+    assert target.device == "xpu"
+    assert target.supports_float64 is want
+
+
+def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
+    torch = pytest.importorskip("torch")
+    ltx2 = pytest.importorskip("diffusers.models.transformers.transformer_ltx2")
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    rope = ltx2.LTX2AudioVideoRotaryPosEmbed(dim = 96, num_attention_heads = 2)
+    assert rope.double_precision
+    pipe = types.SimpleNamespace(components = {"transformer": torch.nn.Sequential(rope)})
+    coords = rope.prepare_video_coords(1, 4, 8, 8, device = "cpu")
+    oracle = rope(coords, device = "cpu")
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(True))) == 0
+    assert rope.double_precision
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
+    assert not rope.double_precision
+    got = rope(coords, device = "cpu")
+    for a, b in zip(got, oracle):
+        assert a.dtype == b.dtype == torch.float32
+        assert 0 < float((a - b).abs().max()) < 1e-2
+    assert dd.float64_device("cpu") == "cpu"
+
+
+def test_float64_device_probes_the_operands_xpu(monkeypatch):
+    """``float64_device`` must probe the operand's own XPU index, not the current card."""
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(has_fp64 = index != 1)
+
+    xpu = types.SimpleNamespace(current_device = lambda: 1, get_device_properties = props)
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    assert dd.float64_device("xpu:1") == "cpu"
+    assert dd.float64_device("xpu:0") == "xpu:0"
+    assert dd.float64_device("xpu") == "cpu"
+    assert asked == [1, 0, 1]
+    monkeypatch.setenv(_PROBE_ENV, "0")
+    assert dd.float64_device("xpu:1") == "xpu:1"

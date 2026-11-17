@@ -186,8 +186,7 @@ class TestOnMetal:
         assert _floor(0, False, False, None) == _FIT_MIN_CTX
 
     def test_a_cap_below_the_floor_wins(self, on_metal):
-        """The exception path keeps max_available_ctx, whose KV answer can sit
-        under the floor. Floating back up would re-create the over-commit."""
+        """max_available_ctx may sit under the floor; raising it re-creates the over-commit."""
         assert _floor(0, False, False, 262144, 2048) == 2048
 
     def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
@@ -380,15 +379,13 @@ class TestAutoLayersWithTheFitterTurnedOff:
     def test_the_users_fit_off_is_not_taken_back_to_keep_the_higher_floor(
         self, tmp_path, monkeypatch
     ):
-        """The other shape this could have taken. Overriding an explicit --fit off
-        would let the floor stay at 8192, and would also re-arm a fitter the user
-        may have turned off because it aborts on their host."""
+        """Overriding an explicit --fit off would keep the 8192 floor, but also re-arm a fitter the
+        user turned off because it aborts on their host."""
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
         assert cmd[-2:] == ["--fit", "off"]
 
     def test_the_no_kv_cap_lands_on_the_same_floor(self, tmp_path, monkeypatch):
-        """With a context length in its GGUF, the Apple cap applies, and must apply the no-fitter
-        reduction."""
+        """With a GGUF context, the Apple cap applies, and must apply the no-fitter reduction."""
         cmd, _ = _launch(
             tmp_path,
             monkeypatch,
@@ -398,8 +395,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
         assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
 
     def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(self, tmp_path, monkeypatch):
-        """With a fitter running, the raised floor is kept and no -c is emitted, leaving the child
-        to size it."""
+        """With a fitter running, keep the raised floor and emit no -c so the child sizes it."""
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144)
         assert _ctx_values(cmd) == [
             str(_FIT_MIN_CTX)
@@ -415,8 +411,7 @@ class TestAutoLayersWithTheFitterTurnedOff:
         assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
 
     def test_an_inherited_fit_off_reaches_the_same_floor(self, tmp_path, monkeypatch):
-        """llama.cpp applies LLAMA_ARG_FIT before argv, so the env twin turns the
-        fitter off just as an extra does and withdraws the same exemption."""
+        """LLAMA_ARG_FIT is applied before argv, so the env twin withdraws the same exemption."""
         monkeypatch.setenv("LLAMA_ARG_FIT", "off")
         cmd, _ = _launch(tmp_path, monkeypatch, **self.AUTO_LAYERS)
         assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
@@ -488,8 +483,7 @@ class TestAnInheritedContextEnvironment:
 
 
 class TestAVirtualisedMetalDevice:
-    """Read the mode from the request, not the paravirtual-rewritten placement, or Auto emits -c 0
-    anyway."""
+    """Read the mode from the request; the rewritten placement would make Auto emit -c 0."""
 
     def _launch_pv(self, tmp_path, monkeypatch, **kwargs):
         return _launch(tmp_path, monkeypatch, paravirtual = True, **kwargs)
@@ -565,8 +559,7 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
 
     def test_a_suppressed_drafter_does_not_snapshot_the_strip(self, tmp_path, monkeypatch):
-        """The drafter drop snapshots before the strip, or the rewrite re-enters the comparator and
-        reloads."""
+        """The drafter drop snapshots before the strip, or a rewrite re-enters the comparator."""
         import core.inference.llama_cpp as _llama_cpp
 
         draft = tmp_path / "draft.gguf"
