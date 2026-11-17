@@ -236,6 +236,19 @@ async def video_download_plan(
                 checkpoint_filename = request.gguf_filename,
                 checkpoint_repo = request.model_path,
             )
+        if fam is not None:
+            from core.inference.video import refuse_without_guardrail_access
+
+            # The picker stages this plan before /video/load runs, so a Nano pick without guardrail access must be
+            # refused here, not after its ~33 GB are staged.
+            await asyncio.to_thread(
+                refuse_without_guardrail_access,
+                fam,
+                kind,
+                request.model_path,
+                request.hf_token,
+                False,
+            )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
@@ -365,6 +378,7 @@ async def load_video_model_gated(
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
+        refuse_without_guardrail_access,
         resolve_video_model_kind,
     )
     from utils.native_path_leases import redact_native_paths
@@ -442,6 +456,15 @@ async def load_video_model_gated(
             request.gguf_filename,
             request.hf_token,
             user_initiated,
+        )
+        # Before chat is evicted: a Nano load without guardrail access would otherwise download ~33 GB first.
+        await asyncio.to_thread(
+            refuse_without_guardrail_access,
+            fam,
+            kind,
+            request.model_path,
+            request.hf_token,
+            not user_initiated,
         )
         # Non-CPU loads take the GPU from chat; CPU loads only release stale VIDEO ownership, owner-guarded.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)

@@ -146,6 +146,12 @@ def _hub_cache(monkeypatch, answer):
     return lookups
 
 
+@pytest.fixture(autouse = True)
+def _no_guardrail_access_check(monkeypatch):
+    """The guardrail access check is a Hub request; test_cosmos3_guardrail_preflight.py covers it."""
+    monkeypatch.setattr(vc3, "guardrail_access_preflight", lambda *args, **kwargs: None)
+
+
 def _set_guardrail(monkeypatch, state):
     """ "opted out" (env 0, no package), "installed" (package, no env) or "absent" (neither)."""
     if state == "opted out":

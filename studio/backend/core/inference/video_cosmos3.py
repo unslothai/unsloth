@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -115,6 +116,114 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
     if not checkpoint_enables_safety_checker(repo_id, index):
         return None
     return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: pip install cosmos-guardrail, restart, {_GUARDRAIL_STEPS}"
+
+
+# Small files the guardrail fetches on its first build (blocklist/*, face_blur_filter/*); all of them gated.
+GUARDRAIL_PROBE_FILES = ("blocklist/custom/branding", "face_blur_filter/Resnet50_Final.pth")
+_PROBE_TIMEOUT_S = 10.0
+# A granted probe is remembered per token, so the route's check and the load's own one send one request.
+_PROBE_OK_TTL_S = 60.0
+_probe_ok: dict[str, float] = {}
+_probe_lock = threading.Lock()
+
+
+def _guardrail_cached() -> bool:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001
+        return False
+    for name in GUARDRAIL_PROBE_FILES:
+        try:
+            if not isinstance(try_to_load_from_cache(GUARDRAIL_REPO, name), str):
+                return False
+        except Exception:  # noqa: BLE001 -- an unreadable cache is a miss
+            return False
+    return True
+
+
+def _hub_offline() -> bool:
+    try:
+        from huggingface_hub import constants
+        if getattr(constants, "HF_HUB_OFFLINE", False):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _probe_key(token: Any) -> str:
+    import hashlib
+    return hashlib.sha256(repr(token).encode("utf-8")).hexdigest()
+
+
+def _remote_model_index(repo_id: str, hf_token: Any) -> Optional[dict]:
+    """The checkpoint's few-KB model_index.json from the Hub, or None on any failure."""
+    if Path(repo_id).expanduser().exists():
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(repo_id, "model_index.json", token = hf_token)
+        data = json.loads(Path(path).read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 -- unknown stays unknown; the family default decides
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def guardrail_access_preflight(
+    repo_id: str,
+    hf_token: Any = None,
+    *,
+    local_files_only: bool = False,
+    index: Optional[dict] = None,
+    default_enabled: bool = True,
+) -> Optional[str]:
+    """Refusal for a load whose guardrail weights this token cannot fetch, checked before any model download.
+
+    One metadata request on a small gated guardrail file with the load's token (None = the ambient login). Only a
+    401 / 403 refuses: a cached guardrail, offline mode and network errors all let the load go on as before. A
+    checkpoint that is neither cached nor a base repo is judged by its own model_index.json (a few KB), else by
+    ``default_enabled`` (the family's: Edge ships the guardrail off)."""
+    if safety_checker_opted_out() or not guardrail_installed():
+        return None
+    if local_files_only or _hub_offline() or _guardrail_cached():
+        return None
+    if isinstance(hf_token, str):
+        hf_token = hf_token.strip() or None
+    if index is None:
+        index = _cached_model_index(repo_id)
+    if index is None and str(repo_id or "").strip().lower() not in _BASE_SAFETY_CHECKER:
+        index = _remote_model_index(repo_id, hf_token)
+    if index is None and str(repo_id or "").strip().lower() not in _BASE_SAFETY_CHECKER:
+        enabled = default_enabled
+    else:
+        enabled = checkpoint_enables_safety_checker(repo_id, index)
+    if not enabled:
+        return None
+    key = _probe_key(hf_token)
+    now = time.monotonic()
+    with _probe_lock:
+        if _probe_ok.get(key, 0.0) > now:
+            return None
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        get_hf_file_metadata(
+            hf_hub_url(GUARDRAIL_REPO, GUARDRAIL_PROBE_FILES[0]),
+            token = hf_token,
+            timeout = _PROBE_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 -- only an access refusal stops the load
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        gated = any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__)
+        if gated or status in (401, 403):
+            logger.warning("video.cosmos3: guardrail access refused before the download: %s", exc)
+            return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail, and this Hugging Face token has no access: {_GUARDRAIL_STEPS}"
+        logger.info(
+            "video.cosmos3: guardrail access check skipped (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+    with _probe_lock:
+        _probe_ok[key] = now + _PROBE_OK_TTL_S
+    return None
 
 
 def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
