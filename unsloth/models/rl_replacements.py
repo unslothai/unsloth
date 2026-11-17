@@ -1750,15 +1750,21 @@ def _unsloth_grpo_autocast_forced_float32(self):
 
 def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
     """Failed packing self-verify -> "kill", "cap" or "skip". bf16 has 1-6 nat single-token outliers, so one narrow
-    mismatch on already verified packing only skips; broad (contamination) or repeated mismatches keep the old rule."""
+    mismatch on already verified packing only skips; broad (contamination) or repeated mismatches keep the old rule.
+    Narrow = at most 2 bad tokens and at most 1% of the scored completion tokens: one bad token of two one-token
+    rollouts is the whole batch's signal (cross-rollout contamination), not an isolated outlier."""
     strikes_attr = f"_unsloth_seq_packing_{kind}_strikes"
     strikes = int(getattr(model, strikes_attr, 0) or 0)
-    verified = int(getattr(model, f"_unsloth_seq_packing_{kind}_verified_T", 0) or 0) > 0
+    verified_T_attr = f"_unsloth_seq_packing_{kind}_verified_T"
+    verified = int(getattr(model, verified_T_attr, 0) or 0) > 0
     if verified and strikes < 1:
         live = cmask > 0
         bad = int((((result.detach().float() - ref.float()).abs() >= 7e-1) & live).sum())
-        if bad <= max(2, int(live.sum()) // 1000):
+        if bad <= 2 and bad * 100 <= int(live.sum()):
             setattr(model, strikes_attr, strikes + 1)
+            # Even a smaller batch must verify again before its packed scores can be trusted.
+            setattr(model, verified_T_attr, 0)
+            setattr(model, f"_unsloth_seq_packing_{kind}_verified_seg", 0)
             return "skip"
     setattr(model, strikes_attr, strikes + 1)
     return "kill" if diff >= 1.5 else "cap"
