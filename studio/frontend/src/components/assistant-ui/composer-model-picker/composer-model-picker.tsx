@@ -5188,10 +5188,10 @@ export function ComposerModelPicker({
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
           configTarget
-            ? "h-(--composer-picker-min-h) max-h-(--picker-floor)"
+            ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
             : isExpanded
               ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
-              : "max-h-(--picker-floor)",
+              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
         )}

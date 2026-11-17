@@ -660,8 +660,11 @@ test("the open picker is at least 420px and grows only into the room under Selec
   );
   assert.match(
     picker,
-    /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\(--picker-floor\)"/,
+    /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
   );
+  // A default --picker-floor in the rule (same layer, after Tailwind) would beat the upward utility.
+  const pickerCss = readSrc("index.css");
+  assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
   assert.match(
     picker,
     /isExpanded\s+\? "min-h-\(--composer-picker-min-h\) max-h-\(--composer-picker-max-h\)"/,
@@ -673,12 +676,12 @@ test("the open picker is at least 420px and grows only into the room under Selec
   const css = readSrc("index.css");
   assert.match(
     css,
-    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor\)\);/,
+    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
   // Never under the floor; above it only as far as the room below and 540px allow.
   assert.match(
     css,
-    /--composer-picker-max-h: max\(var\(--composer-picker-min-h\), min\(calc\(540px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-room, var\(--picker-floor\)\)\)\);/,
+    /--composer-picker-max-h: max\(var\(--composer-picker-min-h\), min\(calc\(540px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-room, var\(--picker-floor, calc\(100dvh - 16px\)\)\)\)\);/,
   );
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
