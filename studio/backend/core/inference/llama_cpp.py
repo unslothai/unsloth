@@ -4115,8 +4115,12 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     loose = [f for f in main_files if boundary.search(f.lower())]
     # A bare quant request must not resolve to a longer sibling quant: q6_k is inside UD-Q6_K_XL.
     if (_quant_label_for_endian(variant_key) or "").lower() == variant_key:
+        # llama.cpp has no _XL type, so Q4_K_XL can only name UD-Q4_K_XL.
+        accepted = (
+            {variant_key, f"ud-{variant_key}"} if variant_key.endswith("_xl") else {variant_key}
+        )
         loose = [
-            f for f in loose if (_quant_label_for_endian(f) or variant_key).lower() == variant_key
+            f for f in loose if (_quant_label_for_endian(f) or variant_key).lower() in accepted
         ]
     return sorted(loose)
 

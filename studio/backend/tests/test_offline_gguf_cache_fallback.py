@@ -241,8 +241,28 @@ class TestGgufVariantFileResolution:
         ]
 
         assert _gguf_files_for_variant(files, "00002-of-00002") == [files[1]]
-        assert _gguf_files_for_variant(["Llama-IQ4_XS-3.57bpw.gguf"], "IQ4_XS") == [
-            "Llama-IQ4_XS-3.57bpw.gguf"
+
+    @pytest.mark.parametrize(
+        "variant, files",
+        [
+            ("IQ4_XS", ["Llama-IQ4_XS-3.57bpw.gguf"]),
+            ("Q4_K_XL", ["Qwen3-8B-UD-Q4_K_XL.gguf"]),
+            (
+                "q2_k_xl",
+                [
+                    "UD-Q2_K_XL/Kimi-K2-UD-Q2_K_XL-00001-of-00002.gguf",
+                    "UD-Q2_K_XL/Kimi-K2-UD-Q2_K_XL-00002-of-00002.gguf",
+                ],
+            ),
+        ],
+    )
+    def test_bare_quant_keeps_loose_match_of_same_quant(self, variant, files):
+        assert _gguf_files_for_variant(files, variant) == files
+
+    def test_loose_match_without_own_quant_token_is_kept(self):
+        # NVFP4 is only a quant token at the end of a name, so this file has none.
+        assert _gguf_files_for_variant(["Model-NVFP4-draft.gguf"], "NVFP4") == [
+            "Model-NVFP4-draft.gguf"
         ]
 
     def test_cached_sibling_quant_is_not_reused_for_bare_quant(self, monkeypatch, hf_cache):
