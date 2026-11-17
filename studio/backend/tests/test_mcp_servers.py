@@ -2390,9 +2390,7 @@ def test_search_only_listing_stays_stable_across_queries_and_tool_calls(
     name = "mcp__srv1__move-pages"
     assert _names(tools_mod.mcp_tool_search_specs({"query": name})) == [name]
     tools_mod.mcp_record_loaded_tools("thread-1", [name])
-    second = _thread_listing(
-        tools_mod, searching, [{"role": "user", "content": "List all users."}]
-    )
+    second = _thread_listing(tools_mod, searching, [{"role": "user", "content": "List all users."}])
     assert second == first
 
 
