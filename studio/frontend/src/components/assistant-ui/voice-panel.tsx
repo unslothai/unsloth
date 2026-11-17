@@ -287,8 +287,8 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       name:
         preset.label ??
         t(
-          preset.randomEachSentence
-            ? "voicePanel.randomEachSentence"
+          preset.newVoiceEachSession
+            ? "voicePanel.newVoiceEachSession"
             : "voicePanel.modelsOwnVoice",
         ),
       state: ttsState,

@@ -183,5 +183,6 @@ test("the reply's player WAV is joined once the stream ends, never swapped mid-p
 
 test("the chat model's voice names the selected chat model, kept slot or primary", () => {
   const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
-  assert.match(player, /model: isChatModelVoice\(selectedVoiceModelId\) \? params\.checkpoint : selectedVoiceModelId,/);
+  assert.match(player, /const model = isChatModelVoice\(selectedVoiceModelId\) \? params\.checkpoint : selectedVoiceModelId;/);
+  assert.match(player, /generateStudioTtsClip\(spoken, signal, \{\s*model,/);
 });

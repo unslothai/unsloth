@@ -985,7 +985,7 @@ export const nl = {
     builtinClassifiers: "Ingebouwde classificatoren",
     decideNotSetUp: "De ingebouwde classificatoren zijn niet op deze server geïnstalleerd. De spraakmodus werkt ook zonder, of je kunt een beslissingsmodel kiezen.",
     modelsOwnVoice: "Eigen stem van het model",
-    randomEachSentence: "Willekeurige stem per zin",
+    newVoiceEachSession: "Nieuwe stem per sessie",
     builtinSpeakers: "Ingebouwd",
     builtinDetectors: "Ingebouwd",
     thinkFirst: "Nadenken voor het antwoorden",

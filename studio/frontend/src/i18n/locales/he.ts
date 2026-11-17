@@ -916,7 +916,7 @@ export const he = {
     chatModelCannotSpeak: "מודל הצ'אט לא יכול לענות בדיבור. טען את LFM3-Audio-2B או LFM3-Omni-2B, או בחר קול אחר.",
     speakerFemale: "נשי",
     speakerMale: "גברי",
-    randomEachSentence: "קול אקראי בכל משפט",
+    newVoiceEachSession: "קול חדש בכל הפעלה",
     builtinSpeakers: "מובנים",
     builtinDetectors: "מובנים",
     thinkFirst: "לחשוב לפני המענה",

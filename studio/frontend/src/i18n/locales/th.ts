@@ -928,7 +928,7 @@ export const th = {
     builtinClassifiers: "ตัวจำแนกในตัว",
     decideNotSetUp: "ยังไม่ได้ติดตั้งตัวจำแนกในตัวบนเซิร์ฟเวอร์นี้ โหมดเสียงใช้งานได้โดยไม่ต้องมี หรือคุณจะเลือกโมเดลตัดสินใจก็ได้",
     modelsOwnVoice: "เสียงของโมเดลเอง",
-    randomEachSentence: "สุ่มเสียงทุกประโยค",
+    newVoiceEachSession: "เสียงใหม่ทุกเซสชัน",
     builtinSpeakers: "ในตัว",
     builtinDetectors: "ในตัว",
     thinkFirst: "คิดก่อนตอบ",

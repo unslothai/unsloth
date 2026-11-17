@@ -23665,10 +23665,13 @@ async def generate_audio(
     text = last_user_msg["content"]
     # /chat/completions hands its own request here: no saved voice, and the clip is kept.
     voice_id = payload.voice_id if isinstance(payload, AudioGenerateRequest) else None
+    reference_input_id = (
+        payload.reference_input_id if isinstance(payload, AudioGenerateRequest) else None
+    )
     persist = payload.persist if isinstance(payload, AudioGenerateRequest) else True
 
     run = None
-    if voice_id:
+    if voice_id or reference_input_id:
         from fastapi.exceptions import RequestValidationError
         from pydantic import ValidationError
 
@@ -23679,7 +23682,13 @@ async def generate_audio(
                 text = text,
                 language = payload.audio_language,
                 instructions = payload.audio_instructions,
-                inputs = AudioRunInputs(reference = AudioSourceRef(voice_id = voice_id)),
+                # A saved voice carries its own transcript; an uploaded clip brings one along.
+                inputs = AudioRunInputs(
+                    reference = AudioSourceRef(voice_id = voice_id)
+                    if voice_id
+                    else AudioSourceRef(input_id = reference_input_id),
+                    reference_text = None if voice_id else payload.reference_text,
+                ),
                 options = payload.audio_options,
                 seed = payload.seed,
                 max_tokens = _effective_max_tokens(payload),

@@ -879,7 +879,7 @@ export const ja = {
     chatModelCannotSpeak: "チャットモデルは音声で答えられません。LFM3-Audio-2B か LFM3-Omni-2B を読み込むか、別の声を選んでください。",
     speakerFemale: "女性",
     speakerMale: "男性",
-    randomEachSentence: "文ごとにランダムな声",
+    newVoiceEachSession: "セッションごとに新しい声",
     builtinSpeakers: "組み込み",
     builtinDetectors: "組み込み",
     thinkFirst: "回答前に考える",

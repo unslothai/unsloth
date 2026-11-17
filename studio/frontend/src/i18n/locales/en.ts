@@ -888,7 +888,7 @@ export const en = {
     chatModelCannotSpeak: "The chat model can't answer in speech. Load LFM3-Audio-2B or LFM3-Omni-2B, or pick another voice.",
     speakerFemale: "Female",
     speakerMale: "Male",
-    randomEachSentence: "Random voice each sentence",
+    newVoiceEachSession: "New voice each session",
     builtinSpeakers: "Built-in",
     builtinDetectors: "Built-in",
     thinkFirst: "Think before answering",

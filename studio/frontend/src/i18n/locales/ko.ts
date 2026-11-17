@@ -878,7 +878,7 @@ export const ko = {
     chatModelCannotSpeak: "채팅 모델이 음성으로 답할 수 없습니다. LFM3-Audio-2B 또는 LFM3-Omni-2B를 불러오거나 다른 목소리를 고르세요.",
     speakerFemale: "여성",
     speakerMale: "남성",
-    randomEachSentence: "문장마다 무작위 목소리",
+    newVoiceEachSession: "세션마다 새 목소리",
     builtinSpeakers: "기본 제공",
     builtinDetectors: "기본 제공",
     thinkFirst: "답하기 전에 생각하기",

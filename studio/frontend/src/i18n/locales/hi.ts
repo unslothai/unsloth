@@ -878,7 +878,7 @@ export const hi = {
     chatModelCannotSpeak: "चैट मॉडल बोलकर जवाब नहीं दे सकता। LFM3-Audio-2B या LFM3-Omni-2B लोड करें, या कोई दूसरी आवाज़ चुनें।",
     speakerFemale: "महिला",
     speakerMale: "पुरुष",
-    randomEachSentence: "हर वाक्य में अलग आवाज़",
+    newVoiceEachSession: "हर सत्र में नई आवाज़",
     builtinSpeakers: "बिल्ट-इन",
     builtinDetectors: "बिल्ट-इन",
     thinkFirst: "जवाब देने से पहले सोचें",

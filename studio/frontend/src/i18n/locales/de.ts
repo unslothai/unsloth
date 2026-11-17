@@ -878,7 +878,7 @@ export const de = {
     chatModelCannotSpeak: "Das Chat-Modell kann nicht sprechen. Lade LFM3-Audio-2B oder LFM3-Omni-2B oder wähle eine andere Stimme.",
     speakerFemale: "Weiblich",
     speakerMale: "Männlich",
-    randomEachSentence: "Zufällige Stimme in jedem Satz",
+    newVoiceEachSession: "Neue Stimme in jeder Sitzung",
     builtinSpeakers: "Integriert",
     builtinDetectors: "Integriert",
     thinkFirst: "Vor der Antwort nachdenken",

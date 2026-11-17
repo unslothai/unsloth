@@ -972,7 +972,7 @@ export const fa = {
     builtinClassifiers: "طبقه‌بندهای داخلی",
     decideNotSetUp: "طبقه‌بندهای داخلی روی این سرور نصب نشده‌اند. حالت صوتی بدون آن‌ها هم کار می‌کند، یا می‌توانید یک مدل تصمیم‌گیری انتخاب کنید.",
     modelsOwnVoice: "صدای خود مدل",
-    randomEachSentence: "صدای تصادفی برای هر جمله",
+    newVoiceEachSession: "صدای تازه در هر جلسه",
     builtinSpeakers: "داخلی",
     builtinDetectors: "داخلی",
     thinkFirst: "فکر کردن پیش از پاسخ",

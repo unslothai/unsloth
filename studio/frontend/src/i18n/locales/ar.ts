@@ -878,7 +878,7 @@ export const ar = {
     chatModelCannotSpeak: "لا يستطيع نموذج الدردشة الإجابة بالكلام. حمّل LFM3-Audio-2B أو LFM3-Omni-2B، أو اختر صوتًا آخر.",
     speakerFemale: "أنثى",
     speakerMale: "ذكر",
-    randomEachSentence: "صوت عشوائي في كل جملة",
+    newVoiceEachSession: "صوت جديد في كل جلسة",
     builtinSpeakers: "مدمجة",
     builtinDetectors: "مدمجة",
     thinkFirst: "التفكير قبل الإجابة",

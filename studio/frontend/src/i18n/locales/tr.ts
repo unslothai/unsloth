@@ -970,7 +970,7 @@ export const tr = {
     builtinClassifiers: "Yerleşik sınıflandırıcılar",
     decideNotSetUp: "Yerleşik sınıflandırıcılar bu sunucuda kurulu değil. Ses modu onlar olmadan da çalışır veya bir karar modeli seçebilirsiniz.",
     modelsOwnVoice: "Modelin kendi sesi",
-    randomEachSentence: "Her cümlede rastgele ses",
+    newVoiceEachSession: "Her oturumda yeni ses",
     builtinSpeakers: "Yerleşik",
     builtinDetectors: "Yerleşik",
     thinkFirst: "Yanıtlamadan önce düşün",

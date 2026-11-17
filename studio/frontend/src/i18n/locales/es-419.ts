@@ -981,7 +981,7 @@ export const es419 = {
     builtinClassifiers: "Clasificadores integrados",
     decideNotSetUp: "Los clasificadores integrados no están instalados en este servidor. El modo de voz funciona sin ellos, o puedes elegir un modelo de decisión.",
     modelsOwnVoice: "Voz propia del modelo",
-    randomEachSentence: "Voz aleatoria en cada oración",
+    newVoiceEachSession: "Voz nueva en cada sesión",
     builtinSpeakers: "Integradas",
     builtinDetectors: "Integrados",
     thinkFirst: "Pensar antes de responder",

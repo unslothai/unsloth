@@ -18,6 +18,7 @@ import {
   isChatModelVoice,
   speakerCarriesOver,
   voiceTtsCanClone,
+  voiceVariesPerSentence,
 } from "@/features/chat/voice/voice-models";
 import { ModelSelector } from "@/features/model-picker";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
@@ -171,7 +172,8 @@ function speakerLabel(
 
 export interface VoicePreset {
   label: string | null;
-  randomEachSentence: boolean;
+  /** No preset speaker: voice mode draws one when it starts and keeps it (voice-pin.ts). */
+  newVoiceEachSession: boolean;
   speakers: BuiltinSpeakers | null;
   canClone: boolean;
   choosable: boolean;
@@ -191,7 +193,7 @@ export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
       : null;
   return {
     label: savedName ?? builtin,
-    randomEachSentence: speakers?.family === "omnivoice" && !savedVoiceId,
+    newVoiceEachSession: !savedVoiceId && (speakers?.family === "omnivoice" || voiceVariesPerSentence(modelId)),
     speakers,
     canClone,
     choosable: canClone || (speakers?.values.length ?? 0) > 1,

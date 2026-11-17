@@ -981,7 +981,7 @@ export const uk = {
     builtinClassifiers: "Вбудовані класифікатори",
     decideNotSetUp: "Вбудовані класифікатори не встановлено на цьому сервері. Голосовий режим працює і без них, або можна вибрати модель рішень.",
     modelsOwnVoice: "Власний голос моделі",
-    randomEachSentence: "Випадковий голос для кожного речення",
+    newVoiceEachSession: "Новий голос у кожному сеансі",
     builtinSpeakers: "Вбудовані",
     builtinDetectors: "Вбудовані",
     thinkFirst: "Думати перед відповіддю",

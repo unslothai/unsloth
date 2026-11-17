@@ -978,7 +978,7 @@ export const vi = {
     builtinClassifiers: "Bộ phân loại tích hợp",
     decideNotSetUp: "Bộ phân loại tích hợp chưa được cài trên máy chủ này. Chế độ giọng nói vẫn hoạt động khi không có chúng, hoặc bạn có thể chọn một mô hình quyết định.",
     modelsOwnVoice: "Giọng riêng của mô hình",
-    randomEachSentence: "Giọng ngẫu nhiên cho mỗi câu",
+    newVoiceEachSession: "Giọng mới cho mỗi phiên",
     builtinSpeakers: "Tích hợp",
     builtinDetectors: "Tích hợp",
     thinkFirst: "Suy nghĩ trước khi trả lời",

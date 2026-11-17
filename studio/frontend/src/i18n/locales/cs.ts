@@ -976,7 +976,7 @@ export const cs = {
     builtinClassifiers: "Vestavěné klasifikátory",
     decideNotSetUp: "Vestavěné klasifikátory nejsou na tomto serveru nainstalovány. Hlasový režim funguje i bez nich, nebo můžete vybrat rozhodovací model.",
     modelsOwnVoice: "Vlastní hlas modelu",
-    randomEachSentence: "Náhodný hlas pro každou větu",
+    newVoiceEachSession: "Nový hlas pro každou relaci",
     builtinSpeakers: "Vestavěné",
     builtinDetectors: "Vestavěné",
     thinkFirst: "Před odpovědí přemýšlet",

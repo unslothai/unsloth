@@ -982,7 +982,7 @@ export const pl = {
     builtinClassifiers: "Wbudowane klasyfikatory",
     decideNotSetUp: "Wbudowane klasyfikatory nie są zainstalowane na tym serwerze. Tryb głosowy działa bez nich, możesz też wybrać model decyzyjny.",
     modelsOwnVoice: "Własny głos modelu",
-    randomEachSentence: "Losowy głos w każdym zdaniu",
+    newVoiceEachSession: "Nowy głos w każdej sesji",
     builtinSpeakers: "Wbudowane",
     builtinDetectors: "Wbudowane",
     thinkFirst: "Myśl przed odpowiedzią",

@@ -6850,6 +6850,20 @@ class AudioGenerateRequest(ChatCompletionRequest):
             "model must clone. Language, instructions, options, seed and the token cap apply."
         ),
     )
+    reference_input_id: Optional[str] = Field(
+        None,
+        pattern = _AUDIO_ID_PATTERN,
+        description = (
+            "[x-unsloth] An uploaded clip (POST /audio/inputs) to speak in, for a model that "
+            "clones; voice_id wins when both are sent. Voice mode pins its first sentence's voice "
+            "this way, so a model with no preset speaker keeps one voice for the session."
+        ),
+    )
+    reference_text: Optional[str] = Field(
+        None,
+        max_length = 4000,
+        description = "[x-unsloth] What reference_input_id says, for models that use a transcript.",
+    )
     persist: bool = Field(
         True, description = "[x-unsloth] Keep the clip in Audio history. Read aloud sends false."
     )

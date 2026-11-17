@@ -878,7 +878,7 @@ export const zhCN = {
     chatModelCannotSpeak: "聊天模型无法用语音回答。请加载 LFM3-Audio-2B 或 LFM3-Omni-2B，或选择其他声音。",
     speakerFemale: "女声",
     speakerMale: "男声",
-    randomEachSentence: "每句随机音色",
+    newVoiceEachSession: "每次会话换一种音色",
     builtinSpeakers: "内置",
     builtinDetectors: "内置",
     thinkFirst: "回答前先思考",

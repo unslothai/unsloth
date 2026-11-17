@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { generateStudioTtsClip, type TtsTiming } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
+import {
+  generateStudioTtsClip,
+  type TtsTiming,
+  uploadVoiceReference,
+} from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -16,9 +20,18 @@ import { getVoicePlayContext, settleVoiceTurn } from "../voice/voice-loop-bridge
 import { outputSpectrumNode } from "../voice/voice-spectrum";
 import { voiceTrace } from "../voice/voice-trace";
 import {
+  VOICE_REFERENCE_SECONDS,
+  VOICE_REFERENCE_TEXT,
+  type VoiceReference,
+  voicePinGeneration,
+  wavSeconds,
+  withVoicePin,
+} from "../voice/voice-pin";
+import {
   cutAbortsSpeechRequest,
   isChatModelVoice,
   voiceTtsCanClone,
+  voiceVariesPerSentence,
 } from "../voice/voice-models";
 import { asideBlocked, createClipLedger, type ClipLedger } from "../voice/tts-clip-ledger";
 
@@ -147,7 +160,8 @@ interface Stream extends SentenceQueue {
 
 function currentVoiceKey(): string {
   const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } = useChatRuntimeStore.getState();
-  return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}`;
+  // The session voice of a model with no preset speaker is redrawn each session.
+  return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}\u0000${voicePinGeneration()}`;
 }
 
 const ASIDE_MAX_LATE_MS = 4000;
@@ -278,12 +292,37 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
         // "auto" names no language: the app's own stands in, so the default setting is not a no-op.
         const language = dictationLanguage === "auto" ? getLocale() : dictationLanguage;
         const spoken = speechNormalize ? normalizeForSpeech(sentence, language) : sentence;
-        const clip = await generateStudioTtsClip(spoken, abortRef.current?.signal, {
-          // The chat model's voice is the selected chat model, which may sit in a kept slot.
-          model: isChatModelVoice(selectedVoiceModelId) ? params.checkpoint : selectedVoiceModelId,
-          voiceId: voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "",
-          speaker: selectedVoiceSpeaker,
-        });
+        const signal = abortRef.current?.signal;
+        // The chat model's voice is the selected chat model, which may sit in a kept slot.
+        const model = isChatModelVoice(selectedVoiceModelId) ? params.checkpoint : selectedVoiceModelId;
+        const voiceId = voiceTtsCanClone(selectedVoiceModelId) ? selectedVoiceId : "";
+        const speak = (reference: VoiceReference | null) =>
+          generateStudioTtsClip(spoken, signal, {
+            model,
+            voiceId,
+            speaker: selectedVoiceSpeaker,
+            reference: reference ?? undefined,
+          });
+        // A voice with no preset speaker draws a new one per sentence: keep the first for the session.
+        const clip =
+          !voiceId && !selectedVoiceSpeaker && voiceVariesPerSentence(selectedVoiceModelId)
+            ? await withVoicePin(model, speak, async () => {
+                // Not tied to this reply's signal: a barge-in must not cost the session its voice.
+                const drawn = await generateStudioTtsClip(VOICE_REFERENCE_TEXT, undefined, {
+                  model,
+                  voiceId: "",
+                });
+                const wav = wavBytesFromDataUrl(drawn.url);
+                const seconds = wavSeconds(wav);
+                if (seconds === null || seconds < VOICE_REFERENCE_SECONDS.min || seconds > VOICE_REFERENCE_SECONDS.max) {
+                  voiceTrace("tts.voicePinSkipped", { model, seconds });
+                  return null;
+                }
+                const inputId = await uploadVoiceReference(wav);
+                voiceTrace("tts.voicePinned", { model, inputId, seconds: Math.round(seconds * 10) / 10 });
+                return { inputId, text: VOICE_REFERENCE_TEXT };
+              })
+            : await speak(null);
         onResponse?.(clip.timing);
         return clip.url;
       };

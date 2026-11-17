@@ -974,7 +974,7 @@ export const id = {
     builtinClassifiers: "Pengklasifikasi bawaan",
     decideNotSetUp: "Pengklasifikasi bawaan belum terpasang di server ini. Mode suara tetap berfungsi tanpanya, atau Anda dapat memilih model keputusan.",
     modelsOwnVoice: "Suara bawaan model",
-    randomEachSentence: "Suara acak setiap kalimat",
+    newVoiceEachSession: "Suara baru setiap sesi",
     builtinSpeakers: "Bawaan",
     builtinDetectors: "Bawaan",
     thinkFirst: "Berpikir sebelum menjawab",

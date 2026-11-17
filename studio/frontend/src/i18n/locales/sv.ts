@@ -931,7 +931,7 @@ export const sv = {
     chatModelCannotSpeak: "Chattmodellen kan inte svara med tal. Läs in LFM3-Audio-2B eller LFM3-Omni-2B, eller välj en annan röst.",
     speakerFemale: "Kvinna",
     speakerMale: "Man",
-    randomEachSentence: "Slumpad röst i varje mening",
+    newVoiceEachSession: "Ny röst varje session",
     builtinSpeakers: "Inbyggda",
     builtinDetectors: "Inbyggda",
     thinkFirst: "Tänk innan svar",

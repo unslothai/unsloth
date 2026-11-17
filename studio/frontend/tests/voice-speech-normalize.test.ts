@@ -71,7 +71,7 @@ test("the player rewrites only the request text, and only with the switch on", (
   const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
   assert.match(
     player,
-    /const spoken = speechNormalize \? normalizeForSpeech\(sentence, language\) : sentence;\s*const clip = await generateStudioTtsClip\(spoken,/,
+    /const spoken = speechNormalize \? normalizeForSpeech\(sentence, language\) : sentence;[\s\S]{0,600}?generateStudioTtsClip\(spoken, signal,/,
   );
   // The default dictation language is "auto", which keys no rules: the app's language stands in.
   assert.match(player, /const language = dictationLanguage === "auto" \? getLocale\(\) : dictationLanguage;/);

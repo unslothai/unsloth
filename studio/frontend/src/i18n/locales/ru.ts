@@ -878,7 +878,7 @@ export const ru = {
     chatModelCannotSpeak: "Чат-модель не умеет отвечать голосом. Загрузите LFM3-Audio-2B или LFM3-Omni-2B либо выберите другой голос.",
     speakerFemale: "Женский",
     speakerMale: "Мужской",
-    randomEachSentence: "Случайный голос в каждой фразе",
+    newVoiceEachSession: "Новый голос в каждом сеансе",
     builtinSpeakers: "Встроенные",
     builtinDetectors: "Встроенные",
     thinkFirst: "Думать перед ответом",

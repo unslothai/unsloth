@@ -15,6 +15,7 @@ import {
   migrateVoiceTtsModel,
 } from "@/features/chat/voice/voice-models";
 import { VOICE_DEFAULT_VAD_MODEL } from "@/features/chat/voice/vad-client";
+import { clearVoicePin } from "@/features/chat/voice/voice-pin";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -4699,12 +4700,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { loadingModelPick: null };
     }),
   // Clears the orb's last state too: a stale "listening" came back over the welcome composer on reopen.
-  setVoiceMode: (voiceMode) =>
+  setVoiceMode: (voiceMode) => {
+    // The next session draws a new voice for a model with no preset speaker.
+    if (voiceMode === "off") clearVoicePin();
     set(
       voiceMode === "off"
         ? { voiceMode, voiceOrbCollapsed: false, voiceHearing: false, voiceOrbState: null, voicePaused: false }
         : { voiceMode },
-    ),
+    );
+  },
   setVoiceHearing: (voiceHearing) => set({ voiceHearing }),
   setVoiceHeldForEdit: (voiceHeldForEdit) => set({ voiceHeldForEdit }),
   setVoiceMuted: (voiceMuted) => set(voiceMuted ? { voiceMuted, voiceHearing: false } : { voiceMuted }),

@@ -39,6 +39,7 @@ const { queueSentences } = loadWithStubs<Player>(
         "../voice/voice-spectrum",
         "../voice/voice-trace",
         "../voice/voice-models",
+        "../voice/voice-pin",
         "../voice/tts-clip-ledger",
         "../voice/speech-normalize",
       ].map((name) => [name, {}]),

@@ -17,6 +17,7 @@ import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { markdownToSpeechText } from "../utils/speech-text";
 import { splitIntoSentences } from "../voice/speech-text";
+import type { VoiceReference } from "../voice/voice-pin";
 import { planTtsChunk, spokenChunk } from "../voice/tts-chunk-plan";
 
 /** "default" resolves to the platform's default voice; undefined lets the browser pick. */
@@ -270,16 +271,24 @@ export type TtsTiming = { resolve_ms?: number; synth_ms?: number };
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
-  options?: { model: string; voiceId: string; speaker?: string },
+  options?: StudioTtsOptions,
 ): Promise<string> {
   return (await generateStudioTtsClip(text, signal, options)).url;
 }
+
+type StudioTtsOptions = {
+  model: string;
+  voiceId: string;
+  speaker?: string;
+  /** An uploaded clip to speak in, when no saved voice is picked: voice mode's session voice. */
+  reference?: VoiceReference;
+};
 
 /** generateStudioTtsAudio with the server's timing beside the clip. */
 export async function generateStudioTtsClip(
   text: string,
   signal?: AbortSignal,
-  options?: { model: string; voiceId: string; speaker?: string },
+  options?: StudioTtsOptions,
 ): Promise<{ url: string; timing?: TtsTiming }> {
   const ttsStudioVoiceId =
     options?.voiceId ?? useVoiceSettingsStore.getState().ttsStudioVoiceId;
@@ -297,6 +306,9 @@ export async function generateStudioTtsClip(
       max_tokens: TTS_MAX_TOKENS,
       ...(model ? { model } : {}),
       ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
+      ...(!ttsStudioVoiceId && options?.reference
+        ? { reference_input_id: options.reference.inputId, reference_text: options.reference.text }
+        : {}),
       ...(options?.speaker ? { audio_options: { voice: options.speaker } } : {}),
     }),
     signal,
@@ -328,6 +340,20 @@ export async function generateStudioTtsClip(
     );
   }
   return { url: `data:audio/wav;base64,${data.audio.data}`, timing: data.timing ?? undefined };
+}
+
+/** Keeps a spoken clip on the server so later sentences can clone it; resolves its input id. */
+export async function uploadVoiceReference(wav: ArrayBuffer, signal?: AbortSignal): Promise<string> {
+  const response = await authFetch("/api/inference/audio/inputs?name=voice-mode.wav", {
+    method: "POST",
+    headers: { "Content-Type": "audio/wav" },
+    body: wav,
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const record = (await response.json()) as { id?: string };
+  if (!record.id) throw new Error("The server kept no clip.");
+  return record.id;
 }
 
 export async function generateCustomTtsAudio(

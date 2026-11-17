@@ -919,7 +919,7 @@ export const zhTW = {
     builtinClassifiers: "內建分類器",
     decideNotSetUp: "此伺服器未安裝內建分類器。語音模式沒有它們也能運作，你也可以選擇一個判斷模型。",
     modelsOwnVoice: "模型本身的音色",
-    randomEachSentence: "每句隨機音色",
+    newVoiceEachSession: "每次工作階段換一種音色",
     builtinSpeakers: "內建",
     builtinDetectors: "內建",
     thinkFirst: "回答前先思考",

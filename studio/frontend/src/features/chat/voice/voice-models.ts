@@ -110,6 +110,26 @@ export function cutAbortsSpeechRequest(voiceModelId: string | null | undefined):
 }
 
 /** Whether the voice can speak in a saved Audio voice (the request turns into a clone). */
+// Heard in the 31-voice listening sweep (an audio model counting speakers over seven sentences):
+// with no saved voice these change speaker from one sentence to the next, and a fixed seed does not hold
+// one. A saved voice (clone) is what keeps a single speaker.
+const VOICE_VARIES_PER_SENTENCE = new Set(
+  [
+    "OmniVoice-GGUF",
+    "Breeze-TTS-2-GGUF",
+    "MOSS-TTS-Nano-100M-GGUF",
+    "DotTTS-Edit-GGUF",
+    "VoxCPM1-GGUF",
+    "Irodori-TTS-v4-Small-GGUF",
+    "Irodori-TTS-500M-v3-GGUF",
+    "Irodori-TTS-600M-v3-VoiceDesign-GGUF",
+  ].map((folder) => `${AUDIO_CPP_REPO}/${folder}`.toLowerCase()),
+);
+
+export function voiceVariesPerSentence(id: string | null | undefined): boolean {
+  return Boolean(id) && VOICE_VARIES_PER_SENTENCE.has(id!.toLowerCase());
+}
+
 export function voiceTtsCanClone(id: string | null | undefined): boolean {
   const model = audioCppModelFor(id);
   return model !== null && audioCppWorkflowsFor(model).includes("clone");
