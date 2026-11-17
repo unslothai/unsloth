@@ -86,3 +86,34 @@ def test_streaming_stand_in_keeps_the_device_repair():
         assert len(calls) == 3
     finally:
         restore()
+
+
+class _OffloadedUnit:
+    """A block unit whose shards sit on the host (CPUOffloadPolicy); unshard() gathers onto cuda:1."""
+
+    def __init__(self):
+        self.__dict__["_per_layer_device"] = torch.device("cuda", 0)  # published at load
+        self.__dict__["_per_layer_device_index"] = 0
+        self.device = torch.device("cpu")
+
+    def unshard(self):
+        self.device = torch.device("cuda", 1)
+
+    def reshard(self):
+        self.device = torch.device("cpu")
+
+    def parameters(self):
+        yield types.SimpleNamespace(device = self.device)
+
+
+def test_streaming_enter_publishes_the_gathered_device():
+    native = _load_native()
+    unit = _OffloadedUnit()
+    stream = native._GenerateBlockStream({0: unit})
+    stream.enter(0)
+    assert unit.__dict__["_per_layer_device"] == torch.device("cuda", 1)
+    assert unit.__dict__["_per_layer_device_index"] == 1
+    stream.leave(0)
+    assert unit.__dict__["_per_layer_device"] == torch.device(
+        "cuda", 1
+    )  # where the next gather lands

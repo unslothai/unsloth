@@ -2316,6 +2316,18 @@ def _generate_streams_blocks(model):
     return not fits
 
 
+def _publish_gathered_device(layer):
+    """Republish the layer's execution device (`_per_layer_device`, read by per_layer_device) from its
+    gathered weights. A stale cuda:0 published at load is otherwise kept when the shards sit on the
+    host (CPU offload), where refresh_moved_layer_devices sees another device type and skips."""
+    device = next((p.device for p in layer.parameters() if p.device.type != "meta"), None)
+    d = layer.__dict__
+    if device is None or d.get("_per_layer_device") == device:
+        return
+    d["_per_layer_device"] = device
+    d["_per_layer_device_index"] = device.index if device.index is not None else device.type
+
+
 class _GenerateBlockStream:
     """Stands in as `layers._unsloth_block_swap` during generate: the decode loops call enter(i) /
     leave(i) around block i, which read its weights without calling it, so the block is gathered there
@@ -2332,6 +2344,7 @@ class _GenerateBlockStream:
         unit = self.units.get(index)
         if unit is not None:
             unit.unshard()
+            _publish_gathered_device(unit)
 
     def leave(self, index):
         unit = self.units.get(index)
