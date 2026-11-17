@@ -7,6 +7,9 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
+import { BrainIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { memoryToolFeedback } from "./memory-tool-feedback";
 import { partsHaveNonEmptyText } from "./message-derived";
 import {
   isToolCallCancelled,
@@ -20,7 +23,11 @@ import {
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
 
-type MemoryArgs = { scope?: unknown; key?: unknown; value?: unknown };
+function MemoryIcon(props: { className?: string }) {
+  return <HugeiconsIcon icon={BrainIcon} strokeWidth={2} {...props} />;
+}
+
+type MemoryArgs = { scope?: unknown; value?: unknown };
 
 export const MemoryToolUI: ToolCallMessagePartComponent<MemoryArgs> = ({
   args,
@@ -29,11 +36,8 @@ export const MemoryToolUI: ToolCallMessagePartComponent<MemoryArgs> = ({
   toolCallId,
 }) => {
   const scope = toolArgText(args?.scope);
-  const key = toolArgText(args?.key);
   const value = toolArgText(args?.value);
   const text = result == null ? "" : stringifyToolResult(result);
-  const saved = text.startsWith("Memory updated:");
-  const unchanged = text.startsWith("Memory unchanged:");
   const forgetting = args?.value === null;
   const isRunning = isToolCallRunning(status);
   const cancelled = isToolCallCancelled(status);
@@ -43,21 +47,18 @@ export const MemoryToolUI: ToolCallMessagePartComponent<MemoryArgs> = ({
     partsHaveNonEmptyText(message.content),
   );
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
-  const label = awaitingApproval
-    ? "Waiting for approval…"
-    : isRunning
-      ? forgetting
-        ? "Forgetting memory…"
-        : "Remembering…"
-      : cancelled
-        ? "Memory update cancelled"
-        : saved
-          ? forgetting
-            ? "Memory forgotten"
-            : "Memory saved"
-          : unchanged
-            ? "Memory already up to date"
-            : "Memory was not saved";
+  const feedback = memoryToolFeedback({
+    phase: awaitingApproval
+      ? "approval"
+      : isRunning
+        ? "running"
+        : cancelled
+          ? "cancelled"
+          : "settled",
+    forgetting,
+    project: scope === "project",
+    resultText: text,
+  });
 
   return (
     <ToolFallbackRoot
@@ -65,27 +66,22 @@ export const MemoryToolUI: ToolCallMessagePartComponent<MemoryArgs> = ({
       onOpenChange={setOpen}
       awaitingApproval={awaitingApproval}
     >
-      <ToolFallbackTrigger toolName="Memory" status={status} />
+      <ToolFallbackTrigger
+        toolName="Memory"
+        status={status}
+        icon={status?.type === "complete" ? MemoryIcon : undefined}
+      />
       <ToolFallbackContent>
         <div className="space-y-2 text-sm" aria-live="polite">
-          <p className="text-muted-foreground">{label}</p>
-          {(value || key) && (
-            <p className="whitespace-pre-wrap break-words">
-              {forgetting
-                ? key.replaceAll("_", " ")
-                : value || key.replaceAll("_", " ")}
-            </p>
+          <p className="text-muted-foreground">{feedback.label}</p>
+          {!forgetting && value && (
+            <p className="whitespace-pre-wrap break-words">{value}</p>
           )}
-          {!isRunning && !cancelled && !saved && !unchanged && text && (
-            <p className="whitespace-pre-wrap break-words text-muted-foreground">
-              {text.replace(/^Error:\s*/, "")}
-            </p>
+          {feedback.detail && (
+            <p className="text-muted-foreground">{feedback.detail}</p>
           )}
-          {(saved || unchanged) && (
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              <span>
-                {scope === "project" ? "This project" : "Across your chats"}
-              </span>
+          {feedback.canManage && (
+            <div className="text-xs text-muted-foreground">
               <button
                 type="button"
                 className="underline underline-offset-4 hover:text-foreground"

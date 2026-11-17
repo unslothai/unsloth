@@ -254,7 +254,7 @@ TOOL = {
                 },
                 "value": {
                     "type": ["string", "null"],
-                    "description": "The concise fact to save, for example Amber Harbor. Use JSON null only to delete the key.",
+                    "description": "A concise, self-contained fact in plain language, shown directly to the user. For example: You prefer Neovim, or This project uses PostgreSQL. Include enough context to understand the fact without its key. Use JSON null only to delete the key.",
                 },
             },
             "required": ["scope", "key", "value"],
