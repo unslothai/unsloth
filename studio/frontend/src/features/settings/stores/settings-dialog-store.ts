@@ -48,6 +48,7 @@ export type SettingsScrollTarget =
   | "library-storage"
   | "remote-lan-keyless"
   | "resources-caches"
+  | "resources-engines"
   | "resources-model-memory"
   | "sandbox-os"
   | "sandbox-permissions";
@@ -201,6 +202,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "library-storage": "library",
   "remote-lan-keyless": "remote-lan",
   "resources-caches": "resources",
+  "resources-engines": "resources",
   "resources-model-memory": "resources",
   "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
