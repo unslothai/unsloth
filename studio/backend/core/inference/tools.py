@@ -439,13 +439,13 @@ _CURL_PLAIN_FLAGS = frozenset(
         "--create-dirs",
         "--no-buffer",
         "--ipv4",
-        "--ipv6",
         "--http1.1",
         "--http2",
         "--version",
     }
 )
-_CURL_PLAIN_SHORT_FLAGS = frozenset("sSLfkIivOJRgN46V#")
+# No -6/--ipv6: curl applies it to the IPv4-only proxy too.
+_CURL_PLAIN_SHORT_FLAGS = frozenset("sSLfkIivOJRgN4V#")
 _CURL_PLAIN_VALUES = {
     "--output": "o",
     "--output-dir": None,
@@ -506,9 +506,11 @@ _PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 # Proxied launches point these at empty rc files; a command that names them could undo that.
 _DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
 # Change what a later curl/wget word runs or which environment it gets.
-_DOWNLOAD_ALTERING_WORDS = frozenset({"source", ".", "alias", "shopt", "function", "enable"})
-# What a download may be piped into: text tools that run nothing. A wrapper (env bash, timeout 5 sh) would hide
-# an interpreter from the pipe-to-shell check.
+_DOWNLOAD_ALTERING_WORDS = frozenset(
+    {"source", ".", "alias", "shopt", "function", "enable", "builtin", "command", "exec", "eval"}
+)
+# What a download may be piped into: text tools with no option that runs a program (not sort: --compress-program).
+# A wrapper (env bash, timeout 5 sh) would hide an interpreter from the pipe-to-shell check.
 _DOWNLOAD_PIPE_TARGETS = frozenset(
     {
         "head",
@@ -516,7 +518,6 @@ _DOWNLOAD_PIPE_TARGETS = frozenset(
         "jq",
         "grep",
         "wc",
-        "sort",
         "uniq",
         "cat",
         "tee",
@@ -598,7 +599,6 @@ def _is_plain_download(command: str) -> bool:
     # The words as bash reads them too: CURL_HO''ME is CURL_HOME.
     if _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens)) or any(
         (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
-        or (not is_operator and token in _DOWNLOAD_ALTERING_WORDS)
         or (
             is_operator
             and token in ("|", "|&")
@@ -624,6 +624,9 @@ def _is_plain_download(command: str) -> bool:
             return False
         name = token.rsplit("/", 1)[-1]
         if not (at_start and name in ("curl", "wget")):
+            # At command position only: jq's . filter is not bash's . builtin.
+            if at_start and token in _DOWNLOAD_ALTERING_WORDS:
+                return False
             is_assignment = _SHELL_ASSIGNMENT_RE.match(token) is not None
             assigned = assigned or (at_start and is_assignment)
             at_start = at_start and (
