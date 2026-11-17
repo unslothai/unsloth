@@ -5882,6 +5882,12 @@ export const uk = {
       openFileFailed: "Не вдалося відкрити файл",
     },
   },
+  exportTabs: {
+    ariaLabel: "Тип експорту",
+    llm: "LLM",
+    diffusionLora: "Diffusion LoRA",
+    q4nx: "Перетворити на Q4NX",
+  },
   exportDecision: {
     title: "Модель рішень",
     description:

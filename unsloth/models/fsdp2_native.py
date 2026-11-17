@@ -2688,12 +2688,27 @@ def _ga_mode(model = None):
     "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
       accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
-      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+      backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
     layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
-    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
+    if not isinstance(layout, dict):
+        return "skip"
+    if layout.get("fits"):
+        return "defer"
+    return "each" if _mostly_trainable(model) else "skip"
+
+
+def _mostly_trainable(model):
+    trainable = frozen = 0
+    for p in model.parameters():
+        if p.requires_grad and _floating(p):
+            trainable += p.numel()
+        else:
+            frozen += p.numel()
+    return trainable > frozen
 
 
 @contextlib.contextmanager
