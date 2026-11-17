@@ -246,3 +246,63 @@ def test_the_parked_layout_renders_bit_identically(h3i, tmp_path, monkeypatch):
     today = _render(h3i, root, te, False, False, monkeypatch)
     assert torch.equal(today, _render(h3i, root, te, True, False, monkeypatch))
     assert torch.equal(today, _render(h3i, root, te, True, True, monkeypatch))
+
+
+def test_a_parked_vae_keeps_its_fp32_fallback_across_decodes(h3i, tmp_path, monkeypatch):
+    """The canvas recasts the fp16 decoder to fp32 when a decode overflows; the next decode of a parked VAE must
+    upload those fp32 weights, not the fp16 snapshot taken when it was parked."""
+    import torch
+
+    import _minimax_h3_image_tiny as tiny
+    from core.inference import diffusion_vae_canvas as canvas
+
+    root = tmp_path / "rel"
+    ref = tiny.make_tiny_release(root)
+    te = tiny.make_text_encoder(ref["tokenizer"])
+    monkeypatch.setattr(h3i, "plan_placement", _stream_plan(h3i, True, True))
+    pipe = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    try:
+        vae = pipe.vae
+        assert canvas._block_linears(vae)
+        assert h3i.unpark(vae)
+        canvas.install(vae, "cpu", speed = False)
+        canvas.set_decoder_dtype(vae, torch.float16)
+        vae._unsloth_canvas_half = True
+        h3i.park_on_host(vae, "cpu", pin = False)
+        seen = []
+
+        def fake_stock(z, *a, **k):
+            seen.append(canvas._block_linears(vae)[0].weight.dtype)
+            return torch.zeros(1, 3, 64, 64)
+
+        vae.__dict__["_unsloth_canvas_stock_decode"] = fake_stock
+        vae.use_tiling = False  # the untiled branch: one stock decode per attempt
+        verdicts = iter(["nonfinite"])
+        monkeypatch.setattr(canvas, "_probe", lambda out: next(verdicts, None))
+        latents = torch.zeros(1, int(vae.config.latent_channels), 4, 4)
+        pipe._decode(latents, 64, 64, "pil")
+        assert seen == [torch.float16, torch.float32]  # overflowed in fp16, decoded again in fp32
+        assert vae._unsloth_canvas_half is False
+        assert canvas._block_linears(vae)[0].weight.device.type == "cpu"
+        pipe._decode(latents, 64, 64, "pil")
+        assert seen[2:] == [torch.float32]
+        assert canvas._block_linears(vae)[0].weight.dtype == torch.float32
+    finally:
+        pipe.release()
+
+
+def test_a_parked_module_keeps_tensors_its_phase_adds(h3i):
+    import torch
+
+    lin = torch.nn.Linear(4, 4)
+    parked = h3i.park_on_host(lin, "cpu", pin = False)
+    parked.enter()
+    lin.register_buffer("extra", torch.ones(3))
+    lin.weight = torch.nn.Parameter(torch.full((4, 4), 2.0), requires_grad = False)
+    parked.leave()
+    parked.enter()
+    assert torch.equal(lin.extra, torch.ones(3)) and torch.equal(
+        lin.weight, torch.full((4, 4), 2.0)
+    )
+    parked.leave()
+    assert parked.bytes == 4 * 4 * 4 + 4 * 4 + 3 * 4

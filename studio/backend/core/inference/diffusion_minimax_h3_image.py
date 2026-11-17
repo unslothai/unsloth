@@ -1873,8 +1873,8 @@ PARKED_ATTR = "_unsloth_h3_parked"
 
 class HostParked:
     """``module``'s tensors wait on the host (pinned where allowed) and are on ``device`` only between ``enter()``
-    and the matching ``leave()``; nested enters count. Leaving drops the device copies (the host ones never change:
-    every parked module runs inference only)."""
+    and the matching ``leave()``; nested enters count. Leaving drops the device copies; a tensor the phase replaced
+    or recast (the VAE canvas's fp32 fallback for an fp16 overflow) or added becomes the new host copy."""
 
     def __init__(
         self,
@@ -1886,35 +1886,70 @@ class HostParked:
         import torch
 
         self.device = torch.device(device)
+        self.module = module
+        self.pin = pin
         self.depth = 0
         self.handles: list = []
-        self.bytes = 0
         self._host: list = []
-        for owner in module.modules():
-            for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
-                for name, tensor in list(table.items()):
-                    if tensor is None:
-                        continue
-                    host = tensor.detach()
-                    if host.device.type != "cpu":
-                        host = host.to("cpu")
-                    if pin:
-                        try:
-                            host = host.pin_memory()
-                        except Exception:  # noqa: BLE001 - a tensor subclass or a refused pin: pageable
-                            pass
-                    self.bytes += host.numel() * host.element_size()
-                    self._host.append((owner, kind, name, host))
+        self._placed: dict = {}
+        for owner, kind, name, tensor in self._tensors():
+            self._host.append((owner, kind, name, self._to_host(tensor)))
         self._put(lambda t: t)
+
+    @property
+    def bytes(self) -> int:
+        return sum(host.numel() * host.element_size() for *_k, host in self._host)
+
+    def _tensors(self) -> list:
+        return [
+            (owner, kind, name, tensor)
+            for owner in self.module.modules()
+            for kind, table in (("p", owner._parameters), ("b", owner._buffers))
+            for name, tensor in list(table.items())
+            if tensor is not None
+        ]
+
+    def _to_host(self, tensor: Any) -> Any:
+        host = tensor.detach()
+        if host.device.type != "cpu":
+            host = host.to("cpu")
+        if self.pin:
+            try:
+                host = host.pin_memory()
+            except Exception:  # noqa: BLE001 - a tensor subclass or a refused pin: pageable
+                pass
+        return host
+
+    @staticmethod
+    def _print(tensor: Any) -> tuple:
+        try:
+            ptr = tensor.data_ptr()
+        except Exception:  # noqa: BLE001 - a tensor subclass: its identity and dtype only
+            ptr = None
+        return (id(tensor), ptr, tensor.dtype)
 
     def _put(self, place: Callable) -> None:
         import torch
+        self._placed = {}
         for owner, kind, name, host in self._host:
             value = place(host)
             if kind == "p":
-                owner._parameters[name] = torch.nn.Parameter(value, requires_grad = False)
+                value = torch.nn.Parameter(value, requires_grad = False)
+                owner._parameters[name] = value
             else:
                 owner._buffers[name] = value
+            self._placed[(id(owner), kind, name)] = (self._print(value), host)
+
+    def _keep_changes(self) -> None:
+        """Host copies for whatever the phase replaced, recast or added (unchanged tensors keep theirs)."""
+        kept = []
+        for owner, kind, name, tensor in self._tensors():
+            placed = self._placed.get((id(owner), kind, name))
+            if placed is not None and placed[0] == self._print(tensor):
+                kept.append((owner, kind, name, placed[1]))
+            else:
+                kept.append((owner, kind, name, self._to_host(tensor)))
+        self._host = kept
 
     def enter(self) -> None:
         self.depth += 1
@@ -1926,6 +1961,7 @@ class HostParked:
             return
         self.depth -= 1
         if self.depth == 0:
+            self._keep_changes()
             self._put(lambda t: t)
 
     def on_forward(self, module: Any) -> "HostParked":
@@ -1941,6 +1977,8 @@ class HostParked:
         for handle in self.handles:
             handle.remove()
         self.handles = []
+        if self.depth:
+            self._keep_changes()
         self.depth = 0
         self._put(lambda t: t)
 
