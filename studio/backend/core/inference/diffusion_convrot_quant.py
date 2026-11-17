@@ -1961,6 +1961,19 @@ def _arm_producer(index: int) -> bool:
 
 
 _SITU_PROBE_SHAPES = ((65, 256 * 4), (130, 256 * 32))
+# Cards where building the SiTU-GLU product inside the act quant measured faster end to end (MOSS-Image SFT, 1024 px,
+# 25 steps, INT8 default): sm120 (RTX PRO 6000) 4.914 -> 4.859 s/image. On sm80 (A100) it measured slower, 8.791 ->
+# 8.985 s/image, so other cards keep the compiled stock SiTU until measured. ``UNSLOTH_DIFFUSION_MOSS_SITU_FUSED=1``
+# arms it on any card whose probe passes.
+_SITU_ARCHS = ((12, 0),)
+SITU_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_SITU_FUSED"
+
+
+def situ_arch_ok(cap: Optional[tuple]) -> bool:
+    """The SiTU-GLU producer serves this compute capability by default (or the switch forces it)."""
+    if _env_mode(SITU_FUSED_ENV) == "force":
+        return True
+    return cap is not None and tuple(cap) in _SITU_ARCHS
 
 
 def _situ_probe(index: int) -> bool:
@@ -1993,9 +2006,14 @@ def _situ_probe(index: int) -> bool:
 
 def _arm_situ(index: int) -> bool:
     """Per load, outside any trace, after ``rotq_h16`` was armed on the device: the SiTU-GLU producer's probe (once per
-    device, behind the same switch as the SwiGLU producer); publishes its op handle."""
+    device, behind the same switch as the SwiGLU producer, on the cards in ``_SITU_ARCHS`` unless forced); publishes its
+    op handle."""
     global _SITU_HANDLE
-    if not rotquant_producer_enabled() or not _H16_DEVICE.get(index):
+    if (
+        not rotquant_producer_enabled()
+        or not _H16_DEVICE.get(index)
+        or not situ_arch_ok(_device_cap(index))
+    ):
         _SITU_OFF.add(index)
         return False
     _SITU_OFF.discard(index)

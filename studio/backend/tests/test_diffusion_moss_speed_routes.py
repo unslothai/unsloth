@@ -345,3 +345,24 @@ def test_the_situ_entry_point_declines_an_unarmed_card():
     g = torch.zeros(32, 256, dtype = torch.bfloat16)
     assert Q.convrot_situ_act_quant(g, g, 256, True) is None
     assert Q.convrot_situ_act_quant(g, g, 128, True) is None
+
+
+def test_the_situ_producer_arms_only_on_measured_cards(monkeypatch):
+    from core.inference import diffusion_convrot_quant as Q
+
+    monkeypatch.delenv(Q.SITU_FUSED_ENV, raising = False)
+    assert Q.situ_arch_ok((12, 0))
+    for cap in ((8, 0), (8, 9), (7, 5), (9, 0), (10, 0), None):
+        assert not Q.situ_arch_ok(cap)
+    monkeypatch.setenv(Q.SITU_FUSED_ENV, "1")
+    assert Q.situ_arch_ok((8, 0))
+    # an unmeasured card is not probed and stays unarmed, even with rotq_h16 armed on it
+    monkeypatch.delenv(Q.SITU_FUSED_ENV, raising = False)
+    probed = []
+    monkeypatch.setitem(Q._H16_DEVICE, 7, True)
+    monkeypatch.setattr(Q, "_device_cap", lambda index: (8, 0))
+    monkeypatch.setattr(Q, "_situ_probe", lambda index: probed.append(index) or True)
+    monkeypatch.setattr(Q, "_SITU_DEVICE", {})
+    monkeypatch.setattr(Q, "_SITU_OFF", set())
+    assert Q._arm_situ(7) is False
+    assert probed == [] and 7 in Q._SITU_OFF and not Q.situ_armed(7)
