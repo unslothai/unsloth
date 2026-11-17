@@ -410,7 +410,6 @@ def test_a_target_moved_when_another_window_is_over_it_whatever_the_pixels():
     assert screen.target_moved(before, frame([("dialog", (400, 400, 200, 200)), page]), 500, 500)
     assert not screen.target_moved(before, frame([("dialog", (0, 0, 200, 200)), page]), 500, 500)
     assert screen.target_moved(before, frame([("page", (10, 0, 1000, 1000))]), 500, 500)
-    # Without a window list the pixels decide, as before.
     assert not screen.target_moved(before, frame(None), 500, 500)
 
 

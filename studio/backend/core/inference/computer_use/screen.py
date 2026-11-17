@@ -139,8 +139,7 @@ def _window_at(windows: list, x: float, y: float) -> Any:
 def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
     if frame.gray is None or now.gray is None or frame.gray.size != now.gray.size:
         return True
-    # Another window over the point, or this one moved: a light dialog on a light page
-    # changes too few pixels for the comparison below to see it.
+    # A light dialog over a light page changes too few pixels for the check below.
     if frame.windows is not None and now.windows is not None:
         desktop = frame.to_desktop(x, y)
         if _window_at(frame.windows, *desktop) != _window_at(now.windows, *desktop):
