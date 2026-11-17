@@ -53,7 +53,6 @@ test("Max on llama.cpp and vLLM sends no limit; the server stops at its window",
       externalRequestMaxTokens(providerType, "qwen3", null, 8192),
       8192,
     );
-    // The connection's own limit is an explicit cap, sent as is.
     assert.equal(
       externalRequestMaxTokens(providerType, "qwen3", 65536, 65536),
       65536,
@@ -66,7 +65,6 @@ test("Max on llama.cpp and vLLM sends no limit; the server stops at its window",
 });
 
 test("Ollama, Custom and hosted providers keep a numeric limit at the top", () => {
-  // Ollama shifts context and keeps going without one; a gateway may default low.
   for (const providerType of ["ollama", "custom", "openrouter"]) {
     assert.equal(
       externalRequestMaxTokens(providerType, "some-model", null, 1e6),
@@ -77,7 +75,6 @@ test("Ollama, Custom and hosted providers keep a numeric limit at the top", () =
     externalRequestMaxTokens("anthropic", "claude-opus-4-1", null, 1e6),
     32000,
   );
-  // The documented floor still applies.
   assert.equal(
     externalRequestMaxTokens("kimi", "kimi-k3", null, 1),
     getExternalMinOutputTokens("kimi"),

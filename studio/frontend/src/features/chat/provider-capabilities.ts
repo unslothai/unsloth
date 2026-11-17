@@ -224,9 +224,7 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-// Without max_tokens these stop at their own window: llama-server's n_predict -1 with context
-// shift off, vLLM's max_model_len minus the prompt. Ollama shifts context and runs on to 10x
-// num_ctx, and a Custom endpoint may be a gateway with a low default, so both keep the fallback.
+// Unset, these stop at their window; Ollama context-shifts past it, a Custom gateway may default low.
 const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set(["llama_cpp", "vllm"]);
 
 /** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
@@ -243,7 +241,7 @@ export function externalMaxTokensUnboundedAtMax(
   );
 }
 
-/** The max_tokens to send, or null to send none. */
+/** Null means send no max_tokens. */
 export function externalRequestMaxTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,

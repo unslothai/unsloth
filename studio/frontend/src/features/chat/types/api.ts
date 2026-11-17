@@ -658,7 +658,6 @@ export interface OpenAIChatCompletionsRequest {
   /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
-  /** Absent on a self-hosted connection at "Max": the server stops at its window. */
   max_tokens?: number;
   top_k?: number;
   min_p?: number;

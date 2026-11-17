@@ -6820,7 +6820,6 @@ export function createOpenAIStreamAdapter(
                 }
               }
             }
-            // Null at "Max" on a self-hosted server: it stops at its own window.
             const externalMaxTokens = externalRequestMaxTokens(
               externalProvider?.providerType,
               externalSelection?.modelId,
