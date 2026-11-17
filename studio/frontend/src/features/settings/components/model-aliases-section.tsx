@@ -30,6 +30,7 @@ export function ModelAliasesSection() {
   const listId = useId();
   const [saved, setSaved] = useState<ModelAlias[] | null>(null);
   const [draft, setDraft] = useState<ModelAlias[]>([]);
+  const [etag, setEtag] = useState<string | null>(null);
   const [modelIds, setModelIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -41,8 +42,9 @@ export function ModelAliasesSection() {
         if (cancelled) {
           return;
         }
-        setSaved(loaded);
-        setDraft(loaded);
+        setSaved(loaded.aliases);
+        setDraft(loaded.aliases);
+        setEtag(loaded.etag);
       })
       .catch((loadError) => {
         if (cancelled) {
@@ -83,11 +85,14 @@ export function ModelAliasesSection() {
     setIsSaving(true);
     setError(null);
     try {
+      // The server refuses a save over a list that changed since it was read (another tab).
       const stored = await saveModelAliases(
         draft.filter((row) => row.name.trim() || row.model.trim()),
+        etag,
       );
-      setSaved(stored);
-      setDraft(stored);
+      setSaved(stored.aliases);
+      setDraft(stored.aliases);
+      setEtag(stored.etag);
     } catch (saveError) {
       setError(
         saveError instanceof Error
