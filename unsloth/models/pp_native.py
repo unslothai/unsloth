@@ -13,6 +13,7 @@ import os
 import dataclasses
 import functools
 import inspect
+import itertools
 import math
 import re
 import sys
@@ -58,7 +59,9 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # adds its layers' load-balancing statistics to the ones it received and the last stage forms the loss
 # (tests/test_pp_moe_aux_gloo.py proves each against one process). Every other MoE family stays refused.
 # Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
-_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM")
+# ConditionalGeneration wrappers read num_experts / top-k / coef from text_config.
+_PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
+_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
 # Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
 # updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
@@ -87,10 +90,17 @@ _ATTENTION_LAYER_TYPES = {"full_attention", "sliding_attention", "chunked_attent
 # "qwen_sparse_attention" up to 5.2x and "indexed_attention" after.
 _PP_HYBRID_FAMILIES = {
     "Qwen4ExpForCausalLM": {"linear_attention", "qwen_sparse_attention", "indexed_attention"},
+    "Qwen4ExpForConditionalGeneration": {
+        "linear_attention",
+        "qwen_sparse_attention",
+        "indexed_attention",
+    },
     "Qwen3_5ForCausalLM": {"linear_attention"},
     "Qwen3_5ForConditionalGeneration": {"linear_attention"},
+    "Qwen3_5MoeForConditionalGeneration": {"linear_attention"},
 }
 _MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
+_MEDIA_INPUTS = ("pixel", "image", "video", "audio", "input_features", "speech")
 # A text-only pipeline refuses these batch keys, never drops them.
 _MEDIA_INPUT_KEYS = (
     "pixel_values",
@@ -617,7 +627,19 @@ def _kv_shared_reads(parts):
 
 def _media_keys(inner):
     config = getattr(inner, "config", None)
-    return [key for key in _MEDIA_CONFIG_KEYS if getattr(config, key, None) is not None]
+    keys = [key for key in _MEDIA_CONFIG_KEYS if getattr(config, key, None) is not None]
+    if keys and not _takes_media(inner):
+        return []  # a text-only class over a composite config (native DeepSeek-V4.1 keeps vision_config)
+    return keys
+
+
+def _takes_media(inner):
+    """Its forward names a media input. Unreadable: assume it does (towers left in place are refused)."""
+    try:
+        names = inspect.signature(type(inner).forward).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(any(k in n for k in _MEDIA_INPUTS) for n in names)
 
 
 def _refuse_shared_across_stages(parts, bounds):
@@ -715,12 +737,12 @@ def check_pipeline_model(model):
 class _MoEAux:
     """How a stage collects its routers' logits and forms the load-balancing loss (_moe_aux_plan)."""
 
-    owner: (
-        nn.Module
-    )  # the CausalLM (num_experts, num_experts_per_tok, router_aux_loss_coef, config)
+    owner: nn.Module
+    config: object  # a wrapper's text_config, else the CausalLM's config
     router_class: type  # the module whose output[index] is a layer's router logits
     index: int
     num_experts: int
+    top_k: int
     routers: dict = dataclasses.field(default_factory = dict)  # {decoder layer: routers in it}
 
 
@@ -830,8 +852,13 @@ def _moe_aux_plan(parts):
         or getattr(recorder, "layer_name", None)
     ):
         return None
-    num_experts = getattr(inner, "num_experts", None)
-    top_k = getattr(inner, "num_experts_per_tok", None)
+    wrapper = type(inner).__name__ in _PP_MOE_AUX_WRAPPERS
+    config = inner.config.get_text_config() if wrapper else inner.config
+    if wrapper and not isinstance(getattr(config, "router_aux_loss_coef", None), (int, float)):
+        return None
+    source = config if wrapper else inner
+    num_experts = getattr(source, "num_experts", None)
+    top_k = getattr(source, "num_experts_per_tok", None)
     if (
         not isinstance(num_experts, int)
         or not isinstance(top_k, int)
@@ -847,7 +874,14 @@ def _moe_aux_plan(parts):
         type(inner).__module__, num_experts, top_k
     ):
         return None
-    return _MoEAux(inner, router_class, index, num_experts, routers)
+    return _MoEAux(inner, config, router_class, index, num_experts, top_k, routers)
+
+
+def _router_aux_coef(moe):
+    """Read per step: trainers rewrite the coef after the split."""
+    if type(moe.owner).__name__ in _PP_MOE_AUX_WRAPPERS:
+        return moe.config.router_aux_loss_coef
+    return moe.owner.router_aux_loss_coef
 
 
 def _scaler_called_by(fn, depth = 1):
@@ -1515,6 +1549,7 @@ class _StageContext:
         self.ple = None
         self.ple_input = None
         self.ple_output = None
+        self.wire_dtypes = None
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -1545,6 +1580,46 @@ class _StageContext:
         if self.carry is not None:
             return hidden
         return (hidden,) if self.tuple_format else hidden
+
+
+_WIRE_DTYPE_KEYS = itertools.count()
+
+
+class _WireDtypes:
+    """Pre-wire-cast dtypes of a stage's carried tensors, so the next stage can cast back.
+
+    Forced float32 sends a float32 wire, but some families (Qwen3.5) keep 16-bit hidden states; float32 input
+    against 16-bit weights fails ("expected mat1 and mat2 to have the same dtype"). Published in the store per
+    (boundary, mode) before the send, read after the receive, so it is always there."""
+
+    def __init__(self, group_ranks):
+        import torch.distributed as dist
+
+        key = next(_WIRE_DTYPE_KEYS)  # every rank applies the same pipelines in the same order
+        prefix = f"unsloth_pp_wire/{'-'.join(map(str, group_ranks))}/{key}/"
+        self.store = dist.PrefixStore(prefix, dist.distributed_c10d._get_default_store())
+        self.published = set()
+        self.received = {}
+
+    @staticmethod
+    def _key(boundary, mode):
+        return f"{boundary}/{int(mode[0])}{int(mode[1])}"
+
+    @torch.compiler.disable
+    def publish(self, boundary, mode, dtypes):
+        key = self._key(boundary, mode)
+        if key not in self.published:
+            self.store.set(key, ",".join(str(d).removeprefix("torch.") for d in dtypes))
+            self.published.add(key)
+
+    @torch.compiler.disable
+    def fetch(self, boundary, mode):
+        key = self._key(boundary, mode)
+        dtypes = self.received.get(key)
+        if dtypes is None:
+            raw = self.store.get(key).decode()
+            dtypes = self.received[key] = [getattr(torch, name) for name in raw.split(",")]
+        return dtypes
 
 
 class _PPStageModule(nn.Module):
@@ -1624,9 +1699,27 @@ class _PPStageModule(nn.Module):
             logits = inner.lm_head(h), labels = labels, vocab_size = inner.vocab_size, **extra
         )
 
+    def _mode(self):
+        return (self.model.training, torch.is_grad_enabled())
+
+    def _publish(self, tensors):
+        wire = self._pp_ctx.wire_dtypes
+        if wire is not None:
+            wire.publish(self._pp_ctx.end, self._mode(), [t.dtype for t in tensors])
+
+    def _restore(self, tensors):
+        wire = self._pp_ctx.wire_dtypes
+        if wire is None:
+            return tensors
+        dtypes = wire.fetch(self._pp_ctx.start, self._mode())
+        return tuple(t if t.dtype == d else t.to(d) for t, d in zip(tensors, dtypes)) + tuple(
+            tensors[len(dtypes) :]
+        )
+
     def _wire(self, tensors):
         """The carried tensors as sent: [micro-batch, seq, prod(trailing shape)], in their declared dtypes."""
         ctx = self._pp_ctx
+        self._publish(tensors)
         out = []
         for t, (shape, dtype) in zip(tensors, ctx.carry):
             if tuple(t.shape[2:]) != tuple(shape):
@@ -1636,7 +1729,7 @@ class _PPStageModule(nn.Module):
                 )
             want = dtype or self._pp_dtype
             if t.dtype != want:
-                if dtype is None and not self._pp_warned:
+                if dtype is None and not self._pp_warned and ctx.wire_dtypes is None:
                     self.__dict__["_pp_warned"] = True
                     warnings.warn(
                         f"Unsloth: pipeline stage hidden states are {t.dtype}, sent as {want} "
@@ -1674,10 +1767,10 @@ class _PPStageModule(nn.Module):
         stage), or None when the auxiliary loss is off (config.output_router_logits)."""
         ctx = self._pp_ctx
         moe = ctx.moe
-        if not getattr(moe.owner.config, "output_router_logits", False):
+        if not getattr(moe.config, "output_router_logits", False):
             return None
         if torch.is_grad_enabled():  # checkpointing can be turned on after the split
-            _refuse_aux_with_reentrant_checkpointing(self, moe.owner.config)
+            _refuse_aux_with_reentrant_checkpointing(self, moe.config)
         expected = sum(moe.routers.get(i, 0) for i in range(ctx.start, ctx.end))
         if len(captured) != expected:
             raise RuntimeError(
@@ -1685,9 +1778,7 @@ class _PPStageModule(nn.Module):
                 f"{moe.router_class.__name__} routers, expected {expected}: the router auxiliary loss "
                 "would miss some of them (a forward that bypasses the router module)."
             )
-        stats = _router_statistics(
-            captured, moe.num_experts, int(moe.owner.num_experts_per_tok), attention_mask
-        )
+        stats = _router_statistics(captured, moe.num_experts, moe.top_k, attention_mask)
         if stats.device != device:
             stats = stats.to(device)
         return stats + carry[0] if carry else stats
@@ -1708,14 +1799,14 @@ class _PPStageModule(nn.Module):
             )
             if ctx.carry is not None:
                 n = len(ctx.carry)
-                wires, carry = (x, *carry[: n - 1]), carry[n - 1 :]
+                wires, carry = self._restore((x, *carry[: n - 1])), carry[n - 1 :]
                 ctx.stage_input = tuple(
                     w.view(*w.shape[:2], *shape) for w, (shape, _) in zip(wires, ctx.carry)
                 )
+            elif ctx.ple is not None:
+                (ctx.stage_input, ctx.ple_input), carry = self._restore((x, carry[0])), carry[1:]
             else:
-                ctx.stage_input = x
-                if ctx.ple is not None:
-                    ctx.ple_input, carry = carry[0], carry[1:]
+                (ctx.stage_input,) = self._restore((x,))
         ctx.active = True
         captured = None
         try:
@@ -1754,8 +1845,14 @@ class _PPStageModule(nn.Module):
                     f"Unsloth: pipeline stage output has shape {tuple(hidden.shape)}, expected "
                     f"[micro-batch, seq, {self._pp_hidden}]."
                 ) from None
+            if ctx.wire_dtypes is not None:
+                self._publish(
+                    (hidden,)
+                    if ctx.ple is None or ctx.ple_output is None
+                    else (hidden, ctx.ple_output)
+                )
             if hidden.dtype != self._pp_dtype:
-                if not self._pp_warned:
+                if not self._pp_warned and ctx.wire_dtypes is None:
                     self.__dict__["_pp_warned"] = True
                     warnings.warn(
                         f"Unsloth: pipeline stage hidden states are {hidden.dtype}, sent as "
@@ -1806,7 +1903,7 @@ class _PPStageModule(nn.Module):
                     coef, divisor = ctx.trainer_aux
                     loss = loss + coef * aux.to(loss.device) / divisor
                 else:
-                    term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                    term = _router_aux_coef(moe) * aux.to(loss.device)
                     loss = loss + _forward_aux_weighting(
                         moe.owner, term, kwargs, ctx.num_items_in_batch
                     )
@@ -2888,7 +2985,7 @@ def apply_pipeline_parallel(
             f"(one stage per rank) only; got {schedule!r} with {stages_per_rank} stages per rank."
         )
     if moe is not None:
-        _refuse_aux_with_reentrant_checkpointing(model, moe.owner.config)
+        _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
     if stages_per_rank > 1:
@@ -2948,6 +3045,8 @@ def apply_pipeline_parallel(
         stages_per_rank = stages_per_rank,
         carry = carry,
     )
+    if pp > 1 and dtype != parts.embed.weight.dtype:
+        pp_stage.ctx.wire_dtypes = _WireDtypes(pp_stage._global_ranks)
     stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
     if carry is not None and callable(stage_fn) and moe is None:
         module = sys.modules.get(type(parts.decoder).__module__)
