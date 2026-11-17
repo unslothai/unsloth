@@ -444,10 +444,8 @@ def sustained_for(m: int) -> bool:
     return m >= _HUGE_M or (mode_ == "large" and m >= _LARGE_M)
 
 
-# Below the huge race, the sustained timings decide only when they move today's own path this far from its short
-# timing: the card's clock follows the load (an L4 at its 72 W cap), so a short burst runs at whatever clock the
-# previous candidate left. On a card that holds its clock (A100) the short timings decide, as before: there the
-# sustained ranking dropped a tile that is faster in the denoiser (Z-Image-Turbo 0.7% slower per step).
+# Sustained timings decide only if today's path drifts this far from its short timing (power-capped L4 clocks);
+# on clock-stable cards (A100) short timings decide: sustained ranking cost Z-Image-Turbo 0.7% per step.
 _CLOCK_DRIFT = 0.05
 
 
