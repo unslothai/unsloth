@@ -3902,16 +3902,25 @@ async def _drop_stale_override_gpu_ids(
 
 
 async def _alias_launch_satisfied(
-    load_kwargs: dict, override: dict, fastapi_request: Optional[Request]
+    load_kwargs: dict,
+    override: dict,
+    fastapi_request: Optional[Request],
+    expected_identifier: Optional[str] = None,
 ) -> bool:
     """Whether the resident llama-server already runs this alias launch, judged by the loader's own
-    reuse check. Identity is the caller's to establish; this compares launch settings only."""
+    reuse check. Identity is the caller's to establish (``expected_identifier``: the resident the
+    caller identified); this compares launch settings only."""
     from core.inference.chat_templates import resolve_effective_chat_template_override
 
     backend = get_llama_cpp_backend()
     # One snapshot: catalog reads are not held off teardown, which clears these as we compare.
     model_identifier = backend.model_identifier
-    if not backend.is_loaded or not model_identifier or getattr(backend, "is_diffusion", False):
+    if (
+        not backend.is_loaded
+        or not model_identifier
+        or getattr(backend, "is_diffusion", False)
+        or (expected_identifier is not None and model_identifier != expected_identifier)
+    ):
         return False
     from utils.openai_auto_switch_settings import stored_gpu_index_kind
 
@@ -3978,7 +3987,14 @@ async def _configured_alias_resident_satisfies(
     requested_model: str, alias_config: dict, fastapi_request: Optional[Request]
 ) -> bool:
     """Whether the resident model is the alias target running the alias's launch settings."""
-    if not get_llama_cpp_backend().is_loaded:
+    backend = get_llama_cpp_backend()
+    # One snapshot of the resident: resolution awaits, and an unload or swap may land meanwhile.
+    resident = (
+        backend.model_identifier,
+        backend.hf_variant,
+        getattr(backend, "_openai_advertised_id", None),
+    )
+    if not backend.is_loaded or not resident[0]:
         return False
     named_resident = await asyncio.to_thread(_loaded_satisfies, requested_model)
     from core.inference.local_model_resolver import (
@@ -3993,17 +4009,13 @@ async def _configured_alias_resident_satisfies(
         resolved = await asyncio.to_thread(
             resolve_local_gguf_for_switch, requested_model, include_companion_scope = True
         )
+    if not backend.is_loaded or backend.model_identifier != resident[0]:
+        return False
     if resolved is None:
         if not named_resident:
             return False
         # Loaded from outside the scan roots, so no index row: the resident names its own target.
-        backend = get_llama_cpp_backend()
-        identifier = backend.model_identifier
-        resolved = (
-            identifier,
-            backend.hf_variant,
-            getattr(backend, "_openai_advertised_id", None) or identifier,
-        )
+        resolved = (resident[0], resident[1], resident[2] or resident[0])
     target_id, variant, override_id = resolved[:3]
     _, requested_variant = split_model_ref(requested_model)
     pinned_variant = local_gguf_pinned_variant(requested_model, allow_scan = False)
@@ -4020,9 +4032,11 @@ async def _configured_alias_resident_satisfies(
             return False
     if bare:
         # A bare alias accepts the resident quant, not just the resolver's preferred one.
-        variant = get_llama_cpp_backend().hf_variant or variant
+        variant = resident[1] or variant
     override, load_kwargs = _alias_load_kwargs(target_id, variant, override_id, alias_config)
-    return await _alias_launch_satisfied(load_kwargs, override, fastapi_request)
+    return await _alias_launch_satisfied(
+        load_kwargs, override, fastapi_request, expected_identifier = resident[0]
+    )
 
 
 async def _validate_configured_alias_request(
@@ -12239,6 +12253,11 @@ async def _maybe_auto_switch_model(
                     include_companion_scope = True,
                 )
         if resolved is None and alias_config:
+            # A resident outside the scan index has no row but may already run this alias.
+            if await _alias_resident_satisfies():
+                if claim_resident:
+                    _claim_slot_for_non_preview(fastapi_request)
+                return
             raise HTTPException(
                 status_code = 404, detail = "Configured alias target is not available locally."
             )

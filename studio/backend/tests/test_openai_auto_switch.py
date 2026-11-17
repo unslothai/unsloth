@@ -13529,7 +13529,12 @@ def _wire_alias_config(
         lambda: {"org/Model-GGUF:Q4_K_M": dict(saved)} if saved else {},
     )
 
-    async def launch_satisfied(load_kwargs, override, fastapi_request):
+    async def launch_satisfied(
+        load_kwargs,
+        override,
+        fastapi_request,
+        expected_identifier = None,
+    ):
         # The loader's own comparison runs against a real backend in test_model_aliases.py.
         return backend.is_loaded and getattr(backend, "alias_launch", None) == _launch_of(
             LoadRequest(**load_kwargs)
@@ -13568,7 +13573,12 @@ def test_unpinned_alias_reuses_the_resident_quant_after_resolution(monkeypatch):
     backend._openai_advertised_id = None
     backend.alias_launch = _alias_launch(_ALIAS_LONG)
 
-    async def satisfied(kwargs, override, request):
+    async def satisfied(
+        kwargs,
+        override,
+        request,
+        expected_identifier = None,
+    ):
         return (
             kwargs["gguf_variant"] == "Q8_0"
             and _launch_of(LoadRequest(**kwargs)) == backend.alias_launch
@@ -13865,7 +13875,12 @@ def test_alias_config_restores_the_idle_unload_stash_with_switching_off(
     backend, rec = _wire_alias_config(monkeypatch, enabled = False, saved = _ALIAS_LONG)
     backend.model_identifier, backend.is_loaded = None, False
 
-    async def launch_satisfied(load_kwargs, override, fastapi_request):
+    async def launch_satisfied(
+        load_kwargs,
+        override,
+        fastapi_request,
+        expected_identifier = None,
+    ):
         # A restore sends no extras and an alias sends []: the loader reads both as no flags.
         def launch(request):
             return _launch_of(request)[:-1] + (request.llama_extra_args or [],)
@@ -13907,7 +13922,12 @@ def test_alias_restore_with_switching_off_replays_the_freed_alias_launch(
     freed.pop("model_path"), freed.pop("gguf_variant")
     backend.model_identifier, backend.is_loaded = None, False
 
-    async def launch_satisfied(load_kwargs, override, fastapi_request):
+    async def launch_satisfied(
+        load_kwargs,
+        override,
+        fastapi_request,
+        expected_identifier = None,
+    ):
         return backend.is_loaded and _launch_of(rec.calls[-1]) == _launch_of(
             LoadRequest(**load_kwargs)
         )
@@ -14012,6 +14032,37 @@ def test_alias_launch_check_is_no_match_when_teardown_races_it(monkeypatch, when
         )
     )
     assert satisfied is False
+
+
+@pytest.mark.parametrize("resident_runs_alias", [True, False])
+def test_unindexed_alias_target_reuses_a_resident_already_running_it(
+    monkeypatch, resident_runs_alias
+):
+    # A manual path load outside the scan index advertises no id; the alias check still decides.
+    backend, rec = _wire_alias_config(monkeypatch, resolves = False)
+    backend._openai_advertised_id = None
+
+    async def resident_satisfies(requested, config, fastapi_request):
+        return resident_runs_alias
+
+    monkeypatch.setattr(inference_route, "_configured_alias_resident_satisfies", resident_satisfies)
+    from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
+
+    # The alias targets the resident's own id: its load path, as /v1/models lists it.
+    target = backend.model_identifier
+    request = _alias_config_request(_ALIAS_LONG)
+    request.scope[MODEL_ALIAS_CONFIG_SCOPE_KEY]["model"] = target
+
+    def switch():
+        asyncio.run(inference_route._maybe_auto_switch_model(target, request, "tester"))
+
+    if resident_runs_alias:
+        switch()
+    else:
+        with pytest.raises(HTTPException) as exc:
+            switch()
+        assert exc.value.status_code == 404
+    assert rec.calls == []
 
 
 def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):

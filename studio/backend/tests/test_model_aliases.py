@@ -978,6 +978,28 @@ def test_alias_reuse_compares_a_resident_outside_the_scan_index(monkeypatch, con
     )
 
 
+def test_alias_reuse_is_no_match_when_the_resident_unloads_during_resolution(monkeypatch):
+    # /v1/models is not held off teardown: an unload while the target resolves is no match, not a 500.
+    import routes.inference as inf
+    from core.inference import local_model_resolver as resolver
+    from utils import openai_auto_switch_settings as settings
+
+    backend = _resident()
+    backend._openai_advertised_id = "org/model"
+
+    def resolve_during_unload(*args, **kwargs):
+        backend._model_identifier = backend._hf_variant = None
+        return None
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_model_overrides", lambda: {})
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf_for_switch", resolve_during_unload)
+    assert (
+        asyncio.run(inf._configured_alias_resident_satisfies("org/model", _CONFIG, None)) is False
+    )
+
+
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):
     # The loader records the requested mode; Auto running MTP is still Auto.
     backend = _resident(_requested_spec_mode = "auto", _speculative_type = "draft-mtp")
