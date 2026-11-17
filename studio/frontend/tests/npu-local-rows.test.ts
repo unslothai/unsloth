@@ -127,3 +127,15 @@ test("deleting a converted row says the export stays", () => {
   assert.match(api.npuDeleteDescription(converted), /exported folder stays/);
   assert.match(api.npuDeleteDescription(catalog), /NPU files/);
 });
+
+test("the composer picker re-reads the NPU list each time it opens on a ready NPU", async () => {
+  const { readSrcAsync } = await import("./helpers/kit.ts");
+  const picker = await readSrcAsync(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /useEffect\(\(\) => \{\s*if \(open && npuReady\) void refreshNpuModels\(\);\s*\}, \[open, npuReady\]\);/,
+  );
+  assert.match(picker, /npuStatus\?\.supported === true && npuStatus\.ready === true/);
+});
