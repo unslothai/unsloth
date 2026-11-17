@@ -100,6 +100,7 @@ _PP_HYBRID_FAMILIES = {
     "Qwen3_5MoeForConditionalGeneration": {"linear_attention"},
 }
 _MEDIA_CONFIG_KEYS = ("vision_config", "audio_config", "speech_config")
+_MEDIA_INPUTS = ("pixel", "image", "video", "audio", "input_features", "speech")
 # A text-only pipeline refuses these batch keys, never drops them.
 _MEDIA_INPUT_KEYS = (
     "pixel_values",
@@ -626,7 +627,19 @@ def _kv_shared_reads(parts):
 
 def _media_keys(inner):
     config = getattr(inner, "config", None)
-    return [key for key in _MEDIA_CONFIG_KEYS if getattr(config, key, None) is not None]
+    keys = [key for key in _MEDIA_CONFIG_KEYS if getattr(config, key, None) is not None]
+    if keys and not _takes_media(inner):
+        return []  # a text-only class over a composite config (native DeepSeek-V4.1 keeps vision_config)
+    return keys
+
+
+def _takes_media(inner):
+    """Its forward names a media input. Unreadable: assume it does (towers left in place are refused)."""
+    try:
+        names = inspect.signature(type(inner).forward).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(any(k in n for k in _MEDIA_INPUTS) for n in names)
 
 
 def _refuse_shared_across_stages(parts, bounds):
