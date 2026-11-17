@@ -283,10 +283,22 @@ def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
             except ValueError:
                 continue
             if _JSON_SECRET_KEY.search(key):
-                try:
-                    _, end = _JSON_DECODER.raw_decode(text, colon.end())
-                except (ValueError, RecursionError):
-                    continue
+                # A string value may be cut off by truncation, so take its token extent rather than decoding it.
+                if value := _JSON_STRING.match(text, colon.end()):
+                    end = value.end()
+                    if value[0] == '""':
+                        continue
+                else:
+                    try:
+                        parsed, end = _JSON_DECODER.raw_decode(text, colon.end())
+                    except (ValueError, RecursionError):
+                        continue
+                    # null, a flag or a count says whether a credential is set, not what it is; same rule as _redact_kv.
+                    if parsed is None or isinstance(parsed, bool):
+                        continue
+                    is_number = isinstance(parsed, (int, float))
+                    if is_number and not _NUMERIC_IS_STILL_SECRET.search(key):
+                        continue
                 parts.extend((text[written : colon.end()], '"<redacted>"'))
                 written = pos = end
             continue

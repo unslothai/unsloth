@@ -7,6 +7,7 @@ hides the failure the user opened the log to read."""
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -418,3 +419,31 @@ def test_terminated_ansi_sequences_are_still_stripped():
         masked = redact_log_text(text)
         assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
         assert REDACTED in masked, text
+
+
+def _provider_error(body: str) -> str:
+    return json.dumps({"event": "External provider returned 401: " + body})
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"api_key": None, "model": "m"},
+        {"has_secret": True, "uses_password": False},
+        {"api_key": ""},
+        {"api_key_count": 2, "api_key": 123456789},
+    ],
+)
+def test_serialized_unset_credential_fields_survive(fields):
+    line = _provider_error(json.dumps(fields))
+    assert redact_log_text(line) == line
+
+
+def test_serialized_credential_cut_by_truncation_is_masked():
+    line = _provider_error('{"error": "bad", "api_key": "opaqueVal123')
+    assert "opaqueVal123" not in redact_log_text(line)
+
+
+def test_serialized_numeric_password_is_masked():
+    line = _provider_error(json.dumps({"password": 123456789}))
+    assert "123456789" not in redact_log_text(line)
