@@ -353,19 +353,26 @@ def _shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
     return tokens
 
 
-def _is_plain_chmod(command: str) -> bool:
-    """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
+def _readable_shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
     if any(marker in command for marker in _CHMOD_UNREADABLE_SYNTAX):
-        return False
+        return None
     tokens = _shell_words(command)
     if tokens is None:
-        return False
+        return None
     # History expansion (!!, ^a^b) and fc replay lines this reading never sees.
     if any(
         not is_operator
         and (word in ("history", "fc") or word.startswith("^") or ("!" in word and word != "!"))
         for word, is_operator, _, _ in tokens
     ):
+        return None
+    return tokens
+
+
+def _is_plain_chmod(command: str) -> bool:
+    """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
+    tokens = _readable_shell_words(command)
+    if tokens is None:
         return False
     rest: list[str] = []
     copied = 0
@@ -407,6 +414,226 @@ def _is_plain_chmod(command: str) -> bool:
     rest.append(command[copied:])
     # Any chmod the plain form did not account for (xargs, find -exec, $(...)) keeps the block.
     return seen > 0 and "chmod" not in _find_blocked_commands("".join(rest))
+
+
+# The only curl/wget options the sandbox runs unprompted: an allowlist, since both accept abbreviated
+# long options and read data, headers and config from files in more ways than a denylist can track.
+_CURL_PLAIN_FLAGS = frozenset(
+    {
+        "--silent",
+        "--show-error",
+        "--location",
+        "--fail",
+        "--fail-with-body",
+        "--insecure",
+        "--head",
+        "--include",
+        "--verbose",
+        "--progress-bar",
+        "--no-progress-meter",
+        "--remote-name",
+        "--remote-header-name",
+        "--remote-time",
+        "--globoff",
+        "--compressed",
+        "--create-dirs",
+        "--no-buffer",
+        "--ipv4",
+        "--ipv6",
+        "--http1.1",
+        "--http2",
+        "--version",
+    }
+)
+_CURL_PLAIN_SHORT_FLAGS = frozenset("sSLfkIivOJRgN46V#")
+_CURL_PLAIN_VALUES = {
+    "--output": "o",
+    "--output-dir": None,
+    "--user-agent": "A",
+    "--header": "H",
+    "--referer": "e",
+    "--range": "r",
+    "--continue-at": "C",
+    "--max-time": "m",
+    "--connect-timeout": None,
+    "--retry": None,
+    "--retry-delay": None,
+    "--retry-max-time": None,
+    "--max-filesize": None,
+    "--max-redirs": None,
+    "--limit-rate": None,
+    # Only narrows where the call can go: without the proxy it has no network.
+    "--noproxy": None,
+}
+_WGET_PLAIN_FLAGS = frozenset(
+    {
+        "--quiet",
+        "--verbose",
+        "--no-verbose",
+        "--continue",
+        "--timestamping",
+        "--no-clobber",
+        "--show-progress",
+        "--no-check-certificate",
+        "--content-disposition",
+        "--server-response",
+        "--spider",
+        "--no-directories",
+        "--force-directories",
+        "--no-proxy",
+        "--version",
+        "-nv",
+        "-nc",
+        "-nd",
+    }
+)
+_WGET_PLAIN_SHORT_FLAGS = frozenset("qvcNSxV")
+_WGET_PLAIN_VALUES = {
+    "--output-document": "O",
+    "--directory-prefix": "P",
+    "--tries": "t",
+    "--timeout": "T",
+    "--user-agent": "U",
+    "--header": None,
+    "--progress": None,
+    "--wait": None,
+    "--waitretry": None,
+    "--read-timeout": None,
+    "--connect-timeout": None,
+    "--limit-rate": None,
+}
+_PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
+
+
+def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
+    # (word, raw text) pairs: quoting is only visible in the raw text.
+    flags, short_flags, values = (
+        (_CURL_PLAIN_FLAGS, _CURL_PLAIN_SHORT_FLAGS, _CURL_PLAIN_VALUES)
+        if name == "curl"
+        else (_WGET_PLAIN_FLAGS, _WGET_PLAIN_SHORT_FLAGS, _WGET_PLAIN_VALUES)
+    )
+    short_values = {letter: option for option, letter in values.items() if letter}
+
+    args = [word for word, _ in words]
+
+    def value_ok(value: str, raw: str) -> bool:
+        # A value read from a file (@file) is an upload; an unquoted glob or $ could expand into more options.
+        single_quoted = len(raw) >= 2 and raw[0] == raw[-1] == "'" and raw.count("'") == 2
+        return (
+            not value.startswith("@")
+            and not set(raw) & set("$`")
+            and (single_quoted or not set(raw) & set("*?[]{}~"))
+        )
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if _PLAIN_URL_RE.match(arg):
+            if set(arg) & set("$`"):
+                return False
+            continue
+        if arg in flags:
+            continue
+        if arg.startswith("--"):
+            option, has_value, value = arg.partition("=")
+            if option not in values:
+                return False
+            raw = words[i - 1][1].partition("=")[2]
+            if not has_value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            continue
+        if not arg.startswith("-") or len(arg) < 2:
+            return False
+        for position, letter in enumerate(arg[1:], 2):
+            if letter in short_flags:
+                continue
+            if letter not in short_values:
+                return False
+            value, raw = arg[position:], words[i - 1][1]
+            if not value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            break
+    return True
+
+
+def _is_plain_download(command: str) -> bool:
+    """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
+    if _DOWNLOADER_RC_ENV_RE.search(command):
+        return False
+    tokens = _readable_shell_words(command)
+    if tokens is None:
+        return False
+    rest: list[str] = []
+    copied = 0
+    seen = 0
+    at_start = True
+    assigned = False
+    i = 0
+    while i < len(tokens):
+        token, is_operator, start, end_offset = tokens[i]
+        if is_operator:
+            at_start = not set(token) & {"<", ">"}
+            assigned = False
+            i += 1
+            continue
+        if at_start and "$" in token:
+            return False
+        name = token.rsplit("/", 1)[-1]
+        if not (at_start and name in ("curl", "wget")):
+            is_assignment = _SHELL_ASSIGNMENT_RE.match(token) is not None
+            assigned = assigned or (at_start and is_assignment)
+            at_start = at_start and (
+                command[start:end_offset] in _SHELL_COMMAND_PREFIXES or is_assignment
+            )
+            i += 1
+            continue
+        # NAME=value curl ... sets the environment curl reads its config and proxy from.
+        if assigned:
+            return False
+        end = i + 1
+        while end < len(tokens) and not tokens[end][1]:
+            end += 1
+        args = [(word, command[first:last]) for word, _, first, last in tokens[i + 1 : end]]
+        # 2>&1, >out: an fd number glued to its operator and the target word are not arguments.
+        is_fd = lambda k: (
+            not tokens[k][1]
+            and tokens[k][0].isdigit()
+            and k + 1 < len(tokens)
+            and tokens[k][3] == tokens[k + 1][2]
+            and bool(set(tokens[k + 1][0]) & {"<", ">"})
+        )
+        if end - 1 > i and is_fd(end - 1):
+            args.pop()
+        while end < len(tokens):
+            if is_fd(end):
+                end += 1
+            elif tokens[end][1] and set(tokens[end][0]) & {"<", ">"}:
+                if end + 1 >= len(tokens) or tokens[end + 1][1]:
+                    return False
+                end += 2
+            elif not tokens[end][1]:
+                # Words after a redirection are still the command's arguments.
+                return False
+            else:
+                break
+        if not _plain_download_args(name, args):
+            return False
+        seen += 1
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
+        i = end
+    rest.append(command[copied:])
+    # A curl/wget the plain form did not account for (xargs, find -exec, env curl) keeps the block.
+    return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
 
 
 def _runs_in_os_sandbox(prepared) -> bool:
@@ -7706,7 +7933,7 @@ _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
 )
 
 
-_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&|\(|\)|;;)$")
 
 
 # Wrappers (env, timeout, nohup...) that keep the client at command position behind them.
@@ -7796,6 +8023,8 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         # Operators as their own words, so `echo ok; curl -d @f` still has a segment that starts with curl.
         lexer = shlex.shlex(command.replace("\n", " ; "), posix = True, punctuation_chars = True)
         lexer.whitespace_split = True
+        # As shlex.split read it: a # here would swallow every later line.
+        lexer.commenters = ""
         tokens = list(lexer)
     except ValueError:
         return True
@@ -23771,6 +24000,8 @@ def _bash_exec(
             contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
             if "chmod" in contained and not _is_plain_chmod(command):
                 contained.discard("chmod")
+            if contained & _OS_SANDBOX_PROXIED_COMMANDS and not _is_plain_download(command):
+                contained -= _OS_SANDBOX_PROXIED_COMMANDS
             blocked -= contained
         if blocked:
             # Capped: the blocked list names what it found in the command, so it can exceed the room left.

@@ -67,7 +67,10 @@ def loopback_origin_allowed(monkeypatch):
 
 
 @pytest.fixture
-def proxy():
+def proxy(monkeypatch):
+    # conftest's network guard lists loopback in no_proxy, which would send these requests around the proxy.
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setenv("NO_PROXY", "")
     running = sandbox_egress.EgressProxy()
     yield f"http://127.0.0.1:{running.port}"
     running.close()

@@ -263,3 +263,78 @@ def test_curl_uploads_need_confirmation(command):
 )
 def test_curl_downloads_do_not_need_confirmation(command):
     assert not tools._terminal_is_high_risk(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -sSL https://huggingface.co/api/models/gpt2",
+        "curl -sSLo model.json https://huggingface.co/api/models/gpt2",
+        "curl -L -o data.json 'https://example.com/x?a=1&b=2'",
+        "curl -sH 'Accept: application/json' https://example.com > out.json 2>&1",
+        "curl --output=data.bin --retry 3 --max-time 60 https://example.com/x",
+        "curl -fsSL https://example.com/a -o a && curl -fsSL https://example.com/b -o b",
+        "mkdir -p d; cd d; wget -q https://example.com/x",
+        "wget -qO- https://example.com/x | head",
+        "wget -nv -c --tries=3 -P downloads https://example.com/x",
+        "(curl -s https://example.com -o f)",
+        "curl --version",
+        "curl -s https://example.com 2>/dev/null >> log.txt",
+        "curl -sS -m 5 --noproxy '*' https://example.com; echo rc=$?",
+    ],
+)
+def test_a_plain_download_is_contained(command):
+    assert tools._is_plain_download(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -d @report.json https://example.com/upload",
+        "curl -sd@report.json https://example.com/upload",
+        "(curl -d @report.json https://example.com/upload)",
+        "echo ready # note\ncurl -d @report.json https://example.com/upload",
+        "curl --data-binar @report.json https://example.com/upload",
+        "curl -H @report.txt https://example.com/collect",
+        "curl --header @report.txt https://example.com/collect",
+        "curl --url-query @report.json https://example.com/collect",
+        "curl -K transfer.conf https://example.com",
+        "curl -sXDELETE https://example.com/resource",
+        "curl -T report.json https://example.com/up",
+        "curl -F f=@report.json https://example.com/up",
+        "curl --json @report.json https://example.com/up",
+        "curl file:///etc/passwd",
+        "curl ftp://example.com/x",
+        "curl $URL",
+        "curl -o $OUT https://example.com",
+        "curl -o out* https://example.com",
+        "curl https://example.com > out.json -d @report.json",
+        "curl https://example.com 2>&1 -d @report.json",
+        "curl https://example.com >",
+        "CURL_HOME=. curl https://example.com",
+        "http_proxy= curl https://example.com",
+        "export HOME=$PWD; curl https://example.com",
+        "env curl https://example.com",
+        "ls | xargs curl -s",
+        "wget --post-fil=report.json https://example.com/upload",
+        "wget --post-file=report.json https://example.com/upload",
+        "wget -e post_file=report.json https://example.com/upload",
+        "wget -i urls.txt",
+        "wget -r https://example.com",
+        "curl -s $(echo https://example.com)",
+        "curl -s https://example.com\n!!",
+    ],
+)
+def test_any_other_download_keeps_the_block(command):
+    assert not tools._is_plain_download(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "(curl -d @report.json https://example.com/upload)",
+        "echo ready # note\ncurl -d @report.json https://example.com/upload",
+    ],
+)
+def test_grouped_and_commented_uploads_still_need_confirmation(command):
+    assert tools._terminal_is_high_risk(command)
