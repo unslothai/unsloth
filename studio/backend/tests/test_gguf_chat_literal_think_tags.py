@@ -121,3 +121,18 @@ def test_a_reply_cut_off_while_thinking_leaves_no_stray_closing_tag(monkeypatch)
 
     assert reasoning == "Still thinking about <think> tags"
     assert content == ""
+
+
+def test_a_later_reasoning_segment_stays_reasoning(monkeypatch):
+    frames = [
+        _sse({"reasoning_content": "Plan."}),
+        _sse({"content": "Literal <think>x</think> first. "}),
+        _sse({"reasoning_content": "Check."}),
+        _sse({"content": _ANSWER}),
+        "data: [DONE]\n",
+    ]
+
+    reasoning, content = _stream(monkeypatch, frames)
+
+    assert reasoning == "Plan.Check."
+    assert content == "Literal <think>x</think> first. " + _ANSWER

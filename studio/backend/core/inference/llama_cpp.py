@@ -38553,6 +38553,11 @@ class LlamaCppBackend:
                                             reasoning_provenance.setdefault("wraps", []).append(
                                                 _prov_entry
                                             )
+                                        elif reasoning_provenance is not None:
+                                            _prov_entry = {"len": 0, "at": len(cumulative)}
+                                            reasoning_provenance.setdefault("later", []).append(
+                                                _prov_entry
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning

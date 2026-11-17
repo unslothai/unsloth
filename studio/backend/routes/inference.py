@@ -40431,6 +40431,8 @@ class _ResponsesReasoningExtractor:
         self._provenance = think_provenance
         self._wrap = None
         self._wrap_taken = 0
+        self._after_lead = False
+        self._fed = 0
 
     def feed(
         self,
@@ -40444,6 +40446,7 @@ class _ResponsesReasoningExtractor:
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
+            self._fed += len(text)
         if not self._parse_think_markers:
             visible_parts.append(self._buffer)
             self._buffer = ""
@@ -40462,7 +40465,28 @@ class _ResponsesReasoningExtractor:
                 elif _RESPONSES_THINK_CLOSE.startswith(self._buffer):
                     break
                 self._wrap = None
-                self._parse_think_markers = False
+                self._after_lead = True
+                continue
+
+            if self._after_lead:
+                # Only a server wrapper recorded at this exact offset is reasoning; any other tag is answer text.
+                later = self._next_later_wrap()
+                gap = None if later is None else later["at"] - (self._fed - len(self._buffer))
+                if gap is None or gap >= len(self._buffer):
+                    visible_parts.append(self._buffer)
+                    self._buffer = ""
+                    break
+                if gap > 0:
+                    visible_parts.append(self._buffer[:gap])
+                    self._buffer = self._buffer[gap:]
+                    continue
+                if _RESPONSES_THINK_OPEN.startswith(self._buffer):
+                    break
+                self._provenance["later_claimed"] = self._provenance.get("later_claimed", 0) + 1
+                if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
+                    self._wrap = later
+                    self._wrap_taken = 0
                 continue
 
             if self._in_reasoning:
@@ -40494,6 +40518,9 @@ class _ResponsesReasoningExtractor:
                     continue
                 if _RESPONSES_THINK_OPEN.startswith(self._buffer):
                     break  # still short of the opener; it may yet arrive
+                if self._provenance is not None:
+                    self._after_lead = True
+                    continue
                 self._parse_think_markers = False
                 visible_parts.append(self._buffer)
                 self._buffer = ""
@@ -40534,12 +40561,21 @@ class _ResponsesReasoningExtractor:
         self._provenance["claimed"] = claimed + 1
         return wraps[claimed]
 
+    def _next_later_wrap(self):
+        later = self._provenance.get("later") or []
+        claimed = self._provenance.get("later_claimed", 0)
+        offset = self._fed - len(self._buffer)
+        while claimed < len(later) and later[claimed]["at"] < offset:
+            claimed += 1
+        self._provenance["later_claimed"] = claimed
+        return later[claimed] if claimed < len(later) else None
+
     def finish(self) -> tuple[str, str]:
         if not self._buffer:
             return "", ""
         remaining = self._buffer
         self._buffer = ""
-        if not self._parse_think_markers:
+        if not self._parse_think_markers or (self._after_lead and self._wrap is None):
             return "", remaining
         if self._wrap is not None:
             # Only an unfinished closing tag is ever left over.
