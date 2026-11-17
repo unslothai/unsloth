@@ -169,7 +169,22 @@ class TextEncoderStreamer:
             blk = _Layer(layers[li], total)
             self.blocks.append(blk)
             total += blk.nbytes
+        self.total_bytes = total
         streamed_ids = {id(m) for li in self.order for m in layers[li].modules()}
+        self.registered = None
+        self.arena = None
+        # (parameter, arena start, nbytes, shape) for every weight moved into the arena, so a failure part way
+        # through can put each one back before the caller falls back to the whole-module move.
+        self._packed: list = []
+        try:
+            self._build(torch, encoder, layers, streamed_ids, pin_budget)
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _build(
+        self, torch: Any, encoder: Any, layers: Any, streamed_ids: set, pin_budget: int
+    ) -> None:
         with torch.no_grad():
             # Everything but the streamed layers' parameters lives on the card for the whole encode.
             for mod in encoder.modules():
@@ -180,19 +195,19 @@ class TextEncoderStreamer:
                 for name, b in list(mod.named_buffers(recurse = False)):
                     if b is not None and b.device != self.device:
                         mod._buffers[name] = b.to(self.device)
-            self.arena = torch.empty(total, dtype = torch.uint8)
+            self.arena = torch.empty(self.total_bytes, dtype = torch.uint8)
             for blk in self.blocks:
                 for p, off, n in zip(blk.params, blk.offsets, blk.sizes):
                     region = self.arena[blk.start + off : blk.start + off + n]
                     region.view(p.dtype).view(p.shape).copy_(p.data)
                     # The host copy now lives in the arena: drop the original as each layer is packed.
+                    self._packed.append((p, blk.start + off, n, tuple(p.shape)))
                     p.data = torch.empty(0, dtype = p.dtype, device = self.device)
         # Pin whole layers only: a copy from a half-pinned range is staged synchronously.
         pin = 0
         for blk in self.blocks:
             if blk.start + blk.nbytes <= pin_budget:
                 pin = blk.start + blk.nbytes
-        self.registered = None
         if pin > 0:
             try:
                 self.registered = _Registered(self.arena, pin, self.side)
@@ -204,6 +219,21 @@ class TextEncoderStreamer:
             self.handles.append(layers[li].register_forward_pre_hook(self._pre(self.pos[li])))
             self.handles.append(layers[li].register_forward_hook(self._post(self.pos[li])))
         self._arm()
+
+    def _rollback(self) -> None:
+        """Undo a construction that failed part way: unhook, unpin, and give every packed weight its host copy back."""
+        for h in self.handles:
+            try:
+                h.remove()
+            except Exception:  # noqa: BLE001
+                pass
+        self.handles = []
+        if self.registered is not None:
+            self.registered.release()
+            self.registered = None
+        for p, start, n, shape in self._packed:
+            p.data = self.arena[start : start + n].view(p.dtype).view(shape).clone()
+        self._packed = []
 
     def _fetch(self, k: int) -> None:
         import torch

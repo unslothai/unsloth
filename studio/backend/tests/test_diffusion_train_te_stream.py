@@ -213,3 +213,24 @@ def test_streamed_hidden_states_are_bit_identical_on_gpu(monkeypatch, mode):
     assert streamer.fetches >= 3 * len(streamer.blocks)
     ts.release_text_encoders(pipe)
     assert streamer.registered is None and streamer.handles == []
+
+
+def test_a_streamer_that_fails_part_way_puts_every_weight_back(monkeypatch):
+    """A failure after packing (e.g. OOM in the first prefetch) must not leave emptied weights or live hooks behind."""
+    monkeypatch.setattr(torch.cuda, "Stream", lambda *a, **k: object())
+    monkeypatch.setattr(
+        ts, "_Registered", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no pinning"))
+    )
+
+    def boom(self):
+        raise torch.cuda.OutOfMemoryError("prefetch")
+
+    monkeypatch.setattr(ts.TextEncoderStreamer, "_arm", boom)
+    enc = _Encoder()
+    layers = ts.find_layers(enc)
+    before = [p.detach().clone() for p in layers.parameters()]
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        ts.TextEncoderStreamer(enc, layers, list(range(len(layers))), "cpu", 1 << 40)
+    after = list(layers.parameters())
+    assert all(a.shape == b.shape and torch.equal(a, b) for a, b in zip(after, before))
+    assert all(not layer._forward_pre_hooks and not layer._forward_hooks for layer in layers)
