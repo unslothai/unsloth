@@ -235,12 +235,17 @@ class TPPlan:
     replicated_layers: int = (
         0  # decoder layers with no region (e.g. short convolutions): run replicated
     )
-    # Mixture-of-experts blocks: run replicated (experts not sharded), outputs averaged over tp.
+    # MoE blocks: routed experts sharded by index where exact (moe_sharded), else replicated with outputs averaged.
     moe_blocks: list = dataclasses.field(default_factory = list)
+    moe_sharded: list = dataclasses.field(default_factory = list)
 
     @property
     def replicated_moe(self):
         return len(self.moe_blocks)
+
+    @property
+    def sharded_moe(self):
+        return len(self.moe_sharded)
 
     def styles(self):
         """{projection path: style} (the plan in transformers form, local paths)."""
@@ -1643,6 +1648,302 @@ def _moe_post_hook(module, args, output):
     )
 
 
+# Rank r keeps ceil(E / tp) contiguous experts on the same tokens; one sum all-reduce replaces the mean (no all-to-all).
+# Uneven E is padded with zero experts the router never selects; inexact blocks keep the replicated path.
+_MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
+_EXPERT_STACKS = ("gate_up_proj", "down_proj")
+_EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
+_EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+
+
+def moe_shard_enabled():
+    import os
+    return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _experts_chain(block):
+    outer = block._modules.get("experts")
+    if not isinstance(outer, nn.Module):
+        return []
+    chain = [outer]
+    while isinstance(chain[-1]._modules.get("base_layer"), nn.Module):
+        chain.append(chain[-1]._modules["base_layer"])
+    return chain
+
+
+def _plain_float(t):
+    return type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES
+
+
+def expert_shard_problem(block):
+    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can."""
+    chain = _experts_chain(block)
+    if not chain:
+        return "no `experts` child"
+    leaf, wrappers = chain[-1], chain[:-1]
+    if isinstance(leaf, (nn.ModuleList, nn.ModuleDict)):
+        # transformers 4.x per-expert modules: the block loops them itself (no experts call), so stay replicated
+        return "unfused per-expert modules (transformers 4.x layout)"
+    E = leaf.__dict__.get("num_experts")
+    if not isinstance(E, int) or isinstance(E, bool) or E < 2:
+        return "the experts module has no integer num_experts"
+    try:
+        names = tuple(inspect.signature(type(leaf).forward).parameters)[1:]
+    except (TypeError, ValueError):
+        names = ()
+    if names != _EXPERT_CALL:
+        return f"its experts forward takes {names}, not {_EXPERT_CALL}"
+    if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
+        return "swapped expert LoRA factors"
+    if any(_has_params(child) for child in leaf.children()) or any(
+        b is not None for b in leaf._buffers.values()
+    ):
+        return "expert submodules / buffers"
+    if any(leaf._parameters.get(name) is None for name in _EXPERT_STACKS):
+        return "no fused gate_up_proj / down_proj"
+    for name, p in leaf._parameters.items():
+        if p is None:
+            continue
+        if not _plain_float(p) or _preloaded(p) is not None:
+            return f"{name} is {type(p).__name__} {p.dtype} (quantized, packed or distributed)"
+        if p.dim() < 2 or p.shape[0] != E:
+            return f"{name} {tuple(p.shape)} is not stacked by expert"
+    for wrapper in wrappers:
+        if type(wrapper).__name__ != "ParamWrapper" or not isinstance(
+            getattr(wrapper, "lora_A", None), nn.ModuleDict
+        ):
+            return f"{type(wrapper).__name__} wraps the experts"
+        if getattr(wrapper, "parameter_name", None) not in leaf._parameters:
+            return "a PEFT wrapper of a non-expert parameter"
+        if getattr(wrapper, "num_experts", None) != E or getattr(wrapper, "merged_adapters", None):
+            return "merged expert LoRA or a different num_experts"
+        own = [n for n, _ in wrapper.named_parameters() if not n.startswith("base_layer.")]
+        if any(not n.startswith(("lora_A.", "lora_B.")) for n in own):
+            return "expert LoRA beyond lora_A / lora_B (DoRA, embeddings)"
+        if any(
+            not isinstance(d, nn.Identity) for d in getattr(wrapper, "lora_dropout", {}).values()
+        ):
+            return "expert lora_dropout"
+        for adapter, A in wrapper.lora_A.items():
+            B = wrapper.lora_B[adapter] if adapter in wrapper.lora_B else None
+            if (
+                not isinstance(A, nn.Linear)
+                or not isinstance(B, nn.Linear)
+                or A.bias is not None
+                or B.bias is not None
+            ):
+                return "expert LoRA bias or non-Linear factors"
+            if not (_plain_float(A.weight) and _plain_float(B.weight)):
+                return "quantized expert LoRA factors"
+            rows = A.weight.shape[0]
+            if rows % E or B.weight.shape[1] != rows:
+                return f"expert LoRA factors {tuple(A.weight.shape)} / {tuple(B.weight.shape)} do not stack {E} experts"
+    return None
+
+
+def _loaded_zoo_module(name):
+    """Never import unsloth_zoo here: its import patches transformers process-wide (empty training logits)."""
+    import sys
+    return sys.modules.get("unsloth_zoo." + name)
+
+
+def _lora_b_layout(wrapper = None, adapter = None):
+    """Per wrapper: one still on PEFT's forward stays rank-major whatever zoo's process mode is."""
+    moe_utils = _loaded_zoo_module("temporary_patches.moe_utils")
+    per_wrapper = getattr(moe_utils, "moe_lora_b_layout_for_wrapper", None)
+    if callable(per_wrapper) and wrapper is not None:
+        return per_wrapper(wrapper, adapter)
+    layout = getattr(moe_utils, "moe_lora_b_layout", None)
+    if callable(layout):
+        return layout()
+    return "rank_major"
+
+
+def _trim_expert_pad(full, dim, groups, experts, padded, per):
+    """Drop the zero experts an uneven split padded in: dim is (groups, padded, per), keep (groups, experts, per)."""
+    if padded == experts:
+        return full
+    return (
+        full.unflatten(dim, (groups, padded, per)).narrow(dim + 1, 0, experts).flatten(dim, dim + 2)
+    )
+
+
+def _shard_expert_param(owner, name, dim, groups, per, E, E_pad, mesh, rank, tp):
+    full = owner._parameters[name]
+    t = full.detach()
+    if E_pad != E:
+        view = t.unflatten(dim, (groups, E, per))
+        zeros = view.new_zeros(view.shape[: dim + 1] + (E_pad - E,) + view.shape[dim + 2 :])
+        t = torch.cat([view, zeros], dim = dim + 1).flatten(dim, dim + 2)
+    t.requires_grad_(full.requires_grad)
+    parts = (E_pad * per,) * groups
+    param = _set_dtensor(owner, name, t, mesh, "shard", parts, dim, rank, tp)
+    pad = (groups, E, E_pad, per)
+    param._unsloth_tp_parts = (dim, parts, pad)
+    owner.__dict__.setdefault("_unsloth_tp_layouts", {})[name] = (dim, parts, tp, pad)
+    return param
+
+
+class _ExpertShard:
+    """This rank owns global experts [lo, hi) as local 0 .. hi - lo."""
+
+    def __init__(self, block, leaf, lo, hi, per_rank, experts, group):
+        self.block, self.leaf, self.group = block, leaf, group
+        self.lo, self.hi, self.per_rank, self.experts = lo, hi, per_rank, experts
+        self.swaps = []
+        self.full_attrs = []  # (module, attribute, one-GPU value): tp_replica restores these
+        self.frozen = {}
+
+
+@contextlib.contextmanager
+def _expert_locals(shard):
+    saved = []
+    try:
+        for owner, name in shard.swaps:
+            current = owner._parameters.get(name)
+            if not _is_dtensor(current):
+                continue
+            if current.requires_grad:
+                local = current.to_local()  # differentiable: the grad lands on the Shard DTensor
+            else:
+                cached = shard.frozen.get(id(current))
+                if cached is None or cached[0] is not current:
+                    cached = (current, nn.Parameter(current.to_local(), requires_grad = False))
+                    shard.frozen[id(current)] = cached
+                local = cached[1]
+            owner._parameters[name] = local
+            saved.append((owner, name, current))
+        yield
+    finally:
+        for owner, name, current in reversed(saved):
+            owner._parameters[name] = current
+
+
+def _moe_checkpoint_routing():
+    return getattr(_loaded_zoo_module("gradient_checkpointing"), "moe_checkpoint_routing", None)
+
+
+def _expert_call_args(args, kwargs):
+    if len(args) > 3:
+        return None
+    values, kwargs = list(args), dict(kwargs)
+    if not values and "x" in kwargs:  # PEFT ParamWrapper.forward(x, *args, **kwargs)
+        values.append(kwargs.pop("x"))
+    for name in _EXPERT_CALL[len(values) :]:
+        if name not in kwargs:
+            return None
+        values.append(kwargs.pop(name))
+    return None if kwargs else values
+
+
+def _experts_copy(x, group):
+    return _CopyToTP.apply(x, group)
+
+
+def _experts_reduce(y, group):
+    return _ReduceFromTP.apply(y, group)
+
+
+def _sharded_experts(shard, prior, hidden, index, weights):
+    routing = _moe_checkpoint_routing()
+    if routing is not None:
+        # Gradient checkpointing replay must select the first pass's (token, slot) pairs.
+        index, weights = routing(shard.leaf, index, weights)
+    shape, group = hidden.shape, shard.group
+    x = hidden.reshape(-1, shape[-1])
+    tokens = x.shape[0]
+    index = index.reshape(tokens, -1)
+    dense = (
+        weights.dim() == 2
+        and weights.shape[-1] == shard.experts
+        and index.shape[-1] != shard.experts
+    )
+    lo, hi = shard.lo, shard.hi
+    local = (index >= lo) & (index < hi)
+    token, slot = local.nonzero(as_tuple = True)
+    empty = token.numel() == 0
+    if empty:  # nothing routed here (or only padding experts): one zero-weight row keeps every grad defined
+        token = slot = index.new_zeros(1)
+    x = _experts_copy(x, group)  # the experts' share of the input gradient is a partial sum over tp
+    if weights.requires_grad:
+        weights = _experts_copy(weights, group)
+    xc = x.index_select(0, token)
+    ic = index.new_zeros((1, 1)) if empty else (index[token, slot] - lo).unsqueeze(1)
+    if dense:
+        wc = weights.index_select(0, token)[:, lo:hi]
+        wc = F.pad(wc, (0, shard.per_rank - wc.shape[1]))
+    else:
+        wc = weights.reshape(tokens, -1)[token, slot].unsqueeze(1)
+    if empty:
+        wc = wc * 0
+    with _expert_locals(shard):
+        yc = prior(xc, ic, wc)
+    y = yc.new_zeros((tokens, yc.shape[-1])).index_add(0, token, yc)
+    y = _experts_reduce(y, group)
+    return y.reshape(*shape[:-1], y.shape[-1])
+
+
+def _tp_experts_forward(shard, prior):
+    def forward(*args, **kwargs):
+        if shard.block.__dict__.get("_unsloth_tp_gathered"):
+            return prior(*args, **kwargs)
+        call = _expert_call_args(args, kwargs)
+        if call is None:
+            raise RuntimeError(
+                f"Unsloth: tensor parallel sharded experts of {type(shard.block).__name__} were called with "
+                f"{len(args)} positional / {sorted(kwargs)} keyword arguments, not {_EXPERT_CALL}. Set "
+                f"{_MOE_SHARD_ENV}=0 to keep the experts replicated."
+            )
+        return _sharded_experts(shard, prior, *call)
+
+    forward._unsloth_tp_experts = True
+    return forward
+
+
+def _shard_moe_experts(block, mesh, rank, tp):
+    chain = _experts_chain(block)
+    leaf, wrappers = chain[-1], chain[:-1]
+    E = leaf.num_experts
+    # At least 2 local experts: PEFT and zoo read a 1-expert stack as a plain 2-D LoRA (another factor layout).
+    per_rank = max(2, -(-E // tp))
+    E_pad = per_rank * tp
+    lo = min(rank * per_rank, E)
+    hi = min(lo + per_rank, E)
+    shard = _ExpertShard(block, leaf, lo, hi, per_rank, E, mesh.get_group())
+    for name in list(leaf._parameters):
+        if leaf._parameters[name] is not None:
+            _shard_expert_param(leaf, name, 0, 1, 1, E, E_pad, mesh, rank, tp)
+            shard.swaps.append((leaf, name))
+    for wrapper in wrappers:
+        for adapter, A in wrapper.lora_A.items():
+            B = wrapper.lora_B[adapter]
+            b_layout = _lora_b_layout(wrapper, adapter)
+            r = A.weight.shape[0] // E
+            _shard_expert_param(A, "weight", 0, 1, r, E, E_pad, mesh, rank, tp)
+            if b_layout == "rank_major":  # column j is expert j % E
+                _shard_expert_param(B, "weight", 1, r, 1, E, E_pad, mesh, rank, tp)
+            else:  # grouped_by_expert: r columns per expert
+                _shard_expert_param(B, "weight", 1, 1, r, E, E_pad, mesh, rank, tp)
+            shard.swaps += [(A, "weight"), (B, "weight")]
+            for module, key, full, local in (
+                (A, "out_features", r * E, r * per_rank),
+                (B, "in_features", r * E, r * per_rank),
+            ):
+                if isinstance(getattr(module, key, None), int):
+                    shard.full_attrs.append((module, key, full))
+                    setattr(module, key, local)
+    for module in chain:
+        if isinstance(module.__dict__.get("num_experts"), int):
+            shard.full_attrs.append((module, "num_experts", E))
+            module.num_experts = per_rank
+    outer = chain[0]
+    prior = outer.__dict__.get("forward", outer.forward)
+    outer.__dict__["_unsloth_tp_experts_prior_forward"] = outer.__dict__.get("forward", _MISSING)
+    outer.forward = _tp_experts_forward(shard, prior)
+    block.__dict__["_unsloth_tp_expert_shard"] = shard
+    return shard
+
+
 class _DropoutState:
     """One training forward of a region: where the tensor parallel layout of its activations stands."""
 
@@ -2635,10 +2936,16 @@ def apply_tensor_parallel(
     if tp > 1 and (dropout_regions or _has_lora_dropout(model)):
         # Dropout masks are drawn from the ranks' own RNG in lockstep: start every tp rank from rank 0's state.
         _sync_rng(group, dist_rank0 = _global_rank0(group))
+    shard_experts = moe_shard_enabled() and tp > 1
+    tp_plan.moe_sharded = []
     for block in tp_plan.moe_blocks:
         block._unsloth_tp_group = group
         block._unsloth_tp_size = tp
-        block.register_forward_hook(_moe_post_hook)
+        if shard_experts and expert_shard_problem(block) is None:
+            _shard_moe_experts(block, tp_mesh, rank, tp)
+            tp_plan.moe_sharded.append(block)
+        else:
+            block.register_forward_hook(_moe_post_hook)
     # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
@@ -2669,14 +2976,24 @@ def apply_tensor_parallel(
                 else ""
             )
             + _kv_replicated_note(tp_plan)
-            + (
-                f", {tp_plan.replicated_moe} mixture-of-experts blocks replicated (experts not sharded)"
-                if tp_plan.replicated_moe
-                else ""
-            )
+            + _moe_note(tp_plan)
             + "."
         )
     return model
+
+
+def _moe_note(tp_plan):
+    note = ""
+    if tp_plan.sharded_moe:
+        shard = tp_plan.moe_sharded[0].__dict__["_unsloth_tp_expert_shard"]
+        note += (
+            f", {tp_plan.sharded_moe} mixture-of-experts blocks with routed experts sharded by index "
+            f"({shard.per_rank} of {shard.experts} per rank; {_MOE_SHARD_ENV}=0 replicates them)"
+        )
+    replicated = len(tp_plan.moe_blocks) - tp_plan.sharded_moe
+    if replicated:
+        note += f", {replicated} mixture-of-experts blocks replicated (experts not sharded)"
+    return note
 
 
 def _linear_attention_note(tp_plan):
@@ -3004,10 +3321,12 @@ def _full(
     full = tensor.full_tensor()
     if layout is None and param is not None:
         layout = getattr(param, "_unsloth_tp_parts", None)
-        layout = None if layout is None else (*layout, tensor.device_mesh.size())
+        layout = None if layout is None else (*layout[:2], tensor.device_mesh.size(), *layout[2:])
     if layout is not None:
-        dim, parts, tp = layout
+        dim, parts, tp = layout[:3]
         full = _unpermute(full, dim, parts, tp)
+        if len(layout) > 3:  # sharded experts: (groups, experts, padded experts, rows per expert)
+            full = _trim_expert_pad(full, dim, *layout[3])
     return full
 
 
