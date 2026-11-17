@@ -29820,9 +29820,7 @@ async def _finish_external_compaction(
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
-            if isinstance(
-                exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)
-            ):
+            if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
             await asyncio.to_thread(

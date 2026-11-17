@@ -77,9 +77,7 @@ class _SummarisingHandler(_Handler):
         else:
             if summary:
                 time.sleep(self.summary_delay_s)
-            payload = (
-                _sse(self.summary_text, self.summary_finish_reason) if summary else _sse("ok")
-            )
+            payload = _sse(self.summary_text, self.summary_finish_reason) if summary else _sse("ok")
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
