@@ -6,8 +6,8 @@ request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RE
 UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
 (estimate only), UNSLOTH_VIDEO_DIT_RESIDENT_WARM_ONLY=0 (stored peaks widen a process's first render too),
 UNSLOTH_VIDEO_DIT_RESIDENT_OOM_RETRY=0 (an out-of-memory render with groups resident fails as is),
-UNSLOTH_VIDEO_DIT_DECODE_LEND=0 (the denoise keeps only what also fits beside the VAE decode). A Low VRAM load keeps
-every group streamed (UNSLOTH_DIFFUSION_LOW_VRAM_PROMOTE=1 lets the fit run there too)."""
+UNSLOTH_VIDEO_DIT_DECODE_LEND=0 (the denoise keeps only what also fits beside the VAE decode). Low VRAM stays
+streamed unless UNSLOTH_DIFFUSION_LOW_VRAM_PROMOTE=1."""
 
 from __future__ import annotations
 

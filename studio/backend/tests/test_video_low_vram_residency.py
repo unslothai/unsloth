@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Low VRAM keeps a video denoiser streamed for every request.
-
-Low VRAM streams the denoiser in block groups. The per-request residency of Wan / HunyuanVideo-1.5 / LTX-2 / LTX-2.5
-(video_stream_residency) fills free memory with resident groups under any group plan: Wan2.1 14B int8 at 832x480x33
-on an A100 40 GB kept all 41 groups (13774 MiB) resident and peaked at 23.0 GiB under Low VRAM, above the 17.0 GiB
-whole-module offload had."""
+"""Low VRAM keeps a video denoiser streamed: residency once peaked Wan2.1 14B int8 at 23.0 GiB vs 17.0 GiB offloaded."""
 
 from __future__ import annotations
 

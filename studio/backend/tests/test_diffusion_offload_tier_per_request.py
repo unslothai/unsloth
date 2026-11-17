@@ -363,8 +363,6 @@ def test_request_gate_keeps_the_eager_key_once_the_profile_rewrites_the_load_key
 
 
 def test_low_vram_never_runs_the_denoiser_whole_for_a_request(_learned, monkeypatch):
-    """Low VRAM streams the denoiser (group offload, the lowest tier): a learned peak that would let Balanced pin it
-    whole for a call must not pin it under Low VRAM, else a returning user's Low VRAM render holds the whole denoiser."""
     monkeypatch.delenv(dm.LOW_VRAM_PROMOTE_ENV, raising = False)
     balanced = _state(memory_mode = dm.MEMORY_MODE_BALANCED)
     balanced.pipe._unsloth_peak_identity = LOADED
