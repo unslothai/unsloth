@@ -77,7 +77,6 @@ export function ProjectsHomeSetting() {
       if (!mounted.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      // Also discard reads that started while the mutation was in flight.
       readVersion.current += 1;
       if (mounted.current) setSaving(false);
     }

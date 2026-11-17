@@ -130,7 +130,6 @@ def _validate_projects_home(value: str) -> Path:
         raise ValueError(
             "Choose a projects folder outside software and interpreter folders shared with tool processes."
         )
-    # The new owner location must never contain or sit inside another account's storage.
     for reserved in (
         studio_root(),
         shared_tmp_root(),
