@@ -2543,8 +2543,8 @@ def test_the_content_part_extractor_keeps_marker_text_and_hops_the_split(monkeyp
         assert "await _extract_content_parts_async(" in body, fn
         assert "= _extract_content_parts(" not in body, fn
     chat = inspect.getsource(inference_route.produce_openai_chat_completions)
-    assert chat.count("await _extract_content_parts_async(") == 1
-    assert chat.count("keep_tool_images = True") == 3
+    assert chat.count("await _extract_content_parts_async(") == 2
+    assert chat.count("keep_tool_images = True") == 4
 
 
 def test_the_note_counts_only_the_tools_pictures_in_a_mixed_turn():

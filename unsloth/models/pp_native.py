@@ -955,6 +955,71 @@ def _forward_has_router_aux(inner):
     return False
 
 
+def _router_aux_coef_of(inner, text):
+    coef = getattr(inner, "router_aux_loss_coef", None)
+    if not isinstance(coef, (int, float)) or isinstance(coef, bool):
+        coef = getattr(text, "router_aux_loss_coef", None)
+    return coef if isinstance(coef, (int, float)) and not isinstance(coef, bool) else None
+
+
+def _router_aux_off(
+    inner,
+    text,
+    output_router_logits = None,
+):
+    """True when output_router_logits is off (call's value, else config's) or the coefficient is zero."""
+    if not hasattr(text, "output_router_logits"):
+        return False  # no transformers switch for it: not known to be off
+    on = output_router_logits
+    if on is None:
+        on = getattr(text, "output_router_logits", False)
+    return not on or _router_aux_coef_of(inner, text) == 0
+
+
+def _uncarried_moe_owner(model, parts = None):
+    """The MoE CausalLM whose aux loss pp does not carry (so trained only with it off), else None."""
+    parts = parts if parts is not None else _find_parts(model)
+    inner = parts.inner
+    name = type(inner).__name__
+    if name in _PP_MOE_AUX_FAMILIES or name in _PP_MOE_NO_AUX_FAMILIES:
+        return None
+    if _moe_marker(_text_config(model), parts.layers) is None:
+        return None
+    return inner
+
+
+def _uncarried_router_aux_message(inner, what):
+    return (
+        f"Unsloth: pipeline parallelism trains {type(inner).__name__} (mixture-of-experts) only with its router "
+        f"auxiliary loss off, but {what}: the loss is carried between stages only for "
+        f"{', '.join(_PP_MOE_AUX_FAMILIES)}, so the last stage would add it over its own layers' routers only. "
+        "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig, which TRL >= 1.x otherwise sets from the "
+        "architecture; or model.config.output_router_logits = False with a plain Trainer), or use native FSDP2 "
+        "(UNSLOTH_FSDP2=1)."
+    )
+
+
+def _refuse_uncarried_router_aux(ctx, kwargs):
+    """Stage forward: a mixture-of-experts model allowed with its auxiliary loss off refuses once it is turned on
+    (a Trainer that enables it after the split); with a zero coefficient the stages skip the router logits."""
+    inner = ctx.uncarried_moe
+    if inner is None:
+        return
+    text = (
+        inner.config.get_text_config() if hasattr(inner.config, "get_text_config") else inner.config
+    )
+    if not _router_aux_off(inner, text, kwargs.get("output_router_logits")):
+        raise ValueError(
+            _uncarried_router_aux_message(
+                inner,
+                "output_router_logits is on with router_aux_loss_coef = "
+                f"{_router_aux_coef_of(inner, text)}",
+            )
+        )
+    if hasattr(text, "output_router_logits"):
+        kwargs["output_router_logits"] = False
+
+
 def _refuse_unsupported(
     model,
     parts,
@@ -983,6 +1048,13 @@ def _refuse_unsupported(
                 f"Unsloth: {type(inner).__name__} is listed as having no router auxiliary loss, but its forward "
                 "adds one; pipeline parallelism would drop that term."
             )
+        marker = None
+    if (
+        marker is not None
+        and _uncarried_moe_owner(model, parts) is not None
+        and _router_aux_off(inner, text)
+    ):
+        # Aux loss off: nothing to carry; the stage forward refuses if it is turned on later.
         marker = None
     if marker is not None:
         moe = _moe_aux_plan(parts) if allow_moe else None
@@ -1546,6 +1618,7 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        self.uncarried_moe = None
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -1819,6 +1892,8 @@ class _PPStageModule(nn.Module):
                 # here from every stage's statistics instead.
                 kwargs["output_router_logits"] = False
                 ctx.router_logits = []
+            else:
+                _refuse_uncarried_router_aux(ctx, kwargs)
             if ctx.stage_forward is not None:
                 return self._model_stage_forward(input_ids, kwargs)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
@@ -2080,6 +2155,7 @@ class PipelineParallel:
         self.start, self.end = bounds[self.local_stages[0]]
         self.n_microbatches = n_microbatches
         self.schedule = self.spec.name
+        self.schedule_auto = False  # pp_env: the default 1F1B (UNSLOTH_PP_SCHEDULE unset)
         self.config = config
         self.parts = parts
         self._foreign_prefixes = ()  # set by apply_pipeline_parallel
@@ -2325,9 +2401,12 @@ class PipelineParallel:
                 )
             )
         cls = torch_schedule_class(self.spec)
-        if not train and not self.spec.multi:
+        if not self.spec.multi and (not train or self.step_schedule(m) == "gpipe"):
             from torch.distributed.pipelining import ScheduleGPipe
-            cls = ScheduleGPipe  # forward only (eval_loss): no backward order to keep
+
+            # forward only (eval_loss): no backward order to keep; the default 1F1B with fewer micro-batches
+            # than stages also runs as GPipe
+            cls = ScheduleGPipe
         schedule = cls(
             stages if self.spec.multi else stages[0],
             m,
@@ -2398,7 +2477,7 @@ class PipelineParallel:
             raise ValueError(
                 f"Unsloth: the batch size {bsz} must be a multiple of n_microbatches = {m}."
             )
-        if self.schedule == "1f1b" and m < self.num_stages:
+        if self.step_schedule(m) == "1f1b" and m < self.num_stages:
             raise ValueError(
                 f"Unsloth: the 1F1B schedule needs n_microbatches >= stages ({m} < {self.num_stages})."
             )
@@ -2455,9 +2534,16 @@ class PipelineParallel:
         total = self._batch_loss(m, device, dp_group)
         return total * float(loss_scale) if loss_scale != 1 else total
 
+    def step_schedule(self, m):
+        """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
+        to GPipe when m < stages; an explicit schedule is always kept."""
+        if self.schedule_auto and self.schedule == "1f1b" and m < self.num_stages:
+            return "gpipe"
+        return self.schedule
+
     def _in_flight(self, m):
         """Micro-batches this rank has forwarded but not yet backpropagated, at most."""
-        if self.schedule == "1f1b":
+        if self.step_schedule(m) == "1f1b":
             return min(m, self.num_stages - self.stage_index)
         return m  # GPipe: every forward before any backward; multi-stage schedules: bounded by m
 
@@ -3074,6 +3160,8 @@ def apply_pipeline_parallel(
         if kept is None:
             # Dropped: hold only the stubs, so the towers' GPU memory is freed.
             parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
+    if moe is None:
+        pp_stage.ctx.uncarried_moe = _uncarried_moe_owner(model, parts)
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe

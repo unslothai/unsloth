@@ -1748,6 +1748,28 @@ def _unsloth_grpo_autocast_forced_float32(self):
     return forced
 
 
+def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
+    """Failed packing self-verify -> "kill", "cap" or "skip". bf16 has 1-6 nat single-token outliers, so one narrow
+    mismatch on already verified packing only skips; broad (contamination) or repeated mismatches keep the old rule.
+    Narrow = at most 2 bad tokens and at most 1% of the scored completion tokens: one bad token of two one-token
+    rollouts is the whole batch's signal (cross-rollout contamination), not an isolated outlier."""
+    strikes_attr = f"_unsloth_seq_packing_{kind}_strikes"
+    strikes = int(getattr(model, strikes_attr, 0) or 0)
+    verified_T_attr = f"_unsloth_seq_packing_{kind}_verified_T"
+    verified = int(getattr(model, verified_T_attr, 0) or 0) > 0
+    if verified and strikes < 1:
+        live = cmask > 0
+        bad = int((((result.detach().float() - ref.float()).abs() >= 7e-1) & live).sum())
+        if bad <= 2 and bad * 100 <= int(live.sum()):
+            setattr(model, strikes_attr, strikes + 1)
+            # Even a smaller batch must verify again before its packed scores can be trusted.
+            setattr(model, verified_T_attr, 0)
+            setattr(model, f"_unsloth_seq_packing_{kind}_verified_seg", 0)
+            return "skip"
+    setattr(model, strikes_attr, strikes + 1)
+    return "kill" if diff >= 1.5 else "cap"
+
+
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
     recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
@@ -4392,6 +4414,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
                             if _pk_diff < 7e-1:
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
+                                unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
                                 if _pk_active >= 2:
                                     unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
@@ -4404,7 +4427,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_use = True
                             else:
                                 _pk_use = False
-                                if _pk_diff >= 1.5:
+                                # A verified layout survives one narrow bf16 outlier (this batch falls back); broad or repeated mismatches keep the old rule.
+                                _pk_vd = _unsloth_seq_packing_verify_verdict(
+                                    unwrapped_model, "nograd", _pk_diff, _pk_result, _pk_ref, _pk_cm
+                                )
+                                if _pk_vd == "skip":
+                                    pass
+                                elif _pk_vd == "kill":
                                     # Contamination (attention ignores the packed mask): disable packing.
                                     unwrapped_model._unsloth_seq_packing_nograd_ok = False
                                 else:
@@ -4908,6 +4937,36 @@ def _patch_grpo_accumulated_loss_prefix_grouper_kill(source):
     )
 
 
+_GRPO_SEQ_PACKING_GRAD_KILL = re.compile(r"(\n[ \t]*)if\s+_pack_diff\s*>=\s*1\.5\s*:")
+_GRPO_SEQ_PACKING_GRAD_PASS = re.compile(
+    r"(\n([ \t]*)unwrapped_model\._unsloth_seq_packing_grad_ok\s*=\s*True[ \t]*)(?=\n)"
+)
+
+
+def _patch_grpo_accumulated_loss_seq_packing_kill(source):
+    """Zoo grad self-verify: route failures through _unsloth_seq_packing_verify_verdict."""
+    if (
+        "_unsloth_seq_packing_grad_ok" not in source
+        or "_unsloth_seq_packing_verify_verdict" in source
+    ):
+        return source
+    if not _GRPO_SEQ_PACKING_GRAD_KILL.search(source) or not _GRPO_SEQ_PACKING_GRAD_PASS.search(
+        source
+    ):
+        return source
+    source = _GRPO_SEQ_PACKING_GRAD_PASS.sub(
+        r"\1\n\2unwrapped_model._unsloth_seq_packing_grad_strikes = 0", source, count = 1
+    )
+    return _GRPO_SEQ_PACKING_GRAD_KILL.sub(
+        r'\1_pack_vd = _unsloth_seq_packing_verify_verdict(unwrapped_model, "grad", _pack_diff, '
+        r"_pack_result, _pack_ref, _pack_cm)"
+        r'\1if _pack_vd == "skip":\1    pass'
+        r'\1elif _pack_vd == "kill":',
+        source,
+        count = 1,
+    )
+
+
 def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
     """Drop zoo's vLLM skip for gradient PrefixGrouper unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0."""
     if "prefix_seg_info" not in source:
@@ -5277,12 +5336,15 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_prefix_grouper_kill(
-        _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
-            _patch_grpo_accumulated_loss_prefix_grouper_gate(
-                _patch_grpo_accumulated_loss_head_hooks(
-                    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_seq_packing_kill(
+        _patch_grpo_accumulated_loss_prefix_grouper_kill(
+            _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
+                _patch_grpo_accumulated_loss_prefix_grouper_gate(
+                    _patch_grpo_accumulated_loss_head_hooks(
+                        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+                    )
                 )
             )
         )

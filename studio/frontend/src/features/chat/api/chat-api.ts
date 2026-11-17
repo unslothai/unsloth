@@ -1088,6 +1088,27 @@ export async function getChatThread(
   }
 }
 
+export type ChatHistoryRevision = {
+  revision: number;
+  threads: Record<string, number>;
+};
+
+/** Null when the server predates the endpoint. */
+export async function getChatHistoryRevision(
+  threadIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ChatHistoryRevision | null> {
+  const query = new URLSearchParams();
+  for (const threadId of threadIds) query.append("threadId", threadId);
+  const encoded = query.toString();
+  const response = await authFetch(
+    `/api/chat/revision${encoded ? `?${encoded}` : ""}`,
+    { signal },
+  );
+  if (response.status === 404 || response.status === 405) return null;
+  return parseJsonOrThrow<ChatHistoryRevision>(response);
+}
+
 export class ChatThreadDeletedError extends Error {
   constructor(message: string) {
     super(message);
@@ -2027,7 +2048,17 @@ export async function* streamChatCompletions(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // A dropped socket rejects with TypeError: treat it as a cut stream.
+        if (!signal.aborted && error instanceof TypeError) {
+          throw new StreamInterruptedError();
+        }
+        throw error;
+      }
+      const { done, value } = chunk;
       if (done) {
         completed = true;
         if (!sawTerminalSignal) {

@@ -6,7 +6,8 @@
 Any load failure or tile failing the bit-exact probe keeps today's path; a tile replaces it only when it wins
 the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
 ``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``);
-``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides that race on interleaved short timings like the others."""
+``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides every race on interleaved short timings, ``=huge`` only the
+16384-row race on sustained timings (the 4096-row race on short ones, as before)."""
 
 from __future__ import annotations
 
@@ -420,9 +421,41 @@ SUSTAINED_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED"
 _SUSTAIN_S = 0.25
 
 
-def sustained_enabled() -> bool:
+def sustained_mode() -> str:
+    """``large`` (default): races from ``_LARGE_M`` rows on sustained timings; ``huge``: only from ``_HUGE_M``; ``off``."""
     raw = (os.environ.get(SUSTAINED_ENV) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no")
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw == "huge":
+        return "huge"
+    return "large"
+
+
+def sustained_enabled() -> bool:
+    return sustained_mode() != "off"
+
+
+def sustained_for(m: int) -> bool:
+    """Time an ``m``-row race back to back too. The 4096-row race serves 1024 to 8191 rows (1024x1024 images): on a
+    power-capped card its short bursts favour the CUTLASS tiles as the 16384-row race's did."""
+    mode_ = sustained_mode()
+    if mode_ == "off":
+        return False
+    return m >= _HUGE_M or (mode_ == "large" and m >= _LARGE_M)
+
+
+# Sustained timings decide only if today's path drifts this far from its short timing (power-capped L4 clocks);
+# on clock-stable cards (A100) short timings decide: sustained ranking cost Z-Image-Turbo 0.7% per step.
+_CLOCK_DRIFT = 0.05
+
+
+def sustained_decides(m: int, short: dict, sustained: dict, base_name: str) -> tuple:
+    """(decide on the sustained timings, today's sustained / short - 1)."""
+    try:
+        drift = float(sustained[base_name]) / float(short[base_name]) - 1.0
+    except (KeyError, TypeError, ZeroDivisionError):
+        return m >= _HUGE_M, None
+    return (m >= _HUGE_M or abs(drift) > _CLOCK_DRIFT), drift
 
 
 def time_sustained_us(
@@ -540,12 +573,21 @@ def race(
         fns = {base_name: base}
         fns.update({t: cut(t) for t in top})
         timing = time_us(fns, rounds = 3, reps = 3, warm = 1)
-        if m >= _HUGE_M and sustained_enabled():
-            timing = time_sustained_us(fns)
+        info: dict = {}
+        if sustained_for(m):
+            sustained = time_sustained_us(fns)
+            decides, drift = sustained_decides(m, timing, sustained, base_name)
+            info = {
+                "short_us": {str(k_): round(v, 1) for k_, v in timing.items()},
+                "clock_drift": None if drift is None else round(drift, 4),
+                "sustained": decides,
+            }
+            if decides:
+                timing = sustained
     best = min(top, key = lambda t: timing[t])
     keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
     us = {str(k_): round(v, 1) for k_, v in timing.items()}
-    return {"tile": best if keep else None, "us": us, "m": m}
+    return {"tile": best if keep else None, "us": us, "m": m, **info}
 
 
 # (card, N, K) -> {race M: tile or None}, sm75 NativeWeightOnlyLinear

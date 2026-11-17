@@ -1902,8 +1902,10 @@ async def _stream_with_studio_tools(
                 yield _status_sse("")
             # A model that only announced a tool gets one nudge, as in the local loops.
             visible_answer = "".join(turn.text)
+            # A turn cut off at the output limit is not nudged: the next round's stop would hide the length stop.
             if (
                 tools_available
+                and not truncated
                 and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts

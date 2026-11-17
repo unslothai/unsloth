@@ -1504,6 +1504,8 @@ export function ComposerModelPicker({
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
+  const browseOnly = source?.browseOnly === true;
+  const hiddenIds = source?.hiddenIds;
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -2139,8 +2141,17 @@ export function ComposerModelPicker({
         section: "npu",
         npu: model,
       }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    const all = [...marked, ...npuOffers, ...hub, ...external];
+    return browseOnly
+      ? all.filter(
+          (row) =>
+            !hiddenIds?.has(row.id.toLowerCase()) &&
+            mediaPageForTask(mediaTaskById.get(row.id.toLowerCase())) === null,
+        )
+      : all;
   }, [
+    browseOnly,
+    hiddenIds,
     inventory.cachedGguf,
     inventory.cachedModels,
     npuModels,
@@ -2479,15 +2490,16 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  const chosenName =
-    shown?.label ??
-    (checkpoint
-      ? (missingExternalModel(
-          checkpoint,
-          externalModels ?? [],
-          source?.externalConnections ?? [],
-        )?.modelName ?? modelDisplayName(checkpoint))
-      : null);
+  const chosenName = browseOnly
+    ? undefined
+    : (shown?.label ??
+      (checkpoint
+        ? (missingExternalModel(
+            checkpoint,
+            externalModels ?? [],
+            source?.externalConnections ?? [],
+          )?.modelName ?? modelDisplayName(checkpoint))
+        : null));
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -2499,13 +2511,38 @@ export function ComposerModelPicker({
     !inventory.cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
+  const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
+  const [browseDevice, setBrowseDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!browseOnly) return;
+    if (!open) {
+      setBrowseDevice(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setBrowseDevice((known) => known ?? false),
+      2000,
+    );
+    return () => clearTimeout(timer);
+  }, [browseOnly, open]);
+  useEffect(() => {
+    if (browseOnly && open && inventory.cachedReady) {
+      setBrowseDevice((known) => known ?? hasDeviceRows);
+    }
+  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
-    (hasModels
-      ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
-        (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
-        DEVICE_TAB)
-      : RECOMMENDED_TAB);
+    (browseOnly
+      ? browseDevice
+        ? DEVICE_TAB
+        : RECOMMENDED_TAB
+      : hasModels
+        ? ((lastTab && tabs.some((t) => t.value === lastTab)
+            ? lastTab
+            : null) ??
+          (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
+          DEVICE_TAB)
+        : RECOMMENDED_TAB);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
@@ -2716,7 +2753,21 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName;
+  // No thinking controls: nothing to collapse to, whatever the quants.
+  const noThinking =
+    !(pane || modelLoading) &&
+    !(
+      reasoning.supportsReasoning ||
+      reasoning.supportsPreserve ||
+      reasoning.supportsFast
+    );
+  const isExpanded = expanded || !chosenName || noThinking;
+  // Stored, so the next pick does not load into the collapsed view.
+  useEffect(() => {
+    if (noThinking && !expanded) {
+      setExpanded(true);
+    }
+  }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -2775,6 +2826,13 @@ export function ComposerModelPicker({
   // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  // Runs once the load settles, when the store holds the new model's reasoning.
+  const closeIfNoThinking = useRef(() => {});
+  closeIfNoThinking.current = () => {
+    if (noThinking) {
+      setOpen(false);
+    }
+  };
   useEffect(() => {
     if (modelLoading) {
       if (loadingFresh) {
@@ -2793,6 +2851,9 @@ export function ComposerModelPicker({
       setExpanded(
         (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
       );
+      if (fresh) {
+        closeIfNoThinking.current();
+      }
     } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
       writeModelExpanded(prev, null);
       setExpanded(true);
@@ -3336,6 +3397,32 @@ export function ComposerModelPicker({
       window.removeEventListener("resize", place);
     };
   }, [dropsDown, panel]);
+  // The open-time rect is stale once the trigger moves or lays out late.
+  useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!(open && panel && trigger)) {
+      return;
+    }
+    const place = () => {
+      const rect = trigger.getBoundingClientRect();
+      if (rect.width === 0 || panel.offsetWidth === 0) {
+        return;
+      }
+      setAlignOffset(
+        pickerAlignOffset(align, rect, panel.offsetWidth, window.innerWidth),
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    observer.observe(trigger);
+    observer.observe(trigger.closest("form") ?? document.body);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [open, panel, align]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -5325,7 +5412,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName ? (
+              {chosenName && !noThinking ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
