@@ -2235,3 +2235,36 @@ def test_models_list_shows_the_npu_display_name(monkeypatch):
     entry = next(e for e in routes._slot_model_objects() if e.get("device") == "npu")
     assert entry["id"] == "lemonade:qwen3-0.6b-FLM"
     assert entry["display_name"] == "Qwen3-0.6B-NPU2"
+
+
+@pytest.mark.parametrize(
+    "name", ["Qwen3-0.6B-NPU2", "FastFlowLM/Qwen3-0.6B-NPU2", "fastflowlm/qwen3-0.6b-npu2"]
+)
+def test_model_retrieval_takes_the_display_name_and_its_repo(monkeypatch, name):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = True)
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: False)
+
+    monkeypatch.setattr("utils.model_aliases.resolve_model_alias", lambda _m: None)
+    entry = asyncio.run(routes.openai_retrieve_model(name, current_subject = "tester"))
+    assert entry["id"] == "lemonade:qwen3-0.6b-FLM"
+
+
+@pytest.mark.parametrize("restriction", ["never", "loaded_only"])
+def test_a_credential_that_cannot_load_never_starts_the_runtime(monkeypatch, restriction):
+    from core.inference import load_policy
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    request = _request()
+    if restriction == "never":
+        monkeypatch.setattr(
+            load_policy, "current_load_policy", lambda: load_policy.LoadPolicy.NEVER
+        )
+    else:
+        request.scope[routes.LOADED_MODELS_ONLY_SCOPE_KEY] = True
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", request))
+    assert caught.value.status_code == 404
+    assert npu.catalog_reads == 0

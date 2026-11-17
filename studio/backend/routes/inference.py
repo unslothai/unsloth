@@ -11403,12 +11403,20 @@ async def _npu_path_for_display_name(
     npu = get_npu_backend()
     if not npu.hardware().get("supported"):
         return requested_model
-    from core.inference.load_policy import owner_chat_loads_beside
+    from core.inference.load_policy import LoadPolicy, current_load_policy, owner_chat_loads_beside
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
-    # Reading the catalog starts the runtime, so only a request that could load may start it.
+    # Reading the catalog starts the runtime, so only a request that could load may start it:
+    # the credential's policy as _refuse_unless_any_load reads it, then the switch settings.
+    policy = current_load_policy()
+    scope = getattr(fastapi_request, "scope", None)
     may_load = (
-        not account_access.managed_account()
+        (
+            policy is LoadPolicy.ANY
+            or (policy is LoadPolicy.BESIDE_ONLY and not _chat_model_resident())
+        )
+        and not (isinstance(scope, dict) and scope.get(LOADED_MODELS_ONLY_SCOPE_KEY))
+        and not account_access.managed_account()
         and not _auto_switch_opted_out(fastapi_request)
         and (
             get_openai_auto_switch_enabled()
@@ -38515,9 +38523,14 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     aliased = await asyncio.to_thread(resolve_model_alias, model_id)
     for entry in [] if aliased else _loaded:
         eid = entry["id"]
-        if isinstance(eid, str) and model_id.lower() in (
-            eid.lower(),
-            str(entry.get("display_name") or "").lower(),
+        resident = _resident_npu_model() if entry.get("device") == "npu" else None
+        if isinstance(eid, str) and (
+            eid.lower() == model_id.lower()
+            or (
+                resident is not None
+                and resident.model_path == eid
+                and resident.answers_to(model_id)
+            )
         ):
             return _with_openai_residency({**entry, "loaded": True})
 
