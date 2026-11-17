@@ -110,3 +110,18 @@ def test_a_block_opened_inside_a_paragraph_link_stays_linked(html, expected, mai
 )
 def test_a_header_left_open_in_a_link_keeps_the_link(html, expected, main_content):
     assert html_to_markdown(html, main_content = main_content) == expected
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        '<div role="heading"><a href="/title">Article title</div>',
+        '<p role="heading"><a href="/title">Article title<p>',
+    ],
+)
+def test_an_unclosed_heading_link_keeps_its_title_in_a_stripped_header(heading):
+    langs = "".join(f'<li><a href="/l{i}">Lang{i}</a></li>' for i in range(300))
+    html = f"<main><header>{heading}By Jane<ul>{langs}</ul></header><p>{'Article body. ' * 30}</p></main>"
+    result = html_to_markdown(html, main_content = True)
+    assert "Lang0" not in result
+    assert "[Article title](/title)" in result
