@@ -16,6 +16,7 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 export {
   isNativeFileLabel,
   isOllamaLinkPath,
+  isOllamaMlxModelId,
   isOllamaModelId,
   isStandaloneGgufPath,
   ggufVariantsMatch,

@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import sys
 from pathlib import Path
 from urllib.parse import quote
 
@@ -730,3 +733,319 @@ def test_non_ollama_paths_take_the_existing_path(tmp_path):
         "unsloth/model-GGUF",
         False,
     )
+
+
+def _safetensors_blob(
+    root: Path,
+    tensors: dict,
+    metadata: dict | None = None,
+) -> dict:
+    """A one-blob safetensors file as Ollama writes each MLX tensor; returns its layer digest."""
+    import hashlib
+    import struct
+
+    import numpy as np
+
+    header, data = ({"__metadata__": metadata} if metadata else {}), b""
+    for name, array in tensors.items():
+        dtype = {np.uint32: "U32", np.uint8: "U8", np.float32: "F32", np.float16: "F16"}[
+            array.dtype.type
+        ]
+        header[name] = {
+            "dtype": dtype,
+            "shape": list(array.shape),
+            "data_offsets": [len(data), len(data) + array.nbytes],
+        }
+        data += array.tobytes()
+    text = json.dumps(header).encode()
+    payload = struct.pack("<Q", len(text)) + text + data
+    digest = hashlib.sha256(payload).hexdigest()
+    (root / "blobs" / f"sha256-{digest}").write_bytes(payload)
+    return {"digest": f"sha256:{digest}", "size": len(payload)}
+
+
+def _write_ollama_mlx_store(
+    root: Path,
+    *,
+    capabilities = ("completion", "vision"),
+    extra_tensor: bool = False,
+):
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    (root / "blobs").mkdir(parents = True)
+    u32 = lambda *shape: rng.integers(0, 2**32, shape, dtype = np.uint64).astype(np.uint32)
+    u8 = lambda *shape: rng.integers(0, 256, shape, dtype = np.uint8)
+    down, gate_up, embed = (
+        "model.language_model.layers.0.mlp.down_proj",
+        "model.language_model.layers.0.mlp.experts.gate_up_proj",
+        "model.language_model.embed_tokens",
+    )
+    tensors = {
+        # Small ModelOpt NVFP4 linear, packed into the shared shard.
+        f"{down}.weight": (
+            {
+                f"{down}.weight": u32(4, 8),
+                f"{down}.weight.scale": u8(4, 4),
+                f"{down}.weight.global_scale": np.array(0.5, np.float32),
+            },
+            {"quant_type": "nvfp4", "group_size": "16"},
+        ),
+        # Fused experts carry no ".weight".
+        gate_up: (
+            {gate_up: u32(2, 4, 8), f"{gate_up}.scale": u8(2, 4, 4)},
+            {"quant_type": "nvfp4", "group_size": "16"},
+        ),
+        # Over the packing threshold: an APFS clone with a rewritten header.
+        f"{embed}.weight": (
+            {f"{embed}.weight": u32(512, 640), f"{embed}.weight.scale": u8(512, 80)},
+            {"quant_type": "mxfp8", "group_size": "32"},
+        ),
+        # Over the threshold and unchanged: a symlink to the blob.
+        "model.language_model.norm.weight": (
+            {"model.language_model.norm.weight": rng.random(600_000).astype(np.float16)},
+            None,
+        ),
+        "draft.model.norm.weight": ({"draft.model.norm.weight": np.ones(4, np.float16)}, None),
+    }
+    if extra_tensor:
+        tensors["model.language_model.extra.weight"] = (
+            {"model.language_model.extra.weight": np.ones(4, np.float16)},
+            None,
+        )
+    layers = [
+        {
+            "mediaType": "application/vnd.ollama.image.tensor",
+            "name": name,
+            **_safetensors_blob(root, arrays, metadata),
+        }
+        for name, (arrays, metadata) in tensors.items()
+    ]
+    config = {
+        "model_type": "gemma4",
+        "text_config": {"hidden_size_per_layer_input": 256},
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"},
+    }
+    for name, content in {
+        "config.json": config,
+        "tokenizer_config.json": {"bos_token": "<bos>"},
+        "hf_quant_config.json": {},
+        "draft/config.json": {},
+    }.items():
+        text = json.dumps(content).encode()
+        digest = __import__("hashlib").sha256(text).hexdigest()
+        (root / "blobs" / f"sha256-{digest}").write_bytes(text)
+        layers.append(
+            {
+                "mediaType": "application/vnd.ollama.image.json",
+                "name": name,
+                "digest": f"sha256:{digest}",
+                "size": len(text),
+            }
+        )
+    ollama_config = json.dumps(
+        {
+            "model_format": "safetensors",
+            "capabilities": list(capabilities),
+            "renderer": "gemma4",
+            "file_type": "nvfp4",
+        }
+    ).encode()
+    config_digest = __import__("hashlib").sha256(ollama_config).hexdigest()
+    (root / "blobs" / f"sha256-{config_digest}").write_bytes(ollama_config)
+    tag_file = root / "manifests" / "registry.ollama.ai" / "library" / "gemma4" / "e4b-mlx"
+    tag_file.parent.mkdir(parents = True, exist_ok = True)
+    tag_file.write_text(
+        json.dumps({"config": {"digest": f"sha256:{config_digest}"}, "layers": layers}),
+        encoding = "utf-8",
+    )
+    return tag_file, tensors
+
+
+# The checkpoint is built from APFS clones, so only on macOS.
+_APFS = pytest.mark.skipif(sys.platform != "darwin", reason = "APFS clonefile")
+
+
+@pytest.fixture
+def mlx_store(tmp_path, monkeypatch):
+    from hub.services.models import ollama, ollama_mlx
+
+    root = tmp_path / "ollama"
+    tag_file, tensors = _write_ollama_mlx_store(root)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: True)
+    return root, tag_file, tensors
+
+
+def test_an_mlx_tag_lists_as_a_chat_only_safetensors_row(mlx_store, monkeypatch):
+    from hub.services.models import ollama, ollama_mlx
+
+    root, _, tensors = mlx_store
+    (row,) = ollama.scan_ollama_dir(root)
+    # Named by the checkpoint path a load builds, which the scan itself does not create.
+    checkpoint = Path(os.path.realpath(root)) / ".studio_links"
+    assert row.id == row.load_id and Path(row.id).relative_to(checkpoint).parts[1:] == (
+        "mlx",
+        "gemma4-e4b-mlx",
+    )
+    assert not checkpoint.exists()
+    (alias := root.parent / "alias").symlink_to(root)
+    assert [r.id for r in ollama.scan_ollama_dir(alias)] == [row.id]
+    assert (row.model_id, row.model_format, row.display_name) == (
+        "ollama/gemma4:e4b-mlx",
+        "safetensors",
+        "gemma4:e4b-mlx (MLX nvfp4)",
+    )
+    assert row.capabilities.can_chat and not row.capabilities.can_train
+    # The drafter's tensors are not part of the model Studio loads.
+    drafter = next(
+        layer
+        for layer in json.loads(mlx_store[1].read_text())["layers"]
+        if layer.get("name") == "draft.model.norm.weight"
+    )
+    assert (
+        row.size_bytes
+        == sum(
+            layer["size"]
+            for layer in json.loads(mlx_store[1].read_text())["layers"]
+            if layer["mediaType"].endswith("tensor")
+        )
+        - drafter["size"]
+    )
+    ref = ollama.ollama_mlx_ref_for_path(row.id)
+    assert ollama.is_ollama_mlx_ref(ref) and ollama.ollama_model_ref_public_id(ref) == row.model_id
+    with pytest.raises(ValueError, match = "MLX format"):
+        ollama.materialize_ollama_model_ref(ref.replace("ollama-mlx:", "ollama-manifest:"))
+    monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: False)
+    assert ollama.scan_ollama_dir(root) == []
+
+
+def test_an_mlx_tag_the_checkpoint_cannot_serve_as_pulled_is_not_listed(tmp_path, monkeypatch):
+    from hub.services.models import ollama, ollama_mlx
+
+    monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: True)
+    _write_ollama_mlx_store(tmp_path / "ollama", capabilities = ("image",))
+    assert ollama.scan_ollama_dir(tmp_path / "ollama") == []
+    # Nor a tag whose SYSTEM prompt or preset messages the checkpoint would silently drop.
+    for kind in ("system", "messages"):
+        tag_file = _write_ollama_mlx_store(tmp_path / kind)[0]
+        manifest = json.loads(tag_file.read_text())
+        manifest["layers"].append(
+            {
+                "mediaType": f"application/vnd.ollama.image.{kind}",
+                "digest": "sha256:" + "0" * 64,
+                "size": 1,
+            }
+        )
+        tag_file.write_text(json.dumps(manifest))
+        assert ollama.scan_ollama_dir(tmp_path / kind) == []
+
+
+@_APFS
+def test_an_mlx_tag_materializes_as_a_standard_mlx_checkpoint(mlx_store):
+    import numpy as np
+    from safetensors.numpy import load_file
+
+    from core.inference.chat_templates import load_bundled_chat_template
+    from hub.services.models import ollama
+
+    root, tag_file, tensors = mlx_store
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    ref = ollama.ollama_mlx_ref_for_path(row_id)
+    checkpoint = Path(ollama.materialize_ollama_mlx_ref(ref))
+    assert str(checkpoint) == row_id and checkpoint.parent.is_symlink()
+    weight_map = json.loads((checkpoint / "model.safetensors.index.json").read_text())["weight_map"]
+    down, gate_up, embed = (
+        "model.language_model.layers.0.mlp.down_proj",
+        "model.language_model.layers.0.mlp.experts.gate_up_proj",
+        "model.language_model.embed_tokens",
+    )
+    renamed = {
+        f"{down}.weight.scale": f"{down}.scales",
+        f"{down}.weight.global_scale": f"{down}.weight_scale_2",
+        f"{gate_up}.scale": f"{gate_up}.scales",
+        f"{embed}.weight.scale": f"{embed}.scales",
+    }
+    expected = {
+        renamed.get(name, name): array
+        for arrays, _ in tensors.values()
+        for name, array in arrays.items()
+        if not name.startswith("draft.")
+    }
+    assert weight_map.keys() == expected.keys()
+    loaded = {}
+    for shard in set(weight_map.values()):
+        loaded.update(load_file(str(checkpoint / shard)))
+    assert all(np.array_equal(loaded[name], array) for name, array in expected.items())
+    assert (
+        weight_map[f"{down}.scales"] == weight_map[f"{gate_up}.scales"]
+    )  # both small: one packed shard
+    assert (checkpoint / weight_map["model.language_model.norm.weight"]).is_symlink()
+    assert not (
+        checkpoint / weight_map[f"{embed}.scales"]
+    ).is_symlink()  # renamed in a clone, never in the blob
+    config = json.loads((checkpoint / "config.json").read_text())
+    assert (
+        config["quantization"] == {"group_size": 16, "bits": 4, "mode": "nvfp4"}
+        and "quantization_config" not in config
+    )
+    assert (
+        not (checkpoint / "hf_quant_config.json").exists() and not (checkpoint / "draft").exists()
+    )
+    assert (checkpoint / "chat_template.jinja").read_text() == load_bundled_chat_template(
+        "gemma-4-edge.jinja"
+    )
+    assert ollama.ollama_manifest_ref_for_path(str(checkpoint)) is None
+    built = (checkpoint / "config.json").stat().st_ino
+    assert (
+        ollama.materialize_ollama_mlx_ref(ref) == str(checkpoint)
+        and (checkpoint / "config.json").stat().st_ino == built
+    )
+
+    # A re-pull builds anew behind the same path and keeps the build a resident model may read.
+    first = Path(os.path.realpath(checkpoint))
+    _write_ollama_mlx_store(root.parent / "repull", extra_tensor = True)
+    for blob in (root.parent / "repull" / "blobs").iterdir():
+        if not (root / "blobs" / blob.name).exists():
+            blob.rename(root / "blobs" / blob.name)
+    tag_file.write_text((root.parent / "repull" / tag_file.relative_to(root)).read_text())
+    assert ollama.materialize_ollama_mlx_ref(ref) == str(checkpoint)
+    second = Path(os.path.realpath(checkpoint))
+    assert ollama.materialize_ollama_mlx_ref(ref) == str(checkpoint)  # again, as a validate does
+    assert second != first and first.exists()
+    assert (
+        "model.language_model.extra.weight"
+        in json.loads((checkpoint / "model.safetensors.index.json").read_text())["weight_map"]
+    )
+    # The one before it goes.
+    tag_file.write_text(json.dumps(json.loads(tag_file.read_text()), indent = 1))
+    assert ollama.materialize_ollama_mlx_ref(ref) == str(checkpoint)
+    assert not first.exists() and second.exists()
+    assert os.path.realpath(checkpoint) not in (str(first), str(second))
+
+
+@_APFS
+def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_store):
+    from hub.services.models import ollama
+    from models.inference import LoadRequest
+    from routes.inference import _as_ollama_mlx_request
+
+    root = mlx_store[0]
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    resolved = _as_ollama_mlx_request(LoadRequest(model_path = row_id))
+    assert resolved.model_path == row_id and resolved._advertised_id == "ollama/gemma4:e4b-mlx"
+    assert (Path(row_id) / "config.json").is_file()
+    # Another spelling of the same place is the same tag.
+    (alias := root.parent / "alias").symlink_to(root)
+    respelled = alias / Path(row_id).relative_to(os.path.realpath(root))
+    assert _as_ollama_mlx_request(LoadRequest(model_path = str(respelled)))._advertised_id == (
+        "ollama/gemma4:e4b-mlx"
+    )
+    # Neither another name beside it, the same name under another links root, nor a copy is the tag.
+    assert ollama.ollama_mlx_ref_for_path(str(Path(row_id).with_name("other"))) is None
+    elsewhere = ollama._ollama_links_roots(root)[1] / Path(row_id).relative_to(
+        Path(row_id).parents[2]
+    )
+    assert ollama.ollama_mlx_ref_for_path(str(elsewhere)) is None
+    copied = shutil.copytree(row_id, root.parent / "copy" / "gemma4-e4b-mlx", symlinks = True)
+    assert _as_ollama_mlx_request(LoadRequest(model_path = str(copied)))._advertised_id is None

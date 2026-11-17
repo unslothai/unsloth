@@ -122,6 +122,7 @@ from hub.utils.hf_tokens import (
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
+    materialize_ollama_mlx_ref,
     materialize_ollama_model_ref,
     ollama_model_ref_public_id,
     ollama_model_ref_system_prompt,
@@ -9130,6 +9131,27 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
     if not model_id:
         return ""
     return (hf_cache_repo_id(model_id) or str(model_id)).lower()
+
+
+def _as_ollama_mlx_request(request):
+    """*request* advertised as the Ollama MLX tag whose checkpoint path it names, with that
+    checkpoint built for the tag's current manifest; the path itself loads like any MLX model."""
+    from hub.services.models.ollama import ollama_mlx_ref_for_path
+
+    ref = isinstance(request.model_path, str) and ollama_mlx_ref_for_path(request.model_path)
+    if not ref:
+        return request
+    try:
+        materialize_ollama_mlx_ref(ref)
+        public_id = ollama_model_ref_public_id(ref)
+    except (OSError, ValueError) as exc:
+        logger.warning("inference.ollama_mlx_materialize_failed: %s", exc)
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    if not hasattr(request, "_advertised_id") or request._advertised_id:
+        return request
+    resolved = request.model_copy()
+    resolved._advertised_id = public_id
+    return resolved
 
 
 def _as_ollama_manifest_request(request):
@@ -18503,6 +18525,7 @@ async def load_model_gated(
                 "Use it from Settings > API > Decision API (POST /v1/systemone)."
             ),
         )
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -21000,6 +21023,7 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(run_as, current_account(), _as_ollama_mlx_request, request)
     # The chat flow validates before /load; offline the remote probe would refuse the id.
     request = await asyncio.to_thread(
         _as_local_scan_folder_request, request, _owner_session(fastapi_request)

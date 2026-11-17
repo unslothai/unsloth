@@ -1372,6 +1372,10 @@ def _install_oq_renames(config: dict) -> None:
     )
     if install is not None:
         install(config.get("model_type"))
+    # Mixed-mode and NVFP4-scaled-embedding checkpoints (Ollama's MLX tags), on a zoo that reads them.
+    install_quantization = getattr(loader, "_ensure_vlm_checkpoint_quantization", None)
+    if install_quantization is not None:
+        install_quantization()
 
 
 @functools.lru_cache(maxsize = 4)
