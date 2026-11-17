@@ -11,10 +11,8 @@ test("the prompt grows to 10 rows, fewer on a short or zoomed window, never unde
   assert.equal(composerMaxRows(1080, 24), 10);
   assert.equal(composerMaxRows(800, 24), 10);
   assert.equal(composerMaxRows(640, 24), 8);
-  // A 900px window at 150% browser zoom is 600 CSS px tall.
   assert.equal(composerMaxRows(600, 24), 7);
   assert.equal(composerMaxRows(200, 24), 3);
-  // A larger interface scale means taller rows, so fewer of them fit.
   assert.equal(composerMaxRows(640, 30), 6);
 });
 

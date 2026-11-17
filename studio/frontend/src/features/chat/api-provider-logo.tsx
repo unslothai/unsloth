@@ -23,13 +23,12 @@ interface ApiProviderLogoProps {
   name?: string;
 }
 
-/** Any hue from the name, at lightnesses that hold white text in either theme. */
 export function letterTileColor(name: string): string {
   let hash = 0x811c9dc5;
   for (const ch of name.toLowerCase()) {
     hash = Math.imul(hash ^ ch.charCodeAt(0), 0x01000193);
   }
-  // murmur3's finalizer: without it names sharing a suffix ("-GGUF") cluster on similar hues.
+  // murmur3 finalizer, or names sharing "-GGUF" cluster on one hue.
   hash ^= hash >>> 16;
   hash = Math.imul(hash, 0x85ebca6b);
   hash ^= hash >>> 13;
@@ -88,7 +87,7 @@ function LetterTile({
       );
     };
     draw();
-    // Drawn before the UI font loads, or mid open-animation, the measured ink placed the letter off centre.
+    // Drawn before the font loads or mid-animation, the letter sat off centre.
     void document.fonts?.ready.then(draw);
     const observer = new ResizeObserver(draw);
     observer.observe(canvas);

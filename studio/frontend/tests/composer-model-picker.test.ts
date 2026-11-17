@@ -662,7 +662,6 @@ test("the open picker is at least 420px and grows only into the room under Selec
     picker,
     /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
   );
-  // A default --picker-floor in the rule (same layer, after Tailwind) would beat the upward utility.
   const pickerCss = readSrc("index.css");
   assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
   assert.match(
@@ -678,7 +677,6 @@ test("the open picker is at least 420px and grows only into the room under Selec
     css,
     /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
-  // Never under the floor; above it only as far as the room below and 540px allow.
   assert.match(
     css,
     /--composer-picker-max-h: max\(var\(--composer-picker-min-h\), min\(calc\(540px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-room, var\(--picker-floor, calc\(100dvh - 16px\)\)\)\)\);/,
@@ -696,9 +694,8 @@ test("short landscape windows get a 380px floor; phones and tall windows keep 42
   assert.equal(pickerMinHeight(1280, 640, 1), 380);
   assert.equal(pickerMinHeight(1440, 900, 1), 380);
   assert.equal(pickerMinHeight(1920, 1080, 1), 420);
-  // Portrait phone.
   assert.equal(pickerMinHeight(390, 844, 1), 420);
-  // A 1366x768 laptop zoomed out to 67% reports 2039x1146 CSS px but is still short on screen.
+  // 1366x768 at 67% zoom.
   assert.equal(pickerMinHeight(2039, 1146, 1.49), 380);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
@@ -707,10 +704,8 @@ test("short landscape windows get a 380px floor; phones and tall windows keep 42
 });
 
 test("opening down, the room under Select model sets the growth and only the floor rides up", () => {
-  // 900px window, Select model ends at 480: 404px of room after the 8px gap and 8px edge.
   assert.equal(pickerRoomBelow(480, 900), 404);
   assert.equal(pickerRoomBelow(900, 900), 0);
-  // A 420px floor in that room rides up 16px; a panel that fits stays 8px under the button.
   assert.equal(pickerDropOffset(480, 420, 900), -8);
   assert.equal(pickerDropOffset(400, 300, 900), 8);
   // Taller than the window: pinned 8px from its top.
@@ -970,23 +965,18 @@ test("the picker slides back inside a narrow window instead of hanging off its e
 test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
   assert.equal(pickerWidth(390, 1), 360);
   assert.equal(pickerWidth(1440, 1), 432);
-  // A 2560px monitor at 100% stays capped.
   assert.equal(pickerWidth(2560, 1), 520);
-  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves both bounds.
   assert.equal(pickerWidth(960, 1), 360);
   assert.equal(pickerWidth(960, 1.25), 450);
-  // Zoomed out to 50%, a 1512px window is 3024 CSS px: the cap doubles, so it shows at 454 screen px.
+  // 1512px window at 50% zoom.
   const zoomOut = pickerZoomOut(3024, 1512, null);
   assert.equal(zoomOut, 2);
   assert.equal(Math.round(pickerWidth(3024, 1, zoomOut) / zoomOut), 454);
-  // 100%, zoomed in, and side-docked devtools (a slightly narrower page) leave the caps alone.
   assert.equal(pickerZoomOut(1512, 1512, null), 1);
   assert.equal(pickerZoomOut(1008, 1512, null), 1);
   assert.equal(pickerZoomOut(1500, 1512, null), 1);
-  // The desktop app reports its webview zoom directly.
   assert.equal(pickerZoomOut(2257, 1512, 0.5), 2);
   assert.equal(pickerZoomOut(1512, 1512, 1.25), 1);
-  // The CSS twin uses the same bounds on the panel itself, where --picker-zoom-out is set.
   const css = readSrc("index.css");
   assert.match(
     css,
@@ -1618,7 +1608,6 @@ test("a model with no logo of its own shows a letter tile from its name", () => 
     picker.indexOf("interface SourceTab"),
   );
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
-  // The connection fallback: ApiProviderLogo with no type draws the name's first letter.
   assert.match(mark, /providerType=\{null\}\s+name=\{name\}/);
   assert.match(
     mark,
@@ -1712,7 +1701,6 @@ test("a connected model in use offers eject, which clears the pick", () => {
     picker,
     /const chosenExternal =\s+!pane && Boolean\(checkpoint && isExternalModelId\(checkpoint\)\);\s+const chosenEjectable = chosenLoaded \|\| chosenExternal;/,
   );
-  // The chip's hover eject (both trigger variants), the panel's Eject, and the collapsed row's Eject.
   assert.equal(picker.match(/chosenName && chosenEjectable \?/g)?.length, 2);
   assert.match(picker, /\(chosenEjectable \|\| loadedModels\.length > 0\)/);
   assert.match(picker, /!pending && chosenEjectable && !modelLoading/);
@@ -1720,7 +1708,6 @@ test("a connected model in use offers eject, which clears the pick", () => {
     picker,
     /\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
   );
-  // The runtime treats an eject of a connected model as clearing the selection.
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(
     runtime,

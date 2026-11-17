@@ -710,7 +710,6 @@ type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   lora?: LoraModelOption;
 };
 
-/** The name a logo-less model's letter tile is drawn from. */
 function rowMarkName(row?: RowMarkRow): string | undefined {
   const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
   return name?.trim() || undefined;
@@ -739,9 +738,8 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
-  // No maker logo (flint, a local folder): the same letter tile a connection without one gets.
   const name = row?.kind === "external" ? undefined : rowMarkName(row);
-  // 2px over the slot: a solid disc reads smaller than the logos beside it.
+  // 2px over the slot: a solid disc reads smaller than the logos.
   return name ? (
     <ApiProviderLogo
       providerType={null}
@@ -3314,7 +3312,6 @@ export function ComposerModelPicker({
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = open && openSide === "bottom";
-  // Grows into the room below; only the floor (pickerMinHeight) rides up when that room is shorter.
   useEffect(() => {
     if (!(dropsDown && panel)) {
       setDropOffset(PICKER_GAP);
@@ -5184,7 +5181,6 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
-          // Opening up, both bounds are the space above.
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
           configTarget

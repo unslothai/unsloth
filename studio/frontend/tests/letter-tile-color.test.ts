@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// The module needs Vite env and React, so mirror its hash here and pin the source to it.
+// The module needs Vite env, so the hash is mirrored and pinned to the source.
 const src = readSrc("features/chat/api-provider-logo.tsx");
 function color(name: string): { l: number; h: number } {
   let hash = 0x811c9dc5;
@@ -32,7 +32,6 @@ test("letter tiles take a hue anywhere on the wheel, stable per name", () => {
     src,
     /return `oklch\(\$\{lightness\.toFixed\(2\)\} 0\.15 \$\{h % 360\}\)`;/,
   );
-  // Even over the wheel: 600 model-like names fill each 60-degree band within a third of its share.
   const counts = new Array(6).fill(0);
   for (let i = 0; i < 600; i++) {
     const { l, h } = color(`model-${i}-GGUF`);

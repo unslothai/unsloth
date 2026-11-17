@@ -464,7 +464,7 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** The picker's floor: 380px on a short landscape window, 420px otherwise (phones included). On-screen px, so zoom does not move it. */
+/** In on-screen px, so zoom does not flip the 380/420 choice. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
@@ -475,7 +475,6 @@ export function pickerMinHeight(
   return shortLandscape ? 380 : 420;
 }
 
-/** Room under Select model before a downward panel has to ride up. */
 export function pickerRoomBelow(
   triggerBottom: number,
   viewportHeight: number,
@@ -483,7 +482,7 @@ export function pickerRoomBelow(
   return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
 }
 
-/** Rows that do not fit below ride up over the composer, never past the window top. */
+/** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
   panelHeight: number,
@@ -493,7 +492,7 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
-/** --composer-picker-w in index.css: 30vw between 360px and 520px, the cap times the zoom-out. */
+/** Mirrors --composer-picker-w in index.css. */
 export function pickerWidth(
   viewportWidth: number,
   scale: number,
@@ -505,7 +504,7 @@ export function pickerWidth(
   );
 }
 
-/** Zoom-out factor (1 at 100% or zoomed in): browser zoom moves innerWidth but not outerWidth; the app zooms its webview. */
+/** Browser zoom moves innerWidth but not outerWidth; the desktop app reports its webview zoom. */
 export function pickerZoomOut(
   innerWidth: number,
   outerWidth: number,
