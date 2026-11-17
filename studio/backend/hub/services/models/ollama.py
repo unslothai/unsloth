@@ -720,7 +720,9 @@ def _manifest_tree_files(root: Path) -> list[Path]:
     """Files under *root*; raises when a directory cannot be listed (``rglob`` skips it silently)."""
 
     def fail(error: OSError) -> None:
-        raise error
+        # A store with no manifests-v2 (older Ollama) is complete, not unreadable.
+        if not (isinstance(error, FileNotFoundError) and error.filename == os.fspath(root)):
+            raise error
 
     return [Path(d) / name for d, _, files in os.walk(root, onerror = fail) for name in files]
 
@@ -834,11 +836,7 @@ def delete_ollama_model_ref(ref: str) -> None:
                     for p in _manifest_tree_files(manifests_root)
                     if os.path.realpath(p) != str(tag_file)
                 ),
-                *(
-                    p
-                    for p in (_manifest_tree_files(v2_root) if v2_root.is_dir() else ())
-                    if p != v2_tag
-                ),
+                *(p for p in _manifest_tree_files(v2_root) if p != v2_tag),
             ]
         except OSError:
             # A tree we cannot fully list may hold a tag that needs any blob.

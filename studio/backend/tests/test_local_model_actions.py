@@ -212,7 +212,7 @@ def test_delete_v2_pulled_tag_keeps_blobs_an_inline_list_child_uses(tmp_path, mo
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
 
-@pytest.mark.parametrize("unreadable", ["child", "tag", "tag dir"])
+@pytest.mark.parametrize("unreadable", ["child", "tag", "tag dir", "v2 root"])
 def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
     tmp_path, monkeypatch, unreadable
 ):
@@ -235,24 +235,28 @@ def test_delete_keeps_every_blob_when_a_retained_manifest_cannot_be_stat(
 
     # os.stat, not Path.is_file: Python 3.14's is_file returns False on EIO instead of raising.
     def flaky_stat(path, *args, **kwargs):
-        target = (
-            f"sha256-{child_digest}" if unreadable == "child" else os.path.join("alias", "latest")
-        )
+        target = {
+            "child": f"sha256-{child_digest}",
+            "tag": os.path.join("alias", "latest"),
+            "v2 root": "manifests-v2",
+        }[unreadable]
         if os.fspath(path).endswith(target):
             raise OSError(errno.EIO, "I/O error")
         return real_stat(path, *args, **kwargs)
 
-    if unreadable == "tag dir":
+    locked = alias.parent if unreadable == "tag dir" else None
+    if locked is not None:
         if sys.platform == "win32" or os.geteuid() == 0:
             pytest.skip("needs a POSIX permission bit root does not bypass")
-        alias.parent.chmod(0)
+        locked.chmod(0)
     else:
         monkeypatch.setattr(os, "stat", flaky_stat)
     try:
         ollama.delete_ollama_model_ref(ref)
     finally:
         monkeypatch.setattr(os, "stat", real_stat)
-        alias.parent.chmod(0o755)
+        if locked is not None:
+            locked.chmod(0o755)
 
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
