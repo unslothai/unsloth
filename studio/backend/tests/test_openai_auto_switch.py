@@ -13313,6 +13313,117 @@ def test_alias_config_switches_same_weights_and_reuses_matching_launch(monkeypat
     ]
 
 
+def test_unpinned_alias_reuses_the_resident_quant_after_resolution(monkeypatch):
+    # A path-loaded resident reaches the resolver, whose preferred quant must not force a reload.
+    from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
+
+    backend, rec = _wire_alias_config(monkeypatch)
+    backend.hf_variant = "Q8_0"
+    backend._openai_advertised_id = None
+    backend.alias_launch = _alias_launch(_ALIAS_LONG)
+
+    async def satisfied(kwargs, override, request):
+        return (
+            kwargs["gguf_variant"] == "Q8_0"
+            and _launch_of(LoadRequest(**kwargs)) == backend.alias_launch
+        )
+
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", satisfied)
+    request = _alias_config_request(_ALIAS_LONG)
+    target = "org/Model-GGUF"
+    request.scope[MODEL_ALIAS_CONFIG_SCOPE_KEY]["model"] = target
+    asyncio.run(inference_route._maybe_auto_switch_model(target, request, "tester"))
+    assert rec.calls == []
+    assert backend.hf_variant == "Q8_0"
+
+
+@pytest.mark.parametrize(
+    "saved, config, refused",
+    [
+        ({}, {"disable_vision": True}, True),
+        ({"disable_vision": True}, {}, True),
+        ({"llama_extra_args": ["--no-mmproj"]}, {}, True),
+        ({"disable_vision": True}, {"disable_vision": False}, False),
+        ({"llama_extra_args": ["--no-mmproj"]}, {"disable_vision": False}, False),
+    ],
+)
+def test_alias_vision_preflight_uses_the_effective_launch(monkeypatch, saved, config, refused):
+    # Image preflight honors the alias overlay and inherited projector settings before any load.
+    backend, rec = _wire_alias_config(monkeypatch, saved = saved)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *a: True)
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            _switch_alias({**_ALIAS_LONG, **config}, require_vision = True)
+        assert exc.value.status_code == 400
+        assert rec.calls == []
+    else:
+        _switch_alias({**_ALIAS_LONG, **config}, require_vision = True)
+        assert len(rec.calls) == 1
+
+
+def test_messages_alias_with_vision_disabled_keeps_the_resident_on_image_refusal(monkeypatch):
+    # A top-level Messages image must be refused before a text-only alias replaces the resident.
+    from models.inference import AnthropicMessagesRequest
+    from PIL import Image
+
+    config = {**_ALIAS_LONG, "disable_vision": True}
+    backend, rec = _wire_alias_config(monkeypatch)
+    backend.model_identifier = "org/Resident-GGUF"
+    backend._openai_advertised_id = backend.model_identifier
+    backend.is_vision = False
+    backend._loaded_by_user_action = True
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *a: True)
+    image = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(image, format = "PNG")
+    payload = AnthropicMessagesRequest(
+        model = _ALIAS_TARGET,
+        max_tokens = 16,
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": _b64.b64encode(image.getvalue()).decode(),
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    request = _alias_config_request(config)
+    request.url.path = "/v1/messages"
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["message"].startswith("messages.0.content.0.image:")
+    assert rec.calls == []
+    assert backend.model_identifier == "org/Resident-GGUF"
+    assert backend._loaded_by_user_action is True
+
+
+def test_alias_vision_preflight_rechecks_settings_after_the_wait(monkeypatch):
+    # A settings change before the gated load cannot turn an accepted image request into an eviction.
+    saved = {}
+    backend, rec = _wire_alias_config(monkeypatch)
+    monkeypatch.setattr(
+        settings, "get_model_overrides", lambda: {"org/Model-GGUF:Q4_K_M": dict(saved)}
+    )
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *a: True)
+    monkeypatch.setattr(
+        inference_route,
+        "_check_switch_precondition",
+        lambda request: saved.update(disable_vision = True),
+    )
+    with pytest.raises(HTTPException) as exc:
+        _switch_alias(_ALIAS_LONG, require_vision = True)
+    assert exc.value.status_code == 400
+    assert rec.calls == []
+
+
 def test_alias_config_layers_over_saved_settings_and_drops_shadowed_flags(monkeypatch):
     # Alias fields win; every field it omits, and unrelated saved flags, come from the model's row.
     saved = {

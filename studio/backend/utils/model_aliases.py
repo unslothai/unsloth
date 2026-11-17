@@ -95,8 +95,8 @@ class ModelAliasLoadConfig(BaseModel):
     @field_validator("gpu_layers")
     @classmethod
     def _layer_count(cls, value):
-        if isinstance(value, int) and value < 0:
-            raise ValueError('must be 0 or more, or "auto"')
+        if isinstance(value, int) and not 0 <= value <= 2**31 - 1:
+            raise ValueError('must be 0 to 2147483647, or "auto"')
         return value
 
     @model_validator(mode = "after")

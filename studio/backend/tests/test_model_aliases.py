@@ -567,6 +567,7 @@ def test_settings_round_trip_returns_what_was_stored(settings_api):
         {"n_parallel": 0},
         {"n_parallel": 65},
         {"gpu_layers": -1},
+        {"gpu_layers": 2**31},
         {"gpu_layers": "all"},
         {"n_cpu_moe": 2},
         {"n_cpu_moe": 2, "gpu_layers": "auto"},
@@ -797,6 +798,41 @@ def _satisfied(
 )
 def test_the_reuse_check_compares_every_launch_setting(monkeypatch, config, satisfied):
     assert _satisfied(monkeypatch, _resident(), config) is satisfied
+
+
+@pytest.mark.parametrize(
+    "requested, resolved_variant, satisfied",
+    [
+        ("org/model", "Q4_K_M", True),
+        ("org/model:latest", "Q4_K_M", True),
+        ("org/model:Q8_0", "Q8_0", True),
+        ("org/model:Q4_K_M", "Q4_K_M", False),
+    ],
+)
+def test_alias_reuse_respects_the_requested_quant_pin(
+    monkeypatch, requested, resolved_variant, satisfied
+):
+    # A bare alias keeps the resident quant; an explicit pin still requires its own weights.
+    from dataclasses import replace
+    import routes.inference as inf
+    from core.inference import local_model_resolver as resolver
+    from utils import openai_auto_switch_settings as settings
+
+    backend = _resident(_hf_variant = "Q8_0", _requested_n_parallel = 2)
+    backend._last_load_intent = replace(backend.last_load_intent, hf_variant = "Q8_0", n_parallel = 2)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(
+        settings, "get_model_overrides", lambda: {"org/model:Q8_0": {"n_parallel": 2}}
+    )
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf_for_switch",
+        lambda *a, **k: ("org/model", resolved_variant, "org/model"),
+    )
+    assert (
+        asyncio.run(inf._configured_alias_resident_satisfies(requested, _CONFIG, None)) is satisfied
+    )
 
 
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):

@@ -3942,9 +3942,11 @@ async def _configured_alias_resident_satisfies(
     if not await asyncio.to_thread(_loaded_satisfies, requested_model):
         return False
     from core.inference.local_model_resolver import (
+        local_gguf_pinned_variant,
         resolve_local_gguf_for_switch,
         resolve_trusted_cached_local_gguf,
     )
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     resolved = resolve_trusted_cached_local_gguf(requested_model, include_companion_scope = True)
     if resolved is None:
@@ -3954,6 +3956,13 @@ async def _configured_alias_resident_satisfies(
     if resolved is None:
         return False
     target_id, variant, override_id = resolved[:3]
+    _, requested_variant = split_model_ref(requested_model)
+    if (
+        not looks_like_quant(requested_variant)
+        and local_gguf_pinned_variant(requested_model, allow_scan = False) is None
+    ):
+        # A bare alias accepts the resident quant, not just the resolver's preferred one.
+        variant = get_llama_cpp_backend().hf_variant or variant
     override, load_kwargs = _alias_load_kwargs(target_id, variant, override_id, alias_config)
     return await _alias_launch_satisfied(load_kwargs, override, fastapi_request)
 
@@ -12158,8 +12167,9 @@ async def _maybe_auto_switch_model(
                 return False
             if not alias_config:
                 return True
+            resident_variant = (backend.hf_variant or variant) if bare else variant
             override, load_kwargs = _alias_load_kwargs(
-                target_id, variant, override_id, alias_config
+                target_id, resident_variant, override_id, alias_config
             )
             return await _alias_launch_satisfied(load_kwargs, override, fastapi_request)
 
@@ -12432,6 +12442,21 @@ async def _maybe_auto_switch_model(
                             override, alias_kwargs = _alias_load_kwargs(
                                 target_id, variant, override_id, alias_config
                             )
+                            if (target_requires_vision or require_audio_input) and (
+                                alias_kwargs.get("disable_vision")
+                                or extra_args_disable_mmproj(alias_kwargs.get("llama_extra_args"))
+                            ):
+                                raise HTTPException(
+                                    status_code = 400,
+                                    detail = error_body_for_path(
+                                        switch_path,
+                                        f"{rejection_prefix}The configured alias disables the projector "
+                                        f"required for the {modality_label} input in this request.",
+                                        status = 400,
+                                        code = "invalid_value",
+                                        param = "model",
+                                    ),
+                                )
                         else:
                             _override_key, override = resolve_override_for_load(
                                 target_id, override_id, variant
