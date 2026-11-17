@@ -45,10 +45,11 @@ _ENV = (
 
 def _modules():
     """unsloth.parallel_env / unsloth.parallel_auto from this tree without importing the GPU package."""
-    if "unsloth" not in sys.modules:
-        pkg = types.ModuleType("unsloth")
-        pkg.__path__ = [os.path.join(REPO, "unsloth")]
-        sys.modules["unsloth"] = pkg
+    for name, path in (("unsloth", ("unsloth",)), ("unsloth.models", ("unsloth", "models"))):
+        if name not in sys.modules:
+            pkg = types.ModuleType(name)
+            pkg.__path__ = [os.path.join(REPO, *path)]
+            sys.modules[name] = pkg
     env = importlib.import_module("unsloth.parallel_env")
     auto = importlib.import_module("unsloth.parallel_auto")
     assert os.path.dirname(auto.__file__) == os.path.join(REPO, "unsloth"), auto.__file__
@@ -155,6 +156,94 @@ def test_checkpoint_headers_size_the_load(clean):
     assert w4 < w16 and lora4 == lora16 > 0
     assert wfull == w16  # full finetuning does not quantize
     assert train_full == sum(__import__("math").prod(s) for _, _, s in tensors)
+
+
+def test_budget_measures_the_local_rank_gpu(clean, monkeypatch):
+    """Rank 1 sizes cuda:1, not the current device (cuda:0), and leaves the current device alone."""
+    _, _, auto = clean
+    gib, calls = 1024**3, []
+    free = {0: 2 * gib, 1: 9 * gib}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (free[d], 16 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 0)
+    monkeypatch.setattr(torch.cuda, "set_device", lambda d: calls.append(d))
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    assert auto._budget() == (9 * gib, 16 * gib)
+    assert calls == []
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)  # one visible GPU per rank
+    assert auto._budget() == (2 * gib, 16 * gib)
+
+
+def test_import_installs_the_trainer_wrapper_while_auto_is_unresolved(clean, monkeypatch):
+    """`import unsloth` then a plain transformers model: the wrapper that resolves auto must be installed."""
+    from transformers import Trainer
+
+    from test_fsdp2_native_trainer_init_any_loader_gloo import _load_launch
+
+    _, _, auto = clean
+    for name in ("unsloth", "unsloth.models", "unsloth.models._utils", "unsloth.fsdp2_launch"):
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name))
+    monkeypatch.setattr(Trainer, "__init__", Trainer.__init__)
+    monkeypatch.setattr(Trainer, "_test_wrapped", False, raising = False)
+    monkeypatch.setenv("UNSLOTH_PARALLEL", "auto")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    calls = []
+    launch = _load_launch(calls)
+    launch.install_native_fsdp2_trainer_init()
+    assert calls == [Trainer]
+    assert Trainer.__init__.__name__ == "_unsloth_trainer_init"
+    # Resolved, or a single process: nothing to install for auto.
+    auto._STATE.update(choice = "ddp")
+    calls.clear()
+    launch.install_native_fsdp2_trainer_init()
+    auto._STATE.update(choice = None)
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    launch.install_native_fsdp2_trainer_init()
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "name, extra, expected",
+    [
+        ("org/model", {}, "ddp"),  # 4-bit on load fits the budget
+        ("org/model-bf16", {}, "fsdp2"),  # the loader loads a -bf16 repo in 16bit: does not fit
+        (
+            "org/model",
+            {"quantization_config": object()},
+            "fsdp2",
+        ),  # precision not known here: not sized
+    ],
+)
+def test_load_sizing_follows_the_loaders_precision(clean, name, extra, expected):
+    mp, _, auto = clean
+    # One 4096 x 4096 linear: ~8.5 MiB in 4-bit, 32 MiB in 16-bit; 25 MiB per rank (80% after the margin).
+    tensors = [("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))]
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: tensors)
+    mp.setattr(auto, "_world", lambda environ: 2)
+    mp.setattr(auto, "_gather", lambda entry: [entry, entry])
+    utils = types.ModuleType("unsloth.models._utils")
+    utils.patch_gradient_accumulation_fix = lambda cls: None
+    mp.setitem(sys.modules, "unsloth.models._utils", utils)
+    for key in ("UNSLOTH_FSDP2", "UNSLOTH_PARALLEL_AUTO_RESOLVED"):
+        mp.setenv(key, "")
+        mp.delenv(key)
+    mp.setenv("UNSLOTH_PARALLEL", "auto")
+    mp.setenv("UNSLOTH_PARALLEL_AUTO_GB", str(25 / 1024))
+    mp.setenv("WORLD_SIZE", "2")
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    assert auto.resolve_for_load(from_pretrained, (name,), dict(extra)) == expected, auto._STATE[
+        "reason"
+    ]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -307,11 +396,10 @@ def _e2e_worker(rank, world, port, out, tmp, budget_gb, expected):
     import torch.distributed as dist
     try:
         native = _load_native()
-        from test_fsdp2_native_trainer_args_gloo import _install_wrapped_trainer_init
         from test_fsdp2_native_trainer_ckpt_gloo import _stub_unsloth_save
+        from test_fsdp2_native_trainer_init_any_loader_gloo import _load_launch
 
         _stub_unsloth_save()
-        _install_wrapped_trainer_init()  # the real _unsloth_trainer_init source
         _, auto = _modules()
         from torch.distributed.tensor import DTensor
         from torch.nn.parallel import DistributedDataParallel
@@ -326,6 +414,10 @@ def _e2e_worker(rank, world, port, out, tmp, budget_gb, expected):
                 os.environ.update(UNSLOTH_PARALLEL = "auto", UNSLOTH_PARALLEL_AUTO_GB = budget_gb)
             else:
                 os.environ["UNSLOTH_FSDP2"] = "1" if expected == "fsdp2" else "0"
+            # What `import unsloth` runs: the Trainer wrapper (the real _unsloth_trainer_init source) installs
+            # under native FSDP2, and under auto while it is unresolved (a plain transformers model, no Unsloth load).
+            installed = []
+            _load_launch(installed).install_native_fsdp2_trainer_init()
             args = TrainingArguments(
                 output_dir = os.path.join(tmp, mode),
                 report_to = [],
@@ -357,6 +449,7 @@ def _e2e_worker(rank, world, port, out, tmp, budget_gb, expected):
                 losses = [h["loss"] for h in trainer.state.log_history if "loss" in h],
                 params = params,
                 choice = auto._STATE["choice"],
+                installed = bool(installed),
             )
         a, b = res["auto"], res["explicit"]
         out.put(
@@ -387,7 +480,7 @@ def test_auto_trains_like_the_explicit_layout_it_picked(tmp_path, budget_gb, exp
     for rank, r in results.items():
         print("AUTO_E2E", rank, r)
         a, b = r["auto"], r["explicit"]
-        assert a["choice"] == expected, r
+        assert a["installed"] and a["choice"] == expected, r
         assert a["fsdp2_env"] == b["fsdp2_env"] == ("1" if expected == "fsdp2" else "0"), r
         assert a["sharded"] == b["sharded"] == (expected == "fsdp2"), r
         assert a["ddp"] == b["ddp"] == (expected == "ddp"), r

@@ -142,6 +142,18 @@ def _parse_budget(raw):
     return int(value * _GiB)
 
 
+def _local_cuda_device(torch):
+    """cuda:LOCAL_RANK (the GPU this rank trains on) without making it current; the current device when each
+    rank sees only its own GPU (LOCAL_RANK beyond the visible count)."""
+    try:
+        local = int(os.environ.get("LOCAL_RANK", ""))
+    except ValueError:
+        local = None
+    if local is not None and 0 <= local < torch.cuda.device_count():
+        return local
+    return torch.cuda.current_device()
+
+
 def _budget(held = 0):
     """(capacity, total) bytes for this rank: what it could use (free + what it already holds) and the device
     size the margin is a share of."""
@@ -152,7 +164,7 @@ def _budget(held = 0):
     import torch
 
     if torch.cuda.is_available():
-        device = torch.cuda.current_device()
+        device = _local_cuda_device(torch)
         free, total = torch.cuda.mem_get_info(device)
         return int(free + torch.cuda.memory_reserved(device)), int(total)
     try:
@@ -354,6 +366,12 @@ def resolve_for_load(loader, args, kwargs):
         name = call.get("model_name") or call.get("pretrained_model_name_or_path")
         if not isinstance(name, str):
             raise ValueError(f"model_name {name!r} is not a checkpoint name or path")
+        if call.get("quantization_config") is not None or call.get("load_in_fp8") not in (
+            None,
+            False,
+        ):
+            # The loader's precision then depends on the config / the fp8 route: not sized here.
+            raise ValueError("a quantization_config or load_in_fp8 load is not sized")
         dtype = call.get("dtype") or call.get("torch_dtype")
         dtype_bytes = 4 if "float32" in str(dtype) else 2
         tensors = _checkpoint_tensors(
@@ -361,7 +379,12 @@ def resolve_for_load(loader, args, kwargs):
             subfolder = call.get("subfolder") or "",
         )  # fmt: skip
         full = bool(call.get("full_finetuning"))
-        load_in_16bit = bool(call.get("load_in_16bit"))
+        from .models.mapper import bf16_repo_loads_16bit
+
+        # The loader's own rule: a -bf16 Hub repo turns 4bit / 8bit off.
+        load_in_16bit = bool(call.get("load_in_16bit")) or bf16_repo_loads_16bit(
+            name, call.get("load_in_16bit")
+        )
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = bool(call.get("load_in_4bit")) and not load_in_16bit,
