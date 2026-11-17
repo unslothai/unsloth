@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -20,7 +21,8 @@ from core.rag import folder_sync
 from storage import rag_db
 
 requires_sqlite_vec = pytest.mark.skipif(
-    not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec cannot be loaded by this Python's sqlite3",
 )
 
 
