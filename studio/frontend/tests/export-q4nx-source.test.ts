@@ -54,6 +54,19 @@ test("Q4_0 and Q4_1 pack directly only where the model reads that layout; Q4_K_M
   }
 });
 
+test("Q8_0 is refused everywhere and a Qwen3.5 Omni reads Q4_1", () => {
+  // Both pinned converters pack Q8_0 as is into 4-bit slots, which the backend guard refuses.
+  for (const arch of [null, "llama", "qwen2", "qwen35"]) {
+    assert.equal(q4nxPacking("Q8_0", arch), "mismatch", String(arch));
+  }
+  // ROCm/FLM_Q4NX_Converter ea1df7e: a qwen35 named Omni uses qwen3.5_omni.json (Q4_1).
+  const omni = "unsloth/Qwen3.5-Omni-7B-GGUF";
+  assert.equal(q4nxFitQuant("qwen35", omni), "q4_1");
+  assert.equal(q4nxPacking("Q4_1", "qwen35", omni), "direct");
+  assert.equal(q4nxPacking("Q4_K_M", "qwen35", omni), "mismatch");
+  assert.equal(q4nxPacking("Q4_K_M", "qwen35", "unsloth/Qwen3.5-4B-GGUF"), "direct");
+});
+
 test("the file list keeps every quant but puts the directly packed ones first", () => {
   const sorted = sortQ4nxVariants([
     { filename: "m-Q8_0.gguf", quant: "Q8_0" },
@@ -64,7 +77,7 @@ test("the file list keeps every quant but puts the directly packed ones first", 
   ]);
   assert.deepEqual(
     sorted.map((v) => v.quant),
-    ["Q4_0", "Q4_1", "Q4_K_M", "Q8_0", "BF16"],
+    ["Q4_0", "Q4_1", "Q4_K_M", "BF16", "Q8_0"],
   );
   // On an architecture the q4nx converter handles, Q4_K_M ranks with the re-quantized files.
   assert.deepEqual(
@@ -83,12 +96,12 @@ test("the file list keeps every quant but puts the directly packed ones first", 
     sortQ4nxVariants(
       [
         { filename: "m-Q4_0.gguf", quant: "Q4_0" },
-        { filename: "m-Q8_0.gguf", quant: "Q8_0" },
+        { filename: "m-Q6_K.gguf", quant: "Q6_K" },
         { filename: "m-Q4_K_M.gguf", quant: "Q4_K_M" },
       ],
       "qwen35",
     ).map((v) => v.quant),
-    ["Q4_K_M", "Q8_0", "Q4_0"],
+    ["Q4_K_M", "Q6_K", "Q4_0"],
   );
 });
 
@@ -396,12 +409,12 @@ test("the export summary describes the conversion: source, file and quant, outpu
 
   const over = rows({
     ...picked,
-    quant: "Q8_0",
-    packing: q4nxPacking("Q8_0", "qwen35"),
+    quant: "Q6_K",
+    packing: q4nxPacking("Q6_K", "qwen35"),
     memory: { fits: false, label: "~16.5 of 16.0 GB NPU" },
     archFit: q4nxArchFit("qwen35", "unsloth/Qwen3.8-27B-GGUF"),
   });
-  assert.equal(over.Quant, "Q8_0, re-quantized to 4-bit");
+  assert.equal(over.Quant, "Q6_K, re-quantized to 4-bit");
   assert.equal(
     rows({ ...picked, quant: "Q4_0", packing: q4nxPacking("Q4_0", "qwen35") }).Quant,
     "Q4_0, not readable by this model",

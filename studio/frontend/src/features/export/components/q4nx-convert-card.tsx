@@ -462,6 +462,7 @@ export function Q4nxConvertCard({
       ? sortQ4nxVariants(
           listings[row.listingKey]?.list ?? [],
           row.architecture,
+          row.id,
         )
       : [];
 
@@ -583,9 +584,9 @@ export function Q4nxConvertCard({
       ? (selectedVariant ?? ownVariant(selectedRow)).quant
       : null;
   const selectedPacking = selectedQuant
-    ? q4nxPacking(selectedQuant, selectedArchitecture)
+    ? q4nxPacking(selectedQuant, selectedArchitecture, selectedRow?.id)
     : null;
-  const selectedFit = q4nxFitQuant(selectedArchitecture);
+  const selectedFit = q4nxFitQuant(selectedArchitecture, selectedRow?.id);
   const selectedWeights =
     sourceReady && selectedRow ? weightsOf(selectedRow, selectedVariant) : null;
   const selectedMemory = q4nxNpuMemory(selectedWeights, windowGb);
@@ -644,8 +645,8 @@ export function Q4nxConvertCard({
 
   const loadingRows = source === "hub" ? searchingHub : loadingLocal;
 
-  const packingTag = (quant: string, architecture?: string | null) => {
-    const packing = q4nxPacking(quant, architecture);
+  const packingTag = (quant: string, architecture?: string | null, name?: string) => {
+    const packing = q4nxPacking(quant, architecture, name);
     return packing === "direct" ? null : (
       <span className="ml-1.5 font-sans text-ui-9 font-medium text-muted-foreground">
         {packing === "requantized"
@@ -701,7 +702,7 @@ export function Q4nxConvertCard({
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
               {fileName(v.filename)}
-              {packingTag(v.quant, row.architecture)}
+              {packingTag(v.quant, row.architecture, row.id)}
             </span>
             <span className="flex shrink-0 items-center gap-1.5 font-mono text-ui-10 text-muted-foreground tabular-nums">
               {memory && (
@@ -891,9 +892,12 @@ export function Q4nxConvertCard({
         <p className="text-xs text-destructive">
           {q4nxQuantName(selectedQuant)} is packed as is, and this model reads
           another layout, so the converter refuses it. Pick{" "}
-          {selectedFit && selectedFit !== "q4_k_m"
-            ? `a ${q4nxQuantName(selectedFit)} or Q4_K_M`
-            : "a Q4_K_M"}{" "}
+          {!selectedFit || selectedFit === "q4_k_m"
+            ? "a Q4_K_M"
+            : q4nxPacking("Q4_K_M", selectedArchitecture, selectedRow?.id) ===
+                "mismatch"
+              ? `a ${q4nxQuantName(selectedFit)}`
+              : `a ${q4nxQuantName(selectedFit)} or Q4_K_M`}{" "}
           file instead.
         </p>
       )}
@@ -947,7 +951,7 @@ export function Q4nxConvertCard({
                     <SelectItem key={v.filename} value={v.filename}>
                       <span className="flex min-w-0 items-center">
                         <span className="truncate">{fileName(v.filename)}</span>
-                        {packingTag(v.quant, selectedRow.architecture)}
+                        {packingTag(v.quant, selectedRow.architecture, selectedRow.id)}
                       </span>
                     </SelectItem>
                   ))}

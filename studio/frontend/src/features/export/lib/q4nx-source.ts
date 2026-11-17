@@ -57,13 +57,15 @@ function directRank(quant: string): number {
   return i === -1 ? DIRECT_QUANTS.length : i;
 }
 
-/** "by-architecture": Q4_K_M of a file whose architecture is not known yet. "mismatch": a Q4_0 or Q4_1 the model reads in another layout. */
+/** "by-architecture": Q4_K_M of a file whose architecture is not known yet. "mismatch": blocks the model reads in another layout. */
 export type Q4nxPacking = "direct" | "by-architecture" | "requantized" | "mismatch";
 
 /** The quant that packs directly for an architecture, or null when it is not known. */
-export function q4nxFitQuant(architecture?: string | null): string | null {
+export function q4nxFitQuant(architecture?: string | null, name?: string | null): string | null {
   const arch = architecture?.trim().toLowerCase();
   if (!arch) return null;
+  // The q4k converter resolves a Qwen3.5 named Omni to qwen3.5_omni.json, which reads Q4_1.
+  if (arch === "qwen35" && /omni/i.test(name ?? "")) return "q4_1";
   if (Q4K_ARCHITECTURES.includes(arch)) return "q4_k_m";
   return Q4_0_ARCHITECTURES.includes(arch) ? "q4_0" : "q4_1";
 }
@@ -71,15 +73,22 @@ export function q4nxFitQuant(architecture?: string | null): string | null {
 export function q4nxPacking(
   quant: string,
   architecture?: string | null,
+  name?: string | null,
 ): Q4nxPacking {
+  // Both converters pack Q8_0 as is, and no model reads 8-bit in its 4-bit slots.
+  if (q4nxQuantLabel(quant).toLowerCase().endsWith("q8_0")) return "mismatch";
   const rank = directRank(quant);
   if (rank === DIRECT_QUANTS.length) return "requantized";
-  const fit = q4nxFitQuant(architecture);
+  const fit = q4nxFitQuant(architecture, name);
   if (DIRECT_QUANTS[rank] !== "q4_k_m") {
     return !fit || fit === DIRECT_QUANTS[rank] ? "direct" : "mismatch";
   }
   if (!fit) return "by-architecture";
-  return fit === "q4_k_m" ? "direct" : "requantized";
+  if (fit === "q4_k_m") return "direct";
+  // The q4k converter packs Q4_K as is too, so only the q4nx one re-quantizes it.
+  return Q4K_ARCHITECTURES.includes(architecture?.trim().toLowerCase() ?? "")
+    ? "mismatch"
+    : "requantized";
 }
 
 export function packsDirectly(quant: string, architecture?: string | null): boolean {
@@ -116,9 +125,10 @@ export function q4nxConvertibleFiles<T extends { filename: string; cleanable?: b
 export function sortQ4nxVariants<T extends Q4nxVariant>(
   variants: T[],
   architecture?: string | null,
+  name?: string | null,
 ): T[] {
   const rank = (v: T) =>
-    PACKING_ORDER.indexOf(q4nxPacking(v.quant, architecture)) * 10 + directRank(v.quant);
+    PACKING_ORDER.indexOf(q4nxPacking(v.quant, architecture, name)) * 10 + directRank(v.quant);
   return variants
     .map((variant, index) => ({ variant, index }))
     .sort((a, b) => rank(a.variant) - rank(b.variant) || a.index - b.index)
