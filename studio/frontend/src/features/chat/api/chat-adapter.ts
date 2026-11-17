@@ -3528,7 +3528,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
     const options = {
       description: notice.description,
-      duration: missedNote ? 10000 : 5000,
+      duration: 5000,
       icon: undefined,
     };
     const showToast = notice.degraded ? toast.warning : toast.success;

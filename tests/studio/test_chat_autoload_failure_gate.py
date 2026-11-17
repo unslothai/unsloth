@@ -33,7 +33,7 @@ def _wait_gate_source() -> str:
     """The gate module with its two ponyfill imports dropped; PONYFILLS supplies those."""
     gate = "\n".join(
         line
-        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        for line in WAIT_GATE.read_text(encoding="utf-8").splitlines()
         if not line.startswith(
             (
                 "import ",
@@ -56,7 +56,7 @@ def _load_request_source() -> str:
     """The load-request module with its imports dropped; PREAMBLE supplies serverTuningLoadPayload."""
     source = "\n".join(
         line
-        for line in LOAD_REQUEST.read_text(encoding = "utf-8").splitlines()
+        for line in LOAD_REQUEST.read_text(encoding="utf-8").splitlines()
         if not line.startswith(
             ("import ", "  type ServerTuningValues,", "  serverTuningLoadPayload,", "} from ")
         )
@@ -72,17 +72,29 @@ LOCAL_CACHE_SNAPSHOT = _source_path(
 )
 
 
+# Inlined, not stubbed: the fallback toast and the record gate are what #18002 scenarios assert on.
+AUTO_LOAD_REMEMBERED = _source_path(
+    "studio/frontend/src/features/chat/utils/auto-load-remembered.ts"
+)
+
+
+def _auto_load_remembered_source() -> str:
+    source = AUTO_LOAD_REMEMBERED.read_text(encoding="utf-8")
+    assert "export function rememberedMissNote(" in source
+    return source
+
+
 def _local_cache_snapshot_source() -> str:
     """looksLikeLocalPath and isOtherCacheSnapshot, as shipped."""
     path_source = "\n".join(
         line
-        for line in LOCAL_PATH.read_text(encoding = "utf-8").splitlines()
+        for line in LOCAL_PATH.read_text(encoding="utf-8").splitlines()
         if not line.startswith("import ")
     )
     assert "export function looksLikeLocalPath(" in path_source
     match = re.search(
         r"^export function isOtherCacheSnapshot\(.*?^}\n",
-        LOCAL_CACHE_SNAPSHOT.read_text(encoding = "utf-8"),
+        LOCAL_CACHE_SNAPSHOT.read_text(encoding="utf-8"),
         re.S | re.M,
     )
     assert (
@@ -527,6 +539,8 @@ const toast: any = Object.assign(
       return "toast-id";
     },
     success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
+    warning: (msg: string, opts?: any) =>
+      EVENTS.push({ kind: "toast.warning", msg, description: opts?.description }),
     error: (msg: string, opts?: any) =>
       EVENTS.push({ kind: "toast.error", msg, description: opts?.description }),
     dismiss: () => EVENTS.push({ kind: "toast.dismiss" }),
@@ -906,10 +920,10 @@ def _require_node():
     try:
         result = subprocess.run(
             ["node", "--experimental-strip-types", "--version"],
-            capture_output = True,
-            text = True,
+            capture_output=True,
+            text=True,
             # A cold Windows runner is slow to start node.
-            timeout = 60,
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         pytest.skip("node could not be started")
@@ -919,7 +933,7 @@ def _require_node():
 
 def _build_harness(run_dir: Path):
     """Slice autoLoadSmallestModel and its helpers verbatim out of the adapter."""
-    lines = ADAPTER.read_text(encoding = "utf-8").splitlines()
+    lines = ADAPTER.read_text(encoding="utf-8").splitlines()
     start = next(
         (i for i, line in enumerate(lines) if line.startswith("const MAX_AUTO_LOAD_ATTEMPTS")),
         None,
@@ -959,7 +973,7 @@ def _build_harness(run_dir: Path):
             if name:
                 imported.add(name)
     # Any mention, not just a call; comments are stripped first.
-    code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    code = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
     code = re.sub(r"//[^\n]*", "", code)
     preamble = (
         PREAMBLE
@@ -967,6 +981,7 @@ def _build_harness(run_dir: Path):
         + _wait_gate_source()
         + _load_request_source()
         + _local_cache_snapshot_source()
+        + _auto_load_remembered_source()
     )
     missing = sorted(
         name
@@ -991,7 +1006,7 @@ def _build_harness(run_dir: Path):
         + body
         + "\nexport { autoLoadSmallestModel, resolveQueuedEmptyLocalModel };\n"
         + "export function storeState() { return STORE; }\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
 
@@ -1003,8 +1018,8 @@ def _run(
 ) -> dict:
     _require_node()
     # Own directory per invocation so runners do not read each other's rewrite.
-    TEMP.mkdir(parents = True, exist_ok = True)
-    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
+    TEMP.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix="run", dir=TEMP))
     _build_harness(run_dir)
     # The real send path always supplies an abort signal.
     entry = (
@@ -1054,16 +1069,16 @@ def _run(
         """
         )
     )
-    (run_dir / "run.mts").write_text(script, encoding = "utf-8")
+    (run_dir / "run.mts").write_text(script, encoding="utf-8")
     completed = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(run_dir),
-        capture_output = True,
-        text = True,
+        cwd=str(run_dir),
+        capture_output=True,
+        text=True,
         # Explicit UTF-8: the Windows ANSI code page mangles non-ASCII toast copy.
-        encoding = "utf-8",
-        timeout = 60,
-        env = dict(os.environ, NODE_NO_WARNINGS = "1"),
+        encoding="utf-8",
+        timeout=60,
+        env=dict(os.environ, NODE_NO_WARNINGS="1"),
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}\nstdout: {completed.stdout}"
     last = [line for line in completed.stdout.strip().splitlines() if line.strip()][-1]
@@ -1369,6 +1384,56 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
 
 
+# #18002: a stand-in for a last used model that failed must say so and must not replace it.
+def test_a_failed_last_used_model_is_kept_and_named_on_the_fallback():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' },"
+        " load: (p) => p.model_path === 'r2' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r2", "r1"]
+    assert out["result"]["loaded"] is True
+    assert [e for e in out["events"] if e["kind"] == "recordLastLocal"] == []
+    assert _toasts(out, "toast.success") == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"] == "Loaded r1 (UD-Q4_K_XL)"
+    assert warning["description"].startswith(
+        "Your last used model r2 (UD-Q4_K_XL) did not load: Failed to load model: "
+        "llama-server was stopped by the operating system"
+    )
+    assert _toasts(out, "toast.error") == []
+
+
+def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
+    """Control for the test above: the healthy path keeps its plain success and record."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " lastLoaded: { id: 'r2', kind: 'gguf', ggufVariant: 'UD-Q4_K_XL' } })"
+    )
+
+    assert _loaded_paths(out) == ["r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
+
+
+def test_without_a_last_used_model_a_fallback_is_recorded_as_before():
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " load: (p) => p.model_path === 'r1' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["r1", "r2"]
+    assert [e["id"] for e in out["events"] if e["kind"] == "recordLastLocal"] == ["r2"]
+    assert _toasts(out, "toast.warning") == []
+
+
 def test_the_default_model_is_fetched_through_the_download_manager():
     """Not inline inside /api/inference/load: the manager owns the transfer, so
     it gets a panel entry, progress, and a Cancel that stops it."""
@@ -1630,7 +1695,7 @@ def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
 def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     """The retry latch must clear once the request settles, or every later Cancel click is swallowed."""
     src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
@@ -1965,7 +2030,7 @@ def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
     out = _run(
         "scenario({ serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
+        prelude=_EXPIRE_CLI_LOAD_WAIT,
     )
 
     assert _loaded_paths(out) == []
@@ -2007,7 +2072,7 @@ def test_a_queued_turn_binds_the_incoming_model_not_the_one_being_replaced():
         "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/outgoing-GGUF',"
         " serverLoading: ['org/slow-model-GGUF'], serverLoadingClearsAfter: 2,"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert out["result"]["loaded"] is True
@@ -2021,8 +2086,8 @@ def test_a_queued_turn_refuses_rather_than_auto_loading_over_a_cli_load():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
-        queued = True,
+        prelude=_EXPIRE_CLI_LOAD_WAIT,
+        queued=True,
     )
 
     assert _loaded_paths(out) == []
@@ -2037,7 +2102,7 @@ def test_a_queued_turn_still_binds_a_resident_model_on_an_idle_server():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/resident-GGUF',"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert out["result"]["loaded"] is True
@@ -2050,7 +2115,7 @@ def test_a_queued_turn_on_an_empty_idle_server_still_auto_loads():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, ggufRepos: [GEMMA],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert _loaded_paths(out) == [GEMMA_REPO]
