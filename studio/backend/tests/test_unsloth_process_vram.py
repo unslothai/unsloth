@@ -224,5 +224,4 @@ def test_own_process_tree_includes_the_backend():
     import os
 
     from utils.process_tree import own_process_tree_pids
-
     assert os.getpid() in own_process_tree_pids()

@@ -444,7 +444,9 @@ def get_process_vram_mib_by_uuid(pids: Collection[int]) -> Optional[dict[str, fl
     return totals or None
 
 
-def _unsloth_vram_mib_by_index(uuid_by_index: Optional[dict[int, str]]) -> Optional[dict[int, float]]:
+def _unsloth_vram_mib_by_index(
+    uuid_by_index: Optional[dict[int, str]],
+) -> Optional[dict[int, float]]:
     from utils.process_tree import own_process_tree_pids
 
     by_uuid = get_process_vram_mib_by_uuid(own_process_tree_pids())

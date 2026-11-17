@@ -56,7 +56,6 @@ def own_process_tree_pids() -> frozenset[int]:
     if descendants is None:
         try:
             import psutil
-
             descendants = [child.pid for child in psutil.Process(pid).children(recursive = True)]
         except Exception:  # noqa: BLE001 -- the backend alone is still a real answer
             descendants = []

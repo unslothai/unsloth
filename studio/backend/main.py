@@ -2757,8 +2757,13 @@ def _get_cached_system_gpu_info(
         try:
             # Already behind a 10 s cache: no stale-while-revalidate on top.
             with (
-                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
-            ), gpu_query.process_vram_reads():
+                (
+                    contextlib.nullcontext()
+                    if refresh_memory
+                    else gpu_query.display_reads(max_stale = 0)
+                ),
+                gpu_query.process_vram_reads(),
+            ):
                 utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
