@@ -6,8 +6,7 @@
 * Per-sequence chosen / rejected logps and LoRA grads from the shared-prefix forward match the
   unshared padded forward in fp32 (<= 1e-4 nats per sequence) over many layouts, in train and eval
   mode, through TRL's fused LM head (TRL >= 1.15) or the plain LM head (older TRL).
-* With LoRA dropout on, the shared forward applies it (train grads move with the seed) and its mean
-  gradient over seeds matches the unshared forward's.
+* With training dropout on (LoRA dropout p > 0), the forward stays unshared; eval mode still shares.
 * DPOTrainer (and ORPO / CPO / SimPO where Unsloth patches them) runs the decoder on P + 2C tokens
   per pair, not 2 (P + C) (fails without the feature), and its losses match
   UNSLOTH_DPO_PREFIX_SHARE=0 step for step.
@@ -456,12 +455,12 @@ def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatc
     assert pg_diff <= tol, (pg_diff, aa_diff)
 
 
-def test_lora_dropout_runs_on_the_shared_path(loaded, monkeypatch):
-    """Train mode with LoRA dropout: the shared forward must apply it (grads move with the seed and
-    stay apart from the eval grads), and its mean gradient over seeds must equal the unshared one's:
-    each row's dropout mask has the same distribution in both forwards (the shared prompt's mask is
-    common to both rows of a pair), so the expected gradient is the same."""
+def test_training_dropout_keeps_the_forward_unshared(loaded, monkeypatch):
+    """Train mode with LoRA dropout (p > 0): the forward must stay unshared. A shared prompt would give
+    the chosen and rejected rows one dropout mask, and the log-sigmoid of their difference makes that
+    correlation change the expected DPO gradient. Eval mode (dropout inactive) still shares."""
     import torch
+    from unsloth.models import dpo_prefix_share as dps
 
     monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
     monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
@@ -481,37 +480,22 @@ def test_lora_dropout_runs_on_the_shared_path(loaded, monkeypatch):
             swapped.append((drop, drop["default"]))
             drop["default"] = torch.nn.Dropout(0.3)
     assert swapped
-
-    def grads(
-        shared,
-        seed,
-        train = True,
-    ):
-        torch.manual_seed(seed)
-        _, g, n = _logps(model, batch, shared = shared, train = train)
-        assert n == int(shared), n
-        return torch.cat([g[k].flatten() for k in sorted(g)]).double()
-
+    model.__dict__.pop("_unsloth_dps_dropouts", None)
+    for m in model.modules():
+        m.__dict__.pop("_unsloth_dps_dropouts", None)
     try:
-        eval_ref, eval_got = grads(False, 0, train = False), grads(True, 0, train = False)
-        assert float((eval_ref - eval_got).abs().max() / eval_ref.abs().max()) <= GRAD_TOL
-        N = 32
-        S = torch.stack([grads(True, 100 + i) for i in range(N)])
-        U = torch.stack([grads(False, 100 + i) for i in range(N)])
+        declined = dps.DECLINED_COUNT
+        _, _, n_train = _logps(model, batch, shared = True, train = True)
+        assert n_train == 0, n_train
+        assert dps.DECLINED_COUNT > declined
+        _, _, n_eval = _logps(model, batch, shared = True, train = False)
+        assert n_eval == 1, n_eval
     finally:
         for drop, original in swapped:
             drop["default"] = original
+        for m in model.modules():
+            m.__dict__.pop("_unsloth_dps_dropouts", None)
         model.train()
-    var_s, var_u = float(S.var(0).sum()), float(U.var(0).sum())
-    # Squared distance of the two means over its expectation when they are equal: ~1.
-    z = float((S.mean(0) - U.mean(0)).square().sum()) / ((var_s + var_u) / N)
-    seed_spread = float((S[0] - S[1]).norm() / S[0].norm())
-    print(
-        f"DPS_DROPOUT z={z:.3f} var_shared/var_unshared={var_s / var_u:.3f} seed_spread={seed_spread:.3e} "
-        f"shared_mean_vs_eval={float((S.mean(0) - eval_got).norm() / eval_got.norm()):.3e}"
-    )
-    assert seed_spread > 1e-2 and var_s > 0.25 * var_u  # dropout runs on the shared stream
-    assert z < 2.0, z
 
 
 def test_leaky_mask_is_caught(loaded, monkeypatch):

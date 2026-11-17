@@ -18,10 +18,10 @@ least ``_MIN_SAVED`` (default 2048) prompt tokens and ``unshared / shared`` toke
 (default 1.3). ``_VERIFY`` (default 1) compares the first shared forward of each backbone with the
 unshared one and turns the feature off for that backbone if they disagree.
 
-Train mode: dropout (LoRA or otherwise) runs on the shared stream, so both rows of a pair see the same
-mask on their prompt; each row's own mask has the same distribution as in the unshared forward, so
-the expected gradient is unchanged. NEFTune keeps a training forward unshared, since its noise is
-scaled by the sequence length.
+Train mode: a forward with any active dropout (LoRA or otherwise, p > 0) stays unshared. Sharing would
+give both rows of a pair one dropout mask on their prompt, and the log-sigmoid of the chosen minus
+rejected log-probability makes that correlation change the expected gradient. NEFTune keeps a training
+forward unshared too, since its noise is scaled by the sequence length.
 """
 
 from __future__ import annotations
@@ -403,12 +403,27 @@ def _neftune_active(causal_lm):
     )
 
 
+def _dropout_active(causal_lm):
+    """Any dropout module in train mode with p > 0 (LoRA dropout included): the shared forward would
+    correlate the chosen and rejected rows' prompt masks, which changes the DPO objective."""
+    modules = getattr(causal_lm, "_unsloth_dps_dropouts", None)
+    if modules is None:
+        modules = [
+            m for m in causal_lm.modules() if isinstance(m, torch.nn.modules.dropout._DropoutNd)
+        ]
+        try:
+            causal_lm._unsloth_dps_dropouts = modules
+        except Exception:
+            pass
+    return any(m.training and m.p > 0 for m in modules)
+
+
 def _pre_hook(module, args, kwargs):
     global DECLINED_COUNT
     state = getattr(module, _STATE, None)
     if state is None or args or getattr(module, _UNSAFE, False):
         return None
-    if _neftune_active(state.causal_lm):
+    if _neftune_active(state.causal_lm) or _dropout_active(state.causal_lm):
         DECLINED_COUNT += 1
         return None
     if _unknown_kwarg_set(kwargs):
