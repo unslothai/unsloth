@@ -716,7 +716,7 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_TILES_ENV, ""),
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
-                f"sustained={int(cut.sustained_enabled())}",
+                f"sustained={cut.sustained_mode()}",
                 h.hexdigest()[:20],
             )
         )
