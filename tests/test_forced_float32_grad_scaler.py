@@ -223,7 +223,6 @@ def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
 
 
 def test_forced_float32_init_scale_rule(monkeypatch):
-    """CPU: 2**8 on one process, divided by the data parallel loss multiplier, env override wins."""
     import types
 
     import unsloth.models.fsdp2_native as fsdp2_native

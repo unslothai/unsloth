@@ -6087,12 +6087,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
 
 
 def _unsloth_forced_float32_init_scale(trainer):
-    """Starting loss scale for the forced float32 GradScaler. Every skipped step also holds the LR schedule
-    back, so start where the first steps do not overflow: Gemma-4 12B on a T4 overflowed float16 gradients at
-    2**12 (steps 2, 9) and 2**10 (step 27). The cost is underflow: on E2B at step 60, 2**8 gives LoRA gradients
-    within 8% (cosine 0.9965) of 2**12's, inside bfloat16's own run-to-run gradient spread, and the same loss
-    curve. Data parallel ranks carry the loss times the number of processes, so divide by it, as native FSDP2
-    does. UNSLOTH_FORCED_FLOAT32_INIT_SCALE overrides."""
+    """2**8: 2**12 and 2**10 overflowed Gemma-4 12B on T4, 2**8 matches gradients; divided by ranks since DP losses are multiplied by the process count."""
     override = os.environ.get("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "")
     if override:
         try:
