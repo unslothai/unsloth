@@ -1696,11 +1696,14 @@ def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
     again = h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_BF16_GB, args)
     assert again.placement == h3i.PLACE_DIT_RESIDENT and again.te_gb == h3i.H3_IMAGE_TE_BF16_GB
     assert h3i.replan_for_encoder(plan, h3i.H3_IMAGE_TE_INT8_GB + 0.5, args) is plan
-    small = dict(args, vram_gb = 6.0)
-    with pytest.raises(RuntimeError, match = "no placement fits"):
+    # 8 GB: the int8 encoder's parked stream layout fits, the bf16 one's layer window does not
+    small = dict(args, vram_gb = 8.0)
+    with pytest.raises(RuntimeError, match = "free GPU memory|no placement fits"):
         h3i.replan_for_encoder(
             h3i.plan_placement(te_gb = 27.2, **small), h3i.H3_IMAGE_TE_BF16_GB, small
         )
+    with pytest.raises(RuntimeError, match = "free GPU memory"):
+        h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 6.0))
 
 
 def test_the_per_prompt_encoder_refuses_a_bf16_fallback(h3i, release, tmp_path, monkeypatch):
