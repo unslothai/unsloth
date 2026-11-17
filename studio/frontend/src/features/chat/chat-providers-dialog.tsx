@@ -2594,12 +2594,19 @@ export function ChatProvidersSettings({
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
-                  <Label
-                    htmlFor="provider-is-reasoning"
-                    className="text-sm font-medium"
-                  >
-                    Reasoning model
-                  </Label>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-is-reasoning"
+                      className="text-sm font-medium"
+                    >
+                      Unrecognized reasoning model
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Known models like Qwen3 and gpt-oss are detected
+                      automatically. Turn on to show a Thinking switch for any
+                      other model.
+                    </p>
+                  </div>
                   <label
                     htmlFor="provider-is-reasoning"
                     className="flex cursor-pointer items-center gap-2 text-sm"
@@ -2611,7 +2618,7 @@ export function ChatProvidersSettings({
                         setIsReasoningModel(checked === true)
                       }
                     />
-                    This server runs a reasoning model
+                    Show a Thinking switch
                   </label>
                 </div>
               ) : null}

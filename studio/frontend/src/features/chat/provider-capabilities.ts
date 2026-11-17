@@ -1103,8 +1103,8 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none".
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
-// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// vLLM has no per-model reasoning signal on OpenAI-compat: known models resolve by name, and the
+// connection's toggle opts in one the catalog misses. Ollama errors a thinking request at a
 // model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
@@ -1112,8 +1112,9 @@ function resolveProviderReasoning(
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    // A known model keeps its own rules (R1 cannot turn thinking off).
     const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
-    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
+    if (catalog?.supportsReasoning) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
