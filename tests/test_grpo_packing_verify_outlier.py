@@ -95,6 +95,22 @@ def test_repeated_outlier_disables_packing(monkeypatch):
     assert model._unsloth_seq_packing_nograd_ok is False
 
 
+@pytest.mark.parametrize("next_mode", [None, "narrow"], ids = ["clean", "second-outlier"])
+def test_recheck_previously_verified_batch_after_outlier(monkeypatch, next_mode):
+    model = _verified_model(monkeypatch)
+    assert _run(model, "narrow")["_pk_use"] is False
+    monkeypatch.setattr(harness, "_batch", _short_batch)
+    ns = _run(model, next_mode)
+    if next_mode is None:
+        assert ns["_pk_use"] is True and ns["_pk_diff"] < 0.7
+        assert model._unsloth_seq_packing_nograd_strikes == 0
+        assert "_pk_diff" not in _run(model, None)  # trusted again
+    else:
+        assert ns["_pk_use"] is False
+        assert ns["_pk_diff"] >= 1.5
+        assert model._unsloth_seq_packing_nograd_ok is False
+
+
 def test_broad_mismatch_disables_verified_packing(monkeypatch):
     model = _verified_model(monkeypatch)
     ns = _run(model, "broad")
