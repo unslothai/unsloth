@@ -89,10 +89,11 @@ function TurnEndingRow() {
               step={TURN_JUDGE_BAR.step}
               onValueChange={(values: number[]) => setTurnJudgeBar(values[0])}
               aria-label={barLabel}
+              thumbValueText={(value) => PERCENT.format(value)}
               data-testid="voice-turn-judge-bar"
             />
             <span className="w-10 text-right text-sm tabular-nums text-muted-foreground">
-              {Math.round(turnJudgeBar * 100)}%
+              {PERCENT.format(turnJudgeBar)}
             </span>
           </div>
         </SettingsRow>
@@ -102,6 +103,7 @@ function TurnEndingRow() {
 }
 
 const NO_DECISION_MODEL = "__none__";
+const PERCENT = new Intl.NumberFormat(undefined, { style: "percent" });
 
 // The decision model voice mode asks; installation-wide, so only the owner can change it.
 function DecisionModelRow() {
@@ -143,7 +145,7 @@ function DecisionModelRow() {
     <SettingsRow label={label} description={description}>
       <div className="flex items-center gap-2">
         {state === "loading" || saving ? (
-          <Spinner className="size-3.5" aria-label={t("settings.voice.voiceMode.decisionModel.loading")} />
+          <Spinner className="size-3.5" label={t("settings.voice.voiceMode.decisionModel.loading")} />
         ) : null}
         <Select value={current} onValueChange={pick} disabled={failed || !status || saving}>
           <SelectTrigger aria-label={label} className="w-56" data-testid="voice-decision-model">
@@ -210,7 +212,7 @@ function ReplyInstructionRow() {
             onChange={(event) => setCustom(event.target.value)}
             data-testid="voice-reply-instruction-custom"
           />
-          <p className="text-xs text-muted-foreground" aria-live="polite">
+          <p className="text-xs text-muted-foreground">
             {custom.trim()
               ? t("settings.voice.voiceMode.replyInstruction.custom.hint", {
                   n: custom.length,
@@ -313,7 +315,7 @@ function SpeakingVoiceRow() {
           </SelectContent>
         </Select>
       ) : preset.spec.state === "loading" ? (
-        <Spinner className="size-4 text-muted-foreground" />
+        <Spinner className="size-4 text-muted-foreground" label={t("voicePanel.optionsLoading")} />
       ) : (
         <span className="text-sm text-muted-foreground">{preset.label ?? t("voicePanel.modelsOwnVoice")}</span>
       )}

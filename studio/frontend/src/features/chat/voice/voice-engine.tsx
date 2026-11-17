@@ -1905,8 +1905,8 @@ export const VoiceMuteButton: FC = () => {
   return (
     <TooltipIconButton
       tooltip={label}
+      // No aria-pressed: the label already flips between Mute and Unmute, so it would state it twice.
       aria-label={label}
-      aria-pressed={muted}
       variant="ghost"
       className={cn("size-8 rounded-full", muted ? "text-destructive" : "text-foreground")}
       onClick={() => setVoiceMuted(!muted)}

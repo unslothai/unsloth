@@ -54,10 +54,18 @@ const isErrorKind = (k: string): k is ErrorKind => (ERROR_KINDS as readonly stri
 const CARDS = "grid grid-cols-[repeat(auto-fit,minmax(calc(11rem*var(--ui-space-scale,1)),1fr))] gap-2 py-3";
 const ALL_CHATS = "__all__";
 
+const SIZE_UNITS = ["byte", "kilobyte", "megabyte"] as const;
+const PERCENT = new Intl.NumberFormat(undefined, { style: "percent" });
+const COUNT = new Intl.NumberFormat();
+
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  const step = n < 1024 ? 0 : n < 1024 * 1024 ? 1 : 2;
+  return new Intl.NumberFormat(undefined, {
+    style: "unit",
+    unit: SIZE_UNITS[step],
+    unitDisplay: "short",
+    maximumFractionDigits: step === 0 ? 0 : 1,
+  }).format(n / 1024 ** step);
 }
 
 function ModelCard({
@@ -84,14 +92,14 @@ function ModelCard({
           <span className="text-lg font-semibold text-foreground">
             {stats?.accuracy === null || stats?.accuracy === undefined
               ? t("settings.voice.voiceMode.noOutcomes")
-              : `${Math.round(stats.accuracy * 100)}%`}
+              : PERCENT.format(stats.accuracy)}
           </span>
           <span className="text-xs text-muted-foreground">
             {t("settings.voice.voiceMode.verdictsAndLatency", {
-              n: String(verdicts),
+              n: COUNT.format(verdicts),
               ms: stats?.latency_p50_ms === null || stats?.latency_p50_ms === undefined
                 ? "–"
-                : String(Math.round(stats.latency_p50_ms)),
+                : COUNT.format(Math.round(stats.latency_p50_ms)),
             })}
           </span>
           {errors.map(([kind, count]) => (
@@ -179,19 +187,19 @@ export function VoiceDecisionLogSection() {
         label={t("settings.voice.voiceMode.arcsLabel")}
         description={t("settings.voice.voiceMode.arcsDescription")}
       >
-        <Switch checked={showArcs} onCheckedChange={setShowArcs} />
+        <Switch aria-label={t("settings.voice.voiceMode.arcsLabel")} checked={showArcs} onCheckedChange={setShowArcs} />
       </SettingsRow>
       <SettingsRow
         label={t("settings.voice.voiceMode.captionLabel")}
         description={t("settings.voice.voiceMode.captionDescription")}
       >
-        <Switch checked={showCaption} onCheckedChange={setShowCaption} />
+        <Switch aria-label={t("settings.voice.voiceMode.captionLabel")} checked={showCaption} onCheckedChange={setShowCaption} />
       </SettingsRow>
       <SettingsRow
         label={t("settings.voice.voiceMode.logLabel")}
         description={t("settings.voice.voiceMode.logDescription")}
       >
-        <Switch checked={enabled} onCheckedChange={setEnabled} />
+        <Switch aria-label={t("settings.voice.voiceMode.logLabel")} checked={enabled} onCheckedChange={setEnabled} />
       </SettingsRow>
       {isOwner ? (
         <>

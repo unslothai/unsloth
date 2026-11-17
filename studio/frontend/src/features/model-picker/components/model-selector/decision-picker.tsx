@@ -108,13 +108,13 @@ export function DecisionPicker({
     {
       value: "recommended",
       label: t("voicePanel.tabRecommended"),
-      icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
+      icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" aria-hidden="true" />,
     },
     {
       value: "downloaded",
       label: t("picker.onDevice"),
       icon: (
-        <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
+        <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" aria-hidden="true" />
       ),
     },
   ];
@@ -158,7 +158,7 @@ export function DecisionPicker({
           className={cn(!m.available && "opacity-50")}
         />
         {selected && state === "error" && error ? (
-          <p className="px-2.5 pb-1 text-ui-10 text-destructive">{error}</p>
+          <p role="alert" className="px-2.5 pb-1 text-ui-10 text-destructive">{error}</p>
         ) : null}
         {!m.available && m.unavailable_reason ? (
           <p className="px-2.5 pb-1 text-ui-10 text-muted-foreground">
@@ -190,10 +190,14 @@ export function DecisionPicker({
             <HugeiconsIcon
               icon={Search01Icon}
               className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
             />
             <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              aria-label={t("voicePanel.searchPlaceholder")}
+              autoComplete="off"
+              spellCheck={false}
               placeholder={t("voicePanel.searchPlaceholder")}
               data-model-picker-search-input={true}
               className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
@@ -235,6 +239,7 @@ export function DecisionPicker({
                     icon={ArrowUpDownIcon}
                     strokeWidth={1.75}
                     className="size-3.5 shrink-0 text-foreground"
+                    aria-hidden="true"
                   />
                   <span className="truncate">
                     {sortOptions.find((o) => o.value === sort)?.label}

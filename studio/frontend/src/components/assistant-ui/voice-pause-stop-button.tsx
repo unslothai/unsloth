@@ -90,8 +90,8 @@ export const VoicePauseStopButton: FC = () => {
           type="button"
           variant="default"
           size="icon"
+          // No aria-pressed: the label already flips between Pause and Resume.
           aria-label={t("voiceOrb.holdToStopAria", { label })}
-          aria-pressed={paused}
           className={cn(
             "aui-composer-cancel relative ml-1.5 size-9 select-none overflow-hidden rounded-full transition-colors duration-150",
             armed && "bg-destructive text-destructive-foreground hover:bg-destructive",
@@ -131,7 +131,7 @@ export const VoicePauseStopButton: FC = () => {
                 transitionDuration: `${holding ? HOLD_TO_STOP_MS : 150}ms`,
               }}
             >
-              <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
+              <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" aria-hidden="true" />
             </span>
           </span>
           <svg

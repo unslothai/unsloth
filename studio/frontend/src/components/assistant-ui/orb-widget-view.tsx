@@ -207,8 +207,9 @@ const ApprovalPopup: FC<{
   approval: OrbWidgetApproval;
   place: PopupPlacement;
 }> = ({ approval, place }) => (
+  // A group, not a dialog: it takes no focus and has no close of its own.
   <div
-    role="dialog"
+    role="group"
     aria-label={approval.line}
     className="absolute flex flex-col gap-1 rounded-lg border border-border/40 bg-background/95 px-1.5 py-1 shadow-sm"
     style={{
@@ -359,6 +360,8 @@ export const OrbWidgetView: FC = () => {
     <div className="relative h-full w-full select-none">
       {approval && place ? <ApprovalPopup approval={approval} place={place} /> : null}
       <div className="group absolute inset-x-0" style={{ top: offset, height: ORB_WIDGET_HEIGHT }}>
+        {/* The labels come with the first snapshot: until then the buttons would have no name. */}
+        {labels ? (
         <div
           className={cn(
             "absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-border/60 bg-background/85 px-1 py-0.5 shadow-sm",
@@ -366,16 +369,17 @@ export const OrbWidgetView: FC = () => {
           )}
           style={{ top: ORB_WIDGET_BAR_TOP }}
         >
-          <BarButton label={(paused ? labels?.resume : labels?.pause) ?? ""} onClick={() => send("toggle-pause")}>
+          <BarButton label={paused ? labels.resume : labels.pause} onClick={() => send("toggle-pause")}>
             {paused ? <PlayIcon className="size-3.5 fill-current" /> : <PauseBars />}
           </BarButton>
-          <BarButton label={labels?.stop ?? ""} onClick={() => send("stop")}>
+          <BarButton label={labels.stop} onClick={() => send("stop")}>
             <SquareIcon className="size-3 fill-current" />
           </BarButton>
-          <BarButton label={labels?.back ?? ""} onClick={() => send("back")}>
+          <BarButton label={labels.back} onClick={() => send("back")}>
             <Maximize2Icon className="size-3.5" />
           </BarButton>
         </div>
+        ) : null}
         <div
           role="presentation"
           className="absolute z-10 cursor-grab active:cursor-grabbing"

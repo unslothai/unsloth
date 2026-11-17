@@ -46,7 +46,7 @@ import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type FC, useEffect, useRef, useState } from "react";
+import { type FC, useEffect, useId, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { SttModelSelector, sttRepoForKey } from "./stt-model-selector";
 import { VadModelSelector } from "./vad-model-selector";
@@ -164,6 +164,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   anchor = "header",
 }) => {
   const t = useT();
+  const uid = useId();
   const composer = anchor === "composer";
   // Turning voice on from the composer opens its setup there, with Start in reach.
   const [open, setOpen] = useState(composer);
@@ -504,9 +505,8 @@ const VoicePanelView: FC<VoicePanelProps> = ({
             <button
               type="button"
               onClick={back}
-              aria-label={t("voicePanel.back")}
               className={cn(
-                "flex items-center gap-1 self-start rounded-full py-1 pl-1.5 pr-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent focus-visible:outline-none",
+                "flex items-center gap-1 self-start rounded-full py-1 pl-1.5 pr-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 PICKER_ROLES.has(role) && "ml-2.5 mt-2.5",
               )}
             >
@@ -514,8 +514,11 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                 icon={ChevronLeftStandardIcon}
                 strokeWidth={1.75}
                 className="size-3.5"
+                aria-hidden="true"
               />
+              {/* The visible role name leads the accessible name, so a spoken "Speak" still finds it. */}
               {t(`voicePanel.roles.${role}`)}
+              <span className="sr-only">, {t("voicePanel.back")}</span>
             </button>
             {drillIn}
           </>
@@ -546,6 +549,8 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                     >
                       {row.name}
                     </span>
+                    {/* The title is hover-only: keyboard and screen-reader users get the error or hint here. */}
+                    {row.title ? <span className="sr-only">{row.title}</span> : null}
                     {row.state && (
                       <StateTag
                         state={row.state}
@@ -565,6 +570,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                       icon={ChevronRightStandardIcon}
                       strokeWidth={1.75}
                       className="size-3.5 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
                     />
                   </button>
                 </div>
@@ -597,14 +603,16 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                 )}
               >
                 <span className="min-w-0 flex-1">
-                  <span className={cn("block text-sm", !chatThinks && "text-muted-foreground")}>
+                  <span id={`${uid}-think`} className={cn("block text-sm", !chatThinks && "text-muted-foreground")}>
                     {t("voicePanel.thinkFirst")}
                   </span>
-                  <span className="block text-xs leading-snug text-muted-foreground">
+                  <span id={`${uid}-think-hint`} className="block text-xs leading-snug text-muted-foreground">
                     {t(chatThinks ? "voicePanel.thinkFirstHint" : "voicePanel.thinkNeedsChatThinking")}
                   </span>
                 </span>
                 <Switch
+                  aria-labelledby={`${uid}-think`}
+                  aria-describedby={`${uid}-think-hint`}
                   checked={chatThinks && voiceThinking}
                   disabled={!chatThinks}
                   onCheckedChange={setVoiceThinking}
@@ -613,7 +621,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
             )}
             {!started && (
               <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
-                <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+                <p id={`${uid}-start-hint`} className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
                   {disabled
                     ? t("voicePanel.selectChatModelFirst")
                     : downloadOnStart
@@ -622,7 +630,14 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                         : t("voicePanel.startHintDownloadUnsized")
                       : t("voicePanel.startHint")}
                 </p>
-                <Button type="button" variant="primary" size="sm" disabled={disabled} onClick={start}>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  disabled={disabled}
+                  aria-describedby={`${uid}-start-hint`}
+                  onClick={start}
+                >
                   {t("voiceControls.start")}
                 </Button>
               </div>

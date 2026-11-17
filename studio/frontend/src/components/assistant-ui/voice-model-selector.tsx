@@ -105,12 +105,13 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       <button
         type="button"
         disabled={!speaks}
+        aria-pressed={isChatModelVoice(value)}
         onClick={() => {
           pick(VOICE_CHAT_MODEL_VOICE);
           onClose?.();
         }}
         className={cn(
-          "mx-3 mt-2 flex flex-col items-start rounded-xl px-2.5 py-1.5 text-left transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none disabled:opacity-50",
+          "mx-3 mt-2 flex flex-col items-start rounded-xl px-2.5 py-1.5 text-left transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50",
           isChatModelVoice(value) && "bg-muted",
         )}
       >
@@ -212,7 +213,7 @@ export const VoicePresetPanel: FC<{
   }, [listed]);
 
   const row =
-    "mb-0.5 flex w-full items-center rounded-full px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+    "mb-0.5 flex w-full items-center rounded-full px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const heading =
     "px-2 pb-1 pt-0.5 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground";
   const choices = (speakers && speakers.values.length > 1) || preset.canClone;
@@ -252,6 +253,7 @@ export const VoicePresetPanel: FC<{
           <div className={heading}>{labels.saved}</div>
           <button
             type="button"
+            aria-pressed={!savedVoiceId}
             onClick={() => {
               setSavedVoiceId("");
               onClose();

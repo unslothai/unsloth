@@ -41,7 +41,10 @@ export const VoiceSoundControls: FC<{
         role="status"
         className={cn("flex items-center gap-2 px-2 py-1.5 text-ui-12 text-muted-foreground", className)}
       >
-        <Spinner className="size-3.5" />
+        {/* The paragraph is the status; the spinner's own "Loading" would be said twice. */}
+        <span aria-hidden="true" className="flex">
+          <Spinner className="size-3.5" />
+        </span>
         {t("voicePanel.optionsLoading")}
       </p>
     );

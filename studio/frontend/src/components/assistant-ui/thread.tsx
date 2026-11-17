@@ -7383,6 +7383,9 @@ const ComposerToolsMenu: FC<{
         )}
         {voiceAvailable && (
           <DropdownMenuItem
+            // A toggle: its on/off is said, not only shown by the tick (mixed while setting up).
+            role="menuitemcheckbox"
+            aria-checked={voiceMode === "active" ? true : voiceMode === "configuring" ? "mixed" : false}
             className={voiceMode !== "off" ? "text-primary font-medium" : undefined}
             onSelect={() => requestVoiceToggle()}
           >
@@ -7677,7 +7680,7 @@ const ComposerRightControls: FC<{
             className="size-9 rounded-full text-foreground"
             onClick={() => requestVoiceToggle()}
           >
-            <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-5" />
+            <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.75} className="size-5" aria-hidden="true" />
           </TooltipIconButton>
         )}
       </div>
@@ -8368,9 +8371,12 @@ const VoiceHeardNote: FC = () => {
   const offset = useAuiState(({ message }) => savedHeardCut(message.metadata)?.offset ?? null);
   const content = useAuiState(({ message }) => message.content);
   const [saving, setSaving] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   if (offset === null) return null;
   const words = heardTail(content as readonly { type: string; text?: string }[], { offset });
   const restoreFullReply = async () => {
+    // The note unmounts once the cut is gone: focus left on its button would drop to the page.
+    const hadFocus = document.activeElement === buttonRef.current;
     setSaving(true);
     clearPendingHeardCut(messageId);
     try {
@@ -8384,6 +8390,7 @@ const VoiceHeardNote: FC = () => {
         isIncognito: useChatRuntimeStore.getState().incognito,
         heard: null,
       });
+      if (hadFocus) document.querySelector<HTMLElement>(".aui-composer-input")?.focus();
     } catch (error) {
       // Rolled back, so the note stays: the cut still applies.
       console.error("Could not restore the full voice reply.", error);
@@ -8396,6 +8403,7 @@ const VoiceHeardNote: FC = () => {
     <p className="aui-voice-heard-note mt-1 text-sm text-foreground">
       {words ? t("voice.interrupted.spokenUpTo", { words }) : t("voice.interrupted.none")}{" "}
       <button
+        ref={buttonRef}
         type="button"
         className="font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60"
         onClick={() => void restoreFullReply()}
