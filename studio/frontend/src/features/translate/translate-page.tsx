@@ -107,6 +107,7 @@ import { ICON_ACTION, IconAction } from "./icon-action";
 import {
   TRANSLATE_LANGUAGES,
   findTranslateLanguage,
+  sortTranslateLanguages,
   translateLanguageLabel,
   translateSpeechTag,
 } from "./languages";
@@ -216,7 +217,7 @@ function LanguagePicker({
   const [query, setQuery] = useState("");
   const languages = useMemo(
     () =>
-      TRANSLATE_LANGUAGES.map((language) => ({
+      sortTranslateLanguages(TRANSLATE_LANGUAGES, locale).map((language) => ({
         ...language,
         label: translateLanguageLabel(language, locale),
       })),

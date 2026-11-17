@@ -52,6 +52,30 @@ export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
 
 export const DEFAULT_TARGET_LANGUAGE = "en";
 
+/**
+ * Keep the picker easy to scan without changing the model's preferred-language
+ * order used when suggesting a target from the browser locale.
+ */
+export function sortTranslateLanguages(
+  languages: readonly TranslateLanguage[],
+  locale: string,
+): TranslateLanguage[] {
+  const labels = new Map(
+    languages.map((language) => [
+      language.code,
+      translateLanguageLabel(language, locale),
+    ]),
+  );
+  const collator = new Intl.Collator(locale, { sensitivity: "base" });
+  return [...languages].sort(
+    (a, b) =>
+      collator.compare(
+        labels.get(a.code) ?? a.name,
+        labels.get(b.code) ?? b.name,
+      ) || a.code.localeCompare(b.code),
+  );
+}
+
 export function findTranslateLanguage(
   code: string,
 ): TranslateLanguage | undefined {

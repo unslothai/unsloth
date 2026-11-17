@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   TRANSLATE_LANGUAGES,
   suggestedTargetLanguage,
+  sortTranslateLanguages,
   translateLanguageLabel,
   translateSpeechTag,
 } from "../src/features/translate/languages.ts";
@@ -247,6 +248,29 @@ test("language codes are unique and named in the interface language", () => {
   assert.ok(french);
   assert.equal(translateLanguageLabel(french, "en"), "French");
   assert.equal(translateLanguageLabel(french, "fr"), "français");
+});
+
+test("language picker sorts labels without changing the source list", () => {
+  const originalCodes = TRANSLATE_LANGUAGES.map((language) => language.code);
+  const sorted = sortTranslateLanguages(TRANSLATE_LANGUAGES, "en");
+  const collator = new Intl.Collator("en", { sensitivity: "base" });
+
+  assert.deepEqual(
+    TRANSLATE_LANGUAGES.map((language) => language.code),
+    originalCodes,
+  );
+  assert.equal(sorted[0]?.code, "ar");
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1];
+    const current = sorted[index];
+    assert.ok(previous && current);
+    assert.ok(
+      collator.compare(
+        translateLanguageLabel(previous, "en"),
+        translateLanguageLabel(current, "en"),
+      ) <= 0,
+    );
+  }
 });
 
 test("the first target is the first browser language the model knows", () => {
