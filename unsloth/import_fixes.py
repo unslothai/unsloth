@@ -8025,8 +8025,7 @@ _SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
 _SDPA_CUDNN_D256_WARNED = False
 
 
-# SM100 (B200 / B300) reproduces the NaN dQ. SM90 (H100 / H200) runs the same cuDNN SDPA kernels at
-# head_dim 256 and is guarded too, without a repro there.
+# NaN dQ reproduces on SM100; SM90 runs the same head_dim-256 kernels, guarded without a repro.
 _SDPA_CUDNN_D256_MAJORS = (9, 10)
 
 
