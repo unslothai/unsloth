@@ -4,8 +4,7 @@
 import json
 import warnings as python_warnings
 
-from .cells import cell_text
-from .format_conversion import _content_text
+from .cells import cell_text, content_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -326,7 +325,7 @@ def _flatten_text_parts(message):
         and content
         and all(isinstance(part, dict) and part.get("type") == "text" for part in content)
     ):
-        return {**message, "content": _content_text(content)}
+        return {**message, "content": content_text(content)}
     return message
 
 
