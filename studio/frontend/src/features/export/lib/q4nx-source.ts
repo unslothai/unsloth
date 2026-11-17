@@ -366,7 +366,7 @@ export function q4nxSummaryRows(
       label: "Convertible",
       value: !archFit
         ? dash
-        : archFit.status === "unsupported"
+        : archFit.status === "unsupported" || input.packing === "mismatch"
           ? "No"
           : archFit.status === "unknown"
             ? "Checked during conversion"

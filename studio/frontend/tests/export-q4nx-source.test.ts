@@ -407,6 +407,10 @@ test("the export summary describes the conversion: source, file and quant, outpu
     "Q4_0, not readable by this model",
   );
   assert.equal(
+    rows({ ...picked, quant: "Q4_0", packing: q4nxPacking("Q4_0", "qwen35") }).Convertible,
+    "No",
+  );
+  assert.equal(
     rows({ ...picked, packing: q4nxPacking("Q4_K_M", null) }).Quant,
     "Q4_K_M, packs directly for Qwen3.5 only",
   );
