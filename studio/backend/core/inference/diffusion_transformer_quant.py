@@ -1433,8 +1433,7 @@ _FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8"
 
 
 def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
-    """Measured reason an explicit int8 request runs W8A8 (not weight-only) for ``family`` on this ROCm RDNA card, else
-    None. Only where ``rdna_explicit_int8_reason`` compiles the request. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only)."""
     reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
     if reason is None or rdna_explicit_int8_reason(target, family) is None:
         return None

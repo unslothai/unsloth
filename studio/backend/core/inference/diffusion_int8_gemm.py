@@ -1628,8 +1628,7 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
 
 
 def rdna_native_rotated(module: Any) -> bool:
-    """``module`` is a native int8 Linear on the ROCm RDNA W8A8 kernels with a ConvRot group of 256 (its rotation +
-    act quant is ``diffusion_native_w8a8_rdna.rotq``). Traced: plain attribute reads only."""
+    """Native int8 Linear on the RDNA W8A8 kernels with ConvRot group 256. Traced: plain attribute reads only."""
     return (
         type(module).__name__ == "NativeWeightOnlyLinear"
         and bool(getattr(module, "act_int8", False))

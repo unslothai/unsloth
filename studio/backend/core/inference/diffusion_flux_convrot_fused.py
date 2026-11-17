@@ -569,8 +569,7 @@ def _rotated_count(transformer: Any) -> int:
 
 
 def _rotated_linears(transformer: Any) -> int:
-    """ConvRot (group 256) Linears in the denoiser, swapped yet or not, and native int8 Linears on the ROCm RDNA W8A8
-    kernels."""
+    """ConvRot (group 256) Linears, swapped or not, plus native RDNA W8A8 int8 Linears."""
     from .diffusion_convrot import is_rotated_linear
     return sum(
         1
@@ -620,7 +619,6 @@ def install(transformer: Any, logger: Any = None) -> dict:
                     native,
                 )
         if native == result["rotated"]:
-            # nothing ConvRot-swapped: no producer kernel to arm
             return result
         from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
