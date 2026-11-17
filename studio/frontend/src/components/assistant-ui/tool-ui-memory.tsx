@@ -7,7 +7,7 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { BookmarkIcon } from "@/lib/hugeicons-derived";
+import { Brain03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memoryToolFeedback } from "./memory-tool-feedback";
 import { partsHaveNonEmptyText } from "./message-derived";
@@ -24,7 +24,7 @@ import {
 import { useToolActivityOpen } from "./use-tool-activity-open";
 
 function MemoryIcon(props: { className?: string }) {
-  return <HugeiconsIcon icon={BookmarkIcon} strokeWidth={1.75} {...props} />;
+  return <HugeiconsIcon icon={Brain03Icon} strokeWidth={1.75} {...props} />;
 }
 
 type MemoryArgs = { scope?: unknown; value?: unknown };
