@@ -524,7 +524,7 @@ export function pickerAlignOffset(
   panelWidth: number,
   viewportWidth: number,
 ): number {
-  if (!trigger) {
+  if (!trigger || trigger.right <= trigger.left) {
     return 0;
   }
   // PopoverContent caps its width at the window less 32px.
