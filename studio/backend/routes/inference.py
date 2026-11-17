@@ -32556,9 +32556,7 @@ async def produce_openai_chat_completions(
         payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
     )
     if _pre_parsed is not None and payload.messages is not _messages_before_memory:
-        _pre_parsed = await _extract_content_parts_async(
-            payload.messages, keep_tool_images = True
-        )
+        _pre_parsed = await _extract_content_parts_async(payload.messages, keep_tool_images = True)
     if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
