@@ -2591,7 +2591,6 @@ CUDA13_TAR = "a-bin-ubuntu-x64-cuda13.tar.gz"
 
 
 def _chat_only_cuda_host(monkeypatch, *, wheels_work):
-    """A Linux x86_64 NVIDIA host with no torch: the runtime is present only once the wheels install."""
     state = {"runtime": False, "installed": []}
     monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
     monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: state["runtime"])

@@ -951,8 +951,7 @@ def _record_fits_request(record: dict, requested: str, detected: Optional[str]) 
             or (_cuda_runtime_wheels_installable() and not record.get("cuda_runtime_wheels_tried"))
         )
     ):
-        # Installed as the CPU fallback; torch's CUDA runtime is here now, or this chat-only install
-        # predates the runtime wheel step, so look up the GPU build (once: the new record is marked).
+        # A CPU fallback whose CUDA runtime is here now, or a chat-only one from before the wheel step.
         return False
     return True
 
@@ -1065,8 +1064,7 @@ def _cuda_runtime_wheels_installable() -> bool:
 
 
 def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
-    """Installs NVIDIA's runtime wheels for ``major`` into this env so a chat-only install can run the
-    CUDA bundle; never raises (the caller falls back to the CPU build)."""
+    """Never raises: the caller falls back to the CPU build."""
     wheels = _LINUX_CUDA_RUNTIME_WHEELS.get(major or 0)
     if not wheels or not _cuda_runtime_wheels_installable():
         return
@@ -1102,7 +1100,7 @@ def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
 def _mark_runtime_wheels_tried(
     target: Path, record: dict, requested: str, detected: Optional[str]
 ) -> None:
-    """A kept install that came through the wheel step records it too, so the next run does not try again."""
+    """A kept CPU install records the wheel attempt too, or every run would retry it."""
     if (
         record.get("accelerator") != "cpu"
         or record.get("cuda_runtime_wheels_tried")
@@ -1434,7 +1432,6 @@ def _install_locked(
             "accelerator": accel,
             "accelerator_request": requested,
             "detected_accelerator": detected,
-            # This install already had its chance to fetch the CUDA runtime wheels (_record_fits_request).
             "cuda_runtime_wheels_tried": _runtime_wheels_marker(requested, detected),
             "espeak": (server.parent / "espeak-ng-data.bin").is_file(),
             "server_relpath": server.relative_to(tree).as_posix(),
