@@ -2217,9 +2217,13 @@ def _search_spec(specs):
     return next(s for s in specs if s["function"]["name"] == "mcp_tool_search")
 
 
-def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, listing_window):
+@pytest.mark.parametrize("search_only", ["0", "1"])
+def test_mcp_listing_stays_full_when_it_fits_the_window(
+    tmp_path, monkeypatch, listing_window, search_only
+):
     from core.inference import tools as tools_mod
 
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", search_only)
     _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool()])
     unsized = tools_mod.cached_mcp_tools()[0]
     assert _names(unsized) == ["mcp__srv1__ping", "mcp__srv1__query"]
@@ -2370,6 +2374,26 @@ def _thread_listing(tools_mod, searching, messages):
     ctx = contextvars.copy_context()
     ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, "thread-1", messages)
     return ctx.run(lambda: tools_mod.cached_mcp_tools()[0])
+
+
+def test_search_only_listing_stays_stable_across_queries_and_tool_calls(
+    tmp_path, monkeypatch, searching
+):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    first = _thread_listing(
+        tools_mod, searching, [{"role": "user", "content": "Move my roadmap page."}]
+    )
+    assert _names(first) == ["mcp_tool_search"]
+    name = "mcp__srv1__move-pages"
+    assert _names(tools_mod.mcp_tool_search_specs({"query": name})) == [name]
+    tools_mod.mcp_record_loaded_tools("thread-1", [name])
+    second = _thread_listing(
+        tools_mod, searching, [{"role": "user", "content": "List all users."}]
+    )
+    assert second == first
 
 
 def test_mcp_listing_holds_while_the_best_match_stays_listed(tmp_path, monkeypatch, searching):
@@ -2798,11 +2822,13 @@ def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, mo
     assert controller.active_tools() == before
 
 
-def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
+@pytest.mark.parametrize("search_only", ["0", "1"])
+def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching, search_only):
     import contextvars
 
     from core.inference import tools as tools_mod
 
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", search_only)
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
 
     def listing_for(messages, tool_choice = None):
