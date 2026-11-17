@@ -3072,9 +3072,7 @@ def _flow_shift_check_engine(engine, audio_flow_shift):
     return None if sd_cpp_supports_flag(find_sd_cpp_binary(), "--audio-flow-shift") else engine
 
 
-async def _require_guardrail_installer(
-    current_subject: str = Depends(get_current_subject),
-) -> None:
+async def _require_guardrail_installer(current_subject: str = Depends(get_current_subject)) -> None:
     """Installing into Studio's own environment is the installation owner's call, from the Unsloth UI (an API key
     only where full API access is enabled, as for every other full-access action)."""
     from auth import policy

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Memory mode Low VRAM never keeps more on the card than Balanced.
 
 Whole-module offload holds the whole denoiser for every step, which is above Balanced's streamed blocks whenever the
