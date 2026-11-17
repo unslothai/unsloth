@@ -13,7 +13,7 @@ export function isManagedEngineType(
   return providerType in ENGINE_NAMES;
 }
 
-/** Points a new vLLM / SGLang connection at Unsloth's own install of that engine, when this host can run it. */
+/** Points a new vLLM / SGLang connection at Unsloth's own engine when this host can run it. */
 export function ManagedEngineHint({
   engine,
 }: {
@@ -31,7 +31,7 @@ export function ManagedEngineHint({
       {status.installed
         ? `${name} is already installed in Unsloth. Pick it as the Inference engine in a model's run settings to run models without a separate server.`
         : `Unsloth can directly install ${name} and run models with it, so you do not need a separate server.`}
-      {/* The System tab is owner-only; a non-owner's link would land on General. */}
+      {/* System is owner-only. */}
       {isOwner ? (
         <>
           {" "}

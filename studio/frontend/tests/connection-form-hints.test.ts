@@ -21,10 +21,8 @@ test("a new vLLM or SGLang connection points at Unsloth's own engine", () => {
     /editingProviderId == null && isManagedEngineType\(providerType\) \? \(\s+<ManagedEngineHint engine=\{providerType\} \/>/,
   );
   const hint = read("features/chat/managed-engine-hint.tsx");
-  // Hidden where the host cannot run the engine, so a remote server stays the only advice.
   assert.match(hint, /status\.unsupported_reason/);
   assert.match(hint, /scrollTarget: "resources-engines"/);
-  // System is owner-only, so only an owner gets the link.
   assert.match(hint, /\{isOwner \? \(\s+<>\s+\{" "\}\s+<button/);
   const resources = read("features/settings/tabs/resources-tab.tsx");
   assert.match(resources, /<InferenceEnginesSection ref=\{enginesRef\} \/>/);
