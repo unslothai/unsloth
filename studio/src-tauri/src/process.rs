@@ -4039,6 +4039,7 @@ fn read_output_stream<R: std::io::Read>(
     if !is_stderr {
         let mut exit_record: Option<(String, bool)> = None;
         let mut emit_crash = false;
+        let mut clean_exit = false;
         if let Ok(mut proc) = state.lock() {
             if proc.generation != generation {
                 return;
@@ -4052,6 +4053,7 @@ fn read_output_stream<R: std::io::Read>(
                 match exit_status_after_stdout_closed(child) {
                     Some(status) => {
                         info!("Backend stdout stream ended with status: {}", status);
+                        clean_exit = exit_status_is_success(&status);
                         exit_record = Some((status, intentional));
                         true
                     }
@@ -4073,7 +4075,7 @@ fn read_output_stream<R: std::io::Read>(
                 }
                 proc.port = None;
                 proc.diagnostics_session = None;
-                emit_crash = !intentional;
+                emit_crash = !intentional && !clean_exit;
             }
         }
         if let Some((status, intentional)) = exit_record {
@@ -4090,6 +4092,13 @@ fn read_output_stream<R: std::io::Read>(
             let _ = app.emit("server-crashed", ());
         }
     }
+}
+
+/// `ExitStatus::to_string()` uses platform-specific labels; normalize the successful status so
+/// an external `unsloth studio stop` (which cannot set `intentional_stop` in Desktop) is not
+/// reported as a crash merely because its stdout closes after a clean exit.
+fn exit_status_is_success(status: &str) -> bool {
+    ["exit status: 0", "exit code: 0"].contains(&status)
 }
 
 /// Exit status of a child whose stdout closed, or None if still alive. Polls briefly since EOF can
@@ -6075,6 +6084,19 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod backend_exit_diagnostic_tests {
+    use super::exit_status_is_success;
+
+    #[test]
+    fn only_zero_exit_statuses_are_clean_across_platform_labels() {
+        assert!(exit_status_is_success("exit status: 0"));
+        assert!(exit_status_is_success("exit code: 0"));
+        assert!(!exit_status_is_success("exit status: 1"));
+        assert!(!exit_status_is_success("signal: 15"));
     }
 }
 
