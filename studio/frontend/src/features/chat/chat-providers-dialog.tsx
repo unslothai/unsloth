@@ -76,6 +76,7 @@ import {
   subscribeModelCatalog,
 } from "./model-catalog";
 
+import { ManagedEngineHint, isManagedEngineType } from "./managed-engine-hint";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -97,7 +98,10 @@ import {
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
-import { getExternalMinOutputTokens } from "./provider-capabilities";
+import {
+  externalMaxTokensUnboundedAtMax,
+  getExternalMinOutputTokens,
+} from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -2060,8 +2064,10 @@ export function ChatProvidersSettings({
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
                         {groupIndex > 0 ? <SelectSeparator className="mx-2" /> : null}
-                        <SelectGroup>
-                          <SelectLabel>{group.label}</SelectLabel>
+                        <SelectGroup aria-label={group.label}>
+                          {group.id === "popular" ? null : (
+                            <SelectLabel>{group.label}</SelectLabel>
+                          )}
                           {group.items.map((item, itemIndex) => (
                             <SelectItem
                               key={item.providerType}
@@ -2089,6 +2095,9 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+              {editingProviderId == null && isManagedEngineType(providerType) ? (
+                <ManagedEngineHint engine={providerType} />
+              ) : null}
 
               {isOpenCodeProviderType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
@@ -2398,8 +2407,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Caps Max Tokens for this connection. Blank uses the model's
-                      limit, or 32,768 without one.
+                      {externalMaxTokensUnboundedAtMax(providerType, null)
+                        ? "Caps Max Tokens for this connection. Blank lets Max send no limit, so the server stops at its context window."
+                        : "Caps Max Tokens for this connection. Blank uses the model's limit, or 32,768 without one."}
                     </p>
                   </div>
                   <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2592,12 +2602,19 @@ export function ChatProvidersSettings({
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-center gap-4 py-3 @max-[520px]:grid-cols-1">
-                  <Label
-                    htmlFor="provider-is-reasoning"
-                    className="text-sm font-medium"
-                  >
-                    Reasoning model
-                  </Label>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-is-reasoning"
+                      className="text-sm font-medium"
+                    >
+                      Unrecognized reasoning model
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Known models like Qwen3 and gpt-oss are detected
+                      automatically. Turn on to show a Thinking switch for any
+                      other model.
+                    </p>
+                  </div>
                   <label
                     htmlFor="provider-is-reasoning"
                     className="flex cursor-pointer items-center gap-2 text-sm"
@@ -2609,7 +2626,7 @@ export function ChatProvidersSettings({
                         setIsReasoningModel(checked === true)
                       }
                     />
-                    This server runs a reasoning model
+                    Show a Thinking switch
                   </label>
                 </div>
               ) : null}
@@ -2878,8 +2895,8 @@ export function ChatProvidersSettings({
           </div>
           {runsStudioToolsLocally ? (
             <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
-              Search, Tools, MCP and Docs run on this machine and send their results to
-              the provider. Risky code and terminal calls still ask first.
+              Search, Tools and MCP run on this machine and send results to the
+              provider. Risky calls still ask first.
             </p>
           ) : null}
         </div>
@@ -2911,7 +2928,7 @@ export function ChatProvidersSettings({
         </div>
         {/* Top edge on the h1's cap top (text-xl at leading 1.4; Hellix: 0.322em). */}
         <div className="mt-[calc(var(--text-xl)*0.322)] flex min-w-0 flex-wrap items-center gap-2">
-          <label className="flex h-9 shrink-0 items-center gap-2 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
+          <label className="flex h-9 shrink-0 items-center gap-4 rounded-full border border-border/60 px-3.5 text-xs font-medium text-foreground">
             <span>Enable connections</span>
             <Switch
               className="scale-[0.88]"

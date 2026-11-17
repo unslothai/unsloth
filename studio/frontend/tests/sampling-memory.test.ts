@@ -156,7 +156,7 @@ test("Reset layers Qwen3's thinking-mode table over the base recommendation", as
   );
   assert.match(
     footer,
-    /\.\.\.recommendedSampling\([\s\S]*?\),\s*\.\.\.qwen,\s*\}\);/,
+    /\.\.\.recommendedSampling\([\s\S]*?\),\s*\.\.\.qwen,\s*\};\s*state\.setParams\(\{ \.\.\.state\.params, \.\.\.recommended \}\);/,
   );
 });
 

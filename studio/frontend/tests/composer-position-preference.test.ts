@@ -43,7 +43,7 @@ test("only the top of the range docks the composer", () => {
   assert.equal(thread.match(/= useNewChatComposerDocked\(\);/g)?.length, 2);
 });
 
-test("the composer box alone is centred, the greeting 16px above it", () => {
+test("the composer box alone is centred, the greeting 22px above it", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   // Spacers split the free height by the setting, so 50 centres the composer itself.
   assert.ok(
@@ -61,6 +61,6 @@ test("the composer box alone is centred, the greeting 16px above it", () => {
   );
   assert.match(
     thread,
-    /<div className="flex flex-col pb-\[calc\(16px\*var\(--ui-space-scale,1\)\)\]">\{greetingRow\}<\/div>/,
+    /<div className="flex flex-col pb-\[calc\(22px\*var\(--ui-space-scale,1\)\)\]">\{greetingRow\}<\/div>/,
   );
 });

@@ -94,8 +94,9 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "recipes",
   "export",
   "api",
-  // Last and under "More", so it joins every saved layout without moving anything.
+  // Last and under "More", so they join every saved layout without moving anything.
   "tasks",
+  "translate",
   // Same: appended unpinned, so assistant-only users see no change.
   "characters",
 ] as const;
@@ -143,6 +144,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   export: false,
   api: false,
   tasks: false,
+  translate: false,
   characters: false,
 };
 

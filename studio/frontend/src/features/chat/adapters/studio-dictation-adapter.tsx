@@ -92,9 +92,11 @@ function customSttConfigured(): boolean {
 export class StudioDictationAdapter implements DictationAdapter {
   // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
+  private readonly language: string | undefined;
 
-  constructor(options: { chatId?: string | null } = {}) {
+  constructor(options: { chatId?: string | null; language?: string } = {}) {
     this.chatId = options.chatId;
+    this.language = options.language;
   }
 
   static isSupported(
@@ -155,6 +157,7 @@ export class StudioDictationAdapter implements DictationAdapter {
       if (StudioModelDictationAdapter.isSupported()) {
         return new StudioModelDictationAdapter({
           chatId: this.chatId,
+          language: this.language,
         }).listen();
       }
       throw new Error(
@@ -166,6 +169,7 @@ export class StudioDictationAdapter implements DictationAdapter {
     if (StudioWebSpeechDictationAdapter.isSupported()) {
       return new StudioWebSpeechDictationAdapter({
         chatId: this.chatId,
+        language: this.language,
       }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");

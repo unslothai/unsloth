@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { MemoryToolUI } from "./tool-ui-memory";
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
@@ -106,7 +107,15 @@ import {
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import {
+  ChatSkillsDialog,
+  contextReportBranch,
+  isContextCommand,
+  isRewindCommand,
+  isSkillsCommand,
+  useContextReportStore,
+  useRewindDialogStore,
+} from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -191,6 +200,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { forkChatThread } from "@/features/chat/api/chat-api";
+import { syncThreadScroll } from "@/features/chat/thread-scroll-flag";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -445,6 +455,7 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -539,6 +550,10 @@ import {
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  COMPOSER_MIN_ROWS,
+  useComposerMaxRows,
+} from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
@@ -2179,6 +2194,7 @@ export const Thread: FC<{
       viewportElRef.current = node;
       setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
+      syncThreadScroll(node);
     },
     [viewportRef, runtimeThreadId],
   );
@@ -2392,6 +2408,7 @@ export const Thread: FC<{
             viewportRef={viewportElRef}
           />
           <ForkChatShortcut />
+          <ContextReportMount />
 
           {/* Bottom slack so the last message has room above the sticky
           scroll-to-bottom button (and floating composer in single mode),
@@ -2719,7 +2736,10 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
+      <div
+        ref={dockInnerRef}
+        className="unsloth-composer-dock-inner relative pb-[calc(1rem*var(--ui-space-scale,1))]"
+      >
         <div
           ref={composerColumnRef}
           className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
@@ -2876,7 +2896,7 @@ const ThreadWelcome: FC<{
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
             <MascotImg
               src={currentEmojiSrc}
-              className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+              className="unsloth-welcome-sloth size-[calc(40px*var(--ui-space-scale,1))] -translate-y-[2px]"
             />
           )}
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
@@ -2884,7 +2904,7 @@ const ThreadWelcome: FC<{
               src={greeting.icon.src}
               alt=""
               draggable={false}
-              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(40px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
             />
           )}
           <h1
@@ -2930,7 +2950,7 @@ const ThreadWelcome: FC<{
               style={{ flexGrow: `calc(var(--welcome-spacer-grow,1)*${composerPosition})` }}
             >
               {/* Padding here, not on the spacer, where it would count toward the spacer's share. */}
-              <div className="flex flex-col pb-[calc(16px*var(--ui-space-scale,1))]">{greetingRow}</div>
+              <div className="flex flex-col pb-[calc(22px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
             <div className="aui-thread-welcome-message flex w-full flex-col">
               {!hideComposer && <ComposerAnimated threadId={threadId} />}
@@ -3078,6 +3098,7 @@ const Composer: FC<{
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
   const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
     useState(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   useEffect(() => {
     if (!researchUsed) return;
     if (hasResearchMessage && researchThreadId) {
@@ -3286,7 +3307,10 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const oneRowHeight = Math.round(40 * uiSpaceScale);
+  const minEditorHeight = Math.round(
+    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
+  );
+  const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
   const detachFromBottom = useDetachThreadFromBottom();
@@ -4054,6 +4078,10 @@ const Composer: FC<{
     registeringVideoDrops ||
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
+  const hasMaterializingAttachments =
+    hasMaterializingImageAttachments ||
+    hasMaterializingAudioAttachments ||
+    hasMaterializingVideoAttachments;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
@@ -5803,6 +5831,55 @@ const Composer: FC<{
         });
         return;
       }
+      // Never sent: only a card under the last message.
+      if (!overlay && !hasAttachments && isContextCommand(composerText)) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        // The count endpoint refuses while anything generates.
+        if (
+          threadIsRunning ||
+          aui.thread().getState().isRunning ||
+          Object.values(runtime.runningByThreadId).some(Boolean)
+        ) {
+          toast.error(translate("context.waitForResponse"));
+          return;
+        }
+        // No local tokenizer: the header ring already shows the provider's total.
+        if (isExternalModelId(runtime.params.checkpoint)) {
+          toast.info(translate("context.apiNoBreakdown"));
+          return;
+        }
+        if (!runtime.params.checkpoint || runtime.loadedContextLength == null) {
+          toast.info(translate("context.noModel"));
+          return;
+        }
+        if (aui.thread().getState().messages.length === 0) {
+          toast.info(translate("context.emptyChat"));
+          return;
+        }
+        aui.composer().setText("");
+        useContextReportStore
+          .getState()
+          .showContext(
+            aui.threadListItem().getState().id,
+            contextReportBranch(aui.thread().getState().messages),
+            runtime.params.checkpoint,
+          );
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
+        !hasMaterializingAttachments &&
+        isSkillsCommand(composerText)
+      ) {
+        event.preventDefault();
+        clearStoredDraft();
+        aui.composer().setText("");
+        setSkillsDialogOpen(true);
+        return;
+      }
       if (
         !overlay &&
         !hasAttachments &&
@@ -5838,6 +5915,7 @@ const Composer: FC<{
           return;
         }
         requestThreadCompaction(referenceThreadId);
+        useContextReportStore.getState().dismissContext();
         clearStoredDraft();
         aui.composer().setText("");
         return;
@@ -5996,6 +6074,7 @@ const Composer: FC<{
       disabled,
       disableQueue,
       hasAttachments,
+      hasMaterializingAttachments,
       hasPendingAudio,
       enqueueSend,
       interceptSend,
@@ -6075,6 +6154,7 @@ const Composer: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+        <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
         <ImagesToggle />
         <KnowledgeBaseComposerButton side={effectiveMenuSide} />
         {mcpEnabledForChat ? (
@@ -6113,6 +6193,15 @@ const Composer: FC<{
     ),
     [researchWebsiteAccessOpen, effectiveDeepResearchEnabled],
   );
+  const skillsDialog = useMemo(
+    () => (
+      <ChatSkillsDialog
+        open={skillsDialogOpen}
+        onOpenChange={setSkillsDialogOpen}
+      />
+    ),
+    [skillsDialogOpen],
+  );
 
   const composerContent = (
     <>
@@ -6146,7 +6235,7 @@ const Composer: FC<{
               className="unsloth-composer-editor"
               style={
                 {
-                  "--composer-editor-height": `${composerText.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
+                  "--composer-editor-height": `${composerText.length === 0 ? minEditorHeight : Math.max(minEditorHeight, editorHeight)}px`,
                 } as CSSProperties
               }
             >
@@ -6162,7 +6251,7 @@ const Composer: FC<{
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
-                maxRows={12}
+                maxRows={maxRows}
                 onHeightChange={handleEditorHeightChange}
                 autoFocus={!disabled}
                 disabled={disabled}
@@ -6252,6 +6341,7 @@ const Composer: FC<{
         )}
       </div>
       {researchWebsiteAccessDialog}
+      {skillsDialog}
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
@@ -7093,6 +7183,7 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ) : null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -8033,6 +8124,10 @@ function useContinuation() {
     const request: ContinuationRequest = {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
+      ...((metadata as { custom?: { splitReasoningSeen?: unknown } } | undefined)?.custom
+        ?.splitReasoningSeen === true
+        ? { splitReasoningSeen: true }
+        : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
       ...(thoughtParts.length > 0 ? { thoughtParts } : {}),
       ...(answerParts.length > 0 ? { answerParts } : {}),
@@ -8263,6 +8358,7 @@ const ASSISTANT_PART_COMPONENTS = {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
       read_skill: ReadSkillToolUIConfirmable,
+      update_memory: withToolConfirmation(MemoryToolUI),
       studio_load_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
@@ -8764,6 +8860,19 @@ const RewindDialogMount: FC = () => {
     </Suspense>
   ) : null;
 };
+
+const LazyContextReport = lazy(() =>
+  import("@/components/assistant-ui/context-report").then((module) => ({
+    default: module.ContextReport,
+  })),
+);
+
+const ContextReportMount: FC = () =>
+  useContextReportStore((s) => s.report !== null) ? (
+    <Suspense fallback={null}>
+      <LazyContextReport />
+    </Suspense>
+  ) : null;
 
 const RewindMessageButton: FC = () => {
   const aui = useAui();

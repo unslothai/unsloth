@@ -241,7 +241,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
-          pip install 'transformers>=4.51,<=5.17.0'
+          pip install 'transformers>=4.51,<=5.18.0'
           # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
           # Install after CPU torch; version from extras-no-deps.txt.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
@@ -419,12 +419,20 @@ jobs:
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
           # catch-all's 1258 s. The two globs are every *gloo* file except test_fs*, which is
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
-          # the globs themselves.
+          # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
+          # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
           - shard: gloo
             selection: >-
-              tests/test_[!fpt]*gloo*.py
+              tests/test_[!dfimpstu]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          # On 2026-11-16 the gloo shard reached the 2100 s cap again (interrupted at 2089 to 2096 s
+          # with 251 to 258 tests passed, upstream and on staging) after #17886, #17930 and the
+          # DeepSeek-V4.1 tests landed. The non-native tensor parallel files (tp_env, tp_eval,
+          # tp_full_finetune, tp_replica, ...) were over half of its measured time, so they run on
+          # their own.
+          - shard: gloo-tp-env
+            selection: >-
               tests/test_tp_[!n]*gloo*.py
           # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
           # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
@@ -441,7 +449,8 @@ jobs:
           # The gloo shard then ran 1331 to 2058 s of the same cap on 2026-10-29. Measured per
           # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
           # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
-          # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
+          # shard (a glob for them would match nothing today, and pytest reads an unmatched glob as
+          # a missing file); tests/test_ci_repo_cpu_shards.py reports such a file as dropped.
           # Pipeline parallel then kept growing (#15655, #15656, #16167, #16417): by 2026-11-04 the
           # combined shard ran 31 to 36 minutes per job and one run was interrupted at the 2100 s
           # cap with 174 tests passed, so tensor and pipeline parallel run in separate shards.
@@ -491,7 +500,7 @@ jobs:
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.17.0' sentence-transformers
+          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
           pip install 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.

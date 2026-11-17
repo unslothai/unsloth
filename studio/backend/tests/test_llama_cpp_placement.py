@@ -3406,6 +3406,49 @@ def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
         assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is True
 
 
+@pytest.mark.parametrize(
+    "libs,sycl_only",
+    [
+        (("cpu", "base", "sycl"), True),
+        (("cpu", "base", "sycl", "cuda"), False),
+        (("cpu", "base", "sycl", "vulkan"), False),
+        (("cpu", "base", "cuda"), False),
+        (("cpu", "base"), False),
+    ],
+)
+def test_sycl_build_is_not_sized_from_nvidia_or_amd_probes(tmp_path, libs, sycl_only):
+    """#17787: a SYCL llama-server on a host with an NVIDIA card was planned against nvidia-smi."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    for lib in libs:
+        (lib_dir / f"{prefix}ggml-{lib}.{extension}").write_bytes(b"x")
+
+    class VendorProbeReached(Exception):
+        pass
+
+    def vendor_probe(*_a, **_kw):
+        raise VendorProbeReached
+
+    from utils.hardware import mig
+
+    with (
+        patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir),
+        patch.object(mig, "visible_devices", side_effect = vendor_probe),
+        patch.object(LlamaCppBackend, "_get_gpu_free_memory_vulkan", return_value = []),
+    ):
+        assert LlamaCppBackend._is_sycl_only_backend(str(binary)) is sycl_only
+        if sycl_only:
+            assert LlamaCppBackend._get_gpu_memory(str(binary)) == []
+            assert LlamaCppBackend._get_gpu_memory(str(binary), for_llama_server = True) == []
+        elif "vulkan" not in libs:
+            with pytest.raises(VendorProbeReached):
+                LlamaCppBackend._get_gpu_memory(str(binary))
+
+
 def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
     """--rpc layers land on remote devices this cannot size, so local refusal would block it."""
     backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)

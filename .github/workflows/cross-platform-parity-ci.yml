@@ -18,6 +18,8 @@ on:
       - 'tests/test_installer_interactive_prompts.py'
       - 'tests/test_installer_systemd.py'
       - 'studio/systemd/unsloth-studio.service.in'
+      - 'tests/test_installer_launchd.py'
+      - 'studio/launchd/ai.unsloth.studio.server.plist.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -45,6 +47,7 @@ on:
       - 'setup*.bat'
       - 'studio/install_*.py'
       - 'studio/systemd/install_user_service.sh'
+      - 'studio/launchd/install_user_agent.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # The only lane that runs this test; the Windows smoke workflow skips it.
@@ -126,6 +129,8 @@ on:
       - 'tests/test_installer_interactive_prompts.py'
       - 'tests/test_installer_systemd.py'
       - 'studio/systemd/unsloth-studio.service.in'
+      - 'tests/test_installer_launchd.py'
+      - 'studio/launchd/ai.unsloth.studio.server.plist.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -153,6 +158,7 @@ on:
       - 'setup*.bat'
       - 'studio/install_*.py'
       - 'studio/systemd/install_user_service.sh'
+      - 'studio/launchd/install_user_agent.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # The only lane that runs this test; the Windows smoke workflow skips it.
@@ -275,6 +281,7 @@ jobs:
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
           tests/test_installer_systemd.py
+          tests/test_installer_launchd.py
           tests/test_installer_profile_hardening.py
           tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs

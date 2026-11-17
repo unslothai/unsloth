@@ -149,6 +149,12 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         return []
     levers: list = []
     resident = getattr(plan, "placement", None) in _RESIDENT_PLACEMENTS
+    from .diffusion_minimax_h3_image import FP16_CONTRACT_ATTR
+
+    # fp16 loads rescale inside each int8 Linear; the fused bf16 kernels would bypass that.
+    fp16_contract = bool(transformer.__dict__.get(FP16_CONTRACT_ATTR))
+    if fp16_contract:
+        resident = False
     if resident and _fuse_qkv(transformer, logger):
         levers.append("h3_fused_qkv")
     if resident:
@@ -158,6 +164,7 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
             levers.append("h3_int8_gemm")
     elif (
         getattr(plan, "placement", None) == "stream"
+        and not fp16_contract
         and streamed_gemm_enabled()
         and _dit_streamer_keeps_parameters(pipe)
     ):
@@ -190,8 +197,12 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
     fused = engaged in ("_native_cudnn", "_native_flash")
     # the env switch also engages over a default SDPA pick (sm75, gfx1151), with the stock q/k norm + RoPE
     int8_forced = int8_attention.mode() == "force"
-    if (fused or int8_forced) and install_strided_attention(
-        transformer, logger = logger, qk_rope = image_qk_rope_enabled(resident) if fused else False
+    if (
+        (fused or int8_forced)
+        and not fp16_contract
+        and install_strided_attention(
+            transformer, logger = logger, qk_rope = image_qk_rope_enabled(resident) if fused else False
+        )
     ):
         levers.append("h3_strided_attn")
         from .video_minimax_h3_qknorm import qk_rope_enabled

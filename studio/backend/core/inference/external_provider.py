@@ -33,6 +33,7 @@ from core.inference.openai_responses_shared import (
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
+from core.inference.http_stream import aiter_sse_lines
 from models.providers import (
     normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
@@ -94,6 +95,7 @@ _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
 _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -2360,7 +2362,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 try:
                     while True:
                         try:
@@ -2455,7 +2457,7 @@ class ExternalProviderClient:
                         )
                         return
                     # Manual __anext__ loop, not async for, avoids Python 3.13 + httpcore 1.0.x GeneratorExit interaction.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     try:
                         while True:
                             try:
@@ -2559,7 +2561,7 @@ class ExternalProviderClient:
                     )
                     return
 
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 # Latch final usage; a big prompt_tokens is evidence the server injected search results into context.
                 last_usage: Optional[dict[str, Any]] = None
                 annotation_shapes: set[str] = set()
@@ -3325,7 +3327,7 @@ class ExternalProviderClient:
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 thinking_open = False
                 client_tool_indices: dict[int, int] = {}
                 # Held until message_stop so an errored or cut-off stream never executes a partial call.
@@ -4531,6 +4533,10 @@ class ExternalProviderClient:
                     if isinstance(sig, str) and sig:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
+                # Gemini 3 400s when a step's first functionCall is unsigned; Gemini itself signs only that one.
+                _fc_parts = [p for p in parts if "functionCall" in p]
+                if _fc_parts and not any("thoughtSignature" in p for p in _fc_parts):
+                    _fc_parts[0]["thoughtSignature"] = _GEMINI_DUMMY_THOUGHT_SIGNATURE
             if role == "tool":
                 # Drop follow-up when its tool_call was dropped or replayed natively; else orphan functionResponse.
                 _tc_id_for_skip = msg.get("tool_call_id")
@@ -4936,6 +4942,11 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+        # Gemini 400s on hosted tools beside functionDeclarations unless this is set; Vertex rejects the field.
+        if function_declarations and any("functionDeclarations" not in t for t in tools_array):
+            from core.inference.providers import is_vertex_host
+            if not is_vertex_host(urlsplit(self.base_url or "").hostname):
+                body.setdefault("toolConfig", {})["includeServerSideToolInvocations"] = True
 
         # JSON mode only on tool-free turns: Gemini 400s on response mime type plus function calling.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
@@ -5099,7 +5110,7 @@ class ExternalProviderClient:
                     web_search_tool_started = True
 
                 # __anext__ loop as in stream_chat_completion (Python 3.13 + httpcore 1.0.x GeneratorExit ordering).
-                lines_gen = response.aiter_lines().__aiter__()
+                lines_gen = aiter_sse_lines(response).__aiter__()
                 final_finish_reason: Optional[str] = None
                 bare_json = ""
                 stream_error: Optional[str] = None
@@ -6389,7 +6400,7 @@ class ExternalProviderClient:
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion; see it for GeneratorExit/aclose ordering.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    lines_gen = aiter_sse_lines(response).__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
