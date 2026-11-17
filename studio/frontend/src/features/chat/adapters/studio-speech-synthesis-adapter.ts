@@ -195,7 +195,6 @@ function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
-/** The best system voice for a BCP 47 tag: its exact locale first, then any of its language. */
 export function findVoiceForLanguage(
   lang: string,
   voices: readonly SpeechSynthesisVoice[] = typeof window !== "undefined" &&
@@ -575,7 +574,6 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  /** `lang` is the text's BCP 47 tag, for a system voice that speaks it; chat leaves it unset. */
   speak(spokenText: string, lang?: string): SpeechSynthesisAdapter.Utterance {
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();

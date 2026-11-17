@@ -3,7 +3,6 @@
 
 // Own module so Chat and node tests can import it without the Translate page.
 
-/** Models the Translate page downloads on first use. They answer every prompt with a translation. */
 export const TRANSLATION_ONLY_REPOS = [
   "unsloth/Hy-MT2-1.8B-GGUF",
   "unsloth/Hy-MT2-7B-GGUF",
@@ -20,10 +19,7 @@ export function isTranslationOnlyRepo(id: string | null | undefined): boolean {
   );
 }
 
-/**
- * Translate loads its model into the chat slot when models are not kept side by side. Chat reads
- * that slot as empty, unless the user picked the model in Chat themselves.
- */
+/** Chat reads the slot Translate loaded into as empty, unless the user picked that model in Chat. */
 export function isTranslationHeldSlot(
   activeModel: string | null | undefined,
   chatSelection: string | null | undefined,

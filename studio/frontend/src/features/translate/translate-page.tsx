@@ -158,7 +158,6 @@ const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
 
-// The run button of the Audio pages: accent to start, outline to stop.
 const ACTION_BUTTON =
   "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100";
 const GO_BUTTON =
@@ -166,7 +165,6 @@ const GO_BUTTON =
 const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-// Fills the window under the title and language row, leaving the run button in view.
 const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
@@ -209,7 +207,6 @@ function LanguagePicker({
   value: string;
   onChange: (code: string) => void;
   label: string;
-  /** Lists "Detect language" first, as the value AUTO_SOURCE. */
   allowAuto?: boolean;
 }) {
   const t = useT();
@@ -337,10 +334,7 @@ type Downloaded = Partial<Record<TranslateModelId, boolean>>;
 
 const ignore = () => undefined;
 
-/**
- * The model picker's panel without its chip: the Translate menu is the trigger, and the hidden
- * chip only anchors the panel under it.
- */
+/** The hidden chip only anchors the panel under the Translate menu, which is the trigger. */
 function OtherModelPicker({
   open,
   onOpenChange,
@@ -424,7 +418,6 @@ function OtherModelPicker({
       browseOnly: true,
       hiddenIds,
       onPick,
-      // Translate loads and releases its model itself.
       eject: ignore,
       ejectAll: ignore,
       open,
@@ -493,7 +486,6 @@ function ModelMenu({
     (state) => state.phase !== null && state.phase.kind !== "translating",
   );
   const [pickerOpen, setPickerOpen] = useState(false);
-  // What the server holds in memory: the Loaded note and Eject.
   const [loaded, setLoaded] = useState<
     { id: string; variant: string | null }[]
   >([]);
@@ -513,7 +505,6 @@ function ModelMenu({
       .then(setLoaded)
       .catch(() => undefined);
   }, []);
-  // On arrival, when a run ends (its model is now loaded), and when the menu opens.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `busy` is the trigger, not an input.
   useEffect(refreshLoaded, [refreshLoaded, busy]);
   const inventory = useDeviceInventorySources(["localModels"]);
@@ -549,7 +540,6 @@ function ModelMenu({
       (customMine?.repo != null && isLoaded(customMine.repo, selectedVariant)));
   const selectedKey = translateModelKey(value, custom);
   const setModelReady = useTranslateStore((state) => state.setModelReady);
-  // A model already in memory, say after a reload, may translate as you type.
   useEffect(() => {
     if (ejectable) setModelReady(selectedKey, true);
   }, [ejectable, selectedKey, setModelReady]);
@@ -579,7 +569,6 @@ function ModelMenu({
       if (seq !== pickSeq.current) return;
       const onDisk = listing ? downloadedQuant(listing.variants) : null;
       if (!onDisk) {
-        // Nothing complete on disk any more: the quant is chosen in the full list.
         setPickerOpen(true);
         return;
       }
@@ -648,7 +637,6 @@ function ModelMenu({
           if (open) refreshLoaded();
         }}
       >
-        {/* The model picker's own chip, so the two read as one control across pages. */}
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
@@ -945,7 +933,6 @@ function OptionsPopover() {
   );
 }
 
-/** Above the run button while a translation is under way, as on the Audio pages. */
 function RunStatus({ phase, model }: { phase: TranslatePhase; model: string }) {
   const t = useT();
   const downloading = phase.kind === "downloading";
@@ -1055,7 +1042,6 @@ export function TranslatePage() {
           ? t("translate.model.chat")
           : (attempt?.customName ?? prefs.customModel?.name ?? "")));
 
-  // Read again when a run ends: that is when a download has landed.
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
@@ -1100,7 +1086,6 @@ export function TranslatePage() {
     translate,
   ]);
 
-  // Follow the stream while it writes past the fold.
   useEffect(() => {
     const pane = outputRef.current;
     if (pane && phase?.kind === "translating")
@@ -1174,7 +1159,6 @@ export function TranslatePage() {
   const [promptDraft, setPromptDraft] = useState<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new kind of model starts from its own prompt.
   useEffect(() => setPromptDraft(null), [promptKind]);
-  // Emptied or typed back to the built prompt: no longer an edit.
   const setCustomPrompt = (value: string | null) => {
     const { [promptKind]: _dropped, ...others } = prefs.customPrompts;
     const edited =
@@ -1197,11 +1181,9 @@ export function TranslatePage() {
   );
   const readAloud = useReadAloud();
   const stopReading = readAloud.stop;
-  // A reading of text that is no longer on screen stops.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs on every new output.
   useEffect(() => stopReading(), [output, stopReading]);
 
-  // Only a finished translation: a stopped or failed one is not worth a follow-up.
   const chatAboutResult = () => {
     if (!result || stale) return;
     chatAboutTranslations(

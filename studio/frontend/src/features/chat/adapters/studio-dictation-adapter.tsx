@@ -92,7 +92,6 @@ function customSttConfigured(): boolean {
 export class StudioDictationAdapter implements DictationAdapter {
   // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
-  // A BCP 47 tag that overrides the Voice settings language for this session.
   private readonly language: string | undefined;
 
   constructor(options: { chatId?: string | null; language?: string } = {}) {

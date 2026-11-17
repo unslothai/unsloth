@@ -11,10 +11,7 @@ import type { StudioDictationSession } from "@/features/chat/adapters/studio-web
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/**
- * Dictation into a text box outside Chat, on the engine picked in Voice settings. Each finished
- * phrase goes to `onTranscript`. A second stop while the last phrase transcribes cancels it.
- */
+/** A second stop while the last phrase transcribes cancels it. */
 export function useDictation(
   onTranscript: (transcript: string) => void,
   language?: string,
@@ -44,7 +41,6 @@ export function useDictation(
     }
     let session: StudioDictationSession;
     try {
-      // No chat: the recording is transcribed, never attached to a message.
       session = new StudioDictationAdapter({
         chatId: null,
         language: languageRef.current,
@@ -100,7 +96,6 @@ export function useDictation(
 
 type Utterance = ReturnType<StudioSpeechSynthesisAdapter["speak"]>;
 
-/** Reads text aloud with the voice from Voice settings, or a system voice of the text's language; one reading at a time. */
 export function useReadAloud() {
   const enabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const [speaking, setSpeaking] = useState(false);

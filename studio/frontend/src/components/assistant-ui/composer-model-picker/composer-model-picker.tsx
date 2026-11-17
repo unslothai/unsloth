@@ -2121,7 +2121,6 @@ export function ComposerModelPicker({
         npu: model,
       }));
     const all = [...marked, ...npuOffers, ...hub, ...external];
-    // Browsing for a text model: nothing known as image, video or audio.
     return browseOnly
       ? all.filter(
           (row) =>
@@ -2470,7 +2469,6 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  // A browse panel has no choice of its own to collapse to: always the list.
   const chosenName = browseOnly
     ? undefined
     : (shown?.label ??

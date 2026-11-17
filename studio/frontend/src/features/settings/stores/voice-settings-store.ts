@@ -524,7 +524,6 @@ const WHISPER_DICTATION_LANGUAGES = new Set([
 
 /** Only literal "auto" resolves, and only to a language both the model and Whisper honor;
  * otherwise it stays auto-detect rather than 422ing every dictation. */
-/** A language the local model engine can be forced to: the model takes it and Whisper knows it. */
 export function isModelDictationLanguage(
   model: SttModel,
   language: string,

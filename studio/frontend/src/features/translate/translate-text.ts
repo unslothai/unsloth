@@ -8,12 +8,10 @@ export const TRANSLATE_MODES = ["automatic", "literal", "semantic"] as const;
 export type TranslateMode = (typeof TRANSLATE_MODES)[number];
 
 export type TranslatePromptOptions = {
-  /** English name of the source language; null lets the model detect it. */
   sourceName: string | null;
   targetName: string;
   mode: TranslateMode;
   tone: TranslateTone;
-  /** The user's own instructions, with the language placeholders still in; replaces the built ones. */
   custom?: string | null;
 };
 
@@ -32,7 +30,6 @@ function fillPlaceholders(
     );
 }
 
-/** The options with the languages as placeholders, for the prompt the user edits. */
 export function templateOptions(
   options: TranslatePromptOptions,
 ): TranslatePromptOptions {
@@ -55,7 +52,6 @@ const MODE_STYLE: Record<Exclude<TranslateMode, "automatic">, string> = {
     "natural and idiomatic, conveying the meaning rather than the wording",
 };
 
-/** The mode and tone as one style phrase; null when both are left to the model. */
 function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
   const parts = [
     mode === "automatic" ? null : MODE_STYLE[mode],
@@ -66,10 +62,7 @@ function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
 
 export type TranslateMessage = { role: "user"; content: string };
 
-/**
- * Hy-MT2's own instruction templates (model card): one user turn, no system prompt, English
- * language names. The card has no slot for a source language; "from X" is added only when set.
- */
+/** Hy-MT2's model-card templates: one user turn, no system prompt; the card has no source-language slot. */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
   if (options.custom) return fillPlaceholders(options.custom, options);
   const pair = `${options.sourceName ? `from ${options.sourceName} ` : ""}into ${options.targetName}`;
@@ -117,10 +110,7 @@ export function generalMessages(
   ];
 }
 
-/**
- * Drops a reasoning block that opens the reply, closed or still streaming. Tags further in are
- * the translation's own.
- */
+/** Only a reasoning block that opens the reply: tags further in are the translation's own. */
 export function stripLeadingReasoning(raw: string): string {
   const text = raw.trimStart();
   if (!/^<think>/i.test(text)) return raw;
@@ -129,13 +119,10 @@ export function stripLeadingReasoning(raw: string): string {
 }
 
 export type TranslateChunk = {
-  /** Text to translate; empty for a run of blank lines, which passes through. */
   text: string;
-  /** Whitespace that followed it in the source, restored after the translation. */
   after: string;
 };
 
-/** Small enough that a 1.8B model keeps every sentence, large enough to give it context. */
 // Hy-MT2 1.8B drops whole paragraphs from passages near 1,600 characters; 1,000 keeps them.
 export const TRANSLATE_CHUNK_CHARS = 1000;
 
@@ -169,17 +156,13 @@ function splitLongLine(line: string, limit: number): TranslateChunk[] {
   return pieces;
 }
 
-/** The first `max` code units, less one when that would keep only half of a surrogate pair. */
 export function clipText(text: string, max: number): string {
   if (text.length <= max) return text;
   const cut = /[\uD800-\uDBFF]/.test(text[max - 1] ?? "") ? max - 1 : max;
   return text.slice(0, cut);
 }
 
-/**
- * Splits at line breaks, packing whole lines up to `limit`, so a long document is translated a
- * passage at a time. Joining every `text + after` gives the source back exactly.
- */
+/** Joining every `text + after` gives the source back exactly. */
 export function splitForTranslation(
   source: string,
   limit: number = TRANSLATE_CHUNK_CHARS,
@@ -210,13 +193,11 @@ export function splitForTranslation(
     current = unit;
   }
   if (current && (current.text || current.after)) chunks.push(current);
-  // A chunk of only whitespace has nothing to translate.
   return chunks.map((chunk) =>
     chunk.text.trim() ? chunk : { text: "", after: chunk.text + chunk.after },
   );
 }
 
-/** Keeps the source's own leading and trailing whitespace around what the model returned. */
 export function restoreChunkWhitespace(
   chunk: TranslateChunk,
   translated: string,

@@ -26,7 +26,6 @@ export type DedicatedTranslateModel = {
   label: string;
   repo: string;
   variant: string;
-  /** Size of that quant on the Hub, shown before the download starts. */
   sizeBytes: number;
   sampling: TranslateSampling;
 };
@@ -60,18 +59,15 @@ export const DEDICATED_TRANSLATE_MODELS: readonly DedicatedTranslateModel[] = [
 
 /** "chat" translates with whatever model Chat has loaded and downloads nothing. */
 export const CHAT_TRANSLATE_MODEL = "chat";
-/** "custom" is the one other model the user picked in the model picker. */
 export const CUSTOM_TRANSLATE_MODEL = "custom";
 export type TranslateModelId =
   | DedicatedTranslateModel["id"]
   | typeof CHAT_TRANSLATE_MODEL
   | typeof CUSTOM_TRANSLATE_MODEL;
 
-/** A model from the picker: a Hub repo, a local file, or a connected provider's model. */
 export type CustomTranslateModel = {
   id: string;
   name: string;
-  /** The GGUF quant to fetch and load; null when the model has none. */
   variant: string | null;
   sizeBytes: number | null;
 };
@@ -101,7 +97,6 @@ export function translateModelKey(
     : id;
 }
 
-/** The built-in model whose prompt a selection takes: Hy-MT2's for any Hy-MT2 quant, else a chat model's. */
 export function translatePromptModel(
   id: TranslateModelId,
   custom: CustomTranslateModel | null,
@@ -114,7 +109,6 @@ export function translatePromptModel(
 
 export const DEFAULT_TRANSLATE_MODEL = "hy-mt2-1.8b" satisfies TranslateModelId;
 
-/** Both passages of a chunk fit beside the instruction, with room to spare. */
 export const TRANSLATE_CONTEXT_TOKENS = 8192;
 export const TRANSLATE_MAX_TOKENS = 4096;
 
@@ -151,7 +145,6 @@ export function translatePromptKind(id: TranslateModelId): TranslatePromptKind {
     : "dedicated";
 }
 
-/** The instructions as sent, without the text, for the Show prompt option. */
 export function translateInstruction(
   id: TranslateModelId,
   options: TranslatePromptOptions,
@@ -169,17 +162,13 @@ export function formatModelBytes(bytes: number): string {
     : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
 }
 
-/** A downloaded model offered under "Your models": a complete GGUF that generates text. */
 export type DownloadedTranslateModel = {
   /** What the loader takes: a Hub repo for the Hugging Face cache, else the path on disk. */
   id: string;
   name: string;
   sizeBytes: number | null;
-  /** A repo or folder holding several quants: the one on disk is looked up before loading. */
   needsQuant: boolean;
-  /** The folder to look in for a model that is loaded by its path. */
   localPath: string | null;
-  /** Its Hub-style name when known: a model loaded by path can be reported under it. */
   repo: string | null;
 };
 
@@ -234,7 +223,6 @@ export function downloadedTranslateModels(
     .slice(0, DOWNLOADED_MODELS_SHOWN);
 }
 
-/** The quant to load from what is on disk: Q4_K_M when there is a choice. */
 export function downloadedQuant(
   variants: readonly {
     quant: string;
@@ -249,7 +237,6 @@ export function downloadedQuant(
   return best ? { quant: best.quant, sizeBytes: best.size_bytes } : null;
 }
 
-/** Downloaded models that are not text models (image, video, audio), by lowercased id. */
 export function nonTextModelIds(rows: readonly InventoryRow[]): Set<string> {
   const ids = new Set<string>();
   for (const row of rows) {

@@ -15,10 +15,6 @@ type HandoffEntry = Pick<
   "at" | "source" | "output" | "target" | "from"
 >;
 
-/**
- * Opens a new chat, as the sidebar's New chat does, with the translations in its message box.
- * Returns false when there is nothing to hand over.
- */
 export function chatAboutTranslations(
   entries: readonly HandoffEntry[],
   navigate: (options: {

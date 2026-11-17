@@ -47,17 +47,14 @@ export const AUTO_SOURCE = "auto";
 export const TRANSLATE_SOURCE_MAX_CHARS = 50_000;
 
 export type TranslatePrefs = {
-  /** A language code, or "auto" to let the model detect it. */
   from: string;
   target: string;
   recentTargets: string[];
   modelId: TranslateModelId;
-  /** The model behind the "custom" id; kept when another model is selected. */
   customModel: CustomTranslateModel | null;
   mode: TranslateMode;
   tone: TranslateTone;
   showPrompt: boolean;
-  /** The user's edited instructions per kind of model; absent means the built ones. */
   customPrompts: Partial<Record<TranslatePromptKind, string>>;
   autoTranslate: boolean;
   saveHistory: boolean;
@@ -67,7 +64,6 @@ export type TranslateError =
   | { code: TranslateRunErrorCode; message?: undefined }
   | { code: "other"; message: string };
 
-/** What the output pane holds was made from; a different draft marks it stale. */
 type Result = {
   source: string;
   from: string;
@@ -76,7 +72,6 @@ type Result = {
   tone: TranslateTone;
   modelKey: string;
   custom: string | null;
-  /** The picked model's name when the run uses one from the picker, for the status line. */
   customName: string | null;
 };
 
@@ -88,20 +83,16 @@ type TranslateState = {
   phase: TranslatePhase | null;
   error: TranslateError | null;
   result: Result | null;
-  /** The last request sent, finished or not. */
   attempt: Result | null;
   /** Models that served a translation this session: translating as you type never starts a download. */
   readyModels: string[];
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
   setTarget: (target: string) => void;
-  /** Flips the pair and moves a finished, current translation into the text box; needs a set source language. */
   swap: () => void;
-  /** Moves the translation into the text box, in its own language, to translate it onward. */
   outputToSource: () => void;
   /** `auto` runs come from typing: each replaces the draft's previous auto entry in the history. */
   translate: (options?: { auto?: boolean }) => Promise<void>;
-  /** Marks a model as serving, so translating as you type may use it; false forgets it. */
   setModelReady: (modelKey: string, ready: boolean) => void;
   stop: () => void;
   clear: () => void;
@@ -208,7 +199,6 @@ export function customPromptOf(
   return prefs.customPrompts[translatePromptKind(model)] ?? null;
 }
 
-/** What the prompt needs from the settings; null when the target is not a known language. */
 export function translatePromptOptions(
   prefs: Pick<
     TranslatePrefs,
@@ -233,9 +223,7 @@ export function translatePromptOptions(
 }
 
 let controller: AbortController | null = null;
-// The history entry the last auto run saved, replaced while the same draft keeps changing.
 let autoEntryId: string | null = null;
-// Shows the running translation's latest streamed text now; Stop calls it before letting go.
 let flushStreamed: (() => void) | null = null;
 
 // One render per frame: a render per streamed token overruns React's nested update limit.
@@ -269,7 +257,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   setSource: (source) => {
     const next = clipText(source, TRANSLATE_SOURCE_MAX_CHARS);
     if (next.trim() === "") {
-      // Emptying the draft discards the translation with it.
       get().stop();
       set({
         source: next,
@@ -417,7 +404,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           from: prefs.from === AUTO_SOURCE ? null : prefs.from,
           model,
         });
-        // A translation too long to keep leaves the earlier entry where it was.
         if (added[0] !== rest[0]) {
           autoEntryId = auto ? added[0].id : null;
           history = saveHistory(added);
@@ -435,7 +421,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           : [...state.readyModels, request.modelKey],
       });
     } catch (error) {
-      // Whatever streamed in before a failure stays on screen; Stop already showed its own.
       flushOutput();
       release();
       if (!current()) return;
@@ -444,7 +429,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         run.signal.aborted ||
         (error instanceof DOMException && error.name === "AbortError")
       ) {
-        // Whatever arrived before Stop stays readable, marked as partial by the missing result.
         set({ phase: null });
         return;
       }
@@ -463,7 +447,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
 
   stop: () => {
     if (!controller) return;
-    // The text that arrived before Stop stays; nothing is written after it.
     flushStreamed?.();
     flushStreamed = null;
     controller.abort();
@@ -511,7 +494,6 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   },
 }));
 
-/** True when the output pane no longer matches the draft and settings. */
 export function translationIsStale(
   state: Pick<TranslateState, "result" | "source" | "prefs">,
 ): boolean {
@@ -528,7 +510,6 @@ export function translationIsStale(
   );
 }
 
-// Another window's translations and deletions show here without a reload.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === HISTORY_KEY || event.key === null) {

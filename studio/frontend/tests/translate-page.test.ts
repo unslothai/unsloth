@@ -170,7 +170,6 @@ test("a chat model is told to translate the text, not answer it", () => {
   );
   assert.doesNotMatch(content, /slang/, "casual lifts the no-slang rule");
   assert.match(content, /\n\n<source>\nWhat time is it\?\n<\/source>$/);
-  // Show prompt displays exactly what is sent, minus the text.
   assert.ok(
     content.startsWith(translateInstruction(CHAT_TRANSLATE_MODEL, options)),
   );
@@ -190,7 +189,6 @@ test("an edited prompt replaces the built one and keeps its language placeholder
     mode: "literal",
     tone: "formal",
   } as const;
-  // What the box shows before any edit: the built prompt, languages as placeholders.
   assert.equal(
     translateInstruction(
       "hy-mt2-1.8b",
@@ -394,7 +392,6 @@ test("chat does not take over a model the Translate page loaded", () => {
     isTranslationHeldSlot(small, "unsloth/gemma-4-E2B-it-GGUF"),
     true,
   );
-  // Picked in Chat by the user: theirs to chat with.
   assert.equal(isTranslationHeldSlot(small, small), false);
   assert.equal(isTranslationHeldSlot("unsloth/gemma-4-E2B-it-GGUF", ""), false);
 
@@ -422,7 +419,6 @@ test("chat does not take over a model the Translate page loaded", () => {
 test("the translation model is fetched by a translation, never by opening the page", () => {
   const page = readText("../src/features/translate/translate-page.tsx");
   assert.doesNotMatch(page, /downloadManager|\bloadModel\(/);
-  // Translating as you type waits for a model that already served a translation.
   assert.match(page, /if \(!readyModels\.includes\(modelKey\) \|\|/);
   const runner = readText("../src/features/translate/translate-runner.ts");
   assert.match(runner, /runtime: "translate"/);
@@ -460,7 +456,6 @@ test("a model from the picker keeps its own identity and takes the right prompt"
   assert.equal(parseCustomTranslateModel({ id: "" }), null);
   assert.equal(parseCustomTranslateModel(null), null);
 
-  // Another quant of Hy-MT2 still takes Hy-MT2's prompt; any other model a chat model's.
   const hyMt = { ...gemma, id: "unsloth/Hy-MT2-7B-GGUF", variant: "Q8_0" };
   assert.equal(translatePromptModel(CUSTOM_TRANSLATE_MODEL, gemma), "chat");
   assert.equal(
@@ -469,7 +464,6 @@ test("a model from the picker keeps its own identity and takes the right prompt"
   );
   assert.equal(translatePromptModel("hy-mt2-7b", gemma), "hy-mt2-7b");
 
-  // Swapping the picked model must read as a different model to the stale check.
   assert.notEqual(
     translateModelKey(CUSTOM_TRANSLATE_MODEL, gemma),
     translateModelKey(CUSTOM_TRANSLATE_MODEL, hyMt),
@@ -605,7 +599,6 @@ test("downloaded models offered for translation are complete text GGUFs, newest 
       partial: false,
     },
   ]);
-  // A model outside the Hugging Face cache loads by its path on disk, never by a guessed repo name.
   assert.deepEqual(
     offered.map((model) => [
       model.id,

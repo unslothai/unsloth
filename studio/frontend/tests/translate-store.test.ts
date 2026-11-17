@@ -32,7 +32,6 @@ const answer = async (options: RunOptions) => ({
 let runner: (
   options: RunOptions,
 ) => Promise<{ output: string; model: string }> = answer;
-// Streams one piece, then waits for Stop like a run still in flight.
 const streaming = (options: RunOptions) => {
   options.onOutput("partial text");
   return new Promise<never>((_, reject) => {

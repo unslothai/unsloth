@@ -50,7 +50,6 @@ import {
 } from "./translate-history";
 import { useTranslateStore } from "./translate-store";
 
-// The Library's chat list, class for class: date groups, flat rows that fill on hover, and a row menu that shows on hover, focus, while open and on touch.
 const ROW =
   "group/row relative flex cursor-pointer items-center gap-4 rounded-md pl-4 pr-6 transition-colors hover:bg-muted dark:hover:bg-muted/60";
 const CELL = "truncate text-ui-12p5 text-muted-foreground";
@@ -67,7 +66,6 @@ const BUCKET_LABELS: Record<
   month: "library.chats.groups.month",
 };
 
-/** The saved translations, listed under the panes as the Library lists chats. */
 export function TranslateHistoryList() {
   const t = useT();
   const locale = useLocale();
@@ -124,7 +122,6 @@ export function TranslateHistoryList() {
           year: "numeric",
         })
       : t(BUCKET_LABELS[bucket.kind]);
-  // The heading carries the day, so a row only adds what it does not say.
   const formatWhen = (at: number, bucket: DateBucket["kind"]) =>
     new Date(at).toLocaleString(
       locale,
@@ -205,7 +202,6 @@ export function TranslateHistoryList() {
                 </span>
               </span>
               {index === 0 && (
-                // The Projects page's column header, over the time column: one control that flips the order.
                 <>
                   <button
                     type="button"

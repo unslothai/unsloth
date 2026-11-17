@@ -56,7 +56,6 @@ export type TranslateRunErrorCode =
   | "cutOff"
   | "filtered";
 
-/** A failure the page words itself; anything else shows the server's message. */
 export class TranslateRunError extends Error {
   readonly code: TranslateRunErrorCode;
   constructor(code: TranslateRunErrorCode) {
@@ -75,11 +74,9 @@ export type TranslateRunOptions = {
   text: string;
   prompt: TranslatePromptOptions;
   modelId: TranslateModelId;
-  /** The model behind the "custom" id. */
   custom: CustomTranslateModel | null;
   signal: AbortSignal;
   onPhase: (phase: TranslatePhase) => void;
-  /** The whole translation so far. */
   onOutput: (output: string) => void;
 };
 
@@ -111,7 +108,6 @@ function isServing(
   ].some((id) => modelIdsMatch(id, repo));
 }
 
-/** A model this page fetches and loads itself. */
 type LocalModel = {
   repo: string;
   /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
@@ -119,7 +115,6 @@ type LocalModel = {
   sizeBytes: number;
 };
 
-/** Whether the model's file is already on disk; null when the listing could not be read. */
 export async function translateModelDownloaded(
   model: LocalModel,
   signal?: AbortSignal,
@@ -139,7 +134,6 @@ export async function translateModelDownloaded(
   }
 }
 
-/** Runs the transfer as a download-manager job, so it also shows in the Hub's download panel. */
 async function downloadModel(
   model: LocalModel & { variant: string },
   hfToken: string | null,
@@ -213,7 +207,6 @@ async function downloadModel(
       useDownloadManagerStore.subscribe((state) => {
         const job = state.jobs[jobKey];
         if (!job) return;
-        // Stopped before the job existed: cancel it as soon as it does.
         if (signal.aborted) {
           cancelJob();
           return;
@@ -242,7 +235,6 @@ async function downloadModel(
       })
       .then(
         (outcome) => {
-          // Stopped during the preflight, before the job existed.
           if (outcome === "started" && signal.aborted) cancelJob();
           // "conflict" and "busy" are settled in the Hub's download card; "error" already toasted.
           if (outcome !== "started")
@@ -253,7 +245,6 @@ async function downloadModel(
   });
 }
 
-/** Downloads the model if it is missing and loads it if it is not serving. Returns its request id. */
 async function ensureLocalModel(
   model: LocalModel,
   signal: AbortSignal,
@@ -319,7 +310,6 @@ async function ensureLocalModel(
   return requestModel;
 }
 
-/** The model picked in Chat when it is a connected provider's, else the one loaded on the server. */
 async function chatModel(signal: AbortSignal): Promise<string> {
   const picked = useChatRuntimeStore.getState().params.checkpoint;
   if (isExternalModelId(picked)) return picked;
@@ -343,7 +333,6 @@ export function translateModelName(requestModel: string): string {
 
 type Request = Parameters<typeof streamChatCompletions>[0];
 
-/** The request, its messages filled in per passage. A chat model reuses the title request's provider routing and sampling gates. */
 async function baseRequest(
   sampling: TranslateSampling | null,
   requestModel: string,
@@ -390,7 +379,6 @@ export async function runTranslation(
     ? await ensureLocalModel(local, signal, onPhase)
     : (custom?.id ?? (await chatModel(signal)));
   const promptModel = translatePromptModel(modelId, custom);
-  // Any Hy-MT2 quant takes the card's sampling; other models the chat title request's.
   const sampling =
     dedicated?.sampling ??
     (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);

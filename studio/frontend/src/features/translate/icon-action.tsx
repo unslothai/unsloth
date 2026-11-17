@@ -6,7 +6,6 @@ import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { ReactNode } from "react";
 
-/** The round ghost action the Audio pages use on a result. */
 export const ICON_ACTION =
   "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
 

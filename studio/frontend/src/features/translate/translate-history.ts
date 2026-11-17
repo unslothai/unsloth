@@ -5,14 +5,12 @@ import { TRANSLATE_LANGUAGES } from "./languages.ts";
 
 export type TranslateHistoryEntry = {
   id: string;
-  /** Epoch milliseconds. */
   at: number;
   source: string;
   output: string;
   target: string;
   /** Language code the user set; null when the model detected it. */
   from: string | null;
-  /** What translated it, as shown to the user. */
   model: string | null;
 };
 
@@ -22,7 +20,6 @@ export const TRANSLATE_HISTORY_MAX_CHARS = 20_000;
 export const TRANSLATE_HISTORY_TOTAL_CHARS = 1_000_000;
 export const TRANSLATE_HISTORY_FILE_NAME = "UnslothTranslateFullHistory.txt";
 
-/** Newest entries that fit both caps, so a write never runs into the storage quota. */
 export function capHistory(
   history: readonly TranslateHistoryEntry[],
 ): TranslateHistoryEntry[] {
@@ -108,7 +105,6 @@ const englishName = (code: string | null): string =>
     : (TRANSLATE_LANGUAGES.find((language) => language.code === code)?.name ??
       code);
 
-/** The translations as the opening of a chat message, oldest first, for a follow-up question. */
 export function buildChatHandoff(
   entries: readonly Pick<
     TranslateHistoryEntry,
@@ -125,7 +121,6 @@ export function buildChatHandoff(
   return `Here ${blocks.length === 1 ? "is a translation" : "are my recent translations"}:\n\n${blocks.join("\n\n---\n\n")}`;
 }
 
-/** Plain text, oldest first, each entry stamped with when it was made. */
 export function exportHistory(
   history: readonly TranslateHistoryEntry[],
 ): string {
