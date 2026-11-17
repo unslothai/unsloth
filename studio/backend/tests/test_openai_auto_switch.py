@@ -13843,6 +13843,75 @@ def test_alias_config_launch_never_inherits_the_resident_flags(monkeypatch):
     assert "llama_extra_args" in request.model_fields_set
 
 
+@pytest.mark.parametrize(
+    "config, stash, restored, refused",
+    [
+        # The freed launch is the alias's: restored and served, as a plain request would be.
+        ({"max_seq_length": 98304}, _ALIAS_RESOLVED, True, False),
+        # A different launch is restored as plain requests restore it, then refused.
+        (_ALIAS_FAST, _ALIAS_RESOLVED, True, True),
+        # Idle unload freed another model: nothing to restore for this alias.
+        (
+            {"max_seq_length": 98304},
+            ("/models/other.gguf", "Q4_K_M", "org/Other-GGUF"),
+            False,
+            True,
+        ),
+    ],
+)
+def test_alias_config_restores_the_idle_unload_stash_with_switching_off(
+    monkeypatch, config, stash, restored, refused
+):
+    backend, rec = _wire_alias_config(monkeypatch, enabled = False, saved = _ALIAS_LONG)
+    backend.model_identifier, backend.is_loaded = None, False
+
+    async def launch_satisfied(load_kwargs, override, fastapi_request):
+        # A restore sends no extras and an alias sends []: the loader reads both as no flags.
+        def launch(request):
+            return _launch_of(request)[:-1] + (request.llama_extra_args or [],)
+
+        return backend.is_loaded and launch(rec.calls[-1]) == launch(LoadRequest(**load_kwargs))
+
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", stash)
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            _switch_alias(config)
+        assert exc.value.status_code == 409
+    else:
+        _switch_alias(config)
+    assert len(rec.calls) == int(restored)
+    if restored:
+        assert rec.calls[0].max_seq_length == 98304
+
+
+def test_alias_launch_check_builds_the_intent_off_the_event_loop(monkeypatch):
+    # Building the intent runs drafter discovery over the model directory: never on the loop.
+    import threading
+
+    backend = _FakeBackend("/models/model.gguf", "Q4_K_M", "org/Model-GGUF")
+    backend.is_diffusion = False
+    seen = []
+
+    def intent(*args, **kwargs):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return "intent"
+
+    backend.load_intent_satisfied = lambda value: value == "intent"
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", intent)
+    monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a: 1)
+    satisfied = asyncio.run(
+        inference_route._alias_launch_satisfied(
+            {"model_path": "/models/model.gguf", "gguf_variant": "Q4_K_M"}, {}, None
+        )
+    )
+    assert satisfied is True
+    assert seen == [False]
+
+
 def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):
     # A stash restores what idle-unload freed; a configured alias launches its own settings.
     backend, rec = _wire_alias_config(monkeypatch)

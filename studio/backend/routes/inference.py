@@ -3923,20 +3923,45 @@ async def _alias_launch_satisfied(
         stored_gpu_index_kind(override) if "gpu_ids" in override else None,
         backend.model_identifier,
     )
-    request, _extras = _normalize_launch_flags(LoadRequest(**load_kwargs))
-    intent = _active_gguf_intent(
-        request,
-        backend,
-        model_identifier = backend.model_identifier,
-        # As _load_model_impl resolves it, so a bundled family template compares equal.
-        chat_template_override = resolve_effective_chat_template_override(
+
+    def satisfied() -> bool:
+        # Off the loop: building the intent runs drafter discovery, which reads the model's directory.
+        request, _extras = _normalize_launch_flags(LoadRequest(**load_kwargs))
+        intent = _active_gguf_intent(
+            request,
+            backend,
             model_identifier = backend.model_identifier,
-            user_override = request.chat_template_override,
-        ),
-        n_parallel = _resolve_parallel_slots(request, fastapi_request),
-        native_grant_backed = False,
+            # As _load_model_impl resolves it, so a bundled family template compares equal.
+            chat_template_override = resolve_effective_chat_template_override(
+                model_identifier = backend.model_identifier,
+                user_override = request.chat_template_override,
+            ),
+            n_parallel = _resolve_parallel_slots(request, fastapi_request),
+            native_grant_backed = False,
+        )
+        return backend.load_intent_satisfied(intent)
+
+    return await asyncio.to_thread(satisfied)
+
+
+def _idle_stash_restores_alias_target(requested_model: str) -> bool:
+    """Nothing is resident and idle unload freed this alias's target."""
+    from core.inference.llama_keepwarm import get_last_unloaded_model
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    last = get_last_unloaded_model()
+    if not last or get_llama_cpp_backend().is_loaded:
+        return False
+    target_id, variant = last[0], last[1]
+    override_id = last[2] if len(last) >= 3 else target_id
+    requested_base, requested_variant = split_model_ref(requested_model)
+    # As the keyless restore check: a quant the alias names must be the one that was freed.
+    return _matches_any(
+        requested_base, (target_id, override_id, public_model_id(target_id))
+    ) and not (
+        looks_like_quant(requested_variant)
+        and (not variant or requested_variant.lower() != variant.lower())
     )
-    return backend.load_intent_satisfied(intent)
 
 
 async def _configured_alias_resident_satisfies(
@@ -12099,12 +12124,20 @@ async def _maybe_auto_switch_model(
             await _config_requires_switch()
             return
 
+    restored_alias_config: dict = {}
     if alias_config and not auto_switch_on:
-        await _refuse_foreign_resident()
-        await _config_requires_switch()
-        if claim_resident:
-            _claim_slot_for_non_preview(fastapi_request)
-        return
+        if idle_unload_is_configured() and await asyncio.to_thread(
+            _idle_stash_restores_alias_target, requested_model
+        ):
+            # Restore what idle unload freed, as a plain request would; the alias still has to
+            # match it afterwards, since switching off never changes the launch settings.
+            restored_alias_config, alias_config = alias_config, {}
+        else:
+            await _refuse_foreign_resident()
+            await _config_requires_switch()
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
 
     from core.inference.npu_backend import is_npu_model_path
 
@@ -12857,6 +12890,10 @@ async def _maybe_auto_switch_model(
     # The switch may have missed, so refuse rather than answer as whatever is resident.
     await _reject_unservable_model(requested_model, fastapi_request)
     await _refuse_foreign_resident()
+    if restored_alias_config and not await _configured_alias_resident_satisfies(
+        requested_model, restored_alias_config, fastapi_request
+    ):
+        _raise_alias_configuration_conflict(fastapi_request)
 
 
 async def _auto_switch_from_request_body(
