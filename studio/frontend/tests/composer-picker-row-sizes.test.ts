@@ -91,7 +91,7 @@ test("Discover rows: the Hub estimate reads as approximate, never for a GGUF rep
     }),
     { params: "8.2B", size: "~16 GB" },
   );
-  // The search's GGUF size is the unquantized weights, so no quant on the row would match it.
+  // A GGUF repo has no dtype-summed estimate, so none shows.
   assert.deepEqual(
     rowSizeMeta({
       kind: "hub",
@@ -166,25 +166,78 @@ test("rows only draw the columns when the setting is on", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /const sizeMeta = showModelSizes\s*\?\s*rowSizeMeta\(/);
+  assert.match(picker, /const rowSize = rowSizeMeta\(/);
+  assert.match(picker, /const sizeMeta = showModelSizes \? rowSize : null;/);
   assert.match(picker, /\{sizeMeta && row\.kind !== "external" \? \(\s*<RowSizeColumns/);
   // Off: Discover keeps its param chip exactly as before; on, the column carries it instead.
   assert.match(picker, /\{paramLabel && !sizeMeta \? \(/);
-  // Discover reserves the size column only when some listed row can fill it (GGUF search rows never do).
-  assert.match(picker, /sizeSlot=\{row\.kind !== "hub" \|\| hubHasSizes\}/);
-  // Judged on the rows that survive the format and fit filters, not the raw search results.
+  // Judged on the rows that survive the format and fit filters, and not at all with the setting off.
   assert.match(
     picker,
-    /const hubHasSizes = useMemo\(\s*\(\) =>\s*shownRows\.some\(\s*\(row\) =>\s*row\.kind === "hub" &&\s*rowSizeMeta\(/,
+    /const hubHasSizes = useMemo\(\s*\(\) =>\s*showModelSizes &&\s*shownRows\.some\(\s*\(row\) =>\s*row\.kind === "hub" &&\s*rowSizeMeta\(/,
   );
-  assert.match(picker, /\[shownRows, hubEstimates\]/);
-  // A favorited quant is looked up on disk for every row kind, local GGUF folders too.
+  assert.match(picker, /\[showModelSizes, shownRows, hubSizes\]/);
+  // A favorited quant is looked up on disk once, for every row kind, local GGUF folders too.
   assert.match(
     picker,
     /const favoriteOnDisk = row\.favoriteQuant\s*\?\s*onDisk\.find\(/,
   );
+  assert.match(picker, /row\.favoriteQuant\s*\?\s*favoriteOnDisk\s*:/);
   assert.match(
     picker,
     /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,[\s\S]*?row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local"\s*\? localInfo\.get\(row\.id\)\?\.size_bytes\s*: undefined\),\s*\)/,
+  );
+});
+
+test("Discover alone hides the size column when no Hub row can fill it", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  // A pinned Hub row in Favorites keeps the slot so it lines up with its neighbours.
+  assert.match(
+    picker,
+    /sizeSlot=\{\s*row\.kind !== "hub" \|\|\s*viewed !== RECOMMENDED_TAB \|\|\s*hubHasSizes\s*\}/,
+  );
+});
+
+test("the Details menu shows the row's own size and params", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const facts = picker.slice(
+    picker.indexOf("function modelFacts("),
+    picker.indexOf("const task =", picker.indexOf("function modelFacts(")),
+  );
+  assert.match(facts, /sized: ReturnType<typeof rowSizeMeta>/);
+  assert.match(facts, /facts\.push\(\["Disk space", sized\.size\]\)/);
+  assert.match(facts, /facts\.push\(\["Parameters", sized\.params\]\)/);
+  // No second derivation that could drift from the row.
+  assert.doesNotMatch(facts, /quantBytes|extractParamLabel|row\.sizeBytes/);
+  assert.match(
+    picker,
+    /<ModelFacts\s+facts=\{modelFacts\([\s\S]*?\),\s*rowSize,\s*\)\}/,
+  );
+  // Computed whether or not the setting is on, so Details matches the row either way.
+  assert.doesNotMatch(picker, /showModelSizes\s*\?\s*rowSizeMeta\(/);
+});
+
+test("Details and the row agree for a favorited quant and a folder model", () => {
+  // Favorite Q4 with Q8 also on disk: the quant's bytes, not the repo total.
+  const fav = rowSizeMeta({
+    kind: "gguf",
+    id: "unsloth/Qwen3-4B-GGUF",
+    format: "gguf",
+    sizeBytes: rowOwnBytes("Q4_K_M", 2.5 * GB, null, 6.8 * GB),
+  });
+  assert.deepEqual(fav, { params: "4B", size: "2.5 GB" });
+  // LM Studio folder: inventory bytes, params from the id.
+  assert.deepEqual(
+    rowSizeMeta({
+      kind: "local",
+      id: "/models/lmstudio/Qwen3-8B",
+      baseModel: "LM Studio",
+      sizeBytes: rowOwnBytes(undefined, null, null, 5 * GB),
+    }),
+    { params: "8B", size: "5.0 GB" },
   );
 });

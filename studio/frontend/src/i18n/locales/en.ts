@@ -3154,7 +3154,7 @@ export const en = {
           "Show estimated VRAM for model weights, context, and speculative decoding.",
         showModelSizes: "Model size and parameters",
         showModelSizesDescription:
-          "Show each model's size and parameter count on its row in the model picker. Blank when unknown.",
+          "Show each model's parameter count and size on disk in the model picker, all downloaded quants together. Hub search results show the Hub's estimate. Blank when unknown.",
         fitOnDeviceOnly: "Only show models that fit",
         fitOnDeviceOnlyDescription:
           "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",

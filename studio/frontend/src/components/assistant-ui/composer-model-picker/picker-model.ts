@@ -551,13 +551,13 @@ export interface RowSizeInput {
   partial?: boolean;
   /** The row's own bytes on disk: its quant when it stands for one. */
   sizeBytes?: number | null;
-  /** Discover only: the Hub's estimate, unquantized weights, so a GGUF repo's never shows. */
+  /** Discover only: the Hub's dtype-summed estimate; GGUF repos have none. */
   estimatedBytes?: number | null;
   /** Discover only: params already resolved from the search result. */
   hubParams?: string | null;
 }
 
-/** A favorited quant row is that quant: if it is no longer on disk its size is unknown, not a sibling's. */
+/** A favorited quant sizes only itself: once deleted, it reads unknown, not a sibling's size. */
 export function rowOwnBytes(
   favoriteQuant: string | undefined,
   favoriteBytes: number | null,

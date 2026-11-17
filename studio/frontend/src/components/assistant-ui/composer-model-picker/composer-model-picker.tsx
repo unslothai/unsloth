@@ -231,9 +231,9 @@ import {
   pinCoversId,
   readBounded,
   repoSection,
-  sectionsHaveRows,
   rowOwnBytes,
   rowSizeMeta,
+  sectionsHaveRows,
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
@@ -1225,6 +1225,7 @@ function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
   known: ChatModelSummary | undefined,
+  sized: ReturnType<typeof rowSizeMeta>,
 ): [string, ReactNode][] {
   const facts: [string, ReactNode][] = [];
   const format =
@@ -1237,13 +1238,12 @@ function modelFacts(
   } else if (format) {
     facts.push(["Format", format]);
   }
-  const size = onDisk.length === 1 ? quantBytes(onDisk[0]) : row.sizeBytes;
-  if (size && size > 0) {
-    facts.push(["Disk space", formatBytes(size)]);
+  // The row's own size and params, so the two never disagree.
+  if (sized.size) {
+    facts.push(["Disk space", sized.size]);
   }
-  const params = extractParamLabel(row.lora?.baseModel ?? row.id);
-  if (params) {
-    facts.push(["Parameters", params]);
+  if (sized.params) {
+    facts.push(["Parameters", sized.params]);
   }
   const task = row.gguf?.task ?? row.cached?.task ?? undefined;
   const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
@@ -1820,22 +1820,18 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, gpuInfo, inferenceGpu, budgetFraction]);
-  const hubParams = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of hubResults) {
-      const label = r.totalParams
-        ? formatParamCount(r.totalParams)
-        : extractParamLabel(r.id);
-      if (label) {
-        map.set(r.id.toLowerCase(), label);
-      }
-    }
-    return map;
-  }, [hubResults]);
-  const hubEstimates = useMemo(
+  const hubSizes = useMemo(
     () =>
       new Map(
-        hubResults.map((r) => [r.id.toLowerCase(), r.estimatedSizeBytes]),
+        hubResults.map((r) => [
+          r.id.toLowerCase(),
+          {
+            params: r.totalParams
+              ? formatParamCount(r.totalParams)
+              : extractParamLabel(r.id),
+            estimate: r.estimatedSizeBytes,
+          },
+        ]),
       ),
     [hubResults],
   );
@@ -2700,6 +2696,7 @@ export function ComposerModelPicker({
   // As the header picker: Discover gives sizes a column only when a shown row can fill it.
   const hubHasSizes = useMemo(
     () =>
+      showModelSizes &&
       shownRows.some(
         (row) =>
           row.kind === "hub" &&
@@ -2707,10 +2704,10 @@ export function ComposerModelPicker({
             kind: row.kind,
             id: row.id,
             format: row.format,
-            estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
+            estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
           }).size !== null,
       ),
-    [shownRows, hubEstimates],
+    [showModelSizes, shownRows, hubSizes],
   );
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -3996,49 +3993,47 @@ export function ComposerModelPicker({
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
     const paramLabel =
-      row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
+      row.kind === "hub"
+        ? (hubSizes.get(row.id.toLowerCase())?.params ?? null)
+        : null;
     const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
     const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const soleQuant = row.favoriteQuant ?? (manyQuants ? null : wholeQuant);
-    const savedVariant =
-      row.kind !== "gguf"
-        ? undefined
-        : row.favoriteQuant
-          ? onDisk.find(
-              (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
-            )
-          : onDisk.length === 1
-            ? onDisk[0]
-            : undefined;
-    // Any kind, local GGUF folders included; savedVariant is gated to Hub GGUF rows for run settings.
     const favoriteOnDisk = row.favoriteQuant
       ? onDisk.find(
           (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
         )
       : undefined;
-    const sizeMeta = showModelSizes
-      ? rowSizeMeta({
-          kind: row.kind,
-          id: row.id,
-          format: row.format,
-          baseModel: row.lora?.baseModel,
-          partial: row.partial,
-          sizeBytes: rowOwnBytes(
-            row.favoriteQuant,
-            favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
-            onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
-            // Folder models carry their bytes only in the inventory listing, as their path does.
-            row.sizeBytes ??
-              (row.lora?.source === "local"
-                ? localInfo.get(row.id)?.size_bytes
-                : undefined),
-          ),
-          estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
-          hubParams: paramLabel,
-        })
-      : null;
+    const savedVariant =
+      row.kind !== "gguf"
+        ? undefined
+        : row.favoriteQuant
+          ? favoriteOnDisk
+          : onDisk.length === 1
+            ? onDisk[0]
+            : undefined;
+    const rowSize = rowSizeMeta({
+      kind: row.kind,
+      id: row.id,
+      format: row.format,
+      baseModel: row.lora?.baseModel,
+      partial: row.partial,
+      sizeBytes: rowOwnBytes(
+        row.favoriteQuant,
+        favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
+        onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
+        // Folder models: bytes come from the inventory.
+        row.sizeBytes ??
+          (row.lora?.source === "local"
+            ? localInfo.get(row.id)?.size_bytes
+            : undefined),
+      ),
+      estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
+      hubParams: paramLabel,
+    });
+    const sizeMeta = showModelSizes ? rowSize : null;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta = savedVariant
       ? ggufMeta(row, savedVariant, true, true, row.gguf?.has_vision)
@@ -4088,8 +4083,9 @@ export function ComposerModelPicker({
           chatModels,
           row.npu ? npuCatalog : null,
           paramLabel,
-          sizeMeta?.params,
-          sizeMeta?.size,
+          showModelSizes,
+          rowSize.params,
+          rowSize.size,
           hubHasSizes,
         ]}
         render={() => (
@@ -4224,7 +4220,11 @@ export function ComposerModelPicker({
                 params={sizeMeta.params}
                 // An NPU offer already prints its size.
                 size={npuOffer || npuProgress ? null : sizeMeta.size}
-                sizeSlot={row.kind !== "hub" || hubHasSizes}
+                sizeSlot={
+                  row.kind !== "hub" ||
+                  viewed !== RECOMMENDED_TAB ||
+                  hubHasSizes
+                }
                 dimmed={dimmed}
               />
             ) : null}
@@ -4262,6 +4262,7 @@ export function ComposerModelPicker({
                                 m.id.toLowerCase() ===
                                 (row.loadedId ?? row.id).toLowerCase(),
                             ),
+                            rowSize,
                           )}
                         />
                       ) : undefined
