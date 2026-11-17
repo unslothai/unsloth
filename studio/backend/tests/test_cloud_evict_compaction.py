@@ -70,9 +70,7 @@ def test_a_long_chat_drops_whole_oldest_turns_without_a_summary_call():
 
 
 def test_the_default_mode_still_summarises():
-    _, summaries, [sent] = _bodies(
-        _SummarisingHandler, **_SMALL_TRIGGER, compaction_mode = "summary"
-    )
+    _, summaries, [sent] = _bodies(_SummarisingHandler, **_SMALL_TRIGGER, compaction_mode = "summary")
     assert len(summaries) == 1 and _SUMMARY in _system_text(sent)
 
 
@@ -105,9 +103,7 @@ def test_a_summary_saved_before_switching_modes_is_not_replayed():
     assert "summarized" not in truncation and truncation["dropped_messages"] > 0
 
 
-def test_evicted_turns_are_archived_and_recalled_word_for_word(
-    rag_home, rag_conn, stub_embeddings
-):
+def test_evicted_turns_are_archived_and_recalled_word_for_word(rag_home, rag_conn, stub_embeddings):
     thread = "thread-evict-recall"
     chat = _recall_chat(thread)
     chunks, summaries, [sent] = _bodies(

@@ -30726,7 +30726,10 @@ async def _proxy_to_external_provider(
     _evict_only = managed is None and payload.compaction_mode == "evict" and not _provider_compacts
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
     _auto_summary = (
-        bool(payload.compaction_threshold) and _rolling and not _provider_compacts and not _evict_only
+        bool(payload.compaction_threshold)
+        and _rolling
+        and not _provider_compacts
+        and not _evict_only
     )
     # /compact. A saved thread only, so the summary outlives this request.
     _compact_now = (
@@ -30787,8 +30790,7 @@ async def _proxy_to_external_provider(
         # /compact, or its epoch replayed, with auto-compact off: nothing past the epoch is evicted.
         _evicting_payload = payload.model_copy(
             update = {
-                "compaction_threshold": payload.context_window
-                or _EXTERNAL_COMPACTION_THRESHOLD_MAX
+                "compaction_threshold": payload.context_window or _EXTERNAL_COMPACTION_THRESHOLD_MAX
             }
         )
 

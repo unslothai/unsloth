@@ -220,7 +220,9 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         max_output_tokens = row.get("max_output_tokens"),
         auto_compact_tokens = row.get("auto_compact_tokens"),
         compaction_mode = (
-            row.get("compaction_mode") if row.get("compaction_mode") in ("summary", "evict") else None
+            row.get("compaction_mode")
+            if row.get("compaction_mode") in ("summary", "evict")
+            else None
         ),
         shared = bool(row.get("shared")),
         shared_by_owner = bool(row.get("shared_by_owner")),
