@@ -45,3 +45,11 @@ test("formatRate scales and rejects non-finite input", () => {
     assert.equal(formatRate(bad), "--");
   }
 });
+
+test("formatRate moves to the next unit when rounding reaches 1024", () => {
+  assert.equal(formatRate(1023.4), "1023 B/s");
+  assert.equal(formatRate(1023.6), "1.0 KB/s");
+  assert.equal(formatRate(1024 ** 2 - 1), "1.0 MB/s");
+  assert.equal(formatRate(1024 ** 3 - 1), "1.00 GB/s");
+  assert.equal(formatRate(1024 * 1023.9), "1023.9 KB/s");
+});
