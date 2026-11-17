@@ -532,3 +532,20 @@ def test_a_missing_runtime_is_refused_with_the_reason(runtime, monkeypatch):
     monkeypatch.setattr(runtime, "_flm_binary", lambda: None)
     with pytest.raises(nb.NpuError, match = "not installed"):
         runtime.load(local.id)
+
+
+def test_a_converted_model_samples_like_its_base():
+    from utils.inference.inference_config import load_inference_config
+
+    converted = nb.NpuModel(
+        id = "local-npu-q4nx-1a2b3c4d-q4nx-FLM",
+        checkpoint = "local-npu-q4nx-1a2b3c4d:q4nx",
+        size_gb = 0.6,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 32768,
+        local = {"folder": "q4nx/Qwen3-0.6B", "base": "qwen3:0.6b", "problem": None},
+    )
+    catalog = dataclasses.replace(converted, id = "qwen3-0.6b-FLM", local = None)
+    assert converted.sampling_id == catalog.sampling_id == "qwen3-0.6b-FLM"
+    assert load_inference_config(converted.sampling_id) == load_inference_config(catalog.id)

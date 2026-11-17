@@ -18963,7 +18963,7 @@ def _npu_load_response(
         display_name = model.id,
         is_npu = True,
         is_vision = model.vision,
-        inference = load_inference_config(model.id),
+        inference = load_inference_config(model.sampling_id),
         context_length = resident.context_length,
         **flm_args_status(flm_args),
         # The free-RAM estimate where one was made, as llama.cpp reports its fit.
@@ -22903,7 +22903,7 @@ async def _slot_status(current_subject: str):
                 is_vision = _npu_model.vision,
                 loading = _loading,
                 loaded = [_npu_model.model_path],
-                inference = load_inference_config(_npu_model.id),
+                inference = load_inference_config(_npu_model.sampling_id),
                 context_length = _npu_resident.context_length,
                 requested_context_length = _npu_resident.requested_context_length,
                 **flm_args_status(_npu_resident.flm_args),
@@ -31341,9 +31341,12 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         payload.enable_thinking = False
     elif payload.enable_thinking is None:
         payload.enable_thinking = payload.reasoning_effort != "none"
+    loaded = npu.loaded_model
     _fill_recommended_sampling_openai(
         payload,
-        upstream.model,
+        loaded.sampling_id
+        if loaded is not None and loaded.id == upstream.model
+        else upstream.model,
         thinking = payload.enable_thinking if upstream.supports_reasoning else None,
     )
 

@@ -179,6 +179,12 @@ class NpuModel:
     def model_path(self) -> str:
         return MODEL_PREFIX + self.id
 
+    @property
+    def sampling_id(self) -> str:
+        """The id sampling recommendations are looked up by: a conversion's base model's."""
+        base = (self.local or {}).get("base")
+        return f"{base.replace(':', '-')}-FLM" if base else self.id
+
     def to_json(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -1034,6 +1040,8 @@ class LemonadeNpuBackend:
             )
             # FastFlowLM's next pull trusts a truncated file an interrupted one left; clear it first.
             server.request("POST", "/v1/delete", json_body = {"model_name": model.id})
+        # Loading a converted model restarts lemond to list it; register on whichever one runs now.
+        server = self._ensure_running()
         event = "progress"
         completed = False
         with server.stream(
