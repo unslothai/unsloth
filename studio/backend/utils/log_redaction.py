@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 REDACTED = "<redacted>"
@@ -260,6 +261,50 @@ def _lowered(text: str) -> str | None:
     return text.lower() if text.isascii() else None
 
 
+# JSON loggers can serialize a provider message that already contains JSON.
+# Work on string boundaries so escaped punctuation in a password cannot expose
+# its suffix. Leave the original record formatting alone outside edited spans.
+# Consume even an unterminated token in one pass on truncated log records.
+_JSON_STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"?')
+_JSON_COLON = re.compile(r"\s*:\s*")
+_JSON_SECRET_KEY = re.compile(_KEY_START + r"(?:" + _SECRET_KEYS + r")$", re.IGNORECASE)
+_JSON_DECODER = json.JSONDecoder()
+
+
+def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
+    parts: list[str] = []
+    written = pos = 0
+    while match := _JSON_STRING.search(text, pos):
+        pos = match.end()
+        token = match[0]
+        if inside_message and (colon := _JSON_COLON.match(text, pos)):
+            try:
+                key = json.loads(token) if "\\" in token else token[1:-1]
+            except ValueError:
+                continue
+            if _JSON_SECRET_KEY.search(key):
+                try:
+                    _, end = _JSON_DECODER.raw_decode(text, colon.end())
+                except (ValueError, RecursionError):
+                    continue
+                parts.extend((text[written:colon.end()], '"<redacted>"'))
+                written = pos = end
+            continue
+        if r'\"' in token and ":" in token:
+            try:
+                message = json.loads(token)
+            except ValueError:
+                continue
+            masked = _mask_json_strings(message, inside_message = True)
+            if masked != message:
+                parts.extend((text[written:match.start()], json.dumps(masked)))
+                written = pos
+    if not parts:
+        return text
+    parts.append(text[written:])
+    return "".join(parts)
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -267,6 +312,8 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
+    if r'\"' in text and ":" in text:
+        text = _mask_json_strings(text)
     for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
         if gate is None or gate.search(text) is not None:
             text = pattern.sub(replacement, text)
