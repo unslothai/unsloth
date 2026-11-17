@@ -568,6 +568,7 @@ from .diffusion_transformer_quant import (
     native_int8_act,
     rdna_auto_w8a8_reason,
     rdna_explicit_int8_reason,
+    rdna_explicit_w8a8_reason,
     turing_auto_int8_reason,
     native_offload_host,
     native_quant_host,
@@ -9071,7 +9072,7 @@ class DiffusionBackend:
                     )
                     transformer_quant = TQ_INT8
                 # An explicit int8 request compiles from render 1 when the denoiser stays resident; W8A8 only where the
-                # family's AUTO table measured it faster (weight-only int8 elsewhere).
+                # family's AUTO or explicit table measured it faster (weight-only int8 elsewhere).
                 rdna_explicit_int8 = (
                     rdna_explicit_int8_reason(target, getattr(fam, "name", None))
                     if rdna_auto_w8a8 is None
@@ -10959,10 +10960,16 @@ class DiffusionBackend:
                                             or rdna_auto_w8a8 is not None
                                             or (
                                                 rdna_explicit_int8 is not None
-                                                and rdna_auto_w8a8_reason(
-                                                    target, getattr(fam, "name", None)
+                                                and (
+                                                    rdna_auto_w8a8_reason(
+                                                        target, getattr(fam, "name", None)
+                                                    )
+                                                    is not None
+                                                    or rdna_explicit_w8a8_reason(
+                                                        target, getattr(fam, "name", None)
+                                                    )
+                                                    is not None
                                                 )
-                                                is not None
                                             )
                                         ),
                                     }
