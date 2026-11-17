@@ -363,6 +363,10 @@ import {
   recordLastLocalModelLoad,
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
+import {
+  readDefaultChatModel,
+  readDefaultChatModelLoadOnStartup,
+} from "../utils/default-chat-model";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import {
   createImageGateRunOwner,
@@ -3473,12 +3477,16 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
+  const defaultModel = readDefaultChatModel();
   const lastLoaded = await readLastLocalModelLoad(options?.abortSignal);
+  const preferredModel = defaultModel ?? lastLoaded;
   let autoLoadToastDismissed = false;
   const toastId = toast.message("Loading a model…", {
-    description: lastLoaded
-      ? "Loading last used model."
-      : "Auto-selecting the smallest downloaded model.",
+    description: defaultModel
+      ? "Loading your default model."
+      : lastLoaded
+        ? "Loading last used model."
+        : "Auto-selecting the smallest downloaded model.",
     duration: Number.POSITIVE_INFINITY,
     closeButton: true,
     icon: createLoadingToastIcon(),
@@ -4107,7 +4115,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         store.params.maxSeqLength,
         options?.abortSignal,
       ),
-      lastLoaded,
+      preferredModel,
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
@@ -4122,8 +4130,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
+      const isRemembered = preferredModel
+        ? isRememberedSource(source, preferredModel)
         : false;
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
@@ -4142,14 +4150,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
-            isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
+            isRemembered ? (preferredModel?.ggufVariant ?? null) : null,
             isTried,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;
           candidateResolvedFor.add(sourceKey);
           updateAutoLoadToast(
-            isRemembered ? "Loading last used model…" : "Loading a model…",
+            defaultModel && isRemembered
+              ? "Loading default model…"
+              : isRemembered
+                ? "Loading last used model…"
+                : "Loading a model…",
             candidate.ggufVariant
               ? `${candidate.id} (${candidate.ggufVariant})`
               : candidate.id,
@@ -4517,6 +4529,16 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   } finally {
     useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
   }
+}
+
+/** Load the chosen default once when Studio starts, without changing an existing session. */
+export async function autoLoadDefaultChatModelOnStartup(
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  if (!readDefaultChatModel() || !readDefaultChatModelLoadOnStartup()) return;
+  const state = useChatRuntimeStore.getState();
+  if (state.params.checkpoint || state.modelLoading) return;
+  await autoLoadSmallestModel({ abortSignal });
 }
 
 export function createOpenAIStreamAdapter(
