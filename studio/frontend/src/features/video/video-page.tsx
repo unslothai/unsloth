@@ -1306,6 +1306,11 @@ function VideoGenerator({
   const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
   // Set once the user picks a size or restores a clip's recipe; a family's first-render size never replaces it.
   const resolutionChosen = useRef(false);
+  // Read by the family-change effect (declared later, so it runs after this one) without re-running it per size.
+  const resolutionIntentRef = useRef(resolutionIntent);
+  useEffect(() => {
+    resolutionIntentRef.current = resolutionIntent;
+  }, [resolutionIntent]);
   const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
@@ -1866,7 +1871,11 @@ function VideoGenerator({
     );
     if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {
       // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
-      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      const firstSize = familyFirstRenderResolution(
+        status?.defaults,
+        resolutionPresets,
+        resolutionIntentRef.current,
+      );
       if (firstSize) {
         setResolutionIntent(firstSize);
         const matched = matchAspect(firstSize[0], firstSize[1]);
