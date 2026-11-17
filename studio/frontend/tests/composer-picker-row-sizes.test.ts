@@ -147,10 +147,12 @@ test("rows only draw the columns when the setting is on", () => {
   assert.match(picker, /\{paramLabel && !sizeMeta \? \(/);
   // Discover reserves the size column only when some listed row can fill it (GGUF search rows never do).
   assert.match(picker, /sizeSlot=\{row\.kind !== "hub" \|\| hubHasSizes\}/);
+  // Judged on the rows that survive the format and fit filters, not the raw search results.
   assert.match(
     picker,
-    /recommended\.some\(\s*\(m\) => !m\.isGguf && \(hubEstimates\.get\(m\.id\.toLowerCase\(\)\) \?\? 0\) > 0/,
+    /const hubHasSizes = useMemo\(\s*\(\) =>\s*shownRows\.some\(\s*\(row\) =>\s*row\.kind === "hub" &&\s*rowSizeMeta\(/,
   );
+  assert.match(picker, /\[shownRows, hubEstimates\]/);
   assert.match(
     picker,
     /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*savedVariant \? quantBytes\(savedVariant\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.sizeBytes,\s*\)/,

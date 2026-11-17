@@ -1901,14 +1901,6 @@ export function ComposerModelPicker({
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
   }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
-  // As the header picker: Discover gives sizes a column only when a listed row can fill it.
-  const hubHasSizes = useMemo(
-    () =>
-      recommended.some(
-        (m) => !m.isGguf && (hubEstimates.get(m.id.toLowerCase()) ?? 0) > 0,
-      ),
-    [recommended, hubEstimates],
-  );
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -2705,6 +2697,21 @@ export function ComposerModelPicker({
     collapsedSections,
     foundRows,
   ]);
+  // As the header picker: Discover gives sizes a column only when a shown row can fill it.
+  const hubHasSizes = useMemo(
+    () =>
+      shownRows.some(
+        (row) =>
+          row.kind === "hub" &&
+          rowSizeMeta({
+            kind: row.kind,
+            id: row.id,
+            format: row.format,
+            estimatedBytes: hubEstimates.get(row.id.toLowerCase()),
+          }).size !== null,
+      ),
+    [shownRows, hubEstimates],
+  );
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
     onFoldersChange: source?.onFoldersChange,
