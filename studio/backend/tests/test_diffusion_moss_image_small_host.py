@@ -27,12 +27,18 @@ if str(_BACKEND) not in sys.path:
 import core.inference.diffusion_moss_image as moss  # noqa: E402
 import core.inference.diffusion_small_host as sh  # noqa: E402
 
-# OpenMOSS-Team/MOSS-Image-SFT safetensors headers: Qwen3.5-9B encoder (vision tower included) and the 5B DiT, bf16.
+# OpenMOSS-Team/MOSS-Image-SFT safetensors headers: Qwen3.5-9B encoder (vision tower included, 248320 x 4096 token
+# embedding) and the 5B DiT, bf16.
 MOSS_SFT = {
-    "text_encoder": sh.StoredComponent("text_encoder", 16013, "bfloat16"),
-    "transformer": sh.StoredComponent("transformer", 9706, "bfloat16"),
-    "vae": sh.StoredComponent("vae", 239, "bfloat16"),
+    "text_encoder": sh.StoredComponent(
+        "text_encoder", 16013, "bfloat16", 0, "transformers", embed_mib = 1940
+    ),
+    "transformer": sh.StoredComponent("transformer", 9706, "bfloat16", 0, "diffusers"),
+    "vae": sh.StoredComponent("vae", 239, "bfloat16", 0, "diffusers"),
 }
+T4_HM = (51 * 1024, 49855)
+T4 = (12976, 10964)
+ROOMY_DISK = 200 * 1024
 
 
 @pytest.fixture(autouse = True)
@@ -41,27 +47,54 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-@pytest.mark.parametrize(
-    "total, available",
-    [
-        # Colab T4 High-RAM: the float32 load was OOM-killed at 49.3 GB anon RSS while the DiT loaded.
-        (51 * 1024, 49855),
-        # Colab T4: OOM-killed at 11.4 GB while the encoder loaded.
-        (12976, 10964),
-    ],
-)
-def test_colab_t4_hosts_take_the_route_and_fit_it(total, available):
-    d = sh.decide_small_host(
+def _decide(total, available, **kw):
+    return sh.decide_small_host(
         MOSS_SFT,
         torch.float32,
         device = "cuda",
         host_total_mib = total,
         host_available_mib = available,
+        **kw,
     )
-    assert d.engaged and d.refuse is None
-    assert d.dense_host_mib > available  # what the float32 load needs
+
+
+def test_colab_t4_high_ram_takes_the_route_in_ram():
+    # The float32 load was OOM-killed at 49.3 GB anon RSS while the DiT loaded; the route measured 23 GB peak.
+    d = _decide(*T4_HM, spill_free_mib = ROOMY_DISK)
+    assert d.engaged and d.refuse is None and not d.int8_spill
+    assert d.dense_host_mib > T4_HM[1]
     assert d.storage_dtypes == {"text_encoder": "bfloat16", "transformer": "bfloat16"}
-    assert d.route_host_mib + sh.host_reserve_mib(total) <= available
+
+
+def test_route_counts_the_float32_token_embedding():
+    """``prepare_streamed_encoder_`` converts the embedding on the host: 3880 MiB in float32, measured as 3.79 GiB of
+    float32 encoder tensors on the route."""
+    d = _decide(*T4_HM)
+    assert d.route_host_mib == 9706 // 2 + 1940 * 2
+
+
+def test_colab_t4_spills_the_int8_dit_or_refuses_cleanly():
+    # In RAM the route left 0.6 GB free (10.7 GB anon of 12.7 GB) and the VM stalled; it must spill or refuse.
+    spilled = _decide(*T4, spill_free_mib = ROOMY_DISK)
+    assert spilled.engaged and spilled.int8_spill and spilled.refuse is None
+    assert spilled.spill_route_host_mib == 1940 * 2 + sh._SPILL_TRANSIENT_MIB
+    no_disk = _decide(*T4)
+    assert no_disk.engaged and not no_disk.int8_spill
+    assert no_disk.refuse and "Not enough system RAM" in no_disk.refuse
+
+
+def test_same_width_embedding_keeps_the_fp16_route_size():
+    """float16 compute copies the embedding at its stored width: the reserve covers it, as before."""
+    d = sh.decide_small_host(
+        MOSS_SFT,
+        torch.float16,
+        device = "cuda",
+        host_total_mib = T4[0],
+        host_available_mib = T4[1],
+        spill_free_mib = ROOMY_DISK,
+    )
+    assert d.route_host_mib == 9706 // 2
+    assert not d.int8_spill and d.refuse is None
 
 
 def _moss_branch() -> ast.If:
