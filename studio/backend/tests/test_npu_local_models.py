@@ -633,3 +633,21 @@ def test_an_unchanged_cross_volume_copy_is_not_copied_again(monkeypatch, tmp_pat
     (folder / "model.q4nx").write_bytes(b"new weights")
     nlm.link_files(local, staged)
     assert copies == ["model.q4nx"]
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "model_id", ["local-*-q4nx-FLM", "local-?-q4nx-FLM", "local-../x-q4nx-FLM"]
+)
+def test_a_pattern_in_a_deleted_id_matches_no_staged_folder(runtime, model_id):
+    keep = runtime._flm_model_dir / "models" / "local-qwen3-1a2b3c4d"
+    keep.mkdir(parents = True)
+    runtime.delete(model_id)
+    assert keep.is_dir()
+
+
+def test_generated_families_are_recognised():
+    folder = _converted()
+    [local] = nlm.account_local_models()
+    assert nlm.is_family(local.family) and nlm.is_family(nlm.family_of_id(local.id))
+    assert not nlm.is_family("local-*") and not nlm.is_family("local-a/b-1a2b3c4d")

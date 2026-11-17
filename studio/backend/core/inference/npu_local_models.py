@@ -127,6 +127,14 @@ def is_local_id(model_id: str) -> bool:
     return model_id.startswith(LOCAL_PREFIX)
 
 
+_FAMILY = re.compile(r"local-[a-z0-9.-]{1,40}-[0-9a-f]{8}")
+
+
+def is_family(name: str) -> bool:
+    """A family LocalQ4nx.family generates; anything else is never matched against folders."""
+    return bool(_FAMILY.fullmatch(name or ""))
+
+
 def family_of_id(model_id: str) -> str:
     return model_id.removesuffix(f"-{LOCAL_SIZE}-FLM")
 

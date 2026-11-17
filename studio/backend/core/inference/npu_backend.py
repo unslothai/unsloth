@@ -994,7 +994,7 @@ class LemonadeNpuBackend:
 
     def _drop_staged(self, family: str) -> None:
         """Drop the linked copy FastFlowLM reads; the export folder itself is left alone."""
-        if not family or "/" in family or "\\" in family or not local_q4nx.is_local_id(family):
+        if not local_q4nx.is_family(family):
             return
         path = self._local_dir / "registered.json"
         try:
@@ -1003,7 +1003,8 @@ class LemonadeNpuBackend:
             registered = None
         if isinstance(registered, dict) and registered.get("family") == family:
             path.unlink(missing_ok = True)
-        for staged in self._flm_model_dir.glob(f"*/{family}"):
+        for parent in self._flm_model_dir.iterdir() if self._flm_model_dir.is_dir() else ():
+            staged = parent / family
             if staged.is_dir() and not staged.is_symlink():
                 shutil.rmtree(staged, ignore_errors = True)
 
