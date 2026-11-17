@@ -123,11 +123,7 @@ test("the documents refresh latches the flag at issue and checks it before repor
 });
 
 test("the pin sync poll stands down under the update screen", () => {
-  const refresh = region(
-    PIN_HOOK,
-    "const refresh = (force = false) => {",
-    "const reconcileSession",
-  );
+  const refresh = region(PIN_HOOK, "const refresh = () => {", "const reconcileSession");
   const gate = refresh.indexOf("if (isBackendDownForDesktopUpdate()) return;");
   assert.ok(gate !== -1 && gate < refresh.indexOf("loadRuntime()"));
 });

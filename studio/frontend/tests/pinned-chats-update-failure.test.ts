@@ -364,3 +364,31 @@ test("transient pin failures stay silent outside an update", async () => {
   assert.ok(runtime.raised.length > 0);
   assert.deepEqual(runtime.toasted, []);
 });
+
+test("a pins read slower than the 10s timeout stays silent and the edit saves on the next refresh", async (t) => {
+  const server = pinsServer();
+  const runtime = pinRuntime();
+  const serve = handle;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let stalledReads = 0;
+  handle = async (url, init) => {
+    if (!url.endsWith("/api/chat/pins")) return serve(url, init);
+    stalledReads += 1;
+    return stalled(init);
+  };
+  const settled = Promise.allSettled([runtime.sync.refresh(), runtime.sync.setPinned(["a"], true)]);
+  while (stalledReads === 0) await new Promise((r) => setImmediate(r));
+  // The refresh's read, the edit's hydration read and its recovery read each stall.
+  for (let tick = 0; tick < 5; tick += 1) {
+    t.mock.timers.tick(10_000);
+    await new Promise((r) => setImmediate(r));
+  }
+  await settled;
+  assert.equal((runtime.raised[0] as Error).name, "AbortError");
+  assert.deepEqual(runtime.toasted, []);
+  assert.deepEqual(server.pins, []);
+  t.mock.timers.reset();
+  handle = serve;
+  await runtime.sync.refresh();
+  assert.deepEqual(server.pins, ["a"]);
+});

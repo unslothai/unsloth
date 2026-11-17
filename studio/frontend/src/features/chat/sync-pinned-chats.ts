@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { toast } from "sonner";
 import { AUTH_SESSION_MARK_KEY, hasAuthToken } from "@/features/auth";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
-import { toast } from "sonner";
 import { createChatPinsApi } from "./api/chat-pins-api";
 import {
   discardUnboundPinEdits,
@@ -18,12 +18,12 @@ import {
 import { createPinnedChatsJournal } from "./utils/pinned-chats-journal";
 import { createPinnedChatsSync } from "./utils/pinned-chats-sync";
 import { createPinnedChatsTransport } from "./utils/pinned-chats-transport";
-import { onChatThreadsDeleted } from "./utils/chat-thread-tombstones";
 import {
   isExpectedPinSyncInterruption,
   isPinFailureUnderDesktopUpdate,
 } from "./utils/pinned-chats-update-failure";
 import { isRetryablePinError } from "./utils/settings-retry";
+import { onChatThreadsDeleted } from "./utils/chat-thread-tombstones";
 
 function scope(): string {
   // Desktop's backend port changes between launches of the same installation.
