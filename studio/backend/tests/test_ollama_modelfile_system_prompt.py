@@ -119,3 +119,25 @@ def test_tag_sharing_weights_but_not_system_is_not_already_resident(tmp_path, mo
     assert inference_route._resident_is_still_tagged(pirate, resident(pirate))
     assert not inference_route._resident_is_still_tagged(pirate, resident(plain))
     assert not inference_route._resident_is_still_tagged(plain, resident(pirate))
+
+
+def test_tool_passthrough_body_carries_modelfile_system_prompt(tmp_path, monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    class _Backend:
+        model_identifier = _ollama_ref_with_system(tmp_path, monkeypatch)
+        is_vision = False
+        _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+    tool = {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}
+
+    def body(messages):
+        payload = ChatCompletionRequest(messages = messages, tools = [tool])
+        return inference_route._build_openai_passthrough_body(
+            payload, backend_ctx = 4096, llama_backend = _Backend()
+        )["messages"]
+
+    sent = body([{"role": "user", "content": "Hi"}])
+    assert sent[0]["role"] == "system" and _SYSTEM in sent[0]["content"]
+    sent = body([{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}])
+    assert all(_SYSTEM not in str(m["content"]) for m in sent)

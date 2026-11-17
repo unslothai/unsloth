@@ -17573,6 +17573,10 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
 
 
+def _has_system_turn(messages) -> bool:
+    return any(m.role in ("system", "developer") for m in messages)
+
+
 def _resident_ollama_system_prompt(llama_backend) -> str:
     ref = getattr(llama_backend, "model_identifier", None) or ""
     if not is_ollama_manifest_ref(ref):
@@ -33346,7 +33350,7 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
             payload.messages, keep_tool_images = True
         )
-    if using_gguf and not any(m.role in ("system", "developer") for m in payload.messages):
+    if using_gguf and not _has_system_turn(payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
@@ -48225,6 +48229,8 @@ def _build_openai_passthrough_body(
         payload, vision = bool(getattr(llama_backend, "is_vision", False))
     )
     system_prompt, _, _ = _extract_content_parts(payload.messages)
+    if llama_backend is not None and not _has_system_turn(payload.messages):
+        system_prompt = _resident_ollama_system_prompt(llama_backend)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
@@ -48278,7 +48284,11 @@ async def _build_openai_passthrough_body_async(
     backend_ctx = None,
     llama_backend = None,
 ) -> dict:
-    if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
+    if (
+        _request_has_image(payload)
+        or _preserve_probe_pending(llama_backend)
+        or is_ollama_manifest_ref(getattr(llama_backend, "model_identifier", None) or "")
+    ):
         return await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
