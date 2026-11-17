@@ -7628,6 +7628,51 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def _same_tensor(tensor):
+    return tensor
+
+
+def fix_flex_attention_eager_saved_tensor_hooks():
+    """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
+    non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
+    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
+    try:
+        import torch
+        flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
+    except Exception:
+        return
+    original = getattr(flex_hop, "create_fw_bw_graph", None)
+    # torch < 2.7 cannot query the active hooks: always trace under identity hooks there.
+    top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
+    if original is None:
+        return
+    if getattr(original, "_unsloth_saved_hooks_free", False):
+        return
+
+    @functools.wraps(original)
+    def create_fw_bw_graph(*args, **kwargs):
+        try:
+            active = top_hooks is None or top_hooks(False) is not None
+        except Exception:
+            active = False
+        if not active:
+            return original(*args, **kwargs)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        try:
+            # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
+            hooks.__enter__()
+        except Exception:
+            return original(*args, **kwargs)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            hooks.__exit__(None, None, None)
+
+    create_fw_bw_graph._unsloth_saved_hooks_free = True
+    create_fw_bw_graph._unsloth_original = original
+    flex_hop.create_fw_bw_graph = create_fw_bw_graph
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
