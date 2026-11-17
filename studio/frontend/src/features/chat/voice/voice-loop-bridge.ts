@@ -19,11 +19,40 @@ let voiceThreadReset: ((prevThreadId: string | null) => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
 let voiceBargeAbort: (() => void) | null = null;
-let voiceSubmit: ((text?: string) => void) | null = null;
+let voiceSubmit: ((text?: string, meta?: VoiceSubmitMeta) => void) | null = null;
 let voicePlayback: (() => boolean) | null = null;
 let voiceListen: (() => DictationAdapter.Session | null) | null = null;
 
 export const loadVoiceMode = () => import("./voice-engine");
+
+// Heard cuts not yet saved on their message, by message id: the next request reads them at once.
+const pendingHeardCuts = new Map<string, { offset: number }>();
+
+export function setPendingHeardCut(messageId: string, cut: { offset: number }): void {
+  pendingHeardCuts.set(messageId, cut);
+}
+
+export function pendingHeardCut(messageId: string): { offset: number } | null {
+  return pendingHeardCuts.get(messageId) ?? null;
+}
+
+export function clearPendingHeardCut(messageId: string): void {
+  pendingHeardCuts.delete(messageId);
+}
+
+// The cut last written to each reply this session (null: cleared), for a writer with no open copy to ask.
+const writtenHeardCuts = new Map<string, { offset: number; at: number } | null>();
+
+export function noteWrittenHeardCut(messageId: string, heard: { offset: number; at: number } | null): void {
+  writtenHeardCuts.set(messageId, heard);
+}
+
+/** The reply's custom metadata as far as its heard cut goes, or undefined when this session never wrote one. */
+export function writtenHeardCustom(messageId: string): Record<string, unknown> | undefined {
+  if (!writtenHeardCuts.has(messageId)) return undefined;
+  const heard = writtenHeardCuts.get(messageId);
+  return heard ? { voiceHeard: heard } : {};
+}
 
 export function useVoiceRequested(): boolean {
   return useSyncExternalStore(
@@ -105,6 +134,14 @@ export function requestVoiceToggle(): void {
   void loadVoiceMode().catch(() => {});
 }
 
+/** Ends voice mode, and drops a toggle queued for an engine still loading: nothing replays to turn it on. */
+export function requestVoiceOff(): void {
+  voiceTogglesPending = 0;
+  if (voiceMode === "off") return;
+  if (voiceToggle) voiceToggle();
+  else voiceMode = "off";
+}
+
 export function registerVoiceThreadReset(fn: ((prevThreadId: string | null) => void) | null): void {
   voiceThreadReset = fn;
 }
@@ -181,13 +218,65 @@ export function requestVoiceEarlyInterject(fragment: string): void {
   voiceEarlyInterject?.(fragment);
 }
 
-export function registerVoiceSubmit(fn: ((text?: string) => void) | null): void {
+// confirmedEarly: Smart Turn said the turn ended (and the judge agreed, when one answered), so no coalesce window is needed.
+export type VoiceSubmitMeta = { turnId?: string; confirmedEarly?: boolean };
+
+export function registerVoiceSubmit(fn: ((text?: string, meta?: VoiceSubmitMeta) => void) | null): void {
   voiceSubmit = fn;
 }
 
 // A no-op outside voice mode: that is what leaves the plain Dictate button filling the composer without sending.
-export function requestVoiceSubmit(text?: string): void {
-  voiceSubmit?.(text);
+export function requestVoiceSubmit(text?: string, meta?: VoiceSubmitMeta): void {
+  voiceSubmit?.(text, meta);
+}
+
+// The traced turn: an utterance waiting for its run, then the run waiting for its first audio.
+export type VoiceTurnEnd = "barged" | "cancelled" | "noTts" | "typed" | "superseded";
+let unsentTurnId: string | null = null;
+let liveTurnId: string | null = null;
+
+/** A spoken utterance headed for the model; coalesced and queued ones keep the first one's id. */
+export function noteVoiceTurn(turnId: string | undefined): void {
+  if (turnId) unsentTurnId ??= turnId;
+}
+
+/** The run starting now answers the waiting utterance: its id, or null for a typed send. */
+export function sendVoiceTurn(): string | null {
+  if (!unsentTurnId) return null;
+  liveTurnId = unsentTurnId;
+  unsentTurnId = null;
+  return liveTurnId;
+}
+
+export function liveVoiceTurn(): string | null {
+  return liveTurnId;
+}
+
+/** The turn is over once its first audio plays. */
+export function settleVoiceTurn(turnId: string | null | undefined): void {
+  if (turnId && liveTurnId === turnId) liveTurnId = null;
+}
+
+/** An utterance that will never be sent (an ignored interjection): true when it was the waiting one. */
+export function dropVoiceTurn(turnId: string | undefined): boolean {
+  if (!turnId || unsentTurnId !== turnId) return false;
+  unsentTurnId = null;
+  return true;
+}
+
+/** The waiting utterance's run will never start: its id, so the next utterance gets its own. */
+export function dropUnsentVoiceTurn(): string | null {
+  const turnId = unsentTurnId;
+  unsentTurnId = null;
+  return turnId;
+}
+
+/** Ends the live turn, and the waiting one unless `liveOnly`; returns the ids it ended. */
+export function endVoiceTurns(liveOnly = false): string[] {
+  const ended = [liveTurnId, liveOnly ? null : unsentTurnId].filter((id): id is string => Boolean(id));
+  liveTurnId = null;
+  if (!liveOnly) unsentTurnId = null;
+  return ended;
 }
 
 let voiceTypedSubmit: ((box: string) => boolean) | null = null;
