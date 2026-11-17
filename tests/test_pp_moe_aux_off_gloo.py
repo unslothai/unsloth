@@ -37,6 +37,8 @@ def build(
     aux = False,
     coef = 0.9,
     lora = False,
+    experts = False,
+    gc = None,
     seed = 0,
 ):
     common = dict(
@@ -75,6 +77,11 @@ def build(
                 p.add_(torch.randn_like(p) * 0.1)
             if name.endswith(("mlp.router.weight", "mlp.gate.weight")):
                 p.normal_(0.0, 0.5)  # uneven routing: an auxiliary loss would be far from zero
+    if gc is not None:
+        # HF gradient checkpointing (reentrant or not): with the auxiliary loss off nothing is captured across it.
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = {"use_reentrant": gc == "reentrant"}
+        )
     if not lora:
         return model.train()
     from peft import LoraConfig, get_peft_model
@@ -84,10 +91,16 @@ def build(
         r = 4,
         lora_alpha = 8,
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_parameters = (
+            ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"] if experts else None
+        ),
         init_lora_weights = False,
         lora_dropout = 0.0,
     )
-    return get_peft_model(model, config).train()
+    model = get_peft_model(model, config)
+    if gc is not None:
+        model.enable_input_require_grads()
+    return model.train()
 
 
 def _group(name):
@@ -236,6 +249,11 @@ CELLS = {
     "gpt_oss_full_logits_off_gpipe": dict(),
     "gpt_oss_lora_logits_off_1f1b": dict(lora = True, schedule = "1f1b"),
     "gpt_oss_full_coef0_logits_on_gpipe_mb4": dict(aux = True, coef = 0.0, n_mb = 4),
+    "gpt_oss_lora_logits_off_gpipe_gc": dict(lora = True, gc = "nonreentrant"),
+    "gpt_oss_lora_experts_logits_off_gpipe": dict(lora = True, experts = True),
+    "gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant": dict(
+        lora = True, experts = True, schedule = "1f1b", gc = "reentrant"
+    ),
     "mixtral_full_logits_off_gpipe": dict(family = "mixtral"),
 }
 
@@ -255,7 +273,9 @@ def test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation(cell):
         if kwargs.get("coef", 0.9):
             assert "router_aux_loss_coef = 0.0" in (res["refused"] or ""), res["refused"]
     groups = set(results[0]["diffs"]) | set(results[1]["diffs"])
-    want = {"lora_attention"} if kwargs.get("lora") else {"router", "experts", "attention"}
+    want = {"router", "experts", "attention"}
+    if kwargs.get("lora"):
+        want = {"lora_attention", "lora_experts"} if kwargs.get("experts") else {"lora_attention"}
     assert want <= groups, groups
 
 

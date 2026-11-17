@@ -924,7 +924,30 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
     with pytest.raises(
         NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
     ):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
+        caps.check(
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+        )
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+    # gpt-oss under pp with its router auxiliary loss off (tests/test_pp_moe_aux_off_gloo.py), eager attention
+    # (its sinks), checkpointing included; with the loss on it names the switch that turns it off.
+    gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
+    for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):
+        query = _q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, **extra})
+        assert caps.cell_status(query)[0] == "supported", extra
+        caps.check(query)
+    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*router_aux_loss_coef = 0.0"):
+        caps.check(
+            _q(
+                pp = 2,
+                pp_schedule = "gpipe",
+                router_aux_loss = True,
+                memory = "unsloth_offload",
+                **gpt_oss_q,
+            )
+        )
+    with pytest.raises(NotImplementedError, match = r"no numeric parity"):
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, "attention": "sdpa"}))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
         caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x mode"):
