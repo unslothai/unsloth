@@ -15664,10 +15664,6 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
-# PyMuPDF is not thread-safe.
-_WEB_PDF_LOCK = threading.Lock()
-
-
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
@@ -16778,16 +16774,23 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
+            from ..rag.parsers import MUPDF_LOCK
+
+            queued_at = time.monotonic()
+            # Indexing can hold the lock for minutes, so Stop must still work while queued.
+            while not MUPDF_LOCK.acquire(timeout = 0.25):
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Failed to fetch URL: cancelled.", "", content_type
             try:
-                queued_at = time.monotonic()
-                with _WEB_PDF_LOCK:
-                    # Time queued behind another read's PDF is not spent on this read.
-                    if deadline is not None:
-                        deadline += time.monotonic() - queued_at
-                    pdf_text = _extract_pdf_text(raw_bytes)
+                # Time queued behind another PDF is not spent on this read.
+                if deadline is not None:
+                    deadline += time.monotonic() - queued_at
+                pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
+            finally:
+                MUPDF_LOCK.release()
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type

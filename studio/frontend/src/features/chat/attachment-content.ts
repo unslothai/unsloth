@@ -1789,7 +1789,7 @@ export async function extractOfficeAttachmentText(
   const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
-    const deck = readPptx(bytes, { images: false, notes: true });
+    const deck = readPptx(bytes, { images: false, notes: true, keepHidden: true });
     for (const [index, slide] of deck.slides.entries()) {
       if (budget.cut) break;
       const lines = [budget.take(`Slide ${index + 1}`)];

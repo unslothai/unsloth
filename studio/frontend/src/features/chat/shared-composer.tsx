@@ -141,6 +141,8 @@ import { FolderAddIcon } from "@/lib/folder-icons";
 import { StopIcon } from "@/lib/media-control-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useChatActive } from "./runtime-provider";
+import { useChatProjectScope } from "./chat-project-scope";
+import { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
 import { toast } from "@/lib/toast";
@@ -291,7 +293,10 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
-  appendMessage: (content: CompareMessagePart[]) => Promise<void>;
+  appendMessage: (
+    content: CompareMessagePart[],
+    model: CompareModelSelection | undefined,
+  ) => Promise<void>;
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
@@ -464,6 +469,7 @@ export function RegisterCompareHandle({
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
+  const projectScope = useChatProjectScope();
 
   useEffect(() => {
     if (!handlesRef) {
@@ -485,7 +491,16 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) => {
+      appendMessage: (content, model) => {
+        if (model?.id) {
+          claimThreadCreation(getThreadIds(), {
+            projectId: projectScope,
+            incognito: useChatRuntimeStore.getState().incognito,
+            modelId: model.id,
+            modelGgufVariant: model.ggufVariant ?? null,
+            createdAt: Date.now(),
+          });
+        }
         const count = aui.thread().getState().messages.length;
         aui.thread().append({
           role: "user",
@@ -544,7 +559,7 @@ export function RegisterCompareHandle({
     return () => {
       delete currentHandles[name];
     };
-  }, [handlesRef, name, aui]);
+  }, [handlesRef, name, aui, projectScope]);
 
   return null;
 }
@@ -2212,8 +2227,8 @@ export function SharedComposer({
       const handle2 = handlesRef.current["model2"];
 
       await Promise.all([
-        handle1?.appendMessage(content),
-        handle2?.appendMessage(content),
+        handle1?.appendMessage(content, model1),
+        handle2?.appendMessage(content, model2),
       ]);
 
       const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";

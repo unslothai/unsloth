@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import weakref
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -17,6 +18,11 @@ logger = get_logger(__name__)
 KRON_ATTR = "_unsloth_kron_adapters"
 # Adapter names whose file held LoKR modules only: diffusers has no PEFT adapter of that name to set.
 KRON_ONLY_ATTR = "_unsloth_kron_only"
+# ``(weakref to parameter, requires_grad)`` of every LoRA-loadable component, taken before the first adapter of a set.
+# PEFT freezes the base weights it injects into and unloading leaves them frozen, while torch.matmul picks its kernel
+# from requires_grad even under no_grad (a non-contiguous 3-D input folds into mm, else runs bmm: other bits on CUDA).
+# Weak, so a quantize after a load-time bake still frees the dense weights it replaced.
+REQUIRES_GRAD_ATTR = "_unsloth_lora_requires_grad"
 _PREFIXES = ("diffusion_model.", "model.diffusion_model.", "transformer.")
 # Kohya / SimpleTuner keys: the reference layer path with its dots written as underscores.
 _KOHYA_PREFIXES = ("lora_unet_", "lycoris_")
@@ -518,8 +524,34 @@ def _adapter_loaded(pipe: Any, name: str) -> bool:
     return any(name in names for names in (pipe.get_list_adapters() or {}).values())
 
 
+def _lora_components(pipe: Any) -> list:
+    import torch
+
+    names = getattr(pipe, "_lora_loadable_modules", None) or ("transformer", "unet")
+    roots = [getattr(pipe, name, None) for name in names]
+    return list({id(m): m for m in roots if isinstance(m, torch.nn.Module)}.values())
+
+
+def _remember_requires_grad(pipe: Any) -> None:
+    if REQUIRES_GRAD_ATTR in pipe.__dict__:
+        return  # an adapter of this set is already loaded: the flags were taken before the first one
+    pipe.__dict__[REQUIRES_GRAD_ATTR] = [
+        (weakref.ref(param), param.requires_grad)
+        for root in _lora_components(pipe)
+        for param in root.parameters()
+    ]
+
+
+def _restore_requires_grad(pipe: Any) -> None:
+    for ref, flag in pipe.__dict__.pop(REQUIRES_GRAD_ATTR, ()):
+        param = ref()
+        if param is not None and param.requires_grad != flag and param.is_leaf:
+            param.requires_grad_(flag)
+
+
 def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None:
     """One file under ``name``: plain LoRA via ``pipe.load_lora_weights``, LoKR modules as ``KronLinear`` slots."""
+    _remember_requires_grad(pipe)
     if family not in NORMALIZED_FAMILIES:
         pipe.load_lora_weights(path, adapter_name = name)
         return
@@ -634,5 +666,9 @@ def unload_adapters(pipe: Any) -> None:
         for adapter in adapters:
             adapter.remove()
     pipe.__dict__.pop(KRON_ONLY_ATTR, None)
-    pipe.unload_lora_weights()
+    try:
+        pipe.unload_lora_weights()
+    finally:
+        # Without this an attach + detach does not reproduce the render before it (HiDream-I1's to_out).
+        _restore_requires_grad(pipe)
     _refresh_group_offload(roots)
