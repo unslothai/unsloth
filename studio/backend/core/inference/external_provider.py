@@ -4942,6 +4942,11 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+        # Gemini 400s on hosted tools beside functionDeclarations unless this is set; Vertex rejects the field.
+        if function_declarations and any("functionDeclarations" not in t for t in tools_array):
+            from core.inference.providers import is_vertex_host
+            if not is_vertex_host(urlsplit(self.base_url or "").hostname):
+                body.setdefault("toolConfig", {})["includeServerSideToolInvocations"] = True
 
         # JSON mode only on tool-free turns: Gemini 400s on response mime type plus function calling.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
