@@ -227,6 +227,7 @@ import {
   matchesFormat,
   orderBySection,
   orgFilterApplies,
+  ownerOrgId,
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
@@ -566,7 +567,17 @@ function rowMaker(
 
 /** As rowMaker, without a fine-tune's base model: an org filter lists only that org's own repos. */
 function rowOrg(row: Pick<Row, "kind" | "id">): Maker | null {
-  return rowMaker({ kind: row.kind, id: row.id });
+  const maker = rowMaker({ kind: row.kind, id: row.id });
+  if (maker || row.kind === "external") {
+    return maker;
+  }
+  // The logo map names few orgs by owner, so `google/gemma-*` would get no org and drop out of Google.
+  const owner = (
+    hubParts(row.id) ??
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined)
+  )?.owner;
+  const id = owner ? ownerOrgId(owner) : null;
+  return PROVIDER_LOGOS.find((logo) => logo.id === id) ?? null;
 }
 
 // Logo files pad their art differently: scale each so its drawn part fills the box.

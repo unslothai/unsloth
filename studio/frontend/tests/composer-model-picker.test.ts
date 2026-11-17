@@ -23,6 +23,7 @@ import {
   localSection,
   orderBySection,
   orgFilterApplies,
+  ownerOrgId,
   pickerAlignOffset,
   pickerDropOffset,
   pickerSide,
@@ -154,8 +155,15 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   );
   assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
-  assert.match(picker, /return rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
+  assert.match(picker, /const maker = rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
   assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
+  // A provider's own repos (`google/gemma-*`) list under it even with no owner logo entry.
+  assert.equal(ownerOrgId("google"), "google");
+  assert.equal(ownerOrgId("Qwen"), "qwen");
+  assert.equal(ownerOrgId("ibm-granite"), "ibm");
+  assert.equal(ownerOrgId("CohereLabs"), "cohere");
+  assert.equal(ownerOrgId("bartowski"), "bartowski");
+  assert.match(picker, /PROVIDER_LOGOS\.find\(\(logo\) => logo\.id === id\)/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {
