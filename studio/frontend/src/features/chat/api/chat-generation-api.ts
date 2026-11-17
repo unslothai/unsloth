@@ -248,7 +248,7 @@ export function explicitStopSignal(signal: AbortSignal): {
   };
 }
 
-// Failures while the page is hidden (a locked phone drops every socket) do not count.
+// Failures while hidden (a locked phone) do not count.
 const ADMISSION_VISIBLE_ATTEMPTS = 4;
 
 function pageIsHidden(): boolean {

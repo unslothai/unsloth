@@ -2050,7 +2050,7 @@ export async function* streamChatCompletions(
       try {
         chunk = await reader.read();
       } catch (error) {
-        // A dropped socket (a locked phone, Wi-Fi handoff) rejects with TypeError: same as a cut stream.
+        // A dropped socket rejects with TypeError: treat it as a cut stream.
         if (!signal.aborted && error instanceof TypeError) {
           throw new StreamInterruptedError();
         }

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Another device writes straight to the server, so nothing local fires: poll the change counters.
 export const REMOTE_HISTORY_POLL_MS = 4_000;
 
 export type RemoteHistoryRevision = {
@@ -40,7 +39,7 @@ export function createRemoteHistorySync(
   >();
   let historyRevision: number | null = null;
   let inFlight: Promise<void> | null = null;
-  // An older server has no endpoint; stop asking for the rest of the page's life.
+  // An older server has no endpoint: stop asking.
   let unsupported = false;
 
   const run = async () => {
