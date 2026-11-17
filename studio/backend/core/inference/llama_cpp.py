@@ -38903,9 +38903,14 @@ class LlamaCppBackend:
                 return text
             # Shared parser-side strip covers every family; tool_healing strip omits loop-only forms (python_tag, Mistral name) and would leak them into display.
             span = _lead_think_span(text)
-            return text[:span] + _shared_strip_tool_markup(
-                text[span:], final = final, enabled_tool_names = _enabled_names_gate
+            tail = text[span:]
+            cleaned = _shared_strip_tool_markup(
+                tail, final = final, enabled_tool_names = _enabled_names_gate
             )
+            if span and final and cleaned:
+                # A whole-text final strip never trimmed the answer's lead; streaming snapshots keep it.
+                cleaned = tail[: len(tail) - len(tail.lstrip())] + cleaned
+            return text[:span] + cleaned
 
         # Avoids quadratic rescans. Think blocks stay verbatim: a rehearsed call inside one must not be deleted.
         _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)

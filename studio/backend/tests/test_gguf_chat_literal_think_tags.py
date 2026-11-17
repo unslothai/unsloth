@@ -299,3 +299,10 @@ def test_a_split_after_an_inline_block_still_claims_its_wrap():
 
     assert "".join(r for r, _ in parts) == "Inline.Split."
     assert "".join(v for _, v in parts) == "Answer <think>"
+
+
+def test_a_held_indented_answer_after_reasoning_keeps_its_indentation(monkeypatch):
+    answer = '    {"value": "hello'
+    frames = [_sse({"reasoning_content": "Plan."}), _sse({"content": answer}), "data: [DONE]\n"]
+
+    assert _stream(monkeypatch, frames, tools = True) == ("Plan.", answer)
