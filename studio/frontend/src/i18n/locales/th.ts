@@ -904,6 +904,8 @@ export const th = {
     downloadNeeded: "ต้องดาวน์โหลด",
     transcriberMissing: "ยังไม่ได้ดาวน์โหลด {model} โหมดเสียงจึงยังฟังคุณไม่ได้",
     startHint: "โมเดลจะโหลดเมื่อคุณเริ่มโหมดเสียง",
+    startHintDownload: "เมื่อเริ่ม ระบบจะดาวน์โหลดโมเดลถอดเสียงก่อน ({size})",
+    startHintDownloadUnsized: "เมื่อเริ่ม ระบบจะดาวน์โหลดโมเดลถอดเสียงก่อน",
     back: "กลับไปที่โมเดลเสียง",
     selectChatModelFirst: "เลือกโมเดลแชทก่อน",
     roles: {
@@ -918,6 +920,7 @@ export const th = {
       loading: "กำลังโหลด",
       notLoaded: "ยังไม่ได้โหลด",
       loadsOnStart: "โหลดเมื่อเริ่ม",
+      downloadsOnStart: "ดาวน์โหลดเมื่อเริ่ม",
       downloading: "กำลังดาวน์โหลด",
       notSetUp: "ยังไม่ได้ตั้งค่า",
       error: "ข้อผิดพลาด",
@@ -1954,6 +1957,10 @@ export const th = {
           "การป้อนตามคำบอกภายในเครื่องทำงานแบบออฟไลน์ทั้งหมด แต่ต้องใช้โมเดลเสียงพูด {model} ก่อน ขนาดประมาณ {size} โดยดาวน์โหลดเพียงครั้งเดียวลงในแคช Hugging Face ของคุณ",
         sttDownloadConfirmBodyUnsized:
           "การป้อนตามคำบอกภายในเครื่องทำงานแบบออฟไลน์ทั้งหมด แต่ต้องใช้โมเดลเสียงพูด {model} ก่อน โดยดาวน์โหลดเพียงครั้งเดียวลงในแคช Hugging Face ของคุณ",
+        sttDownloadConfirmBodyVoice:
+          "โหมดเสียงต้องใช้โมเดลเสียงพูด {model} เพื่อฟังคุณ ขนาดประมาณ {size} โดยดาวน์โหลดเพียงครั้งเดียวลงในแคช Hugging Face ของคุณ",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "โหมดเสียงต้องใช้โมเดลเสียงพูด {model} เพื่อฟังคุณ โดยดาวน์โหลดเพียงครั้งเดียวลงในแคช Hugging Face ของคุณ",
         sttOpenVoiceSettings: "เปิดการตั้งค่าเสียงพูด",
         sttDownloadStarted: "กำลังดาวน์โหลด {model}",
         sttDownloading: "กำลังดาวน์โหลด… {progress}%",

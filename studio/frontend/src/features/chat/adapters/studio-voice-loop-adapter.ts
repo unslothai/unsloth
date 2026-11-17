@@ -853,7 +853,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
             const missing = modelId ?? useVoiceSettingsStore.getState().sttModel;
             const downloading = isTrackingSttDownload(missing);
-            if (!downloading) requestSttDownload(missing);
+            if (!downloading) requestSttDownload(missing, { voice: true });
             // Not a failed transcription: the voice waits for the transcriber (the orb and pill say so)
             // and listens again once it is loaded. This clip cannot be heard.
             const rt = useChatRuntimeStore.getState();
@@ -1142,7 +1142,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               const downloading = isTrackingSttDownload(sttPick);
               rt.setSttSlotDownload(downloading ? "downloading" : "needed");
               // Asked as listening begins, not after the first utterance is lost to the missing model.
-              if (!downloading) requestSttDownload(sttPick);
+              if (!downloading) requestSttDownload(sttPick, { voice: true });
             });
         }
         // Off in Settings > Voice > Voice mode: the fixed silence wait alone ends a turn.

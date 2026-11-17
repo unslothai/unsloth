@@ -849,6 +849,8 @@ export const ptBR = {
     downloadNeeded: "download necessário",
     transcriberMissing: "{model} ainda não foi baixado, então o modo de voz não consegue ouvir você.",
     startHint: "Os modelos são carregados ao iniciar o modo de voz.",
+    startHintDownload: "Ao iniciar, o modelo de transcrição é baixado primeiro ({size}).",
+    startHintDownloadUnsized: "Ao iniciar, o modelo de transcrição é baixado primeiro.",
     back: "Voltar aos modelos de voz",
     selectChatModelFirst: "Selecione primeiro um modelo de chat",
     roles: {
@@ -863,6 +865,7 @@ export const ptBR = {
       loading: "Carregando",
       notLoaded: "Não carregado",
       loadsOnStart: "Carrega ao iniciar",
+      downloadsOnStart: "Baixa ao iniciar",
       downloading: "Baixando",
       notSetUp: "Não configurado",
       error: "Erro",
@@ -1866,6 +1869,10 @@ export const ptBR = {
           "O ditado local funciona totalmente offline, mas antes precisa do modelo de fala {model}. Cerca de {size}, baixado uma única vez para o cache do Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "O ditado local funciona totalmente offline, mas antes precisa do modelo de fala {model}. Ele é baixado uma única vez para o cache do Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "O modo de voz precisa do modelo de fala {model} para ouvir você. Cerca de {size}, baixado uma única vez para o cache do Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "O modo de voz precisa do modelo de fala {model} para ouvir você. Ele é baixado uma única vez para o cache do Hugging Face.",
         sttOpenVoiceSettings: "Abrir as configurações de Voz",
         sttDownloadStarted: "Baixando {model}",
         sttDownloading: "Baixando… {progress}%",

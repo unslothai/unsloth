@@ -850,6 +850,8 @@ export const ja = {
     downloadNeeded: "ダウンロードが必要",
     transcriberMissing: "{model} がまだダウンロードされていないため、音声モードは聞き取れません。",
     startHint: "モデルは音声モードの開始時に読み込まれます。",
+    startHintDownload: "開始すると、まず文字起こしモデルをダウンロードします（{size}）。",
+    startHintDownloadUnsized: "開始すると、まず文字起こしモデルをダウンロードします。",
     back: "音声モデルに戻る",
     selectChatModelFirst: "先にチャットモデルを選択してください",
     roles: {
@@ -864,6 +866,7 @@ export const ja = {
       loading: "読み込み中",
       notLoaded: "未読み込み",
       loadsOnStart: "開始時に読み込み",
+      downloadsOnStart: "開始時にダウンロード",
       downloading: "ダウンロード中",
       notSetUp: "未設定",
       error: "エラー",
@@ -1866,6 +1869,10 @@ export const ja = {
           "ローカルの音声入力は完全にオフラインで動作しますが、先に {model} 音声モデルが必要です。サイズは約 {size} で、初回のみ Hugging Face キャッシュにダウンロードされます。",
         sttDownloadConfirmBodyUnsized:
           "ローカルの音声入力は完全にオフラインで動作しますが、先に {model} 音声モデルが必要です。初回のみ Hugging Face キャッシュにダウンロードされます。",
+        sttDownloadConfirmBodyVoice:
+          "音声モードで聞き取るには {model} 音声モデルが必要です。サイズは約 {size} で、初回のみ Hugging Face キャッシュにダウンロードされます。",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "音声モードで聞き取るには {model} 音声モデルが必要です。初回のみ Hugging Face キャッシュにダウンロードされます。",
         sttOpenVoiceSettings: "音声設定を開く",
         sttDownloadStarted: "{model} をダウンロードしています",
         sttDownloading: "ダウンロード中… {progress}%",

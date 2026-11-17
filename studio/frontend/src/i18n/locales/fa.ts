@@ -948,6 +948,8 @@ export const fa = {
     downloadNeeded: "نیاز به دانلود",
     transcriberMissing: "{model} هنوز دانلود نشده است، بنابراین حالت صوتی نمی‌تواند صدای شما را بشنود.",
     startHint: "مدل‌ها با شروع حالت صوتی بارگیری می‌شوند.",
+    startHintDownload: "با شروع، ابتدا مدل رونویسی دانلود می‌شود ({size}).",
+    startHintDownloadUnsized: "با شروع، ابتدا مدل رونویسی دانلود می‌شود.",
     back: "بازگشت به مدل‌های صوتی",
     selectChatModelFirst: "ابتدا یک مدل گفتگو انتخاب کنید",
     roles: {
@@ -962,6 +964,7 @@ export const fa = {
       loading: "در حال بارگیری",
       notLoaded: "بارگیری‌نشده",
       loadsOnStart: "هنگام شروع بارگیری می‌شود",
+      downloadsOnStart: "هنگام شروع دانلود می‌شود",
       downloading: "در حال دانلود",
       notSetUp: "تنظیم‌نشده",
       error: "خطا",
@@ -2028,6 +2031,10 @@ export const fa = {
           "دیکتهٔ محلی کاملاً آفلاین اجرا می‌شود، اما ابتدا به مدل گفتار {model} نیاز دارد. حدود {size} که یک بار در کش Hugging Face شما دریافت می‌شود.",
         sttDownloadConfirmBodyUnsized:
           "دیکتهٔ محلی کاملاً آفلاین اجرا می‌شود، اما ابتدا به مدل گفتار {model} نیاز دارد. این مدل یک بار در کش Hugging Face شما دریافت می‌شود.",
+        sttDownloadConfirmBodyVoice:
+          "حالت صوتی برای شنیدن صدای شما به مدل گفتار {model} نیاز دارد. حدود {size} که یک بار در کش Hugging Face شما دریافت می‌شود.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "حالت صوتی برای شنیدن صدای شما به مدل گفتار {model} نیاز دارد. این مدل یک بار در کش Hugging Face شما دریافت می‌شود.",
         sttOpenVoiceSettings: "باز کردن تنظیمات صدا",
         sttDownloadStarted: "در حال دانلود {model}",
         sttDownloading: "در حال دانلود… {progress}%",

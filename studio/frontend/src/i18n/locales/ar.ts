@@ -849,6 +849,8 @@ export const ar = {
     downloadNeeded: "يلزم التنزيل",
     transcriberMissing: "لم يُنزَّل {model} بعد، لذا لا يستطيع الوضع الصوتي سماعك.",
     startHint: "تُحمَّل النماذج عند بدء وضع الصوت.",
+    startHintDownload: "عند البدء تُنزَّل أداة النسخ أولًا ({size}).",
+    startHintDownloadUnsized: "عند البدء تُنزَّل أداة النسخ أولًا.",
     back: "العودة إلى نماذج الصوت",
     selectChatModelFirst: "اختر نموذج دردشة أولًا",
     roles: {
@@ -863,6 +865,7 @@ export const ar = {
       loading: "جارٍ التحميل",
       notLoaded: "غير محمّل",
       loadsOnStart: "يُحمَّل عند البدء",
+      downloadsOnStart: "يُنزَّل عند البدء",
       downloading: "جارٍ التنزيل",
       notSetUp: "غير مُعدّ",
       error: "خطأ",
@@ -1862,6 +1865,10 @@ export const ar = {
           "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. حجمه {size} تقريبًا، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         sttDownloadConfirmBodyUnsized:
           "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttDownloadConfirmBodyVoice:
+          "يحتاج وضع الصوت إلى نموذج الكلام {model} ليسمعك. حجمه {size} تقريبًا، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "يحتاج وضع الصوت إلى نموذج الكلام {model} ليسمعك. ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         sttOpenVoiceSettings: "فتح إعدادات الصوت",
         sttDownloadStarted: "جارٍ تنزيل {model}",
         sttDownloading: "جارٍ التنزيل… {progress}%",

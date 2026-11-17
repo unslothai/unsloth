@@ -895,6 +895,8 @@ export const zhTW = {
     downloadNeeded: "需要下載",
     transcriberMissing: "{model} 尚未下載，語音模式暫時聽不到你說話。",
     startHint: "模型會在開始語音模式時載入。",
+    startHintDownload: "啟動時會先下載轉寫模型（{size}）。",
+    startHintDownloadUnsized: "啟動時會先下載轉寫模型。",
     back: "返回語音模型",
     selectChatModelFirst: "請先選擇聊天模型",
     roles: {
@@ -909,6 +911,7 @@ export const zhTW = {
       loading: "載入中",
       notLoaded: "未載入",
       loadsOnStart: "開始時載入",
+      downloadsOnStart: "啟動時下載",
       downloading: "正在下載",
       notSetUp: "未設定",
       error: "錯誤",
@@ -1939,6 +1942,10 @@ export const zhTW = {
           "本機聽寫完全離線執行，但需要先取得 {model} 語音模型。大小約 {size}，只會下載一次至您的 Hugging Face 快取。",
         sttDownloadConfirmBodyUnsized:
           "本機聽寫完全離線執行，但需要先取得 {model} 語音模型。只會下載一次至您的 Hugging Face 快取。",
+        sttDownloadConfirmBodyVoice:
+          "語音模式需要 {model} 語音模型才能聽到你的聲音。大小約 {size}，只會下載一次至您的 Hugging Face 快取。",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "語音模式需要 {model} 語音模型才能聽到你的聲音。只會下載一次至您的 Hugging Face 快取。",
         sttOpenVoiceSettings: "開啟語音設定",
         sttDownloadStarted: "正在下載 {model}",
         sttDownloading: "正在下載… {progress}%",

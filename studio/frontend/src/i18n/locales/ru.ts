@@ -849,6 +849,8 @@ export const ru = {
     downloadNeeded: "нужна загрузка",
     transcriberMissing: "Модель {model} ещё не загружена, поэтому голосовой режим вас не слышит.",
     startHint: "Модели загружаются при включении голосового режима.",
+    startHintDownload: "При запуске сначала скачается модель распознавания ({size}).",
+    startHintDownloadUnsized: "При запуске сначала скачается модель распознавания.",
     back: "Назад к голосовым моделям",
     selectChatModelFirst: "Сначала выберите модель чата",
     roles: {
@@ -863,6 +865,7 @@ export const ru = {
       loading: "Загружается",
       notLoaded: "Не загружена",
       loadsOnStart: "Загрузится при запуске",
+      downloadsOnStart: "Скачается при запуске",
       downloading: "Загрузка",
       notSetUp: "Не настроено",
       error: "Ошибка",
@@ -1866,6 +1869,10 @@ export const ru = {
           "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Около {size}, скачивается один раз в ваш кэш Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Она скачивается один раз в ваш кэш Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "Голосовому режиму нужна модель речи {model}, чтобы слышать вас. Около {size}, скачивается один раз в ваш кэш Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Голосовому режиму нужна модель речи {model}, чтобы слышать вас. Она скачивается один раз в ваш кэш Hugging Face.",
         sttOpenVoiceSettings: "Открыть настройки «Голос»",
         sttDownloadStarted: "Скачивание {model}",
         sttDownloading: "Скачивание… {progress}%",

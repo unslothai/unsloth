@@ -849,6 +849,8 @@ export const ko = {
     downloadNeeded: "다운로드 필요",
     transcriberMissing: "{model}이(가) 아직 다운로드되지 않아 음성 모드가 들을 수 없습니다.",
     startHint: "음성 모드를 시작하면 모델이 로드됩니다.",
+    startHintDownload: "시작하면 먼저 전사 모델을 다운로드합니다({size}).",
+    startHintDownloadUnsized: "시작하면 먼저 전사 모델을 다운로드합니다.",
     back: "음성 모델로 돌아가기",
     selectChatModelFirst: "먼저 채팅 모델을 선택하세요",
     roles: {
@@ -863,6 +865,7 @@ export const ko = {
       loading: "로드 중",
       notLoaded: "로드 안 됨",
       loadsOnStart: "시작 시 로드",
+      downloadsOnStart: "시작할 때 다운로드",
       downloading: "다운로드 중",
       notSetUp: "설정 안 됨",
       error: "오류",
@@ -1863,6 +1866,10 @@ export const ko = {
           "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. 약 {size} 크기이며 Hugging Face 캐시에 한 번만 다운로드합니다.",
         sttDownloadConfirmBodyUnsized:
           "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttDownloadConfirmBodyVoice:
+          "음성 모드가 말을 들으려면 {model} 음성 모델이 필요합니다. 약 {size} 크기이며 Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "음성 모드가 말을 들으려면 {model} 음성 모델이 필요합니다. Hugging Face 캐시에 한 번만 다운로드합니다.",
         sttOpenVoiceSettings: "음성 설정 열기",
         sttDownloadStarted: "{model} 다운로드 중",
         sttDownloading: "다운로드 중… {progress}%",

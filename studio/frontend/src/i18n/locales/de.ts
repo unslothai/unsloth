@@ -849,6 +849,8 @@ export const de = {
     downloadNeeded: "Download erforderlich",
     transcriberMissing: "{model} ist noch nicht heruntergeladen, daher kann der Sprachmodus Sie nicht hören.",
     startHint: "Die Modelle werden geladen, sobald Sie den Sprachmodus starten.",
+    startHintDownload: "Beim Start wird zuerst das Transkriptionsmodell heruntergeladen ({size}).",
+    startHintDownloadUnsized: "Beim Start wird zuerst das Transkriptionsmodell heruntergeladen.",
     back: "Zurück zu den Sprachmodellen",
     selectChatModelFirst: "Wähle zuerst ein Chatmodell",
     roles: {
@@ -863,6 +865,7 @@ export const de = {
       loading: "Lädt",
       notLoaded: "Nicht geladen",
       loadsOnStart: "Lädt beim Start",
+      downloadsOnStart: "Wird beim Start heruntergeladen",
       downloading: "Wird heruntergeladen",
       notSetUp: "Nicht eingerichtet",
       error: "Fehler",
@@ -1871,6 +1874,10 @@ export const de = {
           "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Etwa {size}, wird einmalig in Ihren Hugging Face-Cache geladen.",
         sttDownloadConfirmBodyUnsized:
           "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Es wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttDownloadConfirmBodyVoice:
+          "Der Sprachmodus braucht das Spracherkennungsmodell {model}, um Sie zu hören. Etwa {size}, wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Der Sprachmodus braucht das Spracherkennungsmodell {model}, um Sie zu hören. Es wird einmalig in Ihren Hugging Face-Cache geladen.",
         sttOpenVoiceSettings: "Einstellungen für Sprachfunktionen öffnen",
         sttDownloadStarted: "{model} wird heruntergeladen",
         sttDownloading: "Wird heruntergeladen… {progress} %",

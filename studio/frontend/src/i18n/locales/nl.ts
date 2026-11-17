@@ -961,6 +961,8 @@ export const nl = {
     downloadNeeded: "download nodig",
     transcriberMissing: "{model} is nog niet gedownload, dus de spraakmodus kan je niet horen.",
     startHint: "De modellen worden geladen wanneer je de spraakmodus start.",
+    startHintDownload: "Bij het starten wordt eerst het transcriptiemodel gedownload ({size}).",
+    startHintDownloadUnsized: "Bij het starten wordt eerst het transcriptiemodel gedownload.",
     back: "Terug naar spraakmodellen",
     selectChatModelFirst: "Selecteer eerst een chatmodel",
     roles: {
@@ -975,6 +977,7 @@ export const nl = {
       loading: "Laden",
       notLoaded: "Niet geladen",
       loadsOnStart: "Laadt bij start",
+      downloadsOnStart: "Wordt gedownload bij starten",
       downloading: "Downloaden",
       notSetUp: "Niet ingesteld",
       error: "Fout",
@@ -2061,6 +2064,10 @@ export const nl = {
           "Lokaal dicteren werkt volledig offline, maar vereist eerst het spraakmodel {model}. Ongeveer {size}, eenmalig opgehaald in je Hugging Face-cache.",
         sttDownloadConfirmBodyUnsized:
           "Lokaal dicteren werkt volledig offline, maar vereist eerst het spraakmodel {model}. Het wordt eenmalig opgehaald in je Hugging Face-cache.",
+        sttDownloadConfirmBodyVoice:
+          "De spraakmodus heeft het spraakmodel {model} nodig om je te horen. Ongeveer {size}, eenmalig opgehaald in je Hugging Face-cache.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "De spraakmodus heeft het spraakmodel {model} nodig om je te horen. Het wordt eenmalig opgehaald in je Hugging Face-cache.",
         sttOpenVoiceSettings: "Spraakinstellingen openen",
         sttDownloadStarted: "{model} downloaden",
         sttDownloading: "Downloaden… {progress}%",

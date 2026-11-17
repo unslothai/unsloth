@@ -13,7 +13,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { audioCppSizeLabel } from "@/features/audio/audio-cpp-catalog";
-import { startSttDownload } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   hfApiToken,
   useHfTokenStore,
@@ -21,18 +20,13 @@ import {
 import { listGgufVariants } from "@/features/hub/inventory/api";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
-import { toast } from "@/lib/toast";
 import { type ReactNode, useEffect, useState } from "react";
-import { trackSttDownload } from "../lib/stt-download-mirror";
+import { downloadSttNow } from "../lib/stt-download-now";
 import {
   type SttDownloadRequest,
   useSttDownloadPromptStore,
 } from "../stores/stt-download-prompt-store";
-import {
-  sttModelName,
-  sttModelSize,
-  useVoiceSettingsStore,
-} from "../stores/voice-settings-store";
+import { sttModelName, sttModelSize } from "../stores/voice-settings-store";
 
 /** emphasise the model name in translated copy; use plain text if absent */
 function highlightModel(text: string, model: string): ReactNode {
@@ -53,8 +47,12 @@ export function SttDownloadPrompt() {
   const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
-  const pendingModel = pending?.model ?? null;
-  const variant = pending?.ggufVariant ?? null;
+  // The dialog fades out after dismiss clears the request: keep drawing the last one, not "Download ?".
+  const [lastShown, setLastShown] = useState(pending);
+  if (pending && pending !== lastShown) setLastShown(pending);
+  const shown = pending ?? lastShown;
+  const pendingModel = shown?.model ?? null;
+  const variant = shown?.ggufVariant ?? null;
   // a package folder has no curated size, so read its quant's from the cached listing
   const [listedSize, setListedSize] = useState<{
     model: string;
@@ -83,29 +81,8 @@ export function SttDownloadPrompt() {
     };
   }, [pendingModel, variant, hfToken]);
 
-  const confirm = async (request: SttDownloadRequest) => {
-    // change the engine only on accept because cancel must leave it unchanged
-    if (request.selectLocalEngine) {
-      useVoiceSettingsStore.getState().setDictationEngine("model");
-    }
-    try {
-      const download = await startSttDownload(
-        request.model,
-        hfApiToken(hfToken),
-        undefined,
-        request.ggufVariant,
-      );
-      // progress uses the shared download panel; the model loads when the download finishes
-      trackSttDownload(request.model, {
-        ggufVariant: request.ggufVariant ?? null,
-        downloadId: download.download_id,
-      });
-    } catch (error) {
-      toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    }
-  };
+  const confirm = (request: SttDownloadRequest) => downloadSttNow(request);
+  const voiceCopy = shown?.voice === true;
 
   const size = pendingModel
     ? sttModelSize(pendingModel) ||
@@ -134,13 +111,18 @@ export function SttDownloadPrompt() {
           <AlertDialogDescription>
             {highlightModel(
               pendingModel && size
-                ? t("settings.voice.dictation.sttDownloadConfirmBody", {
-                    model: sttModelName(pendingModel),
-                    size,
-                  })
-                : t("settings.voice.dictation.sttDownloadConfirmBodyUnsized", {
-                    model: sttModelName(pendingModel ?? ""),
-                  }),
+                ? t(
+                    voiceCopy
+                      ? "settings.voice.dictation.sttDownloadConfirmBodyVoice"
+                      : "settings.voice.dictation.sttDownloadConfirmBody",
+                    { model: sttModelName(pendingModel), size },
+                  )
+                : t(
+                    voiceCopy
+                      ? "settings.voice.dictation.sttDownloadConfirmBodyVoiceUnsized"
+                      : "settings.voice.dictation.sttDownloadConfirmBodyUnsized",
+                    { model: sttModelName(pendingModel ?? "") },
+                  ),
               sttModelName(pendingModel ?? ""),
             )}
           </AlertDialogDescription>

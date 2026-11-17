@@ -946,6 +946,8 @@ export const tr = {
     downloadNeeded: "indirme gerekli",
     transcriberMissing: "{model} henüz indirilmedi, bu yüzden sesli mod sizi duyamıyor.",
     startHint: "Modeller, ses modunu başlattığınızda yüklenir.",
+    startHintDownload: "Başlatınca önce transkripsiyon modeli indirilir ({size}).",
+    startHintDownloadUnsized: "Başlatınca önce transkripsiyon modeli indirilir.",
     back: "Ses modellerine dön",
     selectChatModelFirst: "Önce bir sohbet modeli seçin",
     roles: {
@@ -960,6 +962,7 @@ export const tr = {
       loading: "Yükleniyor",
       notLoaded: "Yüklenmedi",
       loadsOnStart: "Başlatınca yüklenir",
+      downloadsOnStart: "Başlatınca indirilir",
       downloading: "İndiriliyor",
       notSetUp: "Kurulmadı",
       error: "Hata",
@@ -2034,6 +2037,10 @@ export const tr = {
           "Yerel dikte tamamen çevrimdışı çalışır, ancak önce {model} konuşma modeline ihtiyaç duyar. Yaklaşık {size} boyutundadır ve Hugging Face önbelleğinize bir kez indirilir.",
         sttDownloadConfirmBodyUnsized:
           "Yerel dikte tamamen çevrimdışı çalışır, ancak önce {model} konuşma modeline ihtiyaç duyar. Hugging Face önbelleğinize bir kez indirilir.",
+        sttDownloadConfirmBodyVoice:
+          "Ses modunun sizi duyabilmesi için {model} konuşma modeli gerekir. Yaklaşık {size} boyutundadır ve Hugging Face önbelleğinize bir kez indirilir.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Ses modunun sizi duyabilmesi için {model} konuşma modeli gerekir. Hugging Face önbelleğinize bir kez indirilir.",
         sttOpenVoiceSettings: "Ses ayarlarını aç",
         sttDownloadStarted: "İndiriliyor: {model}",
         sttDownloading: "İndiriliyor… %{progress}",

@@ -849,6 +849,8 @@ export const zhCN = {
     downloadNeeded: "需要下载",
     transcriberMissing: "{model} 尚未下载，语音模式暂时听不到你说话。",
     startHint: "模型会在开始语音模式时加载。",
+    startHintDownload: "启动时会先下载转写模型（{size}）。",
+    startHintDownloadUnsized: "启动时会先下载转写模型。",
     back: "返回语音模型",
     selectChatModelFirst: "请先选择聊天模型",
     roles: {
@@ -863,6 +865,7 @@ export const zhCN = {
       loading: "加载中",
       notLoaded: "未加载",
       loadsOnStart: "开始时加载",
+      downloadsOnStart: "启动时下载",
       downloading: "正在下载",
       notSetUp: "未设置",
       error: "错误",
@@ -1859,6 +1862,10 @@ export const zhCN = {
           "本地语音输入完全离线运行，但需要先有 {model} 语音模型。约 {size}，只需一次性下载到你的 Hugging Face 缓存。",
         sttDownloadConfirmBodyUnsized:
           "本地语音输入完全离线运行，但需要先有 {model} 语音模型。它只需一次性下载到你的 Hugging Face 缓存。",
+        sttDownloadConfirmBodyVoice:
+          "语音模式需要 {model} 语音模型才能听到你的声音。约 {size}，只需一次性下载到你的 Hugging Face 缓存。",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "语音模式需要 {model} 语音模型才能听到你的声音。它只需一次性下载到你的 Hugging Face 缓存。",
         sttOpenVoiceSettings: "打开语音设置",
         sttDownloadStarted: "正在下载 {model}",
         sttDownloading: "正在下载… {progress}%",

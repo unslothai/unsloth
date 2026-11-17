@@ -1637,6 +1637,10 @@ export const it = {
           "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "La modalità vocale ha bisogno del modello vocale {model} per sentirti. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "La modalità vocale ha bisogno del modello vocale {model} per sentirti. Viene scaricato una sola volta nella tua cache di Hugging Face.",
         sttOpenVoiceSettings: "Apri le impostazioni Voce",
         sttDownloadStarted: "Download di {model} in corso",
         sttDownloading: "Download in corso… {progress}%",
@@ -3991,6 +3995,8 @@ export const it = {
     downloadNeeded: "download necessario",
     transcriberMissing: "{model} non è ancora stato scaricato, quindi la modalità vocale non può sentirti.",
     startHint: "I modelli si caricano all'avvio della modalità vocale.",
+    startHintDownload: "All'avvio viene scaricato prima il modello di trascrizione ({size}).",
+    startHintDownloadUnsized: "All'avvio viene scaricato prima il modello di trascrizione.",
     back: "Torna ai modelli vocali",
     selectChatModelFirst: "Seleziona prima un modello di chat",
     roles: {
@@ -4005,6 +4011,7 @@ export const it = {
       loading: "Caricamento",
       notLoaded: "Non caricato",
       loadsOnStart: "Si carica all'avvio",
+      downloadsOnStart: "Scaricato all'avvio",
       downloading: "Download in corso",
       notSetUp: "Non configurato",
       error: "Errore",

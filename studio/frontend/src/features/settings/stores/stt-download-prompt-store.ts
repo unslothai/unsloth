@@ -10,6 +10,8 @@ export interface SttDownloadRequest {
   ggufVariant?: string | null;
   /** switches dictation to local only after confirmation when browser speech is unavailable. */
   selectLocalEngine?: boolean;
+  /** asked by voice mode, so the copy names voice mode rather than dictation. */
+  voice?: boolean;
 }
 
 /** pending download confirmation shared so the mic can open it without Voice settings mounted. */

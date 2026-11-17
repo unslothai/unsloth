@@ -957,6 +957,8 @@ export const uk = {
     downloadNeeded: "потрібне завантаження",
     transcriberMissing: "Модель {model} ще не завантажено, тому голосовий режим вас не чує.",
     startHint: "Моделі завантажуються після запуску голосового режиму.",
+    startHintDownload: "Під час запуску спершу завантажиться модель розпізнавання ({size}).",
+    startHintDownloadUnsized: "Під час запуску спершу завантажиться модель розпізнавання.",
     back: "Назад до голосових моделей",
     selectChatModelFirst: "Спочатку виберіть модель чату",
     roles: {
@@ -971,6 +973,7 @@ export const uk = {
       loading: "Завантаження",
       notLoaded: "Не завантажено",
       loadsOnStart: "Завантажиться під час запуску",
+      downloadsOnStart: "Завантажиться під час запуску",
       downloading: "Завантаження",
       notSetUp: "Не налаштовано",
       error: "Помилка",
@@ -2050,6 +2053,10 @@ export const uk = {
           "Локальне диктування працює повністю без мережі, але спершу йому потрібна модель мовлення {model}. Приблизно {size}, завантажується один раз у ваш кеш Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "Локальне диктування працює повністю без мережі, але спершу йому потрібна модель мовлення {model}. Вона завантажується один раз у ваш кеш Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "Голосовому режиму потрібна модель мовлення {model}, щоб чути вас. Приблизно {size}, завантажується один раз у ваш кеш Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Голосовому режиму потрібна модель мовлення {model}, щоб чути вас. Вона завантажується один раз у ваш кеш Hugging Face.",
         sttOpenVoiceSettings: "Відкрити налаштування голосу",
         sttDownloadStarted: "Завантаження моделі {model}",
         sttDownloading: "Завантаження… {progress}%",

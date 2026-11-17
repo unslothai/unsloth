@@ -958,6 +958,8 @@ export const pl = {
     downloadNeeded: "wymaga pobrania",
     transcriberMissing: "Model {model} nie jest jeszcze pobrany, więc tryb głosowy Cię nie słyszy.",
     startHint: "Modele załadują się po uruchomieniu trybu głosowego.",
+    startHintDownload: "Przy starcie najpierw pobierany jest model transkrypcji ({size}).",
+    startHintDownloadUnsized: "Przy starcie najpierw pobierany jest model transkrypcji.",
     back: "Wróć do modeli głosowych",
     selectChatModelFirst: "Najpierw wybierz model czatu",
     roles: {
@@ -972,6 +974,7 @@ export const pl = {
       loading: "Ładowanie",
       notLoaded: "Nie załadowano",
       loadsOnStart: "Załaduje się przy starcie",
+      downloadsOnStart: "Pobierany przy starcie",
       downloading: "Pobieranie",
       notSetUp: "Nie skonfigurowano",
       error: "Błąd",
@@ -2056,6 +2059,10 @@ export const pl = {
           "Dyktowanie lokalne działa całkowicie offline, ale najpierw wymaga modelu mowy {model}. Około {size}, pobierane jednorazowo do pamięci podręcznej Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "Dyktowanie lokalne działa całkowicie offline, ale najpierw wymaga modelu mowy {model}. Jest on pobierany jednorazowo do pamięci podręcznej Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "Tryb głosowy potrzebuje modelu mowy {model}, aby cię słyszeć. Około {size}, pobierane jednorazowo do pamięci podręcznej Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Tryb głosowy potrzebuje modelu mowy {model}, aby cię słyszeć. Jest on pobierany jednorazowo do pamięci podręcznej Hugging Face.",
         sttOpenVoiceSettings: "Otwórz ustawienia Głos",
         sttDownloadStarted: "Pobieranie modelu {model}",
         sttDownloading: "Pobieranie… {progress}%",

@@ -849,6 +849,8 @@ export const fr = {
     downloadNeeded: "téléchargement requis",
     transcriberMissing: "{model} n'est pas encore téléchargé, le mode vocal ne peut donc pas vous entendre.",
     startHint: "Les modèles se chargent au démarrage du mode vocal.",
+    startHintDownload: "Au démarrage, le modèle de transcription est d'abord téléchargé ({size}).",
+    startHintDownloadUnsized: "Au démarrage, le modèle de transcription est d'abord téléchargé.",
     back: "Retour aux modèles vocaux",
     selectChatModelFirst: "Choisissez d'abord un modèle de chat",
     roles: {
@@ -863,6 +865,7 @@ export const fr = {
       loading: "Chargement",
       notLoaded: "Non chargé",
       loadsOnStart: "Chargé au démarrage",
+      downloadsOnStart: "Téléchargé au démarrage",
       downloading: "Téléchargement",
       notSetUp: "Non configuré",
       error: "Erreur",
@@ -1870,6 +1873,10 @@ export const fr = {
           "La dictée locale fonctionne entièrement hors ligne, mais elle a d'abord besoin du modèle de reconnaissance vocale {model}. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "La dictée locale fonctionne entièrement hors ligne, mais elle a d'abord besoin du modèle de reconnaissance vocale {model}. Il est téléchargé une seule fois dans votre cache Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "Le mode vocal a besoin du modèle vocal {model} pour vous entendre. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Le mode vocal a besoin du modèle vocal {model} pour vous entendre. Il est téléchargé une seule fois dans votre cache Hugging Face.",
         sttOpenVoiceSettings: "Ouvrir les paramètres Voix",
         sttDownloadStarted: "Téléchargement de {model}",
         sttDownloading: "Téléchargement… {progress} %",

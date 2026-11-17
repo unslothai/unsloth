@@ -954,6 +954,8 @@ export const vi = {
     downloadNeeded: "cần tải xuống",
     transcriberMissing: "{model} chưa được tải xuống nên chế độ giọng nói chưa thể nghe bạn.",
     startHint: "Các mô hình được nạp khi bạn bắt đầu chế độ giọng nói.",
+    startHintDownload: "Khi bắt đầu, mô hình phiên âm sẽ được tải xuống trước ({size}).",
+    startHintDownloadUnsized: "Khi bắt đầu, mô hình phiên âm sẽ được tải xuống trước.",
     back: "Quay lại mô hình giọng nói",
     selectChatModelFirst: "Hãy chọn mô hình trò chuyện trước",
     roles: {
@@ -968,6 +970,7 @@ export const vi = {
       loading: "Đang nạp",
       notLoaded: "Chưa nạp",
       loadsOnStart: "Nạp khi bắt đầu",
+      downloadsOnStart: "Tải xuống khi bắt đầu",
       downloading: "Đang tải xuống",
       notSetUp: "Chưa thiết lập",
       error: "Lỗi",
@@ -2045,6 +2048,10 @@ export const vi = {
           "Đọc chính tả cục bộ chạy hoàn toàn ngoại tuyến, nhưng trước tiên cần mô hình giọng nói {model}. Khoảng {size}, chỉ tải một lần vào bộ nhớ đệm Hugging Face của bạn.",
         sttDownloadConfirmBodyUnsized:
           "Đọc chính tả cục bộ chạy hoàn toàn ngoại tuyến, nhưng trước tiên cần mô hình giọng nói {model}. Mô hình chỉ được tải một lần vào bộ nhớ đệm Hugging Face của bạn.",
+        sttDownloadConfirmBodyVoice:
+          "Chế độ giọng nói cần mô hình giọng nói {model} để nghe bạn. Khoảng {size}, chỉ tải một lần vào bộ nhớ đệm Hugging Face của bạn.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Chế độ giọng nói cần mô hình giọng nói {model} để nghe bạn. Mô hình chỉ được tải một lần vào bộ nhớ đệm Hugging Face của bạn.",
         sttOpenVoiceSettings: "Mở cài đặt Giọng nói",
         sttDownloadStarted: "Đang tải xuống {model}",
         sttDownloading: "Đang tải xuống… {progress}%",

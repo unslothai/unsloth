@@ -859,6 +859,8 @@ export const en = {
     downloadNeeded: "download needed",
     transcriberMissing: "{model} isn't downloaded yet, so voice mode can't hear you.",
     startHint: "Models load when you start voice mode.",
+    startHintDownload: "Start downloads the transcriber first ({size}).",
+    startHintDownloadUnsized: "Start downloads the transcriber first.",
     back: "Back to voice models",
     selectChatModelFirst: "Select a chat model first",
     roles: {
@@ -873,6 +875,7 @@ export const en = {
       loading: "Loading",
       notLoaded: "Not loaded",
       loadsOnStart: "Loads on start",
+      downloadsOnStart: "Downloads on start",
       downloading: "Downloading",
       notSetUp: "Not set up",
       error: "Error",
@@ -1877,6 +1880,10 @@ export const en = {
           "Local dictation runs entirely offline, but it needs the {model} speech model first. About {size}, fetched once into your Hugging Face cache.",
         sttDownloadConfirmBodyUnsized:
           "Local dictation runs entirely offline, but it needs the {model} speech model first. It is fetched once into your Hugging Face cache.",
+        sttDownloadConfirmBodyVoice:
+          "Voice mode needs the {model} speech model to hear you. About {size}, fetched once into your Hugging Face cache.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Voice mode needs the {model} speech model to hear you. It is fetched once into your Hugging Face cache.",
         sttOpenVoiceSettings: "Open Voice settings",
         sttDownloadStarted: "Downloading {model}",
         sttDownloading: "Downloading… {progress}%",

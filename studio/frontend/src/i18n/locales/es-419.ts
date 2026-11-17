@@ -957,6 +957,8 @@ export const es419 = {
     downloadNeeded: "falta descargar",
     transcriberMissing: "{model} aún no está descargado, así que el modo de voz no puede oírte.",
     startHint: "Los modelos se cargan al iniciar el modo de voz.",
+    startHintDownload: "Al iniciar, primero se descarga el modelo de transcripción ({size}).",
+    startHintDownloadUnsized: "Al iniciar, primero se descarga el modelo de transcripción.",
     back: "Volver a los modelos de voz",
     selectChatModelFirst: "Primero selecciona un modelo de chat",
     roles: {
@@ -971,6 +973,7 @@ export const es419 = {
       loading: "Cargando",
       notLoaded: "No cargado",
       loadsOnStart: "Se carga al iniciar",
+      downloadsOnStart: "Se descarga al iniciar",
       downloading: "Descargando",
       notSetUp: "Sin configurar",
       error: "Error",
@@ -2055,6 +2058,10 @@ export const es419 = {
           "El dictado local funciona totalmente sin conexión, pero antes necesita el modelo de voz {model}. Ocupa unos {size} y se descarga una sola vez en tu caché de Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "El dictado local funciona totalmente sin conexión, pero antes necesita el modelo de voz {model}. Se descarga una sola vez en tu caché de Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "El modo de voz necesita el modelo de voz {model} para oírte. Ocupa unos {size} y se descarga una sola vez en tu caché de Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "El modo de voz necesita el modelo de voz {model} para oírte. Se descarga una sola vez en tu caché de Hugging Face.",
         sttOpenVoiceSettings: "Abrir la configuración de Voz",
         sttDownloadStarted: "Descargando {model}",
         sttDownloading: "Descargando… {progress}%",

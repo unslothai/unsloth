@@ -887,6 +887,8 @@ export const he = {
     downloadNeeded: "נדרשת הורדה",
     transcriberMissing: "{model} עדיין לא הורד, ולכן המצב הקולי לא יכול לשמוע אותך.",
     startHint: "המודלים נטענים עם הפעלת המצב הקולי.",
+    startHintDownload: "בהפעלה יורד קודם מודל התמלול ({size}).",
+    startHintDownloadUnsized: "בהפעלה יורד קודם מודל התמלול.",
     back: "חזרה למודלי הקול",
     selectChatModelFirst: "יש לבחור קודם מודל צ'אט",
     roles: {
@@ -901,6 +903,7 @@ export const he = {
       loading: "בטעינה",
       notLoaded: "לא נטען",
       loadsOnStart: "נטען בהפעלה",
+      downloadsOnStart: "יורד בהפעלה",
       downloading: "מוריד",
       notSetUp: "לא הוגדר",
       error: "שגיאה",
@@ -1930,6 +1933,10 @@ export const he = {
           "הכתבה מקומית פועלת לחלוטין ללא אינטרנט, אך היא דורשת תחילה את מודל הדיבור {model}. כ-{size}, יורד פעם אחת למטמון של Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "הכתבה מקומית פועלת לחלוטין ללא אינטרנט, אך היא דורשת תחילה את מודל הדיבור {model}. הוא יורד פעם אחת למטמון של Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "מצב קולי צריך את מודל הדיבור {model} כדי לשמוע אותך. כ-{size}, יורד פעם אחת למטמון של Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "מצב קולי צריך את מודל הדיבור {model} כדי לשמוע אותך. הוא יורד פעם אחת למטמון של Hugging Face.",
         sttOpenVoiceSettings: "פתח הגדרות קול",
         sttDownloadStarted: "מוריד את {model}",
         sttDownloading: "מוריד… {progress}%",

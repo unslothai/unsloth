@@ -902,6 +902,8 @@ export const sv = {
     downloadNeeded: "nedladdning krävs",
     transcriberMissing: "{model} är inte nedladdad än, så röstläget kan inte höra dig.",
     startHint: "Modellerna laddas när du startar röstläget.",
+    startHintDownload: "Vid start laddas transkriberingsmodellen ned först ({size}).",
+    startHintDownloadUnsized: "Vid start laddas transkriberingsmodellen ned först.",
     back: "Tillbaka till röstmodellerna",
     selectChatModelFirst: "Välj en chattmodell först",
     roles: {
@@ -916,6 +918,7 @@ export const sv = {
       loading: "Laddar",
       notLoaded: "Inte laddad",
       loadsOnStart: "Laddas vid start",
+      downloadsOnStart: "Laddas ned vid start",
       downloading: "Laddar ned",
       notSetUp: "Inte konfigurerat",
       error: "Fel",
@@ -1969,6 +1972,10 @@ export const sv = {
           "Lokal diktering körs helt offline, men behöver först talmodellen {model}. Ungefär {size}, hämtas en gång till din Hugging Face-cache.",
         sttDownloadConfirmBodyUnsized:
           "Lokal diktering körs helt offline, men behöver först talmodellen {model}. Den hämtas en gång till din Hugging Face-cache.",
+        sttDownloadConfirmBodyVoice:
+          "Röstläget behöver talmodellen {model} för att höra dig. Ungefär {size}, hämtas en gång till din Hugging Face-cache.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Röstläget behöver talmodellen {model} för att höra dig. Den hämtas en gång till din Hugging Face-cache.",
         sttOpenVoiceSettings: "Öppna röstinställningar",
         sttDownloadStarted: "Hämtar {model}",
         sttDownloading: "Hämtar … {progress} %",

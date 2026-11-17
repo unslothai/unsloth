@@ -25,6 +25,13 @@ import { ORB_IDLE_GRADIENT } from "@/features/chat/voice/orb-config";
 import { DotTag } from "@/features/hub";
 import { useVoiceSettingsStore } from "@/features/settings";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
+import { downloadSttNow } from "@/features/settings/lib/stt-download-now";
+import { isTrackingSttDownload } from "@/features/settings/lib/stt-download-mirror";
+import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import {
+  fetchSttStatus,
+  sttEngineStatusFor,
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
 // Deep import: through the eager model-picker index it would land in the startup bundle.
 // eslint-disable-next-line no-restricted-imports
 import { DecisionPicker } from "@/features/model-picker/components/model-selector/decision-picker";
@@ -38,7 +45,7 @@ import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type FC, useRef, useState } from "react";
+import { type FC, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { SttModelSelector, sttRepoForKey } from "./stt-model-selector";
 import { VadModelSelector } from "./vad-model-selector";
@@ -170,8 +177,38 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const chatThinks = useChatRuntimeStore((s) => s.reasoningEnabled);
   const voiceThinking = useVoiceSettingsStore((s) => s.voiceThinking);
   const setVoiceThinking = useVoiceSettingsStore((s) => s.setVoiceThinking);
+  // Before Start, ask whether the transcriber is on disk, so the row says it will download (and how much)
+  // instead of "Loads on start" followed by a download dialog.
+  useEffect(() => {
+    if (!open || started || sttLoaded) return;
+    let cancelled = false;
+    fetchSttStatus(undefined, sttModelId)
+      .then((status) => {
+        if (cancelled) return;
+        const engine = sttEngineStatusFor(status, sttModelId);
+        if (!engine) return;
+        const rt = useChatRuntimeStore.getState();
+        if (rt.selectedSttModelId !== sttModelId || rt.voiceMode === "active") return;
+        if (engine.downloaded_models.includes(sttModelId)) {
+          if (rt.sttSlotDownload === "needed") rt.setSttSlotDownload(null);
+        } else if (rt.sttSlotDownload === null) {
+          rt.setSttSlotDownload(isTrackingSttDownload(sttModelId) ? "downloading" : "needed");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, started, sttLoaded, sttModelId]);
+  const downloadOnStart = !started && sttDownload === "needed" && !sttLoaded;
+  const sttSize = sttModelSize(sttModelId);
   const start = () => {
     const store = useChatRuntimeStore.getState();
+    // Start is the consent: the panel said the transcriber downloads first, and how big it is.
+    if (downloadOnStart) {
+      store.setSttSlotDownload("downloading");
+      void downloadSttNow({ model: sttModelId, voice: true });
+    }
     store.setVoiceOrbCollapsed(false);
     store.setVoiceMode("active");
     setOpen(false);
@@ -483,9 +520,11 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                         label={t(
                           row.unset
                             ? "voicePanel.state.notSetUp"
-                            : !started && row.state === "not_loaded"
-                              ? "voicePanel.state.loadsOnStart"
-                              : (row.label ?? STATE_KEY[row.state]),
+                            : r === "transcribe" && downloadOnStart
+                              ? "voicePanel.state.downloadsOnStart"
+                              : !started && row.state === "not_loaded"
+                                ? "voicePanel.state.loadsOnStart"
+                                : (row.label ?? STATE_KEY[row.state]),
                         )}
                       />
                     )}
@@ -542,7 +581,13 @@ const VoicePanelView: FC<VoicePanelProps> = ({
             {!started && (
               <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
                 <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
-                  {t(disabled ? "voicePanel.selectChatModelFirst" : "voicePanel.startHint")}
+                  {disabled
+                    ? t("voicePanel.selectChatModelFirst")
+                    : downloadOnStart
+                      ? sttSize
+                        ? t("voicePanel.startHintDownload", { size: sttSize })
+                        : t("voicePanel.startHintDownloadUnsized")
+                      : t("voicePanel.startHint")}
                 </p>
                 <Button type="button" variant="primary" size="sm" disabled={disabled} onClick={start}>
                   {t("voiceControls.start")}

@@ -950,6 +950,8 @@ export const id = {
     downloadNeeded: "perlu diunduh",
     transcriberMissing: "{model} belum diunduh, jadi mode suara belum bisa mendengar Anda.",
     startHint: "Model dimuat saat Anda memulai mode suara.",
+    startHintDownload: "Saat mulai, model transkripsi diunduh dulu ({size}).",
+    startHintDownloadUnsized: "Saat mulai, model transkripsi diunduh dulu.",
     back: "Kembali ke model suara",
     selectChatModelFirst: "Pilih model chat terlebih dahulu",
     roles: {
@@ -964,6 +966,7 @@ export const id = {
       loading: "Memuat",
       notLoaded: "Belum dimuat",
       loadsOnStart: "Dimuat saat dimulai",
+      downloadsOnStart: "Diunduh saat mulai",
       downloading: "Mengunduh",
       notSetUp: "Belum disiapkan",
       error: "Galat",
@@ -2038,6 +2041,10 @@ export const id = {
           "Dikte lokal berjalan sepenuhnya offline, tetapi memerlukan model ucapan {model} terlebih dahulu. Sekitar {size}, diambil sekali ke cache Hugging Face Anda.",
         sttDownloadConfirmBodyUnsized:
           "Dikte lokal berjalan sepenuhnya offline, tetapi memerlukan model ucapan {model} terlebih dahulu. Model diambil sekali ke cache Hugging Face Anda.",
+        sttDownloadConfirmBodyVoice:
+          "Mode suara memerlukan model ucapan {model} untuk mendengar Anda. Sekitar {size}, diambil sekali ke cache Hugging Face Anda.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Mode suara memerlukan model ucapan {model} untuk mendengar Anda. Model diambil sekali ke cache Hugging Face Anda.",
         sttOpenVoiceSettings: "Buka pengaturan Suara",
         sttDownloadStarted: "Mengunduh {model}",
         sttDownloading: "Mengunduh… {progress}%",

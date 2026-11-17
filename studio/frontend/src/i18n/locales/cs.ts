@@ -952,6 +952,8 @@ export const cs = {
     downloadNeeded: "je potřeba stáhnout",
     transcriberMissing: "Model {model} ještě není stažený, takže vás hlasový režim neslyší.",
     startHint: "Modely se načtou po spuštění hlasového režimu.",
+    startHintDownload: "Při spuštění se nejprve stáhne model pro přepis ({size}).",
+    startHintDownloadUnsized: "Při spuštění se nejprve stáhne model pro přepis.",
     back: "Zpět na hlasové modely",
     selectChatModelFirst: "Nejprve vyberte model pro chat",
     roles: {
@@ -966,6 +968,7 @@ export const cs = {
       loading: "Načítání",
       notLoaded: "Nenačteno",
       loadsOnStart: "Načte se při spuštění",
+      downloadsOnStart: "Stáhne se při spuštění",
       downloading: "Stahování",
       notSetUp: "Nenastaveno",
       error: "Chyba",
@@ -2043,6 +2046,10 @@ export const cs = {
           "Místní diktování běží zcela offline, ale nejprve potřebuje model řeči {model}. Přibližně {size}, stáhne se jednou do vaší mezipaměti Hugging Face.",
         sttDownloadConfirmBodyUnsized:
           "Místní diktování běží zcela offline, ale nejprve potřebuje model řeči {model}. Stáhne se jednou do vaší mezipaměti Hugging Face.",
+        sttDownloadConfirmBodyVoice:
+          "Hlasový režim potřebuje model řeči {model}, aby vás slyšel. Přibližně {size}, stáhne se jednou do vaší mezipaměti Hugging Face.",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "Hlasový režim potřebuje model řeči {model}, aby vás slyšel. Stáhne se jednou do vaší mezipaměti Hugging Face.",
         sttOpenVoiceSettings: "Otevřít nastavení Hlas",
         sttDownloadStarted: "Stahování: {model}",
         sttDownloading: "Stahování… {progress} %",

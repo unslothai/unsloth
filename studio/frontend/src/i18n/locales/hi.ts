@@ -849,6 +849,8 @@ export const hi = {
     downloadNeeded: "डाउनलोड ज़रूरी",
     transcriberMissing: "{model} अभी डाउनलोड नहीं हुआ है, इसलिए वॉइस मोड आपको सुन नहीं सकता।",
     startHint: "वॉइस मोड शुरू करने पर मॉडल लोड होते हैं।",
+    startHintDownload: "शुरू करने पर पहले ट्रांसक्राइबर डाउनलोड होगा ({size})।",
+    startHintDownloadUnsized: "शुरू करने पर पहले ट्रांसक्राइबर डाउनलोड होगा।",
     back: "आवाज़ मॉडल पर वापस जाएँ",
     selectChatModelFirst: "पहले एक चैट मॉडल चुनें",
     roles: {
@@ -863,6 +865,7 @@ export const hi = {
       loading: "लोड हो रहा है",
       notLoaded: "लोड नहीं हुआ",
       loadsOnStart: "शुरू करने पर लोड होगा",
+      downloadsOnStart: "शुरू करने पर डाउनलोड होगा",
       downloading: "डाउनलोड हो रहा है",
       notSetUp: "सेट अप नहीं है",
       error: "त्रुटि",
@@ -1867,6 +1870,10 @@ export const hi = {
           "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह लगभग {size} का है और आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
         sttDownloadConfirmBodyUnsized:
           "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttDownloadConfirmBodyVoice:
+          "आपकी बात सुनने के लिए वॉइस मोड को {model} स्पीच मॉडल चाहिए। यह लगभग {size} का है और आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttDownloadConfirmBodyVoiceUnsized:
+          "आपकी बात सुनने के लिए वॉइस मोड को {model} स्पीच मॉडल चाहिए। यह आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
         sttOpenVoiceSettings: "आवाज़ सेटिंग्स खोलें",
         sttDownloadStarted: "{model} डाउनलोड हो रहा है",
         sttDownloading: "डाउनलोड हो रहा है… {progress}%",
