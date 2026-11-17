@@ -445,10 +445,6 @@
 	   control takes from the search field, not the panel. */
 	--picker-panel-w: calc(6.25rem * var(--ui-space-scale, 1) + 2 * var(--picker-tab-pad) + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
 	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem * var(--ui-space-scale, 1) + 2.75rem * var(--ui-font-scale, 1));
-	/* Composer model picker: a share of the window with no px cap, so zooming out grows it with the window.
-	   pickerWidth in picker-model.ts mirrors the width. */
-	--composer-picker-w: max(calc(360px * var(--ui-space-scale, 1)), 30vw);
-	--composer-picker-h: max(calc(320px * var(--ui-space-scale, 1)), 56dvh);
 	/* (button - icon-size) / 2: a negative margin that aligns the first action icon with message text. */
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
 }
@@ -3875,6 +3871,14 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
+
+	/* Tracks the window between bounds (height capped at zeron's 640px). The caps grow by --picker-zoom-out
+	   (pickerZoomOut), so zooming out keeps its on-screen size. Here, not :root, which would resolve the
+	   var before the panel sets it. pickerWidth mirrors the width. */
+	.composer-model-picker {
+		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+		--composer-picker-h: clamp(calc(320px * var(--ui-space-scale, 1)), 56dvh, calc(640px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
+	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
 		padding-top: calc(6px * var(--ui-space-scale, 1));

@@ -474,9 +474,33 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
-/** --composer-picker-w in index.css: 30vw, at least 360px times --ui-space-scale. */
-export function pickerWidth(viewportWidth: number, scale: number): number {
-  return Math.max(360 * scale, viewportWidth * 0.3);
+/** --composer-picker-w in index.css: 30vw between 360px and 520px, the cap times the zoom-out. */
+export function pickerWidth(
+  viewportWidth: number,
+  scale: number,
+  zoomOut = 1,
+): number {
+  return Math.min(
+    520 * scale * zoomOut,
+    Math.max(360 * scale, viewportWidth * 0.3),
+  );
+}
+
+/**
+ * How far the page is zoomed out (1 at 100% or zoomed in). The caps grow by it, so zooming out keeps the
+ * picker's on-screen size while a big monitor at 100% stays capped. Browser zoom shrinks only the CSS
+ * width (outerWidth stays in screen px); the desktop app zooms its webview to the interface scale.
+ */
+export function pickerZoomOut(
+  innerWidth: number,
+  outerWidth: number,
+  webviewZoom: number | null,
+): number {
+  const zoom =
+    webviewZoom ??
+    (innerWidth > 0 && outerWidth > 0 ? outerWidth / innerWidth : 1);
+  // Window borders and side-docked devtools read as a slight zoom; only a real step counts.
+  return zoom < 0.95 ? Math.min(4, 1 / zoom) : 1;
 }
 
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */

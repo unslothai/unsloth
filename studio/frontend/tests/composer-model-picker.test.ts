@@ -25,6 +25,7 @@ import {
   pickerDropOffset,
   pickerSide,
   pickerWidth,
+  pickerZoomOut,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -911,25 +912,37 @@ test("the picker slides back inside a narrow window instead of hanging off its e
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
 });
 
-test("the picker keeps 30% of the window at any zoom, never under 360px", () => {
+test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
   assert.equal(pickerWidth(390, 1), 360);
   assert.equal(pickerWidth(1440, 1), 432);
-  // Zoomed out to 67%, a 1440px window is 2150 CSS px and the picker grows with it.
-  assert.equal(pickerWidth(2150, 1), 645);
-  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves the floor.
+  // A 2560px monitor at 100% stays capped.
+  assert.equal(pickerWidth(2560, 1), 520);
+  // Zoomed in, the CSS window narrows and the floor holds; the interface scale moves both bounds.
   assert.equal(pickerWidth(960, 1), 360);
   assert.equal(pickerWidth(960, 1.25), 450);
-  // The CSS twin uses the same bounds, or alignOffset would slide by the wrong width.
+  // Zoomed out to 50%, a 1512px window is 3024 CSS px: the cap doubles, so it shows at 454 screen px.
+  const zoomOut = pickerZoomOut(3024, 1512, null);
+  assert.equal(zoomOut, 2);
+  assert.equal(Math.round(pickerWidth(3024, 1, zoomOut) / zoomOut), 454);
+  // 100%, zoomed in, and side-docked devtools (a slightly narrower page) leave the caps alone.
+  assert.equal(pickerZoomOut(1512, 1512, null), 1);
+  assert.equal(pickerZoomOut(1008, 1512, null), 1);
+  assert.equal(pickerZoomOut(1500, 1512, null), 1);
+  // The desktop app reports its webview zoom directly.
+  assert.equal(pickerZoomOut(2257, 1512, 0.5), 2);
+  assert.equal(pickerZoomOut(1512, 1512, 1.25), 1);
+  // The CSS twin uses the same bounds on the panel itself, where --picker-zoom-out is set.
   const css = readSrc("index.css");
   assert.match(
     css,
-    /--composer-picker-w: max\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw\);/,
+    /\.composer-model-picker \{\s+--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\)\);/,
   );
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /w-\(--composer-picker-w\)/);
-  assert.match(picker, /pickerWidth\(window\.innerWidth, scale\)/);
+  assert.match(picker, /"--picker-zoom-out": pickerZoomOutState/);
+  assert.match(picker, /pickerWidth\(window\.innerWidth, scale, zoomOut\)/);
 });
 
 test("the Connected tab lists every connection's models, favorites then newest first", () => {
