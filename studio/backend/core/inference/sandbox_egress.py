@@ -279,13 +279,10 @@ class EgressProxy:
             self._closed = True
             sockets = list(self._sockets)
             self._sockets.clear()
+        # Shutdown only: closing here races a handler blocked in select(), which then sleeps out the idle timeout.
         for sock in sockets:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                sock.close()
             except OSError:
                 pass
         self._listener.close()

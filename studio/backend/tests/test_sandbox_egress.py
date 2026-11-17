@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -195,6 +196,25 @@ def test_the_proxy_serves_a_unix_socket_and_stops_on_close(
     running.close()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, pytest.raises(OSError):
         sock.connect(path)
+
+
+def test_open_tunnels_end_with_the_proxy(origin, loopback_origin_allowed):
+    before = set(threading.enumerate())
+    running = sandbox_egress.EgressProxy()
+    target = origin.split("//", 1)[1]
+    tunnels = []
+    for _ in range(20):
+        sock = socket.create_connection(("127.0.0.1", running.port), timeout = 10)
+        sock.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+        assert sock.recv(4096).startswith(b"HTTP/1.1 200")
+        tunnels.append(sock)
+    running.close()
+    deadline = time.monotonic() + 5
+    while set(threading.enumerate()) - before and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for sock in tunnels:
+        sock.close()
+    assert not set(threading.enumerate()) - before
 
 
 def test_seatbelt_reaches_only_its_proxy(tmp_path, monkeypatch):

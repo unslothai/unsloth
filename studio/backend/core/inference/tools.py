@@ -360,6 +360,13 @@ def _is_plain_chmod(command: str) -> bool:
     tokens = _shell_words(command)
     if tokens is None:
         return False
+    # History expansion (!!, ^a^b) and fc replay lines this reading never sees.
+    if any(
+        not is_operator
+        and (word in ("history", "fc") or word.startswith("^") or ("!" in word and word != "!"))
+        for word, is_operator, _, _ in tokens
+    ):
+        return False
     rest: list[str] = []
     copied = 0
     seen = 0
@@ -6818,10 +6825,14 @@ _CURL_UPLOAD_LONG_FLAGS = frozenset(
         "--data-raw",
         "--data-urlencode",
         "--form",
+        "--form-string",
+        "--json",
         "--upload-file",
     }
 )
-_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+_CURL_UPLOAD_SHORT_FLAGS = frozenset("dFT")
+# Short options that take an argument: the rest of the cluster is that argument, not more flags.
+_CURL_SHORT_WITH_ARG = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
 # POST is omitted: already caught by the body/upload flags.
 _WGET_METHOD_FLAGS = frozenset({"--method"})
 _CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
@@ -7809,12 +7820,23 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                 continue
         if has_curl and (
             name in _CURL_UPLOAD_LONG_FLAGS
-            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
-            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
+            # a curl short upload flag, attached or clustered (-d@f, -sd@f, -Ffile=@dump.sql)
+            or _curl_short_cluster_uploads(t)
         ):
             return True
         if has_wget and name in _WGET_UPLOAD_FLAGS:
             return True
+    return False
+
+
+def _curl_short_cluster_uploads(token: str) -> bool:
+    if not token.startswith("-") or token.startswith("--"):
+        return False
+    for ch in token[1:]:
+        if ch in _CURL_UPLOAD_SHORT_FLAGS:
+            return True
+        if ch in _CURL_SHORT_WITH_ARG:
+            return False
     return False
 
 
