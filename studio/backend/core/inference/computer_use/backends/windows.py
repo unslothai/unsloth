@@ -34,6 +34,8 @@ _CREATE_NO_WINDOW = 0x08000000
 _GA_ROOT = 2
 _GWL_EXSTYLE = -20
 _WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_LAYERED = 0x00080000
+_CLICK_THROUGH = _WS_EX_LAYERED | _WS_EX_TRANSPARENT
 _DWMWA_CLOAKED = 14
 _RESOLVE_TTL_S = 60.0
 _START_INDEX_TTL_S = 600.0
@@ -474,8 +476,8 @@ class WindowsBackend(Backend):
         def visit(hwnd, _data):
             if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) or self._cloaked(hwnd):
                 return True
-            # Clicks pass through such a window, as WindowFromPoint skips it.
-            if user32.GetWindowLongW(hwnd, _GWL_EXSTYLE) & _WS_EX_TRANSPARENT:
+            # Clicks pass through a layered window only when it is also transparent.
+            if (user32.GetWindowLongW(hwnd, _GWL_EXSTYLE) & _CLICK_THROUGH) == _CLICK_THROUGH:
                 return True
             rect = wintypes.RECT()
             if user32.GetWindowRect(hwnd, ctypes.byref(rect)):

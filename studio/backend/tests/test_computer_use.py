@@ -489,11 +489,76 @@ def test_a_macos_security_prompt_floating_over_an_app_is_found_under_a_click():
     prompt = FrontWindow(app = "SecurityAgent", pid = 9, bounds = (100, 100, 300, 200))
     menubar = FrontWindow(app = "Window Server", pid = 1, bounds = (0, 0, 800, 25))
     notes = FrontWindow(app = "Notes", pid = 5, bounds = (0, 0, 800, 600))
-    mac._windows = lambda: [(25, menubar), (2001, prompt), (0, notes)]
+    mac._windows = lambda: [(25, 1, menubar), (2001, 2, prompt), (0, 3, notes)]
     mac._front_app = lambda: ("Notes", "com.apple.Notes", 5)
     assert mac.window_at(150, 150).app == "SecurityAgent"
     assert mac.window_at(10, 10).app == "Notes"
     assert mac.window_at(500, 500).app_id == "com.apple.Notes"
+
+
+def _stack_frame(windows):
+    from PIL import Image
+    display = Display(1, 0, 0, 1000, 1000, True)
+    return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+
+def test_a_macos_window_of_the_same_app_and_size_coming_forward_is_a_change():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    first = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    second = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    mac._windows = lambda: [(0, 11, first), (0, 12, second)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(0, 12, second), (0, 11, first)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+
+
+def test_a_macos_floating_panel_counts_and_the_dock_layer_does_not():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    page = FrontWindow(app = "TextEdit", pid = 5, bounds = (0, 0, 1000, 1000))
+    dock = FrontWindow(app = "Dock", pid = 2, bounds = (0, 0, 1000, 1000))
+    panel = FrontWindow(app = "TextEdit", pid = 5, bounds = (400, 400, 200, 200))
+    mac._windows = lambda: [(20, 1, dock), (0, 11, page)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(20, 1, dock), (3, 12, panel), (0, 11, page)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+    assert not screen.target_moved(before, _stack_frame(mac.window_stack()), 100, 100)
+
+
+def test_a_windows_window_is_skipped_only_when_clicks_pass_through_it():
+    import ctypes
+
+    from core.inference.computer_use.backends import windows as win
+
+    styles = {1: win._WS_EX_TRANSPARENT, 2: win._CLICK_THROUGH, 3: 0}
+    rects = {1: (0, 0, 100, 100), 2: (0, 0, 500, 500), 3: (0, 0, 1000, 1000)}
+
+    class User32:
+        def EnumWindows(self, visit, _data):
+            return all(visit(hwnd, 0) for hwnd in rects)
+
+        def IsWindowVisible(self, hwnd):
+            return True
+
+        def IsIconic(self, hwnd):
+            return False
+
+        def GetWindowLongW(self, hwnd, _index):
+            return styles[hwnd]
+
+        def GetWindowRect(self, hwnd, rect):
+            rect = ctypes.cast(rect, ctypes.POINTER(win.wintypes.RECT)).contents
+            rect.left, rect.top, rect.right, rect.bottom = rects[hwnd]
+            return True
+
+    backend = object.__new__(win.WindowsBackend)
+    backend._user32 = User32()
+    backend._dwmapi = None
+    backend._window_proc = lambda visit: visit
+    assert backend.window_stack() == [(1, (0, 0, 100, 100)), (3, (0, 0, 1000, 1000))]
 
 
 def test_a_windows_app_name_is_looked_up_once_for_its_gate_card_and_run(monkeypatch):
