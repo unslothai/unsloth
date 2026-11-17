@@ -212,10 +212,14 @@ class Namespace:
         name: str,
         sources: tuple,
         max_cards: int = _MAX_ENTRIES,
+        extra: Optional[Any] = None,
     ) -> None:
         self.name = str(name)
         self.sources = tuple(sources)
         self.max_cards = int(max_cards)
+        self.extra = (
+            extra  # () -> dict of further key components (library versions), read once per card
+        )
         self._digest: Optional[str] = None
         self._tables: dict = {}  # (file, card) -> (slot key, fingerprint, table), read once per process
 
@@ -249,6 +253,14 @@ class Namespace:
         if fp is None:
             return None
         fp = dict(fp, namespace = self.name, source = self._source_digest())
+        if self.extra is not None:
+            try:
+                more = self.extra()
+            except Exception:  # noqa: BLE001 - an unreadable component: never persisted
+                return None
+            if not isinstance(more, dict):
+                return None
+            fp["extra"] = json.loads(json.dumps(more, sort_keys = True, default = str))
         key = _key(fp)
         entry = _read_all(path).get(key)
         table = (

@@ -187,15 +187,35 @@ PERSIST_SOURCES = (
     "diffusion_int8_attention_cuda.py",
     "diffusion_int8_attention_triton.py",
     "diffusion_int8_attention_dispatch.py",
+    "diffusion_qwenimage21_attn.py",  # the strided cuDNN incumbent the dispatch route races
 )
 _PERSISTED: list = [None]
 WARM_TOKENS = 128
 
 
+def _library_versions() -> dict:
+    """What the races time beyond torch / triton / the driver: the incumbents' libraries (diffusers' dispatch, cuDNN)
+    and the NVRTC the kernels are compiled with."""
+    import torch
+
+    from .diffusion_int8_attention_cuda import nvrtc_version
+    from .diffusion_probe_cache import _version
+
+    try:
+        nvrtc = list(nvrtc_version())
+    except Exception:  # noqa: BLE001 - no NVRTC: the Triton kernel serves
+        nvrtc = None
+    return {
+        "diffusers": _version("diffusers"),
+        "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "nvrtc": nvrtc,
+    }
+
+
 def persisted() -> Any:
     if _PERSISTED[0] is None:
         from .diffusion_probe_cache import Namespace
-        _PERSISTED[0] = Namespace("int8_attention", PERSIST_SOURCES)
+        _PERSISTED[0] = Namespace("int8_attention", PERSIST_SOURCES, extra = _library_versions)
     return _PERSISTED[0]
 
 

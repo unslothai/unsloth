@@ -676,6 +676,13 @@ def _card_floor(
     return found, max(minimum, MIN_TOKENS)
 
 
+def _incumbent_name(backend: Any) -> str:
+    """The verdict / race key of a processor's backend. A strided cuDNN pin races on the strided views rather than
+    diffusers' copies (``_Q21.maybe_strided``): its own verdict, never the plain cuDNN one (also across processes)."""
+    name = f"dispatch:{_backend_name(backend)}"
+    return name + ":strided" if isinstance(backend, _Q21.StridedCudnn) else name
+
+
 def _target_device(target: Any) -> str:
     return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
@@ -746,7 +753,7 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = f"dispatch:{_backend_name(incumbent)}"
+        name = _incumbent_name(incumbent)
 
         def run(
             q: Any,

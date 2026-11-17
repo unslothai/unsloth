@@ -263,3 +263,81 @@ def test_namespace_sources_are_part_of_the_key(machine):
         "int8_attention_test", ("diffusion_probe_cache.py", "diffusion_int8_attention.py")
     )
     assert other.get("cuda:0", "k") is None
+
+
+def test_a_strided_cudnn_incumbent_has_its_own_verdict(machine):
+    from core.inference import diffusion_qwenimage21_attn as Q21
+
+    strided = D._incumbent_name(Q21.StridedCudnn((0,)))
+    plain = D._incumbent_name("_native_cudnn")
+    assert plain == "dispatch:_native_cudnn" and strided == "dispatch:_native_cudnn:strided"
+    assert D._incumbent_name(None) == "dispatch:native"
+    I.verdict("cuda:0", torch.bfloat16, 8, 128, None, plain)
+    machine["new_process"]()
+    I.verdict("cuda:0", torch.bfloat16, 8, 128, None, strided)
+    assert (
+        len(machine["checks"]) == 2
+    )  # the plain cuDNN verdict is not reused for the strided incumbent
+
+
+def test_the_strided_incumbent_source_is_part_of_the_key():
+    assert "diffusion_qwenimage21_attn.py" in I.PERSIST_SOURCES
+    assert "diffusion_int8_attention_cuda.py" in I.PERSIST_SOURCES
+
+
+def test_a_new_cudnn_diffusers_or_nvrtc_runs_the_check_again(machine, monkeypatch):
+    versions = {"diffusers": "0.37.0", "cudnn": 91000, "nvrtc": [12, 8]}
+    monkeypatch.setattr(I, "_library_versions", lambda: dict(versions))
+    _verdict()
+    machine["new_process"]()
+    _verdict()
+    assert len(machine["checks"]) == 1
+    for name, value in (("cudnn", 91100), ("diffusers", "0.38.0"), ("nvrtc", [13, 0])):
+        versions[name] = value
+        machine["new_process"]()
+        _verdict()
+    assert len(machine["checks"]) == 4
+
+
+def test_an_unreadable_key_component_is_never_persisted(machine, monkeypatch):
+    monkeypatch.setattr(
+        I, "_library_versions", lambda: (_ for _ in ()).throw(RuntimeError("no cuDNN"))
+    )
+    _verdict()
+    machine["new_process"]()
+    _verdict()
+    assert len(machine["checks"]) == 2
+
+
+def test_a_corrupted_entry_runs_the_check_again(machine):
+    import json
+
+    _verdict()
+    path = I.persisted()._path()
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    (entry,) = data.values()
+    for key in entry["decisions"]:
+        entry["decisions"][key] = "garbage"
+    path.write_text(json.dumps(data), encoding = "utf-8")
+    machine["new_process"]()
+    assert _verdict()["ok"]
+    assert len(machine["checks"]) == 2
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    (entry,) = data.values()
+    machine["new_process"]()
+    assert _verdict()["ok"]  # the re-check rewrote it: reused from here on
+    assert len(machine["checks"]) == 2
+
+
+def test_an_entry_under_another_fingerprint_is_not_reused(machine):
+    import json
+
+    _verdict()
+    path = I.persisted()._path()
+    data = json.loads(path.read_text(encoding = "utf-8"))
+    (entry,) = data.values()
+    entry["fingerprint"]["driver"] = "stale"  # same slot, a key component that no longer matches
+    path.write_text(json.dumps(data), encoding = "utf-8")
+    machine["new_process"]()
+    _verdict()
+    assert len(machine["checks"]) == 2
