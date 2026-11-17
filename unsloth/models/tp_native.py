@@ -189,6 +189,9 @@ class TPConfig:
     # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
     # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
+    # A frozen, untied input embedding holding at least this fraction of the GPU is served from host memory
+    # instead of being replicated on every rank (0 = never). UNSLOTH_TP_EMBED_ON_CPU = 1 / 0 forces it.
+    host_input_embedding: float = 0.15
 
 
 @dataclasses.dataclass
@@ -2050,6 +2053,86 @@ def _default_mesh(model):
     return init_device_mesh(device.type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
 
 
+def _host_input_embedding(model, tp_mesh, fraction):
+    """The input embedding to serve from host memory instead of replicating it on every tp rank, or None.
+    It must be frozen, untied from (and not shared with) any other module, a plain floating tensor on the
+    tp mesh's GPU and at least `fraction` of it, and tp must span the whole world (a dp / pp dimension wraps
+    or splits the model afterwards, so it is left as before). UNSLOTH_TP_EMBED_ON_CPU = 1 skips the size
+    rule, 0 turns it off. Collective over `tp_mesh` on a CUDA mesh: every rank must decide alike."""
+    import torch.distributed as dist
+
+    from .fsdp2_perf import _env_tristate
+
+    forced = _env_tristate("UNSLOTH_TP_EMBED_ON_CPU")
+    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+        return None
+    if dist.is_initialized() and tp_mesh.size() != dist.get_world_size():
+        return None
+    pick = _host_embedding_candidate(model, forced, fraction)
+    if tp_mesh.device_type == "cuda" and tp_mesh.size() > 1:
+        flag = torch.tensor(
+            [int(pick is not None)], device = torch.device("cuda", torch.cuda.current_device())
+        )
+        dist.all_reduce(flag, op = dist.ReduceOp.MIN, group = tp_mesh.get_group())
+        if not flag.item():
+            return None
+    return pick
+
+
+def _host_embedding_candidate(model, forced, fraction):
+    try:
+        embed = model.get_input_embeddings()
+        head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    except Exception:
+        return None
+    if not isinstance(embed, nn.Embedding) or any(
+        getattr(embed, flag, False)
+        for flag in ("_unsloth_offload_hooks_installed", "_unsloth_fsdp2_cpu_lookup")
+    ):
+        return None
+    params = list(embed.parameters())
+    if len(params) != 1 or params[0] is not embed.weight:
+        return None
+    weight = embed.weight
+    if (
+        weight.requires_grad
+        or type(weight) is not nn.Parameter
+        or not weight.is_floating_point()
+        or weight.device.type not in (("cuda", "cpu") if forced else ("cuda",))
+        or getattr(weight, "_unsloth_tp_full_shape", None) is not None
+    ):
+        return None
+    if head is not None and any(
+        p is weight or p.data_ptr() == weight.data_ptr() for p in head.parameters()
+    ):
+        return None  # tied: lm_head reads the same table
+    owners = sum(1 for m in model.modules() for p in m.parameters(recurse = False) if p is weight)
+    if owners != 1:
+        return None
+    if forced is None:
+        total = torch.cuda.get_device_properties(weight.device).total_memory
+        if weight.numel() * weight.element_size() < fraction * total:
+            return None
+    return embed
+
+
+def _serve_embedding_from_host(model, embed, rank):
+    """The table moves to CPU, lookups run there and only the looked-up rows go back to the GPU: Unsloth's
+    offload_embedding hooks, as native FSDP2 does (#18028), or the plain CPU lookup without them."""
+    from .fsdp2_native import _offload_lookup_table, _serve_lookups_from_cpu
+
+    nbytes = embed.weight.numel() * embed.weight.element_size()
+    if embed.weight.device.type == "cpu":  # UNSLOTH_TP_EMBED_ON_CPU = 1 on a CPU mesh
+        _serve_lookups_from_cpu(embed)
+    else:
+        with contextlib.redirect_stdout(None) if rank != 0 else contextlib.nullcontext():
+            _offload_lookup_table(model, embed)
+    _print_rank0(
+        f"Unsloth: tensor parallel serves the frozen input embedding ({nbytes / 2**30:.2f} GiB) from CPU "
+        "memory instead of replicating it on every GPU (UNSLOTH_TP_EMBED_ON_CPU=0 keeps it on the GPU)."
+    )
+
+
 def _replica_generate(level, prior):
     """generate on a tensor parallel level: every rank gathers a whole replica first (tp_replica)."""
 
@@ -2266,6 +2349,12 @@ def apply_tensor_parallel(
     if tp > 1 and covered and any(_preloaded(p) is not None for p in model.parameters()):
         _refuse_weight_dependent_lora_init(model)
     chain = _tp_chain(model)
+    host_embed = None
+    if not any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
+        host_embed = _host_input_embedding(model, tp_mesh, config.host_input_embedding)
+    if host_embed is not None:
+        # Before sharding, whose slices need the room.
+        _serve_embedding_from_host(model, host_embed, rank)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
         _sync_trainable(model, group, dist.get_global_rank(group, 0))
@@ -2350,7 +2439,12 @@ def apply_tensor_parallel(
     if rank == 0:
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
-            f"({tp_plan.source} plan), embeddings / lm_head / norms replicated"
+            f"({tp_plan.source} plan), "
+            + (
+                "input embedding on CPU, lm_head / norms replicated"
+                if host_embed is not None
+                else "embeddings / lm_head / norms replicated"
+            )
             + _linear_attention_note(tp_plan)
             + (
                 f", {tp_plan.replicated_layers} layers replicated"
