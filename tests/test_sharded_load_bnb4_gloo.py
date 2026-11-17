@@ -471,7 +471,6 @@ _CKPT_DIRS = []
 
 @pytest.fixture(autouse = True, scope = "module")
 def _remove_checkpoints():
-    """The 4-bit checkpoints are shared across this module's tests; delete them (about 66 MB each) at the end."""
     yield
     _CKPTS.clear()
     while _CKPT_DIRS:

@@ -516,8 +516,7 @@ _INDEXER_SCORE_BUDGET = 1 << 26
 
 
 def _indexer_q_ranges(q_len, per_row):
-    """Query-row chunks for the indexer score (zoo flex_attention/sparse_blocks.py _q_ranges pattern). One chunk
-    under torch.compile, where a loop over the sequence length specialises a graph per length."""
+    """Query-row chunks for the indexer score; one chunk under torch.compile (a loop would specialise per length)."""
     if q_len <= 0 or torch.compiler.is_compiling():
         return [(0, q_len)]
     chunk = 0
@@ -596,8 +595,7 @@ class DeepseekV41Indexer(nn.Module):
         visible = torch.arange(n_comp, device = x.device)
         candidates = shared.get("candidates") if self.uses_candidates else None
         topk = min(self.index_topk, n_comp)
-        # Rows are independent, so score + top-k one query chunk at a time: the [b, s, heads, t] fp32 score
-        # (2 GiB at s = t = 4096) never materialises whole.
+        # Rows are independent: chunk queries so the [b, s, heads, t] fp32 score never materialises whole.
         out, picked = [], []
         for start, end in _indexer_q_ranges(seqlen, bsz * self.n_heads * max(1, n_comp)):
             score = torch.einsum("bshd,btd->bsht", q[:, start:end].float(), index_k)
