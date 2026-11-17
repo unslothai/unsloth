@@ -1150,6 +1150,43 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     return True
 
 
+def _bypass_zero_baked_loras(pipe: Any, weights: dict) -> bool:
+    """Turn the baked denoiser LoRA layers off (PEFT ``_disable_adapters``) while every adapter's weight is 0, back on
+    once any is not. True when the flag changed: the compiled forward then traces differently, so captured graphs
+    must be dropped.
+
+    A scale of 0 adds an exact zero, so eager matches a load without adapters bit for bit. Compiled, it does not: the
+    LoRA term changes inductor's fusion, and with it where intermediates are rounded to bf16 (Z-Image LPIPS 0.017
+    on L4). Disabled, the layer runs ``base_layer(x)`` alone, the graph a plain load compiles. Dynamo guards on the
+    flag, so the first switch compiles that graph once and later switches reuse both. ``requires_grad`` is left as
+    is, since it changes the compiled graph too."""
+    layers = []
+    for _attr, root in denoiser_modules(pipe):
+        modules = getattr(root, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            scaling = module.__dict__.get("scaling")
+            if (
+                isinstance(scaling, dict)
+                and scaling
+                and getattr(module, "lora_B", None) is not None
+                and "_disable_adapters" in module.__dict__
+            ):
+                layers.append(module)
+    if not layers:
+        return False
+    off = all(
+        float(weights.get(adapter, 0.0)) == 0.0 for module in layers for adapter in module.scaling
+    )
+    changed = False
+    for module in layers:
+        if bool(module.__dict__["_disable_adapters"]) != off:
+            module.__dict__["_disable_adapters"] = off
+            changed = True
+    return changed
+
+
 def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
     """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
     try:
@@ -14601,10 +14638,15 @@ class DiffusionBackend:
                 if _remerge_quant_loras(state, pipe, disabled):
                     return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
+                # All at 0, the layers are also bypassed, so the compiled graph is a plain load's (one recapture).
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
+                    if _bypass_zero_baked_loras(pipe, {}):
+                        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                        invalidate_cfg_replica(pipe, "the LoRA adapters were switched off", logger)
                     return
                 lora_files.set_adapter_weights(pipe, names, [0.0] * len(names))
+                _bypass_zero_baked_loras(pipe, {})
                 pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -14635,14 +14677,19 @@ class DiffusionBackend:
         _refuse_weight_change_on_streamed_graph(state)
         if _remerge_quant_loras(state, pipe, updated):
             return
-        if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
+        weights = {n: w for (n, _p, w) in updated}
+        if _set_pinned_lora_scales(pipe, weights):
             pipe._unsloth_loras = updated
+            if _bypass_zero_baked_loras(pipe, weights):
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters were switched on or off", logger)
             return
         lora_files.set_adapter_weights(
             pipe,
             [n for (n, _p, _w) in updated],
             [w for (_n, _p, w) in updated],
         )
+        _bypass_zero_baked_loras(pipe, weights)
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)

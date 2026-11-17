@@ -772,7 +772,6 @@ def test_baked_lora_subset_and_weight_changes_keep_compiled_graphs(monkeypatch):
         ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),  # back
         ([("b", 0.5)], 0.0, 0.5),  # the other subset, new weight
         ([("a", 0.7), ("b", 1.0)], 0.7, 1.0),  # weight tweak
-        ([], 0.0, 0.0),  # every adapter off
         ([("a", 1.0), ("b", 1.0)], 1.0, 1.0),
     ):
         b._apply_loras(state, loras, threading.Event())
@@ -781,7 +780,90 @@ def test_baked_lora_subset_and_weight_changes_keep_compiled_graphs(monkeypatch):
         assert [w for (_n, _p, w) in pipe._unsloth_loras] == [wa, wb]
     assert counter.frame_count == 1  # no recompile
     assert resets == []  # no captured graph dropped
+    # Every adapter off bypasses the layers (the plain load's graph): one more frame, compiled once, then reused.
+    for loras, wa, wb in (([], 0.0, 0.0), ([("a", 1.0), ("b", 1.0)], 1.0, 1.0), ([], 0.0, 0.0)):
+        b._apply_loras(state, loras, threading.Event())
+        with torch.no_grad():
+            torch.testing.assert_close(compiled(x), expected(wa, wb))
+    assert counter.frame_count == 2
+    assert len(resets) == 3
     torch._dynamo.reset()
+
+
+def test_baked_lora_at_weight_zero_compiles_to_the_plain_load(monkeypatch):
+    # A baked adapter at scale 0 adds an exact zero, so eager matched a load without it, but compiled it did not: the
+    # LoRA term changed inductor's fusion and so where bf16 intermediates round (Z-Image LPIPS 0.017 on L4). Every
+    # adapter at 0 now bypasses the layers, so the compiled forward is bit-identical to the plain one.
+    import copy
+    import threading
+
+    import torch
+    from peft import LoraConfig, inject_adapter_in_model
+
+    from core.inference import diffusion as diff
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: None)
+
+    class Block(torch.nn.Module):
+        def __init__(self, d):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(d, elementwise_affine = False)
+            self.to_q = torch.nn.Linear(d, d)
+            self.ff1 = torch.nn.Linear(d, 4 * d)
+            self.ff2 = torch.nn.Linear(4 * d, d)
+            self.gate = torch.nn.Parameter(torch.randn(d) * 0.5)
+
+        def forward(self, x):
+            x = x + self.gate * self.to_q(self.norm(x))
+            act = torch.nn.functional.gelu(self.ff1(self.norm(x)), approximate = "tanh")
+            return x + self.ff2(act)
+
+    torch.manual_seed(0)
+    plain = torch.nn.Sequential(*[Block(64) for _ in range(2)]).to(torch.bfloat16).eval()
+    baked = copy.deepcopy(plain)
+    inject_adapter_in_model(
+        LoraConfig(r = 4, lora_alpha = 4, target_modules = ["to_q", "ff1", "ff2"]),
+        baked,
+        adapter_name = "a",
+    )
+    for name, param in baked.named_parameters():
+        if "lora_B" in name:
+            torch.nn.init.normal_(param, std = 0.1)
+    baked.to(torch.bfloat16).eval()
+
+    class _Pipe:
+        transformer = baked
+
+    pipe = _Pipe()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    b = _backend()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    assert diff._pin_baked_lora_scales(pipe, "cpu") == 6
+
+    x = torch.randn(2, 32, 64, dtype = torch.bfloat16)
+    torch._dynamo.reset()
+    try:
+        with torch.no_grad():
+            want = torch.compile(plain, backend = "inductor")(x)
+            compiled = torch.compile(baked, backend = "inductor")
+            with_lora = compiled(x)
+            assert not torch.equal(with_lora, want)  # the adapter applies at weight 1
+            b._apply_loras(state, [], threading.Event())
+            assert torch.equal(compiled(x), want)
+            b._apply_loras(state, [("a", 1.0)], threading.Event())
+            assert torch.equal(compiled(x), with_lora)
+    finally:
+        torch._dynamo.reset()
 
 
 def test_pinned_lora_scale_falls_back_when_a_scale_is_rewritten(monkeypatch):
