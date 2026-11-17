@@ -476,9 +476,6 @@ def test_neftune_declines_in_train_mode_only():
 
 def test_training_dropout_is_detected():
     """Any dropout module in train mode with p > 0 keeps the forward unshared; eval mode or p == 0 shares."""
-    import torch
-    from unsloth.models import dpo_prefix_share as dps
-
     model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout(0.1))
     assert dps._dropout_active(model) is True
     model.eval()
