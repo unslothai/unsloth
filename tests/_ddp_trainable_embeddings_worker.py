@@ -78,7 +78,7 @@ def main(out_dir):
         optimizer.zero_grad(set_to_none = True)
 
     os.makedirs(out_dir, exist_ok = True)
-    with open(os.path.join(out_dir, f"result_{rank}.json"), "w") as f:
+    with open(os.path.join(out_dir, f"result_{rank}.json"), "w", encoding = "utf-8") as f:
         json.dump({"names": names, "losses": losses, "grad_norms": grad_norms}, f)
     print(f"RANK_OK find_unused={find_unused}", flush = True)
     if distributed:

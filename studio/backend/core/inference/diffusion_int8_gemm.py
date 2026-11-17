@@ -1706,6 +1706,42 @@ def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[A
     return y.reshape(*lead, y.shape[-1])
 
 
+def situ_linear(down: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(situ(value, gate))`` for MOSS-Image's SiTU-GLU MLP, with the product, rotation and act quant in one kernel
+    reading the projection's two halves (``[..., F]`` views of one output), else None (caller: stock)."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    f = gate.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or f != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_situ_act_quant
+
+    q = convrot_situ_act_quant(gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*gate.shape[:-1], y.shape[-1])
+
+
 def _plain_silu(act: Any) -> bool:
     """``act`` is an exact, unhooked ``nn.SiLU`` (the fused prologue hard-codes SiLU); ``type() is`` avoids a graph break."""
     from torch import nn

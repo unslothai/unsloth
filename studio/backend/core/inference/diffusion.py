@@ -1362,6 +1362,7 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 # lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
 from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+from .family_profile import compile_from_render_one_reason  # noqa: E402
 
 _TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
@@ -11080,6 +11081,23 @@ class DiffusionBackend:
                             "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
+                    # A family whose eager path is measured far slower than compiled skips the deferred profile.
+                    compile_first_reason = (
+                        compile_from_render_one_reason(fam)
+                        if speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                        else None
+                    )
+                    if compile_first_reason is not None:
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (%s)",
+                            compile_first_reason,
+                        )
+                        effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
                     # amortises. Only when speed was unset.
                     speed_deferred = (
@@ -11745,6 +11763,8 @@ class DiffusionBackend:
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
                                 if speed_deferred
+                                else f"auto: {compile_first_reason}"
+                                if compile_first_reason is not None
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",
