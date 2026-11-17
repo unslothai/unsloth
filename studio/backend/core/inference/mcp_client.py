@@ -590,6 +590,60 @@ def _accept_root_issuer_slash(auth) -> None:
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 
+_OAUTH_METADATA_COLLECTION = "mcp-oauth-server-metadata"
+
+
+def _remember_server_metadata(auth, store) -> None:
+    """Each connection builds a new provider that never ran discovery, so the SDK refreshes at
+    <origin>/token; servers that put it elsewhere (better-auth) 404 into a new sign-in (#18164)."""
+    from mcp.shared.auth import OAuthMetadata
+
+    adapter = getattr(auth, "token_storage_adapter", None)
+    context = getattr(auth, "context", None)
+    initialize = getattr(auth, "_initialize", None)
+    if adapter is None or context is None or initialize is None:
+        logger.warning("MCP OAuth: provider internals missing; token endpoint is not remembered")
+        return
+    key = auth.mcp_url
+    set_tokens, clear = adapter.set_tokens, adapter.clear
+
+    async def _initialize():
+        await initialize()
+        if context.oauth_metadata is not None:
+            return
+        try:
+            raw = await store.get(key = key, collection = _OAUTH_METADATA_COLLECTION)
+            if raw:
+                context.oauth_metadata = OAuthMetadata.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not load the saved server metadata: %s", exc)
+
+    async def _set_tokens(tokens):
+        await set_tokens(tokens)
+        if context.oauth_metadata is None:
+            return
+        try:
+            await store.put(
+                key = key,
+                value = context.oauth_metadata.model_dump(mode = "json", exclude_none = True),
+                collection = _OAUTH_METADATA_COLLECTION,
+                ttl = 60 * 60 * 24 * 365,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP OAuth: could not save the server metadata: %s", exc)
+
+    async def _clear():
+        await clear()
+        await store.delete(key = key, collection = _OAUTH_METADATA_COLLECTION)
+
+    try:
+        auth._initialize = _initialize
+        adapter.set_tokens = _set_tokens
+        adapter.clear = _clear
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP OAuth: token endpoint fixup could not be applied: %s", exc)
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -597,15 +651,17 @@ def _oauth(
 ):
     from fastmcp.client.auth import OAuth
 
+    store = _oauth_store()
     # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
     auth = OAuth(
         mcp_url = url,
-        token_storage = _oauth_store(),
+        token_storage = store,
         client_id = oauth_client_id,
         client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
     _accept_root_issuer_slash(auth)
+    _remember_server_metadata(auth, store)
     return auth
 
 
