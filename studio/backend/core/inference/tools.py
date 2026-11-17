@@ -507,6 +507,24 @@ _PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 _DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
 # Change what a later curl/wget word runs or which environment it gets.
 _DOWNLOAD_ALTERING_WORDS = frozenset({"source", ".", "alias", "shopt", "function", "enable"})
+# What a download may be piped into: text tools that run nothing. A wrapper (env bash, timeout 5 sh) would hide
+# an interpreter from the pipe-to-shell check.
+_DOWNLOAD_PIPE_TARGETS = frozenset(
+    {
+        "head",
+        "tail",
+        "jq",
+        "grep",
+        "wc",
+        "sort",
+        "uniq",
+        "cat",
+        "tee",
+        "sha256sum",
+        "sha1sum",
+        "md5sum",
+    }
+)
 
 
 def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
@@ -581,6 +599,11 @@ def _is_plain_download(command: str) -> bool:
     if _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens)) or any(
         (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
         or (not is_operator and token in _DOWNLOAD_ALTERING_WORDS)
+        or (
+            is_operator
+            and token in ("|", "|&")
+            and (k + 1 >= len(tokens) or tokens[k + 1][0] not in _DOWNLOAD_PIPE_TARGETS)
+        )
         for k, (token, is_operator, _, _) in enumerate(tokens)
     ):
         return False
