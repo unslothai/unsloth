@@ -4,6 +4,7 @@
 """Windows ROCm: SDPA calls with a head wider than 256 (Gemma 4's global layers) must run on the math backend, since
 the fused kernels that take them there compute them wrong. Heads up to 256 and every other platform are untouched."""
 
+import shutil
 import sys
 import types
 
@@ -132,6 +133,11 @@ def test_overlapping_wide_head_calls_restore_the_callers_backends_once():
 @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
 def test_guarded_wide_head_compiles_fullgraph(monkeypatch, backend):
     # Studio installs this guard before unsloth's, which then keeps it: its wide-head branch must trace with no break
+    if backend == "inductor" and sys.platform == "win32" and shutil.which("cl") is None:
+        # Inductor's CPU backend builds C++ with MSVC, which a plain Windows runner does not have on PATH.
+        pytest.skip(
+            "inductor CPU needs MSVC (cl) on Windows; the aot_eager case still traces the guard"
+        )
     F = torch.nn.functional
     monkeypatch.setattr(G, "_wide_cuda_head", lambda q: q.shape[-1] > G.WIDEST_FUSED_HEAD_DIM)
     guarded = G.guard_sdpa(F.scaled_dot_product_attention)
