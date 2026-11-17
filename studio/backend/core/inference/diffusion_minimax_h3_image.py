@@ -146,10 +146,9 @@ PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
 # "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
 TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
-# Stream tier layout: "auto" (priced from the card's measured link and compute), "1" parks the once-per-phase pieces on
-# the host, "0" keeps them on the card (refused where that cannot fit).
+# Stream tier layout: "auto" (priced), "1" park once-per-phase pieces on the host, "0" keep them on the card.
 PARK_ENV = "UNSLOTH_H3_IMAGE_PARK"
-# Host-to-device GiB/s to plan with in place of the measured one (tests and A/B runs).
+# Overrides the measured host-to-device GiB/s.
 H2D_ENV = "UNSLOTH_H3_IMAGE_H2D_GIBS"
 # Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
 REF_CACHE_ENTRIES = 8
@@ -1460,11 +1459,8 @@ class H3ImagePlan:
     reasons: list = field(default_factory = list)
     # host GB held once placed (host DiT blocks + encoder + 4 GB); None without a host budget
     host_need_gb: Optional[float] = None
-    # stream tier: the once-per-phase pieces (encoder embedding + vision tower, token refiner, VAE) wait on the host
     parked: bool = False
-    # stream tier: the VAE waits on the host too and comes in for each decode
     vae_parked: bool = False
-    # the host-to-device GiB/s the stream layout was priced with (None: unmeasured)
     h2d_gib_s: Optional[float] = None
 
     def as_dict(self) -> dict:
@@ -1522,29 +1518,20 @@ def te_gb_for(scheme: Optional[str]) -> float:
 # 0.8B), the encoder's token embedding + vision tower (1.56 + ~1.2 GB).
 DIT_TOP_GB = 2.0
 TE_TOP_GB = 3.0
-# Of those, what runs once per phase and can wait on the host in a parked stream layout (measured on the device:
-# token refiner + context embedder 1.49 GiB, vision tower 1.11 GiB, token embedding 1.45 GiB). The refiner runs once
-# per render, the vision tower only for an edit's pictures; the token embedding never comes to the card there (its
-# lookup is a host-side gather).
+# Parkable once-per-phase pieces (measured: refiner + context embedder 1.49 GiB, vision tower 1.11 GiB).
 DIT_REFINER_GB = 1.6
 TE_VISION_GB = 1.2
-# Stream tier layouts, least parked first: the encoder's embedding + vision tower, the token refiner and the VAE on the
-# card all session; the first two parked; the VAE parked as well (its decode then runs without tile graphs, whose
-# recordings read the weights' addresses).
+# Least parked first; a parked VAE decodes without tile graphs (they record the weights' addresses).
 LAYOUT_TODAY = "today"
 LAYOUT_PARKED = "parked"
 LAYOUT_PARKED_VAE = "parked+vae"
-# Multiply-adds of one DiT block per token (attention 154M + feed-forward 231M; the AdaLN rows are a table lookup).
+# Multiply-adds of one DiT block per token (attention 154M + feed-forward 231M).
 BLOCK_PARAMS = 385e6
-# One block's compute / the probe-priced FLOPs at the card's int8 GEMM rate: A100 11.6 ms per block at 2048x2048
-# resident (0.578 s/step) against 7.8 ms priced at its 406 TOPS. L4 runs slower than priced (~41 ms against 29 at its
-# 165 TOPS), which only overstates what parking saves there: a parked layout costs one refiner upload per render
-# (plus the VAE's and an ungraphed decode for parked+vae) and never streams more blocks.
+# Measured / priced block time at the int8 GEMM rate (A100: 7.8 ms priced, 11.6 ms measured at 2048x2048).
 INT8_BLOCK_EFFICIENCY = 0.67
-# Extra decode seconds per 4 MP without tile graphs, the parked VAE's upload aside (A100 at 2048x2048: 0.47 against
-# 0.33 s).
+# Extra decode seconds per 4 MP without tile graphs (A100: 0.47 against 0.33 s).
 UNGRAPHED_DECODE_S = 0.15
-# A more parked layout replaces a less parked one that fits only where it prices this much faster per render.
+# Minimum priced per-render saving for a more parked layout to win.
 PARK_MIN_SAVING = 0.10
 
 
@@ -1570,13 +1557,8 @@ def stream_render_seconds(
     uploaded_gb: float = 0.0,
     extra_s: float = 0.0,
 ) -> float:
-    """Priced denoise seconds of one render on the stream tier, plus the parked pieces' uploads (``uploaded_gb`` once
-    per render) and ``extra_s``.
-
-    A step runs the resident blocks at compute speed and each streamed block at max(compute, its copy): the copy of
-    block i + 1 overlaps block i (one-ahead prefetch). ``block_tops`` is the card's effective block rate. Checked on
-    an A100 (11.5 GiB/s): 30 resident + 20 streamed price 0.98 s/step against 0.953 measured, all 50 streamed 1.61
-    against 1.593; the reported RTX 3090 on PCIe 3.0 x4 (31 + 19, 2.83 s/step) is copy bound."""
+    """Priced seconds of one stream-tier render; a streamed block costs max(compute, copy) (one-ahead prefetch).
+    A100 check: 30 + 20 streamed price 0.98 s/step against 0.953 measured."""
     tokens = max(1, int(width) * int(height) // (H3_IMAGE_VAE_SCALE * 2) ** 2)
     compute = 2.0 * BLOCK_PARAMS * tokens / (max(float(block_tops), 1e-6) * 1e12)
     bandwidth = max(float(h2d_gib_s), 1e-6) * 2**30
@@ -1589,8 +1571,7 @@ def stream_render_seconds(
 def _choose_layout(
     candidates: list, *, park: Optional[bool], priced: Optional[dict]
 ) -> tuple[Optional[tuple], str]:
-    """``candidates``: (layout, spare GB, resident blocks, GB uploaded per render, extra s), least parked first.
-    Returns the chosen one (None: none fits) and why."""
+    """``candidates``: (layout, spare GB, resident blocks, GB uploaded per render, extra s), least parked first."""
     fitting = [c for c in candidates if c[1] >= 0]
     if park is True:
         fitting = fitting[-1:]
@@ -1712,8 +1693,7 @@ def plan_placement(
     elif choice == PLACE_STREAM:
         spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
         spare -= (inflight - 1) * max(block_gb, layer_gb)
-        # Parked: the per-step DiT pieces stay; encode (layer window + an edit's vision tower), refine (token
-        # refiner), denoise (block window) and, with the VAE parked, decode (VAE) bring their pieces in in turn.
+        # Parked: each phase brings its pieces in, so the peak is the largest phase.
         step_top = DIT_TOP_GB - DIT_REFINER_GB
         phases = [inflight * block_gb, inflight * layer_gb + TE_VISION_GB, DIT_REFINER_GB]
         parked_spare = vram_gb - act - margin - step_top - vae_gb - max(phases)
@@ -1768,7 +1748,7 @@ def plan_placement(
             PLACE_DIT_RESIDENT: 0.0,
             PLACE_SEQUENTIAL: dit_gb + vae_gb,
             PLACE_STREAM: block_gb * (num_blocks - int(plan.dit_resident_blocks or 0))
-            # parked: the refiner (and VAE) copies wait on the host too (the encoder's are in te_gb already)
+            # the encoder's parked pieces are already in te_gb
             + (DIT_REFINER_GB if plan.parked else 0.0)
             + (vae_gb if plan.vae_parked else 0.0),
         }[choice]
@@ -1872,9 +1852,8 @@ PARKED_ATTR = "_unsloth_h3_parked"
 
 
 class HostParked:
-    """``module``'s tensors wait on the host (pinned where allowed) and are on ``device`` only between ``enter()``
-    and the matching ``leave()``; nested enters count. Leaving drops the device copies; a tensor the phase replaced
-    or recast (the VAE canvas's fp32 fallback for an fp16 overflow) or added becomes the new host copy."""
+    """``module``'s tensors live on the host and on ``device`` only between nested ``enter()``/``leave()``; a tensor
+    the phase replaced or recast (the VAE canvas's fp32 overflow fallback) becomes the new host copy."""
 
     def __init__(
         self,
@@ -1941,7 +1920,6 @@ class HostParked:
             self._placed[(id(owner), kind, name)] = (self._print(value), host)
 
     def _keep_changes(self) -> None:
-        """Host copies for whatever the phase replaced, recast or added (unchanged tensors keep theirs)."""
         kept = []
         for owner, kind, name, tensor in self._tensors():
             placed = self._placed.get((id(owner), kind, name))
@@ -1965,7 +1943,6 @@ class HostParked:
             self._put(lambda t: t)
 
     def on_forward(self, module: Any) -> "HostParked":
-        """Enter around each forward of ``module`` (a raising forward still leaves)."""
         self.handles.append(module.register_forward_pre_hook(lambda _m, _a: self.enter()))
         self.handles.append(
             module.register_forward_hook(lambda _m, _a, _o: self.leave(), always_call = True)
@@ -1973,7 +1950,6 @@ class HostParked:
         return self
 
     def remove(self) -> None:
-        """Back to the host copies with no hooks (the module then moves like any other)."""
         for handle in self.handles:
             handle.remove()
         self.handles = []
@@ -1990,8 +1966,7 @@ def park_on_host(
     pin: bool = True,
     per_forward: bool = False,
 ) -> HostParked:
-    """Park ``module`` on the host (idempotent: an earlier parking is kept); ``per_forward`` brings it in around
-    each of its forwards."""
+    """Idempotent; ``per_forward`` brings ``module`` in around each forward."""
     parked = module.__dict__.get(PARKED_ATTR)
     if parked is None:
         parked = HostParked(module, device, pin = pin)
@@ -2002,7 +1977,6 @@ def park_on_host(
 
 
 def unpark(module: Any) -> bool:
-    """Undo ``park_on_host``; True when ``module`` was parked."""
     parked = module.__dict__.pop(PARKED_ATTR, None) if module is not None else None
     if parked is None:
         return False
@@ -2011,8 +1985,7 @@ def unpark(module: Any) -> bool:
 
 
 def lookup_on_host(embedding: Any, device: Any) -> None:
-    """The token embedding stays on the host: ids go to it and the looked-up rows come to ``device`` (a gather,
-    bit-identical to the device lookup)."""
+    """Host-side embedding lookup; rows go to ``device`` (bit-identical)."""
     import torch
 
     if embedding.__dict__.get(PARKED_ATTR) is not None:
@@ -2037,8 +2010,7 @@ def lookup_on_host(embedding: Any, device: Any) -> None:
 
 
 def park_session_pieces(pipe: Any, device: Any, plan: H3ImagePlan) -> float:
-    """Parked stream layout, once the load's levers are in: the token refiner + context embedder come in around
-    their forward, a parked VAE between ``_enter("vae")`` and ``_leave("vae")``. Returns the GB parked."""
+    """Park the refiner + context embedder (per forward) and a parked VAE (via ``_enter``); returns GB parked."""
     if not plan.parked or plan.placement != PLACE_STREAM:
         return 0.0
     from .host_pinning import host_pinning_allowed
@@ -2055,7 +2027,7 @@ def park_session_pieces(pipe: Any, device: Any, plan: H3ImagePlan) -> float:
     if vae is not None and plan.vae_parked:
         from .diffusion_vae_canvas import release_graphs
 
-        # tile graphs read the weights' addresses, which change with each decode's upload
+        # tile graphs record the weights' addresses, which change per upload
         release_graphs(vae)
         vae.__dict__["_unsloth_canvas_graphs"] = False
         parked += park_on_host(vae, device, pin = pin).bytes
@@ -3150,8 +3122,7 @@ _INT8_RATE_PROBES: dict = {}
 
 
 def _int8_gemm_tops(device: Any) -> Optional[float]:
-    """The card's int8 GEMM rate (TOPS) at a DiT block's shape (2048x2048 rows x hidden), best of 3; cached per
-    device, None when ``torch._int_mm`` cannot run here."""
+    """int8 GEMM TOPS at a DiT block's shape, cached per device; None without ``torch._int_mm``."""
     import torch
 
     dev = torch.device(device)
@@ -3187,11 +3158,7 @@ def _int8_gemm_tops(device: Any) -> Optional[float]:
 def link_measurements(
     device: Any, scheme: Optional[str] = None
 ) -> tuple[Optional[float], Optional[float]]:
-    """(pinned host-to-device GiB/s, effective DiT block TOPS) of ``device``, each measured once per device and cached
-    (``diffusion_memory``'s offload pricing probe and an int8 GEMM probe, ~0.1 s together); the block rate is the
-    GEMM rate of the DiT's weights (int8, else bf16) times ``INT8_BLOCK_EFFICIENCY``. ``UNSLOTH_H3_IMAGE_H2D_GIBS``
-    stands in for the link reading. (None, None) off CUDA or when unmeasurable: the stream tier then takes the least
-    parked layout that fits."""
+    """(host-to-device GiB/s, effective block TOPS), cached; (None, None) when unmeasurable: least parked layout."""
     import torch
 
     dev = torch.device(device)
@@ -4793,7 +4760,6 @@ def _place_text_encoder(
             if name == "language_model":
                 continue
             if parked and name == "visual":
-                # only an edit's pictures run the vision tower: it comes in around that forward
                 park_on_host(child, device, pin = pin, per_forward = True)
             else:
                 child.to(device)

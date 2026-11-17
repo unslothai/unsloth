@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image stream tier on CPU: the plan fits small cards by parking the once-per-phase pieces on the host
-(or refuses at load), prices the parked layout from the card's measured link and compute (a PCIe 3.0 x4 card parks,
-fast links keep today's layout), and the parked pieces render bit-identically to the unparked ones."""
+"""MiniMax-H3-Image stream tier on CPU: parked layout planning, pricing and bit-identical parked renders."""
 
 from __future__ import annotations
 
@@ -18,7 +16,6 @@ for p in (_BACKEND, Path(__file__).resolve().parent):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-# The int8 DiT + int8 encoder the default load streams (hosted files), two streamed members in flight.
 STREAM = dict(dit_gb = 21.9, te_gb = 27.2, inflight = 2)
 # RTX 6000 Ada capped to 8 GB (the 8 GB OOM report: 7.73 GB free at load, 80.5 GB host)
 CARD_8GB = dict(vram_gb = 7.73, host_gb = 80.53)
@@ -53,7 +50,6 @@ def _device_need_gb(
     width = 2048,
     height = 2048,
 ):
-    """The plan's own accounting of its peak phase on the device."""
     act = h3i.activation_gb(width, height) + 1.5
     block = (plan.dit_gb - h3i.DIT_TOP_GB) / 50
     layer = (plan.te_gb - h3i.TE_TOP_GB) / 50
@@ -69,7 +65,6 @@ def _device_need_gb(
 def test_an_8gb_card_gets_a_layout_that_fits_it(h3i):
     plan = h3i.plan_placement(**CARD_8GB, **STREAM)
     assert plan.placement == h3i.PLACE_STREAM
-    # today's layout keeps the encoder's embedding + vision tower, the refiner and the VAE on the card: 12.6 GB
     assert plan.parked and plan.vae_parked, plan.reasons
     assert _device_need_gb(h3i, plan) <= CARD_8GB["vram_gb"]
     assert plan.host_need_gb is not None and plan.host_need_gb <= CARD_8GB["host_gb"]
@@ -121,7 +116,6 @@ def test_a_fast_link_keeps_todays_layout(h3i, card):
 
 
 def test_the_render_pricing_matches_the_reported_3090_step(h3i):
-    # 31 resident + 19 streamed blocks of 0.398 GB over ~3 GiB/s: the copies dominate, ~2.8-3 s per step
     per_step = h3i.stream_render_seconds(
         resident = 31,
         num_blocks = 50,
@@ -178,7 +172,7 @@ def test_host_parking_brings_weights_in_only_around_the_forward(h3i):
         lin(torch.empty(2, 3, device = "meta"))
     assert lin.weight.device.type == "cpu" and parked.depth == 0  # a raising forward still leaves
     assert h3i.park_on_host(lin, "meta") is parked
-    assert h3i.unpark(lin) and len(lin._forward_pre_hooks) == 1  # only the test's own hook is left
+    assert h3i.unpark(lin) and len(lin._forward_pre_hooks) == 1
     assert not h3i.unpark(lin)
 
 
@@ -249,8 +243,7 @@ def test_the_parked_layout_renders_bit_identically(h3i, tmp_path, monkeypatch):
 
 
 def test_a_parked_vae_keeps_its_fp32_fallback_across_decodes(h3i, tmp_path, monkeypatch):
-    """The canvas recasts the fp16 decoder to fp32 when a decode overflows; the next decode of a parked VAE must
-    upload those fp32 weights, not the fp16 snapshot taken when it was parked."""
+    """After an fp16 overflow recasts the VAE to fp32, the next parked decode must upload fp32, not the snapshot."""
     import torch
 
     import _minimax_h3_image_tiny as tiny
@@ -276,7 +269,7 @@ def test_a_parked_vae_keeps_its_fp32_fallback_across_decodes(h3i, tmp_path, monk
             return torch.zeros(1, 3, 64, 64)
 
         vae.__dict__["_unsloth_canvas_stock_decode"] = fake_stock
-        vae.use_tiling = False  # the untiled branch: one stock decode per attempt
+        vae.use_tiling = False
         verdicts = iter(["nonfinite"])
         monkeypatch.setattr(canvas, "_probe", lambda out: next(verdicts, None))
         latents = torch.zeros(1, int(vae.config.latent_channels), 4, 4)
