@@ -3761,7 +3761,6 @@ def _rocm_windows_engine_counter_ps(instances: str) -> str:
     )
 
 
-_ROCM_WIN_UTIL_TTL_S = 3.0
 _rocm_win_util_lock = threading.Lock()
 # luid -> (completed_at, spawn seconds, stdout)
 _rocm_win_util_cache: dict[int, tuple[float, float, Optional[str]]] = {}
@@ -3769,20 +3768,23 @@ _rocm_win_util_cache: dict[int, tuple[float, float, Optional[str]]] = {}
 
 def _rocm_windows_adapter_engines_stdout(luid: int) -> Optional[str]:
     # Every engine instance on the host overruns the 5 s spawn timeout (#18005); one adapter's fit.
+    ps = _rocm_windows_engine_counter_ps(f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*")
+    try:
+        from utils.hardware import gpu_query
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY) if gpu_query.display_cache_allowed() else 0.0
+    except Exception:
+        ttl = 0.0
+    if ttl <= 0:
+        return _rocm_windows_counter_stdout_uncached(ps)
     with _rocm_win_util_lock:
         now = time.monotonic()
         cached = _rocm_win_util_cache.get(luid)
         if cached is not None and now - cached[0] < min(
-            _ROCM_WIN_COUNTER_MAX_AGE_S,
-            max(_ROCM_WIN_UTIL_TTL_S, _ROCM_WIN_COUNTER_SPACING * cached[1]),
+            _ROCM_WIN_COUNTER_MAX_AGE_S, max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[1])
         ):
             return cached[2]
         try:
-            stdout = _rocm_windows_counter_stdout_uncached(
-                _rocm_windows_engine_counter_ps(
-                    f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*"
-                )
-            )
+            stdout = _rocm_windows_counter_stdout_uncached(ps)
         except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
             stdout = None
         done = time.monotonic()

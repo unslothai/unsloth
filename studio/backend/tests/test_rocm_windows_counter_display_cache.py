@@ -262,17 +262,34 @@ def test_combined_script_keeps_each_counter_path_and_format():
 
 def test_one_adapters_utilization_reads_its_own_narrowed_counter(counters):
     """#18005: every engine instance overran the 5 s timeout, so the LUID goes in the path."""
-    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
-    (script,) = counters.calls
-    assert "\\GPU Engine(*luid_0x00000000_0x0000d1a2*)\\Utilization Percentage" in script
-    assert "Get-Counter -Counter" not in script
-    # 2 s spawn: served for 4 x 2 s, capped at the display maximum.
-    counters.clock.now += 7.9
-    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
-    assert len(counters.calls) == 1
-    counters.clock.now += 0.1
-    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+    with gpu_query.display_reads(max_stale = 0):
+        assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+        (script,) = counters.calls
+        assert "\\GPU Engine(*luid_0x00000000_0x0000d1a2*)\\Utilization Percentage" in script
+        assert "Get-Counter -Counter" not in script
+        # 2 s spawn: served for 4 x 2 s, capped at the display maximum.
+        counters.clock.now += 7.9
+        assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+        assert len(counters.calls) == 1
+        counters.clock.now += 0.1
+        assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
     assert len(counters.calls) == 2
+
+
+def test_adapter_utilization_honours_the_cache_bypasses(counters, monkeypatch):
+    hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+    hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+    assert len(counters.calls) == 2
+    with gpu_query.display_reads(max_stale = 0), gpu_query.fresh_reads():
+        hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+        hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+    assert len(counters.calls) == 4
+    monkeypatch.setattr(gpu_query, "ttl_for", lambda kind: 0.0)
+    with gpu_query.display_reads(max_stale = 0):
+        hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+        hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2)
+    assert len(counters.calls) == 6
+    assert hw._rocm_win_util_cache == {}
 
 
 def test_a_hung_adapter_counter_is_not_retried_by_every_poll(counters, monkeypatch):
@@ -282,9 +299,10 @@ def test_a_hung_adapter_counter_is_not_retried_by_every_poll(counters, monkeypat
         raise hw.subprocess.TimeoutExpired(argv, 5)
 
     monkeypatch.setattr(hw.subprocess, "run", hung)
-    for _ in range(3):
+    with gpu_query.display_reads(max_stale = 0):
+        for _ in range(3):
+            assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) is None
+        assert len(counters.calls) == 1
+        counters.clock.now += hw._ROCM_WIN_COUNTER_MAX_AGE_S
         assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) is None
-    assert len(counters.calls) == 1
-    counters.clock.now += hw._ROCM_WIN_COUNTER_MAX_AGE_S
-    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) is None
     assert len(counters.calls) == 2
