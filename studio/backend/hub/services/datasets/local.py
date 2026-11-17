@@ -562,6 +562,10 @@ def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
         return stored_path
 
 
+def _is_upload_id(prefix: str) -> bool:
+    return len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix)
+
+
 def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:
     suffix = stored_path.name.split("_", 1)[-1]
     try:
@@ -572,6 +576,7 @@ def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None
             if path.is_file()
             and not path.is_symlink()
             and within_account(path)
+            and _is_upload_id(path.name.split("_", 1)[0])
             and path.name.split("_", 1)[-1] == suffix
             and path.stat().st_size == size
         ]
