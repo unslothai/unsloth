@@ -268,6 +268,23 @@ def _decoder_blocks(model):
     return [m for m in model.modules() if any(c.__name__ in names for c in type(m).__mro__)]
 
 
+def _block_units(model, parents, FSDPModule):
+    """Each decoder block's FSDP unit: the block itself, or the activation checkpoint wrapper around it
+    (accelerate >= 1.16 shards the wrapper, so the block inside is no FSDPModule)."""
+    units = []
+    for block in _decoder_blocks(model):
+        if isinstance(block, FSDPModule):
+            units.append(block)
+            continue
+        parent = parents.get(id(block))
+        if (
+            isinstance(parent, FSDPModule)
+            and getattr(parent, "_checkpoint_wrapped_module", None) is block
+        ):
+            units.append(parent)
+    return units
+
+
 def _all_ranks_agree(value, device):
     """True only when every rank says True, so every rank takes the same branch."""
     try:
@@ -392,7 +409,7 @@ def after_fsdp2_wrap(accelerator, model):
         return
     model._unsloth_fsdp2_prepared = True
     parents = _parents(model)
-    blocks = [b for b in _decoder_blocks(model) if isinstance(b, FSDPModule)]
+    blocks = _block_units(model, parents, FSDPModule)
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     if (
         blocks

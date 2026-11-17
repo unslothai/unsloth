@@ -336,6 +336,16 @@ def resolve_speed_mode(
     return normalize_speed_mode(value)
 
 
+def int8_attention_speed_active(
+    speed_mode: Optional[str], effective_speed: str, deferred: bool
+) -> bool:
+    """Whether the automatic INT8 attention routes race at load: a speed profile is active, or speed was left unset
+    and no deferred profile follows (an int8 DiT the offload streams, a load that cannot compile). The kernel needs no
+    compile and passes an accuracy check and a race per card; speed off by request stays bit-identical, and a deferred
+    profile installs the routes when it engages."""
+    return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
+
+
 @lru_cache(maxsize = 1)
 def torch_compile_runtime_available() -> bool:
     """Triton has no Windows wheel; TORCHDYNAMO_DISABLE is honored on every platform."""
