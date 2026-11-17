@@ -3336,6 +3336,32 @@ export function ComposerModelPicker({
       window.removeEventListener("resize", place);
     };
   }, [dropsDown, panel]);
+  // The open-time rect is stale once the trigger moves or lays out late.
+  useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!(open && panel && trigger)) {
+      return;
+    }
+    const place = () => {
+      const rect = trigger.getBoundingClientRect();
+      if (rect.width === 0 || panel.offsetWidth === 0) {
+        return;
+      }
+      setAlignOffset(
+        pickerAlignOffset(align, rect, panel.offsetWidth, window.innerWidth),
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    observer.observe(trigger);
+    observer.observe(trigger.closest("form") ?? document.body);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [open, panel, align]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };

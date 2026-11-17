@@ -960,6 +960,13 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+  assert.equal(pickerAlignOffset("end", { left: 0, right: 0 }, 520, 2000), 0);
+  assert.match(
+    readSrc(
+      "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+    ),
+    /pickerAlignOffset\(align, rect, panel\.offsetWidth, window\.innerWidth\)/,
+  );
 });
 
 test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
