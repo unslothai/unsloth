@@ -1539,8 +1539,9 @@ BLOCK_PARAMS = 385e6
 # One block's compute / the probe-priced FLOPs at the card's int8 GEMM rate: A100 11.6 ms per block at 2048x2048
 # resident (0.578 s/step) against 7.8 ms priced at its 406 TOPS.
 INT8_BLOCK_EFFICIENCY = 0.67
-# Extra decode seconds per 4 MP without tile graphs (A100: 1.57 vs 0.45 s at 2048x2048).
-UNGRAPHED_DECODE_S = 1.1
+# Extra decode seconds per 4 MP without tile graphs, the parked VAE's upload aside (A100 at 2048x2048: 0.47 against
+# 0.33 s).
+UNGRAPHED_DECODE_S = 0.15
 # A more parked layout replaces a less parked one that fits only where it prices this much faster per render.
 PARK_MIN_SAVING = 0.10
 
