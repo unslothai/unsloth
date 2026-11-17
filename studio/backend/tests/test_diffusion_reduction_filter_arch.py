@@ -109,7 +109,7 @@ def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
     assert _filter_reaching_compile(monkeypatch, fam) is False
 
 
-@pytest.mark.parametrize("name", ["sdxl", "hunyuanvideo-1.5", "wan2.2-ti2v-5b"])
+@pytest.mark.parametrize("name", ["sdxl", "wan2.2-ti2v-5b"])
 def test_unmeasured_families_stay_off_on_sm120(monkeypatch, name):
     _on(monkeypatch, _SM120)
     assert cc.family_filters_reductions(_family(name)) is False

@@ -25,6 +25,8 @@ _THREAD = "thread-sync"
 _CLOCK_COLUMNS = {
     "chat_attachment_inventory_state": {"backfilled_at"},
     "chat_attachment_tombstones": {"deleted_at"},
+    # Counts writes, and skipping unchanged rows is meant to make fewer.
+    "chat_history_revisions": {"revision"},
 }
 
 

@@ -4039,6 +4039,7 @@ fn read_output_stream<R: std::io::Read>(
     if !is_stderr {
         let mut exit_record: Option<(String, bool)> = None;
         let mut emit_crash = false;
+        let mut clean_exit = false;
         if let Ok(mut proc) = state.lock() {
             if proc.generation != generation {
                 return;
@@ -4052,7 +4053,8 @@ fn read_output_stream<R: std::io::Read>(
                 match exit_status_after_stdout_closed(child) {
                     Some(status) => {
                         info!("Backend stdout stream ended with status: {}", status);
-                        exit_record = Some((status, intentional));
+                        clean_exit = status.success();
+                        exit_record = Some((status.to_string(), intentional));
                         true
                     }
                     None => {
@@ -4073,6 +4075,7 @@ fn read_output_stream<R: std::io::Read>(
                 }
                 proc.port = None;
                 proc.diagnostics_session = None;
+                // Also on a clean exit: server-crashed is the window's only notice the backend is gone.
                 emit_crash = !intentional;
             }
         }
@@ -4082,22 +4085,36 @@ fn read_output_stream<R: std::io::Read>(
                 &backend_log.session_id,
                 Some(status),
                 intentional,
-                None,
+                unrequested_exit_reason(intentional, clean_exit),
             );
         }
         if emit_crash {
-            error!("Backend process stdout closed unexpectedly (crash detected)");
+            if clean_exit {
+                warn!(
+                    "Backend exited cleanly without a Desktop stop request \
+                     (e.g. `unsloth studio stop`); not a crash"
+                );
+            } else {
+                error!("Backend process stdout closed unexpectedly (crash detected)");
+            }
             let _ = app.emit("server-crashed", ());
         }
     }
 }
 
+/// `unsloth studio stop` cannot set `intentional_stop`; label its clean exit, not `process_exit`.
+fn unrequested_exit_reason(intentional: bool, clean_exit: bool) -> Option<String> {
+    (!intentional && clean_exit).then(|| "clean_exit".to_string())
+}
+
 /// Exit status of a child whose stdout closed, or None if still alive. Polls briefly since EOF can
 /// precede exit visibility; stdout EOF alone is not death (the backend may close stdout).
-fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
+fn exit_status_after_stdout_closed(
+    child: &mut Box<dyn ChildWrapper + Send>,
+) -> Option<std::process::ExitStatus> {
     for attempt in 0..30 {
         match child.try_wait() {
-            Ok(Some(status)) => return Some(status.to_string()),
+            Ok(Some(status)) => return Some(status),
             Ok(None) => {
                 if attempt > 0 {
                     std::thread::sleep(Duration::from_millis(100));
@@ -6048,7 +6065,24 @@ mod exit_status_after_stdout_closed_tests {
         let mut child = spawn(&["/bin/sh", "-c", "exit 3"]);
         let status = exit_status_after_stdout_closed(&mut child)
             .expect("a child that exited must be reported, not read as alive");
-        assert!(status.contains('3'), "expected the real exit code in {status:?}");
+        assert_eq!(
+            status.code(),
+            Some(3),
+            "expected the real exit code in {status:?}"
+        );
+        assert!(!status.success());
+    }
+
+    #[test]
+    fn a_clean_exit_is_success_and_a_signal_is_not() {
+        let mut clean = spawn(&["/bin/sh", "-c", "exit 0"]);
+        assert!(exit_status_after_stdout_closed(&mut clean)
+            .unwrap()
+            .success());
+        let mut signalled = spawn(&["/bin/sh", "-c", "kill -TERM $$"]);
+        assert!(!exit_status_after_stdout_closed(&mut signalled)
+            .unwrap()
+            .success());
     }
 
     #[test]
@@ -6075,6 +6109,22 @@ mod exit_status_after_stdout_closed_tests {
                 "child exiting after {delay_ms}ms was read as still alive"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod backend_exit_diagnostic_tests {
+    use super::unrequested_exit_reason;
+
+    #[test]
+    fn only_an_unrequested_clean_exit_is_labelled_clean_exit() {
+        assert_eq!(
+            unrequested_exit_reason(false, true).as_deref(),
+            Some("clean_exit")
+        );
+        assert_eq!(unrequested_exit_reason(false, false), None);
+        assert_eq!(unrequested_exit_reason(true, true), None);
+        assert_eq!(unrequested_exit_reason(true, false), None);
     }
 }
 

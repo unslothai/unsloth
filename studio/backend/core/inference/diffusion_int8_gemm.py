@@ -265,14 +265,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         T,
         stride_gb,
         stride_gt,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        EVEN_K: tl.constexpr,  # K divisible by BLOCK_K
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        EVEN_K: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
         NATIVE: tl.constexpr = False,  # NativeWeightOnlyLinear epilogue: fp32 acc * xs * ws (+ bias), one bf16 round
         RES: tl.constexpr = False,  # gated residual: r + bf16(linear out) * g, rows of T tokens per batch
@@ -363,13 +363,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         N,
         K,
         stride_cm,
-        HAS_BIAS: tl.constexpr,  # bias present
-        XS_FP32: tl.constexpr,  # activation scale is fp32
-        WS_FP32: tl.constexpr,  # weight scale is fp32
-        BLOCK_M: tl.constexpr,  # block size along M (rows)
-        BLOCK_N: tl.constexpr,  # block size along N (out features)
-        BLOCK_K: tl.constexpr,  # block size along K (in features)
-        GROUP_M: tl.constexpr,  # M tiles per swizzle group
+        HAS_BIAS: tl.constexpr,
+        XS_FP32: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+        GROUP_M: tl.constexpr,
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -658,7 +658,7 @@ def _cutlass_tile(
         return None
     from . import diffusion_int8_cutlass as cut
 
-    tile = entry.get(max(cut._RACE_M) if a.shape[0] >= _CUT_LARGE_M else min(cut._RACE_M))
+    tile = cut.slot(int(a.shape[0]), entry)
     if tile is None:
         return None
     import torch
@@ -669,7 +669,7 @@ def _cutlass_tile(
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
     from . import diffusion_int8_cutlass as cut
     entry = (_CUT_PLAN.get(index) or {}).get(_cut_key(n, k, xs_dtype, ws_dtype, bias))
-    return bool(entry) and entry.get(max(cut._RACE_M)) is not None
+    return bool(entry) and any(t is not None for t in cut.large_slots(entry))
 
 
 def cutlass_wanted(capability: Optional[tuple]) -> bool:
@@ -715,6 +715,8 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 tv,
                 os.environ.get(INT8_GEMM_TILES_ENV, ""),
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
+                # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
+                f"sustained={cut.sustained_mode()}",
                 h.hexdigest()[:20],
             )
         )
@@ -832,8 +834,11 @@ def _cutlass_plan(
             done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
-            if isinstance(hit, dict) and all(
-                (v is None or v in cut.probed_tiles(index)) for v in hit.values()
+            points = cut.race_points()
+            if (
+                isinstance(hit, dict)
+                and {int(m) for m in hit} == set(points)
+                and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
             ):
                 plan[key] = {int(m): v for m, v in hit.items()}
                 continue
@@ -842,7 +847,17 @@ def _cutlass_plan(
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
             entry = {}
-            for m in cut._RACE_M:
+            for m in points:
+                if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
+                    # no room to time it: today's path at that size, never an untimed 4096-row winner
+                    entry[m] = None
+                    races.setdefault(skey, {})[m] = {
+                        "tile": None,
+                        "us": {},
+                        "m": m,
+                        "skipped": "memory",
+                    }
+                    continue
                 if triton_on:
                     today = lambda a, w_, x_, s_, b_: _launch_or_ref(index, a, w_, x_, s_, b_)  # noqa: E731
                 elif m >= _CUT_LARGE_M:
@@ -857,6 +872,10 @@ def _cutlass_plan(
                     r["tile"] = int(r["tile"]) if r["tile"] is not None else None
                 entry[m] = r["tile"]
                 races.setdefault(skey, {})[m] = r
+                if m == cut._RACE_M_HUGE:
+                    # hand the race's ~1-2 GB of operands / outputs back before the next shape or the first forward
+                    torch.cuda.synchronize(dev)
+                    torch.cuda.empty_cache()
             plan[key] = entry
             cached[skey] = {str(m): v for m, v in entry.items()}
             del w, wsr, br
@@ -876,6 +895,21 @@ def _cutlass_plan(
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     _CUT_RACES[index] = races
     return plan
+
+
+# huge-race free memory, in (operand + output) units: today's output, cached candidate outputs, streaming slack
+_HUGE_RACE_HEADROOM = 4.0
+
+
+def _huge_race_fits(dev: Any, m: int, n: int, k: int) -> bool:
+    import torch
+
+    try:
+        free, _total = torch.cuda.mem_get_info(dev)
+    except Exception:  # noqa: BLE001
+        return False
+    need = m * k + m * n * 2
+    return free >= _HUGE_RACE_HEADROOM * need
 
 
 def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
@@ -1704,6 +1738,42 @@ def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[A
     else:
         y = stock_gemm(xq, wq, xs, ws, down.bias)
     return y.reshape(*lead, y.shape[-1])
+
+
+def situ_linear(down: Any, gate: Any, value: Any) -> Optional[Any]:
+    """``down(situ(value, gate))`` for MOSS-Image's SiTU-GLU MLP, with the product, rotation and act quant in one kernel
+    reading the projection's two halves (``[..., F]`` views of one output), else None (caller: stock)."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    f = gate.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or gate.shape != value.shape
+        or f != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_situ_act_quant
+
+    q = convrot_situ_act_quant(gate.reshape(-1, f), value.reshape(-1, f), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*gate.shape[:-1], y.shape[-1])
 
 
 def _plain_silu(act: Any) -> bool:

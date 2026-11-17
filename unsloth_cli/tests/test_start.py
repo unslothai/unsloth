@@ -3805,7 +3805,11 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": "unsloth/Qwen3.5-35B-A3B", "use_saved_settings": True},
+        )
     ]
     assert result.output.index(
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
@@ -3938,6 +3942,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
+                "use_saved_settings": True,
             },
         )
     ]
@@ -4807,7 +4812,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
+            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL", "use_saved_settings": True},
         )
     ]
     assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
@@ -4822,7 +4827,11 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": MODEL["id"], "gguf_variant": "Q8_0", "use_saved_settings": True},
+        )
     ]
 
 
@@ -4842,13 +4851,17 @@ def test_start_agents_expose_gpu_memory_mode_option(command_name):
 @pytest.mark.parametrize(
     "mode,expected",
     [
-        ("auto", {"model_path": MODEL["id"], "gpu_memory_mode": "auto"}),
+        (
+            "auto",
+            {"model_path": MODEL["id"], "gpu_memory_mode": "auto", "use_saved_settings": True},
+        ),
         (
             "manual",
             {
                 "model_path": MODEL["id"],
                 "gpu_memory_mode": "manual",
                 "gpu_layers": -1,
+                "use_saved_settings": True,
             },
         ),
     ],
@@ -4890,7 +4903,11 @@ def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -4914,7 +4931,11 @@ def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -5800,7 +5821,13 @@ def test_resolve_model_loads_a_kept_model_at_another_quant(monkeypatch, capsys):
         preload_check = lambda *args: gated.append(args),
     )
 
-    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}]
+    assert payloads == [
+        {
+            "model_path": "unsloth/Qwen3-1.7B-GGUF",
+            "gguf_variant": "Q4_K_M",
+            "use_saved_settings": True,
+        }
+    ]
     assert gated, "the kept model is at Q8_0, so the Q4_K_M load must pass the preload gate"
     out = capsys.readouterr().out
     assert (
@@ -5944,7 +5971,12 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(max_seq_length = 8192))
 
     assert payloads == [
-        {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
+        {
+            "model_path": "owner/model-GGUF",
+            "gguf_variant": "Q8_0",
+            "max_seq_length": 8192,
+            "use_saved_settings": True,
+        }
     ]
 
 
@@ -6079,7 +6111,7 @@ def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypa
     start._resolve_model(BASE, "key", "owner/model-GGUF")
 
     [(payload, before_load)] = state["loads"]
-    assert payload == {"model_path": "owner/model-GGUF"}
+    assert payload == {"model_path": "owner/model-GGUF", "use_saved_settings": True}
     assert "from another account's model to owner/model-GGUF." in before_load
     assert "unloads it for every attached session" in before_load
 
