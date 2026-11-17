@@ -6149,10 +6149,13 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
     except (AttributeError, TypeError):
         scaler = torch.cuda.amp.GradScaler(init_scale = init_scale)
     accelerator.scaler = scaler
+    scaler = _parallel_forced_scaler(trainer, init_scale)
 
     # accelerate only unscales under native fp16 AMP; else clipping would see scaled gradients.
     def unscale_gradients(optimizer = None):
         from accelerate.optimizer import AcceleratedOptimizer
+
+        scaler = accelerator.scaler
         if optimizer is None:
             optimizer = accelerator._optimizers
         elif not isinstance(optimizer, (tuple, list)):
@@ -6171,6 +6174,36 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
 
     accelerator.unscale_gradients = unscale_gradients
     return scaler
+
+
+def _parallel_forced_scaler(trainer, init_scale):
+    """The GradScaler forced float32 makes, in the form Unsloth's tensor / pipeline parallel and native FSDP2 give
+    an fp16 run's scaler in their Trainer setup. That setup ran before this scaler existed (mixed precision is
+    "no", so accelerate made none), and a plain GradScaler there fails on the mix of DTensor and local
+    gradients (_amp_foreach_non_finite_check_and_unscale_: "got mixed torch.Tensor and DTensor") and decides
+    found_inf per rank. The native scaler unscales both kinds and all-reduces found_inf over the ranks, so
+    every rank steps or skips together."""
+    accelerator = trainer.accelerator
+    scaler = accelerator.scaler
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return scaler
+        from .fsdp2_native import _scaler_for_native, is_native_fsdp2
+        from .tp_native import _SCALE_DIVISOR
+    except Exception:
+        return scaler
+    divisor = accelerator.__dict__.get(_SCALE_DIVISOR)
+    fsdp2 = divisor is None and is_native_fsdp2(getattr(trainer, "model", None))
+    if divisor is None and not fsdp2:
+        # DDP: gradients are averaged before unscale_, so every rank sees the same inf.
+        return scaler
+    if not _scaler_for_native(trainer):
+        return accelerator.scaler
+    # Keep the forced float32 start, already divided by the loss multiplier, over fp16's 2**16 one.
+    accelerator.scaler._init_scale = init_scale
+    return accelerator.scaler
 
 
 def _unsloth_attach_accelerator_scaler(trainer, model):
