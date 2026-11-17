@@ -136,6 +136,16 @@ _WORKER_TAG = "unsloth/autotune-tag-v2"
 _TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
 
 
+def _version_tag():
+    # Graphs traced through Unsloth code are served from the AOT autograd cache on warm starts:
+    # an Unsloth upgrade starts a fresh cache even where no tagged kernel file changed.
+    try:
+        from .._version import __version__
+    except Exception:
+        return None
+    return f"unsloth/version:{__version__}"
+
+
 def sync_compile_cache_tag_to_workers():
     config = getattr(torch.compiler, "config", None)
     if config is None or not hasattr(config, "cache_key_tag"):
@@ -159,7 +169,7 @@ def tag_compile_cache(path):
     with open(path, "rb") as file:
         tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
     tags = [t for t in config.cache_key_tag.split(",") if t]
-    new_tags = [t for t in (_WORKER_TAG, tag) if t not in tags]
+    new_tags = [t for t in (_WORKER_TAG, _version_tag(), tag) if t and t not in tags]
     if new_tags:
         # Every thread: a reentrant checkpoint recompiles its grad graph on autograd's device thread.
         set_torch_config(config, "cache_key_tag", ",".join(tags + new_tags))
