@@ -12,16 +12,20 @@ import {
 } from "../src/features/video/cosmos-guardrail.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-// The backend's two refusals, as video_cosmos3 words them.
+// The backend's two refusals (safety checker turned on), as video_cosmos3 words them.
+const STEPS =
+  "accept its licence at https://huggingface.co/nvidia/Cosmos-1.0-Guardrail, add that account's Hugging Face token " +
+  "in Settings, and load again. Or unset UNSLOTH_COSMOS3_SAFETY_CHECKER (the checker is off by default) to load " +
+  "without it.";
 const MISSING =
-  "'nvidia/Cosmos3-Nano' needs NVIDIA's gated Cosmos guardrail. Install it with Install guardrail on the Video page " +
-  "or run `uv pip install --python /home/me/.unsloth/studio/unsloth_studio/bin/python cosmos-guardrail`, then accept " +
-  "its licence at https://huggingface.co/nvidia/Cosmos-1.0-Guardrail, add that account's Hugging Face token in " +
-  "Settings, and load again. Or set UNSLOTH_COSMOS3_SAFETY_CHECKER=0 to run without it at your own responsibility.";
+  "The Cosmos safety checker is on (UNSLOTH_COSMOS3_SAFETY_CHECKER=1) for 'nvidia/Cosmos3-Nano', and it needs " +
+  "NVIDIA's gated Cosmos guardrail. Install it with Install guardrail on the Video page or run " +
+  "`uv pip install --python /home/me/.unsloth/studio/unsloth_studio/bin/python cosmos-guardrail`, then " +
+  STEPS;
 const NO_ACCESS =
-  "'nvidia/Cosmos3-Nano' needs NVIDIA's gated Cosmos guardrail, and this Hugging Face token has no access: accept " +
-  "its licence at https://huggingface.co/nvidia/Cosmos-1.0-Guardrail, add that account's Hugging Face token in " +
-  "Settings, and load again. Or set UNSLOTH_COSMOS3_SAFETY_CHECKER=0 to run without it at your own responsibility.";
+  "The Cosmos safety checker is on (UNSLOTH_COSMOS3_SAFETY_CHECKER=1) for 'nvidia/Cosmos3-Nano', and it needs " +
+  "NVIDIA's gated Cosmos guardrail, but this Hugging Face token has no access: " +
+  STEPS;
 
 const status = (s: Partial<CosmosGuardrailStatus>): CosmosGuardrailStatus => ({
   state: "idle",

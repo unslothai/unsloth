@@ -16166,18 +16166,13 @@ class VideoBackend:
 def refuse_without_guardrail_access(
     fam: Any, kind: str, repo_id: str, hf_token: Any, local_files_only: bool
 ) -> None:
-    """A Nano pipeline load whose token cannot fetch the gated guardrail is refused before its ~33 GB download."""
+    """A Cosmos3 load with the safety checker turned on, whose token cannot fetch the gated guardrail, is refused
+    before its download (~33 GB for Nano)."""
     if getattr(fam, "name", None) not in COSMOS3_FAMILIES or kind != "pipeline":
         return
     from .video_cosmos3 import guardrail_access_preflight
 
-    refusal = guardrail_access_preflight(
-        str(repo_id),
-        hf_token,
-        local_files_only = local_files_only,
-        # An unknown fine-tune follows its family: Nano ships the guardrail on, Edge off.
-        default_enabled = getattr(fam, "name", None) == "cosmos3-nano",
-    )
+    refusal = guardrail_access_preflight(str(repo_id), hf_token, local_files_only = local_files_only)
     if refusal:
         raise ValueError(refusal)
 

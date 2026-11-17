@@ -153,11 +153,14 @@ def _no_guardrail_access_check(monkeypatch):
 
 
 def _set_guardrail(monkeypatch, state):
-    """ "opted out" (env 0, no package), "installed" (package, no env) or "absent" (neither)."""
+    """The safety checker is off by default. "default" (no env, no package), "opted out" (env 0, no package),
+    "installed" (turned on with env 1, package present) or "absent" (turned on, package missing)."""
     if state == "opted out":
         monkeypatch.setenv(_OPT_OUT_ENV, "0")
-    else:
+    elif state == "default":
         monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_OPT_OUT_ENV, "1")
     module = None
     if state == "installed":
         module = types.ModuleType("cosmos_guardrail")
@@ -325,16 +328,17 @@ def test_no_text_encoder_is_a_zero_text_term(table, expected):
 
 
 @pytest.mark.parametrize(
-    "value, opted_out",
-    [(v, True) for v in ("0", "FALSE", "no", " Off\n")]
-    + [(v, False) for v in (None, "", "1", "true", "disabled")],
+    "value, requested",
+    [(v, True) for v in ("1", "TRUE", "yes", " On\n")]
+    + [(v, False) for v in (None, "", "0", "false", "disabled")],
 )
-def test_the_opt_out_takes_only_explicit_off_values(monkeypatch, value, opted_out):
+def test_the_safety_checker_runs_only_on_request(monkeypatch, value, requested):
+    # Off by default (user decision; OpenMDW 1.1 has no guardrail clause): only an explicit on value turns it on.
     if value is None:
         monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
     else:
         monkeypatch.setenv(_OPT_OUT_ENV, value)
-    assert vc3.safety_checker_opted_out() is opted_out
+    assert vc3.safety_checker_requested() is requested
 
 
 @pytest.mark.parametrize(
@@ -399,7 +403,7 @@ def test_the_checkpoints_index_decides_the_safety_checker(
     assert lookups == ([(repo, "model_index.json")] if source == "cache" else [])
 
 
-@pytest.mark.parametrize("guardrail", ["opted out", "installed", "absent"])
+@pytest.mark.parametrize("guardrail", ["default", "opted out", "installed", "absent"])
 @pytest.mark.parametrize("repo", [NANO, EDGE])
 def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     _hub_cache(monkeypatch, None)
@@ -410,24 +414,29 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     log = _Log()
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
-    if repo == NANO and guardrail == "absent":
+    if guardrail == "absent":
+        # Turned on, every Cosmos3 checkpoint needs the package.
         for part in (
-            f"'{NANO}'",
+            f"'{repo}'",
             f"pip install --python {sys.executable} cosmos-guardrail",
             f"https://huggingface.co/{_GUARDRAIL_REPO}",
             "token in Settings",
-            f"{_OPT_OUT_ENV}=0",
+            f"{_OPT_OUT_ENV}=1",
+            "off by default",
         ):
             assert part in refusal, part
-        assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
         assert refusal is None
-    opted_out = guardrail == "opted out"
-    expected = {"sound_tokenizer": None, **({"enable_safety_checker": False} if opted_out else {})}
-    assert vc3.pipeline_kwargs(repo) == expected
-    warned = [line for level, line in log.lines if level == "warning"]
-    assert len(warned) == (repo == NANO and opted_out)
-    assert all(_OPT_OUT_ENV in line and repo in line for line in warned)
+    on = guardrail in ("installed", "absent")
+    assert vc3.pipeline_kwargs(repo) == {"sound_tokenizer": None, "enable_safety_checker": on}
+    (line,) = [line for level, line in log.lines if level == "info" and "safety checker" in line]
+    assert repo in line and _OPT_OUT_ENV in line
+    if on:
+        assert "is on" in line
+    else:
+        # Says it is off and how to turn it on; Nano's card runs it, so the line says so.
+        assert "is off" in line and f"{_OPT_OUT_ENV}=1" in line
+        assert ("model card runs it" in line) is (repo == NANO)
 
 
 def _listing(repo, *extra):
@@ -724,7 +733,7 @@ def cosmos3_runtime(fake_runtime, monkeypatch):
     diffusers = sys.modules["diffusers"]
     monkeypatch.setattr(diffusers, "Cosmos3OmniPipeline", _FakeCosmos3Pipeline, raising = False)
     _FakeCosmos3Pipeline.loads = []
-    _set_guardrail(monkeypatch, "opted out")
+    _set_guardrail(monkeypatch, "default")
     encoded = []
 
     def _encode(frames, fps, audio, pipe):
@@ -743,10 +752,11 @@ def _loaded(repo):
 @pytest.mark.parametrize(
     "repo, guardrail, safety",
     [
+        (NANO, "default", {"enable_safety_checker": False}),
+        (EDGE, "default", {"enable_safety_checker": False}),
         (NANO, "opted out", {"enable_safety_checker": False}),
-        (EDGE, "opted out", {"enable_safety_checker": False}),
-        (NANO, "installed", {}),
-        (EDGE, "absent", {}),
+        (NANO, "installed", {"enable_safety_checker": True}),
+        (EDGE, "installed", {"enable_safety_checker": True}),
     ],
 )
 def test_load(cosmos3_runtime, monkeypatch, repo, guardrail, safety):
@@ -814,7 +824,8 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
         f"'{NANO}'",
         f"https://huggingface.co/{_GUARDRAIL_REPO}",
         "token in Settings",
-        f"{_OPT_OUT_ENV}=0",
+        f"{_OPT_OUT_ENV}=1",
+        "off by default",
     ):
         assert part in message, part
     assert "401 Client Error" not in message and "pip install" not in message
@@ -900,12 +911,27 @@ def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
     assert seen == ["hf_a", "hf_b", "ambient"]
 
 
+def test_nano_loads_by_default_without_the_guardrail(cosmos3_runtime, monkeypatch):
+    """Off by default: no package, no access check, no refusal; the pipeline is built with the checker off."""
+    _set_guardrail(monkeypatch, "default")
+    checked = []
+    monkeypatch.setattr(vc3, "guardrail_access_preflight", lambda *a, **k: checked.append(a))
+    started = []
+    monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
+    VideoBackend().begin_load(NANO, model_kind = "pipeline")
+    assert len(started) == 1
+    _FakeCosmos3Pipeline.loads = []
+    _loaded(NANO)
+    ((load,),) = [_FakeCosmos3Pipeline.loads]
+    assert load["enable_safety_checker"] is False
+
+
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):
     _set_guardrail(monkeypatch, "absent")
     started = []
     monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
     backend = VideoBackend()
-    with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
+    with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=1"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
     with pytest.raises(ValueError, match = "Install guardrail on the Video page"):
@@ -924,7 +950,7 @@ def test_a_local_pipeline_folder_validates(
     root = _write_planned_tree(tmp_path_factory.mktemp("m") / names.get(folder, "my-model"), repo)
     if folder == "export":
         (root / "config.json").unlink()
-    _set_guardrail(monkeypatch, "absent" if repo == EDGE else "opted out")
+    _set_guardrail(monkeypatch, "default")
     assert VideoBackend().validate_load_request(str(root)).name == _FAMILY[repo]
 
 

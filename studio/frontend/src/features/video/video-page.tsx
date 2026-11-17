@@ -798,7 +798,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
   toast.error(text || fallback);
 }
 
-const COSMOS_GUARDRAIL_TITLE = "Cosmos3 Nano needs cosmos-guardrail";
+const COSMOS_GUARDRAIL_TITLE = "The Cosmos safety checker needs cosmos-guardrail";
 
 async function installCosmosGuardrail(): Promise<void> {
   const id = "cosmos-guardrail-install";

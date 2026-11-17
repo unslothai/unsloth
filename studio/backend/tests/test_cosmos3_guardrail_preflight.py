@@ -18,16 +18,16 @@ from core.inference import video_cosmos3 as vc3
 
 NANO, EDGE = "nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"
 GUARDRAIL = "nvidia/Cosmos-1.0-Guardrail"
-OPT_OUT = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
+CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 
 
 @pytest.fixture
 def guardrail(monkeypatch):
-    """Package installed, no opt-out, nothing cached, online; returns the metadata requests made."""
+    """Safety checker turned on, package installed, nothing cached, online; returns the metadata requests made."""
     module = types.ModuleType("cosmos_guardrail")
     module.__spec__ = importlib.machinery.ModuleSpec("cosmos_guardrail", None)
     monkeypatch.setitem(sys.modules, "cosmos_guardrail", module)
-    monkeypatch.delenv(OPT_OUT, raising = False)
+    monkeypatch.setenv(CHECKER_ENV, "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     import huggingface_hub
     from huggingface_hub import constants
@@ -69,7 +69,8 @@ def _assert_refusal(message):
         f"https://huggingface.co/{GUARDRAIL}",
         "accept its licence",
         "token in Settings",
-        f"{OPT_OUT}=0",
+        f"{CHECKER_ENV}=1",
+        "off by default",
     ):
         assert part in message, part
 
@@ -136,11 +137,15 @@ def test_a_cached_guardrail_offline_mode_and_local_only_loads_send_nothing(guard
 def test_only_a_load_that_runs_the_guardrail_is_checked(guardrail, monkeypatch):
     calls, state = guardrail
     state["raise"] = _http_error("GatedRepoError", 401)
-    # Edge ships enable_safety_checker false.
-    assert vc3.guardrail_access_preflight(EDGE, None) is None
-    monkeypatch.setenv(OPT_OUT, "0")
-    assert vc3.guardrail_access_preflight(NANO, None) is None
-    monkeypatch.delenv(OPT_OUT)
+    # The checker is off by default, and 0 keeps it off: no request, whatever the checkpoint ships.
+    for value in (None, "0"):
+        if value is None:
+            monkeypatch.delenv(CHECKER_ENV)
+        else:
+            monkeypatch.setenv(CHECKER_ENV, value)
+        assert vc3.guardrail_access_preflight(NANO, None) is None
+        assert vc3.guardrail_access_preflight(EDGE, None) is None
+    monkeypatch.setenv(CHECKER_ENV, "1")
     # Package absent: the install refusal (guardrail_refusal) answers instead.
     monkeypatch.setitem(sys.modules, "cosmos_guardrail", None)
     assert vc3.guardrail_access_preflight(NANO, None) is None
@@ -199,45 +204,12 @@ def test_the_download_plan_route_checks_before_staging(guardrail):
     assert check < source.index("backend.download_plan,")
 
 
-def test_an_unknown_fine_tune_follows_its_own_index_else_its_family(guardrail, monkeypatch):
+def test_turned_on_the_checker_covers_edge_too(guardrail):
+    # The opt-in turns the checker on for every Cosmos3 checkpoint, Edge (which ships it off) included.
     calls, state = guardrail
     state["raise"] = _http_error("GatedRepoError", 403)
-    fetched = []
-
-    def remote(repo, token):
-        fetched.append((repo, token))
-        return indexes.get(repo)
-
-    indexes = {"me/nano-ft-off": {"enable_safety_checker": False}, "me/nano-ft-on": {}}
-    monkeypatch.setattr(vc3, "_remote_model_index", remote)
-    # No index anywhere: an Edge fine-tune is not refused, a Nano one is.
-    assert vc3.guardrail_access_preflight("me/edge-ft", "hf_x", default_enabled = False) is None
-    assert calls == []
-    assert "no access" in vc3.guardrail_access_preflight("me/nano-ft", "hf_x", default_enabled = True)
-    # The checkpoint's own index decides when it can be read.
-    assert vc3.guardrail_access_preflight("me/nano-ft-off", "hf_x", default_enabled = True) is None
-    assert "no access" in vc3.guardrail_access_preflight(
-        "me/nano-ft-on", "hf_x", default_enabled = False
-    )
-    assert ("me/edge-ft", "hf_x") in fetched
-    # The base repos never need the remote index.
-    assert not any(repo in (NANO, EDGE) for repo, _ in fetched)
-
-
-def test_refuse_without_access_passes_the_family_default(guardrail, monkeypatch):
-    from core.inference import video as video_mod
-
-    seen = []
-    monkeypatch.setattr(
-        vc3,
-        "guardrail_access_preflight",
-        lambda repo, token, **kw: seen.append(kw["default_enabled"]),
-    )
-    for name in ("cosmos3-nano", "cosmos3-edge"):
-        video_mod.refuse_without_guardrail_access(
-            types.SimpleNamespace(name = name), "pipeline", "me/ft", None, False
-        )
-    assert seen == [True, False]
+    assert "no access" in vc3.guardrail_access_preflight(EDGE, "hf_x")
+    assert [c["token"] for c in calls] == ["hf_x"]
 
 
 # ── install ──────────────────────────────────────────────────────────────────
@@ -266,11 +238,14 @@ def test_the_windows_command_runs_in_powershell(monkeypatch):
 
 def test_the_refusal_names_the_command(monkeypatch):
     monkeypatch.setitem(sys.modules, "cosmos_guardrail", None)
-    monkeypatch.delenv(OPT_OUT, raising = False)
+    monkeypatch.setenv(CHECKER_ENV, "1")
     monkeypatch.setattr(cgi, "_uv", lambda: None)
-    message = vc3.guardrail_refusal(NANO, index = {"enable_safety_checker": True})
+    message = vc3.guardrail_refusal(NANO)
     assert f"`{sys.executable} -m pip install cosmos-guardrail`" in message
-    assert "Install guardrail on the Video page" in message and f"{OPT_OUT}=0" in message
+    assert "Install guardrail on the Video page" in message and f"{CHECKER_ENV}=1" in message
+    # Off by default: nothing to install, nothing refused.
+    monkeypatch.delenv(CHECKER_ENV)
+    assert vc3.guardrail_refusal(NANO) is None
 
 
 def test_the_install_holds_every_installed_package(monkeypatch, tmp_path):
