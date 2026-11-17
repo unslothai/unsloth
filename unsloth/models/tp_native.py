@@ -1758,9 +1758,13 @@ def _loaded_zoo_module(name):
     return sys.modules.get("unsloth_zoo." + name)
 
 
-def _lora_b_layout():
-    """How fused expert lora_B columns pack experts: zoo's mode in an Unsloth run, else PEFT's (expert index fastest)."""
+def _lora_b_layout(wrapper = None, adapter = None):
+    """How this wrapper's fused expert lora_B columns pack experts: zoo's per-wrapper answer in an Unsloth run (a
+    wrapper on PEFT's forward stays rank-major whatever the process mode), else PEFT's (expert index fastest)."""
     moe_utils = _loaded_zoo_module("temporary_patches.moe_utils")
+    per_wrapper = getattr(moe_utils, "moe_lora_b_layout_for_wrapper", None)
+    if callable(per_wrapper) and wrapper is not None:
+        return per_wrapper(wrapper, adapter)
     layout = getattr(moe_utils, "moe_lora_b_layout", None)
     if callable(layout):
         return layout()
@@ -1925,10 +1929,10 @@ def _shard_moe_experts(block, mesh, rank, tp):
         if leaf._parameters[name] is not None:
             _shard_expert_param(leaf, name, 0, 1, 1, E, E_pad, mesh, rank, tp)
             shard.swaps.append((leaf, name))
-    b_layout = _lora_b_layout()
     for wrapper in wrappers:
         for adapter, A in wrapper.lora_A.items():
             B = wrapper.lora_B[adapter]
+            b_layout = _lora_b_layout(wrapper, adapter)
             r = A.weight.shape[0] // E
             _shard_expert_param(A, "weight", 0, 1, r, E, E_pad, mesh, rank, tp)
             if b_layout == "rank_major":  # column j is expert j % E

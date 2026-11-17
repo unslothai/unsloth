@@ -386,3 +386,19 @@ def test_local_dispatch_sums_to_the_whole_call(dense, monkeypatch):
     torch.testing.assert_close(y_sum, full(x0, index, w0).detach(), rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(dx_sum, x.grad, rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(dw_sum, w.grad, rtol = 1e-5, atol = 1e-5)
+
+
+def test_lora_b_layout_is_resolved_per_wrapper(monkeypatch):
+    # A wrapper still on PEFT's forward stays rank-major even when zoo's process mode is grouped_by_expert.
+    import types
+
+    calls = []
+    zoo = types.SimpleNamespace(
+        moe_lora_b_layout = lambda: "grouped_by_expert",
+        moe_lora_b_layout_for_wrapper = lambda w, a: calls.append((w, a)) or "rank_major",
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.temporary_patches.moe_utils", zoo)
+    wrapper = object()
+    assert tpn._lora_b_layout(wrapper, "default") == "rank_major"
+    assert calls == [(wrapper, "default")]
+    assert tpn._lora_b_layout() == "grouped_by_expert"
