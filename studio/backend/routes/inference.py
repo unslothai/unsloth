@@ -3978,8 +3978,9 @@ async def _configured_alias_resident_satisfies(
     requested_model: str, alias_config: dict, fastapi_request: Optional[Request]
 ) -> bool:
     """Whether the resident model is the alias target running the alias's launch settings."""
-    if not await asyncio.to_thread(_loaded_satisfies, requested_model):
+    if not get_llama_cpp_backend().is_loaded:
         return False
+    named_resident = await asyncio.to_thread(_loaded_satisfies, requested_model)
     from core.inference.local_model_resolver import (
         local_gguf_pinned_variant,
         resolve_local_gguf_for_switch,
@@ -3996,10 +3997,19 @@ async def _configured_alias_resident_satisfies(
         return False
     target_id, variant, override_id = resolved[:3]
     _, requested_variant = split_model_ref(requested_model)
-    if (
-        not looks_like_quant(requested_variant)
-        and local_gguf_pinned_variant(requested_model, allow_scan = False) is None
-    ):
+    pinned_variant = local_gguf_pinned_variant(requested_model, allow_scan = False)
+    bare = not looks_like_quant(requested_variant) and pinned_variant is None
+    if not named_resident:
+        # A file loaded by path shares no spelling with its indexed directory: match the artifact and,
+        # for a pinned alias, the quant, as the plain-name preflight does.
+        index_base = requested_model.rpartition(":")[0] or requested_model
+        if not await asyncio.to_thread(_resolves_to_resident, target_id, llama_only = True):
+            return False
+        if not bare and not await asyncio.to_thread(
+            _resident_quant_is, pinned_variant or variant, index_base
+        ):
+            return False
+    if bare:
         # A bare alias accepts the resident quant, not just the resolver's preferred one.
         variant = get_llama_cpp_backend().hf_variant or variant
     override, load_kwargs = _alias_load_kwargs(target_id, variant, override_id, alias_config)

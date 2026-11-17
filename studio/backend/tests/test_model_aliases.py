@@ -888,6 +888,46 @@ def test_alias_reuse_respects_the_requested_quant_pin(
     )
 
 
+@pytest.mark.parametrize(
+    "requested, satisfied",
+    [
+        ("/models/Group", True),
+        ("/models/Group:Q4_K_M", True),
+        ("/models/Group:Q8_0", False),
+        ("/models/Other", False),
+    ],
+)
+def test_alias_reuse_matches_a_resident_loaded_by_file_path(monkeypatch, requested, satisfied):
+    # A file loaded by path shares no spelling with the indexed directory an alias names.
+    import routes.inference as inf
+    from core.inference import local_model_resolver as resolver
+    from core.inference.llama_cpp import GgufLoadIntent
+    from utils import openai_auto_switch_settings as settings
+
+    gguf = "/models/Group/model-Q4_K_M.gguf"
+    backend = _resident(_model_identifier = gguf, _gguf_path = gguf)
+    backend._last_load_intent = GgufLoadIntent(
+        model_identifier = gguf,
+        gguf_path = gguf,
+        hf_variant = "Q4_K_M",
+        n_ctx = backend._requested_n_ctx,
+        speculative_type = backend._requested_spec_mode,
+    )
+    base = requested.split(":")[0]
+    quant = requested.split(":")[1] if ":" in requested else "Q4_K_M"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_model_overrides", lambda: {})
+    monkeypatch.setattr(inf, "_innermost_indexed_owner", lambda path: "/models/Group")
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf_for_switch", lambda *a, **k: (base, quant, base)
+    )
+    assert inf._loaded_satisfies(requested) is False
+    assert (
+        asyncio.run(inf._configured_alias_resident_satisfies(requested, _CONFIG, None)) is satisfied
+    )
+
+
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):
     # The loader records the requested mode; Auto running MTP is still Auto.
     backend = _resident(_requested_spec_mode = "auto", _speculative_type = "draft-mtp")
