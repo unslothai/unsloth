@@ -1286,13 +1286,7 @@ def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tens
 
 
 def _keeps_fp32_attention(Q: Tensor, K: Tensor, V: Tensor) -> bool:
-    """An fp32 model (dtype = torch.float32, no autocast) asks for fp32 attention.
-
-    Q/K/V all fp32 and no autocast means nothing in the call names a 16-bit dtype, so the
-    fp16 / bf16-only kernels (FlashAttention, xformers on sm_100+) must not silently downcast:
-    that costs ~1e-2 nats per token versus an fp32 reference. DoRA's fp32 q/k/v (#1013) under
-    autocast still downcast to the autocast dtype.
-    """
+    """fp32 Q/K/V without autocast: 16-bit-only kernels must not downcast (~1e-2 nats/token drift)."""
     return (
         Q.dtype == torch.float32
         and K.dtype == torch.float32

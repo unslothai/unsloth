@@ -1,6 +1,4 @@
-"""Regression test for unslothai/unsloth#1013: run_attention must downcast DoRA's
-fp32 q/k/v for FlashAttention (under autocast) while leaving already-16bit tensors
-untouched, and must keep an fp32 model's attention (no autocast) in fp32 via SDPA."""
+"""#1013: downcast DoRA's fp32 q/k/v under autocast; keep an fp32 model (no autocast) fp32 via SDPA."""
 
 import torch
 import unsloth  # noqa: F401
@@ -155,7 +153,6 @@ def test_xformers_leaves_fp32_qkv_below_sm100(monkeypatch):
     assert _run_xformers(monkeypatch, torch.float32, False) == torch.float32
 
 
-# dtype = torch.float32 model, no autocast: attention must stay fp32 (SDPA), not silently bf16.
 def test_fp32_model_dense_flash_keeps_fp32_via_sdpa(monkeypatch):
     assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE, autocast = False) == torch.float32
 
@@ -169,7 +166,6 @@ def test_fp32_model_xformers_sm100_keeps_fp32_via_sdpa(monkeypatch):
 
 
 def test_fp32_model_sdpa_matches_fp32_reference(monkeypatch):
-    # Value check, not just dtype: output equals an fp32 causal SDPA reference.
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     torch.manual_seed(0)
     Q, K, V = (torch.randn(1, 2, 16, 8) for _ in range(3))
