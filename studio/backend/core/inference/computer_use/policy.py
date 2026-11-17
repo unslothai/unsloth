@@ -48,6 +48,8 @@ _PROTECTED = (
     "authorizationhost", "polkit", "pinentry", "askpass", "gcr-prompter", "kdesu", "consent",
     "credentialuibroker",
 )  # fmt: skip
+# Cinnamon's shut-down, restart and log-out dialog is "Cinnamon-session-quit.py".
+_SESSION_DIALOGS = ("session-quit",)
 _EXACT = {"cmd": "a terminal", "wt": "a terminal", "hyper": "a terminal", "mmc": "a system tool"}
 
 # Whole names, since "arc" or "edge" inside another app's name is not a browser.
@@ -67,8 +69,16 @@ _OWN_APP_IDS = ("ai.unsloth.studio",)
 _BLOCKED = {
     "darwin": {"ctrl+cmd+q", "shift+cmd+q", "alt+shift+cmd+q", "alt+cmd+escape", "alt+shift+cmd+escape"},
     "win32": {"cmd+l", "ctrl+alt+delete"},
-    "linux": {"cmd+l", "ctrl+alt+delete", "ctrl+alt+backspace", "ctrl+alt+l"},
+    "linux": {
+        "cmd+l", "ctrl+alt+delete", "ctrl+alt+l",
+        # Cinnamon's shut-down dialog and restart.
+        "ctrl+alt+end", "ctrl+alt+escape",
+        # KDE Plasma up to 5.21: log out, shut down and reboot without confirmation.
+        "ctrl+alt+shift+delete", "ctrl+alt+shift+pagedown", "ctrl+alt+shift+pageup",
+    },
 }  # fmt: skip
+# The X server's own kill and text-console switch: xkb's CTRL+ALT key type ignores Super, so they fire with it held too.
+_XKB_ACTIONS = {"ctrl+alt+backspace", *(f"ctrl+alt+f{n}" for n in range(1, 13))}
 _RISKY = {
     "darwin": {"cmd+q", "cmd+backspace", "shift+cmd+backspace", "alt+shift+cmd+backspace", "alt+cmd+backspace"},
     "win32": {"alt+f4", "shift+delete", "ctrl+shift+delete", "ctrl+shift+escape", "cmd+r", "cmd+x"},
@@ -254,6 +264,7 @@ def _sensitive_kind(front: FrontWindow) -> Optional[str]:
         (_TERMINALS, "a terminal"),
         (_SECRETS, "a password manager"),
         (_SYSTEM, "a system tool"),
+        (_SESSION_DIALOGS, "the shut-down and log-out dialog"),
     ):
         if any(word in name for word in words for name in names if name):
             return kind
@@ -393,7 +404,14 @@ def is_security_prompt(front: FrontWindow) -> bool:
 
 
 def blocked_chord(chord: Chord) -> bool:
-    return chord_text(chord) in _BLOCKED.get(_platform(), set())
+    platform = _platform()
+    if chord_text(chord) in _BLOCKED.get(platform, set()):
+        return True
+    mods, key = chord
+    return (
+        platform == "linux"
+        and chord_text((tuple(m for m in mods if m != "cmd"), key)) in _XKB_ACTIONS
+    )
 
 
 def risks(

@@ -441,6 +441,9 @@ if _IS_MLX:
 
     FastTextModel = FastLanguageModel
     FastModel = FastLanguageModel
+    # The MLX loader dispatches on the checkpoint's config, not on the class.
+    FastLlamaModel = FastMistralModel = FastGraniteModel = FastLanguageModel
+    FastQwen2Model = FastQwen3Model = FastQwen3MoeModel = FastFalconH1Model = FastLanguageModel
 
     class FastSentenceTransformer:
         @staticmethod
@@ -1689,6 +1692,19 @@ if _IS_MLX:
         """Alias ShareGPT standardization to the shared dataset-format helper."""
         return standardize_data_formats(*args, **kwargs)
 
+    def to_sharegpt(*args, **kwargs):
+        from .chat_templates import to_sharegpt as _to_sharegpt
+        return _to_sharegpt(*args, **kwargs)
+
+    from unsloth_zoo import rl_environments as _rl_environments
+
+    check_python_modules = _rl_environments.check_python_modules
+    create_locked_down_function = _rl_environments.create_locked_down_function
+    execute_with_time_limit = _rl_environments.execute_with_time_limit
+    Benchmarker = _rl_environments.Benchmarker
+    is_port_open = _rl_environments.is_port_open
+    launch_openenv = _rl_environments.launch_openenv
+
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
         # Prefer the chat_templates export, which bounds the zoo's map() workers; it is None without torch.
@@ -2071,6 +2087,25 @@ if _IS_MLX:
             # HfArgumentParser drops a plain default on a list field, and TRL types this one list[str].
             fields.append(
                 ("loss_type", list[str], _dataclasses.field(default_factory = lambda: ["sigmoid"]))
+            )
+        # Fields are collected along the reversed MRO, so UnslothTrainingArguments' copy of each
+        # MLXTrainingConfig field would hide the zoo config's own default (e.g. GRPO's loss_type).
+        declared = {name for name, *_ in fields}
+        base_fields = {field.name: field for field in _dataclasses.fields(MLXTrainingConfig)}
+        for name, field in zoo_fields.items():
+            base = base_fields.get(name)
+            if base is None or name in declared:
+                continue
+            if (field.default, field.default_factory) == (base.default, base.default_factory):
+                continue
+            fields.append(
+                (
+                    name,
+                    field.type,
+                    _dataclasses.field(
+                        default = field.default, default_factory = field.default_factory
+                    ),
+                )
             )
         return fields
 
