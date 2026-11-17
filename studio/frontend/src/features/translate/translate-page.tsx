@@ -526,7 +526,6 @@ function ModelMenu({
     }
   };
   const inventory = useDeviceInventorySources(["localModels"]);
-  const refreshInventory = inventory.refresh;
   const localRows = inventory.localModels.rows;
   const mine = useMemo(() => downloadedTranslateModels(localRows), [localRows]);
   const pickMine = async (model: DownloadedTranslateModel) => {
@@ -603,10 +602,7 @@ function ModelMenu({
       />
       <DropdownMenu
         onOpenChange={(open) => {
-          if (open) {
-            refreshLoaded();
-            refreshInventory();
-          }
+          if (open) refreshLoaded();
         }}
       >
         {/* The model picker's own chip, so the two read as one control across pages. */}

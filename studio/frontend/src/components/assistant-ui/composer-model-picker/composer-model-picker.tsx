@@ -2480,7 +2480,8 @@ export function ComposerModelPicker({
     rows.some((row) => row.tab === DEVICE_TAB);
   const viewed =
     tab ??
-    (hasModels
+    // Browsing starts on what can be downloaded, without waiting on the device scan.
+    (hasModels && source?.browseOnly !== true
       ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
         (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
         DEVICE_TAB)
