@@ -24,6 +24,7 @@ if triton is not None:
         LR,
         N,
         SEED,
+        OFFSET,
         TILE,
         B1: tl.constexpr,  # beta1
         B2: tl.constexpr,  # beta2
@@ -48,7 +49,8 @@ if triton is not None:
         low = bits & 65535
         upper = bits & 4294901760
         random = (
-            tl.randint(tl.load(SEED).to(tl.uint64) + step.to(tl.uint64), i.to(tl.uint32)) & 65535
+            tl.randint(tl.load(SEED).to(tl.uint64) + step.to(tl.uint64), (i + OFFSET).to(tl.uint32))
+            & 65535
         )
         special = (bits & 2139095040) == 2139095040
         rounded = tl.where((random < low) & ~special, upper + 65536, upper)
@@ -58,7 +60,7 @@ if triton is not None:
         tl.store(M + i, m, valid)
         tl.store(V + i, v, valid)
 
-    @triton.jit(do_not_specialize = ["sizes"])
+    @triton.jit(do_not_specialize = ["sizes", "offsets"])
     def _adamw_batched(
         P,
         G,
@@ -68,6 +70,7 @@ if triton is not None:
         SEED,
         LR,
         sizes,
+        offsets,
         B1: tl.constexpr,  # beta1
         B2: tl.constexpr,  # beta2
         EPS: tl.constexpr,  # Adam eps
@@ -78,6 +81,7 @@ if triton is not None:
         start = tl.full((), 0, tl.int64)
         for j in tl.static_range(len(sizes)):
             n = tl.cast(sizes[j], tl.int64)
+            offset = tl.cast(offsets[j], tl.int64)
             stop = start + (n + BLOCK - 1) // BLOCK
             if (pid >= start) & (pid < stop):
                 _adamw_tile(
@@ -89,6 +93,7 @@ if triton is not None:
                     LR,
                     n,
                     SEED[j],
+                    offset,
                     pid - start,
                     B1,
                     B2,
@@ -98,7 +103,7 @@ if triton is not None:
                 )
             start = stop
 
-    @triton.jit(do_not_specialize = ["N"])
+    @triton.jit(do_not_specialize = ["N", "OFFSET"])
     def _adamw_single(
         P,
         G,
@@ -108,13 +113,30 @@ if triton is not None:
         LR,
         N,
         SEED,
+        OFFSET,
         B1: tl.constexpr,  # beta1
         B2: tl.constexpr,  # beta2
         EPS: tl.constexpr,  # Adam eps
         WD: tl.constexpr,  # weight decay
         BLOCK: tl.constexpr,  # elements per program
     ):
-        _adamw_tile(P, G, M, V, STEP, LR, N, SEED, tl.program_id(0), B1, B2, EPS, WD, BLOCK)
+        _adamw_tile(
+            P,
+            G,
+            M,
+            V,
+            STEP,
+            LR,
+            N,
+            SEED,
+            OFFSET.to(tl.int64),
+            tl.program_id(0),
+            B1,
+            B2,
+            EPS,
+            WD,
+            BLOCK,
+        )
 
     def _launch(
         p: List[Tensor],
@@ -124,6 +146,7 @@ if triton is not None:
         step: List[Tensor],
         lr: Tensor,
         seed: List[Tensor],
+        offsets: List[int],
         beta1: float,
         beta2: float,
         eps: float,
@@ -135,7 +158,7 @@ if triton is not None:
             return
         with torch.cuda.device(p[0].device):
             if not _BATCHED_ARGUMENTS:
-                for pi, gi, mi, vi, si, seedi, n in zip(p, g, m, v, step, seed, sizes):
+                for pi, gi, mi, vi, si, seedi, oi, n in zip(p, g, m, v, step, seed, offsets, sizes):
                     if n:
                         _adamw_single[((n + 255) // 256,)](
                             pi,
@@ -146,6 +169,7 @@ if triton is not None:
                             lr,
                             n,
                             seedi,
+                            oi,
                             beta1,
                             beta2,
                             eps,
@@ -163,6 +187,7 @@ if triton is not None:
                 tuple(seed),
                 lr,
                 sizes,
+                tuple(offsets),
                 beta1,
                 beta2,
                 eps,
@@ -177,12 +202,83 @@ if triton is not None:
     )(_launch)
 
     @_cuda_update.register_fake
-    def _fake_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
+    def _fake_update(p, g, m, v, step, lr, seed, offsets, beta1, beta2, eps, weight_decay):
         return None
+
+
+def _dtensor_class():
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        try:
+            from torch.distributed._tensor import DTensor
+        except ImportError:
+            return None
+    return DTensor
+
+
+def _is_dtensor(t):
+    cls = _dtensor_class()
+    return cls is not None and isinstance(t, cls)
+
+
+def _local(t):
+    """The tensor the update writes: a DTensor's local shard (same storage), else the tensor itself."""
+    return t._local_tensor if _is_dtensor(t) else t
 
 
 def _plain_parameter(p):
     return type(p) in (Tensor, torch.nn.Parameter) and p.layout == torch.strided
+
+
+def _dense_parameter(p):
+    """A plain strided tensor, or a DTensor (native FSDP2 / torch fully_shard) whose local shard is one
+    contiguous run of the whole tensor's flat elements: dim-0 sharding (fully_shard's default) over any
+    number of mesh dimensions, replicated dimensions included. The update is elementwise, so stepping
+    the local shard is the whole tensor's update restricted to it."""
+    if not _is_dtensor(p):
+        return _plain_parameter(p)
+    local = p._local_tensor
+    if not _plain_parameter(local) or local.layout != torch.strided:
+        return False
+    return _shard_offset(p) is not None
+
+
+_SHARD_OFFSETS = None
+
+
+def _shard_offset(p):
+    """Flat index of a DTensor's first local element in the whole tensor (0 for a plain tensor), or None
+    when the local shard is not one contiguous run of it. Cached per parameter and layout."""
+    global _SHARD_OFFSETS
+    if not _is_dtensor(p):
+        return 0
+    if _SHARD_OFFSETS is None:
+        from torch.utils.weak import WeakIdKeyDictionary
+        _SHARD_OFFSETS = WeakIdKeyDictionary()
+    key = (tuple(p.shape), tuple(p.placements), id(p.device_mesh), tuple(p._local_tensor.shape))
+    cached = _SHARD_OFFSETS.get(p)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    offset = _compute_shard_offset(p)
+    _SHARD_OFFSETS[p] = (key, offset)
+    return offset
+
+
+def _compute_shard_offset(p):
+    try:
+        from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
+    except ImportError:
+        from torch.distributed._tensor._utils import compute_local_shape_and_global_offset
+    shape = tuple(p.shape)
+    local_shape, offset = compute_local_shape_and_global_offset(shape, p.device_mesh, p.placements)
+    if tuple(local_shape) != tuple(p._local_tensor.shape):
+        return None
+    if len(shape) == 0:
+        return 0
+    if tuple(local_shape[1:]) != shape[1:] or any(offset[1:]):
+        return None
+    return int(offset[0]) * math.prod(shape[1:])
 
 
 def prepare_bf16_training(model):
@@ -195,7 +291,8 @@ def prepare_bf16_training(model):
             or p.device.type not in ("cpu", "cuda")
         ):
             raise ValueError(
-                "BF16 training requires contiguous plain FP32/BF16 CPU or CUDA parameters"
+                "BF16 training requires contiguous plain FP32/BF16 CPU or CUDA parameters "
+                "(under FSDP2, call prepare_bf16_training before the model is sharded)"
             )
         if p.grad is not None:
             raise ValueError("Prepare BF16 training before creating gradients")
@@ -205,7 +302,7 @@ def prepare_bf16_training(model):
     return model
 
 
-def _cpu_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
+def _cpu_update(p, g, m, v, step, lr, seed, offset, beta1, beta2, eps, weight_decay):
     generator = torch.Generator(device = "cpu")
     # CPU generators keep only the low 32 seed bits; sr_seed holds the index in the high 32 (splitmix64).
     z = (int(seed) + int(step)) % (2**63 - 1)
@@ -219,11 +316,42 @@ def _cpu_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
     value = p.float() * (1 - lr * weight_decay)
     value = value - lr * (m / (1 - beta1**t)) / ((v / (1 - beta2**t)).sqrt() + eps)
     bits = value.contiguous().view(torch.int32)
-    random = torch.randint(65536, bits.shape, generator = generator, dtype = torch.int32)
+    # A shard draws the whole tensor's stream up to its last element and keeps its own run, so every
+    # element gets the number it gets unsharded.
+    random = torch.randint(
+        65536, (int(offset) + bits.numel(),), generator = generator, dtype = torch.int32
+    )
+    random = random[int(offset) :].view(bits.shape)
     upper = bits & -65536
     rounded = upper + ((random < (bits & 65535)).to(torch.int32) << 16)
     special = (bits & 2139095040) == 2139095040
     p.copy_(torch.where(special, bits, rounded).view(torch.float32))
+
+
+def _moment_like(value, p):
+    """An Adam moment laid out like its parameter: float32 on its device, sharded like a DTensor
+    parameter (a whole saved tensor keeps this rank's run), plain otherwise."""
+    if not _is_dtensor(p):
+        if _is_dtensor(value):
+            value = value.full_tensor()
+        return value.to(device = p.device, dtype = torch.float32).contiguous()
+    DTensor = _dtensor_class()
+    if _is_dtensor(value):
+        if value.device_mesh != p.device_mesh or tuple(value.placements) != tuple(p.placements):
+            value = value.redistribute(p.device_mesh, p.placements)
+        local = value._local_tensor
+    else:
+        local = value.reshape(-1)[_shard_offset(p) : _shard_offset(p) + _local(p).numel()]
+        local = local.view(_local(p).shape)
+    local = local.to(device = _local(p).device, dtype = torch.float32).contiguous()
+    if local.shape != _local(p).shape:
+        raise ValueError(
+            f"AdamWBF16 state shard has shape {tuple(local.shape)}, but its parameter shard has "
+            f"shape {tuple(_local(p).shape)}"
+        )
+    return DTensor.from_local(
+        local, p.device_mesh, p.placements, run_check = False, shape = p.shape, stride = p.stride()
+    )
 
 
 class AdamWBF16(torch.optim.Optimizer):
@@ -257,14 +385,15 @@ class AdamWBF16(torch.optim.Optimizer):
                 continue
             if (
                 not isinstance(p, Tensor)
-                or not _plain_parameter(p)
+                or not _dense_parameter(p)
                 or p.dtype != torch.bfloat16
-                or not p.is_contiguous()
+                or not _local(p).is_contiguous()
                 or p.device.type not in ("cpu", "cuda")
                 or p.numel() > 2**32
             ):
                 raise ValueError(
-                    "AdamWBF16 requires dense contiguous BF16 parameters with <=2**32 elements"
+                    "AdamWBF16 requires dense contiguous BF16 parameters with <=2**32 elements "
+                    "(plain tensors or dim-0 sharded DTensors)"
                 )
             if p.device.type == "cuda" and triton is None:
                 raise RuntimeError("CUDA AdamWBF16 requires Triton")
@@ -288,7 +417,11 @@ class AdamWBF16(torch.optim.Optimizer):
             if p.requires_grad or p.grad is not None
         ]
         for p in params:
-            if not _plain_parameter(p) or p.dtype != torch.bfloat16 or not p.is_contiguous():
+            if (
+                not _dense_parameter(p)
+                or p.dtype != torch.bfloat16
+                or not _local(p).is_contiguous()
+            ):
                 raise ValueError("AdamWBF16 requires contiguous plain BF16 parameters")
             if p.device.type not in ("cpu", "cuda"):
                 raise ValueError("AdamWBF16 supports CPU and CUDA only")
@@ -331,10 +464,19 @@ class AdamWBF16(torch.optim.Optimizer):
                 g = p.grad
                 if not p.requires_grad and g is None:
                     continue
-                if not _plain_parameter(p) or p.dtype != torch.bfloat16 or not p.is_contiguous():
+                if (
+                    not _dense_parameter(p)
+                    or p.dtype != torch.bfloat16
+                    or not _local(p).is_contiguous()
+                ):
                     raise ValueError("AdamWBF16 requires contiguous plain BF16 parameters")
                 if g is not None and (
-                    not _plain_parameter(g) or g.dtype != torch.bfloat16 or not g.is_contiguous()
+                    _is_dtensor(g) != _is_dtensor(p)
+                    or not _dense_parameter(g)
+                    or g.dtype != torch.bfloat16
+                    or not _local(g).is_contiguous()
+                    or _local(g).shape != _local(p).shape
+                    or (_is_dtensor(p) and tuple(g.placements) != tuple(p.placements))
                 ):
                     raise ValueError("AdamWBF16 requires dense contiguous BF16 gradients")
         if any(
@@ -355,13 +497,14 @@ class AdamWBF16(torch.optim.Optimizer):
                     for p in params:
                         state = self.state[p]
                         _cpu_update(
-                            p,
-                            p.grad,
-                            state["exp_avg"],
-                            state["exp_avg_sq"],
+                            _local(p),
+                            _local(p.grad),
+                            _local(state["exp_avg"]),
+                            _local(state["exp_avg_sq"]),
                             state["step"],
                             lr,
                             state["sr_seed"],
+                            _shard_offset(p),
                             *group["betas"],
                             group["eps"],
                             group["weight_decay"],
@@ -369,26 +512,30 @@ class AdamWBF16(torch.optim.Optimizer):
                     continue
                 small, large = [], []
                 for p in params:
-                    (small if p.numel() <= 65536 else large).append(p)
+                    (small if _local(p).numel() <= 65536 else large).append(p)
                 for width, bucket in ((32, small), (8, large)):
                     for start in range(0, len(bucket), width):
                         batch = bucket[start : start + width]
                         states = [self.state[p] for p in batch]
                         update = _cuda_update if torch.compiler.is_compiling() else _launch
                         update(
-                            batch,
-                            [p.grad for p in batch],
-                            [state["exp_avg"] for state in states],
-                            [state["exp_avg_sq"] for state in states],
+                            [_local(p) for p in batch],
+                            [_local(p.grad) for p in batch],
+                            [_local(state["exp_avg"]) for state in states],
+                            [_local(state["exp_avg_sq"]) for state in states],
                             [state["step"] for state in states],
                             lr,
                             [state["sr_seed"] for state in states],
+                            [_shard_offset(p) for p in batch],
                             *group["betas"],
                             group["eps"],
                             group["weight_decay"],
                         )
                         if not torch.compiler.is_compiling():
-                            torch.autograd.graph.increment_version(batch)
+                            torch.autograd.graph.increment_version([_local(p) for p in batch])
+                            dtensors = [p for p in batch if _is_dtensor(p)]
+                            if dtensors:
+                                torch.autograd.graph.increment_version(dtensors)
         return loss
 
     def load_state_dict(self, state_dict):
@@ -412,9 +559,7 @@ class AdamWBF16(torch.optim.Optimizer):
                     if original[name].numel() != 1:
                         raise ValueError(f"AdamWBF16 state {name} must be a single value")
                 for name in ("exp_avg", "exp_avg_sq"):
-                    state[name] = (
-                        original[name].to(device = p.device, dtype = torch.float32).contiguous()
-                    )
+                    state[name] = _moment_like(original[name], p)
                 state["step"] = original["step"].to(device = p.device, dtype = torch.int64)
                 state["sr_seed"] = original["sr_seed"].to(device = p.device, dtype = torch.int64)
         self._initialize()
