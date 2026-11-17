@@ -955,6 +955,74 @@ def _forward_has_router_aux(inner):
     return False
 
 
+def _router_aux_coef_of(inner, text):
+    """The coefficient the model forward multiplies the load-balancing loss by (its own copy, else the config's)."""
+    coef = getattr(inner, "router_aux_loss_coef", None)
+    if not isinstance(coef, (int, float)) or isinstance(coef, bool):
+        coef = getattr(text, "router_aux_loss_coef", None)
+    return coef if isinstance(coef, (int, float)) and not isinstance(coef, bool) else None
+
+
+def _router_aux_off(
+    inner,
+    text,
+    output_router_logits = None,
+):
+    """True when the forward adds no router auxiliary loss: output_router_logits off (the call's value, else the
+    config's) or a zero coefficient. Read at split time and again at every stage forward."""
+    if not hasattr(text, "output_router_logits"):
+        return False  # no transformers switch for it: not known to be off
+    on = output_router_logits
+    if on is None:
+        on = getattr(text, "output_router_logits", False)
+    return not on or _router_aux_coef_of(inner, text) == 0
+
+
+def _uncarried_moe_owner(model, parts = None):
+    """The mixture-of-experts CausalLM a pipeline trains only with its router auxiliary loss off (a family whose
+    loss PipelineParallel does not carry and that is not listed as having none), else None."""
+    parts = parts if parts is not None else _find_parts(model)
+    inner = parts.inner
+    name = type(inner).__name__
+    if name in _PP_MOE_AUX_FAMILIES or name in _PP_MOE_NO_AUX_FAMILIES:
+        return None
+    if _moe_marker(_text_config(model), parts.layers) is None:
+        return None
+    return inner
+
+
+def _uncarried_router_aux_message(inner, what):
+    return (
+        f"Unsloth: pipeline parallelism trains {type(inner).__name__} (mixture-of-experts) only with its router "
+        f"auxiliary loss off, but {what}: the loss is carried between stages only for "
+        f"{', '.join(_PP_MOE_AUX_FAMILIES)}, so the last stage would add it over its own layers' routers only. "
+        "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig, which TRL >= 1.x otherwise sets from the "
+        "architecture; or model.config.output_router_logits = False with a plain Trainer), or use native FSDP2 "
+        "(UNSLOTH_FSDP2=1)."
+    )
+
+
+def _refuse_uncarried_router_aux(ctx, kwargs):
+    """Stage forward: a mixture-of-experts model allowed with its auxiliary loss off refuses once it is turned on
+    (a Trainer that enables it after the split); with a zero coefficient the stages skip the router logits."""
+    inner = ctx.uncarried_moe
+    if inner is None:
+        return
+    text = (
+        inner.config.get_text_config() if hasattr(inner.config, "get_text_config") else inner.config
+    )
+    if not _router_aux_off(inner, text, kwargs.get("output_router_logits")):
+        raise ValueError(
+            _uncarried_router_aux_message(
+                inner,
+                "output_router_logits is on with router_aux_loss_coef = "
+                f"{_router_aux_coef_of(inner, text)}",
+            )
+        )
+    if hasattr(text, "output_router_logits"):
+        kwargs["output_router_logits"] = False
+
+
 def _refuse_unsupported(
     model,
     parts,
@@ -983,6 +1051,14 @@ def _refuse_unsupported(
                 f"Unsloth: {type(inner).__name__} is listed as having no router auxiliary loss, but its forward "
                 "adds one; pipeline parallelism would drop that term."
             )
+        marker = None
+    if (
+        marker is not None
+        and _uncarried_moe_owner(model, parts) is not None
+        and _router_aux_off(inner, text)
+    ):
+        # Router auxiliary loss off (output_router_logits False, gpt-oss's default, or a zero coefficient): the
+        # stages cut nothing that would need carrying. The stage forward refuses if it is turned on later.
         marker = None
     if marker is not None:
         moe = _moe_aux_plan(parts) if allow_moe else None
@@ -1546,6 +1622,9 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        # A mixture-of-experts CausalLM split with its router auxiliary loss off (_uncarried_moe_owner): every
+        # stage forward checks it is still off.
+        self.uncarried_moe = None
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -1819,6 +1898,8 @@ class _PPStageModule(nn.Module):
                 # here from every stage's statistics instead.
                 kwargs["output_router_logits"] = False
                 ctx.router_logits = []
+            else:
+                _refuse_uncarried_router_aux(ctx, kwargs)
             if ctx.stage_forward is not None:
                 return self._model_stage_forward(input_ids, kwargs)
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
@@ -3085,6 +3166,8 @@ def apply_pipeline_parallel(
         if kept is None:
             # Dropped: hold only the stubs, so the towers' GPU memory is freed.
             parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
+    if moe is None:
+        pp_stage.ctx.uncarried_moe = _uncarried_moe_owner(model, parts)
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe
