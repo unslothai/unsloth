@@ -23,8 +23,13 @@ INT32_SAFETY_BUFFER = NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIP
 
 @triton.jit
 def _fg_kernel(
-    e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
-):  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    e,
+    g,
+    h,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
         offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
@@ -65,8 +70,13 @@ def swiglu_fg_kernel(e, g):
 
 @triton.jit
 def _DWf_DW_dfg_kernel(
-    DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
-):  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    DW,
+    e,
+    g,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+):
     """
     e = e.float()
     se = 1.0 / (1.0 + torch.exp(-e))

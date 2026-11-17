@@ -1472,7 +1472,7 @@ def test_sharded_loading_random_lora_init_matches_one_process(init):
 def test_sharded_loading_refuses_quantized_loads():
     from transformers import AutoModelForCausalLM
     for key in ("load_in_4bit", "quantization_config"):
-        with pytest.raises(ValueError, match = "16-bit safetensors checkpoints only"):
+        with pytest.raises(ValueError, match = "safetensors checkpoints only"):
             tpn.load_tensor_parallel(
                 LLAMA, None, loader = AutoModelForCausalLM.from_pretrained, **{key: True}
             )

@@ -158,6 +158,8 @@ import threading
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
+import contextvars
+import collections.abc
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -597,7 +599,7 @@ def _triton_probe(index):
     import triton.language as tl
 
     @triton.jit
-    def _add_one(X, N, BLOCK: tl.constexpr):
+    def _add_one(X, N, BLOCK: tl.constexpr):  # BLOCK: 16, a fixed probe size
         offsets = tl.arange(0, BLOCK)
         tl.store(X + offsets, tl.load(X + offsets, offsets < N) + 1, offsets < N)
 
@@ -5603,8 +5605,12 @@ def refresh_moved_layer_devices(layers, block_swap = None):
     such as {"": 1} to cuda:0) keeps the per-layer device published at load, so decode moved activations
     back to the old card ("cuda:1 and cuda:0"). Checks the first and last layer once per decode step and
     republishes every layer only when a weight sits on another index of the published device type; block
-    swap and offload park weights on CPU or meta by design, so those are left alone."""
-    if block_swap is not None or len(layers) == 0:
+    swap and offload park weights on CPU or meta by design, so those are left alone. A swapper that
+    keeps every weight on the device (native FSDP2's per-block gather during generate,
+    `keeps_weights_on_device`) still gets the repair."""
+    if len(layers) == 0:
+        return
+    if block_swap is not None and not getattr(block_swap, "keeps_weights_on_device", False):
         return
     for layer in (layers[0], layers[-1]):
         published = getattr(layer, "__dict__", {}).get("_per_layer_device")
@@ -6279,14 +6285,54 @@ def _head_counts_unshifted_labels(model):
     return counts_unshifted_labels(head)
 
 
+_MICRO_MEAN_LOSS_CHECKED = {}
+
+
+def _warn_micro_mean_loss(trainer, batch_samples):
+    # A head returning its own mean ignores num_items_in_batch, so GA averages micro-batch means: warn once per class.
+    model = getattr(trainer, "model", None)
+    if (
+        model is None
+        or len(batch_samples) < 2
+        or getattr(trainer, "model_accepts_loss_kwargs", True)
+        or getattr(trainer, "compute_loss_func", None) is not None
+        or not isinstance(batch_samples[0], collections.abc.Mapping)
+        or getattr(batch_samples[0].get("labels"), "ndim", None) is None
+    ):
+        return
+    head = _loss_head(model)
+    key = type(model if head is None else head)
+    if key in _MICRO_MEAN_LOSS_CHECKED:
+        return
+    if head is not None and _forward_consumes_num_items_in_batch(head) is False:
+        own_mean = head
+    else:
+        own_mean = _forward_ignores_num_items_in_batch(model)
+    _MICRO_MEAN_LOSS_CHECKED[key] = own_mean is not None
+    if own_mean is None:
+        return
+    logger.warning(
+        f"Unsloth: {type(own_mean).__name__}.forward returns its own mean loss and cannot take "
+        "num_items_in_batch, so with gradient accumulation each micro-batch is weighted equally, not by "
+        "its token count (as in transformers' Trainer). For exact token weighting raise "
+        "per_device_train_batch_size and lower gradient_accumulation_steps."
+    )
+
+
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
         if _head_counts_unshifted_labels(getattr(self, "model", None)):
-            return _unsloth_get_batch_samples(self, *args, **kwargs)
-        if _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        elif _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
-        return _unsloth_get_batch_samples(self, *args, **kwargs)
+        else:
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        try:
+            _warn_micro_mean_loss(self, result[0] if isinstance(result, tuple) else result)
+        except Exception:
+            pass
+        return result
 
     _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
     return _unsloth_get_batch_samples_dispatch
@@ -6805,6 +6851,7 @@ def _pipeline_parallel_env_refusals(
     compute_loss_func = kwargs.get("compute_loss_func")
     train_dataset = kwargs.get("train_dataset")
     eval_dataset = kwargs.get("eval_dataset")
+    data_collator = kwargs.get("data_collator")
     if training_args is None or args:
         try:
             import inspect
@@ -6814,6 +6861,7 @@ def _pipeline_parallel_env_refusals(
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
             train_dataset = bound.arguments.get("train_dataset", train_dataset)
             eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
+            data_collator = bound.arguments.get("data_collator", data_collator)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6838,6 +6886,7 @@ def _pipeline_parallel_env_refusals(
         model = model,
         train_dataset = train_dataset,
         eval_dataset = eval_dataset,
+        data_collator = data_collator,
     )
 
 
@@ -6903,6 +6952,69 @@ def _tensor_parallel_trainer_pre(model):
         return False
     from .tp_native import tp_trainer_setup
     return tp_trainer_setup(model, phase = "pre")
+
+
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
+    tp = _is_unsloth_tensor_parallel(model)
+    if not tp:
+        try:
+            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
+        except ValueError:
+            tp = False
+    if not tp:
+        return False
+    nonzero, device = 0, torch.device("cpu")
+    params = dict(model.named_parameters(remove_duplicate = False))
+    with torch.no_grad():
+        for name, param in params.items():
+            local = param.to_local() if hasattr(param, "to_local") else param
+            is_lora = any(
+                k in name for k in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
+            )
+            if (
+                (name.endswith(".default") or ".default." in name)
+                and param.requires_grad
+                and not is_lora
+                and (".modules_to_save." not in name)
+            ):
+                # DoRA magnitudes, trainable token rows, ...: equivalence unchecked.
+                nonzero += 1
+                continue
+            if ".modules_to_save.default." in name:
+                # A trained saved module differs from the original the disabled-adapter reference runs.
+                original = params.get(
+                    name.replace(".modules_to_save.default.", ".original_module.")
+                )
+                if original is None:
+                    nonzero += 1
+                    continue
+                original = original.to_local() if hasattr(original, "to_local") else original
+                device = local.device
+                nonzero += int(not torch.equal(local, original.to(local.device)))
+                continue
+            # PEFT zero-inits linear lora_B but embedding lora_embedding_A.
+            if not (name.endswith(".default") or ".default." in name) or not (
+                "lora_B" in name or "lora_embedding_A" in name
+            ):
+                continue
+            device = local.device
+            nonzero += int(torch.count_nonzero(local).item())
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        # Every rank holds a different shard: agree, so no rank raises while another moves on.
+        flag = torch.tensor([float(nonzero)], device = device)
+        dist.all_reduce(flag)
+        nonzero = int(flag.item())
+    if nonzero:
+        raise ValueError(
+            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
+            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
+        )
+    return True
 
 
 def _refuse_model_parallel_export(model, method):
@@ -9431,7 +9543,10 @@ def _merged_torchao_config_for_peft_qat(model):
 
     _merged_name = _peft_merged_module_name
 
-    configs = model._torchao_config.base_config_and_filter_fns
+    configs = [
+        (base_config, _guard_grouped_filter(model, filter_fn))
+        for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns
+    ]
     if len(configs) == 1:
         # Plain config + skip list, not FqnToConfig: transformers 5 applies a module entry to its bias too.
         base_config, filter_fn = configs[0]
@@ -9506,6 +9621,7 @@ def _convert_module_by_module(model, base_config, filter_fn, device):
     from torchao.quantization.quant_api import _is_linear
     import itertools
 
+    filter_fn = _guard_grouped_filter(model, filter_fn)
     select = filter_fn or _is_linear
     unquantized = _unquantized_filter(filter_fn)
     targets = []
@@ -9569,6 +9685,7 @@ def _convert_torchao_model(model):
     module_to_fqn_dict = {}
     device = _TORCHAO_CONVERT_DEVICE[-1] if _TORCHAO_CONVERT_DEVICE else None
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
+        filter_fn = _guard_grouped_filter(model, filter_fn)
         if device is not None:
             _convert_module_by_module(model, base_config, filter_fn, device)
         else:
@@ -9600,17 +9717,76 @@ def _convert_torchao_model(model):
     model.config.quantization_config = quantization_config
 
 
+# Block-diagonal grouped Linears (DeepSeek-V4 / V4.1 `o_a_proj`: `n_groups` + their own forward) stay in full
+# precision under QAT and its export: torchao would swap one for a dense fake-quantized / quantized Linear whose
+# weight no longer runs the grouped matmul. Every QAT filter, scan, validator and export asks this one predicate.
+_QAT_GROUPED_SELECTABLE = contextvars.ContextVar("_QAT_GROUPED_SELECTABLE", default = False)
+
+
+def _is_excluded_grouped_linear(module):
+    if _QAT_GROUPED_SELECTABLE.get():
+        return False
+    try:
+        from .grouped_linear_lora import is_grouped_linear
+    except Exception:
+        return False
+    return is_grouped_linear(module)
+
+
+def _is_plain_qat_linear(module):
+    """A Linear QAT may quantize: any nn.Linear except a grouped one."""
+    return isinstance(module, torch.nn.Linear) and not _is_excluded_grouped_linear(module)
+
+
+def _default_qat_linear_filter(module, fqn):
+    try:
+        from torchao.quantization.quant_api import _is_linear
+    except Exception:
+        return isinstance(module, torch.nn.Linear)
+    return _is_linear(module, fqn)
+
+
+class _SkipGroupedLinears:
+    """A QAT filter that never selects a grouped Linear; structural, so it survives deepcopy."""
+
+    __slots__ = ("filter_fn",)
+
+    def __init__(self, filter_fn):
+        if isinstance(filter_fn, _SkipGroupedLinears):
+            filter_fn = filter_fn.filter_fn
+        self.filter_fn = filter_fn
+
+    def __call__(self, module, fqn):
+        if _is_excluded_grouped_linear(module):
+            return False
+        return (self.filter_fn or _default_qat_linear_filter)(module, fqn)
+
+
+def _has_grouped_linears(model):
+    try:
+        from .grouped_linear_lora import is_grouped_linear
+    except Exception:
+        return False
+    return any(is_grouped_linear(module) for module in model.modules())
+
+
+def _guard_grouped_filter(model, filter_fn):
+    """The filter an export uses: wrapped when the model has grouped Linears (a config prepared elsewhere, or a
+    copy), unchanged otherwise so other models keep their exact metadata (a None filter stays `_default`)."""
+    if isinstance(filter_fn, _SkipGroupedLinears) or not _has_grouped_linears(model):
+        return filter_fn
+    return _SkipGroupedLinears(filter_fn)
+
+
 def _group_size_linear_filter(model, group_size, qat_scheme):
     """PerGroup filter: in_features not divisible by group_size breaks the fake quantizer's reshape."""
     filter_fn = lambda m, _: (
-        isinstance(m, torch.nn.Linear)
-        and m.in_features >= group_size
-        and m.in_features % group_size == 0
+        _is_plain_qat_linear(m) and m.in_features >= group_size and m.in_features % group_size == 0
     )
     skipped = [
         name
         for name, module in model.named_modules()
-        if isinstance(module, torch.nn.Linear)
+        if _is_plain_qat_linear(module)
         and module.in_features >= group_size
         and module.in_features % group_size != 0
         and not _is_lora_adapter_name(name)
@@ -9651,7 +9827,7 @@ def _block_linear_filter(
     in_multiple = in_features_multiple or block_size
 
     def eligible(m):
-        return isinstance(m, torch.nn.Linear) and id(m) not in out_head_ids
+        return _is_plain_qat_linear(m) and id(m) not in out_head_ids
 
     def blocks_ok(m):
         return m.in_features % in_multiple == 0 and m.out_features % block_size == 0
@@ -10180,11 +10356,14 @@ def _prepare_model_for_qat(
 
             group_size = 32
             # PerGroup(32) rejects in_features not divisible by 32, e.g. lora_B at rank 16.
-            linear_filter = lambda m, fqn: _is_linear(m, fqn) and m.in_features % group_size == 0
+            linear_filter = lambda m, fqn: (
+                _is_linear(m, fqn) and _is_plain_qat_linear(m) and m.in_features % group_size == 0
+            )
             skipped = [
                 name
                 for name, module in model.named_modules()
                 if _is_linear(module, name)
+                and _is_plain_qat_linear(module)
                 and module.in_features % group_size != 0
                 and ".lora_" not in name
             ]
@@ -10235,7 +10414,7 @@ def _prepare_model_for_qat(
                 weight_dtype = torch.int8,
                 granularity = PerAxis(0),
             )
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear)
+            filter_fn = lambda m, _: _is_plain_qat_linear(m)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -10253,7 +10432,7 @@ def _prepare_model_for_qat(
                 granularity = PerGroup(group_size),
             )
             filter_fn = lambda m, _: (
-                isinstance(m, torch.nn.Linear)
+                _is_plain_qat_linear(m)
                 and m.in_features >= group_size
                 and m.in_features % group_size == 0
             )
@@ -10261,7 +10440,7 @@ def _prepare_model_for_qat(
             skipped_cactus_layers = [
                 name
                 for name, module in model.named_modules()
-                if isinstance(module, torch.nn.Linear)
+                if _is_plain_qat_linear(module)
                 and module.in_features >= group_size
                 and module.in_features % group_size != 0
             ]
@@ -10305,6 +10484,7 @@ def _prepare_model_for_qat(
     unowned_require_grads = _unowned_require_grads_hooks(all_embeddings)
     embedding_subclasses = _embedding_subclasses(model)
     _check_offloaded_embeddings(embedding_subclasses, torchao_config.base_config_and_filter_fns)
+    _qat_grouped_linear_guard(model, torchao_config)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
@@ -10314,6 +10494,43 @@ def _prepare_model_for_qat(
     _record_qat_engagement(model, torchao_config)
 
     return model
+
+
+def _qat_grouped_linear_guard(model, torchao_config):
+    """Persist the grouped-Linear exclusion in `torchao_config`, which convert and export read again."""
+    try:
+        from .grouped_linear_lora import is_grouped_linear
+    except Exception:
+        return
+    grouped = [
+        (name, module)
+        for name, module in model.named_modules()
+        if not _is_lora_adapter_name(name) and is_grouped_linear(module)
+    ]
+    if not grouped:
+        return
+    pairs = list(torchao_config.base_config_and_filter_fns)
+    token = _QAT_GROUPED_SELECTABLE.set(True)
+    try:
+        changed = sorted(
+            name
+            for name, module in grouped
+            if any(_SkipGroupedLinears(filter_fn)(module, name) for _, filter_fn in pairs)
+        )
+    finally:
+        _QAT_GROUPED_SELECTABLE.reset(token)
+    torchao_config.base_config_and_filter_fns = [
+        (base_config, _SkipGroupedLinears(filter_fn)) for base_config, filter_fn in pairs
+    ]
+    if changed:
+        scheme = getattr(torchao_config, "qat_scheme", None)
+        warnings.warn(
+            f"Unsloth: qat_scheme='{scheme if isinstance(scheme, str) else 'custom'}' keeps these grouped "
+            "(block-diagonal) Linear layers in full precision: "
+            + ", ".join(changed[:8])
+            + (f", ... ({len(changed) - 8} more)" if len(changed) > 8 else ""),
+            stacklevel = 3,
+        )
 
 
 def _record_qat_engagement(model, torchao_config):
@@ -12911,8 +13128,12 @@ def switch_training_mode(
     its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
     (modules, apply) so for_training can still set the mode last.
     """
+    # Decode graphs kept through training (_decode_graphs.keep_for_training) read the LoRA decode casts.
+    drop_casts = training and not getattr(model, "__dict__", {}).get(
+        "_unsloth_decode_keep_casts", False
+    )
     if not isinstance(model, torch.nn.Module):
-        if training:
+        if drop_casts:
             for param in model.parameters():
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora
@@ -12956,7 +13177,7 @@ def switch_training_mode(
             seen.add(id(module))
             if _has_gradient_checkpointing(module, gc):
                 checkpointing.append(module)
-            if training:
+            if drop_casts:
                 for param in module._parameters.values():
                     if param is not None and "_fast_lora" in param.__dict__:
                         del param._fast_lora
@@ -12970,7 +13191,7 @@ def switch_training_mode(
     if not plain_walk:
         # Some class enumerates modules / parameters its own way: scan as the old code did.
         checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
-        if training:
+        if drop_casts:
             for param in model.parameters():
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora

@@ -502,6 +502,31 @@ def test_openclaw_app_keeps_an_empty_allowlist_open(studio, defaults):
     assert json.loads(config.read_text())["agents"]["defaults"] == defaults
 
 
+@pytest.mark.parametrize("vision", [True, False])
+def test_app_config_declares_image_input_only_for_a_vision_model(studio, monkeypatch, vision):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    http_json = start._http_json
+
+    def with_vision(method, url, *args, **kwargs):
+        answer = http_json(method, url, *args, **kwargs)
+        if url.split("?")[0].endswith("/api/inference/status"):
+            answer["is_vision"] = vision
+        return answer
+
+    monkeypatch.setattr(start, "_http_json", with_vision)
+    for agent in ("opencode", "openclaw"):
+        result = CliRunner().invoke(start.start_app, [agent, "--app"])
+        assert result.exit_code == 0, result.output
+    opencode = json.loads((studio["home"] / ".config" / "opencode" / "opencode.json").read_text())
+    model = opencode["provider"]["unsloth-studio"]["models"][MODEL["id"]]
+    assert model.get("attachment", False) is vision
+    assert ("image" in model.get("modalities", {}).get("input", ())) is vision
+    openclaw = json.loads((studio["home"] / ".openclaw" / "openclaw.json").read_text())
+    model = openclaw["models"]["providers"]["unsloth"]["models"][0]
+    assert ("image" in model.get("input", ())) is vision
+
+
 def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))

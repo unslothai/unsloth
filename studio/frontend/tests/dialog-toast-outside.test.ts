@@ -29,11 +29,11 @@ function findByType(node: unknown, type: string): StubElement | null {
   return findByType((element.props ?? {}).children, type);
 }
 
-function outsideEvent(insideToaster: boolean): OutsideEvent {
+function outsideEvent(ancestor: string | null): OutsideEvent {
   return {
     target: {
       closest: (selector) =>
-        insideToaster && selector === "[data-sonner-toaster]" ? {} : null,
+        ancestor && selector.split(",").some((s) => s.trim() === ancestor) ? {} : null,
     },
     defaultPrevented: false,
     preventDefault() {
@@ -42,7 +42,7 @@ function outsideEvent(insideToaster: boolean): OutsideEvent {
   };
 }
 
-test("an interaction on a toast does not dismiss the dialog under it", () => {
+test("an interaction on a toast or a corner card does not dismiss the dialog under it", () => {
   const { DialogContent } = loadWithStubs<{
     DialogContent: (props: {
       onInteractOutside: (event: OutsideEvent) => void;
@@ -83,17 +83,20 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
     event: OutsideEvent,
   ) => void;
 
-  const onToast = outsideEvent(true);
-  const elsewhere = outsideEvent(false);
+  const onToast = outsideEvent("[data-sonner-toaster]");
+  const onRail = outsideEvent("[data-overlay-rail]");
+  const elsewhere = outsideEvent(null);
   onInteractOutside(onToast);
+  onInteractOutside(onRail);
   onInteractOutside(elsewhere);
 
   assert.equal(onToast.defaultPrevented, true, "a toast click closed the dialog");
+  assert.equal(onRail.defaultPrevented, true, "a Downloads card click closed the dialog");
   assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
-  assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
+  assert.deepEqual(seen, [onToast, onRail, elsewhere], "the caller's handler was dropped");
 });
 
-test("an interaction on a toast does not dismiss the sheet under it", () => {
+test("an interaction on a toast or a corner card does not dismiss the sheet under it", () => {
   const { SheetContent } = loadWithStubs<{
     SheetContent: (props: {
       onInteractOutside: (event: OutsideEvent) => void;
@@ -138,12 +141,15 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     event: OutsideEvent,
   ) => void;
 
-  const onToast = outsideEvent(true);
-  const elsewhere = outsideEvent(false);
+  const onToast = outsideEvent("[data-sonner-toaster]");
+  const onRail = outsideEvent("[data-overlay-rail]");
+  const elsewhere = outsideEvent(null);
   onInteractOutside(onToast);
+  onInteractOutside(onRail);
   onInteractOutside(elsewhere);
 
   assert.equal(onToast.defaultPrevented, true, "a toast click closed the sheet");
+  assert.equal(onRail.defaultPrevented, true, "a Downloads card click closed the sheet");
   assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
-  assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
+  assert.deepEqual(seen, [onToast, onRail, elsewhere], "the caller's handler was dropped");
 });

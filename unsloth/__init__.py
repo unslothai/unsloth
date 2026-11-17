@@ -48,6 +48,11 @@ from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
 _apply_fsdp2_env()
 del _apply_fsdp2_env
 
+from .parallel_env import bind_local_cuda_device as _bind_local_cuda_device
+
+_bind_local_cuda_device()
+del _bind_local_cuda_device
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -250,6 +255,12 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_config_commit_hash as _fix_commit_hash
+        _fix_commit_hash()
+        del _fix_commit_hash
+    except Exception:
+        pass
+    try:
         # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
@@ -261,6 +272,15 @@ if _IS_MLX:
         _fix_template_names()
         _fix_vocab_paths()
         del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
+    except Exception:
+        pass
+    try:
+        # MLX can load hub checkpoints through transformers too; a no-op where its quantizers are absent.
+        from .import_fixes import (
+            fix_transformers_quantizer_unquantized_converters as _fix_unquantized_converters,
+        )
+        _fix_unquantized_converters()
+        del _fix_unquantized_converters
     except Exception:
         pass
     try:
@@ -2167,6 +2187,14 @@ else:
         _sys_mod.pop(f"{__name__}._gpu_init", None)
         del _sys_mod
         from ._cpu_init import *  # __all__ carries __version__
+
+    # Both backends: the CPU path never runs _gpu_init.
+    try:
+        from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
+        _fix_dsv41()
+        del _fix_dsv41
+    except Exception:
+        pass
 
     # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
     # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.

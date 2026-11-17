@@ -131,6 +131,16 @@ def _absence_is_real(path: Path) -> bool:
 
 
 def _stored_cache_home() -> Optional[Path]:
+    value = _stored_cache_home_value()
+    if value is None:
+        return None
+    try:
+        return _canonical(value)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _stored_cache_home_value() -> Optional[str]:
     # get_app_setting creates studio.db, so skip only on an observed absence (os.stat).
     # Not Path.exists (3.14 hides EACCES/EIO) nor lstat (sqlite follows symlinks).
     try:
@@ -152,10 +162,7 @@ def _stored_cache_home() -> Optional[Path]:
         return None
     if not isinstance(value, str) or not value.strip():
         return None
-    try:
-        return _canonical(value.strip())
-    except (OSError, RuntimeError, ValueError):
-        return None
+    return value.strip()
 
 
 def configured_cache_key() -> str:
@@ -350,7 +357,7 @@ def _stored_download_homes() -> list[Path]:
     return _stored_paths(DOWNLOAD_HOMES_SETTING_KEY, MAX_DOWNLOAD_HOMES)
 
 
-def _stored_paths(setting_key: str, limit: int) -> list[Path]:
+def _stored_path_values(setting_key: str) -> list[str]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
@@ -359,11 +366,13 @@ def _stored_paths(setting_key: str, limit: int) -> list[Path]:
         raw = []
     if not isinstance(raw, list):
         return []
+    return [value for value in raw if isinstance(value, str) and value.strip()]
+
+
+def _stored_paths(setting_key: str, limit: int) -> list[Path]:
     out: list[Path] = []
     seen: set[str] = set()
-    for value in raw:
-        if not isinstance(value, str) or not value.strip():
-            continue
+    for value in _stored_path_values(setting_key):
         try:
             path = _canonical(value)
         except (OSError, RuntimeError, ValueError):
@@ -500,6 +509,35 @@ def _known_hf_cache_homes() -> list[Path]:
 
 def known_hf_hub_caches() -> list[Path]:
     return list(_scan_memoized("known_hf_hub_caches", _known_hf_hub_caches))
+
+
+def known_hf_hub_cache_candidates() -> list[Path]:
+    """known_hf_hub_caches() in order, expanded but never resolved or touched (a dead mount hangs), so a caller can
+    probe each under its own budget. May hold two spellings of one directory."""
+    paths = get_hf_cache_paths()
+    homes: list[Path] = []
+    if paths.source != "environment":
+        homes.append(Path(paths.cache_home))
+    elif explicit_home := _EXPLICIT_CACHE_ENV.get("HF_HOME"):
+        homes.append(Path(explicit_home).expanduser())
+    stored = _stored_cache_home_value()
+    if stored is not None:
+        homes.append(Path(stored).expanduser())
+    for setting_key, limit in (
+        (CACHE_HISTORY_SETTING_KEY, MAX_CACHE_HISTORY),
+        (DOWNLOAD_HOMES_SETTING_KEY, MAX_DOWNLOAD_HOMES),
+    ):
+        homes.extend(Path(value).expanduser() for value in _stored_path_values(setting_key)[:limit])
+    homes.append(_default_cache_home())
+    out = [Path(paths.hub_cache)]
+    seen = {os.path.normcase(os.path.normpath(str(out[0])))}
+    for home in homes:
+        hub = home / "hub"
+        key = os.path.normcase(os.path.normpath(str(hub)))
+        if key not in seen:
+            seen.add(key)
+            out.append(hub)
+    return out
 
 
 def _known_hf_hub_caches() -> list[Path]:

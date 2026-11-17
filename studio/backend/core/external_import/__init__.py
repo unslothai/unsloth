@@ -54,8 +54,12 @@ class Transcript:
     messages: list[dict]
     # Which physical file the messages came from; a change (Codex revert) re-bases the ledger
     # at ``inherited``, the count of leading messages carried over from the previous revision.
+    # A ``:<tag>`` suffix names the reader; ``reread`` holds the ids an untagged reader skipped.
     revision: str = ""
     inherited: int = 0
+    reread: frozenset[str] = frozenset()
+    # {older revision: index after its n-th turn}; resuming at turns would re-send edited ones.
+    earlier: dict[str, list[int]] = field(default_factory = dict)
 
 
 @dataclass(frozen = True)
@@ -216,6 +220,31 @@ def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict
     }
 
 
+def _reread_messages(
+    transcript: Transcript, turns: int, revision: str, stored: list[dict]
+) -> list[dict]:
+    """Backfill what an older reader skipped; rows it imported only move under their new parent."""
+    old = [m for m in transcript.messages if m["id"] not in transcript.reread]
+    if revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        start = turns
+    else:
+        start = sum(
+            m["id"] not in transcript.reread for m in transcript.messages[: transcript.inherited]
+        )
+    fresh = transcript.reread | {m["id"] for m in old[start:]}
+    rows = {m["id"]: m for m in stored}
+    late = {m["id"]: m for m in _late_tool_results(transcript, stored)}
+    pending = []
+    for message in transcript.messages:
+        row = rows.get(message["id"])
+        if row is None:
+            if message["id"] in fresh:
+                pending.append(message)
+        elif row.get("parentId") != message.get("parentId"):
+            pending.append({**late.get(row["id"], row), "parentId": message.get("parentId")})
+    return pending
+
+
 def _pending_messages(
     source: Source, transcript: Transcript, existing: bool, stored: list[dict]
 ) -> list[dict]:
@@ -228,9 +257,15 @@ def _pending_messages(
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     turns, revision = mark
-    pending = transcript.messages[
-        turns if revision == transcript.revision else transcript.inherited :
-    ]
+    if revision == transcript.revision:
+        pending = transcript.messages[turns:]
+    elif revision in transcript.earlier:
+        ends = transcript.earlier[revision]
+        pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
+    elif revision.partition(":")[2] != transcript.revision.partition(":")[2]:
+        pending = _reread_messages(transcript, turns, revision, stored)
+    else:
+        pending = transcript.messages[transcript.inherited :]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}

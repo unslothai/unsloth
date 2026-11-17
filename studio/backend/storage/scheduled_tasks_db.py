@@ -82,6 +82,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "allowModelLoad": bool(row["allow_model_load"]),
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
+        "webSearch": bool(row["web_search"]),
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -163,6 +164,7 @@ _TASK_COLUMNS = (
     "allow_model_load",
     "archive_successful",
     "project_id",
+    "web_search",
     "next_run_at",
 )
 
@@ -181,6 +183,7 @@ def _task_values(task: dict) -> tuple:
         1 if task.get("allowModelLoad") else 0,
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
+        1 if task.get("webSearch") else 0,
         task["nextRunAt"],
     )
 
