@@ -306,7 +306,9 @@ def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
                 continue
             masked = _mask_json_strings(message, inside_message = True)
             if masked != message:
-                parts.extend((text[written : match.start()], json.dumps(masked)))
+                # Keep raw characters raw, or redact_native_paths no longer matches a non-ASCII path.
+                encoded = json.dumps(masked, ensure_ascii = token.isascii())
+                parts.extend((text[written : match.start()], encoded))
                 written = pos
     if not parts:
         return text

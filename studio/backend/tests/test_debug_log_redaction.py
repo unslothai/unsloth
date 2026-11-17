@@ -447,3 +447,14 @@ def test_serialized_credential_cut_by_truncation_is_masked():
 def test_serialized_numeric_password_is_masked():
     line = _provider_error(json.dumps({"password": 123456789}))
     assert "123456789" not in redact_log_text(line)
+
+
+def test_raw_utf8_native_path_beside_a_serialized_credential_is_masked(monkeypatch):
+    import utils.native_path_leases as leases
+
+    path = "/Users/é/private/model.gguf"
+    monkeypatch.setattr(leases, "_NATIVE_PATH_REDACTIONS", [path])
+    body = json.dumps({"api_key": "opaqueVal123xyz", "path": path}, ensure_ascii = False)
+    out = redact_log_text(json.dumps({"event": "x: " + body}, ensure_ascii = False))
+    assert "opaqueVal123xyz" not in out
+    assert "<native_path>" in out and "private" not in out
