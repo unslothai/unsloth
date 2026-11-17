@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   TRANSLATE_LANGUAGES,
+  sortedTranslateLanguages,
   suggestedTargetLanguage,
   translateLanguageLabel,
   translateSpeechTag,
@@ -18,8 +19,8 @@ import {
   dedicatedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
-  nonTextModelIds,
   isTranslateModelId,
+  nonTextModelIds,
   parseCustomTranslateModel,
   translateInstruction,
   translateMessages,
@@ -247,6 +248,58 @@ test("language codes are unique and named in the interface language", () => {
   assert.ok(french);
   assert.equal(translateLanguageLabel(french, "en"), "French");
   assert.equal(translateLanguageLabel(french, "fr"), "français");
+});
+
+test("the language list is alphabetical in the interface language", () => {
+  for (const locale of ["en", "de", "fr", "ja"]) {
+    const sorted = sortedTranslateLanguages(locale);
+    assert.equal(sorted.length, TRANSLATE_LANGUAGES.length);
+    const collator = new Intl.Collator(locale, { sensitivity: "base" });
+    for (let i = 1; i < sorted.length; i += 1) {
+      assert.ok(
+        collator.compare(sorted[i - 1].label, sorted[i].label) <= 0,
+        `${locale}: ${sorted[i - 1].label} before ${sorted[i].label}`,
+      );
+    }
+  }
+  const english = sortedTranslateLanguages("en").map(
+    (language) => language.label,
+  );
+  assert.equal(english[0], "Arabic");
+  assert.ok(english.indexOf("Bengali") < english.indexOf("Hindi"));
+  // German names reorder it: Englisch sorts before Französisch, and Arabisch stays first.
+  const german = sortedTranslateLanguages("de").map(
+    (language) => language.code,
+  );
+  assert.equal(german[0], "ar");
+  assert.ok(german.indexOf("en") < german.indexOf("fr"));
+  // The picker shows the sorted list; Detect language stays on top on its own.
+  const page = readText("../src/features/translate/translate-page.tsx");
+  assert.match(page, /sortedTranslateLanguages\(locale\)/);
+});
+
+test("the text boxes leave the Translate button on screen, prompt shown or not", () => {
+  const page = readText("../src/features/translate/translate-page.tsx");
+  for (const name of ["PANE_HEIGHT", "PANE_HEIGHT_WITH_PROMPT"]) {
+    const value = page.match(new RegExp(`const ${name} =\\s*"([^"]+)"`))?.[1];
+    assert.ok(value, name);
+    // The Desktop titlebar takes its height out of the window.
+    assert.match(value, /var\(--studio-titlebar-height,0px\)/);
+  }
+  assert.match(
+    page,
+    /prefs\.showPrompt && promptOptions \? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT/,
+  );
+});
+
+test("style and tone are picked on the page, not in the options menu", () => {
+  const page = readText("../src/features/translate/translate-page.tsx");
+  const popover = page.slice(
+    page.indexOf("function OptionsPopover"),
+    page.indexOf("function RunStatus"),
+  );
+  assert.doesNotMatch(popover, /translate\.options\.(mode|tone)"/);
+  assert.match(page, /<StyleControls \/>/);
 });
 
 test("the first target is the first browser language the model knows", () => {

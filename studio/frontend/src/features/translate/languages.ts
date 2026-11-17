@@ -74,6 +74,24 @@ export function translateLanguageLabel(
   return language.name;
 }
 
+export type LabeledTranslateLanguage = TranslateLanguage & { label: string };
+
+/** Every language named in `locale`, in that locale's alphabetical order. */
+export function sortedTranslateLanguages(
+  locale: string,
+): LabeledTranslateLanguage[] {
+  let collator: Intl.Collator;
+  try {
+    collator = new Intl.Collator(locale, { sensitivity: "base" });
+  } catch {
+    collator = new Intl.Collator(undefined, { sensitivity: "base" });
+  }
+  return TRANSLATE_LANGUAGES.map((language) => ({
+    ...language,
+    label: translateLanguageLabel(language, locale),
+  })).sort((a, b) => collator.compare(a.label, b.label));
+}
+
 const SPEECH_TAGS: Record<string, string> = {
   zh: "zh-CN",
   "zh-Hant": "zh-TW",

@@ -31,16 +31,10 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
 import {
@@ -105,8 +99,8 @@ import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
-  TRANSLATE_LANGUAGES,
   findTranslateLanguage,
+  sortedTranslateLanguages,
   translateLanguageLabel,
   translateSpeechTag,
 } from "./languages";
@@ -116,13 +110,13 @@ import {
   type CustomTranslateModel,
   DEDICATED_TRANSLATE_MODELS,
   type DownloadedTranslateModel,
-  downloadedQuant,
-  downloadedTranslateModels,
-  nonTextModelIds,
   type TranslateModelId,
   dedicatedTranslateModel,
+  downloadedQuant,
+  downloadedTranslateModels,
   formatModelBytes,
   isTranslateModelId,
+  nonTextModelIds,
   translateInstruction,
   translateModelKey,
   translatePromptKind,
@@ -166,7 +160,12 @@ const GO_BUTTON =
 const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
+// Side by side, the boxes fill what the window leaves under the Desktop titlebar, so the Translate
+// button stays on screen; a shown prompt takes its own height out of them.
+const PANE_HEIGHT =
+  "h-52 sm:h-96 md:h-[max(16rem,calc(100dvh-var(--studio-titlebar-height,0px)-18rem))]";
+const PANE_HEIGHT_WITH_PROMPT =
+  "h-52 sm:h-80 md:h-[max(12rem,calc(100dvh-var(--studio-titlebar-height,0px)-31rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
@@ -214,14 +213,7 @@ function LanguagePicker({
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const languages = useMemo(
-    () =>
-      TRANSLATE_LANGUAGES.map((language) => ({
-        ...language,
-        label: translateLanguageLabel(language, locale),
-      })),
-    [locale],
-  );
+  const languages = useMemo(() => sortedTranslateLanguages(locale), [locale]);
   const needle = query.trim().toLowerCase();
   const shown = needle
     ? languages.filter((language) =>
@@ -821,18 +813,90 @@ function OptionRow({
   );
 }
 
+function ChoiceGroup<T extends string>({
+  label,
+  value,
+  options,
+  optionLabel,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  optionLabel: Record<T, TranslationKey>;
+  onChange: (value: T) => void;
+}) {
+  const t = useT();
+  const labelId = useId();
+  return (
+    <div className="flex items-center gap-2">
+      <span id={labelId} className="text-ui-12 text-muted-foreground">
+        {label}
+      </span>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        aria-labelledby={labelId}
+        value={value}
+        // A single group lets the pressed item be turned off; one choice always stays picked.
+        onValueChange={(next) => {
+          if (next) onChange(next as T);
+        }}
+      >
+        {options.map((option) => (
+          <ToggleGroupItem
+            key={option}
+            value={option}
+            className="text-ui-12 font-normal"
+          >
+            {t(optionLabel[option])}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    </div>
+  );
+}
+
+/** Style and tone sit on the page, one click each, rather than inside the options menu. */
+function StyleControls() {
+  const t = useT();
+  const { mode, tone } = useTranslateStore(
+    useShallow((state) => ({
+      mode: state.prefs.mode,
+      tone: state.prefs.tone,
+    })),
+  );
+  const setPrefs = useTranslateStore((state) => state.setPrefs);
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <ChoiceGroup
+        label={t("translate.options.mode")}
+        value={mode}
+        options={TRANSLATE_MODES}
+        optionLabel={MODE_LABEL}
+        onChange={(next) => setPrefs({ mode: next })}
+      />
+      <ChoiceGroup
+        label={t("translate.options.tone")}
+        value={tone}
+        options={TRANSLATE_TONES}
+        optionLabel={TONE_LABEL}
+        onChange={(next) => setPrefs({ tone: next })}
+      />
+    </div>
+  );
+}
+
 function OptionsPopover() {
   const t = useT();
-  const { mode, tone, autoTranslate, saveHistory, showPrompt } =
-    useTranslateStore(
-      useShallow((state) => ({
-        mode: state.prefs.mode,
-        tone: state.prefs.tone,
-        autoTranslate: state.prefs.autoTranslate,
-        saveHistory: state.prefs.saveHistory,
-        showPrompt: state.prefs.showPrompt,
-      })),
-    );
+  const { autoTranslate, saveHistory, showPrompt } = useTranslateStore(
+    useShallow((state) => ({
+      autoTranslate: state.prefs.autoTranslate,
+      saveHistory: state.prefs.saveHistory,
+      showPrompt: state.prefs.showPrompt,
+    })),
+  );
   const setPrefs = useTranslateStore((state) => state.setPrefs);
   return (
     <Popover>
@@ -849,48 +913,6 @@ function OptionsPopover() {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80 gap-5">
-        <OptionRow label={t("translate.options.mode")}>
-          {(id) => (
-            <Select
-              value={mode}
-              onValueChange={(next) =>
-                setPrefs({ mode: next as TranslateMode })
-              }
-            >
-              <SelectTrigger id={id} size="sm" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TRANSLATE_MODES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(MODE_LABEL[option])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </OptionRow>
-        <OptionRow label={t("translate.options.tone")}>
-          {(id) => (
-            <Select
-              value={tone}
-              onValueChange={(next) =>
-                setPrefs({ tone: next as TranslateTone })
-              }
-            >
-              <SelectTrigger id={id} size="sm" className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TRANSLATE_TONES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(TONE_LABEL[option])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </OptionRow>
         <OptionRow
           label={t("translate.options.auto")}
           description={t("translate.options.autoDescription")}
@@ -1204,6 +1226,8 @@ export function TranslatePage() {
   };
 
   const shortcut = `${IS_MAC ? "⌘" : "Ctrl"}+Enter`;
+  const paneHeight =
+    prefs.showPrompt && promptOptions ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const firstRun =
     !busy && dedicated !== null && downloaded[dedicated.id] === false;
 
@@ -1221,17 +1245,20 @@ export function TranslatePage() {
             {t("shell.beta")}
           </Badge>
         </div>
-        <div className="flex items-center gap-1">
-          <ModelMenu
-            value={prefs.modelId}
-            custom={prefs.customModel}
-            onChange={(modelId) => setPrefs({ modelId })}
-            onPickCustom={(customModel) =>
-              setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel })
-            }
-            downloaded={downloaded}
-          />
-          <OptionsPopover />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <StyleControls />
+          <div className="flex items-center gap-1">
+            <ModelMenu
+              value={prefs.modelId}
+              custom={prefs.customModel}
+              onChange={(modelId) => setPrefs({ modelId })}
+              onPickCustom={(customModel) =>
+                setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel })
+              }
+              downloaded={downloaded}
+            />
+            <OptionsPopover />
+          </div>
         </div>
       </div>
 
@@ -1295,7 +1322,7 @@ export function TranslatePage() {
             <div
               className={cn(
                 SOURCE_BOX,
-                PANE_HEIGHT,
+                paneHeight,
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
@@ -1385,7 +1412,7 @@ export function TranslatePage() {
             aria-busy={busy}
             className="flex flex-col gap-1.5"
           >
-            <div className={cn(PANEL, PANE_HEIGHT, "overflow-hidden")}>
+            <div className={cn(PANEL, paneHeight, "overflow-hidden")}>
               <div
                 ref={outputRef}
                 className={cn(EDGE_SCROLL, "overflow-y-auto px-3.5 py-3")}
