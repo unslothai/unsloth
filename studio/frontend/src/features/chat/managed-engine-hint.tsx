@@ -30,18 +30,24 @@ export function ManagedEngineHint({
     <p className="pb-3 text-xs leading-snug text-muted-foreground">
       {status.installed
         ? `${name} is already installed in Unsloth. Pick it as the Inference engine in a model's run settings to run models without a separate server.`
-        : `Unsloth can directly install ${name} and run models with it, so you do not need a separate server.`}{" "}
-      <button
-        type="button"
-        onClick={() =>
-          useSettingsDialogStore
-            .getState()
-            .openDialog("resources", { scrollTarget: "resources-engines" })
-        }
-        className="font-medium text-foreground underline-offset-2 hover:underline"
-      >
-        {status.installed ? "Manage engines" : `Install ${name}`}
-      </button>
+        : `Unsloth can directly install ${name} and run models with it, so you do not need a separate server.`}
+      {/* The System tab is owner-only; a non-owner's link would land on General. */}
+      {isOwner ? (
+        <>
+          {" "}
+          <button
+            type="button"
+            onClick={() =>
+              useSettingsDialogStore
+                .getState()
+                .openDialog("resources", { scrollTarget: "resources-engines" })
+            }
+            className="font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            {status.installed ? "Manage engines" : `Install ${name}`}
+          </button>
+        </>
+      ) : null}
     </p>
   );
 }
