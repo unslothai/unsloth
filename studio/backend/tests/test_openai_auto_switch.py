@@ -3570,7 +3570,6 @@ def test_settings_filled_from_a_snapshot_keyed_row_are_not_replayed(monkeypatch)
     assert (filled.max_seq_length, filled.cache_type_kv) == (100000, "q8_0")
     backend = types.SimpleNamespace()
     inference_route._note_replay_launch(backend, filled)
-    # A reset saved setting must not come back from the idle-unload replay.
     assert backend.replay_launch == {"n_parallel": 2}
 
 
