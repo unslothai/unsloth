@@ -642,6 +642,7 @@ def resolve_for_request(
     detected: Optional[str],
     token: Optional[str],
     tag: Optional[str] = None,
+    supply_runtime: bool = True,
 ) -> tuple[str, str, Optional[dict], Optional[str]]:
     """``(accelerator, repo, release, asset)``. An auto-detected GPU the published bundles do not
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
@@ -650,6 +651,8 @@ def resolve_for_request(
     repo, release, chosen = resolve(accel, token, tag)
     if requested == "auto" and accel == "cuda" and chosen:
         major = _cuda_major(chosen)
+        if supply_runtime and not _linux_cuda_runtime_available(major):
+            _install_linux_cuda_runtime_wheels(major)
         if not _linux_cuda_runtime_available(major):
             # Linux CUDA bundles load cudart / cuBLAS from torch's nvidia-* wheels.
             print(
@@ -943,9 +946,13 @@ def _record_fits_request(record: dict, requested: str, detected: Optional[str]) 
         requested == "auto"
         and detected == "cuda"
         and record.get("accelerator") == "cpu"
-        and _linux_cuda_runtime_available(torch_cuda_major())
+        and (
+            _linux_cuda_runtime_available(torch_cuda_major())
+            or (_cuda_runtime_wheels_installable() and not record.get("cuda_runtime_wheels_tried"))
+        )
     ):
-        # Installed as the CPU fallback; torch's CUDA runtime is here now, so look up the GPU build.
+        # Installed as the CPU fallback; torch's CUDA runtime is here now, or this chat-only install
+        # predates the runtime wheel step, so look up the GPU build (once: the new record is marked).
         return False
     return True
 
@@ -1039,6 +1046,53 @@ def _ldconfig_libs() -> set[str]:
     except Exception:  # noqa: BLE001 - no ldconfig: only the wheel dirs count
         return set()
     return {line.split()[0] for line in out.splitlines()[1:] if line.strip()}
+
+
+# Chat-only (no torch) installs have no nvidia-* wheels; the CUDA bundles link these three.
+_LINUX_CUDA_RUNTIME_WHEELS = {
+    12: ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12", "nvidia-cufft-cu12"),
+    13: ("nvidia-cuda-runtime", "nvidia-cublas", "nvidia-cufft"),
+}
+
+
+def _cuda_runtime_wheels_installable() -> bool:
+    """Linux x86_64 without torch: the only hosts where the CUDA runtime comes from these wheels."""
+    return (
+        sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and torch_cuda_major() is None
+    )
+
+
+def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
+    """Installs NVIDIA's runtime wheels for ``major`` into this env so a chat-only install can run the
+    CUDA bundle; never raises (the caller falls back to the CPU build)."""
+    wheels = _LINUX_CUDA_RUNTIME_WHEELS.get(major or 0)
+    if not wheels or not _cuda_runtime_wheels_installable():
+        return
+    try:
+        if __package__:
+            from .install_llama_prebuilt import _uv_for_wheels
+        else:
+            from install_llama_prebuilt import _uv_for_wheels  # type: ignore[no-redef]
+        uv = _uv_for_wheels()
+    except Exception:  # noqa: BLE001
+        uv = shutil.which("uv")
+    cmd = (
+        [uv, "pip", "install", "--python", sys.executable]
+        if uv
+        else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    )
+    print(f"audio.cpp: no CUDA {major} runtime; installing {', '.join(wheels)}", flush = True)
+    try:
+        result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
+        if result.returncode != 0:
+            print(
+                f"audio.cpp: CUDA runtime wheel install failed (exit {result.returncode})",
+                flush = True,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
 
 
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
@@ -1356,6 +1410,10 @@ def _install_locked(
             "accelerator": accel,
             "accelerator_request": requested,
             "detected_accelerator": detected,
+            # This install already had its chance to fetch the CUDA runtime wheels (_record_fits_request).
+            "cuda_runtime_wheels_tried": requested == "auto"
+            and detected == "cuda"
+            and _cuda_runtime_wheels_installable(),
             "espeak": (server.parent / "espeak-ng-data.bin").is_file(),
             "server_relpath": server.relative_to(tree).as_posix(),
             "server_sha256": core.sha256_file(server),
@@ -1416,7 +1474,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.print_asset:
             detected = detect_accelerator() if args.accelerator == "auto" else None
             _, repo, release, chosen = resolve_for_request(
-                args.accelerator, detected, token, release_tag
+                args.accelerator, detected, token, release_tag, supply_runtime = False
             )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED

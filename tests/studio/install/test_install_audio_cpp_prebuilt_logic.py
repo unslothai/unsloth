@@ -310,6 +310,8 @@ def _isolated_env(monkeypatch):
     monkeypatch.setattr(M.core, "sleep_backoff", lambda *a, **k: None)
     monkeypatch.setattr(M, "_LATEST_TAG_MEMO", {})
     monkeypatch.setattr(M, "_RELEASE_INDEX_MEMO", {})
+    # The host's torch decides this for real; tests opt in to the chat-only path explicitly.
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: False)
     # /releases/latest names FORK_TAG unless a test says otherwise.
     heads = []
     monkeypatch.setattr(
@@ -2583,3 +2585,143 @@ def test_driver_cuda_version_is_asked_again_after_the_memo_window(monkeypatch, t
     now[0] += 2
     assert M.nvidia_driver_cuda_version() == (12, 6)
     assert len(calls) == 2
+
+
+CUDA13_TAR = "a-bin-ubuntu-x64-cuda13.tar.gz"
+
+
+def _chat_only_cuda_host(monkeypatch, *, wheels_work):
+    """A Linux x86_64 NVIDIA host with no torch: the runtime is present only once the wheels install."""
+    state = {"runtime": False, "installed": []}
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: state["runtime"])
+
+    def install(major):
+        state["installed"].append(major)
+        state["runtime"] = wheels_work
+
+    monkeypatch.setattr(M, "_install_linux_cuda_runtime_wheels", install)
+    asked = []
+
+    def resolve(
+        accel,
+        token,
+        tag = None,
+    ):
+        asked.append(accel)
+        return FORK, {"assets": []}, CUDA13_TAR if accel == "cuda" else CPU_ZIP
+
+    monkeypatch.setattr(M, "resolve", resolve)
+    return state, asked
+
+
+def test_chat_only_cuda_host_installs_the_runtime_wheels_and_keeps_the_cuda_build(monkeypatch):
+    state, asked = _chat_only_cuda_host(monkeypatch, wheels_work = True)
+    accel, _, _, chosen = M.resolve_for_request("auto", "cuda", None)
+    assert (accel, chosen, asked, state["installed"]) == ("cuda", CUDA13_TAR, ["cuda"], [13])
+
+
+def test_chat_only_cuda_host_falls_back_to_cpu_when_the_wheels_do_not_install(monkeypatch):
+    state, asked = _chat_only_cuda_host(monkeypatch, wheels_work = False)
+    accel, _, _, chosen = M.resolve_for_request("auto", "cuda", None)
+    assert (accel, chosen, asked, state["installed"]) == ("cpu", CPU_ZIP, ["cuda", "cpu"], [13])
+
+
+def test_runtime_already_present_skips_the_wheel_install(monkeypatch):
+    state, _ = _chat_only_cuda_host(monkeypatch, wheels_work = True)
+    state["runtime"] = True
+    assert M.resolve_for_request("auto", "cuda", None)[0] == "cuda"
+    assert state["installed"] == []
+
+
+def test_print_asset_never_installs_the_runtime_wheels(monkeypatch):
+    state, _ = _chat_only_cuda_host(monkeypatch, wheels_work = True)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    M.main(["--print-asset"])
+    assert state["installed"] == []
+
+
+@pytest.mark.parametrize(
+    "installable, record_extra, fits",
+    [
+        (True, {}, False),  # an older chat-only CPU fallback: look the GPU build up again
+        (True, {"cuda_runtime_wheels_tried": True}, True),  # already tried once: no lookup
+        (False, {}, True),  # a torch install keeps the existing rule
+    ],
+)
+def test_chat_only_cpu_fallback_record_is_looked_up_once(
+    monkeypatch, installable, record_extra, fits
+):
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: installable)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: False)
+    record = {"accelerator_request": "auto", "detected_accelerator": "cuda", "accelerator": "cpu"}
+    assert M._record_fits_request({**record, **record_extra}, "auto", "cuda") is fits
+
+
+def test_chat_only_cpu_fallback_install_is_marked_so_reruns_stay_offline(monkeypatch, tmp_path):
+    release = _release(tmp_path, CPU_ZIP)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
+    monkeypatch.setattr(M, "_install_linux_cuda_runtime_wheels", lambda major: None)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: False)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+    record = json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())
+    assert (record["backend"], record["cuda_runtime_wheels_tried"]) == ("cpu", True)
+    monkeypatch.setattr(
+        M, "resolve", lambda *a, **k: pytest.fail("a matching rerun must not look up")
+    )
+    assert M.main(["--install-dir", str(tmp_path / "audio.cpp")]) == M.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    "major, wheels",
+    [
+        (13, ["nvidia-cuda-runtime", "nvidia-cublas", "nvidia-cufft"]),
+        (12, ["nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12", "nvidia-cufft-cu12"]),
+    ],
+)
+def test_runtime_wheel_install_command(monkeypatch, major, wheels):
+    import install_llama_prebuilt
+
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
+    monkeypatch.setattr(install_llama_prebuilt, "_uv_for_wheels", lambda: "/opt/uv")
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return M.subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(M.subprocess, "run", run)
+    M._install_linux_cuda_runtime_wheels(major)
+    expected = ["/opt/uv", "pip", "install", "--python", sys.executable, "--only-binary", ":all:"]
+    assert calls == [expected + wheels]
+
+
+@pytest.mark.parametrize("installable, major", [(False, 13), (True, None), (True, 11)])
+def test_runtime_wheel_install_is_a_no_op_off_chat_only_linux(monkeypatch, installable, major):
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: installable)
+    monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: pytest.fail("must not install"))
+    M._install_linux_cuda_runtime_wheels(major)
+
+
+@pytest.mark.parametrize(
+    "platform_name, machine, torch_major, installable",
+    [
+        ("linux", "x86_64", None, True),
+        ("linux", "x86_64", 12, False),
+        ("linux", "aarch64", None, False),
+        ("win32", "AMD64", None, False),
+        ("darwin", "arm64", None, False),
+    ],
+)
+def test_wheels_installable_only_on_linux_x86_64_without_torch(
+    monkeypatch, platform_name, machine, torch_major, installable
+):
+    monkeypatch.undo()
+    monkeypatch.setattr(M.sys, "platform", platform_name)
+    monkeypatch.setattr(M.platform, "machine", lambda: machine)
+    monkeypatch.setattr(M, "torch_cuda_major", lambda: torch_major)
+    assert M._cuda_runtime_wheels_installable() is installable
