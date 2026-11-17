@@ -179,8 +179,9 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
-# The card verdicts, the long / mid race floors and the sink decisions persist per card, toolchain and these sources
+# The card verdicts and the long / mid race floors persist per card, toolchain and these sources
 # (diffusion_probe_cache.Namespace), so the check and the races run once per machine rather than once per process.
+# The sink decisions stay per load (_choose_path).
 # UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
 PERSIST_SOURCES = (
     "diffusion_int8_attention.py",
@@ -916,45 +917,15 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     plan["sinks"] = True
                 elif known is not None:
                     plan["sinks"] = known
-                elif (stored := _stored_sink_decision(key)) is not None:
-                    plan["sinks"] = _decisions()[key] = stored
-                    if stored == "native":
-                        _drop_routes(plan)
                 else:
+                    # per load, never persisted: the race also checks the plain kernels' error on this model's own
+                    # inputs (_pick_path), which the bucket key cannot identify (checkpoint, LoRA set)
                     plan["sinks"] = True if race is None else race()
                     if key is not None:
                         _decisions()[key] = plan["sinks"]
-                        if (
-                            race is not None and "sink_race" in plan
-                        ):  # timed, not an out-of-memory default
-                            _store_sink_decision(key, plan["sinks"])
                         if plan["sinks"] == "native":
                             _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
-
-
-def _sink_key(key: tuple) -> str:
-    return repr(key[1:])  # without the card index: the namespace keys the card by fingerprint
-
-
-def _stored_sink_decision(key: Optional[tuple]) -> Any:
-    """A sink race this card and toolchain already ran for the bucket (True / False / "native"), or None."""
-    if key is None:
-        return None
-    try:
-        found = persisted().get(card_name(key[0]), _sink_key(key))
-    except Exception:  # noqa: BLE001
-        return None
-    return found if found in (True, False, "native") else None
-
-
-def _store_sink_decision(key: tuple, value: Any) -> None:
-    if value not in (True, False, "native"):
-        return
-    try:
-        persisted().put(card_name(key[0]), _sink_key(key), value)
-    except Exception:  # noqa: BLE001 - persistence never fails a call
-        pass
 
 
 def _outside_capture() -> Any:

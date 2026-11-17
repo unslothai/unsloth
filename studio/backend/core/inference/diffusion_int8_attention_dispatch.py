@@ -534,21 +534,29 @@ def _race_wins(
     device: Any, dtype: Any, heads: int, head_dim: int, incumbent: Any, name: str, tokens: int
 ) -> bool:
     """Whether the kernel beats the incumbent by more than ``RACE_MARGIN`` at ``tokens`` tokens on this card. Timed
-    like the card race (interleaved, median); cached per card, dtype, geometry, incumbent and size; an out-of-memory
+    like the card race (interleaved, median); cached per card, dtype, geometry, incumbent, size and serving implementation; an out-of-memory
     probe counts as a loss."""
     import torch
 
     from . import diffusion_int8_attention as I8
 
-    key = (str(device), str(dtype), int(heads), int(head_dim), name, int(tokens))
+    index = I8._device_index(torch.device(device))
+    # the implementation that serves the race (a CUDA kernel that failed falls back to Triton): its own result
+    try:
+        impl = I8.implementation(index, int(head_dim))
+    except Exception:  # noqa: BLE001 - unreadable: timed as before, never persisted
+        impl = None
+    key = (str(device), str(dtype), int(heads), int(head_dim), name, int(tokens), impl)
     if key in _LONG_VERDICTS:
         return _LONG_VERDICTS[key]
-    card = I8.card_name(I8._device_index(torch.device(device)))
+    card = I8.card_name(index)
     stored_key = repr(("race", *key[1:]))
-    try:
-        stored = I8.persisted().get(card, stored_key)
-    except Exception:  # noqa: BLE001
-        stored = None
+    stored = None
+    if impl is not None:
+        try:
+            stored = I8.persisted().get(card, stored_key)
+        except Exception:  # noqa: BLE001
+            stored = None
     if isinstance(stored, bool):
         _LONG_VERDICTS[key] = stored
         return stored
@@ -572,7 +580,7 @@ def _race_wins(
         q = k = v = None
         torch.cuda.empty_cache()
     _LONG_VERDICTS[key] = won
-    if timed:  # an out-of-memory loss is this moment's, not the card's
+    if timed and impl is not None:  # an out-of-memory loss is this moment's, not the card's
         try:
             I8.persisted().put(card, stored_key, won)
         except Exception:  # noqa: BLE001
