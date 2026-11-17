@@ -14304,6 +14304,7 @@ class VideoBackend:
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
+                        memory_mode = getattr(state, "memory_mode", None),
                     )
                     # Key on the cache mode this request runs; corrected after the runner-aware toggle.
                     if state.cache_auto:

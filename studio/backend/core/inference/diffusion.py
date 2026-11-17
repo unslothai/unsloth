@@ -294,6 +294,7 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _low_vram_whole_module,
+    keeps_denoiser_streamed,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -3543,6 +3544,8 @@ def _whole_tier_for_request(
     if getattr(state, "offload_policy", None) != OFFLOAD_GROUP or getattr(
         state, "transformer_cache", None
     ):
+        return None
+    if keeps_denoiser_streamed(getattr(state, "memory_mode", None)):
         return None
     if int(condition_pixels or 0) > 0:
         # no learned peak covers condition images
