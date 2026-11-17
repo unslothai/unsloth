@@ -198,10 +198,10 @@ _normalized: tuple[Any, list[dict[str, Any]]] = (None, [])
 
 
 def stored_model_aliases() -> list[Any]:
-    """The stored list exactly as written, unreadable settings included."""
-    from utils.openai_auto_switch_settings import _cached_setting
+    """Read persisted aliases directly so saves never trust a stale inference cache."""
+    from storage.studio_db import get_app_setting
 
-    raw = _cached_setting(MODEL_ALIASES_SETTING_KEY, None)
+    raw = get_app_setting(MODEL_ALIASES_SETTING_KEY, None)
     return raw if isinstance(raw, list) else []
 
 

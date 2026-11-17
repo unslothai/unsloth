@@ -23,6 +23,7 @@ def store(monkeypatch):
     import utils.openai_auto_switch_settings as settings
 
     data: dict = {}
+    monkeypatch.setattr(db, "get_app_setting", lambda k, d = None: data.get(k, d))
     monkeypatch.setattr(db, "upsert_app_settings", lambda mapping: data.update(mapping))
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: data.get(k, d))
     return data
@@ -503,6 +504,46 @@ def test_a_current_etag_replaces_the_list_and_a_stale_one_is_refused(settings_ap
         lambda: settings_api.put([{"name": "x", "model": "org/model"}], etag = first["etag"]), 409
     )
     assert store == before
+
+
+@pytest.mark.parametrize("versioned", [False, True], ids = ["legacy", "etag"])
+def test_alias_save_keeps_newer_presets_after_an_overlapping_read(monkeypatch, versioned):
+    # A late read may repopulate the cache, but a stale save must not erase newer presets.
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    import storage.studio_db as db
+    import utils.openai_auto_switch_settings as settings
+
+    key = aliases_mod.MODEL_ALIASES_SETTING_KEY
+    original = [{"name": "plain", "model": "org/model"}]
+    db.upsert_app_settings({key: original})
+    settings._invalidate(key)
+    old_etag = aliases_mod.model_aliases_etag(original)
+    read_started = threading.Event()
+    finish_read = threading.Event()
+    read_setting = db.get_app_setting
+
+    def delayed_read(key, fallback = None):
+        value = read_setting(key, fallback)
+        if threading.current_thread().name.startswith("alias-cache-reader"):
+            read_started.set()
+            assert finish_read.wait(5)
+        return value
+
+    monkeypatch.setattr(db, "get_app_setting", delayed_read)
+    with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "alias-cache-reader") as pool:
+        pending_read = pool.submit(aliases_mod.get_model_aliases)
+        try:
+            assert read_started.wait(5)
+            set_model_aliases([_LONG], etag = old_etag)
+        finally:
+            finish_read.set()
+        assert pending_read.result(timeout = 5) == original
+
+    with pytest.raises(aliases_mod.ModelAliasConflict):
+        set_model_aliases(original, etag = old_etag if versioned else None)
+    assert db.get_app_setting(key) == [_LONG]
 
 
 def test_settings_round_trip_returns_what_was_stored(settings_api):
