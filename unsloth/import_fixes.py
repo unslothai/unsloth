@@ -8025,6 +8025,11 @@ _SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
 _SDPA_CUDNN_D256_WARNED = False
 
 
+# SM100 (B200 / B300) reproduces the NaN dQ. SM90 (H100 / H200) runs the same cuDNN SDPA kernels at
+# head_dim 256 and is guarded too, without a repro there.
+_SDPA_CUDNN_D256_MAJORS = (9, 10)
+
+
 def _sdpa_cudnn_d256_sm100_devices():
     try:
         import torch
@@ -8033,14 +8038,14 @@ def _sdpa_cudnn_d256_sm100_devices():
         return frozenset(
             i
             for i in range(torch.cuda.device_count())
-            if torch.cuda.get_device_capability(i)[0] == 10
+            if torch.cuda.get_device_capability(i)[0] in _SDPA_CUDNN_D256_MAJORS
         )
     except Exception:
         return frozenset()
 
 
 def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
-    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 / SM90 (no-grad never reaches it)."""
     import torch
 
     if attn_mask is None or not torch.is_grad_enabled():
@@ -8061,7 +8066,7 @@ def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
 
 
 def fix_cudnn_sdpa_d256_masked_backward():
-    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100 and SM90.
 
     torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
     (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
@@ -8100,7 +8105,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
                 if not _SDPA_CUDNN_D256_WARNED:
                     _SDPA_CUDNN_D256_WARNED = True
                     logger.warning(
-                        "Unsloth: head_dim 256 attention with a mask is training on an SM100 GPU; "
+                        "Unsloth: head_dim 256 attention with a mask is training on an SM90 / SM100 GPU; "
                         "running it without cuDNN attention, whose backward returns NaN gradients "
                         "there (set UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 to keep cuDNN)."
                     )
@@ -8112,7 +8117,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
     setattr(scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, True)
     F.scaled_dot_product_attention = scaled_dot_product_attention
     logger.info(
-        "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
+        "Unsloth: SM90 / SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
     )
 
