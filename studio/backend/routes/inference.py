@@ -50995,6 +50995,8 @@ async def load_diffusion_model_gated(
                 transformer_quant_fast_accum = request.transformer_quant_fast_accum,
                 transformer_prequant_path = request.transformer_prequant_path,
                 attention_backend = request.attention_backend,
+                # Only when set: older engines and test doubles take no such argument.
+                **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,

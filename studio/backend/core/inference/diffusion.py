@@ -525,6 +525,8 @@ from .diffusion_prequant import (
     scoped_local_files_only,
     usable_prequant_source,
 )
+from .diffusion_int8_attention import annotate_resolved as int8_annotate_resolved
+from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_auto_policy import (
     RESOLVED_APPLIED,
     RESOLVED_FELL_BACK,
@@ -1803,6 +1805,9 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
+    # The load's INT8 attention policy (diffusion_int8_attention.Int8Policy), resolved once at begin_load: the
+    # deferred speed profile re-installs with it, never with a later read of the env switch.
+    int8_policy: Any = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
@@ -5733,8 +5738,15 @@ class DiffusionBackend:
         allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         nvfp4_route: Any = None,
+        int8_attention: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        """Validate, then run the (slow) load on a daemon thread. Returns at once.
+
+        ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
+        resolved once here into the load's ``Int8Policy``."""
+        from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
+
+        int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
@@ -5870,6 +5882,7 @@ class DiffusionBackend:
                 transformer_quant_fast_accum = transformer_quant_fast_accum,
                 transformer_prequant_path = transformer_prequant_path,
                 attention_backend = attention_backend,
+                int8_attention = int8_policy,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
@@ -8659,6 +8672,8 @@ class DiffusionBackend:
         transformer_quant_fast_accum: Optional[bool] = None,
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
+        # the load's Int8Policy (begin_load) or a direct call's "auto" / "on" / "off"
+        int8_attention: Any = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
@@ -8706,6 +8721,11 @@ class DiffusionBackend:
         normalize_transformer_quant(transformer_quant)
         normalize_speed_mode(speed_mode)
         normalize_attention_backend(attention_backend)
+        from .diffusion_int8_attention import Int8Policy, normalize_int8_attention, resolve_policy
+
+        if not isinstance(int8_attention, Int8Policy):
+            normalize_int8_attention(int8_attention)
+        int8_policy = resolve_policy(int8_attention)
         normalize_transformer_cache(transformer_cache)
         # Text-encoder tri-state resolved once so every consumer agrees; must run before the load evicts the previous pipeline, since it validates the raw request.
         text_encoder_quant_requested = text_encoder_quant
@@ -8864,6 +8884,7 @@ class DiffusionBackend:
                         text_encoder_quant_explicit = bool(text_encoder_quant_requested),
                         load_token = _load_token,
                         loras = loras,
+                        int8_policy = int8_policy,
                     )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
@@ -11222,6 +11243,7 @@ class DiffusionBackend:
                         ),
                         # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
                         speed_unset_only = effective_speed == SPEED_OFF,
+                        int8_policy = int8_policy,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -11928,6 +11950,11 @@ class DiffusionBackend:
                                 attention_engaged or "native",
                                 attention_status_reason(attention_backend, attention_engaged),
                             ),
+                            "int8_attention": int8_resolved_entry(
+                                int8_policy,
+                                pipe,
+                                supported = str(getattr(target, "device", "")) == "cuda",
+                            ),
                             "memory_mode": (
                                 memory_mode,
                                 effective_policy,
@@ -11957,6 +11984,7 @@ class DiffusionBackend:
                             ),
                         }
                     )
+                    int8_annotate_resolved(resolved, int8_policy, pipe)
                     if transformer_quant_artifact is not None:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
@@ -12064,6 +12092,7 @@ class DiffusionBackend:
                         transformer_quant = transformer_quant_engaged,
                         attention_backend = attention_engaged,
                         attention_request = attention_backend,
+                        int8_policy = int8_policy,
                         transformer_cache = cache_engaged,
                         cache_auto = cache_may_toggle,
                         cache_quant_active = cache_quant_active,
@@ -12183,6 +12212,7 @@ class DiffusionBackend:
         load_token: Optional[int],
         text_encoder_quant_explicit: bool = False,
         loras: Any = None,
+        int8_policy: Any = None,
     ) -> dict[str, Any]:
         """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted).
         LoRAs named in the load are merged into the DiT weights before quantization (``diffusion_minimax_h3_image``)."""
@@ -12213,6 +12243,7 @@ class DiffusionBackend:
             cache_dir = hub_cache_dir(),
             local_files_only = local_files_only,
             check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
+            int8_policy = int8_policy,
         )
         if baked:
             pipe._unsloth_loras = baked
@@ -12261,7 +12292,9 @@ class DiffusionBackend:
                 "source": "auto",
                 "reason": "; ".join(plan.reasons),
             },
+            **build_resolved_record({"int8_attention": int8_resolved_entry(int8_policy, pipe)}),
         }
+        int8_annotate_resolved(resolved, int8_policy, pipe)
         state = _LoadState(
             pipe = pipe,
             family = fam,
@@ -12280,6 +12313,7 @@ class DiffusionBackend:
             transformer_quant = report.scheme,
             hf_token = hf_token,
             resolved = resolved,
+            int8_policy = int8_policy,
         )
         with self._load_cancel_lock:
             self._raise_if_load_cancelled(load_token)
@@ -14869,6 +14903,8 @@ class DiffusionBackend:
             logger = logger,
             target = target,
             requested = state.attention_request,
+            # the load's own policy: a per-load on / off must not revert to the env switch at the 3rd image
+            int8_policy = getattr(state, "int8_policy", None),
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)
@@ -14894,6 +14930,15 @@ class DiffusionBackend:
             entry = dict(state.resolved["attention_backend"])
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
+        if isinstance(state.resolved, dict) and "int8_attention" in state.resolved:
+            policy = getattr(state, "int8_policy", None)
+            fresh = build_resolved_record(
+                {"int8_attention": int8_resolved_entry(policy, state.pipe)}
+            )
+            int8_annotate_resolved(fresh, policy, state.pipe)
+            object.__setattr__(
+                state, "resolved", {**state.resolved, "int8_attention": fresh["int8_attention"]}
+            )
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
         if _compile_cache_wanted(
             state.pipe,
