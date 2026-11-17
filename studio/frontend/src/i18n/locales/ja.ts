@@ -4816,8 +4816,6 @@ export const ja = {
       fast: "高速",
       quality: "最高品質",
       chat: "チャットモデル",
-      chatPicked: "チャットで選択したモデル: {model}",
-      chatNone: "チャットでまだモデルが選択されていません",
       recommended: "おすすめ",
       yourModels: "あなたのモデル",
       browse: "すべてのモデルを見る…",

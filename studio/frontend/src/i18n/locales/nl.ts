@@ -5255,8 +5255,6 @@ export const nl = {
       fast: "Snel",
       quality: "Beste kwaliteit",
       chat: "Chatmodel",
-      chatPicked: "Het model dat in Chat is gekozen: {model}",
-      chatNone: "Nog geen model gekozen in Chat",
       recommended: "Aanbevolen",
       yourModels: "Jouw modellen",
       browse: "Alle modellen bekijken…",

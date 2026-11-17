@@ -8,6 +8,7 @@ import {
   suggestedTargetLanguage,
 } from "./languages";
 import {
+  CHAT_TRANSLATE_MODEL,
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
   DEFAULT_TRANSLATE_MODEL,
@@ -142,6 +143,8 @@ function loadPrefs(): TranslatePrefs {
       : [],
     modelId:
       isTranslateModelId(saved.modelId) &&
+      // The menu no longer offers "the model picked in Chat".
+      saved.modelId !== CHAT_TRANSLATE_MODEL &&
       (saved.modelId !== CUSTOM_TRANSLATE_MODEL || customModel)
         ? saved.modelId
         : DEFAULT_TRANSLATE_MODEL,

@@ -5246,8 +5246,6 @@ export const uk = {
       fast: "Швидка",
       quality: "Найкраща якість",
       chat: "Модель чату",
-      chatPicked: "Модель, вибрана в чаті: {model}",
-      chatNone: "У чаті ще не вибрано модель",
       recommended: "Рекомендовані",
       yourModels: "Ваші моделі",
       browse: "Переглянути всі моделі…",

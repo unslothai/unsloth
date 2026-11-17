@@ -4884,8 +4884,6 @@ export const en = {
       fast: "Fast",
       quality: "Best quality",
       chat: "Chat model",
-      chatPicked: "{model}, picked in Chat",
-      chatNone: "No model picked in Chat yet",
       recommended: "Recommended",
       yourModels: "Your models",
       browse: "Browse all models…",

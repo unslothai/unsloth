@@ -5256,8 +5256,6 @@ export const pl = {
       fast: "Szybki",
       quality: "Najlepsza jakość",
       chat: "Model czatu",
-      chatPicked: "Model wybrany w Czacie: {model}",
-      chatNone: "W Czacie nie wybrano jeszcze modelu",
       recommended: "Polecane",
       yourModels: "Twoje modele",
       browse: "Przeglądaj wszystkie modele…",

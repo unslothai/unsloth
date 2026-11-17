@@ -5208,8 +5208,6 @@ export const id = {
       fast: "Cepat",
       quality: "Kualitas terbaik",
       chat: "Model chat",
-      chatPicked: "Model yang dipilih di Chat: {model}",
-      chatNone: "Belum ada model yang dipilih di Chat",
       recommended: "Direkomendasikan",
       yourModels: "Model Anda",
       browse: "Telusuri semua model…",

@@ -4947,8 +4947,6 @@ export const he = {
       fast: "מהיר",
       quality: "האיכות הטובה ביותר",
       chat: "מודל צ'אט",
-      chatPicked: "המודל שנבחר בצ'אט: {model}",
-      chatNone: "עדיין לא נבחר מודל בצ'אט",
       recommended: "מומלצים",
       yourModels: "המודלים שלך",
       browse: "עיון בכל המודלים…",

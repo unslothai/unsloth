@@ -4876,8 +4876,6 @@ export const hi = {
       fast: "तेज़",
       quality: "सर्वोत्तम गुणवत्ता",
       chat: "चैट मॉडल",
-      chatPicked: "चैट में चुना गया मॉडल: {model}",
-      chatNone: "चैट में अभी कोई मॉडल नहीं चुना गया",
       recommended: "सुझाए गए",
       yourModels: "आपके मॉडल",
       browse: "सभी मॉडल देखें…",

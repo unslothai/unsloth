@@ -5226,8 +5226,6 @@ export const cs = {
       fast: "Rychlý",
       quality: "Nejlepší kvalita",
       chat: "Model z chatu",
-      chatPicked: "Model vybraný v Chatu: {model}",
-      chatNone: "V Chatu zatím není vybrán žádný model",
       recommended: "Doporučené",
       yourModels: "Vaše modely",
       browse: "Procházet všechny modely…",

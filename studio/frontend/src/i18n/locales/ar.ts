@@ -4865,8 +4865,6 @@ export const ar = {
       fast: "سريع",
       quality: "أفضل جودة",
       chat: "نموذج الدردشة",
-      chatPicked: "النموذج المختار في المحادثة: {model}",
-      chatNone: "لم يتم اختيار نموذج في المحادثة بعد",
       recommended: "موصى به",
       yourModels: "نماذجك",
       browse: "تصفح كل النماذج…",

@@ -4856,8 +4856,6 @@ export const ko = {
       fast: "빠름",
       quality: "최고 품질",
       chat: "채팅 모델",
-      chatPicked: "채팅에서 선택한 모델: {model}",
-      chatNone: "채팅에서 아직 선택한 모델이 없습니다",
       recommended: "추천",
       yourModels: "내 모델",
       browse: "모든 모델 둘러보기…",

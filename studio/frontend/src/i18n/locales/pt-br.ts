@@ -4894,8 +4894,6 @@ export const ptBR = {
       fast: "Rápido",
       quality: "Melhor qualidade",
       chat: "Modelo do chat",
-      chatPicked: "O modelo escolhido no Chat: {model}",
-      chatNone: "Nenhum modelo escolhido no Chat ainda",
       recommended: "Recomendados",
       yourModels: "Seus modelos",
       browse: "Ver todos os modelos…",

@@ -4980,8 +4980,6 @@ export const th = {
       fast: "เร็ว",
       quality: "คุณภาพดีที่สุด",
       chat: "โมเดลแชท",
-      chatPicked: "โมเดลที่เลือกในแชต: {model}",
-      chatNone: "ยังไม่ได้เลือกโมเดลในแชต",
       recommended: "แนะนำ",
       yourModels: "โมเดลของคุณ",
       browse: "ดูโมเดลทั้งหมด…",

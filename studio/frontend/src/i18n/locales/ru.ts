@@ -4893,8 +4893,6 @@ export const ru = {
       fast: "Быстрая",
       quality: "Лучшее качество",
       chat: "Модель чата",
-      chatPicked: "Модель, выбранная в чате: {model}",
-      chatNone: "В чате ещё не выбрана модель",
       recommended: "Рекомендуемые",
       yourModels: "Ваши модели",
       browse: "Все модели…",

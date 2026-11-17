@@ -42,22 +42,26 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
-import { chatLocalModelOptions, useChatRuntimeStore } from "@/features/chat";
+import {
+  chatLocalModelOptions,
+  providerModelDisplayName,
+  useChatRuntimeStore,
+  useExternalProvidersStore,
+  useModelDisplayNamesVersion,
+} from "@/features/chat";
 import {
   getInferenceStatus,
   listGgufVariants,
   unloadModel,
 } from "@/features/chat/api/chat-api";
 import {
+  buildExternalModelId,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 } from "@/features/chat/external-providers";
-import { externalModelLabel } from "@/features/chat/lib/external-model-label";
 import { useDeviceInventorySources } from "@/features/hub";
-import {
-  modelDisplayName,
-  modelIdsMatch,
-} from "@/features/hub/lib/model-identity";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
@@ -73,7 +77,6 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
-import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft02Icon,
@@ -331,8 +334,6 @@ function LanguagePicker({
 
 type Downloaded = Partial<Record<TranslateModelId, boolean>>;
 
-const NO_EXTERNAL_MODELS: ComposerModelPickerSource["externalModels"] = [];
-const NO_CONNECTIONS: ComposerModelPickerSource["externalConnections"] = [];
 const ignore = () => undefined;
 
 /**
@@ -355,6 +356,43 @@ function OtherModelPicker({
   const inventory = useDeviceInventorySources(["localModels"]);
   const refreshLocalModels = inventory.refresh;
   const localRows = inventory.localModels.rows;
+  const providers = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const namesVersion = useModelDisplayNamesVersion();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: learned display names arrive by version.
+  const externalModels = useMemo<ComposerModelPickerSource["externalModels"]>(
+    () =>
+      connectionsEnabled
+        ? providers
+            .filter((provider) => !isDecisionConnection(provider))
+            .flatMap((provider) =>
+              provider.models.map((model) => ({
+                id: buildExternalModelId(provider.id, model),
+                name: providerModelDisplayName(provider.providerType, model),
+                providerId: provider.id,
+                providerName: provider.name,
+                providerType: provider.providerType,
+              })),
+            )
+        : [],
+    [providers, connectionsEnabled, namesVersion],
+  );
+  const externalConnections = useMemo<
+    ComposerModelPickerSource["externalConnections"]
+  >(
+    () =>
+      connectionsEnabled
+        ? providers.map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+            providerType: provider.providerType,
+            availableModels: provider.availableModels,
+          }))
+        : [],
+    [providers, connectionsEnabled],
+  );
   const loraModels = useMemo<LoraModelOption[]>(
     () => [
       ...loras.map((lora) => ({
@@ -378,10 +416,9 @@ function OtherModelPicker({
         isGguf,
       })),
       loraModels,
-      // A connected provider's model is reached through the Chat model row.
-      externalModels: NO_EXTERNAL_MODELS,
-      externalConnections: NO_CONNECTIONS,
-      connections: false,
+      externalModels,
+      externalConnections,
+      connections: connectionsEnabled,
       onPick,
       // Translate loads and releases its model itself.
       eject: ignore,
@@ -405,6 +442,9 @@ function OtherModelPicker({
     [
       models,
       loraModels,
+      externalModels,
+      externalConnections,
+      connectionsEnabled,
       onPick,
       open,
       onOpenChange,
@@ -445,39 +485,14 @@ function ModelMenu({
   const preparing = useTranslateStore(
     (state) => state.phase !== null && state.phase.kind !== "translating",
   );
-  const chatPick = useChatRuntimeStore((s) => s.params.checkpoint);
   const [pickerOpen, setPickerOpen] = useState(false);
-  // What the server holds: loaded rows, Eject, and the chat model when Chat has no pick yet.
+  // What the server holds in memory: the Loaded note and Eject.
   const [loaded, setLoaded] = useState<string[]>([]);
-  const [serverChatModel, setServerChatModel] = useState<string | null>(null);
-  const ownModel =
-    value === CUSTOM_TRANSLATE_MODEL && custom && !isExternalModelId(custom.id)
-      ? custom.id
-      : null;
-  // Asks for the slot serving Chat's pick, as a run does, so the Chat row names what would run.
   const refreshLoaded = useCallback(() => {
-    const local = chatPick && !isExternalModelId(chatPick) ? chatPick : "";
-    getInferenceStatus(undefined, local || undefined)
-      .then((status) => {
-        setLoaded(status.loaded ?? []);
-        const active = status.active_model;
-        setServerChatModel(
-          active &&
-            !status.is_audio &&
-            !status.is_diffusion &&
-            !isTranslationHeldSlot(active, local) &&
-            // A model this page picked and loaded is not Chat's.
-            !(ownModel && modelIdsMatch(active, ownModel))
-            ? active
-            : null,
-        );
-      })
+    getInferenceStatus()
+      .then((status) => setLoaded(status.loaded ?? []))
       .catch(() => undefined);
-  }, [chatPick, ownModel]);
-  const chatModelId = isExternalModelId(chatPick) ? chatPick : serverChatModel;
-  const chatPickName = chatModelId
-    ? (externalModelLabel(chatModelId) ?? modelDisplayName(chatModelId))
-    : null;
+  }, []);
   // On arrival, when a run ends (its model is now loaded), and when the menu opens.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `busy` is the trigger, not an input.
   useEffect(refreshLoaded, [refreshLoaded, busy]);
@@ -663,25 +678,14 @@ function ModelMenu({
                 </span>
               </DropdownMenuRadioItem>
             ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>
-              {t("translate.model.yourModels")}
-            </DropdownMenuLabel>
-            <DropdownMenuRadioItem
-              value={CHAT_TRANSLATE_MODEL}
-              className="items-start"
-            >
-              <span className="grid min-w-0 gap-0.5">
-                <span className="text-ui-13 font-medium text-foreground">
-                  {t("translate.model.chat")}
-                </span>
-                <span className="text-ui-12 leading-normal text-muted-foreground">
-                  {chatPickName
-                    ? t("translate.model.chatPicked", { model: chatPickName })
-                    : t("translate.model.chatNone")}
-                </span>
-              </span>
-            </DropdownMenuRadioItem>
+            {(mine.length > 0 || (custom && !customIsMine)) && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>
+                  {t("translate.model.yourModels")}
+                </DropdownMenuLabel>
+              </>
+            )}
             {mine.map((model) => (
               <DropdownMenuRadioItem
                 key={model.id}

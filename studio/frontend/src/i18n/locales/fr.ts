@@ -4949,8 +4949,6 @@ export const fr = {
       fast: "Rapide",
       quality: "Meilleure qualité",
       chat: "Modèle de chat",
-      chatPicked: "Le modèle choisi dans Chat: {model}",
-      chatNone: "Aucun modèle choisi dans Chat pour l'instant",
       recommended: "Recommandés",
       yourModels: "Vos modèles",
       browse: "Parcourir tous les modèles…",

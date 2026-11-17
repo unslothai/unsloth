@@ -5205,8 +5205,6 @@ export const tr = {
       fast: "Hızlı",
       quality: "En iyi kalite",
       chat: "Sohbet modeli",
-      chatPicked: "Sohbette seçilen model: {model}",
-      chatNone: "Sohbette henüz model seçilmedi",
       recommended: "Önerilen",
       yourModels: "Modelleriniz",
       browse: "Tüm modellere göz at…",

@@ -5203,8 +5203,6 @@ export const vi = {
       fast: "Nhanh",
       quality: "Chất lượng tốt nhất",
       chat: "Mô hình trò chuyện",
-      chatPicked: "Mô hình đã chọn trong Chat: {model}",
-      chatNone: "Chưa chọn mô hình nào trong Chat",
       recommended: "Đề xuất",
       yourModels: "Mô hình của bạn",
       browse: "Xem tất cả mô hình…",

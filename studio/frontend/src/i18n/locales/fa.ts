@@ -5181,8 +5181,6 @@ export const fa = {
       fast: "سریع",
       quality: "بهترین کیفیت",
       chat: "مدل گفتگو",
-      chatPicked: "مدل انتخاب‌شده در گفتگو: {model}",
-      chatNone: "هنوز مدلی در گفتگو انتخاب نشده است",
       recommended: "پیشنهادی",
       yourModels: "مدل‌های شما",
       browse: "مرور همه مدل‌ها…",

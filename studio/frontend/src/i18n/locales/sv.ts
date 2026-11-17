@@ -5080,8 +5080,6 @@ export const sv = {
       fast: "Snabb",
       quality: "Bäst kvalitet",
       chat: "Chattmodell",
-      chatPicked: "Modellen som valts i Chatt: {model}",
-      chatNone: "Ingen modell vald i Chatt ännu",
       recommended: "Rekommenderade",
       yourModels: "Dina modeller",
       browse: "Bläddra bland alla modeller…",

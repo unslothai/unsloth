@@ -5290,8 +5290,6 @@ export const es419 = {
       fast: "Rápido",
       quality: "Mejor calidad",
       chat: "Modelo de chat",
-      chatPicked: "El modelo elegido en Chat: {model}",
-      chatNone: "Todavía no hay un modelo elegido en Chat",
       recommended: "Recomendados",
       yourModels: "Tus modelos",
       browse: "Explorar todos los modelos…",

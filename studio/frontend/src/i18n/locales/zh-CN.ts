@@ -4767,8 +4767,6 @@ export const zhCN = {
       fast: "快速",
       quality: "最佳质量",
       chat: "聊天模型",
-      chatPicked: "在聊天中选择的模型: {model}",
-      chatNone: "尚未在聊天中选择模型",
       recommended: "推荐",
       yourModels: "你的模型",
       browse: "浏览所有模型…",

@@ -4939,8 +4939,6 @@ export const zhTW = {
       fast: "快速",
       quality: "最佳品質",
       chat: "聊天模型",
-      chatPicked: "在聊天中選擇的模型: {model}",
-      chatNone: "尚未在聊天中選擇模型",
       recommended: "推薦",
       yourModels: "你的模型",
       browse: "瀏覽所有模型…",
