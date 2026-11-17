@@ -4993,8 +4993,8 @@ html[data-chat-font] .aui-root {
 	background: color-mix(in srgb, var(--destructive) 8%, transparent) !important;
 	color: var(--destructive) !important;
 }
-/* While loading, the X sits on Cancel's row instead of the top corner. */
-[data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']):has([data-cancel]) [data-close-button] {
+/* sonner.tsx tags the X of a toast with a Cancel; :has([data-cancel]) here would restyle the whole thread. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-close-button][data-hide-label] {
 	top: 50% !important;
 	transform: translateY(-50%) !important;
 }
