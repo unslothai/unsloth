@@ -179,24 +179,21 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
-# The card verdicts and the long / mid race floors persist per card, toolchain and these sources
-# (diffusion_probe_cache.Namespace), so the check and the races run once per machine rather than once per process.
-# The sink decisions stay per load (_choose_path).
-# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink decisions stay per
+# load. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
 PERSIST_SOURCES = (
     "diffusion_int8_attention.py",
     "diffusion_int8_attention_cuda.py",
     "diffusion_int8_attention_triton.py",
     "diffusion_int8_attention_dispatch.py",
-    "diffusion_qwenimage21_attn.py",  # the strided cuDNN incumbent the dispatch route races
+    "diffusion_qwenimage21_attn.py",
 )
 _PERSISTED: list = [None]
 WARM_TOKENS = 128
 
 
 def _library_versions() -> dict:
-    """What the races time beyond torch / triton / the driver: the incumbents' libraries (diffusers' dispatch, cuDNN)
-    and the NVRTC the kernels are compiled with."""
+    """Library versions the races depend on beyond torch / triton / the driver."""
     import torch
 
     from .diffusion_int8_attention_cuda import nvrtc_version
@@ -204,7 +201,7 @@ def _library_versions() -> dict:
 
     try:
         nvrtc = list(nvrtc_version())
-    except Exception:  # noqa: BLE001 - no NVRTC: the Triton kernel serves
+    except Exception:  # noqa: BLE001
         nvrtc = None
     return {
         "diffusers": _version("diffusers"),
@@ -918,8 +915,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 elif known is not None:
                     plan["sinks"] = known
                 else:
-                    # per load, never persisted: the race also checks the plain kernels' error on this model's own
-                    # inputs (_pick_path), which the bucket key cannot identify (checkpoint, LoRA set)
+                    # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
                     plan["sinks"] = True if race is None else race()
                     if key is not None:
                         _decisions()[key] = plan["sinks"]
@@ -1628,14 +1624,11 @@ def _check(
 
 def _verdict_key(key: tuple) -> str:
     import json
-    return json.dumps(
-        list(key[1:])
-    )  # the card is the namespace's, by fingerprint rather than by index
+    return json.dumps(list(key[1:]))
 
 
 def _storable(found: dict) -> bool:
-    """A verdict a later process may reuse: no exception anywhere in it (a failure may be transient), and a passing
-    timed one has both race sizes."""
+    """Reusable only if exception-free (failures may be transient) and, when timed and passing, has all race sizes."""
     if found.get("error") or found.get("failed") or (found.get("long") or {}).get("failed"):
         return False
     return not (
@@ -1648,13 +1641,12 @@ def _persist_verdict(index: int, key: tuple, found: dict) -> None:
         return
     try:
         persisted().put(card_name(index), _verdict_key(key), found)
-    except Exception:  # noqa: BLE001 - persistence never fails a load
+    except Exception:  # noqa: BLE001
         pass
 
 
 def _warm(index: int, dtype: Any, head_dim: int, impl: str, found: dict) -> None:
-    """Load the kernels a persisted pass vouches for, as the check would have (eagerly, before any CUDA graph capture),
-    with one small call each; it raises where they no longer load or launch here."""
+    """Eagerly load the vouched kernels (before CUDA graph capture); raises if they no longer run here."""
     import torch
 
     device = torch.device("cuda", index)
@@ -1670,9 +1662,7 @@ def _warm(index: int, dtype: Any, head_dim: int, impl: str, found: dict) -> None
 
 
 def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optional[dict]:
-    """The persisted verdict for ``key`` installed as ``_check`` would have left it (the accuracy pass recorded, the
-    long variant's check, the kernels loaded), or None: no entry, another implementation, or kernels that no longer
-    run here (the check then runs again)."""
+    """The persisted verdict for ``key`` installed as ``_check`` would leave it, or None to re-check."""
     import torch
 
     impl = key[-1]
@@ -1693,7 +1683,7 @@ def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optiona
             _warm(index, dtype, head_dim, impl, found)
         except torch.OutOfMemoryError:
             raise
-        except Exception:  # noqa: BLE001 -- the kernel no longer runs here: check it again
+        except Exception:  # noqa: BLE001
             return None
         _VERIFIED.add((index, int(head_dim), str(dtype), impl))
         long = found.get("long")

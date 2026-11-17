@@ -202,10 +202,8 @@ def store(card: str, table: dict[str, Any]) -> bool:
 
 
 class Namespace:
-    """Decisions of one module persisted per card in their own file (``diffusion_<name>.json``), under the same
-    fingerprint as the quant probes plus a digest of ``sources``: editing any of them, or any toolchain / card /
-    driver / ``UNSLOTH_DIFFUSION_*`` change, is a miss. ``get`` / ``put`` take string keys and JSON values; a torn,
-    absent or foreign file reads as empty, and a write never raises."""
+    """Per-card decisions in ``diffusion_<name>.json``, keyed by the probe fingerprint plus a digest of ``sources``.
+    Unreadable files read as empty; writes never raise."""
 
     def __init__(
         self,
@@ -217,11 +215,9 @@ class Namespace:
         self.name = str(name)
         self.sources = tuple(sources)
         self.max_cards = int(max_cards)
-        self.extra = (
-            extra  # () -> dict of further key components (library versions), read once per card
-        )
+        self.extra = extra  # () -> dict of extra key components
         self._digest: Optional[str] = None
-        self._tables: dict = {}  # (file, card) -> (slot key, fingerprint, table), read once per process
+        self._tables: dict = {}  # (file, card) -> (slot key, fingerprint, table)
 
     def _source_digest(self) -> str:
         if self._digest is None:
@@ -246,7 +242,7 @@ class Namespace:
         path = self._path()
         if path is None:
             return None
-        found = self._tables.get((str(path), card))  # per file: a new storage root reads its own
+        found = self._tables.get((str(path), card))
         if found is not None:
             return found
         fp = fingerprint(card)
@@ -256,7 +252,7 @@ class Namespace:
         if self.extra is not None:
             try:
                 more = self.extra()
-            except Exception:  # noqa: BLE001 - an unreadable component: never persisted
+            except Exception:  # noqa: BLE001
                 return None
             if not isinstance(more, dict):
                 return None
@@ -310,7 +306,7 @@ class Namespace:
                 tmp.write_text(json.dumps(data, sort_keys = True), encoding = "utf-8")
                 os.replace(tmp, path)
                 return True
-            except Exception:  # noqa: BLE001 - a cache write never fails a load
+            except Exception:  # noqa: BLE001
                 if tmp is not None:
                     try:
                         tmp.unlink()
@@ -319,5 +315,4 @@ class Namespace:
                 return False
 
     def forget(self) -> None:
-        """Drop the per-process reads (tests, or after the file changed underneath)."""
         self._tables.clear()

@@ -541,10 +541,10 @@ def _race_wins(
     from . import diffusion_int8_attention as I8
 
     index = I8._device_index(torch.device(device))
-    # the implementation that serves the race (a CUDA kernel that failed falls back to Triton): its own result
+    # keyed by the serving implementation (a failed CUDA kernel falls back to Triton)
     try:
         impl = I8.implementation(index, int(head_dim))
-    except Exception:  # noqa: BLE001 - unreadable: timed as before, never persisted
+    except Exception:  # noqa: BLE001
         impl = None
     key = (str(device), str(dtype), int(heads), int(head_dim), name, int(tokens), impl)
     if key in _LONG_VERDICTS:

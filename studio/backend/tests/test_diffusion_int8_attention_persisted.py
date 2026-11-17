@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""INT8 attention decides once per machine: the card verdict (accuracy check and race) and the long / mid race floors
-persist per card + toolchain + kernel sources (``diffusion_probe_cache.Namespace``), and a later process reuses them
-without probing or timing. The sink decisions stay per load (their race checks accuracy on the model's own inputs). CPU: the card, the fingerprint and the kernels are faked; each
-test gets its own UNSLOTH_STUDIO_HOME, so its own cache file."""
+"""INT8 attention card verdicts and race floors persist across processes; sink decisions stay per load. CPU-only fakes."""
 
 from __future__ import annotations
 
@@ -30,7 +27,6 @@ PASS = {
 
 @pytest.fixture
 def machine(monkeypatch):
-    """One fake card: a fixed fingerprint, the CUDA kernel serving it, kernels that load, and fresh process state."""
     fp = {"gpu_uuid": "GPU-1", "torch": "fake"}
     monkeypatch.setattr(pc, "fingerprint", lambda card: dict(fp, card = card))
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PROBE_CACHE", raising = False)
@@ -72,9 +68,9 @@ def test_a_second_process_reuses_the_verdict_without_probing(machine):
     second = _verdict()
     assert machine["checks"] == [(8, 128, True, "cuda")]  # no second check, no second race
     assert second["persisted"] and second["min_tokens"] == 0
-    assert second["ms"] == PASS["ms"]  # race sizes come back as ints
+    assert second["ms"] == PASS["ms"]
     assert (0, 128, "torch.bfloat16", "cuda") in I._VERIFIED
-    assert machine["warmed"] == [(0, torch.bfloat16, 128, "cuda")]  # kernels still loaded eagerly
+    assert machine["warmed"] == [(0, torch.bfloat16, 128, "cuda")]
 
 
 def test_the_key_keeps_dtype_geometry_incumbent_and_timing_apart(machine):
@@ -185,7 +181,7 @@ def _plan(decision):
     return {
         "sinks": None,
         "calls": I.SINK_DECIDE_AT,
-        "checks": [(_Event(), torch.tensor([1]))],  # a head clipped V in the learning calls
+        "checks": [(_Event(), torch.tensor([1]))],
         "decision": decision,
         "shape": (1, 4096, 4096, 24, 128),
         "index": 0,
@@ -194,9 +190,7 @@ def _plan(decision):
 
 
 def test_a_sink_decision_is_raced_again_for_every_load(machine, monkeypatch):
-    """The sink race also gates the plain kernels on their error against torch on this model's own inputs
-    (_pick_path), so a verdict from one checkpoint / LoRA set is never reused for another load of the same geometry:
-    not across processes, and not after a new pipeline (forget_plans) in this one."""
+    """Sink race verdicts are per load: never reused across processes or after forget_plans."""
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(I, "_GRAPHED", [False])
@@ -215,22 +209,18 @@ def test_a_sink_decision_is_raced_again_for_every_load(machine, monkeypatch):
 
     I._decisions().clear()
     plan = _plan(decision)
-    assert (
-        I._choose_path(plan, race(plan, False))[0] is False
-    )  # model A: the plain kernels are accurate enough
+    assert I._choose_path(plan, race(plan, False))[0] is False
     plan = _plan(decision)
-    assert I._choose_path(plan, race(plan, False))[0] is False  # same load: decided once
+    assert I._choose_path(plan, race(plan, False))[0] is False
     assert races == [False]
     I.forget_plans()
     machine["new_process"]()
     plan = _plan(decision)
-    assert I._choose_path(plan, race(plan, True))[0] is True  # model B, same geometry: its own race
+    assert I._choose_path(plan, race(plan, True))[0] is True
     assert races == [False, True]
     I.forget_plans()
     plan = _plan(decision)
-    assert (
-        I._choose_path(plan, race(plan, "native"))[0] == "native"
-    )  # a new load in the same process too
+    assert I._choose_path(plan, race(plan, "native"))[0] == "native"
     assert races == [False, True, "native"] and len(dropped) == 1
     I.forget_plans()
 
@@ -245,7 +235,7 @@ def test_an_out_of_memory_sink_race_is_not_persisted(machine, monkeypatch):
 
     def race():
         races.append(1)
-        return "native"  # _sink_race's out-of-memory answer: no "sink_race" timings on the plan
+        return "native"
 
     I._decisions().clear()
     I._choose_path(_plan(decision), race)
@@ -337,7 +327,7 @@ def test_a_corrupted_entry_runs_the_check_again(machine):
     data = json.loads(path.read_text(encoding = "utf-8"))
     (entry,) = data.values()
     machine["new_process"]()
-    assert _verdict()["ok"]  # the re-check rewrote it: reused from here on
+    assert _verdict()["ok"]
     assert len(machine["checks"]) == 2
 
 
@@ -348,7 +338,7 @@ def test_an_entry_under_another_fingerprint_is_not_reused(machine):
     path = I.persisted()._path()
     data = json.loads(path.read_text(encoding = "utf-8"))
     (entry,) = data.values()
-    entry["fingerprint"]["driver"] = "stale"  # same slot, a key component that no longer matches
+    entry["fingerprint"]["driver"] = "stale"
     path.write_text(json.dumps(data), encoding = "utf-8")
     machine["new_process"]()
     _verdict()
@@ -356,8 +346,7 @@ def test_an_entry_under_another_fingerprint_is_not_reused(machine):
 
 
 def test_a_long_race_is_keyed_by_the_implementation_that_served_it(machine, monkeypatch):
-    """A CUDA kernel that failed this start falls back to Triton (same fingerprint): the Triton timing must not
-    answer for a later CUDA start, nor the other way round."""
+    """Race floors are keyed by the serving implementation (CUDA vs its Triton fallback)."""
     timed = []
     serving = {"impl": "triton"}
     monkeypatch.setattr(I, "implementation", lambda index, hd: serving["impl"])
@@ -373,21 +362,13 @@ def test_a_long_race_is_keyed_by_the_implementation_that_served_it(machine, monk
     monkeypatch.setattr(I, "_median_ms", median_ms)
     monkeypatch.setattr(I, "probe_inputs", lambda *a, **k: (None, None, None))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
-    assert not D._race_wins(
-        "cuda:0", torch.bfloat16, 2, 64, None, "native", 16384
-    )  # Triton served: lost
+    assert not D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
     machine["new_process"]()
     serving["impl"] = "cuda"
-    assert D._race_wins(
-        "cuda:0", torch.bfloat16, 2, 64, None, "native", 16384
-    )  # CUDA timed on its own
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
     assert timed == ["triton", "cuda"]
     machine["new_process"]()
-    assert D._race_wins(
-        "cuda:0", torch.bfloat16, 2, 64, None, "native", 16384
-    )  # and reused as CUDA's
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
     serving["impl"] = "triton"
-    assert not D._race_wins(
-        "cuda:0", torch.bfloat16, 2, 64, None, "native", 16384
-    )  # in-process too
+    assert not D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
     assert timed == ["triton", "cuda"]
