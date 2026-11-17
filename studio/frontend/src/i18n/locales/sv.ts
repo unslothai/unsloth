@@ -2236,6 +2236,13 @@ export const sv = {
         add: "Lägg till alias",
         loadError: "Det gick inte att läsa in modellalias.",
         saveError: "Det gick inte att spara modellalias.",
+        contextLength: "Kontextlängd",
+        kvCacheType: "Typ av KV-cache",
+        speculativeDecoding: "Spekulativ avkodning",
+        savedSetting: "Sparad inställning",
+        loadSettings: "Inläsningsinställningar",
+        loadSettingsHint:
+          "Valfritt, endast GGUF-modeller. En begäran som anger det här aliaset läser in modellen med dessa inställningar ovanpå modellens sparade inläsningsinställningar och läser in den på nytt när en annan konfiguration körs.",
       },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",

@@ -2193,6 +2193,13 @@ export const zhTW = {
         add: "新增別名",
         loadError: "無法載入模型別名。",
         saveError: "無法儲存模型別名。",
+        contextLength: "上下文長度",
+        kvCacheType: "KV 快取類型",
+        speculativeDecoding: "推測解碼",
+        savedSetting: "已儲存的設定",
+        loadSettings: "載入設定",
+        loadSettingsHint:
+          "選用，僅適用於 GGUF 模型。指定此別名的請求會在模型已儲存的載入設定之上套用這些設定來載入模型，並在執行的是其他組態時重新載入。",
       },
       previewSharing: {
         sectionTitle: "預覽分享",

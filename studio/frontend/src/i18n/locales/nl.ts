@@ -2336,6 +2336,13 @@ export const nl = {
         add: "Alias toevoegen",
         loadError: "Kan de modelaliassen niet laden.",
         saveError: "Kan de modelaliassen niet opslaan.",
+        contextLength: "Contextlengte",
+        kvCacheType: "Type KV-cache",
+        speculativeDecoding: "Speculatieve decodering",
+        savedSetting: "Opgeslagen instelling",
+        loadSettings: "Laadinstellingen",
+        loadSettingsHint:
+          "Optioneel, alleen voor GGUF-modellen. Een verzoek dat deze alias noemt, laadt het model met deze instellingen bovenop de opgeslagen laadinstellingen van het model en laadt het opnieuw wanneer een andere configuratie actief is.",
       },
       previewSharing: {
         sectionTitle: "Voorbeelden delen",

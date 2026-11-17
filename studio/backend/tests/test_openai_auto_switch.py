@@ -297,6 +297,69 @@ def test_already_loaded_does_not_reload(monkeypatch):
     assert rec.calls == []
 
 
+_FAST_ALIAS = {"max_seq_length": 4096, "kv_cache_dtype": "q4_0", "speculative_type": "auto"}
+
+
+class _AliasLoadRecorder(_LoadRecorder):
+    async def __call__(self, request, *args, **kwargs):
+        await super().__call__(request, *args, **kwargs)
+        self.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+            request.model_path,
+            n_ctx = request.max_seq_length,
+            cache_type_kv = request.cache_type_kv,
+            speculative_type = request.speculative_type,
+        )
+
+
+def _loaded_with_other_settings(monkeypatch, *, enabled):
+    backend = _FakeBackend("unsloth/a-gguf")
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        "unsloth/a-gguf", n_ctx = 8192, cache_type_kv = "q5_1", speculative_type = "ngram"
+    )
+    rec = _AliasLoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = enabled,
+        resolves_to = ("unsloth/a-gguf", None, "unsloth/a-gguf"),
+        backend = backend,
+        recorder = rec,
+    )
+    return rec
+
+
+def _run_alias_hook():
+    from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+
+    alias = {"name": "fast", "model": "unsloth/a-gguf", "load_settings": _FAST_ALIAS}
+    request = SimpleNamespace(
+        scope = {"_unsloth_model_alias": alias},
+        state = SimpleNamespace(**{KEYLESS_ADMISSION_STATE_KEY: False}),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    asyncio.run(inference_route._maybe_auto_switch_model("unsloth/a-gguf", request, "tester"))
+
+
+def test_an_alias_reloads_the_loaded_model_with_its_own_load_settings_once(monkeypatch):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = True)
+    _run_alias_hook()
+    _run_alias_hook()
+    assert [(c.max_seq_length, c.cache_type_kv, c.speculative_type) for c in rec.calls] == [
+        (4096, "q4_0", "auto")
+    ]
+
+
+@pytest.mark.parametrize("enabled, load_policy", [(False, "any"), (True, "never")])
+def test_an_alias_is_refused_when_its_load_settings_cannot_be_loaded(
+    monkeypatch, enabled, load_policy
+):
+    rec = _loaded_with_other_settings(monkeypatch, enabled = enabled)
+    with pytest.raises(HTTPException) as excinfo:
+        run_as(replace(OWNER, load_policy = load_policy), _run_alias_hook)
+    assert excinfo.value.status_code == 409
+    assert "fast" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
 def _as_chat_tools_key(account, fn, *args, **kwargs):
     if account is None:
         return fn(*args, **kwargs)

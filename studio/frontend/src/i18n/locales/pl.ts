@@ -2330,6 +2330,13 @@ export const pl = {
         add: "Dodaj alias",
         loadError: "Nie udało się wczytać aliasów modeli.",
         saveError: "Nie udało się zapisać aliasów modeli.",
+        contextLength: "Długość kontekstu",
+        kvCacheType: "Typ pamięci podręcznej KV",
+        speculativeDecoding: "Dekodowanie spekulatywne",
+        savedSetting: "Zapisane ustawienie",
+        loadSettings: "Ustawienia wczytywania",
+        loadSettingsHint:
+          "Opcjonalne, tylko dla modeli GGUF. Żądanie wskazujące ten alias wczytuje model z tymi ustawieniami nałożonymi na zapisane ustawienia wczytywania modelu i wczytuje go ponownie, gdy działa inna konfiguracja.",
       },
       previewSharing: {
         sectionTitle: "Udostępnianie podglądu",

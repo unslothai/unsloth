@@ -2299,6 +2299,13 @@ export const tr = {
         add: "Takma ad ekle",
         loadError: "Model takma adları yüklenemedi.",
         saveError: "Model takma adları kaydedilemedi.",
+        contextLength: "Bağlam uzunluğu",
+        kvCacheType: "KV önbelleği türü",
+        speculativeDecoding: "Spekülatif kod çözme",
+        savedSetting: "Kayıtlı ayar",
+        loadSettings: "Yükleme ayarları",
+        loadSettingsHint:
+          "İsteğe bağlı, yalnızca GGUF modelleri için. Bu takma adı belirten bir istek, modeli kayıtlı yükleme ayarlarının üzerine bu ayarlarla yükler ve başka bir yapılandırma çalışıyorsa yeniden yükler.",
       },
       previewSharing: {
         sectionTitle: "Önizleme paylaşımı",

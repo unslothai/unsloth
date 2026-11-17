@@ -2141,6 +2141,13 @@ export const de = {
         add: "Alias hinzufügen",
         loadError: "Modell-Aliase konnten nicht geladen werden.",
         saveError: "Modell-Aliase konnten nicht gespeichert werden.",
+        contextLength: "Kontextlänge",
+        kvCacheType: "KV-Cache-Typ",
+        speculativeDecoding: "Spekulative Dekodierung",
+        savedSetting: "Gespeicherte Einstellung",
+        loadSettings: "Ladeeinstellungen",
+        loadSettingsHint:
+          "Optional, nur für GGUF-Modelle. Eine Anfrage mit diesem Alias lädt das Modell mit diesen Einstellungen zusätzlich zu den gespeicherten Ladeeinstellungen des Modells und lädt es neu, wenn eine andere Konfiguration läuft.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",

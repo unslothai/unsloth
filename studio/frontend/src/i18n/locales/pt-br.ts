@@ -2130,6 +2130,13 @@ export const ptBR = {
         add: "Adicionar alias",
         loadError: "Não foi possível carregar os aliases de modelos.",
         saveError: "Não foi possível salvar os aliases de modelos.",
+        contextLength: "Tamanho do contexto",
+        kvCacheType: "Tipo de cache KV",
+        speculativeDecoding: "Decodificação especulativa",
+        savedSetting: "Configuração salva",
+        loadSettings: "Configurações de carregamento",
+        loadSettingsHint:
+          "Opcional, apenas para modelos GGUF. Uma requisição que informa este alias carrega o modelo com estas configurações sobre as configurações de carregamento salvas do modelo, e o recarrega quando outra configuração está em execução.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",

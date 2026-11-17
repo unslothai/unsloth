@@ -2121,6 +2121,13 @@ export const ko = {
         add: "별칭 추가",
         loadError: "모델 별칭을 불러오지 못했습니다.",
         saveError: "모델 별칭을 저장하지 못했습니다.",
+        contextLength: "컨텍스트 길이",
+        kvCacheType: "KV 캐시 유형",
+        speculativeDecoding: "추측 디코딩",
+        savedSetting: "저장된 설정",
+        loadSettings: "로드 설정",
+        loadSettingsHint:
+          "선택 사항이며 GGUF 모델 전용입니다. 이 별칭을 지정한 요청은 모델에 저장된 로드 설정 위에 이 설정을 적용해 모델을 로드하고, 다른 구성이 실행 중이면 다시 로드합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",

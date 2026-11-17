@@ -2105,6 +2105,13 @@ export const zhCN = {
         add: "添加别名",
         loadError: "无法加载模型别名。",
         saveError: "无法保存模型别名。",
+        contextLength: "上下文长度",
+        kvCacheType: "KV 缓存类型",
+        speculativeDecoding: "推测解码",
+        savedSetting: "已保存的设置",
+        loadSettings: "加载设置",
+        loadSettingsHint:
+          "可选，仅适用于 GGUF 模型。指定此别名的请求会在模型已保存的加载设置之上应用这些设置来加载模型，并在运行的是其他配置时重新加载。",
       },
       previewSharing: {
         sectionTitle: "预览分享",

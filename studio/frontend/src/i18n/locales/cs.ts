@@ -2317,6 +2317,13 @@ export const cs = {
         add: "Přidat alias",
         loadError: "Aliasy modelů se nepodařilo načíst.",
         saveError: "Aliasy modelů se nepodařilo uložit.",
+        contextLength: "Délka kontextu",
+        kvCacheType: "Typ mezipaměti KV",
+        speculativeDecoding: "Spekulativní dekódování",
+        savedSetting: "Uložené nastavení",
+        loadSettings: "Nastavení načtení",
+        loadSettingsHint:
+          "Volitelné, jen pro modely GGUF. Požadavek s tímto aliasem načte model s těmito nastaveními nad rámec uložených nastavení načtení modelu a načte ho znovu, pokud běží jiná konfigurace.",
       },
       previewSharing: {
         sectionTitle: "Sdílení náhledů",

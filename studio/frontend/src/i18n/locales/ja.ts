@@ -2116,6 +2116,13 @@ export const ja = {
         add: "エイリアスを追加",
         loadError: "モデルエイリアスを読み込めませんでした。",
         saveError: "モデルエイリアスを保存できませんでした。",
+        contextLength: "コンテキスト長",
+        kvCacheType: "KV キャッシュの種類",
+        speculativeDecoding: "投機的デコード",
+        savedSetting: "保存済みの設定",
+        loadSettings: "読み込み設定",
+        loadSettingsHint:
+          "任意、GGUF モデルのみ。このエイリアスを指定したリクエストは、モデルに保存された読み込み設定の上にこれらの設定を適用してモデルを読み込み、別の構成が実行中の場合は読み込み直します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",

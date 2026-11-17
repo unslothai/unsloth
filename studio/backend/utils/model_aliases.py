@@ -28,9 +28,26 @@ _ALIAS_ROUTES = frozenset(
     )
 )
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
+ALIAS_SCOPE_KEY = "_unsloth_model_alias"
+_LOAD_SETTING_KEYS = ("max_seq_length", "kv_cache_dtype", "speculative_type")
 
 
-def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
+def _normalize_load_settings(name: str, raw: Any) -> dict[str, Any]:
+    from utils.openai_auto_switch_settings import normalize_model_override
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Alias '{name}' has invalid load settings.")
+    sent = {key: raw[key] for key in _LOAD_SETTING_KEYS if raw.get(key) is not None}
+    settings = normalize_model_override(sent)
+    for key in sent:
+        if key not in settings:
+            raise ValueError(f"Alias '{name}' has an invalid load setting: {key}.")
+    return settings
+
+
+def normalize_model_aliases(raw: Any) -> list[dict[str, Any]]:
     """Validated ``[{"name", "model"}]``; raises ValueError naming the first bad entry."""
     if raw is None:
         return []
@@ -38,7 +55,7 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         raise ValueError("Model aliases must be a list.")
     if len(raw) > MAX_MODEL_ALIASES:
         raise ValueError(f"At most {MAX_MODEL_ALIASES} model aliases are allowed.")
-    aliases: list[dict[str, str]] = []
+    aliases: list[dict[str, Any]] = []
     seen: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
@@ -58,7 +75,11 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
         if name.lower() in seen:
             raise ValueError(f"Alias '{name}' is defined twice.")
         seen.add(name.lower())
-        aliases.append({"name": name, "model": model})
+        alias: dict[str, Any] = {"name": name, "model": model}
+        load_settings = _normalize_load_settings(name, entry.get("load_settings"))
+        if load_settings:
+            alias["load_settings"] = load_settings
+        aliases.append(alias)
     # One hop only: a target naming another alias would be served as a literal model id.
     for alias in aliases:
         if alias["model"].lower() in seen:
@@ -66,10 +87,10 @@ def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
     return aliases
 
 
-_normalized: tuple[Any, list[dict[str, str]]] = (None, [])
+_normalized: tuple[Any, list[dict[str, Any]]] = (None, [])
 
 
-def get_model_aliases() -> list[dict[str, str]]:
+def get_model_aliases() -> list[dict[str, Any]]:
     global _normalized
     from utils.openai_auto_switch_settings import _cached_setting
 
@@ -85,13 +106,19 @@ def get_model_aliases() -> list[dict[str, str]]:
     return _normalized[1]
 
 
-def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, str]]:
+def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, Any]]:
     """Replace the whole alias list; the same input always stores the same value. ``model_ids``
     are real ids an alias may not reuse: the rewrite would silently serve other weights."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
     aliases = normalize_model_aliases(raw)
+    # A client that predates load settings sends none: keep the ones stored for the same alias.
+    stored = {(a["name"].lower(), a["model"]): a.get("load_settings") for a in get_model_aliases()}
+    for alias, entry in zip(aliases, raw or ()):
+        kept = stored.get((alias["name"].lower(), alias["model"]))
+        if kept and "load_settings" not in entry:
+            alias["load_settings"] = kept
     taken = {model_id.lower() for model_id in model_ids}
     for alias in aliases:
         if alias["name"].lower() in taken:
@@ -135,12 +162,17 @@ def alias_model_objects(
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
         row = {k: v for k, v in listed.items() if k not in ("display_name", "quant")}
         row.update(id = alias["name"], alias_for = target)
+        if alias.get("load_settings"):
+            row["load_settings"] = alias["load_settings"]
         rows.append(row)
     return rows
 
 
-def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]:
-    """The body with an aliased top-level ``model`` replaced by its target, or None if unchanged."""
+def _rewrite_alias_body(
+    body: bytes, aliases: dict[str, dict[str, Any]]
+) -> Optional[tuple[bytes, dict[str, Any]]]:
+    """The body with an aliased top-level ``model`` replaced by its target, and that alias, or None
+    if unchanged."""
     # Cheap scan first so a large (image, audio) body is only parsed when it names an alias.
     if not any(
         value.decode("utf-8", "ignore").strip().lower() in aliases
@@ -156,11 +188,11 @@ def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]
     model = payload.get("model")
     if not isinstance(model, str):
         return None
-    target = aliases.get(model.strip().lower())
-    if target is None:
+    alias = aliases.get(model.strip().lower())
+    if alias is None:
         return None
-    payload["model"] = target
-    return json.dumps(payload, ensure_ascii = False).encode("utf-8")
+    payload["model"] = alias["model"]
+    return json.dumps(payload, ensure_ascii = False).encode("utf-8"), alias
 
 
 class ModelAliasMiddleware:
@@ -188,7 +220,7 @@ class ModelAliasMiddleware:
         ):
             await self.app(scope, receive, send)
             return
-        aliases = model_alias_map()
+        aliases = {alias["name"].lower(): alias for alias in get_model_aliases()}
         if not aliases:
             await self.app(scope, receive, send)
             return
@@ -204,7 +236,7 @@ class ModelAliasMiddleware:
         body = b"".join(chunks)
         rewritten = _rewrite_alias_body(body, aliases)
         if rewritten is not None:
-            body = rewritten
+            body, scope[ALIAS_SCOPE_KEY] = rewritten
             headers = [(k, v) for k, v in scope.get("headers", []) if k != b"content-length"]
             headers.append((b"content-length", str(len(body)).encode("ascii")))
             # In place: outer middlewares (keep-warm) read markers the route sets on this same dict.

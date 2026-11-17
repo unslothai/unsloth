@@ -2331,6 +2331,13 @@ export const es419 = {
         add: "Agregar alias",
         loadError: "No se pudieron cargar los alias de modelos.",
         saveError: "No se pudieron guardar los alias de modelos.",
+        contextLength: "Longitud de contexto",
+        kvCacheType: "Tipo de caché KV",
+        speculativeDecoding: "Decodificación especulativa",
+        savedSetting: "Configuración guardada",
+        loadSettings: "Configuración de carga",
+        loadSettingsHint:
+          "Opcional, solo para modelos GGUF. Una solicitud que nombra este alias carga el modelo con esta configuración sobre la configuración de carga guardada del modelo, y lo vuelve a cargar si hay otra configuración en ejecución.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",

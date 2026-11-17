@@ -60,6 +60,51 @@ def test_set_is_idempotent_and_a_bad_stored_row_disables_aliases(store):
     assert aliases_mod.get_model_aliases() == []
 
 
+_LONG = {"max_seq_length": 96000, "kv_cache_dtype": "q5_1", "speculative_type": "ngram"}
+
+
+def test_load_settings_are_stored_and_survive_a_client_that_does_not_send_them(store):
+    model = "unsloth/Qwen3-4B-GGUF"
+    stored = [
+        {"name": "long", "model": model, "load_settings": _LONG},
+        {"name": "plain", "model": model},
+    ]
+    assert (
+        set_model_aliases(
+            [
+                {"name": "long", "model": model, "load_settings": {**_LONG, "n_parallel": 4}},
+                {"name": "plain", "model": model, "load_settings": {"kv_cache_dtype": None}},
+            ]
+        )
+        == stored
+    )
+    assert set_model_aliases([{"name": "long", "model": model}, stored[1]]) == stored
+    assert set_model_aliases([{"name": "long", "model": model, "load_settings": None}]) == [
+        {"name": "long", "model": model}
+    ]
+
+
+@pytest.mark.parametrize(
+    "load_settings",
+    [{"kv_cache_dtype": "q9"}, {"max_seq_length": 0}, {"speculative_type": "fast"}, "q4_0"],
+)
+def test_normalize_rejects_bad_load_settings(load_settings):
+    with pytest.raises(ValueError):
+        normalize_model_aliases([{"name": "chat", "model": "x", "load_settings": load_settings}])
+
+
+def test_models_listing_shows_the_load_settings_of_an_alias(store):
+    set_model_aliases([{"name": "long", "model": "unsloth/Qwen3-4B-GGUF", "load_settings": _LONG}])
+    assert alias_model_objects([{"id": "unsloth/Qwen3-4B-GGUF", "object": "model"}]) == [
+        {
+            "id": "long",
+            "object": "model",
+            "alias_for": "unsloth/Qwen3-4B-GGUF",
+            "load_settings": _LONG,
+        }
+    ]
+
+
 def _run_middleware(
     body: bytes,
     headers = None,
@@ -72,6 +117,7 @@ def _run_middleware(
         message = await receive()
         seen["body"] = message["body"]
         seen["headers"] = dict(scope["headers"])
+        seen["scope"] = scope
 
     sent = [{"type": "http.request", "body": body, "more_body": False}]
 
@@ -98,6 +144,12 @@ def test_middleware_rewrites_alias_and_content_length(store):
     assert payload["model"] == "unsloth/Qwen3-4B-GGUF:Q4_K_M"
     assert payload["messages"][0]["content"] == "hé"
     assert seen["headers"][b"content-length"] == str(len(seen["body"])).encode()
+
+
+def test_middleware_hands_the_route_the_alias_it_rewrote(store):
+    alias = {"name": "long", "model": "unsloth/Qwen3-4B-GGUF", "load_settings": _LONG}
+    set_model_aliases([alias])
+    assert _run_middleware(b'{"model": "LONG"}')["scope"]["_unsloth_model_alias"] == alias
 
 
 @pytest.mark.parametrize(

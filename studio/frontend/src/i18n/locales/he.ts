@@ -2180,6 +2180,13 @@ export const he = {
         add: "הוספת כינוי",
         loadError: "טעינת הכינויים למודלים נכשלה.",
         saveError: "שמירת הכינויים למודלים נכשלה.",
+        contextLength: "אורך הקשר",
+        kvCacheType: "סוג מטמון KV",
+        speculativeDecoding: "פענוח ספקולטיבי",
+        savedSetting: "הגדרה שמורה",
+        loadSettings: "הגדרות טעינה",
+        loadSettingsHint:
+          "אופציונלי, למודלי GGUF בלבד. בקשה שמציינת את הכינוי הזה טוענת את המודל עם ההגדרות האלה על גבי הגדרות הטעינה השמורות של המודל, וטוענת אותו מחדש כשתצורה אחרת פועלת.",
       },
       previewSharing: {
         sectionTitle: "שיתוף תצוגה מקדימה",

@@ -2140,6 +2140,13 @@ export const fr = {
         add: "Ajouter un alias",
         loadError: "Impossible de charger les alias de modèles.",
         saveError: "Impossible d’enregistrer les alias de modèles.",
+        contextLength: "Longueur du contexte",
+        kvCacheType: "Type de cache KV",
+        speculativeDecoding: "Décodage spéculatif",
+        savedSetting: "Paramètre enregistré",
+        loadSettings: "Paramètres de chargement",
+        loadSettingsHint:
+          "Facultatif, modèles GGUF uniquement. Une requête qui nomme cet alias charge le modèle avec ces paramètres, appliqués par-dessus les paramètres de chargement enregistrés du modèle, et le recharge si une autre configuration est en cours d’exécution.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",

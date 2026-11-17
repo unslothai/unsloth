@@ -2703,6 +2703,7 @@ def update_openai_auto_switch(
 class ModelAliasEntry(BaseModel):
     name: str
     model: str
+    load_settings: Optional[dict[str, Any]] = None
 
 
 class ModelAliasesPayload(BaseModel):
@@ -2735,7 +2736,9 @@ async def update_model_aliases_setting(
     model_ids += list(decision_catalog.CHECKPOINTS)
     try:
         aliases = await asyncio.to_thread(
-            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+            set_model_aliases,
+            [entry.model_dump(exclude_unset = True) for entry in payload.aliases],
+            model_ids,
         )
     except ValueError as exc:
         raise log_and_http_error(

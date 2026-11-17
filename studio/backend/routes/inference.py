@@ -10320,6 +10320,63 @@ def load_alongside_for_request(scope) -> None:
         scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
 
 
+def _alias_load_settings(fastapi_request) -> dict[str, Any]:
+    from utils.model_aliases import ALIAS_SCOPE_KEY
+
+    scope = getattr(fastapi_request, "scope", None)
+    alias = scope.get(ALIAS_SCOPE_KEY) if isinstance(scope, dict) else None
+    return (alias or {}).get("load_settings") or {}
+
+
+def _alias_load_settings_met(fastapi_request) -> bool:
+    settings = _alias_load_settings(fastapi_request)
+    backend = get_llama_cpp_backend()
+    intent = getattr(backend, "last_load_intent", None)
+    if not settings or intent is None or not getattr(backend, "is_loaded", False):
+        return True
+    from core.inference.llama_cpp import _canonicalize_spec_mode
+
+    launched = {
+        "max_seq_length": intent.n_ctx,
+        "kv_cache_dtype": intent.cache_type_kv or "f16",
+        "speculative_type": _canonicalize_spec_mode(intent.speculative_type) or "auto",
+    }
+    wanted = dict(settings)
+    if "speculative_type" in wanted:
+        wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
+    return all(launched[name] == value for name, value in wanted.items())
+
+
+def _alias_reload_due(fastapi_request) -> bool:
+    return _loads_anything() and not _alias_load_settings_met(fastapi_request)
+
+
+def _serves_alias_load_settings(switch):
+    @functools.wraps(switch)
+    async def wrapper(requested_model, fastapi_request, *args, **kwargs):
+        await switch(requested_model, fastapi_request, *args, **kwargs)
+        if _alias_load_settings_met(fastapi_request):
+            return
+        from utils.model_aliases import ALIAS_SCOPE_KEY
+
+        alias = fastapi_request.scope[ALIAS_SCOPE_KEY]
+        message = (
+            f"The alias '{alias['name']}' has its own load settings, and '{alias['model']}' is "
+            "loaded with different ones. This request could not reload it: that needs 'Switch "
+            "model by request' on under Settings > API and an API key that may load models. Or "
+            "load the model with these settings in Unsloth Studio."
+        )
+        path = fastapi_request.url.path
+        raise HTTPException(
+            status_code = 409,
+            detail = error_body_for_path(
+                path, message, status = 409, code = "model_settings_mismatch", param = "model"
+            ),
+        )
+
+    return wrapper
+
+
 def _load_alongside_for_request(fastapi_request) -> bool:
     scope = getattr(fastapi_request, "scope", None)
     return isinstance(scope, dict) and bool(scope.get(_LOAD_ALONGSIDE_SCOPE_KEY))
@@ -11646,6 +11703,7 @@ async def _npu_path_for_display_name(
     raise _refuse(404, message, "model_not_found")
 
 
+@_serves_alias_load_settings
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11875,7 +11933,11 @@ async def _maybe_auto_switch_model(
         return
 
     # Check resident state before the filesystem index; rebuilding it can take seconds.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if (
+        auto_switch_on
+        and await asyncio.to_thread(_loaded_identity_satisfies, requested_model)
+        and not _alias_reload_due(fastapi_request)
+    ):
         await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
@@ -12091,6 +12153,8 @@ async def _maybe_auto_switch_model(
                     return False
                 return _matches_any(override_id, loaded_keys)
             if not backend.is_loaded or not backend.model_identifier:
+                return False
+            if _alias_reload_due(fastapi_request):
                 return False
             loaded_keys = {backend.model_identifier.lower()}
             advertised = getattr(backend, "_openai_advertised_id", None)
@@ -12394,6 +12458,12 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        alias_settings = _alias_load_settings(fastapi_request)
+                        if alias_settings and resolved is not None and target_is_gguf:
+                            override = {**override, **alias_settings}
+                            if "max_seq_length" in alias_settings:
+                                # Manual GPU memory with Auto layers reads the context from this key.
+                                override["custom_context_length"] = alias_settings["max_seq_length"]
                         if require_speech and resolved is not None and speech_budget is not None:
                             target_context = await asyncio.to_thread(
                                 _target_effective_context_length,

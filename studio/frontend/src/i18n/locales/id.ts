@@ -2304,6 +2304,13 @@ export const id = {
         add: "Tambah alias",
         loadError: "Gagal memuat alias model.",
         saveError: "Gagal menyimpan alias model.",
+        contextLength: "Panjang konteks",
+        kvCacheType: "Jenis cache KV",
+        speculativeDecoding: "Decoding spekulatif",
+        savedSetting: "Pengaturan tersimpan",
+        loadSettings: "Pengaturan pemuatan",
+        loadSettingsHint:
+          "Opsional, hanya untuk model GGUF. Permintaan yang menyebut alias ini memuat model dengan pengaturan ini di atas pengaturan pemuatan tersimpan milik model, dan memuatnya ulang jika konfigurasi lain sedang berjalan.",
       },
       previewSharing: {
         sectionTitle: "Berbagi pratinjau",

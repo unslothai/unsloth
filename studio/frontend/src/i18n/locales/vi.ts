@@ -2309,6 +2309,13 @@ export const vi = {
         add: "Thêm bí danh",
         loadError: "Không thể tải bí danh mô hình.",
         saveError: "Không thể lưu bí danh mô hình.",
+        contextLength: "Độ dài ngữ cảnh",
+        kvCacheType: "Loại bộ nhớ đệm KV",
+        speculativeDecoding: "Giải mã suy đoán",
+        savedSetting: "Cài đặt đã lưu",
+        loadSettings: "Cài đặt nạp",
+        loadSettingsHint:
+          "Không bắt buộc, chỉ dành cho mô hình GGUF. Yêu cầu nêu bí danh này sẽ nạp mô hình với các cài đặt này chồng lên cài đặt nạp đã lưu của mô hình, và nạp lại khi một cấu hình khác đang chạy.",
       },
       previewSharing: {
         sectionTitle: "Chia sẻ bản xem trước",

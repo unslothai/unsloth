@@ -2142,6 +2142,13 @@ export const en = {
         add: "Add alias",
         loadError: "Failed to load model aliases.",
         saveError: "Failed to save model aliases.",
+        contextLength: "Context length",
+        kvCacheType: "KV cache type",
+        speculativeDecoding: "Speculative decoding",
+        savedSetting: "Saved setting",
+        loadSettings: "Load settings",
+        loadSettingsHint:
+          "Optional, GGUF models only. A request naming this alias loads the model with these settings on top of the model's saved load settings, and reloads it when another configuration is running.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",

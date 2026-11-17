@@ -2022,6 +2022,13 @@ export const it = {
         add: "Aggiungi alias",
         loadError: "Impossibile caricare gli alias dei modelli.",
         saveError: "Impossibile salvare gli alias dei modelli.",
+        contextLength: "Lunghezza del contesto",
+        kvCacheType: "Tipo di cache KV",
+        speculativeDecoding: "Decodifica speculativa",
+        savedSetting: "Impostazione salvata",
+        loadSettings: "Impostazioni di caricamento",
+        loadSettingsHint:
+          "Facoltativo, solo per modelli GGUF. Una richiesta che indica questo alias carica il modello con queste impostazioni in aggiunta alle impostazioni di caricamento salvate del modello, e lo ricarica se è in esecuzione un’altra configurazione.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",

@@ -99,6 +99,7 @@ import {
   mlxDrafterChoices,
   mlxSpeculativeMode,
   resolveSpeculativeType,
+  SPECULATIVE_TYPE_LABELS,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -287,18 +288,6 @@ const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
 // Mirrors the backend's Auto default once GPU-only placement is impossible.
 const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;
 const KV_CACHE_DTYPE_DEFAULT = "f16";
-const SPECULATIVE_TYPE_LABELS: Record<
-  (typeof SPECULATIVE_TYPES)[number],
-  string
-> = {
-  auto: "Auto",
-  mtp: "MTP",
-  dspark: "DSpark",
-  dflash: "DFlash",
-  ngram: "Ngram",
-  "mtp+ngram": "MTP+Ngram",
-  off: "Off",
-};
 const MLX_SPECULATIVE_TYPE_LABELS: Record<
   (typeof MLX_SPECULATIVE_TYPES)[number],
   string
