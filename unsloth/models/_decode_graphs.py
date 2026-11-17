@@ -1261,6 +1261,11 @@ def decode_step(
         state.eager_steps += 1
         state.generation_epoch = -1
         return None
+    rope = getattr(attn0, "rotary_emb", None)
+    if rope_len > getattr(rope, "original_max_position_embeddings", rope_len):
+        # LongRoPE switches tables by length; a capture would bake one table into every step.
+        state.eager_steps += 1
+        return None
     if state.ineligible_epoch == GENERATION_EPOCH:
         state.eager_steps += 1
         return None

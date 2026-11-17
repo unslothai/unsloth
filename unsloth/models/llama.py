@@ -1633,18 +1633,23 @@ def LlamaModel_fast_forward(
             materialize_len = rope_rows,
         )
         device_index = hidden_states.device.index
-        original = getattr(self.rotary_emb, "original_max_position_embeddings", None)
-        if (
-            position_ids is not None
-            and isinstance(self.rotary_emb, LongRopeRotaryEmbedding)
-            and rope_len <= original < rope_rows
-        ):
-            # Mirrors transformers longrope_frequency_update (factors from max(position_ids) + 1, a
-            # host sync); other models and LongRoPE without position_ids stay sync-free; in-graph
-            # choice under compile would rebuild tables each forward.
-            rope_len = max(rope_len, int(position_ids.max()) + 1)
+        if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
+            # As transformers' longrope_frequency_update: factors from max(position_ids) + 1
+            # (a host sync), not max_seq_length, so 2048 tokens stay short at max_seq_length 8192.
+            # Other models stay sync-free (an in-graph choice would rebuild tables each forward).
+            rope_len = seq_length_with_past if position_ids is None else int(position_ids.max()) + 1
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
+        if (
+            rope_len < seq_length_with_past
+            and position_embeddings[0].shape[0] < seq_length_with_past
+        ):
+            # Packed positions restart, so the short table covers them, but each layer checks rows
+            # against the packed length and would rebuild it long: pad rows no position reads.
+            position_embeddings = tuple(
+                torch.nn.functional.pad(x, (0, 0, 0, seq_length_with_past - x.shape[0]))
+                for x in position_embeddings
+            )
     else:
         position_embeddings = None
 
@@ -4799,6 +4804,28 @@ class FastLlamaModel:
         # For transformers > 4.47.1, rotary_emb must be added to all attention layers.
         if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
             rotary_emb = model.model.rotary_emb
+            config = model.config
+            scaling = _rope_scaling_as_dict(
+                getattr(config, "rope_scaling", None)
+                or getattr(config, "rope_parameters", None)
+                or {}
+            )
+            if isinstance(rotary_emb, LlamaRotaryEmbedding) and "longrope" in (
+                scaling.get("rope_type"),
+                scaling.get("type"),
+            ):
+                # LlamaModel builds one rotary for every rope type; patch_llama_rope_scaling only
+                # reaches pre-4.48 attention layers, so Phi-3.5 kept its short factors past 4096.
+                rotary_emb = model.model.rotary_emb = LongRopeRotaryEmbedding(
+                    original_max_position_embeddings = int(
+                        getattr(config, "original_max_position_embeddings", None)
+                        or scaling.get("original_max_position_embeddings")
+                        or config.max_position_embeddings
+                    ),
+                    short_factor = scaling["short_factor"],
+                    long_factor = scaling["long_factor"],
+                    config = config,
+                )
             for layer in model.model.layers:
                 layer.self_attn.rotary_emb = rotary_emb
 
