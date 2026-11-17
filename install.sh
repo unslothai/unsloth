@@ -2271,7 +2271,7 @@ DESKTOP_EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>ai.unsloth.studio</string>
+    <string>ai.unsloth.studio.launcher</string>
     <key>CFBundleName</key>
     <string>Unsloth Studio</string>
     <key>CFBundleDisplayName</key>
