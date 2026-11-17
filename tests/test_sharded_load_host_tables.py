@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Sharded loading reads whole 16-bit tables (embedding, lm_head) in row slices instead of one whole-table
-host copy, and under tensor parallel reads a large frozen untied input embedding straight into host memory
-(Qwen3.8-27B 4-bit on 2x T4: the 2.37 GiB table never touches the GPU). CPU only; meta stands in for the GPU."""
+"""Sharded loading: row-sliced whole-table reads and host-read TP input embeddings. CPU only; meta = GPU."""
 
 import os
 import sys
@@ -83,7 +81,6 @@ def _meta_tables():
 
 @pytest.fixture()
 def reads(monkeypatch):
-    """{key: [bytes of every single read]} through _SliceReader's safetensors handles."""
     seen = {}
     original = tpn._SliceReader._open
 
@@ -140,7 +137,6 @@ def test_whole_tables_are_read_in_slices(ckpt, reads):
 
 
 def test_host_tables_land_in_host_memory(ckpt, reads):
-    """`host` ids go to the CPU, the rest to the load device (meta stands in for the GPU)."""
     path, tensors = ckpt
     model = _meta_tables()
     tpn._fill_from_checkpoint(
@@ -180,8 +176,6 @@ def _fake_cuda(monkeypatch, total):
 
 
 def test_host_load_selection(monkeypatch):
-    """Judged on the meta model before reading: untied, single-owner, at least 15% of the GPU (forced by
-    UNSLOTH_TP_EMBED_ON_CPU=1, never with =0), CUDA mesh and device only."""
     monkeypatch.delenv("UNSLOTH_TP_EMBED_ON_CPU", raising = False)
     cuda_mesh = types.SimpleNamespace(device_type = "cuda", size = lambda: 1)
     cuda = torch.device("cuda", 0)
@@ -204,7 +198,6 @@ def test_host_load_selection(monkeypatch):
 
 
 def _host_loaded_peft(pinned = True):
-    """PEFT tiny Qwen3: everything on meta (the GPU stand-in) but the host-read input embedding."""
     model = _peft(_qwen3())
     model.to("meta")
     base = model.get_base_model()
@@ -237,7 +230,6 @@ def test_unserved_host_read_table_returns_to_the_gpu():
 
 
 def test_unserved_table_takes_its_peft_token_adapter_to_the_gpu():
-    """trainable_token_indices: PEFT builds its delta next to the host-read table; both must go back."""
     from peft import LoraConfig, get_peft_model
 
     base = _qwen3()
@@ -268,7 +260,6 @@ def test_served_host_read_table_stays_on_the_host():
 
 
 def test_rebuilt_weight_still_returns_to_the_gpu():
-    """A pass that rebuilds the weight (or the module) drops the marks; the model-level mark still finds it."""
     model, _, embed = _host_loaded_peft()
     embed.__dict__.pop(tpn._HOST_LOADED, None)
     embed.weight = nn.Parameter(embed.weight.detach().clone(), requires_grad = False)
@@ -293,7 +284,6 @@ def test_candidate_accepts_the_host_read_table(monkeypatch):
 
 
 def test_sharded_from_pretrained_forwards_materialize_kwargs(monkeypatch):
-    """tp_env asks for the host read through state["materialize_kwargs"]; the loader passes them on."""
     from unsloth.models import bnb_sharded_load
 
     monkeypatch.setattr(
@@ -341,8 +331,6 @@ def _host_read_bf16_model():
 
 @pytest.mark.parametrize("forced", [True, False])
 def test_host_read_table_is_cast_in_place(monkeypatch, forced):
-    """The dtype pass's host-side module.to() held a second copy of the table: it is cast in place first,
-    in slices, to the dtype that pass gives it (same values as .to())."""
     monkeypatch.setattr(tpn, "_READ_SLICE_BYTES", 4096, raising = False)
     model, embed = _host_read_bf16_model()
     want = embed.weight.detach().to(torch.float16)

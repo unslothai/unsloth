@@ -4845,8 +4845,6 @@ class FastLlamaModel:
     ):
         try:
             from .tp_native import cast_host_read_tables
-
-            # A host-read tensor parallel input embedding: cast in place, not by a host-side module.to().
             cast_host_read_tables(model, False, correct_dtype)
         except Exception:
             pass

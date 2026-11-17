@@ -2065,18 +2065,14 @@ def _host_served_params(model):
     return ids
 
 
-# Set on the weight (and module) of an input embedding sharded loading read into host memory. On the
-# weight because the post-load patching installs a new Embedding module over the same weight.
+# Also set on the weight: post-load patching installs a new Embedding module over the same weight.
 _HOST_LOADED = "_unsloth_tp_host_loaded"
-# Set on the model whose `device` was pinned to the decoder for it.
 _HOST_PINNED = "_unsloth_tp_host_pinned"
-# Set on the model whose input embedding sharded loading read into host memory.
 _HOST_MODEL = "_unsloth_tp_host_load_model"
 
 
 def _input_embedding_host_loaded(model, embed):
-    """`embed` (the model's input embedding) waits in host memory because sharded loading read it there:
-    marked, or unhooked on the CPU in a model loaded that way (a pass that rebuilt its weight drops marks)."""
+    """Marked, or unhooked on the CPU in a host-loaded model (rebuilding the weight drops marks)."""
     if _is_host_loaded(embed):
         return True
     weight = embed.__dict__.get("_parameters", {}).get("weight")
@@ -2090,7 +2086,6 @@ def _input_embedding_host_loaded(model, embed):
 
 
 def _is_host_loaded(module):
-    """A module holding a host-read embedding table that still sits in host memory."""
     weight = module.__dict__.get("_parameters", {}).get("weight")
     if weight is None or weight.device.type != "cpu":
         return False
@@ -2100,10 +2095,8 @@ def _is_host_loaded(module):
 
 
 def _host_load_embedding(model, mesh, device):
-    """The input embedding apply_tensor_parallel would serve from host memory (_host_input_embedding with
-    TPConfig's default fraction; whether it is frozen is only known then), judged on the meta model before
-    it is read, or None. Per rank: apply_tensor_parallel agrees over the tp group and returns a table it
-    does not serve to the GPU, so a rank deciding otherwise only changes where the table waits."""
+    """Input embedding apply_tensor_parallel would serve from host, judged on the meta model, or None.
+    Per rank is safe: apply_tensor_parallel agrees over the tp group and returns unserved tables to the GPU."""
     import torch.distributed as dist
 
     from .fsdp2_perf import _env_tristate
@@ -2142,8 +2135,6 @@ def _host_load_embedding(model, mesh, device):
 
 
 def _mark_host_loaded(model, embed):
-    """Tag the host-read embedding; `model.device` keeps naming the GPU (embed_tokens is often the first
-    parameter), as offload_input_embedding does."""
     embed.__dict__[_HOST_LOADED] = True
     embed.weight.__dict__[_HOST_LOADED] = True
     model.__dict__[_HOST_MODEL] = True
@@ -2156,7 +2147,6 @@ def _mark_host_loaded(model, embed):
 
 
 def _host_loaded_modules(model):
-    """Modules whose table sharded loading read into host memory and that still wait there."""
     marked = [m for m in model.modules() if _is_host_loaded(m)]
     try:
         embed = model.get_input_embeddings()
@@ -2172,8 +2162,7 @@ def _host_loaded_modules(model):
 
 
 def _host_table_home(model):
-    """The device a host-read table would have been read to: the first accelerator parameter's (meta and
-    CPU skipped: a model may hold storage-free meta parameters), else the first non-CPU one."""
+    """First accelerator parameter's device (skip meta: storage-free meta params exist), else first non-CPU."""
     skip = _host_served_params(model)
     fallback = None
     for param in model.parameters():
@@ -2192,10 +2181,7 @@ def cast_host_read_tables(
     do_forced_float32 = False,
     correct_dtype = None,
 ):
-    """Before unsloth_zoo's patch_model_and_tokenizer dtype pass: convert a host-read input embedding in
-    place, in row chunks, to the dtype that pass gives it. Its module.to() on a host tensor held both copies
-    (2.37 GiB extra host memory for Qwen3.8-27B's bfloat16 table on a T4); on the GPU the pass already casts
-    in place. Same values as .to(dtype). Returns how many tables were converted."""
+    """Cast host-read embeddings in place before the zoo dtype pass, whose module.to() on host holds both copies."""
     converted = 0
     for module in _host_loaded_modules(model):
         weight = module.weight
@@ -2231,8 +2217,7 @@ def cast_host_read_tables(
 
 
 def _return_host_loaded(model, served):
-    """Move every host-read table apply_tensor_parallel does not serve from host back to the GPU, where a
-    load without it would have put it. Returns how many modules moved."""
+    """Move host-read tables apply_tensor_parallel does not serve from host back to the GPU."""
     marked = _host_loaded_modules(model)
     device = _host_table_home(model) if marked else None
     try:
@@ -2249,7 +2234,7 @@ def _return_host_loaded(model, served):
             module, "_unsloth_fsdp2_cpu_lookup", False
         ):
             continue
-        # A PEFT wrapper around the table (trainable_token_indices) made its own tensors on the host too.
+        # trainable_token_indices: the PEFT wrapper made its own host tensors too.
         target = module
         if (
             isinstance(outer, nn.Module)
@@ -2270,7 +2255,6 @@ def _return_host_loaded(model, served):
         for level in _tp_chain(model):
             level.__dict__.pop(_HOST_MODEL, None)
             if level.__dict__.pop(_HOST_PINNED, False):
-                # The device pin answers by this flag only; nothing is on the host any more.
                 level._unsloth_embedding_offloaded = False
     return moved
 
@@ -2323,7 +2307,6 @@ def _host_embedding_candidate(model, forced, fraction):
     if len(params) != 1 or params[0] is not embed.weight:
         return None
     weight = embed.weight
-    # Read into host memory by sharded loading (_host_load_embedding): judged as the GPU table it replaces.
     host_loaded = _input_embedding_host_loaded(model, embed)
     if (
         weight.requires_grad
@@ -2586,7 +2569,7 @@ def apply_tensor_parallel(
     host_embed = None
     if not any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
         host_embed = _host_input_embedding(model, tp_mesh, config.host_input_embedding)
-    _return_host_loaded(model, host_embed)  # a host-read table not served from host goes to the GPU
+    _return_host_loaded(model, host_embed)
     if host_embed is not None:
         _serve_embedding_from_host(model, host_embed, rank)
     if config.sync_trainable and tp > 1:
@@ -3334,9 +3317,7 @@ class _SliceReader:
         device,
         sliced = True,
     ):
-        """Rows [start, stop) of dim 0 as one `dtype` tensor on `device`, read and converted in slices of about
-        _READ_SLICE_BYTES: host memory holds one slice at a time, not a whole-table copy (a 2.37 GiB embedding
-        of Qwen3.8-27B). Same values as reading the rows whole and calling .to(device, dtype)."""
+        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy)."""
         view = self._open(key).get_slice(key)
         shape = tuple(view.get_shape())
         tail = shape[1:]
@@ -3365,14 +3346,12 @@ class _SliceReader:
         return out
 
     def full_to(self, key, dtype, device):
-        """The whole tensor as `dtype` on `device`, read in row slices (see rows_to)."""
         shape = self.shape(key)
         if len(shape) == 0:
             return self.full(key).to(device = device, dtype = dtype)
         return self.rows_to(key, 0, shape[0], dtype, device, sliced = False)
 
 
-# Bytes per read slice of a large whole table (embedding, lm_head): bounds the host copy of a load.
 _READ_SLICE_BYTES = 64 << 20
 
 
@@ -3578,8 +3557,7 @@ def _materialize_sharded(
     host_embed = False,
 ):
     """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices.
-    `host_embed`: an input embedding apply_tensor_parallel would serve from host memory is read straight
-    there (it never touches the GPU); apply_tensor_parallel returns it to the GPU if it does not serve it."""
+    `host_embed`: read a host-servable input embedding straight into host memory."""
     tp, rank = mesh.size(), mesh.get_local_rank()
     host_module = _host_load_embedding(model, mesh, device) if host_embed else None
     host = {id(host_module.weight)} if host_module is not None else set()
