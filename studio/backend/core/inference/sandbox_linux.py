@@ -543,7 +543,6 @@ def forget_proc_layout() -> None:
     _private_network_answers.clear()
 
 
-# Inside the jail: the proxy socket and relay, and the loopback port the relay serves.
 _EGRESS_INNER = "/run/unsloth-egress"
 _EGRESS_PORT = 3128
 _private_network_answers: "dict[tuple, bool]" = {}

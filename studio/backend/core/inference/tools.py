@@ -287,8 +287,7 @@ _APPROVED_RM_REFUSED = (
     "nor are globs, pipes, xargs, chained commands or $ expansion."
 )
 
-# What the OS sandbox already contains: its PID namespace (Seatbelt: same-sandbox signals) and read-only binds outside
-# the workdir. rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside it.
+# rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside the sandbox.
 _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
     {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
 )
@@ -416,8 +415,7 @@ def _is_plain_chmod(command: str) -> bool:
     return seen > 0 and "chmod" not in _find_blocked_commands("".join(rest))
 
 
-# The only curl/wget options the sandbox runs unprompted: an allowlist, since both accept abbreviated
-# long options and read data, headers and config from files in more ways than a denylist can track.
+# Allowlist, not denylist: both tools accept abbreviated long options and read data/config from files.
 _CURL_PLAIN_FLAGS = frozenset(
     {
         "--silent",
@@ -522,8 +520,7 @@ _DOWNLOAD_PIPE_TARGETS = frozenset(
         "md5sum",
     }
 )
-# The only other commands a call with an exempted download may run. Anything else (an interpreter running what was
-# just downloaded, unset/export of the rc variables, source, aliases) keeps the block; separate calls still work.
+# Anything else (an interpreter, unset/export of the rc variables, source, aliases) keeps the block.
 _DOWNLOAD_COMPANIONS = _DOWNLOAD_PIPE_TARGETS | frozenset(
     {
         "cd",
@@ -551,7 +548,6 @@ _DOWNLOAD_OPERATORS = frozenset(
 )
 
 
-# Builtins and keywords bash never looks up on PATH.
 _DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
 
 
@@ -573,7 +569,6 @@ def _unquoted(raw: str) -> str:
 
 
 def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
-    # (word, raw text) pairs: quoting is only visible in the raw text.
     flags, short_flags, values = (
         (_CURL_PLAIN_FLAGS, _CURL_PLAIN_SHORT_FLAGS, _CURL_PLAIN_VALUES)
         if name == "curl"
@@ -682,8 +677,7 @@ def _is_plain_download(command: str) -> bool:
             continue
         if at_start and "$" in token:
             return False
-        # Spelled plainly ("fi" quoted is a program, not the keyword) and, unless a builtin, installed outside the
-        # writable package bin: ./curl or a planted jq may be a downloaded script.
+        # Quoted "fi" is a program, not the keyword; ./curl or a planted jq may be a downloaded script.
         if at_start and command[start:end_offset] != token:
             return False
         if (
@@ -696,8 +690,7 @@ def _is_plain_download(command: str) -> bool:
         name = token
         if not (at_start and name in ("curl", "wget")):
             is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
-            # No assignments at all (PATH=. picks another curl, NAME=value curl sets its environment), and only
-            # companion commands: the command word itself, not its arguments (jq's . filter is not bash's .).
+            # No assignments (PATH=. picks another curl); check the command word only (jq's . is not bash's .).
             if at_start and (
                 _SHELL_ASSIGNMENT_RE.match(token) is not None
                 or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
@@ -728,7 +721,6 @@ def _is_plain_download(command: str) -> bool:
                     return False
                 end += 2
             elif not tokens[end][1]:
-                # Words after a redirection are still the command's arguments.
                 return False
             else:
                 break
@@ -7163,7 +7155,6 @@ _CURL_UPLOAD_LONG_FLAGS = frozenset(
         "--form-string",
         "--json",
         "--upload-file",
-        # A config file can carry any of the above.
         "--config",
     }
 )
