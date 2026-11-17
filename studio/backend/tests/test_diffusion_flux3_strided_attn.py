@@ -74,6 +74,24 @@ def test_strided_processor_matches_the_cudnn_dispatch_bitwise(dtype, batch, seq)
     assert torch.equal(got, want)
 
 
+def test_strided_processor_hands_sdpa_the_projection_views(monkeypatch):
+    # the point of the processor: no Q / K / V copies (a restored .contiguous() must fail this)
+    attn, _stock = _attn()
+    seen = []
+    real = torch.nn.functional.scaled_dot_product_attention
+
+    def spy(q, k, v, *a, **k2):
+        seen.append(tuple(t.is_contiguous() for t in (q, k, v)))
+        return real(q, k, v, *a, **k2)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", spy)
+    new = fa.strided_processor_class()()
+    new._attention_backend = "_native_cudnn"
+    with torch.no_grad():
+        new(attn, torch.randn(2, 12, 64), None, _rope(12))
+    assert seen == [(False, False, False)]
+
+
 def test_masks_and_other_backends_take_the_stock_call(monkeypatch):
     attn, stock = _attn()
     new = fa.strided_processor_class()()
