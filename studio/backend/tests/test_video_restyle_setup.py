@@ -556,15 +556,22 @@ def test_a_failure_after_the_merge_leaves_no_orphaned_outputs(tmp_path, clean_en
     assert hub.paths["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"].exists()
 
 
-def test_leftover_outputs_count_as_free_space(tmp_path, clean_env, monkeypatch):
+def test_leftover_outputs_are_removed_before_the_disk_check(tmp_path, clean_env, monkeypatch):
+    """A failed run's outputs would sit beside their .partial replacements, so they are removed, not counted free."""
     clean_env.mkdir(parents = True)
-    (clean_env / rs.MODEL_BF16).write_bytes(b"0" * 4096)
+    leftovers = [clean_env / rs.MODEL_BF16, clean_env / (rs.VAE_OUT + ".partial")]
+    for path in leftovers:
+        path.write_bytes(b"0" * 4096)
     seen = []
-    monkeypatch.setattr(
-        rs.RestyleSetup, "_check_disk", lambda self, blobs, left, root, out: seen.append(out)
-    )
+
+    def check(self, blobs, left, root, out):
+        seen.append((out, [p.exists() for p in leftovers]))
+
+    monkeypatch.setattr(rs.RestyleSetup, "_check_disk", check)
     assert _runner(_FakeHub(tmp_path)).start(background = False)["phase"] == "done"
-    assert seen and seen[0] == 0
+    out, present = seen[0]
+    assert present == [False, False]
+    assert out > 0
 
 
 def test_setup_routes_are_owner_only(tmp_path, clean_env, monkeypatch):

@@ -539,12 +539,16 @@ class RestyleSetup:
             for (repo, _, f), size in zip(wanted, sizes)
             if size > 0 and _blob_bytes(_hub_blob_dir(repo), f.get("sha256"), final = True) >= size
         )
-        # Room for what is left to download, the merged transformer, the VAE and (8-bit) the GGUF; files a failed
-        # earlier run left at those names are overwritten, so they count as free.
+        # Room for what is left to download, the merged transformer, the VAE and (8-bit) the GGUF. Each output is
+        # written to .partial and replaces its file only once verified, so an existing copy still holds its space
+        # while the new one is written: outputs a failed run left (no record) are removed first, and a recorded
+        # setup's outputs are kept and not counted as free.
+        if not (root / RECORD_NAME).exists():
+            for leftover in _outputs(root):
+                leftover.unlink(missing_ok = True)
         out_bytes = transformer_bytes + sizes[-1] // 2
         if weights == "q8_0":
             out_bytes += int(transformer_bytes * _Q8_RATIO)
-        out_bytes = max(0, out_bytes - sum(_size(p) for p in _outputs(root)))
         self._check_disk(blobs, total - cached, root, out_bytes)
         ours = {
             (repo, f["name"]) for repo, rev, f in wanted if not _was_cached(repo, f["name"], rev)
