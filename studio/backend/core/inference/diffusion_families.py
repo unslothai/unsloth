@@ -59,6 +59,17 @@ def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
 
 
+def load_lora_signature(specs) -> tuple:
+    """Comparable form of a load's ``load_lora_specs``: a same-model reload with other adapters differs."""
+    out = []
+    for spec in specs or ():
+        try:
+            out.append((str(spec["id"]), float(spec["weight"])))
+        except Exception:  # noqa: BLE001 - a malformed row names no adapter
+            continue
+    return tuple(out)
+
+
 # The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
 _pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
     "pinned_checkpoint", default = None
@@ -1480,6 +1491,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
+            compile_from_render_one = (
+                "the eager port is host-bound: 1024 px bf16 eager 14.5 s vs compiled 8.0 s per image on an RTX PRO "
+                "6000, 27.5 s vs 12.9 s on an A100, so bf16 compiles from render 1 like the INT8 default"
+            ),
         ),
         pipeline_class = "MOSSImagePipeline",
         transformer_class = "MOSSImageTransformer",

@@ -203,9 +203,10 @@ def prequantized_skeleton(original, cls, name, args, kwargs, config, state_dict)
         )
     }
     with torch.random.fork_rng(devices = []), _no_missing_key_init():
-        model = original(
+        loaded = original(
             cls, None, *args, config = config, state_dict = state_dict, device_map = "meta", **kwargs
         )
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
     model.name_or_path = name
     model.config._name_or_path = name
     if callable(getattr(model, "can_generate", None)) and model.can_generate():
@@ -215,7 +216,7 @@ def prequantized_skeleton(original, cls, name, args, kwargs, config, state_dict)
             model.generation_config = GenerationConfig.from_pretrained(name, **hub)
         except Exception:
             pass
-    return model
+    return loaded
 
 
 class QuantReads:

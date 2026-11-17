@@ -62,11 +62,9 @@ def replica_active(model):
 
 
 def _device(root):
-    for param in root.parameters():
-        if tpn._is_dtensor(param):
-            return param.to_local().device
-        return param.device
-    return torch.device("cpu")
+    # Not a host-served input embedding (tp_native._serve_embedding_from_host): it is often the first
+    # parameter, and its CPU device would send NCCL collectives CPU tensors.
+    return tpn._compute_device(root, torch.device("cpu"))
 
 
 def _gib(n):
@@ -402,10 +400,13 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
-        if saved is not None:
-            for key, value in saved.items():
-                replica.set(module, key, value)
+        owners = [module] + [o for o, _, _ in getattr(region, "child_params", ())]
+        for owner in {id(o): o for o in owners}.values():
+            # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
+            saved = owner.__dict__.get("_unsloth_tp_saved_attrs")
+            if saved is not None:
+                for key, value in saved.items():
+                    replica.set(owner, key, value)
         for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
             if key in module.__dict__:
                 replica.set(module, key, tpn._MISSING)

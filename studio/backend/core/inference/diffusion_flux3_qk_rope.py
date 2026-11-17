@@ -296,8 +296,10 @@ def verdict(x: Any, weight: Any, eps: float) -> Optional[dict]:
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
+    # capture query reads the current device: ask on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
     with _LOCK:
         found = _VERDICTS.get(key)
         if found is None:
@@ -487,6 +489,16 @@ def _install(pipe: Any, device: Any, logger: Any) -> int:
         if not isinstance(attn, tf3.Flux3Attention):
             continue
         proc = getattr(attn, "processor", None)
+        stock = getattr(proc, "_unsloth_stock", None)
+        if type(stock) is tf3.Flux3AttnProcessor:
+            # keep the replaced processor to give back where torch wins
+            new = cls()
+            new._attention_backend = stock._attention_backend
+            new._parallel_config = stock._parallel_config
+            proc._unsloth_stock = new
+            _SWAPPED.append(weakref.ref(attn))
+            swapped += 1
+            continue
         if type(proc) is not tf3.Flux3AttnProcessor:
             continue
         new = cls()
@@ -511,12 +523,18 @@ def uninstall() -> None:
         return
     while _SWAPPED:
         attn = _SWAPPED.pop()()
-        if attn is None or not is_qk_processor(getattr(attn, "processor", None)):
+        proc = getattr(attn, "processor", None)
+        held = getattr(proc, "_unsloth_stock", None)
+        if attn is None or not (is_qk_processor(proc) or is_qk_processor(held)):
             continue
+        qk = proc if is_qk_processor(proc) else held
         stock = tf3.Flux3AttnProcessor()
-        stock._attention_backend = attn.processor._attention_backend
-        stock._parallel_config = attn.processor._parallel_config
-        attn.set_processor(stock)
+        stock._attention_backend = qk._attention_backend
+        stock._parallel_config = qk._parallel_config
+        if qk is proc:
+            attn.set_processor(stock)
+        else:
+            proc._unsloth_stock = stock
 
 
 def wanted(device: Any = "cuda") -> bool:

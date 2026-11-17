@@ -74,6 +74,7 @@ from .diffusion_families import (
     require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
+    load_lora_signature,
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
@@ -292,6 +293,8 @@ from .diffusion_memory import (
     with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _low_vram_whole_module,
+    keeps_denoiser_streamed,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -330,6 +333,7 @@ from .diffusion_speed import (
     int8_gemm_live,
     arm_graphs_after_placement,
     normalize_speed_mode,
+    int8_attention_speed_active,
     resolve_speed_mode,
     family_render_cudnn_scope,
     release_rocm_tunableop as _release_rocm_tunableop,
@@ -1148,6 +1152,43 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     return True
 
 
+def _bypass_zero_baked_loras(pipe: Any, weights: dict) -> bool:
+    """Turn the baked denoiser LoRA layers off (PEFT ``_disable_adapters``) while every adapter's weight is 0, back on
+    once any is not. True when the flag changed: the compiled forward then traces differently, so captured graphs
+    must be dropped.
+
+    A scale of 0 adds an exact zero, so eager matches a load without adapters bit for bit. Compiled, it does not: the
+    LoRA term changes inductor's fusion, and with it where intermediates are rounded to bf16 (Z-Image LPIPS 0.017
+    on L4). Disabled, the layer runs ``base_layer(x)`` alone, the graph a plain load compiles. Dynamo guards on the
+    flag, so the first switch compiles that graph once and later switches reuse both. ``requires_grad`` is left as
+    is, since it changes the compiled graph too."""
+    layers = []
+    for _attr, root in denoiser_modules(pipe):
+        modules = getattr(root, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            scaling = module.__dict__.get("scaling")
+            if (
+                isinstance(scaling, dict)
+                and scaling
+                and getattr(module, "lora_B", None) is not None
+                and "_disable_adapters" in module.__dict__
+            ):
+                layers.append(module)
+    if not layers:
+        return False
+    off = all(
+        float(weights.get(adapter, 0.0)) == 0.0 for module in layers for adapter in module.scaling
+    )
+    changed = False
+    for module in layers:
+        if bool(module.__dict__["_disable_adapters"]) != off:
+            module.__dict__["_disable_adapters"] = off
+            changed = True
+    return changed
+
+
 def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
     """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
     try:
@@ -1359,6 +1400,7 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 # lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
 from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+from .family_profile import compile_from_render_one_reason  # noqa: E402
 
 _TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
@@ -3503,6 +3545,8 @@ def _whole_tier_for_request(
         state, "transformer_cache", None
     ):
         return None
+    if keeps_denoiser_streamed(getattr(state, "memory_mode", None)):
+        return None
     if int(condition_pixels or 0) > 0:
         # no learned peak covers condition images
         return None
@@ -3769,6 +3813,33 @@ def _small_host_fetch(
     return lambda: download(repo, **pipe_kwargs)
 
 
+def _moss_small_host_fetch(
+    repo: Any, local_dir: Optional[str], local_files_only: bool, token: Any
+) -> Optional[Callable[[], Any]]:
+    """MOSS-Image's components, fetched before the small-host decision as ``_small_host_fetch`` does for diffusers
+    pipelines (the in-tree pipeline class has no Hub ``download``); None offline or with a staged snapshot."""
+    if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
+        return None
+
+    def _fetch() -> Any:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            repo,
+            cache_dir = hub_cache_dir(),
+            token = token,
+            allow_patterns = [
+                "model_index.json",
+                "*/config.json",
+                "*/*.safetensors",
+                "*/*.safetensors.index.json",
+                "scheduler/*",
+                "tokenizer/*",
+            ],
+        )
+
+    return _fetch
+
+
 def _conditioning_cache_hits(pipe: Any) -> int:
     """Encodes served from the in-memory prompt cache or the persistent conditioning cache so far: a render with a
     hit skipped the text-encoder phase, so its peak covers only part of what a new prompt needs."""
@@ -3901,6 +3972,12 @@ def _inplace_torchao_placement(
     """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
+    whole = _low_vram_whole_module(plan)
+    if whole is not None and not (
+        torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan)
+    ):
+        # low_vram streams by default; a scheme that cannot stream is judged on the whole-module tier it had.
+        plan = whole
     if plan.offload_policy == OFFLOAD_MODEL:
         estimates = getattr(plan, "estimates", None) or {}
         budget = int(estimates.get("safe_device_budget_mib") or 0)
@@ -10113,6 +10190,22 @@ class DiffusionBackend:
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
+                                        # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
+                                        # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
+                                        small_host = self._small_host_decision(
+                                            _base_local_dir or fetch_base,
+                                            pipe_kwargs,
+                                            target,
+                                            dtype,
+                                            lora_active = _has_active_lora(loras),
+                                            dense_denoiser = small_host_dense,
+                                            fetch = _moss_small_host_fetch(
+                                                fetch_base,
+                                                _base_local_dir,
+                                                local_files_only,
+                                                hub_token,
+                                            ),
+                                        )
                                         pipe = load_moss_image_pipeline(
                                             _base_local_dir or fetch_base,
                                             dtype,
@@ -10125,6 +10218,9 @@ class DiffusionBackend:
                                             transformer = pipe_kwargs.get("transformer"),
                                             vae = pipe_kwargs.get("vae"),
                                             checkpoint = base,
+                                            storage_dtypes = small_host.storage_dtypes
+                                            if small_host is not None and small_host.engaged
+                                            else None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -11071,6 +11167,23 @@ class DiffusionBackend:
                             "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
+                    # A family whose eager path is measured far slower than compiled skips the deferred profile.
+                    compile_first_reason = (
+                        compile_from_render_one_reason(fam)
+                        if speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                        else None
+                    )
+                    if compile_first_reason is not None:
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (%s)",
+                            compile_first_reason,
+                        )
+                        effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
                     # amortises. Only when speed was unset.
                     speed_deferred = (
@@ -11097,7 +11210,11 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                         requested = attention_backend,
-                        speed_active = effective_speed != SPEED_OFF,
+                        speed_active = int8_attention_speed_active(
+                            speed_mode, effective_speed, speed_deferred
+                        ),
+                        # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
+                        speed_unset_only = effective_speed == SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -11732,6 +11849,8 @@ class DiffusionBackend:
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
                                 if speed_deferred
+                                else f"auto: {compile_first_reason}"
+                                if compile_first_reason is not None
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",
@@ -14575,10 +14694,15 @@ class DiffusionBackend:
                 if _remerge_quant_loras(state, pipe, disabled):
                     return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
+                # All at 0, the layers are also bypassed, so the compiled graph is a plain load's (one recapture).
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
+                    if _bypass_zero_baked_loras(pipe, {}):
+                        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                        invalidate_cfg_replica(pipe, "the LoRA adapters were switched off", logger)
                     return
                 lora_files.set_adapter_weights(pipe, names, [0.0] * len(names))
+                _bypass_zero_baked_loras(pipe, {})
                 pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -14609,14 +14733,19 @@ class DiffusionBackend:
         _refuse_weight_change_on_streamed_graph(state)
         if _remerge_quant_loras(state, pipe, updated):
             return
-        if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
+        weights = {n: w for (n, _p, w) in updated}
+        if _set_pinned_lora_scales(pipe, weights):
             pipe._unsloth_loras = updated
+            if _bypass_zero_baked_loras(pipe, weights):
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters were switched on or off", logger)
             return
         lora_files.set_adapter_weights(
             pipe,
             [n for (n, _p, _w) in updated],
             [w for (_n, _p, w) in updated],
         )
+        _bypass_zero_baked_loras(pipe, weights)
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
@@ -14965,6 +15094,8 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # load_lora_signature() of the status an omitted loras was resolved from; a reload with other adapters refuses
+        expected_load_loras: Optional[tuple] = None,
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
@@ -15008,6 +15139,10 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    if expected_load_loras is not None and tuple(
+                        expected_load_loras
+                    ) != load_lora_signature(_load_lora_specs(state.pipe)):
+                        raise DiffusionModelReplacedError(expected_load or loaded_id, loaded_id)
                     require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)

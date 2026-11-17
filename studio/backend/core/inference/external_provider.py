@@ -95,6 +95,7 @@ _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _GEMINI_MAX_MODEL_PAGES = 20
 _GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
+_GEMINI_DUMMY_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 _served_windows: dict[tuple[str, str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -4532,6 +4533,10 @@ class ExternalProviderClient:
                     if isinstance(sig, str) and sig:
                         fc_part["thoughtSignature"] = sig
                     parts.append(fc_part)
+                # Gemini 3 400s when a step's first functionCall is unsigned; Gemini itself signs only that one.
+                _fc_parts = [p for p in parts if "functionCall" in p]
+                if _fc_parts and not any("thoughtSignature" in p for p in _fc_parts):
+                    _fc_parts[0]["thoughtSignature"] = _GEMINI_DUMMY_THOUGHT_SIGNATURE
             if role == "tool":
                 # Drop follow-up when its tool_call was dropped or replayed natively; else orphan functionResponse.
                 _tc_id_for_skip = msg.get("tool_call_id")
@@ -4937,6 +4942,11 @@ class ExternalProviderClient:
                 if _allowed:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
+        # Gemini 400s on hosted tools beside functionDeclarations unless this is set; Vertex rejects the field.
+        if function_declarations and any("functionDeclarations" not in t for t in tools_array):
+            from core.inference.providers import is_vertex_host
+            if not is_vertex_host(urlsplit(self.base_url or "").hostname):
+                body.setdefault("toolConfig", {})["includeServerSideToolInvocations"] = True
 
         # JSON mode only on tool-free turns: Gemini 400s on response mime type plus function calling.
         _rf_type = response_format.get("type") if isinstance(response_format, dict) else None

@@ -118,6 +118,7 @@ import {
   type NamedConversationHtml,
   buildConversationHtmlBody,
   buildConversationHtmlDocument,
+  isDataImage,
 } from "../utils/conversation-html";
 import { renderConversationPdf } from "../api/chat-export-api";
 import { planChatItemSources } from "../utils/project-source-plan";
@@ -606,15 +607,37 @@ async function loadConversationForHtml(
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
-    messages: messages.map((msg) => ({
-      role: String(msg.role ?? ""),
-      content: stripSearchImageTokens(
-        msg.role === "user" || msg.role === "system"
-          ? messageToText(msg)
-          : messageToMarkdown(msg),
-      ),
-    })),
+    messages: messages.map((msg) => {
+      const images: string[] = [];
+      const rest = {
+        content: takeDataImages(msg.content, images),
+        attachments: msg.attachments?.map((attachment) => ({
+          content: takeDataImages(attachment?.content, images),
+        })),
+      };
+      return {
+        role: String(msg.role ?? ""),
+        content: stripSearchImageTokens(
+          msg.role === "user" || msg.role === "system"
+            ? messageToText(rest)
+            : messageToMarkdown(rest),
+        ),
+        images,
+      };
+    }),
   };
+}
+
+function takeDataImages(content: unknown, images: string[]): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.filter((part) => {
+    const { type, image } = (part ?? {}) as { type?: unknown; image?: unknown };
+    if (type !== "image" || typeof image !== "string" || !isDataImage(image)) {
+      return true;
+    }
+    images.push(image);
+    return false;
+  });
 }
 
 async function pdfBytes(title: string, body: string): Promise<Uint8Array> {

@@ -104,7 +104,7 @@ def _capture_server_payload(monkeypatch):
 
     monkeypatch.setattr(inference.HttpChatBackend, "_request", fake_request)
     monkeypatch.setattr(
-        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model: None
+        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model, status: None
     )
     monkeypatch.setattr(
         inference, "read_json_checking_deferred_error", lambda url, response: {"is_vision": False}
@@ -192,7 +192,7 @@ def _refusing_server(monkeypatch, error):
 
     monkeypatch.setattr(inference.HttpChatBackend, "_request", refuse)
     monkeypatch.setattr(
-        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model: None
+        inference.HttpChatBackend, "_resident_gguf_variant", lambda self, model, status: None
     )
     return inference.HttpChatBackend("http://127.0.0.1:1", "token")
 
