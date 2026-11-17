@@ -3,6 +3,9 @@
 
 """Password hashing utilities using PBKDF2."""
 
+from __future__ import annotations
+
+
 import hashlib
 import hmac
 import secrets

@@ -7,6 +7,9 @@ Like auth/storage.py (module-level functions, raw sqlite3, per-function connecti
 and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
+from __future__ import annotations
+
+
 import base64
 import binascii
 import hashlib
