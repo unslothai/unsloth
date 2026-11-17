@@ -1836,7 +1836,7 @@ def test_a_discrete_card_on_the_same_runtime_keeps_the_dedicated_counter(win_roc
 # This card at 17%, other adapters at 61%, so a wrong selection still reads 78.
 FOREIGN_ENGINES = [
     ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 12.0),
-    ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_3D", 5.0),
+    ("pid_101_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 5.0),
     ("pid_200_luid_0x00000000_0x000183fe_phys_0_eng_0_engtype_3D", 44.0),
     ("pid_300_luid_0x00000000_0x0001842f_phys_0_eng_0_engtype_3D", 17.0),
 ]
@@ -1931,7 +1931,7 @@ def test_engtype_spelled_in_lower_case_is_still_a_3d_engine(win_rocm, monkeypatc
         SOLO_ADAPTERS,
         [
             ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3d", 12.0),
-            ("pid_101_LUID_0X00000000_0X00015369_phys_0_eng_1_ENGTYPE_3D", 5.0),
+            ("pid_101_LUID_0X00000000_0X00015369_PHYS_0_ENG_0_ENGTYPE_3D", 5.0),
         ],
     )
     assert device["gpu_utilization_pct"] == 17.0
@@ -1952,6 +1952,21 @@ def test_the_busiest_engine_type_is_the_reading(win_rocm, monkeypatch):
         ],
     )
     assert device["gpu_utilization_pct"] == 90.0
+
+
+def test_separate_engines_of_one_type_do_not_add_up(win_rocm, monkeypatch):
+    """Two Compute engines at 60 % each are a 60 % adapter, as Task Manager and the NPU reading say."""
+    _solo_host(monkeypatch, (0x15369, 0))
+
+    (device,), _ = _engine_query(
+        monkeypatch,
+        SOLO_ADAPTERS,
+        [
+            ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_Compute", 60.0),
+            ("pid_100_luid_0x00000000_0x00015369_phys_0_eng_3_engtype_Compute", 60.0),
+        ],
+    )
+    assert device["gpu_utilization_pct"] == 60.0
 
 
 def test_without_a_luid_only_3d_engines_count(win_rocm, monkeypatch):
@@ -1992,11 +2007,11 @@ def test_unusable_samples_are_dropped_and_the_sum_is_bounded(win_rocm, monkeypat
         SOLO_ADAPTERS,
         [
             ("pid_1_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "NaN"),
-            ("pid_2_luid_0x00000000_0x00015369_phys_0_eng_1_engtype_3D", "Infinity"),
-            ("pid_3_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_3D", -5.0),
-            ("pid_4_luid_0x00000000_0x00015369_phys_0_eng_3_engtype_3D", "not-a-number"),
-            ("pid_5_luid_0x00000000_0x00015369_phys_0_eng_4_engtype_3D", 70.0),
-            ("pid_6_luid_0x00000000_0x00015369_phys_0_eng_5_engtype_3D", 70.0),
+            ("pid_2_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "Infinity"),
+            ("pid_3_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", -5.0),
+            ("pid_4_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", "not-a-number"),
+            ("pid_5_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 70.0),
+            ("pid_6_luid_0x00000000_0x00015369_phys_0_eng_0_engtype_3D", 70.0),
         ],
     )
     assert device["gpu_utilization_pct"] == 100.0

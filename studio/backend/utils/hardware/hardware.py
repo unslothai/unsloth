@@ -3791,7 +3791,7 @@ def _rocm_windows_adapter_engines_stdout(luid: int) -> Optional[str]:
 
 
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
-    """AMD GPU utilization via Windows Performance Counters. With ``luid``: that adapter's busiest engine type, since HIP runs on Compute while 3D idles (#18005); PDH narrows the query, the LUID match here decides. Without: the host's 3D engines."""
+    """AMD GPU utilization via Windows Performance Counters. With ``luid``: that adapter's busiest engine of any type, since HIP runs on Compute while 3D idles (#18005); PDH narrows the query, the LUID match here decides. Without: the host's 3D engines."""
     if platform.system() != "Windows":
         return None
     try:
@@ -3803,14 +3803,15 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             stdout = _rocm_windows_adapter_engines_stdout(luid)
         if stdout is None:
             return None
-        by_type: dict[str, float] = {}
+        by_engine: dict[str, float] = {}
         for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
             instance, _, raw = line.rpartition("|")
             # Hosts spell it engtype_3D and engtype_3d both.
-            _, sep, engine_type = instance.strip().lower().rpartition("engtype_")
+            name = instance.strip().lower()
+            _, sep, engine_type = name.rpartition("engtype_")
             if not sep or (luid is None and engine_type != "3d"):
                 continue
             if luid is not None and _engine_instance_luid(instance.strip()) != luid:
@@ -3822,10 +3823,13 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
             if value != value or value in (float("inf"), float("-inf")) or value < 0:
                 continue
-            by_type[engine_type] = by_type.get(engine_type, 0.0) + value
-        if not by_type:
+            # Processes on one engine add up; the adapter is as busy as its busiest engine (Task Manager).
+            engine = re.search(r"_phys_\d+_eng_\d+_", name) if luid is not None else None
+            key = engine.group(0) if engine else engine_type
+            by_engine[key] = by_engine.get(key, 0.0) + value
+        if not by_engine:
             return None
-        return round(min(max(by_type.values()), 100.0), 1)
+        return round(min(max(by_engine.values()), 100.0), 1)
     except Exception:
         return None
 
