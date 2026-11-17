@@ -1096,6 +1096,7 @@ def test_the_name_the_app_shows_resolves_to_the_lemonade_id(npu):
 
 
 def test_a_display_name_starts_the_runtime_only_when_allowed(npu):
+    assert npu.can_run()
     assert npu.model_path_for_name("Qwen3-0.6B-NPU2", start_runtime = False) is None
     assert npu._server is None
     assert not _requests(npu)

@@ -2091,6 +2091,7 @@ def _shown_npu(
     loaded: bool,
     running: bool = True,
     auto_switch: bool = False,
+    runs_npu = True,
 ):
     """A backend whose catalog holds qwen3-0.6b-FLM, published as FastFlowLM/Qwen3-0.6B-NPU2."""
     import utils.openai_auto_switch_settings as switch_settings
@@ -2117,6 +2118,9 @@ def _shown_npu(
         def catalog(self):
             self.catalog_reads += 1
             return [model]
+
+        def can_run(self):
+            return runs_npu
 
     npu = _Npu()
     npu._server = _Server() if running else None
@@ -2145,7 +2149,7 @@ def test_the_npu_resident_answers_to_the_name_the_app_shows(monkeypatch, name):
 def test_other_names_pass_the_npu_display_name_step_unchanged(monkeypatch):
     from routes import inference as routes
     npu, _ = _shown_npu(monkeypatch, loaded = True, auto_switch = True)
-    for name in ("unsloth/Qwen3-0.6B-GGUF", "lemonade:gemma3-4b-FLM", "Gemma3-4B-NPU2", None):
+    for name in ("unsloth/Qwen3-0.6B-GGUF", "lemonade:gemma3-4b-FLM", "Qwen3-0.6B", None):
         assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == name
 
 
@@ -2165,6 +2169,27 @@ def test_a_display_name_never_starts_the_runtime_with_switching_off(monkeypatch)
     from routes import inference as routes
 
     npu, _ = _shown_npu(monkeypatch, loaded = False, running = False)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
+    assert caught.value.status_code == 404
+    assert "'Qwen3-0.6B-NPU2' is not loaded" in json.dumps(caught.value.detail)
+    assert npu.catalog_reads == 0
+
+
+def test_an_unknown_npu_name_is_refused_not_served_by_another_model(monkeypatch):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = False, auto_switch = True)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._npu_path_for_display_name("Qwen3-9B-Nope-NPU2", _request()))
+    assert caught.value.status_code == 404
+    assert "No NPU model is named 'Qwen3-9B-Nope-NPU2'" in json.dumps(caught.value.detail)
+
+
+def test_a_host_without_the_npu_passes_the_name_on(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, runs_npu = False)
     name = asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
     assert name == "Qwen3-0.6B-NPU2"
     assert npu.catalog_reads == 0

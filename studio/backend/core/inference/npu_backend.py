@@ -802,6 +802,10 @@ class LemonadeNpuBackend:
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
 
+    def can_run(self) -> bool:
+        """A supported NPU with the runtime installed: the catalog is readable once it starts."""
+        return bool(self.hardware().get("supported")) and self._installed_lemond() is not None
+
     def model_path_for_name(self, name: str, *, start_runtime: bool) -> Optional[str]:
         """`lemonade:<id>` for the model whose Hugging Face repo or repo name is name, or None.
 

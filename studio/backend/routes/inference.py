@@ -11396,7 +11396,6 @@ async def _npu_path_for_display_name(
         NpuError,
         get_npu_backend,
         looks_like_npu_display_name,
-        peek_npu_backend,
     )
 
     if not looks_like_npu_display_name(requested_model):
@@ -11415,24 +11414,47 @@ async def _npu_path_for_display_name(
         )
         and not await _keyless_caller_held_back(fastapi_request)
     )
-    npu = get_npu_backend() if may_load else peek_npu_backend()
-    if npu is None:
+    if account_access.managed_account():
+        # The NPU is the owner's; a managed caller only reaches the model already loaded.
+        loaded = _resident_npu_model()
+        if loaded is not None and loaded.answers_to(requested_model):
+            return loaded.model_path
         return requested_model
+    npu = get_npu_backend()
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+
+    def _refuse(status: int, message: str, code: str) -> HTTPException:
+        return HTTPException(
+            status_code = status,
+            detail = (
+                error_body_for_path(path, message, status = status, code = code, param = "model")
+                if isinstance(path, str)
+                else message
+            ),
+        )
+
     try:
         resolved = await asyncio.to_thread(
             npu.model_path_for_name, requested_model, start_runtime = may_load
         )
     except NpuError as exc:
-        path = getattr(getattr(fastapi_request, "url", None), "path", None)
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                error_body_for_path(path, str(exc), status = 400, code = "invalid_value", param = "model")
-                if isinstance(path, str)
-                else str(exc)
-            ),
-        ) from None
-    return resolved or requested_model
+        raise _refuse(400, str(exc), "invalid_value") from None
+    if resolved:
+        return resolved
+    if not await asyncio.to_thread(npu.can_run):
+        return requested_model
+    # This host runs the NPU, so the name is an NPU model's: never answered by another model.
+    if may_load:
+        message = (
+            f"No NPU model is named '{requested_model}'. GET /api/npu/models lists them, "
+            "with the name Unsloth Studio shows in hf_repo."
+        )
+    else:
+        message = (
+            f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio, or turn "
+            "on 'Switch model by request' under Settings > API to load it from a request."
+        )
+    raise _refuse(404, message, "model_not_found")
 
 
 async def _maybe_auto_switch_model(
