@@ -158,6 +158,8 @@ export interface PoolSplitInput {
   vramTotalGb: number;
   /** VRAM the backend's process tree holds (driver per-process sizes); absent on WDDM, Apple, MIG. */
   vramUnslothGb?: number | null;
+  /** With vramUnslothGb: break the slice into models and the engine's rest, else one slice. */
+  vramDetail?: boolean;
 }
 
 export interface PoolSplit {
@@ -203,11 +205,14 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
     modelsInVram && vramUnslothGb !== null && input.vramUsedGb !== null
       ? memoryShare(input.vramUsedGb, input.vramTotalGb, vramUnslothGb)
       : null;
-  const vramBreakdown = !showBreakdown
-    ? null
-    : measuredGb !== null
-      ? modelBreakdown(vramUnslothGb, vramModels, true)
-      : { models: vramModels, app: null };
+  const vramBreakdown =
+    measuredGb !== null
+      ? input.vramDetail
+        ? modelBreakdown(vramUnslothGb, vramModels, true)
+        : null
+      : showBreakdown
+        ? { models: vramModels, app: null }
+        : null;
   return {
     ram: ramShare && memorySegments(ramShare, ramBreakdown),
     vram: vramShare && memorySegments(vramShare, vramBreakdown, measuredGb !== null),
