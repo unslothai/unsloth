@@ -3574,6 +3574,27 @@ def test_settings_filled_from_a_snapshot_keyed_row_are_not_replayed(monkeypatch)
     assert backend.replay_launch == {"n_parallel": 2}
 
 
+@pytest.mark.parametrize("four_bit, precision", [(True, "int4"), (False, "auto")])
+def test_a_sent_4bit_choice_is_the_saved_engine_precision(monkeypatch, four_bit, precision):
+    _saved(monkeypatch, {"engine": "vllm", "engine_precision": "fp8"})
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: False)
+    request = LoadRequest(model_path = "org/A", load_in_4bit = four_bit, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.engine == "vllm" and "engine_precision" not in filled.model_fields_set
+    seen = []
+
+    def _validate(engine, request):
+        seen.append(request.engine_precision)
+        raise ValueError("stop")
+
+    import core.inference.managed_engine as managed_engine
+
+    monkeypatch.setattr(managed_engine, "validate_load", _validate)
+    with pytest.raises(Exception):
+        asyncio.run(inference_route._managed_engine_request(filled))
+    assert seen == [precision]
+
+
 def test_filling_saved_settings_keeps_the_request_private_state(monkeypatch):
     _saved(monkeypatch, {"kv_cache_dtype": "q8_0"})
     request = LoadRequest(model_path = "/runs/job-1", use_saved_settings = True)

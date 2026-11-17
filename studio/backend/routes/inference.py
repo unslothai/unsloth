@@ -8395,6 +8395,9 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
         for name, value in model_override_load_kwargs(override, is_gguf = is_gguf).items()
         if name not in sent
     }
+    # A sent 4-bit choice is the engine precision (_managed_engine_request maps it only when none is set).
+    if "load_in_4bit" in sent:
+        fill.pop("engine_precision", None)
     # Placement is one choice: saved layers or split would contradict the sent mode or GPUs.
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
