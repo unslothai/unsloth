@@ -551,7 +551,8 @@ def _file_digest(path: Path) -> str:
 
 
 def _partial_upload_path(stored_path: Path) -> Path:
-    return stored_path.with_name(f"{stored_path.name}.part")
+    # Only the upload id: appending to a long original name can exceed the 255-byte filename limit.
+    return stored_path.with_name(f"{stored_path.name.split('_', 1)[0]}.part")
 
 
 def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
