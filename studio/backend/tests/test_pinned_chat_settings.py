@@ -308,6 +308,24 @@ def test_noop_and_migration_preserve_unpin_tombstones():
     assert _migrate(["b"]) == {"pinnedIds": ["a"]}
 
 
+def test_repeated_legacy_migration_answers_while_another_writer_holds_the_lock(monkeypatch):
+    _seed("a", "b", "c")
+    assert _migrate(["a", "b"]) == {"pinnedIds": ["a", "b"]}
+    monkeypatch.setattr(studio_db, "_CONTENDED_BUSY_TIMEOUT_SECONDS", 0.2)
+    writer = studio_db.get_connection()
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        # Every client refresh re-sends the same legacy pins; that must not queue behind a writer.
+        assert _migrate(["b", "a"]) == {"pinnedIds": ["a", "b"]}
+        assert _migrate([]) == {"pinnedIds": ["a", "b"]}
+        with pytest.raises(Exception):
+            _migrate(["c"])
+    finally:
+        writer.rollback()
+        writer.close()
+    assert _migrate(["c"]) == {"pinnedIds": ["a", "b", "c"]}
+
+
 def test_deleting_threads_prunes_single_and_comparison_pins_atomically():
     _seed("single")
     _seed("left", "right", pair_id = "pair")

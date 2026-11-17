@@ -5926,25 +5926,35 @@ def get_chat_pins() -> Optional[list[str]]:
         conn.close()
 
 
+def _merge_legacy_chat_pins_in_conn(
+    conn: sqlite3.Connection, ids: list[str], *, repair: bool
+) -> tuple[Optional[list[str]], list[str], bool]:
+    current, dirty = _load_chat_pins_in_conn(conn, repair = repair)
+    incoming = _existing_chat_pin_ids(conn, _normalized_chat_pin_ids(ids))
+    blocked: set[str] = set()
+    for start in range(0, len(incoming), _SQLITE_IN_CHUNK_SIZE):
+        chunk = incoming[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        blocked.update(
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM chat_pin_tombstones WHERE id IN ({placeholders})", chunk
+            )
+        )
+    present = set(current or [])
+    additions = [id for id in incoming if id not in present and id not in blocked]
+    return current, [*(current or []), *additions][:MAX_PINNED_CHAT_IDS], dirty
+
+
 def migrate_chat_pins(ids: list[str]) -> Optional[list[str]]:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
+        # Clients re-send legacy pins on every refresh: take the writer lock only when that changes something.
+        current, pins, dirty = _merge_legacy_chat_pins_in_conn(conn, ids, repair = False)
+        if not dirty and pins == (current or []):
+            return current
         conn.execute("BEGIN IMMEDIATE")
-        current, _ = _load_chat_pins_in_conn(conn, repair = True)
-        incoming = _existing_chat_pin_ids(conn, _normalized_chat_pin_ids(ids))
-        blocked: set[str] = set()
-        for start in range(0, len(incoming), _SQLITE_IN_CHUNK_SIZE):
-            chunk = incoming[start : start + _SQLITE_IN_CHUNK_SIZE]
-            placeholders = ",".join("?" for _ in chunk)
-            blocked.update(
-                row["id"]
-                for row in conn.execute(
-                    f"SELECT id FROM chat_pin_tombstones WHERE id IN ({placeholders})", chunk
-                )
-            )
-        present = set(current or [])
-        additions = [id for id in incoming if id not in present and id not in blocked]
-        pins = [*(current or []), *additions][:MAX_PINNED_CHAT_IDS]
+        current, pins, _ = _merge_legacy_chat_pins_in_conn(conn, ids, repair = True)
         if pins != (current or []):
             _store_chat_pins_in_conn(conn, pins)
             current = pins
