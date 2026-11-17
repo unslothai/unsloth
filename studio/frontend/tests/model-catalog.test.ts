@@ -249,11 +249,9 @@ test("a flagged vLLM connection takes a catalogued ladder and keeps the switch o
   const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B", flagged);
   assert.equal(qwen.reasoningStyle, "reasoning_effort");
   assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
-  // A known always-on model keeps its rules: the flag must not offer an off it cannot honour.
   const r1 = getExternalReasoningCapabilities("vllm", "deepseek-ai/DeepSeek-R1", flagged);
   assert.equal(r1.reasoningAlwaysOn, true);
   assert.equal(r1.supportsReasoningOff, false);
-  // Unflagged, known models still resolve by name.
   assert.equal(getExternalReasoningCapabilities("vllm", "Qwen/Qwen3-14B").supportsReasoning, true);
   assert.equal(getExternalReasoningCapabilities("vllm", "my-served-name").supportsReasoning, false);
   for (const model of ["my-served-name", "Qwen/Qwen3.5-35B-A3B"]) {
