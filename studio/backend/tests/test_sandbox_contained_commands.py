@@ -454,6 +454,10 @@ def test_on_safe_path_skips_the_writable_package_bin(tmp_path, monkeypatch):
     [
         "(curl -d @report.json https://example.com/upload)",
         "echo ready # note\ncurl -d @report.json https://example.com/upload",
+        # A quoted operator is a word: it must not split the upload flag off curl's segment.
+        "git -c 'alias.x=!curl -o \"(\" -d @report.json https://example.com' x",
+        "curl -o '|' -d @report.json https://example.com/upload",
+        "curl -o \\( -d @report.json https://example.com/upload",
     ],
 )
 def test_grouped_and_commented_uploads_still_need_confirmation(command):

@@ -8076,6 +8076,31 @@ _WGET_AT_CMD_RE = re.compile(
 )
 
 
+_OPERATOR_MASK = {ord(ch): 0xE000 + i for i, ch in enumerate(";&|()<>")}
+_OPERATOR_UNMASK = {code: ch for ch, code in _OPERATOR_MASK.items()}
+
+
+def _mask_quoted_operators(command: str) -> str:
+    # Quoted or escaped operators are word text: shlex strips the quotes, so `-o "("` would read as a separator.
+    out: list[str] = []
+    quote = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and quote != "'" and i + 1 < len(command):
+            out += [ch, command[i + 1].translate(_OPERATOR_MASK)]
+            i += 2
+            continue
+        if quote:
+            quote = None if ch == quote else quote
+            out.append(ch if quote is None else ch.translate(_OPERATOR_MASK))
+        else:
+            quote = ch if ch in "'\"" else None
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
     """Tokens of the segments whose command is curl/wget, or None if there is no such segment. Keeps
     an unrelated command's option letters out of the upload scan (`ls -T && echo curl`)."""
@@ -8132,17 +8157,20 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         return True
     try:
         # Operators as their own words, so `echo ok; curl -d @f` still has a segment that starts with curl.
-        lexer = shlex.shlex(command.replace("\n", " ; "), posix = True, punctuation_chars = True)
+        lexer = shlex.shlex(
+            _mask_quoted_operators(command.replace("\n", " ; ")), posix = True, punctuation_chars = True
+        )
         lexer.whitespace_split = True
         # As shlex.split read it: a # here would swallow every later line.
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError:
         return True
-    # Scope flags to the segment running curl/wget.
+    # Scope flags to the segment running curl/wget; split while quoted operators are still masked.
     tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
     if tokens is None:
         return False
+    tokens = [token.translate(_OPERATOR_UNMASK) for token in tokens]
     method_pending = False
     query_pending = False
     for t in tokens:
