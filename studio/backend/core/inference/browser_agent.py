@@ -593,8 +593,12 @@ def workspace_path_of(raw: Any) -> Optional[str]:
     Syntax only: `page.html`, `./a/b.html`, `/abs/x.svg`, `file:///abs/x.html`."""
     target = str(raw or "").strip()
     if re.match(r"^file:", target, re.IGNORECASE):
-        parsed = urlsplit(target)
-        if (parsed.hostname or "localhost").lower() != "localhost":
+        try:
+            parsed = urlsplit(target)
+            host = parsed.hostname
+        except ValueError:
+            return None
+        if (host or "localhost").lower() != "localhost":
             return None
         return unquote(parsed.path) or None
     if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", target) or target.startswith("//"):
