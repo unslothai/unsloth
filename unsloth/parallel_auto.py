@@ -3,28 +3,11 @@
 
 """UNSLOTH_PARALLEL=auto: plain DDP when the model and its training state fit on every GPU, else native FSDP2.
 
-    UNSLOTH_PARALLEL=auto torchrun --nproc-per-node 2 train.py
-
-Opt-in. An explicit layout (UNSLOTH_PARALLEL="fsdp=1", UNSLOTH_FSDP2=1, ...) is untouched by this module.
-
-The choice is made once per process, at the first Unsloth `from_pretrained` (load-time paths read UNSLOTH_FSDP2:
-the 4-bit storage dtype, sharded loading), or at the first Trainer if no Unsloth load ran. It writes
-UNSLOTH_FSDP2=0 (DDP) or 1 (native FSDP2), so every later reader sees an ordinary explicit launch. Every rank
-sizes its own GPU and the ranks agree with one collective: DDP only when it fits on all of them.
-
-Fits means weights + training state + activation margin <= the memory this rank can use, where
-  * weights: the checkpoint's safetensors headers (no weights downloaded), at the bytes they take once loaded
-    (4-bit / 8-bit quantize on load counts the quantized linear weights), or the loaded model's parameters;
-  * training state, all of it per rank under DDP: gradient + DDP bucket copy + two AdamW moments per trainable
-    parameter (LoRA r=16 on every linear weight before get_peft_model has run);
-  * activation margin: _ACTIVATION_SHARE of the GPU. Activations are per rank under both layouts, so they only
-    keep headroom for DDP's larger resident state.
-Conservative by construction: only the loads modelled exactly are sized, through the loader's own helpers
-(get_model_name, the -bf16 rule, PeftConfig base resolution, ALLOW_BITSANDBYTES, the bfloat16 check, the
-bitsandbytes skip lists, FastBaseModel's float32 master weights for full finetuning). Everything else declines
-and picks FSDP2, the launcher default, with the reason in the rank 0 line: a quantization_config or fp8 load,
-fast_inference (vLLM), UNSLOTH_FORCE_FLOAT32 / UNSLOTH_FORCE_CUSTOM_DTYPE, a FORCE_FLOAT32 architecture on
-float16, an unknown dtype, a Hub subfolder, and any config or header that cannot be read.
+Decided once per process (first Unsloth `from_pretrained`, else first Trainer) by writing UNSLOTH_FSDP2=0 / 1;
+the ranks agree with one collective. Fits = weights + DDP training state + _ACTIVATION_SHARE of the GPU <= capacity.
+Conservative by construction: only loads modelled exactly through the loader's own helpers are sized; anything
+else (quantization_config, fp8, vLLM, FORCE_FLOAT32 / CUSTOM_DTYPE, unknown dtype, subfolder, unreadable
+config / header) declines to FSDP2, the launcher default, with the reason in the rank 0 line.
 """
 
 from __future__ import annotations
@@ -46,21 +29,17 @@ __all__ = [
 
 AUTO = "auto"
 FLAG = "UNSLOTH_PARALLEL"
-# Written beside UNSLOTH_FSDP2 so a child process (dataset workers, a re-exec) inherits the decision.
 RESOLVED = "UNSLOTH_PARALLEL_AUTO_RESOLVED"
-# Per-rank memory budget override in GiB (default: this GPU's free memory, or host RAM per local rank on CPU).
 BUDGET = "UNSLOTH_PARALLEL_AUTO_GB"
 DDP, FSDP2 = "ddp", "fsdp2"
-# The activation share loader_utils._plan_fits_first_device keeps free when it plans a device map. In the M2
-# Kaggle 2x T4 notebook sweep, DDP's training peak above its post-setup reserved memory was 0.97 GB median and
-# 3.04 GB p90 (21% of a 14.56 GB T4).
+# Matches loader_utils._plan_fits_first_device. Kaggle 2x T4 sweep: DDP training peak above post-setup
+# reserved was 0.97 GB median, 3.04 GB p90 (21% of a 14.56 GB T4).
 _ACTIVATION_SHARE = 0.2
 _LORA_RANK = 16  # get_peft_model's default r
 _GiB = 1024**3
 _TRUTHY = ("1", "true", "yes", "on")
 _EMBEDDING_NAMES = ("embed", "wte", "wpe", "lm_head", "output_layer", "shared")
 
-# {"choice": None | "ddp" | "fsdp2" | "single", "reason": str}
 _STATE = {"choice": None, "reason": None}
 
 
@@ -118,8 +97,7 @@ def training_state_bytes(
     grad_itemsize = 4,
     optim = None,
 ):
-    """What DDP keeps per trainable parameter on every rank: the gradient, its DDP bucket copy, and the optimizer
-    moments (two fp32 AdamW moments; 8-bit optimizers two bytes)."""
+    """Per trainable parameter under DDP: gradient + bucket copy + two AdamW moments (fp32, or 1 byte each 8-bit)."""
     name = str(getattr(optim, "value", optim) or "").lower()
     moments = 2 if "8bit" in name else 8
     return int(trainable_numel) * (2 * int(grad_itemsize) + moments)
@@ -132,7 +110,6 @@ def decide(
     total = None,
     share = _ACTIVATION_SHARE,
 ):
-    """(fits, need) for one rank: fits when weights + state + share x total <= capacity."""
     total = capacity if total is None else total
     need = int(weights) + int(state) + int(share * total)
     return (capacity > 0 and need <= capacity), need
@@ -149,8 +126,7 @@ def _parse_budget(raw):
 
 
 def _local_cuda_device(torch):
-    """cuda:LOCAL_RANK (the GPU this rank trains on) without making it current; the current device when each
-    rank sees only its own GPU (LOCAL_RANK beyond the visible count)."""
+    """cuda:LOCAL_RANK without making it current; the current device if LOCAL_RANK exceeds the visible count."""
     try:
         local = int(os.environ.get("LOCAL_RANK", ""))
     except ValueError:
@@ -209,8 +185,7 @@ def _gib(n):
 
 
 def _resolve(estimate, install_trainer_init):
-    """Run once: `estimate()` -> (weights, state, held); agree over the ranks; write
-    UNSLOTH_FSDP2. Returns the choice."""
+    """Run once: `estimate()` -> (weights, state, held); agree over ranks; write UNSLOTH_FSDP2."""
     if _STATE["choice"] is not None or not auto_requested():
         return _STATE["choice"]
     world = _world(os.environ)
@@ -275,10 +250,6 @@ def _describe(choice, entries):
     return f"{head}{split}: {'; '.join(reasons)}. Set {FLAG}=\"fsdp=0\" to force DDP."
 
 
-# --------------------------------------------------------------------------------------------------
-# Sizing a checkpoint before it loads (top-level from_pretrained)
-# --------------------------------------------------------------------------------------------------
-
 _DTYPE_BYTES = {
     "F64": 8, "I64": 8, "U64": 8, "F32": 4, "I32": 4, "U32": 4, "F16": 2, "BF16": 2, "I16": 2, "U16": 2,
     "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
@@ -292,7 +263,6 @@ def _checkpoint_tensors(
     revision = None,
     subfolder = "",
 ):
-    """[(tensor name, safetensors dtype, shape)] from the safetensors headers only (no weights read)."""
     if os.path.isdir(name):
         import glob
 
@@ -351,16 +321,14 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
             weights += numel * stored
             numel_total += 2 * numel  # two 4-bit codes per byte
             if key.lower().endswith(".weight") and len(shape) >= 1:
-                # packed [n / 2, 1] holds 2 n parameters; one side is hidden_size for the decoder's linears
-                # (a square guess undercounts rectangular MLP / GQA layers), else square.
+                # packed [n / 2, 1] = 2n params; one side is hidden_size (square undercounts MLP / GQA).
                 params = 2 * numel
                 if hidden_size and params % hidden_size == 0:
                     lora += lora_rank * (hidden_size + params // hidden_size)
                 else:
                     lora += lora_rank * 2 * int(math.sqrt(params))
             continue
-        # Floating-point weights load in the model dtype (an fp32 load upcasts a bf16 checkpoint); bitsandbytes
-        # quant state beside packed weights keeps its stored dtype.
+        # Float weights load in the model dtype; bnb quant state beside packed weights keeps its stored dtype.
         quant_state = packed and any(
             t in key for t in ("absmax", "quant_map", "quant_state", "nested_")
         )
@@ -425,7 +393,6 @@ def _model_types(name, call, revision):
 
 
 def _hidden_size(name, call, revision):
-    """The text model's hidden_size, or None."""
     try:
         config = _config(name, call, revision)
         config = config.get_text_config() if hasattr(config, "get_text_config") else config
@@ -436,11 +403,9 @@ def _hidden_size(name, call, revision):
 
 
 def _quant_skip_modules(model_types):
-    """The modules the loaders keep out of bitsandbytes for these model types."""
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
     from .models.vision import _architecture_skip_modules
-
     return list(SKIP_QUANTIZATION_MODULES) + list(_architecture_skip_modules(model_types))
 
 
@@ -541,8 +506,7 @@ def resolve_for_load(loader, args, kwargs):
                 f"{model_types[0]} loads in a forced float32 mode on float16; not sized"
             )
         if full:
-            # FastBaseModel.post_patch_model: float32 master weights (and so float32 grads and DDP buckets)
-            # unless the model loads in bfloat16 and float32_mixed_precision is not True.
+            # FastBaseModel.post_patch_model: fp32 master weights unless bf16 and float32_mixed_precision is not True.
             fp32_master = loaded != "bfloat16" or call.get("float32_mixed_precision") is True
             dtype_bytes = 4 if fp32_master else 2
         quantize = (load_in_4bit or load_in_8bit) and not load_in_16bit
@@ -569,11 +533,6 @@ def resolve_for_load(loader, args, kwargs):
         return weights, state, 0
 
     return _resolve(estimate, install_trainer_init = True)
-
-
-# --------------------------------------------------------------------------------------------------
-# Sizing a model already built (a Trainer whose model no Unsloth load made)
-# --------------------------------------------------------------------------------------------------
 
 
 def resolve_for_trainer(model, training_args = None):

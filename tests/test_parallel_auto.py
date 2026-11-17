@@ -139,16 +139,10 @@ def _snapshot():
         pytest.skip(f"{TINY} unavailable: {exc}")
 
 
-# --------------------------------------------------------------------------------------------------
-# Parsing (no process group)
-# --------------------------------------------------------------------------------------------------
-
-
 def test_auto_parses_and_explicit_layouts_are_unchanged(clean):
     mp, env, auto = clean
     assert env.parse_parallel_spec("auto") == {"auto": True}
     assert env.parse_parallel_spec("  AUTO ") == {"auto": True}
-    # Explicit layouts: the same spec and the same legacy variables as before auto existed.
     assert env.parse_parallel_spec("fsdp=1") == {"fsdp": True}
     assert env.parse_parallel_spec("fsdp=0") == {"fsdp": False}
     assert env.parse_parallel_spec("dp_shard=2") == {"dp": 2, "fsdp": True}
@@ -562,8 +556,7 @@ def test_budget_measures_the_local_rank_gpu(clean, monkeypatch):
 
 
 def test_budget_excludes_live_unrelated_allocations(clean, monkeypatch):
-    """Reserved memory still holding live tensors (a reference model loaded first) is not available; only the
-    allocator's free cache and the sized model's own resident bytes count."""
+    """Reserved memory holding other live tensors is not available; free cache + the model's own bytes are."""
     _, _, auto = clean
     gib = 1024**3
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -595,7 +588,6 @@ def test_import_installs_the_trainer_wrapper_while_auto_is_unresolved(clean, mon
     launch.install_native_fsdp2_trainer_init()
     assert calls == [Trainer]
     assert Trainer.__init__.__name__ == "_unsloth_trainer_init"
-    # Resolved, or a single process: nothing to install for auto.
     auto._STATE.update(choice = "ddp")
     calls.clear()
     launch.install_native_fsdp2_trainer_init()
@@ -647,11 +639,6 @@ def test_load_sizing_follows_the_loaders_precision(clean, name, extra, expected)
     ]
 
 
-# --------------------------------------------------------------------------------------------------
-# gloo world of 2
-# --------------------------------------------------------------------------------------------------
-
-
 def _init(rank, world, port):
     import datetime
 
@@ -697,7 +684,6 @@ def _decision_worker(rank, world, port, out, snapshot):
             return model_name
 
         res = {}
-        # GiB per rank: ample on both, ~1 KiB on both, ample on rank 0 only.
         for case, budgets in (
             ("fits", ("64", "64")),
             ("tight", ("1e-6", "1e-6")),
