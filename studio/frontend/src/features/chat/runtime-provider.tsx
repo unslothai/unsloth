@@ -191,6 +191,7 @@ import {
   reconcileOrdinarySavedMessagesInView,
   subscribeThreadSwitchRecovery,
 } from "./utils/saved-history-reconciliation";
+import { watchRemoteHistory } from "./utils/remote-history-watch";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import {
@@ -2534,7 +2535,7 @@ function useStudioRuntimeAdapters(
   useEffect(() => registerLiveThreadView(aui), [aui]);
 
   useEffect(() => {
-    const recoverCurrentThread = () => {
+    const recoverCurrentThread = (): Promise<boolean> | undefined => {
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
       const generation = beginSavedHistoryReconciliation(remoteId);
@@ -2544,13 +2545,14 @@ function useStudioRuntimeAdapters(
       } catch {
         idsAtRead = undefined;
       }
-      void readStoredChatMessages(remoteId)
+      // False only when the server copy was never read, so the remote watcher retries.
+      return readStoredChatMessages(remoteId)
         .then(({ messages, fromBackend }) => {
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
-            return;
+            return true;
           }
           if (aui.threadListItem().getState().remoteId !== remoteId) {
-            return;
+            return true;
           }
           // A legacy browser copy served during an outage is older, not an external update.
           if (fromBackend) {
@@ -2562,7 +2564,7 @@ function useStudioRuntimeAdapters(
             });
           }
           if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
-            return;
+            return fromBackend;
           }
           for (const message of messages) {
             if (
@@ -2573,8 +2575,9 @@ function useStudioRuntimeAdapters(
               scheduleGenerationRecovery(remoteId, message, messages, aui);
             }
           }
+          return fromBackend;
         })
-        .catch(() => {});
+        .catch(() => false);
     };
     const unsubscribeWake = subscribeGenerationRecoveryTriggers(
       globalThis,
@@ -2590,7 +2593,26 @@ function useStudioRuntimeAdapters(
       },
       recoverCurrentThread,
     );
+    const unwatchRemote = watchRemoteHistory({
+      threadId: () => aui.threadListItem().getState().remoteId ?? null,
+      isIdle: () => {
+        if (useChatRuntimeStore.getState().editingMessageId != null) {
+          return false;
+        }
+        try {
+          const state = aui.thread().getState();
+          return (
+            !state.isRunning &&
+            !state.messages.some((message) => message.composer?.isEditing)
+          );
+        } catch {
+          return false;
+        }
+      },
+      onThreadChanged: recoverCurrentThread,
+    });
     return () => {
+      unwatchRemote();
       unsubscribeSwitch();
       unsubscribeWake();
     };

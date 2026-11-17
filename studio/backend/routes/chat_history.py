@@ -66,6 +66,7 @@ from storage.studio_db import (
     fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
+    get_chat_history_revisions,
     get_chat_thread,
     get_chat_pins,
     get_chat_message,
@@ -909,6 +910,29 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
         if not payload.projectId:
             raise
         raise _missing_project_error(payload.projectId) from exc
+
+
+_REVISION_THREADS_MAX = 50
+
+
+class ChatHistoryRevisionResponse(BaseModel):
+    revision: int
+    threads: dict[str, int]
+
+
+@router.get("/revision", response_model = ChatHistoryRevisionResponse)
+def chat_history_revision(
+    thread_id: list[str] = Query(default_factory = list, alias = "threadId"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Change counters other devices poll, so a chat open elsewhere picks up writes made here."""
+    if len(thread_id) > _REVISION_THREADS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_REVISION_THREADS_MAX} thread ids per request",
+        )
+    revision, threads = get_chat_history_revisions(thread_id)
+    return ChatHistoryRevisionResponse(revision = revision, threads = threads)
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
