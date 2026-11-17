@@ -311,7 +311,8 @@ def test_materialization_lease_blocks_a_concurrent_retag(tmp_path, monkeypatch):
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
     ref = f"ollama-manifest:{quote(str(tag_file), safe = '')}"
 
-    alternate_ref = ref.replace("%2F", "%2f")
+    # Separator escape differs by OS (%2F vs %5C); lowercase whichever this host produced.
+    alternate_ref = ref.replace("%2F", "%2f").replace("%5C", "%5c")
     assert alternate_ref != ref
     lease = ollama.acquire_ollama_model_ref(ref)
 

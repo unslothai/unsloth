@@ -716,21 +716,31 @@ def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -
         if not isinstance(current, dict):
             continue
         digests |= _manifest_digests(current)
-        children = current.get("manifests") or []
-        for entry in [
-            *(current.get("layers") or []),
-            *(children if isinstance(children, list) else []),
-        ]:
+        layers = current.get("layers")
+        children = current.get("manifests")
+        children = children if isinstance(children, list) else []
+        # A list child is a digest reference or, as manifest.resolveLocalManifestReference allows, inline.
+        pending.extend(children)
+        for entry in [*(layers if isinstance(layers, list) else []), *children]:
             if not isinstance(entry, dict) or not isinstance(entry.get("digest"), str):
                 continue
-            if entry.get("mediaType") not in _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES:
+            if entry not in children and entry.get("mediaType") not in (
+                _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES
+            ):
                 continue
             digests.add(entry["digest"])
             if entry["digest"] in seen:
                 continue
             seen.add(entry["digest"])
             blob = _ollama_blob_path(blobs_dir, entry["digest"])
-            if blob is None or not _safe_is_file(blob):
+            try:
+                # Path.is_file raises on errors other than "missing", which strict must not skip.
+                present = blob is not None and (blob.is_file() if strict else _safe_is_file(blob))
+            except OSError:
+                if strict:
+                    raise
+                present = False
+            if not present:
                 # A pull downloads one list child; the others are not on disk.
                 continue
             try:
@@ -785,6 +795,8 @@ def delete_ollama_model_ref(ref: str) -> None:
         owned = _manifest_closure_digests(blobs_dir, manifest, strict = False)
         rel = _manifest_rel_path(tag_file, manifests_root)
         v2_file = _ollama_v2_manifest_path(ollama_dir, rel) if rel is not None else None
+        if v2_file is not None and not path_is_same_or_child(v2_file.parent, v2_root):
+            v2_file = None
         # ``ollama rm`` drops both trees: leaving the v2 entry would point Ollama at deleted blobs.
         v2_tag = v2_file if v2_file is not None and _safe_is_file(v2_file) else None
         if v2_tag is not None:

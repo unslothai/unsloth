@@ -191,6 +191,26 @@ def test_delete_v2_pulled_tag_removes_both_trees_and_keeps_a_cp_alias(tmp_path, 
     )
 
 
+def test_delete_v2_pulled_tag_keeps_blobs_an_inline_list_child_uses(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    store, ref, _ = _v2_store(tmp_path, monkeypatch)
+    alias = store / "manifests-v2" / "ollama.com" / "library" / "alias" / "latest"
+    inline = {
+        "config": {"digest": "sha256:cfg"},
+        "layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:model"}],
+    }
+    alias.write_text(
+        json.dumps(
+            {"mediaType": "application/vnd.ollama.manifest.list.v2+json", "manifests": [inline]}
+        )
+    )
+
+    ollama.delete_ollama_model_ref(ref)
+
+    assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
+
+
 def test_delete_split_gguf_takes_every_shard(lm_root, tmp_path, monkeypatch):
     hermes = tmp_path / "hermes"
     hermes.mkdir()
