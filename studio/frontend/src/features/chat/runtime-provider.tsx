@@ -191,6 +191,7 @@ import {
   reconcileOrdinarySavedMessagesInView,
   subscribeThreadSwitchRecovery,
 } from "./utils/saved-history-reconciliation";
+import { watchRemoteHistory } from "./utils/remote-history-watch";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import {
@@ -2577,7 +2578,26 @@ function useStudioRuntimeAdapters(
       },
       recoverCurrentThread,
     );
+    const unwatchRemote = watchRemoteHistory({
+      threadId: () => aui.threadListItem().getState().remoteId ?? null,
+      isIdle: () => {
+        if (useChatRuntimeStore.getState().editingMessageId != null) {
+          return false;
+        }
+        try {
+          const state = aui.thread().getState();
+          return (
+            !state.isRunning &&
+            !state.messages.some((message) => message.composer?.isEditing)
+          );
+        } catch {
+          return false;
+        }
+      },
+      onThreadChanged: recoverCurrentThread,
+    });
     return () => {
+      unwatchRemote();
       unsubscribeSwitch();
       unsubscribeWake();
     };

@@ -708,6 +708,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    _ensure_chat_history_revision_triggers(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
     )
@@ -2577,6 +2578,88 @@ def get_chat_thread(id: str) -> Optional[dict]:
         return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+# Scope '' counts every chat write; a thread id counts that thread's. Triggers, so every writer
+# (routes, server-side runs, imports) moves them and other devices can poll one cheap row.
+_CHAT_HISTORY_REVISION_ALL = ""
+
+
+def _bump_revision_sql(scope_expr: str, only_live_thread: bool = False) -> str:
+    # A message deleted by the thread's cascade must not recreate the row the thread delete dropped.
+    guard = (
+        f"WHERE EXISTS (SELECT 1 FROM chat_threads WHERE id = {scope_expr})"
+        if only_live_thread
+        else "WHERE true"
+    )
+    return (
+        "INSERT INTO chat_history_revisions (scope, revision) "
+        f"SELECT {scope_expr}, 1 {guard} "
+        "ON CONFLICT(scope) DO UPDATE SET revision = revision + 1;"
+    )
+
+
+def _ensure_chat_history_revision_triggers(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_history_revisions (
+            scope TEXT NOT NULL PRIMARY KEY,
+            revision INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    everything = _bump_revision_sql(f"'{_CHAT_HISTORY_REVISION_ALL}'")
+    for event, row in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS chat_history_revision_message_{event.lower()}
+            AFTER {event} ON chat_messages
+            BEGIN
+                {everything}
+                {_bump_revision_sql(f"{row}.thread_id", only_live_thread = True)}
+            END
+            """
+        )
+    for event in ("INSERT", "UPDATE"):
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS chat_history_revision_thread_{event.lower()}
+            AFTER {event} ON chat_threads
+            BEGIN
+                {everything}
+                {_bump_revision_sql("NEW.id")}
+            END
+            """
+        )
+    conn.execute(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS chat_history_revision_thread_delete
+        AFTER DELETE ON chat_threads
+        BEGIN
+            {everything}
+            DELETE FROM chat_history_revisions WHERE scope = OLD.id;
+        END
+        """
+    )
+
+
+def get_chat_history_revisions(thread_ids: list[str]) -> tuple[int, dict[str, int]]:
+    """The whole history's revision and each listed thread's; a thread never written reads 0."""
+    scopes = [_CHAT_HISTORY_REVISION_ALL, *dict.fromkeys(thread_ids)]
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT scope, revision FROM chat_history_revisions "
+            f"WHERE scope IN ({', '.join('?' for _ in scopes)})",
+            scopes,
+        ).fetchall()
+    finally:
+        conn.close()
+    found = {row["scope"]: int(row["revision"]) for row in rows}
+    return (
+        found.get(_CHAT_HISTORY_REVISION_ALL, 0),
+        {thread_id: found.get(thread_id, 0) for thread_id in scopes[1:]},
+    )
 
 
 def list_chat_threads(

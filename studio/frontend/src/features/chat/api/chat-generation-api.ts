@@ -248,18 +248,50 @@ export function explicitStopSignal(signal: AbortSignal): {
   };
 }
 
+// Failures while the page is hidden (a locked phone drops every socket) do not count.
+const ADMISSION_VISIBLE_ATTEMPTS = 4;
+
+function pageIsHidden(): boolean {
+  return (
+    typeof document !== "undefined" && document.visibilityState === "hidden"
+  );
+}
+
 export async function supportsChatGenerationRuns(
   threadId: string,
   signal?: AbortSignal,
+  options: {
+    isHidden?: () => boolean;
+    delay?: (failures: number) => number;
+  } = {},
 ): Promise<boolean> {
   const query = new URLSearchParams({ threadId });
-  const response = await authFetch(
-    `/api/inference/chat-runs/active?${query.toString()}`,
-    { signal },
-  );
-  if (response.status === 404 || response.status === 405) return false;
-  await json<{ runs: ChatGenerationRun[] }>(response);
-  return true;
+  const isHidden = options.isHidden ?? pageIsHidden;
+  let failures = 0;
+  let visibleFailures = 0;
+  while (true) {
+    try {
+      const response = await authFetch(
+        `/api/inference/chat-runs/active?${query.toString()}`,
+        { signal },
+      );
+      if (response.status === 404 || response.status === 405) return false;
+      await json<{ runs: ChatGenerationRun[] }>(response);
+      return true;
+    } catch (error) {
+      if (signal?.aborted || isPermanent(error)) throw error;
+      failures += 1;
+      if (!isHidden()) visibleFailures += 1;
+      if (visibleFailures >= ADMISSION_VISIBLE_ATTEMPTS) throw error;
+      await waitForReconnect(
+        (options.delay ?? reconnectDelay)(failures),
+        signal,
+      );
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+    }
+  }
 }
 
 export async function getActiveChatGenerationRuns(
