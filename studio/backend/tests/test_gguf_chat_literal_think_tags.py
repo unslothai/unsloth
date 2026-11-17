@@ -188,3 +188,71 @@ def test_a_trace_quoting_tool_tags_keeps_the_answer_with_tools_on(monkeypatch):
 
     assert reasoning == trace
     assert content == "OK"
+
+
+def _stream_with_tools(monkeypatch, frames):
+    real = _llama_server(monkeypatch, frames)
+
+    class _ToolGguf(_ThinkingGguf):
+        supports_tools = True
+
+        def _request_reasoning_kwargs(self, *args, **kwargs):
+            return {}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            return self._real.generate_chat_completion_with_tools(**kwargs)
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ToolGguf(real))
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+
+    async def _select(payload, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    response = TestClient(app).post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "enable_tools": True,
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    reasoning = content = ""
+    for line in response.text.splitlines():
+        if not line.startswith("data: {"):
+            continue
+        for choice in json.loads(line[len("data: ") :]).get("choices") or []:
+            delta = choice.get("delta") or {}
+            reasoning += delta.get("reasoning_content") or ""
+            content += delta.get("content") or ""
+    return reasoning, content
+
+
+def test_a_later_reasoning_segment_stays_reasoning_with_tools_on(monkeypatch):
+    frames = [
+        _sse({"reasoning_content": "Plan."}),
+        _sse({"content": "Literal <think>x</think> first. "}),
+        _sse({"reasoning_content": "Check."}),
+        _sse({"content": "Answer"}),
+        "data: [DONE]\n",
+    ]
+
+    reasoning, content = _stream_with_tools(monkeypatch, frames)
+
+    assert reasoning == "Plan.Check."
+    assert content == "Literal <think>x</think> first. Answer"
+
+
+def test_a_trace_quoting_a_tool_call_keeps_the_answer_with_tools_on(monkeypatch):
+    trace = "Quote </think> and <tool_call>{}</tool_call>."
+    frames = [_sse({"reasoning_content": trace}), _sse({"content": "OK"}), "data: [DONE]\n"]
+
+    reasoning, content = _stream_with_tools(monkeypatch, frames)
+
+    assert reasoning == trace
+    assert content == "OK"

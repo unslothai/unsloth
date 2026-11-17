@@ -38880,6 +38880,14 @@ class LlamaCppBackend:
         # Enabled-name gate for the markerless Gemma strip (disabled/example
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
+        _lead_wrap = None
+
+        def _lead_think_span(text: str) -> int:
+            # The server's leading think block may quote </think>; markup stripping must not reach into it.
+            if _lead_wrap is None or not text.startswith("<think>"):
+                return 0
+            end = len("<think>") + _lead_wrap["len"]
+            return end + len("</think>") if text.startswith("</think>", end) else 0
 
         def _gemma_lead_promotable(text: str) -> bool:
             # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
@@ -38894,8 +38902,9 @@ class LlamaCppBackend:
             if not (auto_heal_tool_calls or force):
                 return text
             # Shared parser-side strip covers every family; tool_healing strip omits loop-only forms (python_tag, Mistral name) and would leak them into display.
-            return _shared_strip_tool_markup(
-                text, final = final, enabled_tool_names = _enabled_names_gate
+            span = _lead_think_span(text)
+            return text[:span] + _shared_strip_tool_markup(
+                text[span:], final = final, enabled_tool_names = _enabled_names_gate
             )
 
         # Avoids quadratic rescans. Think blocks stay verbatim: a rehearsed call inside one must not be deleted.
@@ -38935,7 +38944,8 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return _streaming_stripper.strip(text)
+            span = _lead_think_span(text)
+            return text[:span] + _streaming_stripper.strip(text[span:])
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -38977,7 +38987,7 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display, _lead_wrap
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
@@ -38989,9 +38999,8 @@ class LlamaCppBackend:
                     and not _suppress_visible_output
                 ):
                     reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
-                    reasoning_provenance.setdefault("wraps", []).append(
-                        {"len": len(reasoning_accum)}
-                    )
+                    _lead_wrap = {"len": len(reasoning_accum)}
+                    reasoning_provenance.setdefault("wraps", []).append(_lead_wrap)
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
             # Not cleared: callers measure len(content_buffer) right after; recorded in _buffer_in_display so the cancel flush does not re-add it.
@@ -39569,7 +39578,7 @@ class LlamaCppBackend:
                 _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
-                _prov_entry = None
+                _prov_entry = _lead_wrap = None
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
@@ -39916,8 +39925,19 @@ class LlamaCppBackend:
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif (
+                                                reasoning_provenance is not None
+                                                and not _suppress_visible_output
+                                            ):
+                                                _prov_entry = {
+                                                    "len": 0,
+                                                    "at": len(cumulative_display),
+                                                }
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative_display += "<think>"
@@ -42192,7 +42212,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         # Track content separately to preserve literal `</think>` in the answer.
         answer_text = ""
-        _prov_entry = None
+        _prov_entry = _lead_wrap = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
         _metadata_usage = None
@@ -42357,8 +42377,13 @@ class LlamaCppBackend:
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif reasoning_provenance is not None:
+                                                _prov_entry = {"len": 0, "at": len(cumulative)}
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative += "<think>"
@@ -42385,8 +42410,10 @@ class LlamaCppBackend:
                                             in_thinking = False
                                             _prov_entry = None
                                         cumulative += token
+                                        _span = _lead_think_span(cumulative)
                                         cleaned = (
-                                            _final_answer_stripper.strip(cumulative)
+                                            cumulative[:_span]
+                                            + _final_answer_stripper.strip(cumulative[_span:])
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
@@ -42404,8 +42431,11 @@ class LlamaCppBackend:
                             break  # exit outer for
                     if auto_heal_tool_calls and has_content_tokens and not in_thinking:
                         # Release an answer still held as a possible bare-JSON call.
+                        _span = _lead_think_span(cumulative)
                         _flushed = _final_answer_visible(
-                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                            cumulative[:_span] + _final_answer_stripper.strip(cumulative[_span:]),
+                            answer_text,
+                            at_end = True,
                         )
                         if len(_flushed) > len(_last_emitted):
                             _last_emitted = _flushed
