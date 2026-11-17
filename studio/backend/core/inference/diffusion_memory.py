@@ -1147,6 +1147,26 @@ def trim_host_heap_after_load(logger: Any = None) -> bool:
         return False
 
 
+# "=1" re-enables per-request denoiser promotion (video residency, image whole tier) under Low VRAM.
+LOW_VRAM_PROMOTE_ENV = "UNSLOTH_DIFFUSION_LOW_VRAM_PROMOTE"
+
+
+def keeps_denoiser_streamed(memory_mode: Optional[str]) -> bool:
+    """True under Low VRAM (no per-request promotion). Never raises: an unreadable mode returns False."""
+    try:
+        mode = normalize_memory_mode(memory_mode)
+    except Exception:  # noqa: BLE001
+        return False
+    if mode != MEMORY_MODE_LOW_VRAM:
+        return False
+    return (os.environ.get(LOW_VRAM_PROMOTE_ENV) or "").strip().lower() not in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+
+
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode (accepting dashes); None passes through. Raises ValueError
     for an unsupported mode so the route rejects it as a 4xx before any GPU work."""
