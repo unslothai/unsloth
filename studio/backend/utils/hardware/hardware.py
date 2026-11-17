@@ -3651,6 +3651,11 @@ _ROCM_WIN_DISPLAY_COUNTERS: dict[tuple[str, str], tuple[str, str, str]] = {
         "\\GPU Adapter Memory(*)\\Shared Usage",
         "[int64]$_.CookedValue",
     ),
+    ("util", "3D"): (
+        "U",
+        "\\GPU Engine(*engtype_3D*)\\Utilization Percentage",
+        _ROCM_WIN_INVARIANT_COOKED,
+    ),
 }
 
 
@@ -3747,76 +3752,86 @@ def _rocm_windows_counter_stdout_uncached(ps: str) -> Optional[str]:
     return r.stdout
 
 
-_GPU_UTIL_TTL_S = 3.0
-_gpu_util_cache_lock = threading.Lock()
-_gpu_util_cache: Dict[int, tuple[float, Optional[float]]] = {}
+def _rocm_windows_engine_counter_ps(instances: str) -> str:
+    return (
+        f"$s=(Get-Counter '\\GPU Engine({instances})\\Utilization Percentage'"
+        " -ErrorAction SilentlyContinue).CounterSamples;"
+        "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,"
+        f"{_ROCM_WIN_INVARIANT_COOKED}}}}}else{{'__NONE__'}}"
+    )
+
+
+_ROCM_WIN_UTIL_TTL_S = 3.0
+_rocm_win_util_lock = threading.Lock()
+# luid -> (completed_at, spawn seconds, stdout)
+_rocm_win_util_cache: dict[int, tuple[float, float, Optional[str]]] = {}
+
+
+def _rocm_windows_adapter_engines_stdout(luid: int) -> Optional[str]:
+    # Every engine instance on the host overruns the 5 s spawn timeout (#18005); one adapter's fit.
+    with _rocm_win_util_lock:
+        now = time.monotonic()
+        cached = _rocm_win_util_cache.get(luid)
+        if cached is not None and now - cached[0] < min(
+            _ROCM_WIN_COUNTER_MAX_AGE_S,
+            max(_ROCM_WIN_UTIL_TTL_S, _ROCM_WIN_COUNTER_SPACING * cached[1]),
+        ):
+            return cached[2]
+        try:
+            stdout = _rocm_windows_counter_stdout_uncached(
+                _rocm_windows_engine_counter_ps(
+                    f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*"
+                )
+            )
+        except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
+            stdout = None
+        done = time.monotonic()
+        _rocm_win_util_cache[luid] = (done, done - now, stdout)
+        return stdout
 
 
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
-    """AMD GPU load via Windows Performance Counters, all engine types, busiest type wins.
-
-    ``luid`` narrows the query to one adapter: over every instance the counter call takes longer
-    than the 5 s spawn timeout, so the wildcard is part of the PowerShell path rather than a
-    Python filter. Sums each engine type (3D, Compute, Copy ...) and returns the maximum, because
-    a HIP kernel runs on Compute while 3D stays idle. Cached for a few seconds to spare PowerShell.
-    """
+    """AMD GPU utilization via Windows Performance Counters. With ``luid``: that adapter's busiest engine type, since HIP runs on Compute while 3D idles (#18005); PDH narrows the query, the LUID match here decides. Without: the host's 3D engines."""
     if platform.system() != "Windows":
         return None
-    cache_key = luid if luid is not None else -1
-    now = time.monotonic()
-    with _gpu_util_cache_lock:
-        cached = _gpu_util_cache.get(cache_key)
-        if cached is not None and now - cached[0] < _GPU_UTIL_TTL_S:
-            return cached[1]
-    value: Optional[float] = None
     try:
-        wildcard = (
-            "*"
-            if luid is None
-            else "*luid_0x{:08x}_0x{:08x}*".format((luid >> 32) & 0xFFFFFFFF, luid & 0xFFFFFFFF)
-        )
-        ps = (
-            "$s=(Get-Counter '\\GPU Engine(" + wildcard + ")\\Utilization Percentage'"
-            " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,"
-            f"{_ROCM_WIN_INVARIANT_COOKED}}}}}else{{'__NONE__'}}"
-        )
-        stdout = _rocm_windows_counter_stdout_uncached(ps)
-        if stdout is not None:
-            per_engine: Dict[str, float] = {}
-            for line in stdout.splitlines():
-                line = line.strip()
-                if not line or line == "__NONE__" or "|" not in line:
-                    continue
-                instance, _, raw = line.rpartition("|")
-                instance = instance.strip()
-                if "engtype_" not in instance.lower():
-                    continue
-                engine_type = instance.rsplit("engtype_", 1)[-1].strip().lower()
-                try:
-                    reading = float(raw.strip())
-                except (ValueError, TypeError):
-                    continue
-                # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
-                if reading != reading or reading in (float("inf"), float("-inf")) or reading < 0:
-                    continue
-                per_engine[engine_type] = per_engine.get(engine_type, 0.0) + reading
-            if per_engine:
-                value = round(min(max(per_engine.values()), 100.0), 1)
+        if luid is None:
+            stdout = _rocm_windows_counter_stdout(
+                ("util", "3D"), _rocm_windows_engine_counter_ps("*engtype_3D*")
+            )
+        else:
+            stdout = _rocm_windows_adapter_engines_stdout(luid)
+        if stdout is None:
+            return None
+        by_type: dict[str, float] = {}
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or line == "__NONE__" or "|" not in line:
+                continue
+            instance, _, raw = line.rpartition("|")
+            # Hosts spell it engtype_3D and engtype_3d both.
+            _, sep, engine_type = instance.strip().lower().rpartition("engtype_")
+            if not sep or (luid is None and engine_type != "3d"):
+                continue
+            if luid is not None and _engine_instance_luid(instance.strip()) != luid:
+                continue
+            try:
+                value = float(raw.strip())
+            except (ValueError, TypeError):
+                continue
+            # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
+            if value != value or value in (float("inf"), float("-inf")) or value < 0:
+                continue
+            by_type[engine_type] = by_type.get(engine_type, 0.0) + value
+        if not by_type:
+            return None
+        return round(min(max(by_type.values()), 100.0), 1)
     except Exception:
-        value = None
-    with _gpu_util_cache_lock:
-        _gpu_util_cache[cache_key] = (now, value)
-    return value
+        return None
 
 
-def _windows_d3dkmt_temperature_c(luid: Optional[int]) -> Optional[float]:
-    """Adapter temperature from the display driver via D3DKMT (Windows; no vendor library, no admin).
-
-    Source: Strata (MIT), apps/host/server/windows-gpu.mjs - D3DKMTOpenAdapterFromLuid, then
-    D3DKMTQueryAdapterInfo type 62 into a 64-byte buffer, temperature as int32 at offset 56 in
-    tenths of a degree. AMD returns 0 for power there and WDDM counters carry none, so power stays None.
-    """
+def _rocm_windows_d3dkmt_temperature_c(luid: Optional[int]) -> Optional[float]:
+    """Adapter temperature via D3DKMTQueryAdapterInfo(KMTQAITYPE_ADAPTERPERFDATA = 62): D3DKMT_ADAPTER_PERFDATA.Temperature, ULONG deci-Celsius at offset 56 of 64. No vendor library, no admin. Its Power is a percentage (AMD reports 0), so watts stay unknown."""
     if platform.system() != "Windows" or luid is None:
         return None
     try:
@@ -3826,10 +3841,10 @@ def _windows_d3dkmt_temperature_c(luid: Optional[int]) -> Optional[float]:
         class _Luid(ctypes.Structure):
             _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
 
-        class _Open(ctypes.Structure):
+        class _OpenAdapterFromLuid(ctypes.Structure):
             _fields_ = [("AdapterLuid", _Luid), ("hAdapter", wintypes.UINT)]
 
-        class _Query(ctypes.Structure):
+        class _QueryAdapterInfo(ctypes.Structure):
             _fields_ = [
                 ("hAdapter", wintypes.UINT),
                 ("Type", ctypes.c_int),
@@ -3838,28 +3853,20 @@ def _windows_d3dkmt_temperature_c(luid: Optional[int]) -> Optional[float]:
             ]
 
         gdi = ctypes.WinDLL("gdi32")
-        gdi.D3DKMTOpenAdapterFromLuid.argtypes = [ctypes.POINTER(_Open)]
-        gdi.D3DKMTOpenAdapterFromLuid.restype = ctypes.c_long
-        gdi.D3DKMTQueryAdapterInfo.argtypes = [ctypes.POINTER(_Query)]
-        gdi.D3DKMTQueryAdapterInfo.restype = ctypes.c_long
-        gdi.D3DKMTCloseAdapter.argtypes = [ctypes.POINTER(wintypes.UINT)]
-
-        opened = _Open()
+        opened = _OpenAdapterFromLuid()
         opened.AdapterLuid.LowPart = luid & 0xFFFFFFFF
-        high = (luid >> 32) & 0xFFFFFFFF
-        opened.AdapterLuid.HighPart = high - (1 << 32) if high >= (1 << 31) else high
+        opened.AdapterLuid.HighPart = ctypes.c_int32(luid >> 32).value
         if gdi.D3DKMTOpenAdapterFromLuid(ctypes.byref(opened)) != 0:
             return None
-        buffer = ctypes.create_string_buffer(64)
-        query = _Query(opened.hAdapter, 62, ctypes.cast(buffer, ctypes.c_void_p), 64)
+        perf = ctypes.create_string_buffer(64)
         try:
+            query = _QueryAdapterInfo(opened.hAdapter, 62, ctypes.cast(perf, ctypes.c_void_p), 64)
             if gdi.D3DKMTQueryAdapterInfo(ctypes.byref(query)) != 0:
                 return None
-            raw = int.from_bytes(bytes(buffer.raw[56:60]), "little", signed = True)
         finally:
-            handle = wintypes.UINT(opened.hAdapter)
-            gdi.D3DKMTCloseAdapter(ctypes.byref(handle))
-        # 0 means "no answer"; sanity-capped at 150 C so a garbage read is not shown as a sensor.
+            gdi.D3DKMTCloseAdapter(ctypes.byref(wintypes.UINT(opened.hAdapter)))
+        raw = int.from_bytes(perf.raw[56:60], "little")
+        # 0 = the driver has no sensor; above 150 C is not a reading.
         return round(raw / 10.0, 1) if 0 < raw <= 1500 else None
     except Exception:
         return None
@@ -4901,10 +4908,7 @@ def _rocm_windows_per_device_vram(
 
 
 def _rocm_windows_device_payload_entry(
-    device: DeviceType,
-    dev: Dict[str, Any],
-    gpu_util_pct: Optional[float],
-    temperature_c: Optional[float] = None,
+    device: DeviceType, dev: Dict[str, Any], gpu_util_pct: Optional[float]
 ) -> Dict[str, Any]:
     """Build a ``get_gpu_utilization`` device entry from a per-device VRAM dict."""
     total_gb = dev["total_gb"]
@@ -4916,7 +4920,7 @@ def _rocm_windows_device_payload_entry(
         "visible_ordinal": dev["visible_ordinal"],
         "name": dev.get("name", "Unknown"),
         "gpu_utilization_pct": gpu_util_pct,
-        "temperature_c": temperature_c,
+        "temperature_c": _rocm_windows_d3dkmt_temperature_c(dev.get("luid")),
         "vram_used_gb": used_gb,
         "vram_total_gb": total_gb,
         "vram_utilization_pct": round((used_gb / total_gb) * 100, 1)
@@ -5015,9 +5019,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                 return _gpu_utilization_payload(
                     device,
                     [
-                        _rocm_windows_device_payload_entry(
-                            device, _wd, _win_util, _windows_d3dkmt_temperature_c(_wd.get("luid"))
-                        )
+                        _rocm_windows_device_payload_entry(device, _wd, _win_util)
                         for _wd in _win_devices
                     ],
                     vram_used_gb_aggregate = _win_aggregate,

@@ -37,6 +37,7 @@ def _de_de_powershell(samples):
 def windows(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
 
     def use(samples, combined):
         monkeypatch.setattr(gpu_query, "enabled", lambda: combined)

@@ -40,6 +40,7 @@ def _tagged(tag, body):
 @pytest.fixture
 def counters(monkeypatch):
     monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(gpu_query, "enabled", lambda: True)
     monkeypatch.setattr(gpu_query, "ttl_for", lambda kind: 3.0)
@@ -78,25 +79,24 @@ def _read_all():
         hw._rocm_windows_perf_counter_vram_by_adapter(),
         hw._rocm_windows_perf_counter_vram_by_adapter("Shared Usage"),
         hw._rocm_windows_perf_counter_gpu_util_pct(),
-        hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2),
     )
 
 
 def test_back_to_back_display_polls_spawn_once(counters):
     fresh = _read_all()
-    assert len(counters.calls) == 4 and not _combined(counters.calls)
+    assert len(counters.calls) == 3 and not _combined(counters.calls)
     with gpu_query.display_reads(max_stale = 0):
         for _ in range(10):
             assert _read_all() == fresh
     # Ten polls of all three counters: one combined spawn, against 30 per-counter spawns before.
-    assert len(counters.calls) == 4 + 1
+    assert len(counters.calls) == 3 + 1
     assert len(_combined(counters.calls)) == 1
     assert fresh[0] == [
         ("luid_0x00000000_0x0000d1a2_phys_0", 1073741824.0),
         ("luid_0x00000000_0x0000d1a3_phys_0", 0.0),
     ]
     assert fresh[1] == [("luid_0x00000000_0x0000d1a2_phys_0", 2048.0)]
-    assert fresh[2] == fresh[3] == 37.5
+    assert fresh[2] == 37.5
 
 
 def test_reading_outlives_its_own_probe(counters):
@@ -200,10 +200,10 @@ def test_a_hung_combined_call_is_not_retried_by_every_read(counters, monkeypatch
 
     monkeypatch.setattr(hw.subprocess, "run", hung)
     with gpu_query.display_reads(max_stale = 0):
-        assert _read_all() == (None, None, None, None)
-    # Base ran 4 own calls (20 s); one combined attempt rides on top (25 s), not one per read (40 s).
+        assert _read_all() == (None, None, None)
+    # Base ran 3 own calls (15 s); one combined attempt rides on top (20 s), not one per read (30 s).
     assert len(_combined(counters.calls)) == 1
-    assert len(counters.calls) == 5
+    assert len(counters.calls) == 4
 
 
 def test_a_counter_missing_from_the_combined_reading_reads_its_own(counters):
@@ -213,10 +213,10 @@ def test_a_counter_missing_from_the_combined_reading_reads_its_own(counters):
         for _ in range(2):
             assert _read_all() == fresh
     combined = _combined(counters.calls)
-    own_util = [c for c in counters.calls[4:] if c not in combined and "GPU Engine" in c]
+    own_util = [c for c in counters.calls[3:] if c not in combined and "GPU Engine" in c]
     assert len(combined) == 1
-    assert len(own_util) == 4
-    assert len(counters.calls) == 4 + 1 + 4
+    assert len(own_util) == 2
+    assert len(counters.calls) == 3 + 1 + 2
 
 
 def test_concurrent_display_polls_share_one_spawn(counters, monkeypatch):
@@ -258,3 +258,33 @@ def test_combined_script_keeps_each_counter_path_and_format():
         ("vram", "Shared Usage"): _SHARED,
         ("util", "3D"): _UTIL,
     }
+
+
+def test_one_adapters_utilization_reads_its_own_narrowed_counter(counters):
+    """#18005: every engine instance overran the 5 s timeout, so the LUID goes in the path."""
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+    (script,) = counters.calls
+    assert "\\GPU Engine(*luid_0x00000000_0x0000d1a2*)\\Utilization Percentage" in script
+    assert "Get-Counter -Counter" not in script
+    # 2 s spawn: served for 4 x 2 s, capped at the display maximum.
+    counters.clock.now += 7.9
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+    assert len(counters.calls) == 1
+    counters.clock.now += 0.1
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.5
+    assert len(counters.calls) == 2
+
+
+def test_a_hung_adapter_counter_is_not_retried_by_every_poll(counters, monkeypatch):
+    def hung(argv, **kwargs):
+        counters.calls.append(argv[-1])
+        counters.clock.now += 5.0
+        raise hw.subprocess.TimeoutExpired(argv, 5)
+
+    monkeypatch.setattr(hw.subprocess, "run", hung)
+    for _ in range(3):
+        assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) is None
+    assert len(counters.calls) == 1
+    counters.clock.now += hw._ROCM_WIN_COUNTER_MAX_AGE_S
+    assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) is None
+    assert len(counters.calls) == 2
