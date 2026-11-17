@@ -28,7 +28,7 @@ test("all max-output cap callers pass the selected connection override", () => {
   );
   assert.match(
     adapter,
-    /getExternalMaxOutputTokens\([\s\S]*?externalProvider\?\.maxOutputTokens/,
+    /externalRequestMaxTokens\([\s\S]*?externalProvider\?\.maxOutputTokens,\s*params\.maxTokens,/,
   );
 
   // re-gating this on the UI provider type makes the feature a no-op on the next sync

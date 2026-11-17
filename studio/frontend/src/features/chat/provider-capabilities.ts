@@ -224,6 +224,52 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
+// Unset, these stop at their window; Ollama context-shifts past it, a Custom gateway may default low.
+const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set(["llama_cpp", "vllm"]);
+
+/** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
+export function externalMaxTokensUnboundedAtMax(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): boolean {
+  return (
+    providerType != null &&
+    SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType) &&
+    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) == null &&
+    _documentedMaxOutputTokens(providerType, modelId) == null
+  );
+}
+
+/** Null means send no max_tokens. */
+export function externalRequestMaxTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens: number | null | undefined,
+  maxTokens: number,
+): number | null {
+  const cap = getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+  );
+  if (
+    maxTokens >= cap &&
+    externalMaxTokensUnboundedAtMax(
+      providerType,
+      modelId,
+      connectionMaxOutputTokens,
+    )
+  ) {
+    return null;
+  }
+  // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
+  return Math.min(
+    Math.max(maxTokens, getExternalMinOutputTokens(providerType)),
+    cap,
+  );
+}
+
 /**
  * Null unless a published cap or user override grounds it; guesses are unsafe as a budget.
  */
