@@ -172,6 +172,20 @@ def test_broadcast_position_ids():
         assert torch.equal(x, y) and torch.equal(x, z)
 
 
+def test_broadcast_position_ids_on_unfused_fallback():
+    # Trainable norm weights take the fallback path. The fallback must receive the
+    # same expanded [batch, seq] ids as the fused path, not the original one-row view.
+    bsz, seq = 2, 37
+    case = _case(bsz, seq, 8, 2, 128, torch.float32, False, trainable = True)
+    q_lin, k_lin, cos, sin, _, grads, norms = case
+    one_row = torch.arange(seq, device = "cuda")[None]
+    full = one_row.expand(bsz, seq)
+    broadcast = _run(fast_qk_norm_rope, q_lin, k_lin, cos, sin, one_row, grads, norms, 128)
+    expanded = _run(fast_qk_norm_rope, q_lin, k_lin, cos, sin, full, grads, norms, 128)
+    for got, expected in zip(broadcast, expanded):
+        assert torch.equal(got, expected)
+
+
 @pytest.mark.skipif(not TRACEABLE, reason = "needs torch.library.triton_op")
 @pytest.mark.parametrize("dtype", [BF16, torch.float16, torch.float32])
 @pytest.mark.parametrize("packed", [False, True])
