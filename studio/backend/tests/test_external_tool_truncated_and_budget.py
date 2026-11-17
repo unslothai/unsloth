@@ -435,7 +435,6 @@ def _finishes(lines):
 
 
 def test_an_intent_cut_off_at_the_output_limit_is_not_nudged(executed):
-    # A nudge would start another round whose stop clears the client's length notice.
     transport = FakeTransport(
         [
             [_sse({"content": "Let me search for that."}), _sse(finish = "length"), _DONE],
