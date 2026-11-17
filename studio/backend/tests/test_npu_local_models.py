@@ -549,3 +549,14 @@ def test_a_converted_model_samples_like_its_base():
     catalog = dataclasses.replace(converted, id = "qwen3-0.6b-FLM", local = None)
     assert converted.sampling_id == catalog.sampling_id == "qwen3-0.6b-FLM"
     assert load_inference_config(converted.sampling_id) == load_inference_config(catalog.id)
+
+
+@posix_only
+def test_a_loaded_conversion_asks_for_its_base_models_sampling(runtime):
+    _converted()
+    [local] = nlm.account_local_models()
+    runtime.load(local.id)
+    upstream = runtime.upstream()
+    assert upstream.model == local.id
+    assert upstream.sampling_model == "qwen3-0.6b-FLM"
+    runtime.unload()

@@ -31341,12 +31341,9 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         payload.enable_thinking = False
     elif payload.enable_thinking is None:
         payload.enable_thinking = payload.reasoning_effort != "none"
-    loaded = npu.loaded_model
     _fill_recommended_sampling_openai(
         payload,
-        loaded.sampling_id
-        if loaded is not None and loaded.id == upstream.model
-        else upstream.model,
+        upstream.sampling_model or upstream.model,
         thinking = payload.enable_thinking if upstream.supports_reasoning else None,
     )
 

@@ -219,6 +219,7 @@ class ManagedUpstream:
     supports_tools: bool
     supports_reasoning: bool
     context_length: Optional[int]
+    sampling_model: Optional[str] = None
 
 
 @dataclass
@@ -1384,6 +1385,7 @@ class LemonadeNpuBackend:
             supports_tools = model.tools,
             supports_reasoning = model.reasoning,
             context_length = resident.context_length,
+            sampling_model = model.sampling_id,
         )
 
 
