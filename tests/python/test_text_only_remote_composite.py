@@ -50,6 +50,33 @@ _HELPERS = (
 )
 
 _CONSTANTS = ("_REMOTE_CODE_HUB_KWARGS", "_QC_MODULE_NAME_FIELDS")
+IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
+
+
+@pytest.fixture(scope = "module", autouse = True)
+def _config_commit_hash_fix():
+    # `import unsloth` stamps config._commit_hash again on transformers >= 5.18, which dropped it; a no-op before.
+    import logging
+
+    from transformers import configuration_utils as cu
+
+    source = IMPORT_FIXES_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "fix_transformers_config_commit_hash"
+    )
+    ns = {"logger": logging.getLogger(__name__)}
+    exec(ast.get_source_segment(source, node), ns)
+    base = cu.PreTrainedConfig if hasattr(cu, "PreTrainedConfig") else cu.PretrainedConfig
+    saved = {k: base.__dict__[k] for k in ("get_config_dict", "from_dict")}
+    ns["fix_transformers_config_commit_hash"]()
+    yield
+    for k, v in saved.items():
+        setattr(base, k, v)
+    if "_unsloth_commit_hash_patched" in base.__dict__:
+        del base._unsloth_commit_hash_patched
 
 
 def _ns():

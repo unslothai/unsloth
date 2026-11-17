@@ -178,6 +178,7 @@ from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
 from .media_decode_phase import denoise_phase as _denoise_phase
 from . import diffusion_bg_compile
+from . import video_lora
 from . import diffusion_render_thread as render_thread
 from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
@@ -6177,6 +6178,7 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         allow_oversized_load: bool = False,
         nvfp4_route: Any = None,
+        loras: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -6239,6 +6241,20 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
+        )
+        if video_lora.has_active(loras):
+            lora_refusal = video_lora.load_refusal(
+                fam, resolve_video_model_kind(gguf_filename, model_kind), transformer_quant
+            )
+            if lora_refusal:
+                raise ValueError(lora_refusal)
+        # Network, so after the cheap checks; before the worker, whose first step downloads the weights.
+        refuse_without_guardrail_access(
+            fam,
+            resolve_video_model_kind(gguf_filename, model_kind),
+            repo_id,
+            hf_token,
+            local_files_only,
         )
         if auto_ordinal:
             # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
@@ -6327,6 +6343,8 @@ class VideoBackend:
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
                 _nvfp4_route = nvfp4_route,
+                # Only when sent, so a plain load runs exactly as before.
+                **({"loras": loras} if video_lora.has_active(loras) else {}),
             ),
             daemon = True,
         ).start()
@@ -6367,6 +6385,17 @@ class VideoBackend:
                 allow_network = not local_files_only,
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
+            baking_loras = video_lora.has_active(kwargs.get("loras"))
+            if baking_loras:
+                lora_refusal = video_lora.load_refusal(fam, kind, kwargs.get("transformer_quant"))
+                if lora_refusal:
+                    raise ValueError(lora_refusal)
+                # Planned as the load will run: the dense denoiser the adapters merge into.
+                kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
+                    fam, kwargs.get("transformer_quant"), kwargs.get("loras")
+                )
+            else:
+                kwargs.pop("loras", None)
             ltx25_dev = _ltx25_dev_load(
                 fam,
                 kind,
@@ -6442,6 +6471,10 @@ class VideoBackend:
                 ltx25_dev = ltx25_dev,
                 native_hosted = native_hosted_out,
             )
+            if baking_loras:
+                # LoRAs merge into dense weights: no hosted pre-quantized denoiser replaces the dense shards.
+                video_auto_denoiser = DENOISER_SEED_DECLINED
+                native_hosted_out.clear()
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
                 video_auto_denoiser = None
@@ -8652,6 +8685,14 @@ class VideoBackend:
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        loras = load_kwargs.pop("loras", None)
+        baking_loras = video_lora.has_active(loras)
+        if baking_loras:
+            # Planned as the load runs: the dense denoiser the adapters merge into, never a hosted quantized one.
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            if lora_refusal:
+                raise ValueError(lora_refusal)
+            transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -8696,6 +8737,9 @@ class VideoBackend:
             ltx25_dev = ltx25_dev,
             native_hosted = native_hosted_out,
         )
+        if baking_loras:
+            video_planned = None
+            native_hosted_out.clear()
         if video_planned == DENOISER_SEED_DECLINED:
             # An offloaded int8 load reads the hosted file as native Linears: plan that file, not the dense shards.
             video_planned = native_hosted_out[0] if native_hosted_out else None
@@ -9603,6 +9647,7 @@ class VideoBackend:
         _video_auto_denoiser_planned: Optional[str] = None,
         _video_native_hosted_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
+        loras: Any = None,
     ) -> dict[str, Any]:
         fam = self.validate_load_request(
             repo_id,
@@ -9617,6 +9662,28 @@ class VideoBackend:
         )
         install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        refuse_without_guardrail_access(fam, kind, repo_id, hf_token, local_files_only)
+        lora_specs = video_lora.active_specs(loras)
+        baked_loras: tuple = ()
+        if lora_specs:
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            if lora_refusal:
+                raise ValueError(lora_refusal)
+            transformer_quant = video_lora.dense_transformer_quant(
+                fam, transformer_quant, lora_specs
+            )
+            # The adapters merge into the dense denoiser, so no pre-quantized one may stand in for it.
+            _video_auto_denoiser_planned = DENOISER_SEED_DECLINED
+            _video_native_hosted_planned = None
+            _h3_auto_denoiser_planned = None
+            # Resolved (and downloaded) before teardown, so a bad pick leaves the resident model alone.
+            baked_loras = video_lora.resolve(
+                lora_specs,
+                family = getattr(fam, "name", None),
+                hf_token = hf_token,
+                cancel_event = self._cancel_event if _load_token is not None else None,
+                local_files_only = local_files_only,
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -9804,6 +9871,8 @@ class VideoBackend:
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
                 _nvfp4_install_outcome = _nvfp4_install_outcome,
                 transformer_cache = transformer_cache,
+                baked_loras = baked_loras,
+                lora_specs = lora_specs,
             )
 
         transformer_quant_requested = transformer_quant
@@ -10429,7 +10498,8 @@ class VideoBackend:
                 kind = kind,
                 source_dir = _base_local_dir or repo_id,
             )
-            if kind == "pipeline" and not denoiser_injected
+            # A LoRA load quantises its merged weights, never a cached build of the bare ones.
+            if kind == "pipeline" and not denoiser_injected and not baked_loras
             else None
         )
         native_config_kwargs: dict[str, Any] = (
@@ -10554,6 +10624,13 @@ class VideoBackend:
                     raise
                 logger.warning("video.cosmos3: guardrail download refused: %s", exc)
                 raise ValueError(refusal) from exc
+            if baked_loras:
+                # The live denoiser will hold merged weights: caching it as the base's cast would poison later loads.
+                cast_missed = [
+                    c
+                    for c in cast_missed
+                    if not video_lora.is_denoiser_component(getattr(c, "component", ""))
+                ]
             if cast_missed:
                 from .diffusion_cast_cache import defer_writes
 
@@ -10847,6 +10924,9 @@ class VideoBackend:
             del pipe
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
+
+        if baked_loras:
+            self._bake_video_loras(pipe, baked_loras, lora_specs, fam = fam, target = target)
 
         # Dual-DiT MoE: sites cover BOTH experts (``views`` = pipe, _SecondDiTView(pipe)); single: (pipe,).
         views = _views_for(pipe, fam)
@@ -11154,7 +11234,10 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                if (
+                if baked_loras:
+                    # Quantized from merged weights: never written as a cache of the bare base model.
+                    pass
+                elif (
                     native_cache_spec is not None
                     and native_scheme == engaged[0]
                     and native_cache_spec
@@ -11913,6 +11996,10 @@ class VideoBackend:
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
+        if baked_loras:
+            # Built from merged weights: never written back as a cache of the base model.
+            _discard_resident_quant_write(self, _load_token)
+            native_writes = None
         held = (cast_writes, native_writes, _take_resident_quant_write(self, _load_token))
         if any(w is not None for w in held) and _cache_writes_after_render():
             holder = _HeldCacheWrites(
@@ -11926,6 +12013,45 @@ class VideoBackend:
         else:
             _start_cache_writes(pipe, *held)
         return self.status()
+
+    @staticmethod
+    def _bake_video_loras(
+        pipe: Any,
+        baked: tuple,
+        specs: Any,
+        *,
+        fam: Any,
+        target: Any = None,
+        component: str = "transformer",
+    ) -> int:
+        """Merge the resolved adapters into the dense denoiser in place and record them on ``pipe``."""
+        denoiser = getattr(pipe, component, None)
+        label = f"{getattr(fam, 'label', None) or getattr(fam, 'name', 'video')} denoiser"
+        if denoiser is None:
+            # A modular load_components logs a failed component and carries on, so the cause is in the log above.
+            raise ValueError(
+                f"The {label} did not load (a failed download or read, often a full disk; see the server log), "
+                "so the LoRA has nothing to bake into."
+            )
+        device = (
+            getattr(target, "torch_device", None)
+            if getattr(target, "device", None) == "cuda"
+            else None
+        )
+        merged = video_lora.bake_into_module_(
+            denoiser,
+            [(path, weight) for (_name, path, weight) in baked],
+            device = device,
+            label = label,
+        )
+        video_lora.mark_baked(pipe, baked, specs)
+        logger.info(
+            "video.lora_bake: %d adapter(s), %d layer(s) merged into the bf16 %s",
+            len(baked),
+            merged,
+            label,
+        )
+        return merged
 
     @staticmethod
     def _raise_on_modular_unified_shortfall(
@@ -12008,6 +12134,8 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         comfy_checkpoint: Optional[str] = None,
         gguf_filename: Optional[str] = None,
+        baked_loras: tuple = (),
+        lora_specs: Any = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -12420,6 +12548,21 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
+        if baked_loras:
+            # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
+            if transformer_quant_engaged is not None:
+                raise ValueError(
+                    f"MiniMax-H3 LoRAs merge into the released bfloat16 denoiser, but this load engaged a "
+                    f"{transformer_quant_engaged} one. Load with transformer_quant unset or 'none'."
+                )
+            self._bake_video_loras(
+                pipe,
+                baked_loras,
+                lora_specs,
+                fam = fam,
+                target = umem_target,
+                component = denoiser_component,
+            )
         # Before any offload hook wraps the denoiser's forward (the hooks then wrap this one).
         from .video_minimax_h3_forward import install_h3_forward_on_pipe
 
@@ -13754,6 +13897,12 @@ class VideoBackend:
                     "text_encoder_quant": result.get("text_encoder_quant"),
                     "memory_mode": result.get("memory_mode"),
                     "offload_policy": result.get("offload_policy"),
+                    # Adapters baked into the denoiser at load: part of the build, so part of the recipe.
+                    **(
+                        {"baked_loras": list(result["baked_loras"])}
+                        if result.get("baked_loras")
+                        else {}
+                    ),
                     "created_at": created_at,
                 },
                 **({"video_id": video_id} if video_id is not None else {}),
@@ -14841,6 +14990,7 @@ class VideoBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
+                    "baked_loras": video_lora.baked_lora_names(state.pipe),
                 }
             except Exception as exc:
                 self._gen = {"active": False}
@@ -15606,6 +15756,7 @@ class VideoBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": "none" if render_resident else state.offload_policy,
+                    "baked_loras": video_lora.baked_lora_names(state.pipe),
                 }
             finally:
                 output_path.unlink(missing_ok = True)
@@ -15882,6 +16033,9 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
+                "baked_loras": [],
+                "baked_lora_specs": [],
+                "lora_refusal": None,
                 "transformer_quant_backend": None,
                 "transformer_quant_backend_reason": None,
                 "text_encoder_quant": None,
@@ -15951,6 +16105,10 @@ class VideoBackend:
                 else None
             ),
             "transformer_quant": state.transformer_quant,
+            "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
+            "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
+            # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
+            "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
@@ -16003,6 +16161,20 @@ class VideoBackend:
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
+
+
+def refuse_without_guardrail_access(
+    fam: Any, kind: str, repo_id: str, hf_token: Any, local_files_only: bool
+) -> None:
+    """A Cosmos3 load with the safety checker turned on, whose token cannot fetch the gated guardrail, is refused
+    before its download (~33 GB for Nano)."""
+    if getattr(fam, "name", None) not in COSMOS3_FAMILIES or kind != "pipeline":
+        return
+    from .video_cosmos3 import guardrail_access_preflight
+
+    refusal = guardrail_access_preflight(str(repo_id), hf_token, local_files_only = local_files_only)
+    if refusal:
+        raise ValueError(refusal)
 
 
 def _custom_size_defaults(fam: Any) -> dict[str, Any]:

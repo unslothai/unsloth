@@ -124,6 +124,7 @@ from hub.services.models.ollama import (
     is_ollama_manifest_ref,
     materialize_ollama_model_ref,
     ollama_model_ref_public_id,
+    ollama_model_ref_system_prompt,
 )
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
@@ -3448,6 +3449,7 @@ from models.inference import (
     validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
+    LoraSpec,
     MediaUnloadOutcome,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
@@ -10774,7 +10776,16 @@ def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
         return False
     source = _ollama_source_identity(ref)
     loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
-    return bool(source and source == loaded)
+    return bool(source and source == loaded) and _same_ollama_system(ref, llama_backend)
+
+
+def _same_ollama_system(ref: str, llama_backend) -> bool:
+    # Tags sharing blobs can carry different SYSTEM layers; only the resident tag's is applied.
+    try:
+        wanted = ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        wanted = ""
+    return wanted == _resident_ollama_system_prompt(llama_backend)
 
 
 def _ollama_request_is_resident(requested: str, llama_backend) -> bool:
@@ -11807,6 +11818,11 @@ async def _maybe_auto_switch_model(
         ollama_source_identity = (
             await asyncio.to_thread(_ollama_source_identity, target_id) if ollama_target else None
         )
+        ollama_same_system = (
+            await asyncio.to_thread(_same_ollama_system, target_id, backend)
+            if ollama_target
+            else True
+        )
 
         def _already_serving() -> bool:
             # Match the load path and advertised repo id, so either load style counts as already serving.
@@ -11832,6 +11848,8 @@ async def _maybe_auto_switch_model(
                 # The blobs, not the keys: an alias shares no spelling with the resident tag.
                 loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
                 if not ollama_source_identity or loaded_source != ollama_source_identity:
+                    return False
+                if not ollama_same_system:
                     return False
             elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
@@ -12091,6 +12109,9 @@ async def _maybe_auto_switch_model(
                         if ollama_target:
                             ollama_source_identity = await asyncio.to_thread(
                                 _ollama_source_identity, target_id
+                            )
+                            ollama_same_system = await asyncio.to_thread(
+                                _same_ollama_system, target_id, backend
                             )
                         if _already_serving():
                             if claim_resident:
@@ -17553,6 +17574,28 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
         return True
     # A load rewrites a materialized Ollama link to its tag; compare by ref.
     return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
+
+
+def _has_system_turn(messages) -> bool:
+    return any(m.role in ("system", "developer") for m in messages)
+
+
+def _resident_ollama_system_prompt(llama_backend) -> str:
+    ref = getattr(llama_backend, "model_identifier", None) or ""
+    if not is_ollama_manifest_ref(ref):
+        return ""
+    try:
+        return ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        return ""
+
+
+async def _with_ollama_system(messages: list[dict], llama_backend) -> list[dict]:
+    # Ollama's Messages endpoint falls back to the Modelfile SYSTEM when no system text is sent.
+    if any(m.get("role") == "system" and str(m.get("content") or "").strip() for m in messages):
+        return messages
+    system = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    return _set_or_prepend_system_message(messages, system)
 
 
 def _ollama_ref_for_link(model_path: str) -> Optional[str]:
@@ -29475,7 +29518,12 @@ def _plan_external_compaction(
     )
     plan.cut = plan.covered
     over = plan.budget is not None and count(plan.current) > plan.budget
-    if summarise and (force or over):
+    cut_off = force != "manual" and cloud_compaction.summary_was_cut_off(
+        thread_id, payload.external_model or payload.model
+    )
+    if summarise and (force or over) and cut_off:
+        plan.summary_failed = True
+    elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
         cut = cloud_compaction.tail_start(
             plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
@@ -29547,6 +29595,8 @@ async def _finish_external_compaction(
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
+            if isinstance(exc, cloud_compaction.SummaryCutOff):
+                cloud_compaction.remember_cut_off(thread_id, model)
         else:
             await asyncio.to_thread(
                 cloud_compaction.save_summary,
@@ -33318,6 +33368,9 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
             payload.messages, keep_tool_images = True
         )
+    if using_gguf and not _has_system_turn(payload.messages):
+        # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
+        system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
@@ -33420,12 +33473,20 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_think_prov: dict = {"wrapped": 0}
+        if _continue_final_message(payload) and getattr(
+            payload.messages[-1], "reasoning_content", None
+        ):
+            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            _gguf_think_prov["split"] = True
+
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
                 parse_think_markers = _responses_should_parse_think_markers(
                     payload,
                     llama_backend,
-                )
+                ),
+                think_provenance = _gguf_think_prov,
             )
 
         _gguf_monitor_callback = (
@@ -33655,6 +33716,7 @@ async def produce_openai_chat_completions(
                     permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    reasoning_provenance = _gguf_think_prov,
                     live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
@@ -33866,9 +33928,12 @@ async def produce_openai_chat_completions(
 
                     def _release_held_mention():
                         nonlocal prev_text, _gguf_turn_raw
+                        span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw, _gguf_auto_heal_tool_calls
+                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
                         )
+                        if clean is not None:
+                            clean = _gguf_turn_raw[:span] + clean
                         _gguf_turn_raw = ""
                         if clean is None:
                             return []
@@ -34062,8 +34127,9 @@ async def produce_openai_chat_completions(
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
                         _gguf_turn_raw = raw_cumulative
-                        clean_cumulative = _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
+                        span = reasoning_extractor.server_wrap_span(raw_cumulative)
+                        clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
+                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -34302,10 +34368,16 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                turn_mark = snapshot_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
                             break
+                        if event.get("type") == "tool_start" or (
+                            event.get("type") == "status" and not event.get("text")
+                        ):
+                            # A new turn opens its own leading wrap, as in the streaming route.
+                            turn_mark = _think_ledger_mark(_gguf_think_prov)
                         if event.get("type") == "metadata":
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
@@ -34315,20 +34387,26 @@ async def produce_openai_chat_completions(
                                 context_truncation, event
                             )
                         elif event.get("type") == "content":
+                            # Taken with the snapshot: a terminal empty status would move the mark past it.
+                            snapshot_mark = turn_mark
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
                             # turn's text. As in the safetensors drain, a visible
                             # preamble emitted before a tool call (its own earlier
                             # turn) isn't carried -- only the final turn is.
                             raw_text = event.get("text", "")
+                    provenance = {**_gguf_think_prov, **snapshot_mark}
                     if raw_text is not None:
                         # Stripped once: stripping every cumulative event is quadratic in the turn.
-                        full_text = _strip_tool_xml_for_display(
-                            raw_text,
+                        span = _ResponsesReasoningExtractor(
+                            think_provenance = provenance
+                        ).server_wrap_span(raw_text)
+                        full_text = raw_text[:span] + _strip_tool_xml_for_display(
+                            raw_text[span:],
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation
+                    return full_text, usage, finish, timings, context_truncation, provenance
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -34402,6 +34480,7 @@ async def produce_openai_chat_completions(
                         completion_finish,
                         completion_timings,
                         completion_context_truncation,
+                        think_provenance,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -34410,6 +34489,7 @@ async def produce_openai_chat_completions(
                     parse_think_markers = _responses_should_parse_think_markers(
                         payload, llama_backend
                     ),
+                    think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:
@@ -34528,6 +34608,7 @@ async def produce_openai_chat_completions(
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
+                reasoning_provenance = _gguf_think_prov,
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 temperature = payload.temperature,
@@ -35039,6 +35120,7 @@ async def produce_openai_chat_completions(
                         completion_usage = None
                         completion_finish = None
                         _choice_context_truncation = None
+                        _choice_mark = _think_ledger_mark(_gguf_think_prov)
                         for token in gguf_generate(_idx):
                             if isinstance(token, dict):
                                 if token.get("type") == "metadata":
@@ -35067,6 +35149,7 @@ async def produce_openai_chat_completions(
                                 payload,
                                 llama_backend,
                             ),
+                            think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
                         if reasoning_text:
@@ -40414,13 +40497,20 @@ class _ResponsesReasoningExtractor:
         parse_think_markers: bool = False,
         reasoning_prefilled: bool = False,
         single_block: bool = False,
+        think_provenance: Optional[dict] = None,
     ) -> None:
         self._buffer = ""
         # Prefilled template opens an unclosed <think>, so start in reasoning.
         self._in_reasoning = reasoning_prefilled and not single_block
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
-        self._single_block = single_block
+        self._single_block = single_block or think_provenance is not None
+        self._provenance = think_provenance
+        self._wrap = None
+        self._wrap_taken = 0
+        self._after_lead = False
+        self._fed = 0
+        self._lead = None
 
     def feed(
         self,
@@ -40434,12 +40524,54 @@ class _ResponsesReasoningExtractor:
             reasoning_parts.append(structured_reasoning)
         if text:
             self._buffer += text
+            self._fed += len(text)
         if not self._parse_think_markers:
             visible_parts.append(self._buffer)
             self._buffer = ""
             return "".join(reasoning_parts), "".join(visible_parts)
 
         while self._buffer:
+            if self._wrap is not None:
+                take = int(self._wrap.get("len", 0)) - self._wrap_taken
+                if take > 0:
+                    reasoning_parts.append(self._buffer[:take])
+                    self._wrap_taken += min(take, len(self._buffer))
+                    self._buffer = self._buffer[take:]
+                    continue
+                if self._buffer.startswith(_RESPONSES_THINK_CLOSE):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_CLOSE) :]
+                elif _RESPONSES_THINK_CLOSE.startswith(self._buffer):
+                    break
+                self._wrap = None
+                self._after_lead = True
+                continue
+
+            if self._after_lead:
+                # Only a server wrapper recorded at this exact offset is reasoning; any other tag is answer text.
+                later = self._next_later_wrap()
+                gap = None if later is None else later["at"] - (self._fed - len(self._buffer))
+                if gap is None or gap >= len(self._buffer):
+                    visible_parts.append(self._buffer)
+                    self._buffer = ""
+                    break
+                if gap > 0:
+                    visible_parts.append(self._buffer[:gap])
+                    self._buffer = self._buffer[gap:]
+                    continue
+                if _RESPONSES_THINK_OPEN.startswith(self._buffer):
+                    break
+                self._provenance["later_claimed"] = self._provenance.get("later_claimed", 0) + 1
+                if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
+                    self._wrap = later
+                    self._wrap_taken = 0
+                continue
+
+            if not (self._single_block or self._in_reasoning) and self._server_splits():
+                # The server split reasoning out after inline text: its recorded wraps take over.
+                self._after_lead = True
+                continue
+
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
@@ -40462,11 +40594,25 @@ class _ResponsesReasoningExtractor:
 
             if self._single_block:
                 if self._buffer.startswith(_RESPONSES_THINK_OPEN):
+                    wrap = self._claim_wrap()
+                    if wrap is None and self._server_splits():
+                        # Not the server's leading block: a later wrap at this offset or literal text.
+                        self._after_lead = True
+                        continue
                     self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
-                    self._in_reasoning = True
+                    self._wrap = self._lead = wrap
+                    self._wrap_taken = 0
+                    self._in_reasoning = wrap is None
                     continue
                 if _RESPONSES_THINK_OPEN.startswith(self._buffer):
                     break  # still short of the opener; it may yet arrive
+                if self._server_splits():
+                    self._after_lead = True
+                    continue
+                if self._provenance is not None:
+                    # The server left reasoning inline, so read the tags as before.
+                    self._single_block = False
+                    continue
                 self._parse_think_markers = False
                 visible_parts.append(self._buffer)
                 self._buffer = ""
@@ -40496,13 +40642,61 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
+    def _server_splits(self) -> bool:
+        # Once the server has split reasoning out in this request, only its recorded wraps are reasoning.
+        prov = self._provenance
+        return prov is not None and bool(
+            prov.get("split") or prov.get("wraps") or prov.get("later")
+        )
+
+    def _claim_wrap(self):
+        # The recorded length keeps a literal </think> inside the trace from ending it early.
+        if self._provenance is None:
+            return None
+        claimed = self._provenance.get("claimed", 0)
+        wraps = self._provenance.get("wraps") or []
+        if claimed >= len(wraps):
+            return None
+        self._provenance["claimed"] = claimed + 1
+        return wraps[claimed]
+
+    def server_wrap_span(self, text: str) -> int:
+        # Length of the leading server-made <think> block in text, so display sanitizing can leave it alone.
+        lead = self._lead
+        if (
+            lead is None
+            and self._provenance is not None
+            and not self._after_lead
+            and not self._in_reasoning
+            and text.startswith(_RESPONSES_THINK_OPEN)
+        ):
+            wraps = self._provenance.get("wraps") or []
+            claimed = self._provenance.get("claimed", 0)
+            lead = wraps[claimed] if claimed < len(wraps) else None
+        if lead is None:
+            return 0
+        return len(_RESPONSES_THINK_OPEN) + int(lead.get("len", 0)) + len(_RESPONSES_THINK_CLOSE)
+
+    def _next_later_wrap(self):
+        later = self._provenance.get("later") or []
+        claimed = self._provenance.get("later_claimed", 0)
+        offset = self._fed - len(self._buffer)
+        while claimed < len(later) and later[claimed]["at"] < offset:
+            claimed += 1
+        self._provenance["later_claimed"] = claimed
+        return later[claimed] if claimed < len(later) else None
+
     def finish(self) -> tuple[str, str]:
         if not self._buffer:
             return "", ""
         remaining = self._buffer
         self._buffer = ""
-        if not self._parse_think_markers:
+        if not self._parse_think_markers or (self._after_lead and self._wrap is None):
             return "", remaining
+        if self._wrap is not None:
+            # Only an unfinished closing tag is ever left over.
+            self._wrap = None
+            return "", ""
         if self._in_reasoning:
             self._in_reasoning = False
             return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""
@@ -40516,15 +40710,25 @@ def _extract_responses_reasoning(
     parse_think_markers: bool = False,
     reasoning_prefilled: bool = False,
     single_block: bool = False,
+    think_provenance: Optional[dict] = None,
 ) -> tuple[str, str]:
     extractor = _ResponsesReasoningExtractor(
         parse_think_markers = parse_think_markers,
         reasoning_prefilled = reasoning_prefilled,
         single_block = single_block,
+        think_provenance = think_provenance,
     )
     reasoning, visible = extractor.feed(text, reasoning_content)
     final_reasoning, final_visible = extractor.finish()
     return reasoning + final_reasoning, visible + final_visible
+
+
+def _think_ledger_mark(provenance: dict) -> dict:
+    # Claim cursors for an extractor over {**ledger, **mark}, so it skips the wraps recorded so far.
+    return {
+        "claimed": len(provenance.get("wraps") or []),
+        "later_claimed": len(provenance.get("later") or []),
+    }
 
 
 def _responses_should_parse_think_markers(
@@ -44022,6 +44226,8 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
+    if not _has_system_turn(payload.messages):
+        _system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     _user_system_prompt = _system_prompt
     _date_controls = _template_controls(payload)
@@ -44808,6 +45014,7 @@ async def anthropic_count_tokens(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
     # on templates without tool-role support.
     openai_messages = _named_anthropic_tool_results(openai_messages)
@@ -45586,6 +45793,7 @@ async def anthropic_messages(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
     openai_messages = _named_anthropic_tool_results(openai_messages)
     _anthropic_replayed_image_parts: list = []
@@ -48194,6 +48402,8 @@ def _build_openai_passthrough_body(
         payload, vision = bool(getattr(llama_backend, "is_vision", False))
     )
     system_prompt, _, _ = _extract_content_parts(payload.messages)
+    if llama_backend is not None and not _has_system_turn(payload.messages):
+        system_prompt = _resident_ollama_system_prompt(llama_backend)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
@@ -48247,7 +48457,11 @@ async def _build_openai_passthrough_body_async(
     backend_ctx = None,
     llama_backend = None,
 ) -> dict:
-    if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
+    if (
+        _request_has_image(payload)
+        or _preserve_probe_pending(llama_backend)
+        or is_ollama_manifest_ref(getattr(llama_backend, "model_identifier", None) or "")
+    ):
         return await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
@@ -50637,6 +50851,22 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _expected_load_loras_kwarg(generate: Any, signature: Optional[tuple]) -> dict:
+    """``expected_load_loras`` for an engine whose generate() takes it (the diffusers backend), else nothing."""
+    if signature is None:
+        return {}
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+        if "expected_load_loras" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            return {"expected_load_loras": signature}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
     try:
@@ -51318,6 +51548,7 @@ async def _generate_diffusion_image_run(
         DIFFUSION_NOT_LOADED_MSG,
         DiffusionModelReplacedError,
         load_identity,
+        load_lora_signature,
     )
 
     from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
@@ -51369,6 +51600,7 @@ async def _generate_diffusion_image_run(
         request = submitted
         status = None
         expected_load = None
+        expected_load_loras = None
         if account_access.managed_account():
             status = backend.status()
             await asyncio.to_thread(
@@ -51395,6 +51627,37 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if request.loras is None:
+            # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no load adapters: the engine's default stands
+                    logger.debug(
+                        "images.generate: status read for the omitted loras failed: %s", exc
+                    )
+        if request.loras is None and status is not None:
+            loaded = bool(status.get("loaded"))
+            pairs = _load_lora_defaults(status) if loaded else []
+            # The pin above is repo / base / family only: a same-model reload with other adapters must retry too.
+            expected_load_loras = (
+                load_lora_signature(status.get("load_lora_specs")) if loaded else ()
+            )
+            if pairs:
+                request = request.model_copy(
+                    update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
+                )
+            if expected_load is None:
+                # Pinned even when it resolved to none: a load swapped in before the slot retries with its own set.
+                expected_load = (
+                    load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+                    if loaded
+                    else load_identity(None, None, None)
+                )
         if txt2img_size_omitted:
             if status is None:
                 status = probe.pop("status", None) if attempt == 0 else None
@@ -51429,6 +51692,7 @@ async def _generate_diffusion_image_run(
                 result = await _image_generate_in_thread(
                     backend.generate,
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
@@ -53604,8 +53868,17 @@ def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tupl
     """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
     if body.loras is not None:
         return [(spec.id, float(spec.weight)) for spec in body.loras]
+    return _load_lora_defaults(status)
+
+
+def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
+    """Adapters an omitted ``loras`` stands for: baked set, else the load's named set (none once compiled
+    adapter-free). The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
     pairs = []
-    for spec in status.get("baked_lora_specs") or status.get("load_lora_specs") or ():
+    specs = status.get("baked_lora_specs") or (
+        status.get("load_lora_specs") if status.get("supports_lora", True) else None
+    )
+    for spec in specs or ():
         try:
             lora_id, weight = str(spec["id"]), float(spec["weight"])
         except Exception:  # noqa: BLE001 - a malformed status row names no adapter

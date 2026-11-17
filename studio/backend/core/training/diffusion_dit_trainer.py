@@ -284,10 +284,14 @@ def _empty_device_cache(device) -> None:
 
 
 def _encoders_to_device(pipe, device) -> None:
-    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped."""
+    """A QLoRA load leaves text encoders on CPU, so move them; a 4-bit encoder already placed is skipped. Encoders
+    that do not fit in free VRAM stream their layers through the card instead (diffusion_te_stream)."""
+    from core.training.diffusion_te_stream import STREAMER_ATTR, place_text_encoders
+
+    place_text_encoders(pipe, device)
     for attr in ("text_encoder", "text_encoder_2", "text_encoder_3"):
         enc = getattr(pipe, attr, None)
-        if enc is None:
+        if enc is None or getattr(enc, STREAMER_ATTR, None) is not None:
             continue
         try:
             enc.to(device)
@@ -3621,6 +3625,9 @@ def _make_optimizer(
 
 def _free_text_encoders(pipe) -> None:
     """Frees conditioning modules once embeddings are precomputed, so they do not sit in VRAM."""
+    from core.training.diffusion_te_stream import release_text_encoders
+
+    release_text_encoders(pipe)
     # A modular facade (FLUX.3) keeps the encoder alive in its block graph's pipeline; drop it (rebuilds on use).
     if getattr(pipe, "_modular", None) is not None:
         pipe._modular = None

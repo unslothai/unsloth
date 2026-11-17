@@ -51,6 +51,7 @@ from .mistral_format import (
 )
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from ..tokenizers_v1 import tokenizers_v1_on_return
+from .mapper import bf16_repo_loads_16bit
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     deepspeed_zero3_device_map,
@@ -1551,9 +1552,7 @@ class FastLanguageModel(FastLlamaModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM whose message never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -1779,9 +1778,7 @@ class FastLanguageModel(FastLlamaModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit
@@ -2533,9 +2530,7 @@ class FastModel(FastBaseModel):
         if on_model_resolved is not None:
             on_model_resolved(model_name)
         # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-        if model_name.lower().endswith("-bf16") and (
-            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-        ):
+        if bf16_repo_loads_16bit(model_name, load_in_16bit):
             # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
             if (
                 not load_in_16bit
@@ -3032,9 +3027,7 @@ class FastModel(FastBaseModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
-            if model_name.lower().endswith("-bf16") and (
-                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
-            ):
+            if bf16_repo_loads_16bit(model_name, load_in_16bit):
                 # A user quantization_config stays in **kwargs and still quantizes. load_in_4bit defaults to True, so a set flag is no proof of a request; an explicit load_in_16bit is.
                 if (
                     not load_in_16bit

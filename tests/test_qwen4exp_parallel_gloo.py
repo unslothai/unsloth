@@ -75,10 +75,11 @@ CONFIG = dict(
     indexer_kv_heads = 1,
     indexer_n_heads = 2,
     linear_conv_kernel_dim = 4,
-    linear_key_head_dim = 16,
-    linear_num_key_heads = 2,
-    linear_num_value_heads = 4,
-    linear_value_head_dim = 16,
+    # Gated DeltaNet layers shard by heads: 4 key heads (two value heads each) split at tp 2 and tp 4.
+    linear_key_head_dim = 8,
+    linear_num_key_heads = 4,
+    linear_num_value_heads = 8,
+    linear_value_head_dim = 8,
     num_experts = 4,
     num_experts_per_tok = 2,
     moe_intermediate_size = 32,
@@ -345,7 +346,11 @@ def test_qwen4exp_parallel_matches_one_process(cell):
 def test_tp_plan_shards_qsa_heads_and_keeps_the_indexer_whole():
     model = build()
     plan = tpn.derive_tp_plan(model, 2)
-    (region,) = plan.regions  # the one QSA layer; GDN layers, MoE and the PLE layer stay replicated
+    # The one QSA layer and the three Gated DeltaNet layers (sharded by heads); MoE and the PLE layer replicated.
+    gdn = [r for r in plan.regions if r.kind == "linear_attention"]
+    assert [r.path.rsplit(".", 2)[-2] for r in gdn] == ["0", "1", "2"]
+    assert all((r.heads, r.kv_heads, r.head_dim) == (8, 4, 8) for r in gdn)
+    (region,) = [r for r in plan.regions if r.kind == "attention"]
     assert region.path.endswith("layers.3.self_attn")
     # q_proj emits [q, gate] per head: 4 heads, not 8.
     assert (region.heads, region.kv_heads, region.head_dim) == (4, 2, 16)

@@ -74,6 +74,7 @@ from .diffusion_families import (
     require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
+    load_lora_signature,
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
@@ -292,6 +293,7 @@ from .diffusion_memory import (
     with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _low_vram_whole_module,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -330,6 +332,7 @@ from .diffusion_speed import (
     int8_gemm_live,
     arm_graphs_after_placement,
     normalize_speed_mode,
+    int8_attention_speed_active,
     resolve_speed_mode,
     family_render_cudnn_scope,
     release_rocm_tunableop as _release_rocm_tunableop,
@@ -423,6 +426,7 @@ from .diffusion_precision import (
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
 from .diffusion_lora import LoraSelectionError
+from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
@@ -1358,6 +1362,7 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 # lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
 from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+from .family_profile import compile_from_render_one_reason  # noqa: E402
 
 _TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
@@ -3900,6 +3905,12 @@ def _inplace_torchao_placement(
     """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
+    whole = _low_vram_whole_module(plan)
+    if whole is not None and not (
+        torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan)
+    ):
+        # low_vram streams by default; a scheme that cannot stream is judged on the whole-module tier it had.
+        plan = whole
     if plan.offload_policy == OFFLOAD_MODEL:
         estimates = getattr(plan, "estimates", None) or {}
         budget = int(estimates.get("safe_device_budget_mib") or 0)
@@ -11070,6 +11081,23 @@ class DiffusionBackend:
                             "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
+                    # A family whose eager path is measured far slower than compiled skips the deferred profile.
+                    compile_first_reason = (
+                        compile_from_render_one_reason(fam)
+                        if speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                        else None
+                    )
+                    if compile_first_reason is not None:
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (%s)",
+                            compile_first_reason,
+                        )
+                        effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
                     # amortises. Only when speed was unset.
                     speed_deferred = (
@@ -11096,7 +11124,11 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                         requested = attention_backend,
-                        speed_active = effective_speed != SPEED_OFF,
+                        speed_active = int8_attention_speed_active(
+                            speed_mode, effective_speed, speed_deferred
+                        ),
+                        # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
+                        speed_unset_only = effective_speed == SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -11465,10 +11497,23 @@ class DiffusionBackend:
                     peak_model = _peak_model_identity(
                         repo_id, gguf_filename, kind, base, fetch_base
                     )
-                    if getattr(pipe, "_unsloth_loras", None):
-                        peak_model = (
-                            "unknown"  # adapters baked in at load: a build the key cannot name
+                    if getattr(pipe, "_unsloth_loras", None) and (
+                        price_attached_loras(
+                            pipe,
+                            cfg = bool(getattr(fam, "uses_negative_prompt", False)),
+                            compute_bytes = _float_load_itemsize(
+                                _resolve_diffusion_compute_dtype(
+                                    fam, getattr(target, "dtype", None)
+                                )
+                            ),
+                            compute_dtype = _resolve_diffusion_compute_dtype(
+                                fam, getattr(target, "dtype", None)
+                            ),
                         )
+                        is None
+                    ):
+                        # unpriceable adapters: a build the key cannot name; priced ones' renders still record nothing
+                        peak_model = "unknown"
                     try:
                         # the phase-table seed holds only where it was measured; unpriced references size flat
                         pipe._unsloth_phase_seeds = (
@@ -11718,6 +11763,8 @@ class DiffusionBackend:
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
                                 if speed_deferred
+                                else f"auto: {compile_first_reason}"
+                                if compile_first_reason is not None
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",
@@ -14951,6 +14998,8 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # load_lora_signature() of the status an omitted loras was resolved from; a reload with other adapters refuses
+        expected_load_loras: Optional[tuple] = None,
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
@@ -14994,6 +15043,10 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    if expected_load_loras is not None and tuple(
+                        expected_load_loras
+                    ) != load_lora_signature(_load_lora_specs(state.pipe)):
+                        raise DiffusionModelReplacedError(expected_load or loaded_id, loaded_id)
                     require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)

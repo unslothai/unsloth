@@ -51,6 +51,8 @@ def strided_processor_class() -> Any:
         # set by install_int8_attention: unmasked calls of at least this many tokens run the INT8 kernel
         _unsloth_int8 = False
         _unsloth_int8_min_tokens = 0
+        # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
+        _unsloth_int8_sinks = 0
 
         def __call__(
             self,
@@ -60,10 +62,12 @@ def strided_processor_class() -> Any:
             image_rotary_emb: Any = None,
         ) -> Any:
             cudnn = _backend_value(self._attention_backend) == _CUDNN
+            # below the INT8 floor: the stock call
+            int8 = self._unsloth_int8 and hidden_states.shape[1] >= self._unsloth_int8_min_tokens
             if (
                 attention_mask is not None
                 or self._parallel_config is not None
-                or not (cudnn or self._unsloth_int8)
+                or not (cudnn or int8)
             ):
                 return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
             query, key, value = tf3._get_qkv_projections(attn, hidden_states)
@@ -77,15 +81,19 @@ def strided_processor_class() -> Any:
                 attn, query, key, value.dtype, image_rotary_emb, tf3.apply_rotary_emb
             )
             if (
-                self._unsloth_int8
-                and query.shape[1] >= self._unsloth_int8_min_tokens
+                int8
                 # no backward in the kernel: gradient calls run native here, not inside the op (autograd cannot see in)
                 and not (
                     torch.is_grad_enabled()
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                out = _i8.int8_attention_call(query, key, value)
+                mode = self._unsloth_int8_sinks
+                out = (
+                    _i8.int8_attention_call(query, key, value, mode)
+                    if mode
+                    else _i8.int8_attention_call(query, key, value)
+                )
                 hidden_states = out.flatten(2, 3)
             else:
                 if cudnn:
@@ -170,6 +178,8 @@ def _ensure_strided(pipe: Any, target: Any, logger: Any) -> int:
         new._attention_backend = proc._attention_backend
         new._parallel_config = proc._parallel_config
         new._unsloth_probe_dtype = dtype
+        # the processor the module had: a plan that decides torch's attention gives it back (_raise_processor_floor)
+        new._unsloth_stock = proc
         attn.set_processor(new)
         count += 1
     return count

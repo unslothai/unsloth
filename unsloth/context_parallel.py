@@ -127,8 +127,9 @@ def context_parallel_options(config) -> tuple:
 
 # Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
 # only these layer types and the window are exempt; chunked attention and softcap still refuse.
+# transformers >= 5.18 renames V3.2's "deepseek_sparse_attention" to "indexed_attention".
 _ULYSSES_OWN_MASK_LAYER_TYPES = {
-    "deepseek_v32": ("deepseek_sparse_attention",),
+    "deepseek_v32": ("deepseek_sparse_attention", "indexed_attention"),
     "deepseek_v4": (
         "sliding_attention",
         "compressed_sparse_attention",

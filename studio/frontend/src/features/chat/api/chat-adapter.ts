@@ -384,6 +384,7 @@ import {
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
@@ -5720,8 +5721,11 @@ export function createOpenAIStreamAdapter(
       // Both this stream and recovery followers persist it, or reload blocks the composer again.
       let generationStalled = false;
       let parseThink = true;
-      const generationCustom = () =>
-        generationRunId
+      // Recovery and Continue mark tags as this stream does only if they know reasoning arrived split out.
+      let reasoningContentSeen = false;
+      const generationCustom = () => ({
+        ...(reasoningContentSeen ? { splitReasoningSeen: true } : {}),
+        ...(generationRunId
           ? {
               generationRunId,
               generationSeq,
@@ -5737,7 +5741,8 @@ export function createOpenAIStreamAdapter(
               serverManaged: true,
               parseThinkTags: parseThink,
             }
-          : {};
+          : {}),
+      });
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5836,7 +5841,11 @@ export function createOpenAIStreamAdapter(
         owner: serverCancel,
       });
       const continuationPartial = continuation
-        ? continuationSeed(continuation.partial, resumedThought)
+        ? continuationSeed(
+            continuation.partial,
+            resumedThought,
+            continuation.splitReasoningSeen === true,
+          )
         : "";
       const geminiContinuationReplayTurns =
         continuation?.geminiReplayTurns?.length
@@ -5988,6 +5997,8 @@ export function createOpenAIStreamAdapter(
       }
       // Keep the <think> block open across reasoning deltas; answer content closes it.
       let reasoningContentOpen = resumesInsideThought;
+      reasoningContentSeen =
+        resumesInsideThought || continuation?.splitReasoningSeen === true;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -8637,17 +8648,22 @@ export function createOpenAIStreamAdapter(
               if (reasoning) {
                 if (!reasoningContentOpen) {
                   reasoningDurationTracker.startGroup();
-                  appendCumulative(`<think>${reasoning}`);
+                  appendCumulative(`<think>${markLiteralThinkTags(reasoning)}`);
                   reasoningContentOpen = true;
+                  reasoningContentSeen = true;
                 } else {
-                  appendCumulative(reasoning);
+                  appendCumulative(markLiteralThinkTags(reasoning));
                 }
               }
               if (delta) {
                 if (reasoningContentOpen) {
                   closeReasoningContent();
                 }
-                appendCumulative(delta);
+                if (reasoningContentSeen && typeof rawDelta === "string") {
+                  appendCumulative(markLiteralThinkTags(delta));
+                } else {
+                  appendCumulative(delta);
+                }
               }
               streamedChars += reasoning.length + delta.length;
               producedReplyText = true;

@@ -138,6 +138,10 @@ import {
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
+import {
+  interfaceScaleToZoom,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -146,6 +150,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -207,7 +212,11 @@ import {
   type ListSection,
   PICKER_EDGE,
   PICKER_GAP,
-  PICKER_WIDTH,
+  pickerDropOffset,
+  pickerMinHeight,
+  pickerRoomBelow,
+  pickerWidth,
+  pickerZoomOut,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -224,7 +233,6 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -699,14 +707,19 @@ function MakerMark({
 
 type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   id?: string;
+  label?: string;
   lora?: LoraModelOption;
 };
 
-/** A model's own logo only; no placeholder. */
+function rowMarkName(row?: RowMarkRow): string | undefined {
+  const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
+  return name?.trim() || undefined;
+}
+
 function hasRowMark(row?: RowMarkRow): boolean {
   return row?.kind === "external"
     ? Boolean(row.providerType)
-    : rowMaker(row) !== null;
+    : rowMaker(row) !== null || rowMarkName(row) !== undefined;
 }
 
 function RowMark({ row }: { row?: RowMarkRow }) {
@@ -726,7 +739,15 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
-  return null;
+  const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  // 2px over the slot: a solid disc reads smaller than the logos.
+  return name ? (
+    <ApiProviderLogo
+      providerType={null}
+      name={name}
+      className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+    />
+  ) : null;
 }
 
 interface SourceTab {
@@ -2696,7 +2717,21 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName;
+  // No thinking controls: nothing to collapse to, whatever the quants.
+  const noThinking =
+    !(pane || modelLoading) &&
+    !(
+      reasoning.supportsReasoning ||
+      reasoning.supportsPreserve ||
+      reasoning.supportsFast
+    );
+  const isExpanded = expanded || !chosenName || noThinking;
+  // Stored, so the next pick does not load into the collapsed view.
+  useEffect(() => {
+    if (noThinking && !expanded) {
+      setExpanded(true);
+    }
+  }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -2755,6 +2790,13 @@ export function ComposerModelPicker({
   // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  // Runs once the load settles, when the store holds the new model's reasoning.
+  const closeIfNoThinking = useRef(() => {});
+  closeIfNoThinking.current = () => {
+    if (noThinking) {
+      setOpen(false);
+    }
+  };
   useEffect(() => {
     if (modelLoading) {
       if (loadingFresh) {
@@ -2773,11 +2815,18 @@ export function ComposerModelPicker({
       setExpanded(
         (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
       );
+      if (fresh) {
+        closeIfNoThinking.current();
+      }
     } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
       writeModelExpanded(prev, null);
       setExpanded(true);
     }
   }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
+  // Never loaded, but ejectModel clears a connected pick.
+  const chosenExternal =
+    !pane && Boolean(checkpoint && isExternalModelId(checkpoint));
+  const chosenEjectable = chosenLoaded || chosenExternal;
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
@@ -3282,17 +3331,22 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
+  const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
+  const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
+  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = open && openSide === "bottom";
   useEffect(() => {
     if (!(dropsDown && panel)) {
       setDropOffset(PICKER_GAP);
+      setRoomBelow(null);
       return;
     }
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
+        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3307,6 +3361,32 @@ export function ComposerModelPicker({
       window.removeEventListener("resize", place);
     };
   }, [dropsDown, panel]);
+  // The open-time rect is stale once the trigger moves or lays out late.
+  useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!(open && panel && trigger)) {
+      return;
+    }
+    const place = () => {
+      const rect = trigger.getBoundingClientRect();
+      if (rect.width === 0 || panel.offsetWidth === 0) {
+        return;
+      }
+      setAlignOffset(
+        pickerAlignOffset(align, rect, panel.offsetWidth, window.innerWidth),
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    observer.observe(trigger);
+    observer.observe(trigger.closest("form") ?? document.body);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [open, panel, align]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -3325,8 +3405,24 @@ export function ComposerModelPicker({
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
           ) || 1
         : 1;
+      const zoomOut = pickerZoomOut(
+        window.innerWidth,
+        window.outerWidth,
+        isTauri
+          ? interfaceScaleToZoom(useInterfaceScaleStore.getState().scale)
+          : null,
+      );
+      setPickerZoomOutState(zoomOut);
+      setPickerMinBase(
+        pickerMinHeight(window.innerWidth, window.innerHeight, zoomOut),
+      );
       setAlignOffset(
-        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
+        pickerAlignOffset(
+          align,
+          rect,
+          pickerWidth(window.innerWidth, scale, zoomOut),
+          window.innerWidth,
+        ),
       );
       resetView();
       setActive(0);
@@ -4187,7 +4283,9 @@ export function ComposerModelPicker({
                         : undefined
                     }
                     items={[
-                      ...(row.loaded && canEject
+                      ...((row.loaded ||
+                        (chosenExternal && row.id === checkpoint)) &&
+                      canEject
                         ? [
                             {
                               key: "eject",
@@ -4980,7 +5078,7 @@ export function ComposerModelPicker({
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-                ) : chosenName && chosenLoaded ? (
+                ) : chosenName && chosenEjectable ? (
                   <Hint label="Eject model">
                     {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                     <span
@@ -5054,7 +5152,7 @@ export function ComposerModelPicker({
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : chosenName && chosenLoaded ? (
+            ) : chosenName && chosenEjectable ? (
               <Hint label="Eject model">
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                 <span
@@ -5109,14 +5207,23 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
+        ref={setPanel}
         sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
+        style={
+          {
+            "--picker-zoom-out": pickerZoomOutState,
+            "--picker-min-base": `${pickerMinBase}px`,
+            ...(roomBelow === null
+              ? {}
+              : { "--picker-room": `${roomBelow}px` }),
+          } as CSSProperties
+        }
         data-tour="chat-model-selector-popover"
         data-list-last={
           isExpanded && !hasFoot && !configTarget ? "" : undefined
@@ -5128,15 +5235,16 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
-          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) &&
-            "h-[calc(420px*var(--ui-space-scale,1))]",
+          "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          openSide !== "bottom" &&
+            "[--picker-floor:var(--radix-popover-content-available-height)]",
+          configTarget
+            ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
+            : isExpanded
+              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
-          openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
@@ -5234,7 +5342,7 @@ export function ComposerModelPicker({
                 ))}
               </div>
               {(!pane || pane.loaded) &&
-              (chosenLoaded || loadedModels.length > 0) &&
+              (chosenEjectable || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
                 <Button
@@ -5244,7 +5352,7 @@ export function ComposerModelPicker({
                     ejectsAll
                       ? "Eject all models"
                       : `Eject ${
-                          chosenLoaded
+                          chosenEjectable
                             ? (chosenName ?? "model")
                             : modelDisplayName(loadedModels[0]?.id ?? "model")
                         }`
@@ -5252,7 +5360,7 @@ export function ComposerModelPicker({
                   onClick={() => {
                     if (ejectsAll) {
                       source?.ejectAll();
-                    } else if (!chosenLoaded && loadedModels[0]) {
+                    } else if (!chosenEjectable && loadedModels[0]) {
                       source?.eject(
                         loadedModels[0].checkpoint ?? loadedModels[0].id,
                       );
@@ -5272,7 +5380,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName ? (
+              {chosenName && !noThinking ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
@@ -5577,7 +5685,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </button>
-            {!pending && chosenLoaded && !modelLoading ? (
+            {!pending && chosenEjectable && !modelLoading ? (
               <Button
                 variant="destructive"
                 size="xs"

@@ -20,6 +20,7 @@ import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
@@ -199,6 +200,7 @@ export function applyActiveModelStatusToStore(
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
+        presetEditedKeys: store.presetEditedKeys,
         loadedContextLength: loadedContextFields(status).loadedContextLength,
       }),
       // Remembered settings outrank the recommendation, capped at the loaded context.
@@ -770,11 +772,15 @@ export function applyActiveModelStatusToStore(
   // Layer the active Qwen mode over the family defaults so a refresh cannot undo performLoad.
   if (status.inference && supportsReasoning) {
     const current = useChatRuntimeStore.getState();
-    const qwenParams = resolveQwenThinkingParams(
-      checkpointId,
-      reasoningAlwaysOn || current.reasoningEnabled,
+    const qwenParams = recommendedValuesForPick(
+      resolveQwenThinkingParams(
+        checkpointId,
+        reasoningAlwaysOn || current.reasoningEnabled,
+      ),
+      current.activePresetSource,
+      current.presetEditedKeys,
     );
-    if (qwenParams !== null && current.activePresetSource === "builtin-default") {
+    if (qwenParams !== null) {
       current.setParams(
         { ...current.params, ...qwenParams },
         {
