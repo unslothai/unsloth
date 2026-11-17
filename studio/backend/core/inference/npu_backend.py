@@ -51,6 +51,9 @@ _events = structlog.get_logger(__name__)
 
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
+# FastFlowLM publishes its NPU builds as FastFlowLM/<name>-NPU2; Unsloth Studio shows <name>-NPU2.
+_REPO_OWNER = "fastflowlm/"
+_DISPLAY_NAME_SUFFIX = re.compile(r"-npu\d*$", re.IGNORECASE)
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
@@ -174,6 +177,18 @@ class NpuModel:
     def model_path(self) -> str:
         return MODEL_PREFIX + self.id
 
+    @property
+    def display_name(self) -> Optional[str]:
+        """The Hugging Face repo name, as Unsloth Studio shows the model."""
+        repo = (self.hf_repo or "").strip()
+        return repo.rsplit("/", 1)[-1] or None
+
+    def answers_to(self, name: str) -> bool:
+        """Whether name is this model's Hugging Face repo or repo name, in any case."""
+        repo = (self.hf_repo or "").strip().lower()
+        wanted = name.strip().lower()
+        return bool(repo) and wanted in (repo, repo.rsplit("/", 1)[-1])
+
     def to_json(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -239,6 +254,17 @@ class NpuResident:
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
     return isinstance(model_path, str) and model_path.startswith(MODEL_PREFIX)
+
+
+def looks_like_npu_display_name(name: Optional[str]) -> bool:
+    """A FastFlowLM repo (`FastFlowLM/<name>`) or a bare name ending in `-NPU<n>`, as shown in the app."""
+    if not isinstance(name, str):
+        return False
+    text = name.strip()
+    if text.lower().startswith(_REPO_OWNER):
+        rest = text[len(_REPO_OWNER) :]
+        return bool(rest) and "/" not in rest and ":" not in rest
+    return "/" not in text and ":" not in text and bool(_DISPLAY_NAME_SUFFIX.search(text))
 
 
 def model_id_from_path(model_path: str) -> str:
@@ -775,6 +801,31 @@ class LemonadeNpuBackend:
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
+
+    def model_path_for_name(self, name: str, *, start_runtime: bool) -> Optional[str]:
+        """`lemonade:<id>` for the model whose Hugging Face repo or repo name is name, or None.
+
+        The loaded model answers without I/O; the others are read from the catalog when the
+        runtime is running, or ``start_runtime`` lets it start.
+        """
+        if not looks_like_npu_display_name(name):
+            return None
+        loaded = self.loaded_model
+        if loaded is not None and loaded.answers_to(name):
+            return loaded.model_path
+        server = self._server
+        if not start_runtime and (server is None or not server.is_alive()):
+            return None
+        try:
+            matches = [model for model in self.catalog() if model.answers_to(name)]
+        except (NpuError, LemonadeUnavailable):
+            return None
+        if len(matches) > 1:
+            paths = ", ".join(sorted(model.model_path for model in matches))
+            raise NpuError(
+                f"{name.strip()} names more than one NPU model: {paths}. Use one of those."
+            )
+        return matches[0].model_path if matches else None
 
     def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
         return read_model_files(flm_binary, self._flm_model_dir, checkpoint)

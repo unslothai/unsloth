@@ -2083,3 +2083,122 @@ def test_a_merged_reprompt_still_marks_the_users_turn(monkeypatch):
     notice = {"role": "user", "content": "You are out of tool calls. Answer now."}
     loop = chat[:-1] + [merged, call, result, notice]
     assert ri._active_turn_anchors(loop, chat) == {id(merged), id(call), id(result), id(notice)}
+
+
+def _shown_npu(
+    monkeypatch,
+    *,
+    loaded: bool,
+    running: bool = True,
+    auto_switch: bool = False,
+):
+    """A backend whose catalog holds qwen3-0.6b-FLM, published as FastFlowLM/Qwen3-0.6B-NPU2."""
+    import utils.openai_auto_switch_settings as switch_settings
+
+    model = nb.NpuModel(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3:0.6b",
+        size_gb = 0.66,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 40960,
+        hf_repo = "FastFlowLM/Qwen3-0.6B-NPU2",
+    )
+
+    class _Server:
+        port, api_key = 1, "key"
+
+        def is_alive(self):
+            return running
+
+    class _Npu(nb.LemonadeNpuBackend):
+        catalog_reads = 0
+
+        def catalog(self):
+            self.catalog_reads += 1
+            return [model]
+
+    npu = _Npu()
+    npu._server = _Server() if running else None
+    if loaded:
+        npu._loaded = nb._Loaded(model = model, context_length = 8192, requested_context_length = None)
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: npu)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr(switch_settings, "get_openai_auto_switch_enabled", lambda: auto_switch)
+    return npu, model
+
+
+@pytest.mark.parametrize(
+    "name", ["Qwen3-0.6B-NPU2", "qwen3-0.6b-npu2", "FastFlowLM/Qwen3-0.6B-NPU2"]
+)
+def test_the_npu_resident_answers_to_the_name_the_app_shows(monkeypatch, name):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = True)
+    assert routes._loaded_satisfies(name)
+    assert routes._loaded_identity_satisfies(name)
+    assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == model.model_path
+    assert npu.catalog_reads == 0
+    asyncio.run(routes._reject_unservable_model(model.model_path, None))
+
+
+def test_other_names_pass_the_npu_display_name_step_unchanged(monkeypatch):
+    from routes import inference as routes
+    npu, _ = _shown_npu(monkeypatch, loaded = True, auto_switch = True)
+    for name in ("unsloth/Qwen3-0.6B-GGUF", "lemonade:gemma3-4b-FLM", "Gemma3-4B-NPU2", None):
+        assert asyncio.run(routes._npu_path_for_display_name(name, _request())) == name
+
+
+def test_an_unloaded_display_name_gets_the_not_loaded_error_of_its_id(monkeypatch):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = False)
+    path = asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
+    assert path == model.model_path
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._reject_unservable_model(path, _request()))
+    assert caught.value.status_code == 404
+    assert "lemonade:qwen3-0.6b-FLM' is not loaded" in json.dumps(caught.value.detail)
+
+
+def test_a_display_name_never_starts_the_runtime_with_switching_off(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False)
+    name = asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request()))
+    assert name == "Qwen3-0.6B-NPU2"
+    assert npu.catalog_reads == 0
+
+
+def test_a_display_name_auto_switches_to_its_lemonade_id(monkeypatch):
+    from routes import inference as routes
+
+    npu, model = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    switched = []
+
+    async def _switch(named_model, *_args, **_kwargs):
+        switched.append(named_model)
+
+    async def _servable(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(routes, "_auto_switch_npu_model", _switch)
+    monkeypatch.setattr(routes, "_refuse_unservable_npu_switch", _servable)
+    monkeypatch.setattr(routes, "_refuse_unless_any_load", lambda *_args: None)
+    asyncio.run(
+        routes._maybe_auto_switch_model(
+            "Qwen3-0.6B-NPU2", _request(), "tester", claim_resident = False, serves_npu = True
+        )
+    )
+    assert switched == [model.model_path]
+    assert npu.catalog_reads == 1
+
+
+def test_models_list_shows_the_npu_display_name(monkeypatch):
+    from routes import inference as routes
+
+    _shown_npu(monkeypatch, loaded = True)
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: False)
+    entry = next(e for e in routes._slot_model_objects() if e.get("device") == "npu")
+    assert entry["id"] == "lemonade:qwen3-0.6b-FLM"
+    assert entry["display_name"] == "Qwen3-0.6B-NPU2"
