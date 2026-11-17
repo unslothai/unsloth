@@ -87,6 +87,7 @@ from storage.studio_db import (
     project_working_folder_status,
     ProjectWorkingFolderConflictError,
     migrate_chat_pins,
+    PRESET_EDITED_KEYS,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -606,9 +607,7 @@ class ChatSettingsPayload(BaseModel):
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
-    presetEditedKeys: Optional[
-        dict[Literal["temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens"], bool]
-    ] = None
+    presetEditedKeys: Optional[dict[Literal[PRESET_EDITED_KEYS], bool]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]

@@ -65,9 +65,15 @@ export function isRecommendedSamplingKey(
   return (RECOMMENDED_SAMPLING_KEYS as readonly string[]).includes(key);
 }
 
+/** The recommended key a Run settings edit of `key` moves, if any. */
+export function editedSamplingKey(key: string): RecommendedSamplingKey | undefined {
+  const sampling = key === "minPMode" ? "minP" : key;
+  return isRecommendedSamplingKey(sampling) ? sampling : undefined;
+}
+
 /** The recommended keys the active pick keeps instead of taking the loaded model's values: a custom
  *  preset keeps them all, Default none, and an edited Default only the ones the user moved. */
-export function heldRecommendedKeys(
+function heldRecommendedKeys(
   presetSource: ChatPresetSource,
   presetEditedKeys: readonly RecommendedSamplingKey[],
 ): ReadonlySet<RecommendedSamplingKey> {

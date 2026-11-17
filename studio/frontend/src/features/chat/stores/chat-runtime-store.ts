@@ -2514,7 +2514,8 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  /** Under an edited Default, the recommended keys the user moved; empty for any other source. */
+  /** Under `modified`, the recommended keys held over a model's recommendation: the ones the user
+   *  moved on Default, every key on a custom preset. Empty for any other source. */
   presetEditedKeys: RecommendedSamplingKey[];
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
@@ -2799,11 +2800,13 @@ type ChatRuntimeStore = {
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
-  /** `editedKey`: the recommended key a hand edit moved, so only it outlasts a model switch. */
+  /** `editedKey`: the recommended key a hand edit moved, added to the held keys. */
   setActivePresetSource: (
     source: ChatPresetSource,
     editedKey?: RecommendedSamplingKey,
   ) => void;
+  /** Stops holding keys just set back to the model's recommendation. */
+  releasePresetEditedKeys: (keys: readonly string[]) => void;
   setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (
@@ -4923,7 +4926,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activePreset,
         activePresetSource,
         [
-          ...(state.activePresetSource === "modified" ? state.presetEditedKeys : []),
+          ...state.presetEditedKeys,
           ...(editedKey ? [editedKey] : []),
         ],
       );
@@ -4940,6 +4943,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
     }
   },
+  releasePresetEditedKeys: (keys) =>
+    set((state) => {
+      if (getPresetSource(state.activePreset) === "custom") return state;
+      const released = state.presetEditedKeys.filter((key) => keys.includes(key));
+      if (released.length === 0) return state;
+      saveSettingsPatch({ presetEditedKeys: keptKeysMap(released, false) });
+      return {
+        presetEditedKeys: state.presetEditedKeys.filter(
+          (key) => !keys.includes(key),
+        ),
+      };
+    }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras, loraInventorySettled: true }),
   setThreadRunning: (threadId, running, options) =>

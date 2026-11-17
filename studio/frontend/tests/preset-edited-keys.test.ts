@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
@@ -24,6 +24,7 @@ const {
   BUILTIN_PRESETS,
   RECOMMENDED_SAMPLING_KEYS,
   applyPresetForProvider,
+  editedSamplingKey,
   getPresetSource,
   mergeBackendRecommendedInference,
 } = await import("../src/features/chat/presets/preset-policy.ts");
@@ -190,6 +191,54 @@ test("the Qwen thinking switch skips only the keys the user moved", () => {
   assert.deepEqual(sampling(), { temperature: 0.2, topP: 0.8, topK: 20, presencePenalty: 1.5 });
 });
 
+test("Reset to the recommendation stops holding the keys it set", async () => {
+  load(QWEN);
+  moveSlider("temperature", 0.2);
+  saveSystemPrompt("Be terse.");
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.getState().releasePresetEditedKeys(["temperature", "topP"]);
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, []);
+  assert.equal(useChatRuntimeStore.getState().activePresetSource, "modified");
+  load(GEMMA);
+  assert.deepEqual(sampling(), OWN[GEMMA]);
+  await settled();
+  assert.equal((stored().presetEditedKeys as Record<string, boolean>).temperature, false);
+
+  pickPreset(PIRATE);
+  saveSystemPrompt("Arr.");
+  useChatRuntimeStore.getState().releasePresetEditedKeys(["temperature"]);
+  assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, [...RECOMMENDED_SAMPLING_KEYS]);
+});
+
+test("a Run settings edit holds only the recommended key it moves", () => {
+  assert.equal(editedSamplingKey("temperature"), "temperature");
+  assert.equal(editedSamplingKey("minPMode"), "minP");
+  for (const key of ["systemPrompt", "seed", "repetitionPenalty"]) {
+    assert.equal(editedSamplingKey(key), undefined, key);
+  }
+});
+
+test("every apply site filters the recommendation by the held keys", () => {
+  const sites = {
+    status: readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
+    load: readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
+    compare: readSrc("features/chat/shared-composer.tsx"),
+  };
+  for (const [name, source] of Object.entries(sites)) {
+    assert.doesNotMatch(source, /=== "builtin-default"/, name);
+    assert.match(source, /presetEditedKeys: [\w.()]+\.presetEditedKeys,/, name);
+    assert.match(source, /recommendedValuesForPick\(\s*resolveQwenThinkingParams\(/, name);
+  }
+  assert.match(
+    readSrc("features/chat/chat-settings-sheet.tsx"),
+    /setActivePresetSource\(nextSource, editedSamplingKey\(key\)\)/,
+  );
+  assert.match(
+    readSrc("features/chat/components/sampling-footer.tsx"),
+    /releasePresetEditedKeys\(Object\.keys\(recommended\)\)/,
+  );
+});
+
 test("the kept keys are saved with the source", async () => {
   load(QWEN);
   settingsHttp.puts.length = 0;
@@ -351,7 +400,7 @@ for (const beforeHydration of [false, true]) {
     settingsHttp.settings = {};
   });
 }
-test("a startup prompt edit saved before the settings read is not taken for an older `modified`", async () => {
+test("a startup prompt edit flushed before the settings read hydrates with no held key", async () => {
   load(QWEN);
   await settled();
   settingsHttp.settings = { activePreset: "Default", activePresetSource: "builtin-default" };
