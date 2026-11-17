@@ -394,7 +394,7 @@ test("the cap offers the bounds every request is clamped to", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /getExternalMaxOutputTokens\(/);
-  assert.match(adapter, /getExternalMinOutputTokens\(externalProvider\?\.providerType\),/);
+  assert.match(adapter, /externalRequestMaxTokens\(\s*externalProvider\?\.providerType,/);
   assert.match(
     settingsDialog,
     /const minCap = getExternalMinOutputTokens\(providerType\);/,

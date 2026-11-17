@@ -811,6 +811,9 @@ def fake_runtime(monkeypatch):
     torch.backends = types.SimpleNamespace(mps = None)
     torch.inference_mode = lambda: contextlib.nullcontext()
     torch.no_grad = lambda: contextlib.nullcontext()
+    # Loading an adapter snapshots the requires_grad flags of the pipe's nn.Module components (#18081); the fake
+    # components are not modules, so there is nothing to snapshot.
+    torch.nn = types.SimpleNamespace(Module = type("Module", (), {}))
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
@@ -4343,7 +4346,8 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     monkeypatch.setattr(dmod, "quantize_text_encoders", _quantize)
     monkeypatch.setattr(dmod, "refine_memory_plan_for_components", _refine)
-    _load_m(backend, tmp_path, memory_mode = "low_vram")
+    # The legacy flag is the whole-module request now that low_vram streams.
+    _load_m(backend, tmp_path, cpu_offload = True)
     assert seen == {"quantized": True, "refined": True}
 
 

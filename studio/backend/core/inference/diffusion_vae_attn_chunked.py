@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 / fp16
-VAE's math SDPA keeps its own dtype (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that
-process-wide flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the
-fp32 upcast)."""
+"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 VAE's
+math SDPA keeps bf16 (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that process-wide
+flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32
+upcast). fp16 always upcasts: the FLUX.1 / Z-Image VAE's mid-block scores reach 1e6 to 5e7, past fp16's 65504."""
 
 from __future__ import annotations
 
@@ -72,10 +72,12 @@ def _autocast_dtype(device_type: str) -> Any:
 
 
 def _half_math_call(q: Any) -> bool:
+    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
+    # cards without native bf16, gfx103x and older, run the VAE in fp16).
     import torch
     return (
         getattr(getattr(q, "device", None), "type", None) == "cuda"
-        and q.dtype in (torch.bfloat16, torch.float16)
+        and q.dtype == torch.bfloat16
         and is_rocm_torch(torch)
         and half_math_enabled()
     )

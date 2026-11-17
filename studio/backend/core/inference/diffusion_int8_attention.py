@@ -179,6 +179,46 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
+# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink decisions stay per
+# load. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PERSIST_SOURCES = (
+    "diffusion_int8_attention.py",
+    "diffusion_int8_attention_cuda.py",
+    "diffusion_int8_attention_triton.py",
+    "diffusion_int8_attention_dispatch.py",
+    "diffusion_qwenimage21_attn.py",
+)
+_PERSISTED: list = [None]
+WARM_TOKENS = 128
+
+
+def _library_versions() -> dict:
+    """Library versions the races depend on beyond torch / triton / the driver."""
+    import torch
+
+    from .diffusion_int8_attention_cuda import nvrtc_version
+    from .diffusion_probe_cache import _version
+
+    try:
+        nvrtc = list(nvrtc_version())
+    except Exception:  # noqa: BLE001
+        nvrtc = None
+    return {
+        "diffusers": _version("diffusers"),
+        "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "nvrtc": nvrtc,
+    }
+
+
+def persisted() -> Any:
+    if _PERSISTED[0] is None:
+        from .diffusion_probe_cache import Namespace
+        _PERSISTED[0] = Namespace("int8_attention", PERSIST_SOURCES, extra = _library_versions)
+    return _PERSISTED[0]
+
+
+def card_name(index: int) -> str:
+    return f"cuda:{int(index)}"
 
 
 def _dtype_kinds() -> dict:
@@ -477,7 +517,14 @@ PLAIN_ERROR_SLACK = 1.15
 # MODE_KERNELS: forced SINK_DITS request, races only the INT8 paths, never torch.
 MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
 SINK_DITS = frozenset(
-    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
 )
 _RACE = (
     threading.local()
@@ -868,6 +915,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 elif known is not None:
                     plan["sinks"] = known
                 else:
+                    # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
                     plan["sinks"] = True if race is None else race()
                     if key is not None:
                         _decisions()[key] = plan["sinks"]
@@ -1574,6 +1622,79 @@ def _check(
     return out
 
 
+def _verdict_key(key: tuple) -> str:
+    import json
+    return json.dumps(list(key[1:]))
+
+
+def _storable(found: dict) -> bool:
+    """Reusable only if exception-free (failures may be transient) and, when timed and passing, has all race sizes."""
+    if found.get("error") or found.get("failed") or (found.get("long") or {}).get("failed"):
+        return False
+    return not (
+        found.get("ok") and found.get("timed") and len(found.get("ms") or {}) < len(RACE_TOKENS)
+    )
+
+
+def _persist_verdict(index: int, key: tuple, found: dict) -> None:
+    if key[-1] is None or not _storable(dict(found, timed = key[-2])):
+        return
+    try:
+        persisted().put(card_name(index), _verdict_key(key), found)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _warm(index: int, dtype: Any, head_dim: int, impl: str, found: dict) -> None:
+    """Eagerly load the vouched kernels (before CUDA graph capture); raises if they no longer run here."""
+    import torch
+
+    device = torch.device("cuda", index)
+    with torch.no_grad():
+        q, k, v = probe_inputs(device, dtype, WARM_TOKENS, 1, head_dim)
+        _run(q, k, v, impl, config = select_config(device_config(index, head_dim, impl), 0))
+        if (found.get("long") or {}).get("ok"):
+            config = device_config(index, head_dim, impl)
+            keys = int(config["long_keys"]) + LONG_PROBE_EXTRA
+            q, k, v = probe_inputs(device, dtype, keys, 1, head_dim, seed = keys)
+            _run(q[:, :WARM_TOKENS], k, v, impl, config = config)
+        torch.cuda.synchronize(device)
+
+
+def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optional[dict]:
+    """The persisted verdict for ``key`` installed as ``_check`` would leave it, or None to re-check."""
+    import torch
+
+    impl = key[-1]
+    if impl is None:
+        return None
+    try:
+        stored = persisted().get(card_name(index), _verdict_key(key))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(stored, dict) or stored.get("impl") != impl:
+        return None
+    found = dict(stored, persisted = True)
+    found["ms"] = {
+        int(t): v for t, v in (found.get("ms") or {}).items()
+    }  # JSON keys come back as strings
+    if found.get("ok"):
+        try:
+            _warm(index, dtype, head_dim, impl, found)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception:  # noqa: BLE001
+            return None
+        _VERIFIED.add((index, int(head_dim), str(dtype), impl))
+        long = found.get("long")
+        if isinstance(long, dict):
+            long_key = (index, int(head_dim), str(dtype), impl)
+            _LONG_CHECKS[long_key] = long
+            if long.get("ok"):
+                _LONG_VERIFIED.add(long_key)
+    return found
+
+
 def verdict(
     device: Any,
     dtype: Any,
@@ -1615,9 +1736,18 @@ def verdict(
                 _VERDICTS[key] = found
             if found is None:
                 with torch.cuda.device(index):
-                    found = _check(
-                        torch.device("cuda", index), dtype, int(heads), hd, incumbent, timed, impl
-                    )
+                    found = _adopt_verdict(index, dtype, hd, key)
+                    if found is None:
+                        found = _check(
+                            torch.device("cuda", index),
+                            dtype,
+                            int(heads),
+                            hd,
+                            incumbent,
+                            timed,
+                            impl,
+                        )
+                        _persist_verdict(index, key, found)
                 _VERDICTS[key] = found
             if impl == "cuda" and found.get("failed") and (index, hd) not in _CUDA_FAILED:
                 _CUDA_FAILED[(index, hd)] = found.get("error")

@@ -276,11 +276,12 @@ def verdict(x: Any) -> Optional[dict]:
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
-    with _LOCK:
-        if key not in _VERDICTS:
-            with torch.cuda.device(x.device):
+    # capture query reads the current device: ask on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        with _LOCK:
+            if key not in _VERDICTS:
                 _VERDICTS[key] = _check(x.device, x.dtype, int(x.shape[-1]))
     return _VERDICTS[key]
 

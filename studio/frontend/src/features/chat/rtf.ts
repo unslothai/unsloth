@@ -40,7 +40,6 @@ const SKIPPED_DESTINATIONS = new Set([
   "footerl",
   "footerr",
   "footerf",
-  "footnote",
   "annotation",
   "xe",
   "tc",
@@ -103,6 +102,7 @@ type Group = {
   inTable: boolean;
   uc: number;
   font: number;
+  note: string[] | null;
 };
 
 export async function readRtfAttachmentContent(
@@ -137,9 +137,12 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
     inTable: false,
     uc: 1,
     font: -1,
+    note: null,
   };
   const stack: Group[] = [];
   const parts: string[] = [];
+  const notes: string[][] = [];
+  const noteRefs: { at: number; note: number }[] = [];
   let length = 0;
   let pending: number[] = [];
   let pendingEncoding = "";
@@ -148,14 +151,14 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
 
   const flush = () => {
     if (pending.length > 0) {
-      parts.push(
+      (group.note ?? parts).push(
         new TextDecoder(pendingEncoding).decode(new Uint8Array(pending)),
       );
       pending = [];
     }
   };
   const append = (text: string) => {
-    parts.push(text);
+    (group.note ?? parts).push(text);
     length += text.length;
   };
   const emit = (text: string) => {
@@ -202,7 +205,11 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
       group = { ...group };
       fallbackToSkip = 0;
     } else if (byte === 0x7d) {
-      group = stack.pop() ?? group;
+      const outer = stack.pop() ?? group;
+      if (outer.note !== group.note) {
+        flush();
+      }
+      group = outer;
       fallbackToSkip = 0;
     } else if (byte === 0x0d || byte === 0x0a) {
       continue;
@@ -260,6 +267,17 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
         group.inTable = word === "intbl";
       } else if (word === "par" && group.inTable) {
         emit(" ");
+      } else if (word === "footnote" && !stack[stack.length - 1]?.skip) {
+        flush();
+        group.skip = false;
+        group.note = [];
+        notes.push(group.note);
+      } else if (word === "chftn") {
+        if (!(group.skip || group.note)) {
+          flush();
+          noteRefs.push({ at: parts.length, note: notes.length });
+          parts.push("");
+        }
       } else if (SKIPPED_DESTINATIONS.has(word)) {
         group.skip = true;
         group.fontTable ||= word === "fonttbl";
@@ -295,6 +313,18 @@ function rtfToText(bytes: Uint8Array, filename: string): string {
     }
   }
   flush();
+  const bodies = notes.map((note) => note.join("").replace(/\s+/g, " ").trim());
+  for (const { at, note } of noteRefs) {
+    if (bodies[note]) {
+      parts[at] = `[${note + 1}]`;
+    }
+  }
+  const noteLines = bodies.flatMap((body, i) =>
+    body ? [`[${i + 1}] ${body}`] : [],
+  );
+  if (noteLines.length > 0) {
+    parts.push(`\n\nFootnotes\n${noteLines.join("\n")}`);
+  }
 
   const text = parts
     .join("")

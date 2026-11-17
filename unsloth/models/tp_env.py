@@ -28,7 +28,7 @@ replica for generate / exports): Trainer.__init__ splits it (apply_pipeline_para
 the CPU for the post-training cells), then applies tensor parallel inside the stage, then FSDP2 / DDP-style
 averaging over mesh["dp"], and runs every training step through the pipeline schedule.
 UNSLOTH_PP_MICROBATCHES (default 2 x pp, lowered to a divisor of the batch) and UNSLOTH_PP_SCHEDULE (gpipe,
-1f1b) tune it.
+1f1b; default 1f1b, run as gpipe on a step with fewer micro-batches than stages) tune it.
 
 UNSLOTH_TP_SHARDED_LOAD=0 loads checkpoints in full on every rank instead (then shards them).
 """
