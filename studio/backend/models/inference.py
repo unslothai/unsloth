@@ -4917,7 +4917,8 @@ class DiffusionLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM "
-        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "cut), low_vram (stream the transformer and text encoders block by block, tiled VAE "
+        "decode; lowest VRAM, slowest). "
         "Overrides cpu_offload when set.",
     )
     allow_oversized_load: bool = Field(
@@ -7548,7 +7549,8 @@ class VideoLoadRequest(BaseModel):
         None,
         description = "Memory policy: auto (measured), fast (resident), balanced "
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
-        "(offload every component, lowest VRAM, slower).",
+        "(stream the transformer and text encoders block by block, tiled VAE decode; lowest "
+        "VRAM, slowest).",
     )
     allow_oversized_load: bool = Field(
         False,

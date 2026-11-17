@@ -293,6 +293,7 @@ from .diffusion_memory import (
     with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _low_vram_whole_module,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -3903,6 +3904,12 @@ def _inplace_torchao_placement(
     """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
+    whole = _low_vram_whole_module(plan)
+    if whole is not None and not (
+        torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan)
+    ):
+        # low_vram streams by default; a scheme that cannot stream is judged on the whole-module tier it had.
+        plan = whole
     if plan.offload_policy == OFFLOAD_MODEL:
         estimates = getattr(plan, "estimates", None) or {}
         budget = int(estimates.get("safe_device_budget_mib") or 0)

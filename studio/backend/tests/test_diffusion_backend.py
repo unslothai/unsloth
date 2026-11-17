@@ -4343,7 +4343,8 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     monkeypatch.setattr(dmod, "quantize_text_encoders", _quantize)
     monkeypatch.setattr(dmod, "refine_memory_plan_for_components", _refine)
-    _load_m(backend, tmp_path, memory_mode = "low_vram")
+    # The legacy flag is the whole-module request now that low_vram streams.
+    _load_m(backend, tmp_path, cpu_offload = True)
     assert seen == {"quantized": True, "refined": True}
 
 
