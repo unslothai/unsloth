@@ -101,7 +101,7 @@ def test_rag_embedding_alias_configuration_is_rejected_before_fallback(
     from utils import model_aliases
     from utils.api_errors import install_api_error_handlers
 
-    config = {"max_seq_length": 4096, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    config = {"max_seq_length": 4096, "kv_cache_dtype": "q5_1", "speculative_type": "off"}
     alias = {"name": "embed", "model": f"{MODEL}-GGUF"}
     if configured:
         alias["load_config"] = config

@@ -102,55 +102,6 @@ def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
     return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
-def test_default_f16_runtime_satisfies_configured_alias_without_reload():
-    # The loader's equivalent None/f16 cache requests must also match an alias.
-    from dataclasses import replace
-    from utils.model_aliases import alias_config_matches
-
-    backend = _loaded_backend()
-    backend._last_load_intent = GgufLoadIntent(
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        speculative_type = "auto",
-    )
-    assert backend.adopt_load_intent_if_matched(
-        replace(backend.last_load_intent, cache_type_kv = "f16")
-    )
-    assert backend.last_load_intent.cache_type_kv is None
-    assert alias_config_matches(
-        backend, {"max_seq_length": 8192, "cache_type_kv": "f16", "speculative_type": "auto"}
-    )
-
-
-@pytest.mark.parametrize(
-    "recorded, selected, matches",
-    [
-        (("f16", "f16"), "f16", True),
-        (("q4_0", "q4_0"), "q4_0", True),
-        (("q4_0", "f16"), "f16", False),
-        (("q4_0", "q4_0"), "f16", False),
-    ],
-)
-def test_alias_cache_match_uses_recorded_axes_after_environment_changes(
-    monkeypatch, recorded, selected, matches
-):
-    # A later environment edit cannot change the K/V pair requested by a resident runtime.
-    from utils.model_aliases import alias_config_matches
-
-    backend = _loaded_backend()
-    backend._last_load_intent = GgufLoadIntent(model_identifier = "owner/repo", n_ctx = 8192)
-    backend._requested_cache_types = recorded
-    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "f32")
-    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "f32")
-    assert (
-        alias_config_matches(
-            backend, {"max_seq_length": 8192, "cache_type_kv": selected, "speculative_type": "auto"}
-        )
-        is matches
-    )
-
-
 def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
     gguf_file = tmp_path / "model.Q4_K_M.gguf"
     gguf_file.write_bytes(b"")
@@ -800,9 +751,7 @@ def test_missing_extra_args_source_refuses_without_raising():
         ("q4_0", True),
     ],
 )
-def test_a_set_cache_type_overrides_inherited_cache_flags_in_the_reuse_check(
-    cache_type_kv, reuses
-):
+def test_a_set_cache_type_overrides_inherited_cache_flags_in_the_reuse_check(cache_type_kv, reuses):
     # Live repro on main: q4_0 launch flags, then /load with cache_type_kv only, kept q4_0.
     import routes.inference as routes
 

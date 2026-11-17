@@ -1115,6 +1115,11 @@ _MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-a
 _MMPROJ_ENABLE_FLAGS: frozenset[str] = frozenset({"--mmproj-auto"})
 
 
+def strip_mmproj_disable_flags(args: Iterable[str]) -> list[str]:
+    """``args`` without the boolean switches that turn vision mmproj loading off."""
+    return [arg for arg in args if _flag_name(str(arg)) not in _MMPROJ_DISABLE_FLAGS]
+
+
 def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     """True when pass-through args opt out of vision mmproj loading. llama-server parses
     --mmproj-auto / --no-mmproj / --no-mmproj-auto as one boolean with last-wins semantics;

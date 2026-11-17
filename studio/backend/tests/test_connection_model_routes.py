@@ -181,7 +181,7 @@ def test_connection_alias_rejects_load_configuration_before_dispatch(
     # Configured aliases must fail before upstream work; plain aliases still dispatch normally.
     from utils import model_aliases
 
-    config = {"max_seq_length": 4096, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    config = {"max_seq_length": 4096, "kv_cache_dtype": "q5_1", "speculative_type": "off"}
     alias = {"name": "connection", "model": CONNECTION_MODEL}
     if configured:
         alias["load_config"] = config

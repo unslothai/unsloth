@@ -13205,16 +13205,41 @@ def test_an_unattended_switch_beside_rechecks_after_the_load_gate_before_replaci
     assert loads == [] and backend.model_identifier == "org/A-GGUF"
 
 
-_ALIAS_FAST = {"max_seq_length": 53248, "cache_type_kv": "q4_0", "speculative_type": "auto"}
-_ALIAS_LONG = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "ngram"}
+_ALIAS_FAST = {"max_seq_length": 53248, "kv_cache_dtype": "q4_0", "speculative_type": "auto"}
+_ALIAS_LONG = {"max_seq_length": 98304, "kv_cache_dtype": "q5_1", "speculative_type": "ngram"}
 _ALIAS_TARGET = "org/Model-GGUF:Q4_K_M"
+_ALIAS_RESOLVED = ("/models/model.gguf", "Q4_K_M", "org/Model-GGUF")
+_LAUNCH_FIELDS = (
+    "max_seq_length",
+    "cache_type_kv",
+    "speculative_type",
+    "n_parallel",
+    "gpu_memory_mode",
+    "gpu_layers",
+    "n_cpu_moe",
+    "disable_vision",
+    "llama_extra_args",
+)
 
 
-def _alias_config_request(config, **scope_fields):
+def _launch_of(request):
+    return tuple(getattr(request, field) for field in _LAUNCH_FIELDS)
+
+
+def _alias_config_request(
+    config,
+    *,
+    unsupported = False,
+    **scope_fields,
+):
     from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
     return SimpleNamespace(
         scope = {
-            MODEL_ALIAS_CONFIG_SCOPE_KEY: {"model": _ALIAS_TARGET, "load_config": config},
+            MODEL_ALIAS_CONFIG_SCOPE_KEY: {
+                "model": _ALIAS_TARGET,
+                "load_config": config,
+                "unsupported": unsupported,
+            },
             **scope_fields,
         },
         state = SimpleNamespace(),
@@ -13225,12 +13250,13 @@ def _alias_config_request(config, **scope_fields):
 class _AliasLoadRecorder(_LoadRecorder):
     async def __call__(self, request, *args, **kwargs):
         await super().__call__(request, *args, **kwargs)
-        self.backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
-            model_identifier = request.model_path,
-            n_ctx = request.max_seq_length,
-            cache_type_kv = request.cache_type_kv,
-            speculative_type = request.speculative_type,
-        )
+        self.backend.alias_launch = _launch_of(request)
+
+
+def _alias_launch(config):
+    """The launch a configured alias asks for, as the switch builds it."""
+    _override, kwargs = inference_route._alias_load_kwargs(*_ALIAS_RESOLVED, config)
+    return _launch_of(LoadRequest(**kwargs))
 
 
 def _wire_alias_config(
@@ -13239,6 +13265,7 @@ def _wire_alias_config(
     enabled = True,
     resolves = True,
     fail = False,
+    saved = None,
 ):
     backend = _FakeBackend("/models/model.gguf", "Q4_K_M", "org/Model-GGUF")
     rec = _AliasLoadRecorder(backend, fail = fail)
@@ -13247,38 +13274,55 @@ def _wire_alias_config(
         enabled = enabled,
         backend = backend,
         recorder = rec,
-        resolves_to = ("/models/model.gguf", "Q4_K_M", "org/Model-GGUF") if resolves else None,
+        resolves_to = _ALIAS_RESOLVED if resolves else None,
     )
+    # The real override lookup and alias overlay run; only the stored rows are faked.
+    monkeypatch.setattr(
+        settings,
+        "get_model_overrides",
+        lambda: {"org/Model-GGUF:Q4_K_M": dict(saved)} if saved else {},
+    )
+
+    async def launch_satisfied(load_kwargs, override, fastapi_request):
+        # The loader's own comparison runs against a real backend in test_model_aliases.py.
+        return backend.is_loaded and getattr(backend, "alias_launch", None) == _launch_of(
+            LoadRequest(**load_kwargs)
+        )
+
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
     return backend, rec
 
 
-def test_alias_config_switches_same_weights_and_reuses_matching_intent(monkeypatch):
-    # A→B→B→A changes runtime configuration three times without changing model weights.
+def _switch_alias(config, **kwargs):
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _ALIAS_TARGET, _alias_config_request(config), "tester", **kwargs
+        )
+    )
+
+
+def test_alias_config_switches_same_weights_and_reuses_matching_launch(monkeypatch):
+    # A→B→B→A changes the launch three times without changing model weights.
     backend, rec = _wire_alias_config(monkeypatch)
     for config in (_ALIAS_FAST, _ALIAS_LONG, _ALIAS_LONG, _ALIAS_FAST):
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(config), "tester"
-            )
-        )
+        _switch_alias(config)
     assert [(r.max_seq_length, r.cache_type_kv, r.speculative_type) for r in rec.calls] == [
         (53248, "q4_0", "auto"),
         (98304, "q5_1", "ngram"),
         (53248, "q4_0", "auto"),
     ]
-    assert backend.last_load_intent.n_ctx == 53248
 
 
-def test_alias_config_overrides_saved_settings_and_conflicting_flags(monkeypatch):
-    # Configured launch fields win without mutating the ordinary model settings.
-    backend, rec = _wire_alias_config(monkeypatch)
+def test_alias_config_layers_over_saved_settings_and_drops_shadowed_flags(monkeypatch):
+    # Alias fields win; every field it omits, and unrelated saved flags, come from the model's row.
     saved = {
         "max_seq_length": 2048,
         "custom_context_length": 2048,
         "kv_cache_dtype": "f16",
         "speculative_type": "off",
+        "n_parallel": 4,
         "gpu_memory_mode": "manual",
-        "gpu_layers": -1,
+        "gpu_layers": 12,
         "llama_extra_args": [
             "--ctx-size",
             "2048",
@@ -13290,70 +13334,100 @@ def test_alias_config_overrides_saved_settings_and_conflicting_flags(monkeypatch
             "2",
         ],
     }
-    original = dict(saved)
-    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: ("model", saved))
-    asyncio.run(
-        inference_route._maybe_auto_switch_model(
-            _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-        )
-    )
-    assert len(rec.calls) == 1
-    request = rec.calls[0]
+    original = json.loads(json.dumps(saved))
+    backend, rec = _wire_alias_config(monkeypatch, saved = saved)
+    _switch_alias(_ALIAS_LONG)
+    (request,) = rec.calls
     assert (request.max_seq_length, request.cache_type_kv, request.speculative_type) == (
         98304,
         "q5_1",
         "ngram",
     )
+    assert (request.n_parallel, request.gpu_memory_mode, request.gpu_layers) == (4, "manual", 12)
     assert request.llama_extra_args == ["--threads", "2"]
     assert saved == original
 
 
-@pytest.mark.parametrize("same_source", [True, False])
-def test_alias_config_reloads_unsaved_inherited_flags(monkeypatch, same_source):
-    # A configured reload applies the existing same-model inheritance and flag-stripping rules.
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        # Omitted fields keep the saved context, cache and speculation.
+        ({"kv_cache_dtype": "q8_0"}, (4096, "q8_0", "mtp")),
+        # 0 hands the context back to Auto even though the model saved one.
+        ({"max_seq_length": 0}, (0, "q4_0", "mtp")),
+    ],
+)
+def test_alias_config_omitted_fields_inherit_the_saved_settings(monkeypatch, config, expected):
+    saved = {"max_seq_length": 4096, "kv_cache_dtype": "q4_0", "speculative_type": "mtp"}
+    backend, rec = _wire_alias_config(monkeypatch, saved = saved)
+    _switch_alias(config)
+    (request,) = rec.calls
+    assert (request.max_seq_length, request.cache_type_kv, request.speculative_type) == expected
+
+
+@pytest.mark.parametrize(
+    "saved, config, expected",
+    [
+        (
+            {},
+            {"gpu_layers": 20, "n_cpu_moe": 4, "n_parallel": 2, "disable_vision": True},
+            ("manual", 20, 4, 2, True),
+        ),
+        (
+            {"gpu_memory_mode": "manual", "gpu_layers": 10, "n_cpu_moe": 3, "disable_vision": True},
+            {"gpu_layers": "auto", "disable_vision": False},
+            ("auto", -1, 0, None, False),
+        ),
+        (
+            {"gpu_memory_mode": "manual", "gpu_layers": 10, "n_cpu_moe": 3},
+            {"gpu_layers": 30},
+            ("manual", 30, 3, None, False),
+        ),
+    ],
+)
+def test_alias_config_placement_fields(monkeypatch, saved, config, expected):
+    backend, rec = _wire_alias_config(monkeypatch, saved = saved)
+    _switch_alias(config)
+    (request,) = rec.calls
+    assert (
+        request.gpu_memory_mode,
+        request.gpu_layers,
+        request.n_cpu_moe,
+        request.n_parallel,
+        request.disable_vision,
+    ) == expected
+
+
+def test_alias_config_launch_never_inherits_the_resident_flags(monkeypatch):
+    # Flags the resident was started with are not the alias's: the launch names its own (none here).
     backend, rec = _wire_alias_config(monkeypatch)
-    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
-        model_identifier = backend.model_identifier,
-        n_ctx = _ALIAS_LONG["max_seq_length"],
-        cache_type_kv = _ALIAS_LONG["cache_type_kv"],
-        speculative_type = _ALIAS_LONG["speculative_type"],
-    )
-    backend.extra_args = ["--cache-type-k", "q4_0", "--gpu-layers", "99", "--threads", "2"]
+    backend.extra_args = ["--cache-type-k", "q4_0", "--threads", "2"]
     backend.requested_extra_args = list(backend.extra_args)
-    backend.extra_args_source = (
-        backend.model_identifier if same_source else "org/Other-GGUF",
-        backend.hf_variant,
-    )
+    backend.extra_args_source = (backend.model_identifier, backend.hf_variant)
+    _switch_alias(_ALIAS_LONG)
+    (request,) = rec.calls
+    assert request.llama_extra_args == []
+    assert request.force_reload is False
+    assert "llama_extra_args" in request.model_fields_set
+
+
+def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):
+    # A stash restores what idle-unload freed; a configured alias launches its own settings.
+    backend, rec = _wire_alias_config(monkeypatch)
+
+    def replay(*args, **kwargs):
+        pytest.fail("a configured alias replayed the idle-unload stash")
+
+    monkeypatch.setattr(inference_route, "_replay_load_kwargs", replay)
+    monkeypatch.setattr(inference_route, "_same_launch_target", lambda *a: True, raising = False)
+    import core.inference.llama_keepwarm as keepwarm
+
+    monkeypatch.setattr(keepwarm, "get_last_unloaded_model", lambda: _ALIAS_RESOLVED)
     monkeypatch.setattr(
-        settings,
-        "resolve_override_for_load",
-        lambda *a: ("model", {"gpu_memory_mode": "manual", "gpu_layers": 0}),
+        keepwarm, "get_last_unloaded_intent", lambda last: {"kwargs": {"max_seq_length": 8}}
     )
-
-    async def load(request, *args, **kwargs):
-        # The resident can deduplicate an inherited request unless a fresh load is required.
-        if not request.force_reload:
-            return
-        extras = inference_route._resolve_inherited_extra_args(
-            request,
-            SimpleNamespace(is_gguf = True, gguf_variant = request.gguf_variant),
-            request.model_path,
-            request.llama_extra_args,
-        )
-        await rec(request, *args, **kwargs)
-        backend.extra_args = list(extras or [])
-        backend.requested_extra_args = list(extras or [])
-
-    monkeypatch.setattr(inference_route, "_load_model_impl", load)
-    for _ in range(2):
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
-    assert len(rec.calls) == 1
-    assert rec.calls[0].force_reload is True
-    assert backend.requested_extra_args == (["--threads", "2"] if same_source else [])
+    _switch_alias(_ALIAS_LONG)
+    assert rec.calls[0].max_seq_length == 98304
 
 
 @pytest.mark.parametrize("policy", ["disabled", "loaded-only"])
@@ -13393,6 +13467,20 @@ def test_alias_config_conflict_uses_endpoint_error_envelope(monkeypatch, policy,
     assert not rec.calls
 
 
+def test_alias_config_unreadable_settings_refuse_without_loading(monkeypatch):
+    # Settings a newer release stored are never guessed at: the request is refused before any load.
+    backend, rec = _wire_alias_config(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _ALIAS_TARGET, _alias_config_request({}, unsupported = True), "tester"
+            )
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"]["code"] == "model_configuration_unsupported"
+    assert not rec.calls
+
+
 @pytest.mark.parametrize("claim_resident", [False, True])
 @pytest.mark.parametrize("prior_preview", [False, True])
 def test_alias_config_failed_load_does_not_adopt_configuration(
@@ -13404,18 +13492,11 @@ def test_alias_config_failed_load_does_not_adopt_configuration(
     monkeypatch.setattr(inference_route, "_preview_resident_ident", prior_marker)
     for _ in range(2):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(
-                inference_route._maybe_auto_switch_model(
-                    _ALIAS_TARGET,
-                    _alias_config_request(_ALIAS_LONG),
-                    "tester",
-                    claim_resident = claim_resident,
-                )
-            )
+            _switch_alias(_ALIAS_LONG, claim_resident = claim_resident)
         assert exc.value.status_code == 503
         assert inference_route._get_preview_resident() == prior_marker
     assert len(rec.calls) == 2
-    assert getattr(backend, "last_load_intent", None) is None
+    assert getattr(backend, "alias_launch", None) is None
 
 
 @pytest.mark.parametrize("idle_unload", [False, True])
@@ -13423,53 +13504,35 @@ def test_alias_config_failed_load_does_not_adopt_configuration(
 def test_alias_config_disabled_switch_reuses_only_matching_runtime(
     monkeypatch, idle_unload, claim_resident
 ):
-    # Disabling auto-switch never silently serves a different configured window.
+    # Disabling auto-switch never silently serves a different configured launch.
     backend, rec = _wire_alias_config(monkeypatch, enabled = False)
     monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: idle_unload)
     monkeypatch.setattr(inference_route, "_preview_resident_ident", backend.model_identifier)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET,
-                _alias_config_request(_ALIAS_LONG),
-                "tester",
-                claim_resident = claim_resident,
-            )
-        )
+        _switch_alias(_ALIAS_LONG, claim_resident = claim_resident)
     assert exc.value.status_code == 409
-    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
-        model_identifier = backend.model_identifier,
-        n_ctx = 98304,
-        cache_type_kv = "q5_1",
-        speculative_type = "ngram",
-    )
-    asyncio.run(
-        inference_route._maybe_auto_switch_model(
-            _ALIAS_TARGET,
-            _alias_config_request(_ALIAS_LONG),
-            "tester",
-            claim_resident = claim_resident,
-        )
-    )
+    backend.alias_launch = _alias_launch(_ALIAS_LONG)
+    _switch_alias(_ALIAS_LONG, claim_resident = claim_resident)
     assert not rec.calls
     assert inference_route._get_preview_resident() == (
         None if claim_resident else backend.model_identifier
     )
 
 
-def test_alias_config_loaded_only_refuses_mismatching_runtime(monkeypatch):
+@pytest.mark.parametrize("matching", [False, True])
+def test_alias_config_loaded_only_serves_only_a_matching_runtime(monkeypatch, matching):
     # A loaded-only credential cannot reconfigure an otherwise permitted resident model.
     LOADED_MODELS_ONLY_SCOPE_KEY = inference_route.LOADED_MODELS_ONLY_SCOPE_KEY
     backend, rec = _wire_alias_config(monkeypatch)
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET,
-                _alias_config_request(_ALIAS_LONG, **{LOADED_MODELS_ONLY_SCOPE_KEY: True}),
-                "tester",
-            )
-        )
-    assert exc.value.status_code == 409
+    if matching:
+        backend.alias_launch = _alias_launch(_ALIAS_LONG)
+    request = _alias_config_request(_ALIAS_LONG, **{LOADED_MODELS_ONLY_SCOPE_KEY: True})
+    if matching:
+        asyncio.run(inference_route._maybe_auto_switch_model(_ALIAS_TARGET, request, "tester"))
+    else:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(inference_route._maybe_auto_switch_model(_ALIAS_TARGET, request, "tester"))
+        assert exc.value.status_code == 409
     assert not rec.calls
 
 
@@ -13481,11 +13544,7 @@ def test_alias_config_refuses_multi_model_modes(monkeypatch, mode):
     backend, rec = _wire_alias_config(monkeypatch)
     monkeypatch.setattr(multi, "get_multi_model_mode", lambda: mode)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
+        _switch_alias(_ALIAS_LONG)
     assert exc.value.status_code == 400
     assert not rec.calls
 
@@ -13499,11 +13558,7 @@ def test_alias_config_missing_local_target_never_downloads(monkeypatch):
 
     monkeypatch.setattr(inference_route, "_maybe_auto_download_model", download)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
+        _switch_alias(_ALIAS_LONG)
     assert exc.value.status_code == 404
     assert not rec.calls
 
@@ -13513,17 +13568,13 @@ def test_alias_config_refuses_non_gguf_before_load(monkeypatch):
     backend, rec = _wire_alias_config(monkeypatch)
     monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a: False)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
+        _switch_alias(_ALIAS_LONG)
     assert exc.value.status_code == 400
     assert not rec.calls
 
 
 def test_alias_config_concurrent_identical_requests_load_once(monkeypatch):
-    # Waiters recheck the configured intent after the first request completes its load.
+    # Waiters recheck the configured launch after the first request completes its load.
     backend, rec = _wire_alias_config(monkeypatch)
 
     async def run():
@@ -13541,6 +13592,24 @@ def test_alias_config_concurrent_identical_requests_load_once(monkeypatch):
     assert rec.calls[0].max_seq_length == 98304
 
 
+def test_alias_config_concurrent_different_configurations_both_load(monkeypatch):
+    # Different waiters for one model cannot coalesce solely on model and quantization identity.
+    backend, rec = _wire_alias_config(monkeypatch)
+
+    async def run():
+        await asyncio.gather(
+            *(
+                inference_route._maybe_auto_switch_model(
+                    _ALIAS_TARGET, _alias_config_request(config), "tester"
+                )
+                for config in (_ALIAS_LONG, _ALIAS_FAST)
+            )
+        )
+
+    asyncio.run(run())
+    assert sorted(r.max_seq_length for r in rec.calls) == [53248, 98304]
+
+
 def test_alias_config_kept_slot_cannot_bypass_configuration_check(monkeypatch):
     # A previously kept slot still requires the requested configuration when multi-model mode is off.
     backend, rec = _wire_alias_config(monkeypatch)
@@ -13550,11 +13619,7 @@ def test_alias_config_kept_slot_cannot_bypass_configuration_check(monkeypatch):
 
     monkeypatch.setattr(inference_route, "_route_to_extra_slot", route)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
+        _switch_alias(_ALIAS_LONG)
     assert exc.value.status_code == 409
     assert not rec.calls
 
@@ -13598,24 +13663,6 @@ def test_alias_config_real_middleware_reaches_switch_hook(monkeypatch):
     assert rec.calls[0].max_seq_length == 98304
 
 
-def test_alias_config_concurrent_different_configurations_both_load(monkeypatch):
-    # Different waiters for one model cannot coalesce solely on model and quantization identity.
-    backend, rec = _wire_alias_config(monkeypatch)
-
-    async def run():
-        await asyncio.gather(
-            *(
-                inference_route._maybe_auto_switch_model(
-                    _ALIAS_TARGET, _alias_config_request(config), "tester"
-                )
-                for config in (_ALIAS_LONG, _ALIAS_FAST)
-            )
-        )
-
-    asyncio.run(run())
-    assert sorted(r.max_seq_length for r in rec.calls) == [53248, 98304]
-
-
 def test_alias_config_refuses_embeddings_before_load(monkeypatch):
     # Text launch configurations cannot silently reconfigure the embedding endpoint.
     backend, rec = _wire_alias_config(monkeypatch)
@@ -13637,11 +13684,7 @@ def test_alias_config_target_authorization_precedes_switch(monkeypatch):
 
     monkeypatch.setattr(inference_route, "_require_named_model_access", denied)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                _ALIAS_TARGET, _alias_config_request(_ALIAS_LONG), "tester"
-            )
-        )
+        _switch_alias(_ALIAS_LONG)
     assert exc.value.status_code == 404
     assert not rec.calls
 
@@ -13651,12 +13694,7 @@ def test_alias_config_disabled_switch_refuses_other_weights_with_matching_settin
     from utils.model_aliases import MODEL_ALIAS_CONFIG_SCOPE_KEY
 
     backend, rec = _wire_alias_config(monkeypatch, enabled = False, resolves = False)
-    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
-        model_identifier = backend.model_identifier,
-        n_ctx = 98304,
-        cache_type_kv = "q5_1",
-        speculative_type = "ngram",
-    )
+    backend.alias_launch = _alias_launch(_ALIAS_LONG)
     request = _alias_config_request(_ALIAS_LONG)
     request.scope[MODEL_ALIAS_CONFIG_SCOPE_KEY]["model"] = "missing-local-model"
     with pytest.raises(HTTPException) as exc:

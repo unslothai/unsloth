@@ -2700,31 +2700,42 @@ def update_openai_auto_switch(
     )
 
 
-from utils.model_aliases import ModelAliasLoadConfig
-
-
 class ModelAliasEntry(BaseModel):
     name: str
     model: str
-    load_config: Optional[ModelAliasLoadConfig] = Field(
-        None, exclude_if = lambda value: value is None
-    )
+    # Any shape: set_model_aliases validates it, and settings a newer release stored must read back.
+    load_config: Optional[Any] = Field(None, exclude_if = lambda value: value is None)
 
 
 class ModelAliasesPayload(BaseModel):
     aliases: list[ModelAliasEntry] = Field(default_factory = list)
+    # From the last GET or PUT. A stale one is refused; without one, configured aliases this
+    # client may not know about are kept (utils.model_aliases._keep_unseen_configurations).
+    etag: Optional[str] = None
 
 
 class ModelAliasesResponse(BaseModel):
     aliases: list[ModelAliasEntry]
+    etag: str
+
+
+def _model_aliases_response(stored: list) -> ModelAliasesResponse:
+    from utils.model_aliases import model_aliases_etag, normalize_model_aliases
+    try:
+        normalize_model_aliases(stored, tolerant = True)
+        listed = stored
+    except ValueError:
+        # A hand-edited row aliases ignore entirely; a save with this etag replaces it.
+        listed = []
+    return ModelAliasesResponse(aliases = listed, etag = model_aliases_etag(stored))
 
 
 @_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
 def get_model_aliases_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelAliasesResponse:
-    from utils.model_aliases import get_model_aliases
-    return ModelAliasesResponse(aliases = get_model_aliases())
+    from utils.model_aliases import stored_model_aliases
+    return _model_aliases_response(stored_model_aliases())
 
 
 @_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
@@ -2733,7 +2744,7 @@ async def update_model_aliases_setting(
 ) -> ModelAliasesResponse:
     from core.systemone import catalog as decision_catalog
     from routes.inference import _openai_catalog_objects
-    from utils.model_aliases import set_model_aliases
+    from utils.model_aliases import ModelAliasConflict, set_model_aliases
 
     # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
     objects = await _openai_catalog_objects()
@@ -2741,13 +2752,21 @@ async def update_model_aliases_setting(
     model_ids += list(decision_catalog.CHECKPOINTS)
     rows = []
     for entry in payload.aliases:
-        row = entry.model_dump()
-        # Keep an explicit null (clears a stored configuration) distinct from an omitted field.
+        row = entry.model_dump(exclude_unset = True)
+        # An omitted load_config (keep) differs from an explicit null (clear); exclude_if drops both.
         if "load_config" in entry.model_fields_set:
-            row.setdefault("load_config", None)
+            row["load_config"] = entry.load_config
         rows.append(row)
     try:
-        aliases = await asyncio.to_thread(set_model_aliases, rows, model_ids)
+        stored = await asyncio.to_thread(set_model_aliases, rows, model_ids, payload.etag)
+    except ModelAliasConflict as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc, fallback = "The model aliases changed. Reload and try again."),
+            event = "settings.update_model_aliases_conflict",
+            log = logger,
+        ) from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -2756,7 +2775,7 @@ async def update_model_aliases_setting(
             event = "settings.update_model_aliases_failed",
             log = logger,
         ) from exc
-    return ModelAliasesResponse(aliases = aliases)
+    return _model_aliases_response(stored)
 
 
 @_account_settings_router.get(

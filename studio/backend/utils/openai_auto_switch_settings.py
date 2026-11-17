@@ -945,19 +945,64 @@ def override_lookup_candidates(
     return seen
 
 
+def apply_alias_load_config(override: dict, alias_config: Optional[Mapping[str, Any]]) -> dict:
+    """``override`` with a configured model alias's launch settings on top; a field the alias omits keeps the model's saved value. Normalized afterwards like a stored override, so a dependent field (a drafter depth, a manual layer count) cannot outlive the mode the alias replaced. ``alias_config`` is already validated (utils.model_aliases)."""
+    if not alias_config:
+        return override
+    merged = dict(override)
+    if "max_seq_length" in alias_config:
+        # Both keys: resolve_fit_max_seq_length reads the pin under Manual with Auto layers. 0 (Auto) drops both.
+        merged["max_seq_length"] = merged["custom_context_length"] = alias_config["max_seq_length"]
+    for key in ("kv_cache_dtype", "speculative_type", "n_parallel", "disable_vision"):
+        if key in alias_config:
+            merged[key] = alias_config[key]
+    if "gpu_layers" in alias_config:
+        if alias_config["gpu_layers"] == "auto":
+            for key in ("gpu_memory_mode", "gpu_layers", "n_cpu_moe"):
+                merged.pop(key, None)
+        else:
+            merged["gpu_memory_mode"] = "manual"
+            merged["gpu_layers"] = alias_config["gpu_layers"]
+    if "n_cpu_moe" in alias_config:
+        merged["n_cpu_moe"] = alias_config["n_cpu_moe"]
+    if merged.get("llama_extra_args"):
+        # The alias replaces a saved flag for a setting it names, even with a value normalization
+        # drops (Auto context, automatic layers, vision on), which would otherwise revive the flag.
+        shadowed = {
+            field: alias_config[key]
+            for key, field in (
+                ("max_seq_length", "max_seq_length"),
+                ("kv_cache_dtype", "cache_type_kv"),
+                ("speculative_type", "speculative_type"),
+            )
+            if key in alias_config
+        }
+        extras = strip_args_shadowed_by(
+            merged["llama_extra_args"], shadowed, strip_offload = "gpu_layers" in alias_config
+        )
+        if alias_config.get("disable_vision") is False:
+            from core.inference.llama_server_args import strip_mmproj_disable_flags
+            extras = strip_mmproj_disable_flags(extras)
+        merged["llama_extra_args"] = extras
+    return normalize_model_override(merged, keep_empty_extra_args = True)
+
+
 def resolve_override_for_load(
     load_id: str,
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
+    alias_config: Optional[Mapping[str, Any]] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine). ``alias_config`` layers a configured model alias over the row (apply_alias_load_config)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
-            return resolve_model_override_key(key) or key, override
+            return resolve_model_override_key(key) or key, apply_alias_load_config(
+                override, alias_config
+            )
     if not is_owner_context():
-        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant)
-    return None, {}
+        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant, alias_config)
+    return None, apply_alias_load_config({}, alias_config)
 
 
 def resolve_model_override_key(model_id: str) -> Optional[str]:

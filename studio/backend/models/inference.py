@@ -106,7 +106,8 @@ class LoadRequest(BaseModel):
     _gguf_companion_roots_set: bool = PrivateAttr(default = False)
     # Auto-switch only: the owner-override alias, so the managed path-flag check reads the same row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
-    _required_alias_config: dict = PrivateAttr(default_factory = dict)
+    # Auto-switch only: a configured alias's launch, which a capacity-relaxed shared join cannot serve.
+    _alias_load: bool = PrivateAttr(default = False)
     # The catalog id a load by path should keep advertising (Open WebUI /models/load).
     _advertised_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(

@@ -59,12 +59,15 @@ class StrictLlama(FakeLlama):
             and (intent.hf_variant or "").lower() == VARIANT.lower()
         )
 
-    def adopt_load_intent_if_matched(self, intent):
+    def load_intent_satisfied(self, intent):
         resident = self.last_load_intent
-        matched = self.matches_load_source(intent) and (
+        return self.matches_load_source(intent) and (
             intent.n_parallel,
             intent.tensor_parallel,
         ) == (resident.n_parallel, resident.tensor_parallel)
+
+    def adopt_load_intent_if_matched(self, intent):
+        matched = self.load_intent_satisfied(intent)
         if matched:
             self.adopted.append(intent)
         return matched
@@ -250,14 +253,20 @@ def test_configured_alias_refuses_capacity_relaxed_join(
     monkeypatch.setattr(inference, "_preview_resident_ident", prior_marker)
     prior_sharers = set(access._resident_sharers.get("chat", ()))
     target = f"{RESIDENT}:{VARIANT}"
-    config = {"max_seq_length": 98304, "cache_type_kv": "q5_1", "speculative_type": "off"}
+    config = {"max_seq_length": 98304, "kv_cache_dtype": "q5_1", "speculative_type": "off"}
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(
         resolver, "resolve_local_gguf", lambda *a, **k: (RESIDENT, VARIANT, RESIDENT)
     )
     request = SimpleNamespace(
         app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
-        scope = {MODEL_ALIAS_CONFIG_SCOPE_KEY: {"model": target, "load_config": config}},
+        scope = {
+            MODEL_ALIAS_CONFIG_SCOPE_KEY: {
+                "model": target,
+                "load_config": config,
+                "unsupported": False,
+            }
+        },
         state = SimpleNamespace(),
         url = SimpleNamespace(path = path),
     )
@@ -335,11 +344,7 @@ def test_configured_alias_refuses_a_diffusion_target_before_replacing(
     with pytest.raises(HTTPException) as reached:
         run()
     assert isinstance(reached.value.__cause__ or reached.value.__context__, StopBeforeLaunch)
-    request._required_alias_config = {
-        "max_seq_length": 4096,
-        "cache_type_kv": "f16",
-        "speculative_type": "off",
-    }
+    request._alias_load = True
     with pytest.raises(HTTPException) as exc:
         run()
     assert exc.value.status_code == 400
