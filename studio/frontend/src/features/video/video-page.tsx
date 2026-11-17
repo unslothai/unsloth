@@ -146,8 +146,11 @@ import {
 import {
   fitVideoSize,
   isPresetSize,
+  lockedVideoSize,
   snapVideoDim,
+  trainedSizeValue,
   videoDimOptions,
+  videoSizeAspect,
   videoSizeLimits,
 } from "./video-size";
 import {
@@ -1770,7 +1773,7 @@ function VideoGenerator({
       if (!statusKnown) setPendingPresetFps({ fps: rate });
       else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -1878,7 +1881,7 @@ function VideoGenerator({
       );
       if (firstSize) {
         setResolutionIntent(firstSize);
-        const matched = matchAspect(firstSize[0], firstSize[1]);
+        const matched = videoSizeAspect(firstSize[0], firstSize[1], sizeLimits, ASPECT_RATIOS);
         setAspect(matched.key);
         setPortrait(matched.portrait);
       }
@@ -1905,6 +1908,7 @@ function VideoGenerator({
     fps,
     loadedFamily,
     resolutionPresets,
+    sizeLimits,
     status?.defaults,
     videoPresets.storedRecipe,
   ]);
@@ -2535,7 +2539,7 @@ function VideoGenerator({
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -3823,7 +3827,7 @@ function VideoGenerator({
     setResolutionIntent(size);
     setMatchSource(false);
     if (keepAspect) return;
-    const matched = matchAspect(size[0], size[1]);
+    const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
     setAspect(matched.key);
     setPortrait(matched.portrait);
   };
@@ -3847,13 +3851,14 @@ function VideoGenerator({
     }
     applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
   };
+  const lockedRatio = !sourceSized && aspect !== "custom" ? ASPECT_RATIOS[aspect] : undefined;
   const changeWidth = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+    if (!lockedRatio) return applySize(v, shownSize[1], false);
+    applySize(...lockedVideoSize("width", v, lockedRatio, portrait, sizeLimits), true);
   };
   const changeHeight = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+    if (!lockedRatio) return applySize(shownSize[0], v, false);
+    applySize(...lockedVideoSize("height", v, lockedRatio, portrait, sizeLimits), true);
   };
   const flipDimensions = () => {
     if (sourceSized) {
@@ -4890,7 +4895,7 @@ function VideoGenerator({
             hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value=""
+              value={trainedSizeValue(videoSize, sizeLimits, sourceSized)}
               onValueChange={(v) => {
                 const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
                 if (preset) applySize(preset[0], preset[1]);
