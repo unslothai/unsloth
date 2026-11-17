@@ -310,8 +310,10 @@ def _cpu_update(p, g, m, v, step, lr, seed, offset, beta1, beta2, eps, weight_de
     z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & (2**64 - 1)
     generator.manual_seed((z ^ (z >> 31)) & 0xFFFFFFFF)
     gf = g.float()
-    m.lerp_(gf, 1 - beta1)
-    v.lerp_(gf.square(), 1 - beta2)
+    # Not lerp_: CPU lerp fuses multiply-add in its vector body but not in its tail on MSVC, so a shard's
+    # rounding would depend on element position and miss the whole tensor's bits (Windows, 1 ulp).
+    m.mul_(beta1).add_(gf * (1 - beta1))
+    v.mul_(beta2).add_(gf.square() * (1 - beta2))
     t = int(step)
     value = p.float() * (1 - lr * weight_decay)
     value = value - lr * (m / (1 - beta1**t)) / ((v / (1 - beta2**t)).sqrt() + eps)
