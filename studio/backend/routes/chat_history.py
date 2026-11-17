@@ -1602,9 +1602,11 @@ def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, in
 
 def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
     """Studio's own roots are reserved: they hold every account's data."""
-    from core.inference.tools import list_orphaned_projects, shared_sandbox_root
-    from storage.studio_db import list_chat_project_root_paths
-    from utils.project_workspace_settings import owner_project_workspaces_roots
+    from core.inference.tools import shared_sandbox_root
+    from utils.project_workspace_settings import (
+        owner_project_workspaces_roots,
+        reserved_project_workspace_roots,
+    )
     from utils.paths.path_utils import is_path_within
     from utils.paths.storage_roots import (
         shared_project_workspaces_root,
@@ -1612,19 +1614,13 @@ def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
         studio_root,
     )
 
-    # A saved home may also hold unrelated repositories. Reserve actual workspaces,
-    # including kept/deferred-deletion folders whose project rows are already gone.
-    project_roots = list_chat_project_root_paths()
-    project_roots.extend(
-        root or workspace
-        for _, workspace, root, _, _ in list_orphaned_projects(include_missing = True)
-    )
+    # A saved home may also hold unrelated repositories, so reserve actual workspaces only.
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
         shared_sandbox_root(),
         shared_tmp_root(),
-        *project_roots,
+        *reserved_project_workspace_roots(),
     ):
         reserved = os.path.realpath(str(reserved))
         if is_path_within(path, reserved, allow_root = True):

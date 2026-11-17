@@ -547,6 +547,27 @@ def test_existing_project_cannot_contain_the_new_projects_parent(client, relativ
     assert keep.read_text() == "Existing project content"
 
 
+@pytest.mark.parametrize("relative", [".", "sandbox"])
+def test_pending_delete_workspace_cannot_hold_the_new_projects_parent(client, relative):
+    from core.inference import tools
+
+    old = studio_db.upsert_chat_project(_project("old-project"))
+    root = Path(old["rootPath"])
+    studio_db.delete_chat_project(old["id"])
+    tools.record_orphaned_project(old["id"], str(root / "sandbox"), True, str(root))
+    before = settings.get_projects_home_status()
+
+    response = client.put(
+        "/api/settings/projects-home", json = {"projects_home": str(root / relative)}
+    )
+
+    assert response.status_code == 400, response.text
+    assert (
+        response.json()["detail"] == "Choose a projects folder outside existing project workspaces."
+    )
+    assert settings.get_projects_home_status() == before
+
+
 def test_existing_project_container_remains_a_valid_projects_parent(client):
     first = studio_db.upsert_chat_project(_project("first-project"))
     container = Path(first["rootPath"]).parent

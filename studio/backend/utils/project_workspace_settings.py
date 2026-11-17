@@ -89,14 +89,23 @@ def owner_project_workspaces_roots() -> tuple[Path, ...]:
     return tuple(dict.fromkeys(roots))
 
 
+def reserved_project_workspace_roots() -> list[str]:
+    """Live project roots plus kept or pending-delete workspaces whose rows are gone."""
+    from core.inference.tools import list_orphaned_projects
+    from storage.studio_db import list_chat_project_root_paths
+
+    roots = list_chat_project_root_paths()
+    roots.extend(
+        root or workspace
+        for _, workspace, root, _, _ in list_orphaned_projects(include_missing = True)
+    )
+    return roots
+
+
 def _validate_projects_home(value: str) -> Path:
     from core.inference.tool_confinement import project_home_overlaps_tool_read_roots
     from core.inference.tools import shared_sandbox_root
-    from storage.studio_db import (
-        contains_sensitive_path_component,
-        is_denied_system_path,
-        list_chat_project_root_paths,
-    )
+    from storage.studio_db import contains_sensitive_path_component, is_denied_system_path
     from utils.hf_cache_settings import known_hf_cache_homes, known_hf_hub_caches
     from utils.paths.path_utils import is_network_or_device_path, is_path_within
     from utils.paths.storage_roots import (
@@ -147,7 +156,7 @@ def _validate_projects_home(value: str) -> Path:
             )
     # Deleting a project recursively removes its managed workspace. Nesting a new
     # project's home there would also remove the new project's files.
-    for root in list_chat_project_root_paths():
+    for root in reserved_project_workspace_roots():
         if root and is_path_within(str(candidate), os.path.realpath(root), allow_root = True):
             raise ValueError("Choose a projects folder outside existing project workspaces.")
     try:
