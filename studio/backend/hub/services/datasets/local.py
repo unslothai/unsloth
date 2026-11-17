@@ -554,34 +554,36 @@ def _partial_upload_path(stored_path: Path) -> Path:
 
 def _publish_upload(partial_path: Path, stored_path: Path) -> Path:
     with _REUSE_LOCK:
+        existing = _find_identical_upload(partial_path, stored_path)
+        if existing is not None:
+            partial_path.unlink(missing_ok = True)
+            return existing
         partial_path.replace(stored_path)
-        return _reuse_identical_upload(stored_path)
+        return stored_path
 
 
-def _reuse_identical_upload(stored_path: Path) -> Path:
+def _find_identical_upload(partial_path: Path, stored_path: Path) -> Path | None:
     suffix = stored_path.name.split("_", 1)[-1]
     try:
-        size = stored_path.stat().st_size
+        size = partial_path.stat().st_size
         candidates = [
             path
             for path in DATASET_UPLOAD_DIR.iterdir()
-            if path != stored_path
-            and path.is_file()
+            if path.is_file()
             and not path.is_symlink()
             and within_account(path)
             and path.name.split("_", 1)[-1] == suffix
             and path.stat().st_size == size
         ]
         if not candidates:
-            return stored_path
-        new_digest = _file_digest(stored_path)
+            return None
+        new_digest = _file_digest(partial_path)
         for existing in candidates:
             if _file_digest(existing) == new_digest:
-                stored_path.unlink(missing_ok = True)
                 return existing
     except OSError:
         pass
-    return stored_path
+    return None
 
 
 def delete_uploaded_dataset_response(dataset_id: str) -> dict:
