@@ -40,6 +40,8 @@ export interface PersistedChatSettings {
   forgetInferenceParamsByModel?: Record<string, string[]>;
   rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
+  /** Outgoing only: per preset name, the preset to save in its place, or null to delete it. */
+  editCustomPresets?: Record<string, PersistedChatPreset | null>;
   activePreset?: string;
   activePresetSource?: ChatPresetSource;
   autoTitle?: boolean;
