@@ -42,6 +42,17 @@ test("a trained row takes its params from the base model", () => {
   );
 });
 
+test("a folder model whose baseModel is its store falls back to the id", () => {
+  assert.equal(
+    rowSizeMeta({ kind: "local", id: "/models/lmstudio/Qwen3-8B", baseModel: "LM Studio" }).params,
+    "8B",
+  );
+  assert.equal(
+    rowSizeMeta({ kind: "local", id: "/models/custom/mystery", baseModel: "Custom Folders" }).params,
+    null,
+  );
+});
+
 test("unknown stays blank instead of guessing", () => {
   assert.deepEqual(rowSizeMeta({ kind: "cached", id: "someone/mystery-model" }), {
     params: null,
@@ -122,6 +133,13 @@ test("connected API models get neither", () => {
   );
 });
 
+test("folder models carry the inventory's bytes to the picker", () => {
+  assert.match(
+    readSrc("features/model-picker/inventory/use-chat-picker-inventory.ts"),
+    /function toLocalModelInfo[\s\S]*?size_bytes: row\.bytes,/,
+  );
+});
+
 test("the setting is off by default and Reset All clears it", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   const key = store.match(/CHAT_SHOW_MODEL_SIZES_KEY\s*=\s*"([^"]+)"/);
@@ -167,6 +185,6 @@ test("rows only draw the columns when the setting is on", () => {
   );
   assert.match(
     picker,
-    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.sizeBytes,\s*\)/,
+    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,[\s\S]*?row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local"\s*\? localInfo\.get\(row\.id\)\?\.size_bytes\s*: undefined\),\s*\)/,
   );
 });

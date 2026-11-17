@@ -562,7 +562,7 @@ export function rowOwnBytes(
   favoriteQuant: string | undefined,
   favoriteBytes: number | null,
   soleQuantBytes: number | null,
-  repoBytes: number | undefined,
+  repoBytes: number | null | undefined,
 ): number | null {
   if (favoriteQuant) {
     return favoriteBytes;
@@ -581,7 +581,9 @@ export function rowSizeMeta(row: RowSizeInput): {
   const params =
     row.kind === "hub"
       ? (row.hubParams ?? null)
-      : extractParamLabel(row.baseModel ?? row.id);
+      : // A folder model's baseModel is its store ("LM Studio"), so the id is the fallback.
+        ((row.baseModel ? extractParamLabel(row.baseModel) : null) ??
+        extractParamLabel(row.id));
   // A partial download's bytes are what arrived, not the model.
   const bytes = row.partial
     ? null
