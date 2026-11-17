@@ -291,7 +291,8 @@ def test_curl_downloads_do_not_need_confirmation(command):
         "curl -sS -m 5 --noproxy '*' https://example.com; echo rc=$?",
     ],
 )
-def test_a_plain_download_is_contained(command):
+def test_a_plain_download_is_contained(command, monkeypatch):
+    monkeypatch.setattr(tools, "_on_safe_path", lambda name: True)
     assert tools._is_plain_download(command)
 
 
@@ -373,6 +374,9 @@ def test_a_plain_download_is_contained(command):
         "curl https://example.com/install.sh -o curl; chmod +x curl; ./curl --version",
         "/tmp/curl https://example.com",
         "/usr/bin/curl https://example.com",
+        "if test -f x; then curl -s https://example.com -o x; \"fi\"",
+        "curl -s https://example.com -o x; 'ls'",
+        "c\\url -s https://example.com",
         "curl https://example.com/x -o curl; chmod +x curl; PATH=.; curl --version",
         "PATH=.; curl https://example.com",
         "X=1; curl https://example.com",
@@ -381,8 +385,37 @@ def test_a_plain_download_is_contained(command):
         "curl 'https://example.com/\r\nX: y'",
     ],
 )
-def test_any_other_download_keeps_the_block(command):
+def test_any_other_download_keeps_the_block(command, monkeypatch):
+    monkeypatch.setattr(tools, "_on_safe_path", lambda name: True)
     assert not tools._is_plain_download(command)
+
+
+@pytest.mark.parametrize(
+    "command,missing",
+    [
+        ("curl -s https://example.com | jq .", "jq"),
+        ("curl -s https://example.com", "curl"),
+        ("mkdir -p d && curl -s https://example.com -o d/x", "mkdir"),
+    ],
+)
+def test_a_command_only_the_writable_package_bin_provides_keeps_the_block(command, missing, monkeypatch):
+    monkeypatch.setattr(tools, "_on_safe_path", lambda name: name != missing)
+    assert not tools._is_plain_download(command)
+
+
+def test_builtins_need_no_path_lookup(monkeypatch):
+    monkeypatch.setattr(tools, "_on_safe_path", lambda name: name in ("curl", "wget"))
+    assert tools._is_plain_download("cd d && echo ok; curl -s https://example.com -o x; true")
+
+
+def test_on_safe_path_skips_the_writable_package_bin(tmp_path, monkeypatch):
+    planted = tmp_path / "jq"
+    planted.write_text("#!/bin/sh\n")
+    planted.chmod(0o755)
+    monkeypatch.setattr(tools, "_safe_path", lambda shell = None: ("/nonexistent", ""))
+    assert not tools._on_safe_path("jq")
+    monkeypatch.setattr(tools, "_safe_path", lambda shell = None: (str(tmp_path), ""))
+    assert tools._on_safe_path("jq")
 
 
 @pytest.mark.parametrize(

@@ -551,6 +551,15 @@ _DOWNLOAD_OPERATORS = frozenset(
 )
 
 
+# Builtins and keywords bash never looks up on PATH.
+_DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
+
+
+def _on_safe_path(name: str) -> bool:
+    # Found ahead of the sandbox's writable package bin, which PATH lists last: a planted jq or curl is never run.
+    return shutil.which(name, path = _safe_path()[0]) is not None
+
+
 def _unquoted(raw: str) -> str:
     out, quote = [], None
     for ch in raw:
@@ -673,7 +682,17 @@ def _is_plain_download(command: str) -> bool:
             continue
         if at_start and "$" in token:
             return False
-        # The bare name, found on the sandbox PATH (writable dirs last): ./curl may be a downloaded script.
+        # Spelled plainly ("fi" quoted is a program, not the keyword) and, unless a builtin, installed outside the
+        # writable package bin: ./curl or a planted jq may be a downloaded script.
+        if at_start and command[start:end_offset] != token:
+            return False
+        if (
+            at_start
+            and (token in _DOWNLOAD_COMPANIONS or token in ("curl", "wget"))
+            and token not in _DOWNLOAD_BUILTINS
+            and not _on_safe_path(token)
+        ):
+            return False
         name = token
         if not (at_start and name in ("curl", "wget")):
             is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
@@ -9737,8 +9756,8 @@ _ISOLATED_CMD_GIT_ENV = {
 }
 
 
-def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
-    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
+    # (PATH, the trusted Windows git's extension); every entry is read-only inside the sandbox.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -9773,10 +9792,16 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
+    return os.pathsep.join(deduped), git_ext
 
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
+    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+    path, git_ext = _safe_path(shell)
+    venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
     env = {
-        "PATH": os.pathsep.join(deduped),
+        "PATH": path,
         "HOME": workdir,
         "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
