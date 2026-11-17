@@ -6,6 +6,7 @@ start (a traced autograd.Function made AOTAutogradCache bypass the whole graph),
 eager _NF4Linear bit for bit, and miss again when a kernel file or the Unsloth version changes."""
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -60,6 +61,35 @@ _CHILD = textwrap.dedent(
         out = fn(x)
         out.backward(dy)
         return out.detach(), x.grad
+
+    if os.environ.get("NF4_TEST_GRAPH") == "1":
+        # The partitioned graphs Inductor would get: what crosses to backward, what backward runs.
+        from functorch.compile import make_boxed_func
+        from torch._dynamo.backends.common import aot_autograd
+        from torch._functorch.partitioners import min_cut_rematerialization_partition
+
+        graphs = {}
+
+        def grab(name):
+            def compiler(gm, example_inputs):
+                graphs[name] = gm
+                return make_boxed_func(gm.forward)
+            return compiler
+
+        backend = aot_autograd(fw_compiler = grab("fw"), bw_compiler = grab("bw"),
+                               partition_fn = min_cut_rematerialization_partition)
+        # gelu's backward needs the linear output: it must be saved, not recomputed.
+        run(torch.compile(lambda x: torch.nn.functional.gelu(step(x)), backend = backend, fullgraph = True))
+        fw_out = list(graphs["fw"].graph.find_nodes(op = "output"))[0].args[0]
+        saved = [tuple(n.meta["val"].shape) for n in fw_out[1:] if hasattr(n, "meta") and hasattr(n.meta.get("val"), "shape")]
+        bw = graphs["bw"].graph
+        aten = torch.ops.aten
+        print("RESULT " + json.dumps({
+            "bw_mm": sum(1 for n in bw.nodes if n.target in (aten.mm.default, aten.addmm.default, aten.bmm.default)),
+            "bw_dequant": sum(1 for n in bw.nodes if n.op == "call_function" and ("dequantize" in str(n.target) or "triton_kernel_wrapper" in str(n.target))),
+            "saved": saved,
+        }))
+        sys.exit(0)
 
     eager = run(lambda x: O._apply(O._NF4Linear, x * 2, weight, state, None))
     compiled = run(torch.compile(step, fullgraph = True))
@@ -132,3 +162,17 @@ def test_kill_switch_keeps_the_autograd_function(tmp_path):
     old = _child(tmp_path, UNSLOTH_BNB_NF4_CACHEABLE = "0")
     assert old["out_equal"] and old["grad_equal"]
     assert old["aot"].get("autograd_cache_bypass", 0) >= 1, old["aot"]
+
+
+def test_backward_recomputes_the_weight_not_the_matmul(tmp_path):
+    # As _NF4Linear: the dequantized weight is rebuilt in backward, never saved, and the matmul
+    # output a later op needs in backward is saved, not recomputed.
+    for env in ({}, {"UNSLOTH_BNB_NF4_CACHEABLE": "0"}):
+        graph = _child(tmp_path, NF4_TEST_GRAPH = "1", **env)
+        assert graph["bw_mm"] == 1, (env, graph)
+        assert graph["bw_dequant"] >= 1, (env, graph)
+        assert [384, 512] not in [list(shape) for shape in graph["saved"]], (env, graph)
+        assert any(
+            shape and shape[-1] == 384 and math.prod(shape) == 2 * 48 * 384
+            for shape in graph["saved"]
+        ), (env, graph)
