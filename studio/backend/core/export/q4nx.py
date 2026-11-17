@@ -22,8 +22,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# What each pinned converter can pack as is, tried first; anything else is dequantized and rounded
-# again. q4nx takes Q4_0 or Q4_1 by model (qwen2 / lfm2 read Q4_0); q4k's Qwen3.5 configs read Q4_K.
+# Tried first: what each converter packs as is for its models; anything else is rounded again.
 DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": ("q4_k_m",)}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
@@ -89,9 +88,8 @@ class SourceMismatch(RuntimeError):
 
 
 _MISMATCH_EXIT = 3
-# The converter packs a Q4_0 / Q4_1 / Q8_0 tensor (q4k: also Q4_K) in its own layout whatever the
-# model's config targets, and FastFlowLM reads each slot as the config says (Q4_0 signed nibbles,
-# Q4_1 unsigned plus a min, Q4_K super-blocks), so a mismatch decodes as noise. Refuse the first one.
+# Q4_0 / Q4_1 / Q8_0 (q4k: Q4_K) blocks are packed as is, but FastFlowLM reads each slot in the
+# config's layout, so a mismatch decodes as noise: refuse it.
 _GUARD = f"""
 from gguf import GGMLQuantizationType as T
 from q4nx.gguf_tensor import GGUFTensor
