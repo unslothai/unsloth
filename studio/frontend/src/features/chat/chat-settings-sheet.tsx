@@ -452,7 +452,7 @@ function specFallbackMessage({
       // Only the drafter is off: the backend substitutes zero-VRAM ngram-mod where available.
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context window and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
-      return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+      return `${drafter} could not start for this model, so it is running without speculative decoding. Lowering the context length or Parallel Slots can give it room.`;
     case "drafter_unloadable":
       // The file is present but unloadable as a draft, so neither placement nor network is the remedy.
       return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
