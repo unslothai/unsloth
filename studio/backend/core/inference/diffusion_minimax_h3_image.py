@@ -17,6 +17,7 @@ uniform knot grid at load, so 20B parameters are left to quantize."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
 import hashlib
@@ -3992,7 +3993,7 @@ def install_checkpoint_attention(
         log,
     )
     if race is None and sage_on and not forced and not kernel_blocks:
-        race = race_checkpoint_attention(transformer, saved, dtype)
+        race = race_checkpoint_attention(transformer, saved, dtype, device = dev)
     sage_kept = sage_on and (forced or race is None or race["keep"])
     if kernel_blocks:
         from .diffusion_int8_attention import BACKEND as INT8_KERNEL
@@ -4051,16 +4052,45 @@ def _paired_ratio(times: list, first: int, second: int) -> float:
     return _median([a / b for a, b in zip(times[first], times[second]) if b > 0] or [float("inf")])
 
 
+@contextlib.contextmanager
+def _weights_on(module: Any, device: Any) -> Any:
+    """``module``'s parameters and buffers swapped for copies on ``device`` while the block runs, the host originals put
+    back after: the swap the DiT streamers make around a streamed block's forward (they hold the host tensors, which
+    stay untouched)."""
+    import torch
+
+    swapped: list = []
+    try:
+        for owner in module.modules():
+            for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
+                for name, tensor in list(table.items()):
+                    if tensor is None or tensor.device.type == device.type:
+                        continue
+                    moved = tensor.to(device)
+                    swapped.append((table, name, tensor))
+                    table[name] = (
+                        torch.nn.Parameter(moved, requires_grad = False) if kind == "p" else moved
+                    )
+        yield module
+    finally:
+        for table, name, tensor in reversed(swapped):
+            table[name] = tensor
+
+
 def race_checkpoint_attention(
     transformer: Any,
     saved: dict,
     dtype: Any,
     *,
     kernel: bool = False,
+    device: Any = None,
 ) -> Optional[dict]:
     """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
     (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
-    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route).
+    With no block's attention on the card (every block streams) and a CUDA ``device``, the first block's attention
+    weights are copied there for the race and dropped after, so a fully streamed DiT takes the same decision as one
+    with a resident block (skipping the race kept SageAttention where a resident layout turns it down: different
+    images by layout). None when nothing could be timed (the caller keeps the INT8 route).
 
     ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
     count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
@@ -4069,12 +4099,24 @@ def race_checkpoint_attention(
 
     attn = None
     norm = None
+    streamed = None
     for block in getattr(transformer, "transformer_blocks", ()) or ():
         module = getattr(block, "attn", None)
         params = list(module.parameters()) if module is not None else []
-        if module in saved and params and all(p.is_cuda for p in params):
+        if module not in saved or not params:
+            continue
+        if all(p.is_cuda for p in params):
             attn, norm = module, getattr(block, "norm1", None)
             break
+        if streamed is None:
+            streamed = (module, getattr(block, "norm1", None))
+    stage = None
+    if attn is None and streamed is not None and device is not None:
+        stage = torch.device(device)
+        if stage.type != "cuda":
+            stage = None
+        else:
+            attn, norm = streamed
     rope = getattr(transformer, "rope", None)
     if attn is None or norm is None or rope is None:
         return None
@@ -4083,7 +4125,7 @@ def race_checkpoint_attention(
     native = saved[attn]
     kernel = kernel and hasattr(type(proc), "_unsloth_int8")
     routed = (getattr(proc, "_unsloth_int8", False), getattr(proc, "_unsloth_int8_min_tokens", 0))
-    device = next(attn.parameters()).device
+    device = stage if stage is not None else next(attn.parameters()).device
     width = int(norm.normalized_shape[0])
     text = _RACE_ROWS[1]
 
@@ -4127,13 +4169,20 @@ def race_checkpoint_attention(
 
     variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
-        with torch.no_grad(), torch.cuda.device(device):
+        with (
+            torch.no_grad(),
+            torch.cuda.device(device),
+            _weights_on(attn, device) if stage is not None else contextlib.nullcontext(),
+        ):
             rows = {
                 image: timed(image, variants)
                 for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])
             }
     except torch.OutOfMemoryError:
-        raise
+        if stage is None:
+            raise
+        # no room for a streamed block's attention beside the load: untimed, as before
+        return None
     except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
         return None
     finally:
@@ -4145,6 +4194,7 @@ def race_checkpoint_attention(
         "keep": _paired_ratio(large, 1, 0) < 0.98,
         "ms": [_median(t) for t in large[:2]],
         "native": str(native),
+        "staged": stage is not None,
     }
     if kernel:
         found["kernel"] = {n: [_median(t) for t in times] for n, times in rows.items()}
