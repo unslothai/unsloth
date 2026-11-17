@@ -6994,6 +6994,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                compactionMode: externalProvider.compactionMode,
                 autoCompactTokens: externalProvider.autoCompactTokens,
                 compactNow,
               }),
@@ -8982,7 +8983,8 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description: isCloudForCompaction
+            description: isCloudForCompaction &&
+              externalProvider?.compactionMode !== "evict"
               ? "There was nothing before your latest message to summarize."
               : "Compaction needs the conversation archive and the default checkpoint policy.",
           });

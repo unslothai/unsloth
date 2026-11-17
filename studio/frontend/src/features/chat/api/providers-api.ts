@@ -56,6 +56,7 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   auto_compact_tokens?: number | null;
+  compaction_mode?: "summary" | "evict" | null;
   reasoning_config?: CustomReasoningConfig | null;
   extra_headers?: Record<string, string>;
   shared?: boolean;
@@ -248,6 +249,7 @@ export async function createProviderConfig(payload: {
   availableModels?: string[];
   maxOutputTokens?: number | null;
   autoCompactTokens?: number | null;
+  compactionMode?: "summary" | "evict" | null;
   reasoningConfig?: CustomReasoningConfig | null;
   extraHeaders?: Record<string, string>;
   shared?: boolean;
@@ -270,6 +272,9 @@ export async function createProviderConfig(payload: {
         ...(payload.autoCompactTokens === undefined
           ? {}
           : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
@@ -309,6 +314,7 @@ export async function updateProviderConfig(
     availableModels?: string[];
     maxOutputTokens?: number | null;
     autoCompactTokens?: number | null;
+    compactionMode?: "summary" | "evict" | null;
     reasoningConfig?: CustomReasoningConfig | null;
     extraHeaders?: Record<string, string>;
     shared?: boolean;
@@ -335,6 +341,9 @@ export async function updateProviderConfig(
         ...(payload.autoCompactTokens === undefined
           ? {}
           : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),

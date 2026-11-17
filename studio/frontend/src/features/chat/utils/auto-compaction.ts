@@ -64,6 +64,19 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   return value;
 }
 
+/**
+ * What a cloud chat does once it passes its trigger: "summary" asks the same model for a summary
+ * of the older turns, "evict" drops whole oldest turns into the thread's archive, where
+ * search_conversation finds them verbatim. Unset is "summary".
+ */
+export type ProviderCompactionMode = "summary" | "evict";
+
+export function normalizeCompactionMode(
+  value: unknown,
+): ProviderCompactionMode | undefined {
+  return value === "summary" || value === "evict" ? value : undefined;
+}
+
 /** Blank clears the setting; anything else must be a whole number of tokens in range. */
 export function parseAutoCompactTokens(input: string): number | null {
   const trimmed = input.trim().replace(/[,_\s]/g, "");
@@ -132,6 +145,8 @@ export function apiCompactionRequestFields(options: {
   contextLength: number | null | undefined;
   /** The connection's "Auto-compact after", which replaces the 75% default. */
   autoCompactTokens?: number | null;
+  /** The connection's "When the chat is full"; the backend ignores it where the provider compacts. */
+  compactionMode?: ProviderCompactionMode | null;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
 }): {
@@ -140,6 +155,7 @@ export function apiCompactionRequestFields(options: {
   compaction_uncapped?: true;
   context_window?: number;
   compact_context?: true;
+  compaction_mode?: "evict";
 } {
   const { autoCompactEnabled, contextLength, compactNow } = options;
   if (!autoCompactEnabled && !compactNow) return {};
@@ -154,5 +170,8 @@ export function apiCompactionRequestFields(options: {
     ...(requested?.uncapped ? { compaction_uncapped: true as const } : {}),
     ...(contextLength && contextLength > 0 ? { context_window: contextLength } : {}),
     ...(compactNow ? { compact_context: true as const } : {}),
+    ...(options.compactionMode === "evict"
+      ? { compaction_mode: "evict" as const }
+      : {}),
   };
 }

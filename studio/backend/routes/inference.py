@@ -30721,10 +30721,20 @@ async def _proxy_to_external_provider(
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
+    # The connection's "Drop oldest turns": no summary call. Whole turns go to the thread's
+    # archive and /compact starts a checkpoint epoch, as on a local model.
+    _evict_only = managed is None and payload.compaction_mode == "evict" and not _provider_compacts
     # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _provider_compacts
+    _auto_summary = (
+        bool(payload.compaction_threshold) and _rolling and not _provider_compacts and not _evict_only
+    )
     # /compact. A saved thread only, so the summary outlives this request.
-    _compact_now = managed is None and payload.compact_context is True and bool(payload.thread_id)
+    _compact_now = (
+        managed is None
+        and not _evict_only
+        and payload.compact_context is True
+        and bool(payload.thread_id)
+    )
     _first_turn_overrides: dict = {}
     if _compact_now and _provider_compacts:
         _native_trigger = None
@@ -30742,7 +30752,13 @@ async def _proxy_to_external_provider(
             _first_turn_overrides = {"compaction_threshold": _native_trigger}
     _manual_summary_pending = _compact_now and not _first_turn_overrides
     _has_saved_summary = False
-    if managed is None and payload.thread_id and not _auto_summary and not _manual_summary_pending:
+    if (
+        managed is None
+        and not _evict_only
+        and payload.thread_id
+        and not _auto_summary
+        and not _manual_summary_pending
+    ):
         from core.inference import cloud_compaction as _cloud_compaction
         _has_saved_summary = await asyncio.to_thread(
             _cloud_compaction.thread_has_summaries, str(payload.thread_id)
@@ -30751,10 +30767,34 @@ async def _proxy_to_external_provider(
     _fit_active = _auto_summary or (
         managed is None and (_manual_summary_pending or _has_saved_summary)
     )
+    if _evict_only:
+        # An earlier summary is not replayed: the turns it covered are evicted like any others.
+        _fit_active = (bool(payload.compaction_threshold) and _rolling) or (
+            payload.compact_context is True and bool(payload.thread_id)
+        )
+        if not _fit_active and payload.thread_id:
+            # A /compact epoch stays in force with auto-compact off, as a saved summary does.
+            from storage import studio_db as _studio_db
+            _fit_active = bool(
+                await asyncio.to_thread(
+                    _studio_db.chat_thread_has_context_truncation, str(payload.thread_id)
+                )
+            )
+    # Managed engines and "Drop oldest turns" connections fit by eviction only.
+    _evicting_fit = managed is not None or _evict_only
+    _evicting_payload = payload
+    if _evict_only and _fit_active and not payload.compaction_threshold:
+        # /compact, or its epoch replayed, with auto-compact off: nothing past the epoch is evicted.
+        _evicting_payload = payload.model_copy(
+            update = {
+                "compaction_threshold": payload.context_window
+                or _EXTERNAL_COMPACTION_THRESHOLD_MAX
+            }
+        )
 
     # Managed local engines keep the evicting fit, with its /compact checkpoint epochs.
     _checkpoint_pass: dict = {}
-    _first_payload = payload
+    _first_payload = _evicting_payload
 
     async def _managed_context_fitter(messages, tools):
         nonlocal _first_payload
@@ -30778,7 +30818,7 @@ async def _proxy_to_external_provider(
         refit = not later
         if later:
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                fit, candidate, payload, False
+                fit, candidate, _evicting_payload, False
             )
             refit = bool(
                 truncation and (truncation.get("dropped_messages") or not truncation.get("fits"))
@@ -30786,14 +30826,17 @@ async def _proxy_to_external_provider(
             if refit:
                 # Boundaries must count the full branch, so an overflow refits it without /compact.
                 fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                    fit, messages, payload.model_copy(update = {"compact_context": None}), True
+                    fit,
+                    messages,
+                    _evicting_payload.model_copy(update = {"compact_context": None}),
+                    True,
                 )
         else:
             # /compact applies to the loop's first fit only, whether or not it evicted anything.
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 fit, messages, _first_payload, True
             )
-            _first_payload = payload.model_copy(update = {"compact_context": None})
+            _first_payload = _evicting_payload.model_copy(update = {"compact_context": None})
         # A refit moves the boundary, so the next pass extends this result, not the stale one.
         if (later and not refit) or (refit and truncation and truncation.get("checkpoint") is True):
             _checkpoint_pass.update(input = list(messages), fitted = fitted)
@@ -30816,7 +30859,8 @@ async def _proxy_to_external_provider(
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
-        if managed is not None:
+        # An overflow refit on a "Drop oldest turns" connection evicts down without a summary.
+        if _evicting_fit and not (_evict_only and force == "overflow"):
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
             if plan is None:
@@ -30827,6 +30871,7 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
+                    summarise = not _evict_only,
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -30894,14 +30939,17 @@ async def _proxy_to_external_provider(
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
     _unfitted_messages = chat_messages
-    if _fit_active and not run_studio_tool_loop and managed is not None:
+    if _fit_active and not run_studio_tool_loop and _evicting_fit:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context,
             chat_messages,
-            payload,
+            _evicting_payload,
             tools = _external_fit_tools,
             # Tools switched off this turn: /compact still resets, recalled inline, as on GGUF.
-            can_reset = bool(managed.supports_tools) and not _tool_calls_are_disabled(payload),
+            can_reset = (
+                bool(managed.supports_tools) if managed is not None else bool(studio_tool_loop)
+            )
+            and not _tool_calls_are_disabled(payload),
             replays_manual = True,
         )
         try:

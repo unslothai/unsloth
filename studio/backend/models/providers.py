@@ -12,6 +12,8 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
+# What a chat on the connection does once it passes its compaction trigger.
+ProviderCompactionMode = Literal["summary", "evict"]
 
 
 class ProviderReasoningConfig(BaseModel):
@@ -212,6 +214,15 @@ class ProviderCreate(ExtraHeadersMixin):
             "instead of the default three quarters of the model's context window"
         ),
     )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = (
+            "What chats on this connection do once they pass the auto-compact trigger: "
+            "'summary' (the default) asks the same model to summarise the older turns, "
+            "'evict' drops whole oldest turns into the thread's archive, where "
+            "search_conversation finds them, with no summary call"
+        ),
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -252,6 +263,15 @@ class ProviderUpdate(ExtraHeadersMixin):
         description = (
             "Optional token count after which chats on this connection compact, "
             "instead of the default three quarters of the model's context window"
+        ),
+    )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = (
+            "What chats on this connection do once they pass the auto-compact trigger: "
+            "'summary' (the default) asks the same model to summarise the older turns, "
+            "'evict' drops whole oldest turns into the thread's archive, where "
+            "search_conversation finds them, with no summary call"
         ),
     )
 
@@ -310,6 +330,10 @@ class ProviderResponse(BaseModel):
     auto_compact_tokens: Optional[int] = Field(
         None,
         description = "Configured auto-compact trigger for this connection, in tokens",
+    )
+    compaction_mode: Optional[ProviderCompactionMode] = Field(
+        None,
+        description = "Configured compaction mode for this connection; null is 'summary'",
     )
     extra_headers: dict[str, str] = Field(
         default_factory = dict,

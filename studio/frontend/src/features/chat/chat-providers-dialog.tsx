@@ -157,7 +157,11 @@ import {
   withNewlyOfferedCodexModels,
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
-import { parseAutoCompactTokens } from "./utils/auto-compaction";
+import {
+  normalizeCompactionMode,
+  parseAutoCompactTokens,
+  type ProviderCompactionMode,
+} from "./utils/auto-compaction";
 import { SettingsSection } from "@/features/settings/components/settings-section";
 import {
   learnModelDisplayNames,
@@ -392,6 +396,8 @@ export function ChatProvidersSettings({
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
+  const [compactionModeDraft, setCompactionModeDraft] =
+    useState<ProviderCompactionMode>("summary");
   const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -728,6 +734,7 @@ export function ChatProvidersSettings({
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -836,6 +843,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
@@ -1337,6 +1345,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
         autoCompactTokens: autoCompactTokens ?? undefined,
+        ...(supportsAutoCompactTokens && compactionModeDraft === "evict"
+          ? { compactionMode: "evict" as const }
+          : {}),
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1367,6 +1378,7 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
         autoCompactTokens: created.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(created.compaction_mode),
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
@@ -1524,6 +1536,10 @@ export function ChatProvidersSettings({
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
         autoCompactTokens,
+        // null clears the column back to the default summary.
+        compactionMode: supportsAutoCompactTokens
+          ? (compactionModeDraft === "evict" ? "evict" : null)
+          : undefined,
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
@@ -1561,6 +1577,7 @@ export function ChatProvidersSettings({
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
         autoCompactTokens: updated.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(updated.compaction_mode),
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
@@ -1748,6 +1765,7 @@ export function ChatProvidersSettings({
     setAutoCompactTokensDraft(
       provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
     );
+    setCompactionModeDraft(provider.compactionMode ?? "summary");
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
@@ -2345,7 +2363,10 @@ export function ChatProvidersSettings({
                   id="provider-auto-compact-tokens-help"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  Tokens before older messages are summarized. Blank uses 75% of
+                  {compactionModeDraft === "evict"
+                    ? "Tokens before the oldest messages are dropped."
+                    : "Tokens before older messages are summarized."}{" "}
+                  Blank uses 75% of
                   the model's context window
                   {providerType === "anthropic" || providerType === "openai"
                     ? ", up to 200,000"
@@ -2377,6 +2398,50 @@ export function ChatProvidersSettings({
                     : "Capped at the model's context window."}
                 </p>
               </div>
+            </div>
+          ) : null}
+
+          {supportsAutoCompactTokens ? (
+            <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label
+                  htmlFor="provider-compaction-mode"
+                  className="text-sm font-medium"
+                >
+                  When the chat is full
+                </Label>
+                <p
+                  id="provider-compaction-mode-help"
+                  className="text-xs leading-snug text-muted-foreground"
+                >
+                  {compactionModeDraft === "evict"
+                    ? "Whole oldest turns leave the model's context with no summary call. Search conversation brings them back word for word."
+                    : "The same model writes a summary of the older turns; the recent ones stay as they are."}
+                  {providerType === "anthropic" || providerType === "openai"
+                    ? " Models that compact on the provider's side keep doing so."
+                    : ""}
+                </p>
+              </div>
+              <Select
+                value={compactionModeDraft}
+                onValueChange={(value) =>
+                  setCompactionModeDraft(
+                    value === "evict" ? "evict" : "summary",
+                  )
+                }
+              >
+                <SelectTrigger
+                  id="provider-compaction-mode"
+                  aria-describedby="provider-compaction-mode-help"
+                  className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="summary">Summarize older turns</SelectItem>
+                  <SelectItem value="evict">Drop oldest turns</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 

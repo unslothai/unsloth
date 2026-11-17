@@ -3478,6 +3478,18 @@ class ChatCompletionRequest(BaseModel):
             "raised to the provider's floor and never exceeds context_window."
         ),
     )
+    compaction_mode: Optional[Literal["summary", "evict"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] How a cloud connection that does not compact server-side "
+            "compacts once compaction_threshold is passed, and on compact_context. "
+            "'summary' (the default) asks the same model to summarise the older turns. "
+            "'evict' makes no summary call: whole oldest turns are dropped into the "
+            "thread's archive, where search_conversation and inline recall find them, "
+            "as on a local model, and compact_context starts a checkpoint the same way. "
+            "Ignored by local engines and by Anthropic and OpenAI server-side compaction."
+        ),
+    )
     context_window: Optional[int] = Field(
         None,
         ge = 1,
