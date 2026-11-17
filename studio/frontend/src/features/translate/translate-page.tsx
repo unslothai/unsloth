@@ -84,6 +84,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { motion, useReducedMotion } from "motion/react";
 import {
   type ReactNode,
   useCallback,
@@ -838,30 +839,49 @@ function ChoiceChips<T extends string>({
   onChange: (next: T) => void;
 }) {
   const t = useT();
+  const pillId = useId();
+  const reduced = useReducedMotion();
   return (
-    <fieldset className="flex items-center gap-1.5">
-      <legend className="float-start pe-1 text-ui-12 leading-8 text-muted-foreground">
-        {label}
-      </legend>
-      {options.map((option) => (
-        <Button
-          key={option}
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-pressed={option === value}
-          className={cn(
-            "rounded-full text-ui-12 font-normal",
-            option === value
-              ? "border-transparent bg-foreground text-background hover:bg-foreground hover:text-background"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-          onClick={() => onChange(option)}
-        >
-          {t(labels[option])}
-        </Button>
-      ))}
-    </fieldset>
+    <div role="group" aria-label={label} className="flex flex-col gap-1.5">
+      <span className="text-ui-12 text-muted-foreground">{label}</span>
+      <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+        {options.map((option) => {
+          const active = option === value;
+          return (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(option)}
+              className={cn(
+                "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
+                active
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {active && (
+                <motion.span
+                  layoutId={pillId}
+                  className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                  transition={
+                    reduced
+                      ? { duration: 0 }
+                      : {
+                          type: "spring",
+                          stiffness: 500,
+                          damping: 35,
+                          mass: 0.5,
+                        }
+                  }
+                />
+              )}
+              <span className="relative z-10">{t(labels[option])}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1289,7 +1309,7 @@ export function TranslatePage() {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
           <ChoiceChips
             label={t("translate.options.mode")}
             options={TRANSLATE_MODES}
