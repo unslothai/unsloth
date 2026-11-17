@@ -5,6 +5,7 @@
 
 import ast
 import copy
+import functools
 import gc
 import glob
 import importlib.util
@@ -3761,35 +3762,116 @@ def _rocm_windows_engine_counter_ps(instances: str) -> str:
     )
 
 
-_rocm_win_util_lock = threading.Lock()
-# luid -> (completed_at, spawn seconds, stdout)
-_rocm_win_util_cache: dict[int, tuple[float, float, Optional[str]]] = {}
+_PDH_FMT_DOUBLE_NOCAP100 = 0x00000200 | 0x00008000
+_PDH_MORE_DATA = 0x800007D2
+# A rate over a few milliseconds is noise; inside this the last collect answers.
+_ROCM_WIN_PDH_MIN_INTERVAL_S = 1.0
+_rocm_win_pdh_lock = threading.Lock()
+# luid -> [query, counter, collected_at, samples]
+_rocm_win_pdh_queries: dict[int, list] = {}
 
 
-def _rocm_windows_adapter_engines_stdout(luid: int) -> Optional[str]:
-    # Every engine instance on the host overruns the 5 s spawn timeout (#18005); one adapter's fit.
-    ps = _rocm_windows_engine_counter_ps(f"*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*")
-    try:
-        from utils.hardware import gpu_query
-        ttl = gpu_query.ttl_for(gpu_query.DISPLAY) if gpu_query.display_cache_allowed() else 0.0
-    except Exception:
-        ttl = 0.0
-    if ttl <= 0:
-        return _rocm_windows_counter_stdout_uncached(ps)
-    with _rocm_win_util_lock:
-        now = time.monotonic()
-        cached = _rocm_win_util_cache.get(luid)
-        if cached is not None and now - cached[0] < min(
-            _ROCM_WIN_COUNTER_MAX_AGE_S, max(ttl, _ROCM_WIN_COUNTER_SPACING * cached[1])
-        ):
-            return cached[2]
+@functools.lru_cache(maxsize = 1)
+def _rocm_windows_pdh():
+    import ctypes
+    from ctypes import wintypes
+
+    pdh = ctypes.WinDLL("pdh")
+    handle_out = ctypes.POINTER(wintypes.HANDLE)
+    pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_size_t, handle_out]
+    pdh.PdhAddEnglishCounterW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        ctypes.c_size_t,
+        handle_out,
+    ]
+    pdh.PdhCollectQueryData.argtypes = [wintypes.HANDLE]
+    pdh.PdhCloseQuery.argtypes = [wintypes.HANDLE]
+    pdh.PdhGetFormattedCounterArrayW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    for name in (
+        "PdhOpenQueryW",
+        "PdhAddEnglishCounterW",
+        "PdhCollectQueryData",
+        "PdhCloseQuery",
+        "PdhGetFormattedCounterArrayW",
+    ):
+        getattr(pdh, name).restype = wintypes.DWORD
+    return pdh
+
+
+def _rocm_windows_pdh_samples(pdh, counter) -> list[tuple[str, float]]:
+    import ctypes
+    from ctypes import wintypes
+
+    class _Value(ctypes.Structure):
+        _fields_ = [("CStatus", wintypes.DWORD), ("doubleValue", ctypes.c_double)]
+
+    class _Item(ctypes.Structure):
+        _fields_ = [("szName", wintypes.LPWSTR), ("FmtValue", _Value)]
+
+    size, count = wintypes.DWORD(0), wintypes.DWORD(0)
+    status = pdh.PdhGetFormattedCounterArrayW(
+        counter, _PDH_FMT_DOUBLE_NOCAP100, ctypes.byref(size), ctypes.byref(count), None
+    )
+    if status != _PDH_MORE_DATA:
+        return []
+    buf = ctypes.create_string_buffer(size.value)
+    if pdh.PdhGetFormattedCounterArrayW(
+        counter, _PDH_FMT_DOUBLE_NOCAP100, ctypes.byref(size), ctypes.byref(count), buf
+    ):
+        raise OSError("PdhGetFormattedCounterArrayW failed")
+    items = ctypes.cast(buf, ctypes.POINTER(_Item))
+    # CStatus 0 / 1: valid / new data; anything else is no reading for that instance.
+    return [
+        (items[i].szName, items[i].FmtValue.doubleValue)
+        for i in range(count.value)
+        if items[i].FmtValue.CStatus in (0, 1) and items[i].szName
+    ]
+
+
+def _rocm_windows_adapter_engine_samples(luid: int) -> Optional[list[tuple[str, float]]]:
+    """This adapter's GPU Engine utilization from an in-process PDH query (#18005): a standard user's Get-Counter overran the 5 s timeout (5.5 s measured), and nothing is spawned, so nothing can elevate. One query per LUID; each collect is the average since the previous one."""
+    from ctypes import byref, wintypes
+    with _rocm_win_pdh_lock:
+        entry = _rocm_win_pdh_queries.get(luid)
         try:
-            stdout = _rocm_windows_counter_stdout_uncached(ps)
-        except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
-            stdout = None
-        done = time.monotonic()
-        _rocm_win_util_cache[luid] = (done, done - now, stdout)
-        return stdout
+            pdh = _rocm_windows_pdh()
+            if entry is None:
+                query, counter = wintypes.HANDLE(), wintypes.HANDLE()
+                if pdh.PdhOpenQueryW(None, 0, byref(query)):
+                    return None
+                path = f"\\GPU Engine(*luid_0x{luid >> 32:08x}_0x{luid & 0xFFFFFFFF:08x}*)\\Utilization Percentage"
+                if pdh.PdhAddEnglishCounterW(
+                    query, path, 0, byref(counter)
+                ) or pdh.PdhCollectQueryData(query):
+                    pdh.PdhCloseQuery(query)
+                    return None
+                # A rate needs two collects: the first poll pays this once.
+                time.sleep(0.25)
+                entry = [query, counter, 0.0, None]
+                _rocm_win_pdh_queries[luid] = entry
+            now = time.monotonic()
+            if entry[3] is not None and now - entry[2] < _ROCM_WIN_PDH_MIN_INTERVAL_S:
+                return entry[3]
+            if pdh.PdhCollectQueryData(entry[0]):
+                raise OSError("PdhCollectQueryData failed")
+            entry[2], entry[3] = now, _rocm_windows_pdh_samples(pdh, entry[1])
+            return entry[3]
+        except Exception:
+            # Windows reassigns LUIDs on a driver restart: the next poll opens a fresh query.
+            if entry is not None:
+                _rocm_win_pdh_queries.pop(luid, None)
+                try:
+                    _rocm_windows_pdh().PdhCloseQuery(entry[0])
+                except Exception:
+                    pass
+            return None
 
 
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
@@ -3801,16 +3883,19 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             stdout = _rocm_windows_counter_stdout(
                 ("util", "3D"), _rocm_windows_engine_counter_ps("*engtype_3D*")
             )
+            if stdout is None:
+                return None
+            samples = [
+                line.strip().rpartition("|")[::2]
+                for line in stdout.splitlines()
+                if "|" in line and line.strip() != "__NONE__"
+            ]
         else:
-            stdout = _rocm_windows_adapter_engines_stdout(luid)
-        if stdout is None:
-            return None
+            samples = _rocm_windows_adapter_engine_samples(luid)
+            if samples is None:
+                return None
         by_engine: dict[str, float] = {}
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or line == "__NONE__" or "|" not in line:
-                continue
-            instance, _, raw = line.rpartition("|")
+        for instance, raw in samples:
             # Hosts spell it engtype_3D and engtype_3d both.
             name = instance.strip().lower()
             _, sep, engine_type = name.rpartition("engtype_")
@@ -3819,7 +3904,7 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             if luid is not None and _engine_instance_luid(instance.strip()) != luid:
                 continue
             try:
-                value = float(raw.strip())
+                value = float(raw.strip() if isinstance(raw, str) else raw)
             except (ValueError, TypeError):
                 continue
             # 0.0 is an idle engine, so a reading; NaN / inf / negative is not.
@@ -4856,6 +4941,14 @@ def _rocm_windows_per_device_vram(
     else:
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
+        # A standard user's Get-Counter overruns its timeout (#18005), but HIP still names each plain adapter,
+        # which the in-process engine and temperature reads need. A linked node (mask set) stays unknown.
+        identities = _rocm_windows_hip_adapter_ids(
+            [int(meta["visible_ordinal"]) for meta in dev_meta],
+            [str(meta["name"]) for meta in dev_meta],
+        )
+        if identities is not None and len({luid for luid, _ in identities}) == len(identities):
+            whole_adapter = [None if node_mask else luid for luid, node_mask in identities]
 
     # A pool-scoped total needs a numerator spanning the same ground, and Dedicated Usage saturates at the carve-out, so pairing them reports a loaded card as mostly free (#9362 measured the plateau at ~30.5 GiB on a gfx1151). _rocm_windows_unified_used_bytes sums Dedicated and Shared for exactly this, and a decline must null the reading rather than leave the carve-out figure under a pool-sized total. Pool-scoped covers both routes -- a total this call widened, and a confirmed APU whose props.total_memory already spanned the pool -- while being a UMA part is not enough by itself, since an APU whose driver probe failed still carries a carve-out-sized total Dedicated Usage is right for.
     pool_scoped = [

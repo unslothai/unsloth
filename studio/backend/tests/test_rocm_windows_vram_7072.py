@@ -119,6 +119,12 @@ def _subprocess_run(
     return fake_run
 
 
+def _pdh_feed(luid):
+    """The in-process PDH read, fed by whatever fake ``subprocess.run`` the test installed."""
+    out = hw.subprocess.run(["pdh", f"GPU Engine(*luid {luid:#x}*)"], capture_output = True).stdout
+    return [tuple(line.rsplit("|", 1)) for line in out.splitlines() if "|" in line]
+
+
 @pytest.fixture
 def win_rocm(monkeypatch):
     """Configure the hardware module as a Windows ROCm host with 2 visible GPUs."""
@@ -127,7 +133,7 @@ def win_rocm(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw.sys, "platform", "win32")
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
-    monkeypatch.setattr(hw, "_rocm_win_util_cache", {}, raising = False)
+    monkeypatch.setattr(hw, "_rocm_windows_adapter_engine_samples", _pdh_feed)
     # Force the capacity-ranking path: a Windows dev box would otherwise query its own HIP/registry.
     monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
@@ -1896,15 +1902,13 @@ def test_a_linked_adapters_hidden_nodes_are_not_this_devices_engines(win_rocm, m
     assert device["gpu_utilization_pct"] == 78.0
 
 
-def test_the_luid_narrows_the_path_and_is_matched_here_too(win_rocm, monkeypatch):
-    """PDH narrows to the adapter so the call fits its timeout (#18005); the match here still decides,
+def test_a_known_luid_reads_in_process_not_through_powershell(win_rocm, monkeypatch):
+    """#18005: a standard user's Get-Counter overran its timeout; the LUID match here still decides,
     which the longer-LUID and high-half tests cover."""
     _solo_host(monkeypatch, (0x15369, 0))
 
     _, query = _engine_query(monkeypatch, SOLO_ADAPTERS, FOREIGN_ENGINES)
-    assert "\\GPU Engine(*luid_0x00000000_0x00015369*)\\Utilization Percentage" in query
-    assert "engtype_" not in query
-    assert "InstanceName" in query
+    assert query.startswith("pdh GPU Engine(*luid 0x15369*)")
 
 
 def test_a_longer_luid_that_starts_the_same_is_not_this_adapter(win_rocm, monkeypatch):
@@ -2266,3 +2270,46 @@ def test_display_polls_share_one_combined_counter_read(win_rocm_solo, monkeypatc
     assert poll() == fresh
     assert len(spawns) - before == per_poll
     assert not any("Get-Counter -Counter" in s for s in spawns[before:])
+
+
+def test_counters_unavailable_still_name_a_plain_adapter_from_hip(win_rocm, monkeypatch):
+    """#18005: a standard user's Get-Counter overruns its timeout; HIP's LUID keeps the in-process
+    engine and temperature reads alive. A linked node (mask set) stays unknown."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(SOLO_DEVICE, free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_by_adapter", lambda *a, **k: None)
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0)))
+    (dev,), _ = hw._rocm_windows_per_device_vram([0])
+    assert dev["luid"] == 0x15369 and dev["used_gb"] is None
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", _hip_ids((0x15369, 0b11)))
+    (dev,), _ = hw._rocm_windows_per_device_vram([0])
+    assert dev["luid"] is None
+
+
+def test_the_monitor_poll_starts_nothing_that_can_elevate(win_rocm, monkeypatch):
+    """No UAC prompt, ever (#14041, #18005): a Windows ROCm poll launches only PowerShell Get-Counter;
+    the per-adapter engine and temperature reads launch nothing."""
+    _solo_host(monkeypatch, (0x15369, 0))
+    monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
+    inner = _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
+    launched = []
+
+    def run(cmd, *a, **k):
+        launched.append(cmd if isinstance(cmd, list) else [cmd])
+        return inner(cmd, *a, **k)
+
+    monkeypatch.setattr(hw.subprocess, "run", run)
+    monkeypatch.setattr(
+        hw.subprocess, "Popen", lambda *a, **k: pytest.fail(f"unexpected Popen {a!r}")
+    )
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_adapter_engine_samples",
+        lambda luid: [("pid_1_luid_0x00000000_0x00015369_phys_0_eng_2_engtype_compute 0", 64.0)],
+    )
+    monkeypatch.setattr(hw, "_rocm_windows_d3dkmt_temperature_c", lambda luid: 51.0)
+
+    (device,) = hw.get_gpu_utilization()["devices"]
+    assert (device["gpu_utilization_pct"], device["temperature_c"]) == (64.0, 51.0)
+    assert launched and all(cmd[0] == "powershell" and "Get-Counter" in cmd[-1] for cmd in launched)
+    assert not any("GPU Engine" in cmd[-1] for cmd in launched)
