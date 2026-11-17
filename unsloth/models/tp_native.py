@@ -2187,6 +2187,49 @@ def _host_table_home(model):
     return fallback
 
 
+def cast_host_read_tables(
+    model,
+    do_forced_float32 = False,
+    correct_dtype = None,
+):
+    """Before unsloth_zoo's patch_model_and_tokenizer dtype pass: convert a host-read input embedding in
+    place, in row chunks, to the dtype that pass gives it. Its module.to() on a host tensor held both copies
+    (2.37 GiB extra host memory for Qwen3.8-27B's bfloat16 table on a T4); on the GPU the pass already casts
+    in place. Same values as .to(dtype). Returns how many tables were converted."""
+    converted = 0
+    for module in _host_loaded_modules(model):
+        weight = module.weight
+        if hasattr(weight, "_pre_set_compute_dtype"):
+            continue  # the pass casts it to its own pin
+        if do_forced_float32:
+            target = getattr(module, "_pre_set_compute_dtype", torch.float16)
+        elif correct_dtype == torch.float16 and weight.dtype == torch.bfloat16:
+            if any(
+                hasattr(m, "_pre_set_compute_dtype") and any(c is module for c in m.modules())
+                for m in model.modules()
+            ):
+                continue  # a module pin decides
+            target = torch.float16
+        else:
+            continue
+        if (
+            target == weight.dtype
+            or not weight.dtype.is_floating_point
+            or weight.element_size() != torch.empty(0, dtype = target).element_size()
+            or not weight.data.is_contiguous()
+        ):
+            continue
+        src = weight.data.view(-1)
+        dst = src.view(target)
+        step = max(1, _READ_SLICE_BYTES // src.element_size())
+        with torch.no_grad():
+            for start in range(0, src.numel(), step):
+                dst[start : start + step].copy_(src[start : start + step].to(target))
+        weight.data = weight.data.view(target)
+        converted += 1
+    return converted
+
+
 def _return_host_loaded(model, served):
     """Move every host-read table apply_tensor_parallel does not serve from host back to the GPU, where a
     load without it would have put it. Returns how many modules moved."""

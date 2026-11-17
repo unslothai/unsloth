@@ -5405,6 +5405,13 @@ class FastBaseModel:
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
         # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        try:
+            from .tp_native import cast_host_read_tables
+
+            # A host-read tensor parallel input embedding: cast in place, not by a host-side module.to().
+            cast_host_read_tables(model, do_forced_float32, correct_dtype)
+        except Exception:
+            pass
         with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
             model, tokenizer = patch_model_and_tokenizer(
                 model,

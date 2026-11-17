@@ -306,3 +306,35 @@ def test_tp_env_requests_the_host_read_except_full_finetuning():
     source = open(os.path.join(os.path.dirname(tpn.__file__), "tp_env.py"), encoding = "utf-8").read()
     assert '"materialize_kwargs": {"host_embed": host_embed}' in source
     assert 'host_embed = not values.get("full_finetuning")' in source
+
+
+def _host_read_bf16_model():
+    model = _qwen3().to(torch.bfloat16)
+    embed = model.get_input_embeddings()
+    tpn._mark_host_loaded(model, embed)
+    return model, embed
+
+
+@pytest.mark.parametrize("forced", [True, False])
+def test_host_read_table_is_cast_in_place(monkeypatch, forced):
+    """The dtype pass's host-side module.to() held a second copy of the table: it is cast in place first,
+    in slices, to the dtype that pass gives it (same values as .to())."""
+    monkeypatch.setattr(tpn, "_READ_SLICE_BYTES", 4096, raising = False)
+    model, embed = _host_read_bf16_model()
+    want = embed.weight.detach().to(torch.float16)
+    ptr = embed.weight.data_ptr()
+    assert tpn.cast_host_read_tables(model, forced, torch.float16) == 1
+    assert embed.weight.dtype == torch.float16
+    assert embed.weight.data_ptr() == ptr  # no new storage
+    assert torch.equal(embed.weight.detach(), want)
+    embed.to(torch.float16)  # the pass's module.to() is then a no-op
+    assert embed.weight.data_ptr() == ptr
+    assert tpn.cast_host_read_tables(model, forced, torch.float16) == 0  # idempotent
+
+
+def test_host_read_table_cast_respects_pins_and_bf16_runs():
+    model, embed = _host_read_bf16_model()
+    assert tpn.cast_host_read_tables(model, False, torch.bfloat16) == 0  # bf16 run: nothing to cast
+    embed._pre_set_compute_dtype = torch.float32
+    assert tpn.cast_host_read_tables(model, False, torch.float16) == 0  # a module pin decides
+    assert embed.weight.dtype == torch.bfloat16
