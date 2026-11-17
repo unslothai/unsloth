@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The Unsloth SFT compute_loss keeps the MoE router aux loss that stock TRL adds; ast-loaded, CPU-only.
-
-TRL 1.7 to 1.17 wrote `output_router_logits = True` into the model config, so the model forward added
-`router_aux_loss_coef * aux_loss` itself. TRL 1.18 stopped writing the config and requests the router logits per
-forward inside its own compute_loss, which the Unsloth nll path does not call.
-"""
+"""The Unsloth SFT compute_loss keeps the MoE router aux loss that stock TRL adds; ast-loaded, CPU-only."""
 
 from __future__ import annotations
 
@@ -70,13 +65,12 @@ def _recording_trainer(**attrs):
 
 
 def test_router_logits_requested_only_when_trl_enables_the_aux_loss():
-    # TRL >= 1.7 with an MoE model and a non-zero coefficient.
     trainer = _recording_trainer(aux_loss_enabled = True, router_aux_loss_coef = COEF)
     inputs = {"input_ids": torch.ones(1, 2, dtype = torch.long)}
     trainer.compute_loss(None, inputs)
     assert trainer.seen["output_router_logits"] is True
     assert "output_router_logits" not in inputs, "the caller's batch must not be mutated"
-    # Dense models, router_aux_loss_coef = 0, and TRL without the attribute (0.22): batch passes through unchanged.
+    # Dense, coef 0, or TRL 0.22 (no attribute): unchanged.
     for attrs in ({"aux_loss_enabled": False}, {}):
         trainer = _recording_trainer(**attrs)
         trainer.compute_loss(None, dict(inputs))

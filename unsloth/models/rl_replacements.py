@@ -1484,10 +1484,7 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
-        # MoE router aux loss: TRL >= 1.18 no longer sets output_router_logits in the config and asks for the
-        # router logits per forward instead, so request them the same way. The model then returns aux_loss and
-        # the nll forward adds router_aux_loss_coef * aux_loss itself, as it already does on TRL <= 1.17, where
-        # the config flag is on and this is a no-op.
+        # TRL >= 1.18 requests router logits per forward, not via config; do the same so aux_loss is kept.
         if getattr(self, "aux_loss_enabled", False):
             inputs = {**inputs, "output_router_logits": True}
         # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
