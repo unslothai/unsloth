@@ -155,6 +155,7 @@ class Int8Route(str):
         return str(getattr(self.incumbent, "name", None) or self.value).upper()
 
     def __reduce__(self) -> tuple:
+        # the state dict carries what the constructor does not take: a CFG replica (deepcopy) keeps the sink mode
         return (
             Int8Route,
             (
@@ -166,6 +167,7 @@ class Int8Route(str):
                 self.impl,
                 self.cards,
             ),
+            {"sinks": self.sinks},
         )
 
     def __repr__(self) -> str:
