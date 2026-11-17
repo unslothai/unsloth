@@ -347,6 +347,9 @@ def test_an_older_clients_modified_write_keeps_every_key(tmp_path, monkeypatch):
             {"activePresetSource": "modified", "presetEditedKeys": {}}
         )
         assert merged["presetEditedKeys"]["topK"] is False
+        # An older tab still open after an upgrade, with a map already saved by a current one.
+        merged = studio_db.upsert_chat_settings_merge({"activePresetSource": "modified"})
+        assert merged["presetEditedKeys"] == {key: True for key in PRESET_EDITED_KEYS}
     finally:
         studio_db.close_wal_keeper()
         studio_db.reset_schema_state_for_tests()

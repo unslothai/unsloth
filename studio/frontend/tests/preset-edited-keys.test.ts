@@ -371,3 +371,18 @@ test("a startup prompt edit saved before the settings read is not taken for an o
   assert.deepEqual(useChatRuntimeStore.getState().presetEditedKeys, []);
   settingsHttp.settings = {};
 });
+
+test("an older `modified` read from browser storage keeps every key", async () => {
+  const { loadLegacyChatSettings } = await import(
+    "../src/features/chat/utils/chat-settings-storage.ts"
+  );
+  localStorageFake.set("unsloth_chat_active_preset_source", "modified");
+  try {
+    assert.deepEqual(
+      loadLegacyChatSettings().presetEditedKeys,
+      Object.fromEntries(RECOMMENDED_SAMPLING_KEYS.map((key) => [key, true])),
+    );
+  } finally {
+    localStorageFake.delete("unsloth_chat_active_preset_source");
+  }
+});

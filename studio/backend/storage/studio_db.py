@@ -6053,9 +6053,9 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
     merged = _deep_merge_settings(current, updates)
-    # Current clients write the map with every source change, so a `modified` without one comes from
-    # an older client or an import, where it kept every key.
-    if merged.get("activePresetSource") == "modified" and "presetEditedKeys" not in merged:
+    # Current clients send the map with every source change, so a `modified` sent without one comes
+    # from an older client or a legacy import, where it kept every key.
+    if updates.get("activePresetSource") == "modified" and "presetEditedKeys" not in updates:
         merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
     return merged
 

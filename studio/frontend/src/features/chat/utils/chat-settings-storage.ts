@@ -19,6 +19,7 @@ import {
   getUniquePresetName,
   isRecommendedSamplingKey,
   normalizeCustomPresets,
+  RECOMMENDED_SAMPLING_KEYS,
   type ChatPresetSource,
   type Preset,
   type RecommendedSamplingKey,
@@ -474,6 +475,12 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (activePreset?.trim()) settings.activePreset = activePreset.trim();
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  // Saved before the edited keys existed, when `modified` kept every key.
+  if (activePresetSource === "modified") {
+    settings.presetEditedKeys = Object.fromEntries(
+      RECOMMENDED_SAMPLING_KEYS.map((key) => [key, true]),
+    );
+  }
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
