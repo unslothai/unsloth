@@ -519,8 +519,11 @@ def _run_child(
     try:
         return subprocess.run(cmd, env = env, capture_output = True, text = True, timeout = timeout)
     except subprocess.TimeoutExpired as e:
-        out = (e.stdout or "") + (e.stderr or "")
-        out = out.decode(errors = "replace") if isinstance(out, bytes) else out
+        # TimeoutExpired keeps raw bytes even with text = True, and None for a stream that wrote nothing.
+        out = "".join(
+            (s.decode(errors = "replace") if isinstance(s, bytes) else s) or ""
+            for s in (e.stdout, e.stderr)
+        )
         pytest.fail(f"{cmd[-2:]} hung past {timeout}s:\n{out[-4000:]}")
 
 
