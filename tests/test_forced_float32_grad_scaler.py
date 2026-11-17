@@ -27,6 +27,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 TINY = os.environ.get(
     "UNSLOTH_TEST_TINY_GEMMA4", "trl-internal-testing/tiny-Gemma4ForConditionalGeneration"
 )
@@ -89,7 +91,7 @@ def _finite(x):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
     on = _run(tmp_path, "float16")
     assert on["forced"], "a float16 Gemma-4 load must take the forced float32 path"
@@ -114,7 +116,7 @@ def test_forced_float32_float16_training_has_a_grad_scaler(tmp_path):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+    not (has_real_cuda() and torch.cuda.is_bf16_supported()),
     reason = "needs a bfloat16 GPU",
 )
 def test_bfloat16_training_has_no_extra_grad_scaler(tmp_path):
@@ -187,7 +189,7 @@ _OPT_SCRIPT = textwrap.dedent(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_forced_float32_grad_scaler_update_matches_float32_reference(tmp_path):
     script = tmp_path / "opt.py"
     script.write_text(_OPT_SCRIPT)
