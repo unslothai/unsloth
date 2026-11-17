@@ -1247,6 +1247,28 @@ def test_upload_reuses_only_identical_name_and_content(
     assert len(list(tmp_path.iterdir())) == (1 if reused else 2)
 
 
+def test_native_upload_reuses_identical_file(monkeypatch, tmp_path):
+    import utils.native_path_leases as leases
+
+    source = tmp_path / "picked" / "train.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(b'{"text":"a"}\n')
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        leases,
+        "verify_native_path_lease",
+        lambda *_a, **_k: SimpleNamespace(canonical_path = source, size_bytes = None),
+    )
+
+    first = local._native_upload_dataset_response("lease")
+    second = local._native_upload_dataset_response("lease")
+
+    assert first.stored_path == second.stored_path
+    assert [p.name for p in uploads.iterdir()] == [Path(first.stored_path).name]
+
+
 def test_upload_accepts_name_at_filename_limit(monkeypatch, tmp_path):
     async def run_inline(function, *args):
         return function(*args)
