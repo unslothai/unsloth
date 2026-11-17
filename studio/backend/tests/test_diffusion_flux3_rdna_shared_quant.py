@@ -42,6 +42,8 @@ def rdna_cpu(monkeypatch):
     monkeypatch.setattr(
         rdna, "_STATE", {"devices": {}, "on": {None: True}, "broken": None, "rotq": rotq, "mm": mm}
     )
+    # A ROCm host would probe its card here and install the real ops over the counted references.
+    monkeypatch.setattr(rdna, "prepare", lambda device = None: True)
     cls = nq.native_linear_class()
     monkeypatch.setattr(cls, "_rdna_on", lambda self, x: bool(self._rdna))
     return cls, calls
