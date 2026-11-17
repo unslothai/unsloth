@@ -655,7 +655,11 @@ def _is_plain_download(command: str) -> bool:
     while i < len(tokens):
         token, is_operator, start, end_offset = tokens[i]
         if is_operator:
-            at_start = not set(token) & {"<", ">"}
+            is_redirect = bool(set(token) & {"<", ">"})
+            # A redirection before the command word (<run.sh bash) leaves the next words in command position.
+            if is_redirect and at_start:
+                return False
+            at_start = not is_redirect
             assigned = False
             i += 1
             continue
