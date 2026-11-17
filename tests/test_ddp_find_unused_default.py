@@ -302,9 +302,9 @@ def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
     assert out.count("RANK_OK find_unused=False") == 2, out[-4000:]
-    ref = json.loads((tmp_path / "single" / "result_0.json").read_text())
+    ref = json.loads((tmp_path / "single" / "result_0.json").read_text(encoding = "utf-8"))
     for rank in (0, 1):
-        got = json.loads((tmp_path / "ddp" / f"result_{rank}.json").read_text())
+        got = json.loads((tmp_path / "ddp" / f"result_{rank}.json").read_text(encoding = "utf-8"))
         assert got["names"] == ref["names"]
         assert any("embed_tokens.modules_to_save" in n for n in got["names"])
         assert any("lm_head.modules_to_save" in n for n in got["names"])
