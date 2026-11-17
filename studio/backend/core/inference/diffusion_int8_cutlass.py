@@ -33,8 +33,8 @@ _STATUS = {
 # ties keep today's path
 _MARGIN = 0.02
 _RACE_M = (512, 4096)
-# Video token counts (MiniMax-H3 960x544x124: 19318 rows): unswizzled tiles that win at 4096 rows lose 20-55% there
-# (A100: L2 reuse of the weight tiles collapses), so M >= _HUGE_M takes the winner of its own race at _RACE_M_HUGE.
+# Video token counts (MiniMax-H3 960x544x124: 19318 rows): on A100 the tiles that win H3's FFN shapes at 4096 rows
+# are 1.2-1.55x slower than the Triton path at 19318, so M >= _HUGE_M takes the winner of its own race at _RACE_M_HUGE.
 HUGE_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE"
 _RACE_M_HUGE = 16384
 _HUGE_M = 8192
