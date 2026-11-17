@@ -1854,6 +1854,10 @@ html.force-reduced-motion .generated-image-loading-dot {
 	animation-duration: 1850ms !important;
 	animation-iteration-count: infinite !important;
 }
+html.force-reduced-motion .voice-orb-dots > span {
+	animation-duration: 1.4s !important;
+	animation-iteration-count: infinite !important;
+}
 html.force-reduced-motion .loading-bar-slide {
 	animation-duration: 1.3s !important;
 	animation-iteration-count: infinite !important;
@@ -5968,6 +5972,10 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 	html:not(.force-motion) .generated-image-loading-dot {
 		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
+	html:not(.force-motion) .voice-orb-dots > span {
+		animation-duration: 1.4s !important;
 		animation-iteration-count: infinite !important;
 	}
 

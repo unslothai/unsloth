@@ -37,7 +37,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AudioLinesIcon, AudioWaveformIcon, InfoIcon, Loader2Icon, MicOffIcon } from "lucide-react";
 import { useAuiState } from "@assistant-ui/react";
 import { AnimatePresence, motion } from "motion/react";
-import { Component, type FC, createRef, useEffect, useRef, useState } from "react";
+import { Component, type FC, createRef, useEffect, useId, useRef, useState } from "react";
 import { OrbApprovalCard } from "./orb-approval-card";
 
 export type { OrbStateName, SpectrumReader };
@@ -67,7 +67,8 @@ const DEBOSS_BOX = "0 1px 0.5px rgba(255,255,255,0.22), 0 -1px 1.5px rgba(0,0,0,
 
 // A CSS keyframe, not a scripted tween: scripted dots over the pulsing body dropped frames in the desktop webview.
 const Dots: FC = () => (
-  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+  // voice-orb-dots: a loading signal, so reduced motion slows it (index.css) rather than freezing it.
+  <div className="voice-orb-dots" style={{ display: "flex", alignItems: "center", gap: 9 }}>
     {[0, 1, 2].map((i) => (
       <span
         key={i}
@@ -125,6 +126,14 @@ function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
 
 let blobLevel = 0;
 
+// Mirrors index.css: the app's Reduce motion setting wins over the OS one either way.
+function reducedMotion(query: MediaQueryList | undefined): boolean {
+  const html = document.documentElement.classList;
+  if (html.contains("force-reduced-motion")) return true;
+  if (html.contains("force-motion")) return false;
+  return query?.matches === true;
+}
+
 function useBlobClip(
   ref: React.RefObject<HTMLDivElement | null>,
   side: "input" | "output" | undefined,
@@ -143,9 +152,18 @@ function useBlobClip(
     }
     let raf = 0;
     let last = Number.NEGATIVE_INFINITY;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       if (now - last < BLOB_FRAME_MS) return;
+      // Reduced motion keeps the still circle; the state label and colour still say who is talking.
+      // Not rendered (chat hidden off-route): no frame to draw.
+      if (reducedMotion(reduce) || el.getClientRects().length === 0) {
+        last = Number.NEGATIVE_INFINITY;
+        el.style.clipPath = plain;
+        if (!live) cancelAnimationFrame(raf);
+        return;
+      }
       const dt = last === Number.NEGATIVE_INFINITY ? BLOB_FRAME_MS : now - last;
       last = now;
       if (live) {
@@ -277,17 +295,10 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     );
   if (icon === "spinner")
     return (
-      <motion.div
-        animate={{ rotate: 360 }}
-        transition={{
-          duration: 1.1,
-          repeat: Number.POSITIVE_INFINITY,
-          ease: "linear",
-        }}
-        style={{ display: "grid", placeItems: "center" }}
-      >
+      // A CSS spin, not a motion tween: reduced motion slows .animate-spin (index.css) where it stops a tween dead.
+      <div className="grid animate-spin place-items-center [animation-duration:1.1s]">
         <Loader2Icon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />
-      </motion.div>
+      </div>
     );
   if (icon === "pencil")
     return (
@@ -336,22 +347,36 @@ const ARCS: Array<{
   key: keyof VoiceDecisions;
   start: number;
   color: string;
-  label: string;
+  label: TranslationKey;
 }> = [
-  { key: "turn", start: 180, color: "#fb7185", label: "turn" },
-  { key: "filler", start: 300, color: "#38bdf8", label: "filler" },
-  { key: "interject", start: 60, color: "#818cf8", label: "interrupt" },
+  { key: "turn", start: 180, color: "#fb7185", label: "voiceOrb.help.turnName" },
+  { key: "filler", start: 300, color: "#38bdf8", label: "voiceOrb.help.fillerName" },
+  { key: "interject", start: 60, color: "#818cf8", label: "voiceOrb.help.interruptName" },
 ];
 
-function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions): string {
-  if (key === "turn") return d.turn ? `${Math.round(d.turn.p * 100)}% ${d.turn.sent ? "sent" : "wait"}` : "";
+type Translate = ReturnType<typeof useT>;
+const PERCENT = new Intl.NumberFormat(undefined, { style: "percent" });
+
+function arcValue(d: VoiceDecisions, key: keyof VoiceDecisions, t: Translate): string {
+  if (key === "turn")
+    return d.turn
+      ? t(d.turn.sent ? "voiceOrb.decision.arcSent" : "voiceOrb.decision.arcWaiting", { p: PERCENT.format(d.turn.p) })
+      : "";
   if (key === "filler")
-    return d.filler ? `${d.filler.phrase ? "spoke" : "quiet"} ${Math.round(d.filler.p * 100)}%` : "";
-  return d.interject ? `${d.interject.action} ${Math.round(d.interject.confidence * 100)}%` : "";
+    return d.filler
+      ? t(d.filler.phrase ? "voiceOrb.decision.arcSpoke" : "voiceOrb.decision.arcQuiet", { p: PERCENT.format(d.filler.p) })
+      : "";
+  return d.interject
+    ? t("voiceOrb.decision.withPercent", {
+        label: t(`voiceOrb.decision.interject.${d.interject.action}`),
+        p: PERCENT.format(d.interject.confidence),
+      })
+    : "";
 }
 
 const VoiceDecisionRing: FC = () => {
   const d = useVoiceDecisions();
+  const t = useT();
   // The canvas is wider than the ring so the labels outside it are never clipped.
   const PAD = 110;
   const circ = 2 * Math.PI * RING_R;
@@ -378,7 +403,7 @@ const VoiceDecisionRing: FC = () => {
         const lx = C + Math.sin(mid) * (RING_R + 18);
         const ly = C - Math.cos(mid) * (RING_R + 18);
         const anchor = Math.sin(mid) < -0.1 ? "end" : Math.sin(mid) > 0.1 ? "start" : "middle";
-        const value = arcValue(d, arc.key);
+        const value = arcValue(d, arc.key, t);
         const above = Math.cos(mid) > 0.5;
         const labelY = above ? ly - 14 : ly;
         const valueY = above ? ly : ly + 14;
@@ -398,7 +423,7 @@ const VoiceDecisionRing: FC = () => {
                 textTransform: "uppercase",
               }}
             >
-              {arc.label}
+              {t(arc.label)}
             </text>
             <AnimatePresence initial={false}>
               {value && (
@@ -469,6 +494,7 @@ const HELP_ROWS: { color: string; name?: TranslationKey; text: TranslationKey }[
 
 const VoiceHelpButton: FC = () => {
   const t = useT();
+  const titleId = useId();
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -483,9 +509,10 @@ const VoiceHelpButton: FC = () => {
       <PopoverContent
         align="center"
         sideOffset={8}
+        aria-labelledby={titleId}
         className="menu-soft-surface w-80 border-0 p-3 text-ui-13 ring-0"
       >
-        <div className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
+        <div id={titleId} className="pb-2 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
           {t("voiceOrb.help.title")}
         </div>
         <ul className="flex flex-col gap-2">
@@ -518,42 +545,49 @@ type LatestDecision = {
   quote: boolean;
 };
 
-function latestDecision(d: VoiceDecisions): LatestDecision | undefined {
+function latestDecision(d: VoiceDecisions, t: Translate): LatestDecision | undefined {
   const interjectKind = d.interject?.kind ?? d.interject?.action;
   return [
     d.turn && {
       at: d.turn.at,
-      tag: "turn",
+      tag: t("voiceOrb.help.turnName"),
       color: "#fb7185",
-      text: `${d.turn.sent ? "Sent" : "Waiting"}, ${Math.round(d.turn.p * 100)}% done`,
+      text: t(d.turn.sent ? "voiceOrb.decision.turnSent" : "voiceOrb.decision.turnWaiting", {
+        p: PERCENT.format(d.turn.p),
+      }),
       quote: false,
     },
     d.filler && {
       at: d.filler.at,
-      tag: "filler",
+      tag: t("voiceOrb.help.fillerName"),
       color: "#38bdf8",
-      text: d.filler.phrase || "Quiet",
+      text: d.filler.phrase || t("voiceOrb.decision.quiet"),
       quote: Boolean(d.filler.phrase),
     },
-    d.interject && {
-      at: d.interject.at,
-      tag: "interrupt",
-      color: "#818cf8",
-      text: `${interjectKind?.[0]?.toUpperCase() ?? ""}${interjectKind?.slice(1) ?? ""}, ${Math.round(d.interject.confidence * 100)}%`,
-      quote: false,
-    },
+    d.interject &&
+      interjectKind && {
+        at: d.interject.at,
+        tag: t("voiceOrb.help.interruptName"),
+        color: "#818cf8",
+        text: t("voiceOrb.decision.withPercent", {
+          label: t(`voiceOrb.decision.interject.${interjectKind}`),
+          p: PERCENT.format(d.interject.confidence),
+        }),
+        quote: false,
+      },
+    // VAD and STT are names, not words: they stay as they are in every language.
     d.vad && {
       at: d.vad.at,
       tag: "vad",
       color: "#34d399",
-      text: d.vad.kept ? "Kept" : "Dropped",
+      text: t(d.vad.kept ? "voiceOrb.decision.kept" : "voiceOrb.decision.dropped"),
       quote: false,
     },
     d.stt && {
       at: d.stt.at,
       tag: "stt",
       color: "#94a3b8",
-      text: d.stt.kept ? "Kept" : `Dropped, ${d.stt.why}`,
+      text: d.stt.kept ? t("voiceOrb.decision.kept") : t("voiceOrb.decision.droppedWhy", { why: d.stt.why }),
       quote: false,
     },
   ]
@@ -581,7 +615,8 @@ const HeardCaption: FC<{ text: string }> = ({ text }) => (
 );
 
 const VoiceDecisionCaption: FC = () => {
-  const latest = latestDecision(useVoiceDecisions());
+  const t = useT();
+  const latest = latestDecision(useVoiceDecisions(), t);
   return (
     <div className="flex h-9 items-center justify-center">
       <AnimatePresence mode="wait">
@@ -779,7 +814,8 @@ export const VoiceOrb: FC = () => {
 
   const showArcs = useVoiceSettingsStore((s) => s.showVoiceArcs);
   const showCaption = useVoiceSettingsStore((s) => s.showVoiceCaption);
-  const hasDecision = latestDecision(useVoiceDecisions()) !== undefined;
+  const decisions = useVoiceDecisions();
+  const hasDecision = Boolean(decisions.turn || decisions.filler || decisions.interject || decisions.vad || decisions.stt);
   const heard = useAuiState(({ thread }) => lastUserUtterance(thread.messages));
   const showHeard = showOverlay && !(showCaption && hasDecision) && showsHeardCaption(orbState) && heard !== "";
   // Filtered below to the voiced chat: the store also holds Compare panes' and background chats' calls.
@@ -838,6 +874,8 @@ export const VoiceOrb: FC = () => {
           "transition-opacity duration-200 ease-out will-change-[opacity]",
           showOverlay ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
+        // Faded out is not gone: inert keeps its buttons out of the tab order and its status unannounced.
+        inert={!showOverlay}
         ref={rootRef}
       >
         <div
@@ -861,6 +899,8 @@ export const VoiceOrb: FC = () => {
                 {/* Live caption: names the current state so the color never needs a
                 legend. Studio heading font (Hellix / Space Grotesk) to match chrome. */}
                 <div className="flex h-5 items-center gap-2">
+                  {/* The region itself is never re-keyed, so each new state is announced. */}
+                  <span role="status" className="flex items-center">
                   <AnimatePresence mode="wait">
                     {meta && (
                       <motion.span
@@ -877,6 +917,7 @@ export const VoiceOrb: FC = () => {
                       </motion.span>
                     )}
                   </AnimatePresence>
+                  </span>
                   {showOverlay && <VoiceHelpButton />}
                 </div>
               </StackItem>
