@@ -374,7 +374,7 @@ def test_a_plain_download_is_contained(command, monkeypatch):
         "curl https://example.com/install.sh -o curl; chmod +x curl; ./curl --version",
         "/tmp/curl https://example.com",
         "/usr/bin/curl https://example.com",
-        "if test -f x; then curl -s https://example.com -o x; \"fi\"",
+        'if test -f x; then curl -s https://example.com -o x; "fi"',
         "curl -s https://example.com -o x; 'ls'",
         "c\\url -s https://example.com",
         "curl https://example.com/x -o curl; chmod +x curl; PATH=.; curl --version",
@@ -398,7 +398,9 @@ def test_any_other_download_keeps_the_block(command, monkeypatch):
         ("mkdir -p d && curl -s https://example.com -o d/x", "mkdir"),
     ],
 )
-def test_a_command_only_the_writable_package_bin_provides_keeps_the_block(command, missing, monkeypatch):
+def test_a_command_only_the_writable_package_bin_provides_keeps_the_block(
+    command, missing, monkeypatch
+):
     monkeypatch.setattr(tools, "_on_safe_path", lambda name: name != missing)
     assert not tools._is_plain_download(command)
 
