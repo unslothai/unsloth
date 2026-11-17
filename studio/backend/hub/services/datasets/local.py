@@ -598,14 +598,15 @@ def delete_uploaded_dataset_response(dataset_id: str) -> dict:
     if not name or name != dataset_id or Path(name).suffix.lower() not in LOCAL_UPLOAD_EXTS:
         raise HTTPException(status_code = 400, detail = "Invalid uploaded dataset id")
     path = DATASET_UPLOAD_DIR / name
-    if not path.is_file() or path.is_symlink() or not within_account(path):
-        raise HTTPException(status_code = 404, detail = "Uploaded dataset not found")
-    try:
-        path.unlink()
-    except OSError as exc:
-        raise HTTPException(
-            status_code = 500, detail = "Could not delete the uploaded dataset"
-        ) from exc
+    with _REUSE_LOCK:
+        if not path.is_file() or path.is_symlink() or not within_account(path):
+            raise HTTPException(status_code = 404, detail = "Uploaded dataset not found")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise HTTPException(
+                status_code = 500, detail = "Could not delete the uploaded dataset"
+            ) from exc
     return {"status": "deleted", "id": name}
 
 

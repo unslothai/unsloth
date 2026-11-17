@@ -4,6 +4,7 @@
 import asyncio
 import os
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1297,6 +1298,23 @@ def test_delete_uploaded_dataset_removes_only_named_upload(monkeypatch, tmp_path
     assert local.delete_uploaded_dataset_response("train.jsonl")["id"] == "train.jsonl"
     assert not target.exists()
     assert outside.exists()
+
+
+def test_delete_uploaded_dataset_waits_for_publication(monkeypatch, tmp_path):
+    target = tmp_path / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+
+    with local._REUSE_LOCK:
+        deleter = threading.Thread(
+            target = local.delete_uploaded_dataset_response, args = ("train.jsonl",)
+        )
+        deleter.start()
+        deleter.join(0.2)
+        assert target.exists()
+    deleter.join(5)
+
+    assert not target.exists()
 
 
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):
