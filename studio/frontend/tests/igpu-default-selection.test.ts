@@ -16,11 +16,7 @@ import {
   defaultGpuIds,
   reconcileGpuSelection,
 } from "../src/hooks/gpu-selection.ts";
-import {
-  type MemoryTotalDevice,
-  aggregateGpuMemoryTotalGb,
-  defaultGpuMemoryTotalGb,
-} from "../src/hooks/gpu-vram.ts";
+import { type MemoryTotalDevice } from "../src/hooks/gpu-vram.ts";
 import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
 import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
 import { normalizeReportedOffloadFitTiers } from "../src/lib/offload-fit-tiers.ts";
@@ -32,11 +28,6 @@ const IGPU_SHARED: MemoryTotalDevice = {
   shared_memory: true,
   shared_memory_host_backed_gb: 34.26,
   unified_memory: true,
-};
-// Same iGPU on a stack where the driver did not mark it integrated, but torch has no gfx1036 kernels.
-const IGPU_NO_KERNELS: MemoryTotalDevice = {
-  memory_total_gb: 36.23,
-  no_torch_kernels: true,
 };
 
 function device(
@@ -55,38 +46,6 @@ function device(
     ...overrides,
   };
 }
-
-test("the default VRAM total leaves a shared-memory iGPU out", () => {
-  const devices = [R9700, R9700, IGPU_SHARED];
-  assert.equal(aggregateGpuMemoryTotalGb(devices), 99.95);
-  assert.equal(defaultGpuMemoryTotalGb(devices), 63.72);
-});
-
-test("the default VRAM total leaves a GPU torch cannot run out", () => {
-  assert.equal(defaultGpuMemoryTotalGb([R9700, R9700, IGPU_NO_KERNELS]), 63.72);
-});
-test("no GPU torch can run leaves no default VRAM", () => {
-  const noKernelCard: MemoryTotalDevice = {
-    memory_total_gb: 16,
-    no_torch_kernels: true,
-  };
-  assert.equal(defaultGpuMemoryTotalGb([IGPU_NO_KERNELS]), 0);
-  assert.equal(defaultGpuMemoryTotalGb([noKernelCard, IGPU_NO_KERNELS]), 0);
-});
-
-test("a shared-memory GPU beside a card torch cannot run counts alone", () => {
-  const noKernelCard: MemoryTotalDevice = {
-    memory_total_gb: 16,
-    no_torch_kernels: true,
-  };
-  assert.equal(defaultGpuMemoryTotalGb([IGPU_SHARED, noKernelCard]), 36.23);
-});
-
-test("an iGPU alone, or discrete cards alone, count as before", () => {
-  assert.equal(defaultGpuMemoryTotalGb([IGPU_SHARED]), 36.23);
-  assert.equal(defaultGpuMemoryTotalGb([R9700, R9700]), 63.72);
-  assert.equal(defaultGpuMemoryTotalGb([]), 0);
-});
 
 test("an untouched picker ticks only the discrete cards", () => {
   assert.deepEqual(
@@ -385,4 +344,23 @@ test("fit capacity counts only the cards each engine can run", () => {
   gpu.devices[1] = { ...gpu.devices[1], no_llama_kernels: true } as (typeof gpu.devices)[number];
   assert.equal(hooks.useInferenceGpuInfo().memoryTotalGb, 31.86);
   assert.equal(hooks.useGpuInfo().memoryTotalGb, 63.72);
+});
+
+test("training capacity keeps a shared-memory GPU torch can run", () => {
+  // Training's auto-select adds it once the discrete card alone is too small, so its fit must count it.
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", visible_ordinal: 0, ...R9700 },
+      { index: 1, index_kind: "physical", visible_ordinal: 1, ...IGPU_SHARED },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 68.09);
+  gpu.devices[1] = { ...gpu.devices[1], no_torch_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 31.86);
+  // A host with only cards torch cannot run has no GPU capacity to fit against.
+  gpu.devices[0] = { ...gpu.devices[0], no_torch_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 0);
 });

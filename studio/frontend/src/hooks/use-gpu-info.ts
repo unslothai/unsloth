@@ -19,7 +19,6 @@ import {
   resolveGpuSelectionContext,
 } from "./gpu-selection";
 import {
-  defaultGpuMemoryTotalGb,
   gpuMemoryTotalsGb,
   gpuSharedHostMemoryGb,
   sharesHostMemory,
@@ -68,8 +67,6 @@ export interface GpuInfo {
   memorySharedGb: number;
   /** Without shared-memory devices: VRAM beside system RAM, not a view of it. */
   dedicatedMemoryTotalGb: number;
-  /** VRAM of the GPUs a training run gets by default: no iGPU beside a discrete card, no card torch cannot run. */
-  defaultMemoryTotalGb: number;
   /** Image/video loads live on ONE device, so their fit math must not use the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** Lowest visible ordinal, where a bare "cuda" diffusion load lands; NOT maxDeviceMemoryGb on a
@@ -154,7 +151,6 @@ const DEFAULT_GPU: GpuInfo = {
   memoryTotalGb: 0,
   memorySharedGb: 0,
   dedicatedMemoryTotalGb: 0,
-  defaultMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
   loadDeviceSharedMemory: false,
@@ -226,7 +222,6 @@ function toGpuInfo(
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: memoryTotals.total,
     dedicatedMemoryTotalGb: memoryTotals.dedicated,
-    defaultMemoryTotalGb: defaultGpuMemoryTotalGb(devices),
     memorySharedGb: memoryTotals.shared,
     maxDeviceMemoryGb: runnable.reduce(
       (max, d) => Math.max(max, d.memory_total_gb ?? 0),
