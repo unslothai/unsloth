@@ -64,6 +64,18 @@ test("the miss note keeps the other notices and is inert without a miss", () => 
   );
 });
 
+test("the miss note drops the llama-server log tail and stays short", () => {
+  const detail =
+    "Failed to load model: llama-server failed to start. Check that the GGUF file is valid and you have enough memory.\n\nllama-server output:\n0.00.428.167 E gguf_init_from_reader: failed to read key-value pairs\nFull log: /home/u/.unsloth/studio/logs/llama.log";
+  assert.equal(
+    rememberedMissNote("unsloth/Qwen3-0.6B-GGUF (Q4_K_M)", detail),
+    "Your last used model unsloth/Qwen3-0.6B-GGUF (Q4_K_M) did not load: Failed to load model: llama-server failed to start. Check that the GGUF file is valid and you have enough memory.",
+  );
+  const long = rememberedMissNote("m", "x".repeat(500));
+  assert.ok(long.endsWith("…"));
+  assert.ok(long.length < 260);
+});
+
 test("quant names match the way the remembered quant is picked", () => {
   assert.equal(sameVariant("UD-Q4_K_XL", "ud-q4_k_xl"), true);
   assert.equal(sameVariant(null, null), true);
