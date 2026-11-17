@@ -1130,7 +1130,7 @@ def test_old_glibc_is_refused_before_the_bundle_download(
     monkeypatch.setattr(
         M, "_download", lambda url, dest: downloads.append(url) or _fake_download(url, dest)
     )
-    monkeypatch.setattr(M, "resolve_for_request", lambda *a: ("cpu", FORK, release, CPU_ZIP))
+    monkeypatch.setattr(M, "resolve_for_request", lambda *a, **k: ("cpu", FORK, release, CPU_ZIP))
     target = tmp_path / "audio.cpp"
     if refused:
         floor = min_os.split("-")[1]
@@ -2751,3 +2751,26 @@ def test_an_old_chat_only_cpu_install_kept_after_a_failed_wheel_install_is_marke
         M, "resolve", lambda *a, **k: pytest.fail("a marked rerun must not look up")
     )
     assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
+
+
+def test_a_cpu_fallback_that_tried_the_wheels_does_not_retry_them_for_a_new_release(
+    monkeypatch, tmp_path
+):
+    release = _release(tmp_path, CPU_ZIP)
+    asked, resolve = _resolve_recording(release, covers = ("cpu", "cuda"))
+    _stub_install_io(monkeypatch)
+    attempts = []
+    monkeypatch.setattr(M, "_cuda_runtime_wheels_installable", lambda: True)
+    monkeypatch.setattr(M, "_install_linux_cuda_runtime_wheels", attempts.append)
+    monkeypatch.setattr(M, "_linux_cuda_runtime_available", lambda major: False)
+    monkeypatch.setattr(M, "resolve", resolve)
+    monkeypatch.setattr(M, "detect_accelerator", lambda: "cuda")
+    target = tmp_path / "audio.cpp"
+    assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
+    assert len(attempts) == 1
+    record_path = target / M.INSTALL_RECORD
+    record = json.loads(record_path.read_text())
+    record["release_tag"] = "v0.0.1-unsloth.1"  # a newer release is now published
+    record_path.write_text(json.dumps(record))
+    assert M.main(["--install-dir", str(target)]) == M.EXIT_OK
+    assert len(attempts) == 1

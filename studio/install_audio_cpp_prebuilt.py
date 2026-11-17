@@ -1313,7 +1313,14 @@ def _install_locked(
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         accel, repo, release, chosen = resolve_for_request(
-            requested, "cpu" if vulkan_unusable else detected, token, release_tag
+            requested,
+            "cpu" if vulkan_unusable else detected,
+            token,
+            release_tag,
+            # A CPU fallback that already tried the wheels does not retry them for every new release.
+            supply_runtime = not (
+                existing.get("accelerator") == "cpu" and existing.get("cuda_runtime_wheels_tried")
+            ),
         )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
