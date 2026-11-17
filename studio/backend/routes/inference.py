@@ -4593,8 +4593,26 @@ def _sf_parse_think_markers(
     return _resolved_kwargs_think(None, resolved)
 
 
-def _effective_enable_tools(payload) -> Optional[bool]:
-    """An explicit enable_tools false beats the launcher default; a CLI policy override outranks it."""
+def _memory_tool_requested(payload) -> bool:
+    """Saved memory may add a tool only when the caller has no client-owned contract."""
+    if (
+        getattr(payload, "tools", None)
+        or getattr(payload, "tool_choice", None) == "none"
+        or (getattr(payload, "n", None) or 1) > 1
+        or _response_format_constrains_decoding(payload)
+        or (
+            _has_openai_tool_history(getattr(payload, "messages", None) or [])
+            and not _only_studio_tool_history(payload)
+        )
+    ):
+        return False
+    from core.chat_memory import thread_context
+
+    return thread_context(getattr(payload, "thread_id", None)) is not None
+
+
+def _base_enable_tools(payload) -> Optional[bool]:
+    """Tool selection before optional memory tools; the CLI policy outranks request flags."""
     from state.tool_policy import get_tool_policy, get_tool_policy_default
 
     policy = get_tool_policy()
@@ -4603,6 +4621,16 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     if payload.enable_tools is None:
         return get_tool_policy_default()
     return payload.enable_tools
+
+
+_MEMORY_LOOP_TOOL_NAMES = ("update_memory", "search_conversation")
+
+
+def _effective_enable_tools(payload) -> Optional[bool]:
+    from state.tool_policy import get_tool_policy
+    if get_tool_policy() is not False and _memory_tool_requested(payload):
+        return True
+    return _base_enable_tools(payload)
 
 
 async def _materialize_sandbox_attachments(payload) -> None:
@@ -4632,6 +4660,7 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
         get_tool_policy() is None
         and payload.enable_tools is None
         and not getattr(payload, "mcp_enabled", False)
+        and not _memory_tool_requested(payload)
     )
 
 
@@ -4656,7 +4685,9 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     from state.tool_policy import get_tool_policy
 
     policy = get_tool_policy()
-    return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+    return policy is not False and (
+        payload.enable_tools is True or bool(payload.mcp_enabled) or _memory_tool_requested(payload)
+    )
 
 
 def _selects_only_provider_hosted_tools(
@@ -4892,6 +4923,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
         enabled = list(selected_names)
     elif getattr(payload, "mcp_enabled", False):
         return True
+    elif _memory_tool_requested(payload) and not _base_enable_tools(payload):
+        if getattr(payload, "deep_research_armed", False):
+            return True
+        enabled = _MEMORY_LOOP_TOOL_NAMES
     else:
         enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
@@ -4947,10 +4982,10 @@ def _confirm_gate_has_no_channel(
         # Bypass suppresses the gate, so no stream is needed; else full-access non-streaming runs 400.
         if getattr(payload, "bypass_permissions", False):
             return False
-        return _confirm_gate_needs_stream(payload)
+        return _confirm_gate_needs_stream(payload, selected_names)
     if ui_events:
         return False
-    if _request_states_no_tool_flag(payload):
+    if _request_states_no_tool_flag(payload) and not _memory_tool_requested(payload):
         # Never asked for tools: withdraw launcher defaults, not 400; external providers use the complement.
         return False
     return _confirm_gate_would_prompt(payload, selected_names)
@@ -4967,7 +5002,7 @@ def _confirm_gate_would_prompt(payload, selected_names = None) -> bool:
     return _confirm_gate_needs_stream(payload, selected_names)
 
 
-def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+def _launcher_tool_catalog_applies(payload, ui_events: bool) -> bool:
     """Launcher default skips streams the gate would stop, else the caller parks in wait_tool_decision."""
     if not _request_states_no_tool_flag(payload):
         return True
@@ -4976,6 +5011,11 @@ def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
     if not (getattr(payload, "stream", False) and not ui_events):
         return True
     return not _confirm_gate_would_prompt(payload)
+
+
+def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+    """Memory keeps its loop without opting into the launcher's broader tool catalog."""
+    return _memory_tool_requested(payload) or _launcher_tool_catalog_applies(payload, ui_events)
 
 
 def _reject_confirm_gate_without_channel(
@@ -6294,6 +6334,18 @@ async def _select_request_tools(
         if not tools_on:
             # After a reset, offer search_conversation ALONE: models guess tool names in big catalogs.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    from core.chat_memory import offer
+
+    memory_tools = (
+        offer(getattr(payload, "thread_id", None))
+        if tools_on and _memory_tool_requested(payload)
+        else []
+    )
+    if memory_tools and (
+        not _base_enable_tools(payload) or not _launcher_tool_catalog_applies(payload, ui_events)
+    ):
+        tools = [t for t in tools if t["function"]["name"] in _MEMORY_LOOP_TOOL_NAMES]
+    tools += memory_tools
     tools = _tools_for_search_images(tools)
     # Before the MCP append: Full access says nothing about how an MCP server runs.
     if payload.bypass_permissions:
@@ -32311,6 +32363,8 @@ async def produce_openai_chat_completions(
     cancel_on_disconnect: bool,
 ):
     """GGUF models route to llama-server, others to the transformers backend; stream defaults to false."""
+    from core.chat_memory import apply_to_request
+
     request = _DisconnectPolicyRequest(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
@@ -32364,6 +32418,8 @@ async def produce_openai_chat_completions(
                 status_code = 400,
                 detail = "Audio input is only supported on a local model with audio support.",
             )
+        # A hosted request must not inherit an unrelated local model's window.
+        apply_to_request(payload, payload.context_window)
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     _mcp_image = await _request_mcp_image(payload, _ui_events)
@@ -32550,7 +32606,15 @@ async def produce_openai_chat_completions(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded and routed_slot.get() is None:
+    _using_npu = _npu is not None and _npu.is_loaded and routed_slot.get() is None
+    # Auto-switching also selects kept slots: budget facts against the serving model.
+    _messages_before_memory = payload.messages
+    apply_to_request(
+        payload, _npu.loaded_context_length if _using_npu else _monitor_context_length()
+    )
+    if _pre_parsed is not None and payload.messages is not _messages_before_memory:
+        _pre_parsed = await _extract_content_parts_async(payload.messages, keep_tool_images = True)
+    if _using_npu:
         _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
 
@@ -35301,6 +35365,18 @@ async def produce_openai_chat_completions(
 
     _managed_promoted_parts: list = []
     if _managed_images:
+        if not backend.models.get(backend.active_model_name, {}).get(
+            "supports_tools"
+        ) and _only_studio_tool_history(payload):
+            # A model switch can leave Studio tool turns in a plain-chat conversation.
+            payload.messages = _folded_studio_tool_messages(payload.messages)
+            for message in payload.messages:
+                if message.tool_calls:
+                    message.content = _merge_user_content(
+                        message.content,
+                        "Tool calls: " + json.dumps(message.tool_calls, ensure_ascii = False),
+                    )
+                    message.tool_calls = None
         # Fetch remote image URLs here: the engine's own fetch has no SSRF guard.
         if _messages_have_remote_image(payload.messages):
             try:
@@ -41044,6 +41120,7 @@ def _build_chat_request(
     chat_kwargs: dict = dict(
         messages = messages,
         stream = stream,
+        thread_id = getattr(payload, "thread_id", None),
     )
     # Forward only an explicit model so an omitted one stays reload-only.
     if "model" in payload.model_fields_set:
@@ -42219,7 +42296,6 @@ async def _responses_in_process_stream(
     # Registered by the chat handler's tracker, so a cancel by response id, thread or run
     # reaches the run just as it does on llama-server.
     chat_req.cancel_id = resp_id
-    chat_req.thread_id = getattr(payload, "thread_id", None)
     chat_req.generation_run_id = getattr(payload, "generation_run_id", None)
     source = await _InProcessChatStream.open(chat_req, request, current_subject)
     try:
@@ -42389,6 +42465,11 @@ async def _responses_stream(
         # half the client called.
         if _folds_studio_tool_history(chat_req, llama_backend):
             chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
+
+        # Facts only: this passthrough has no tool loop to offer update_memory.
+        from core.chat_memory import apply_to_request
+
+        apply_to_request(chat_req, llama_backend.context_length)
 
         # Streaming /v1/responses builds the passthrough body directly (bypassing
         # openai_chat_completions), so apply recommended sampling here too.
@@ -44123,6 +44204,8 @@ async def chat_count_tokens(
     ):
         raise HTTPException(status_code = 404, detail = "Model not found")
     # Admitted only while idle, not atomic by design; also blocks second-tab and /api runs the UI misses.
+    from core.chat_memory import apply_to_request
+
     await _route_to_extra_slot(payload.model)
     if model_slots.routed_generation_count() > 0:
         raise HTTPException(
@@ -44145,6 +44228,8 @@ async def chat_count_tokens(
             and isinstance(_tool.get("function"), dict)
         ):
             _tool["type"] = "function"
+
+    apply_to_request(payload, _monitor_context_length())
 
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_attached_image(payload):
