@@ -16,6 +16,8 @@ import {
   DEDICATED_TRANSLATE_MODELS,
   DEFAULT_TRANSLATE_MODEL,
   dedicatedTranslateModel,
+  downloadedQuant,
+  downloadedTranslateModels,
   isTranslateModelId,
   parseCustomTranslateModel,
   translateInstruction,
@@ -526,4 +528,99 @@ test("the source limit never keeps half of a surrogate pair", () => {
   assert.equal(clipText("abc", 5), "abc");
   const store = readText("../src/features/translate/translate-store.ts");
   assert.doesNotMatch(store, /\.slice\(0, TRANSLATE_SOURCE_MAX_CHARS\)/);
+});
+
+test("downloaded models offered for translation are complete text GGUFs, newest first", () => {
+  const offered = downloadedTranslateModels([
+    {
+      id: "unsloth/Qwen3-0.6B-GGUF",
+      display_name: "Qwen3-0.6B-GGUF",
+      source: "hf_cache",
+      model_format: "gguf",
+      runtime: "llama_cpp",
+      size_bytes: 396705472,
+      partial: false,
+      task: "text-generation",
+      updated_at: 1,
+    },
+    {
+      id: "unsloth/gemma-3-270m-it-GGUF",
+      display_name: "gemma-3-270m-it-GGUF",
+      source: "hf_cache",
+      model_format: "gguf",
+      runtime: "llama_cpp",
+      size_bytes: 291546144,
+      partial: false,
+      task: "text-generation",
+      updated_at: 2,
+    },
+    {
+      id: "unsloth/Hy-MT2-1.8B-GGUF",
+      display_name: "Hy-MT2-1.8B-GGUF",
+      source: "hf_cache",
+      model_format: "gguf",
+      partial: false,
+      task: "text-generation",
+    },
+    {
+      id: "unsloth/Qwen3.5-2B-GGUF",
+      display_name: "Qwen3.5-2B-GGUF",
+      source: "hf_cache",
+      model_format: "gguf",
+      partial: true,
+    },
+    {
+      id: "unsloth/gemma-3-270m-it",
+      display_name: "gemma-3-270m-it",
+      source: "hf_cache",
+      model_format: "safetensors",
+      runtime: "transformers",
+      partial: false,
+    },
+    {
+      id: "audio-cpp/Kokoro-GGUF",
+      display_name: "Kokoro-GGUF",
+      source: "hf_cache",
+      model_format: "gguf",
+      partial: false,
+      audio_type: "tts",
+    },
+    {
+      id: "/models/llama.gguf",
+      display_name: "llama",
+      source: "models_dir",
+      model_format: "gguf",
+      partial: false,
+    },
+  ]);
+  assert.deepEqual(
+    offered.map((model) => [model.id, model.name, model.fromHub]),
+    [
+      ["unsloth/gemma-3-270m-it-GGUF", "gemma-3-270m-it", true],
+      ["unsloth/Qwen3-0.6B-GGUF", "Qwen3-0.6B", true],
+      ["/models/llama.gguf", "llama", false],
+    ],
+  );
+});
+
+test("a downloaded model loads the quant already on disk, Q4_K_M when there is a choice", () => {
+  assert.deepEqual(
+    downloadedQuant([
+      { quant: "Q8_0", size_bytes: 2, downloaded: true },
+      { quant: "UD-Q4_K_XL", size_bytes: 1, downloaded: false },
+      { quant: "Q4_K_M", size_bytes: 3, downloaded: true },
+    ]),
+    { quant: "Q4_K_M", sizeBytes: 3 },
+  );
+  assert.deepEqual(
+    downloadedQuant([
+      { quant: "Q8_0", size_bytes: 2, downloaded: true },
+      { quant: "Q6_K", size_bytes: 5, downloaded: true, partial: true },
+    ]),
+    { quant: "Q8_0", sizeBytes: 2 },
+  );
+  assert.equal(
+    downloadedQuant([{ quant: "Q4_K_M", size_bytes: 3, downloaded: false }]),
+    null,
+  );
 });

@@ -168,3 +168,67 @@ export function formatModelBytes(bytes: number): string {
     ? `${gb.toFixed(1)} GB`
     : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
 }
+
+/** A downloaded model offered under "Your models": a complete GGUF that generates text. */
+export type DownloadedTranslateModel = {
+  id: string;
+  name: string;
+  sizeBytes: number | null;
+  /** In the Hugging Face cache, so the quant on disk has to be looked up before loading it. */
+  fromHub: boolean;
+};
+
+type InventoryRow = {
+  id: string;
+  model_id?: string | null;
+  display_name: string;
+  source: string;
+  model_format?: string | null;
+  runtime?: string | null;
+  size_bytes?: number;
+  partial?: boolean;
+  task?: string | null;
+  audio_type?: string | null;
+  updated_at?: number | null;
+};
+
+export const DOWNLOADED_MODELS_SHOWN = 6;
+
+export function downloadedTranslateModels(
+  rows: readonly InventoryRow[],
+): DownloadedTranslateModel[] {
+  const seen = new Set<string>();
+  return rows
+    .filter(
+      (row) =>
+        !row.partial &&
+        (row.model_format === "gguf" || row.runtime === "llama_cpp") &&
+        !row.audio_type &&
+        (!row.task || row.task === "text-generation") &&
+        !isTranslationOnlyRepo(row.model_id ?? row.id),
+    )
+    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
+    .map((row) => ({
+      id: row.model_id ?? row.id,
+      name: row.display_name.replace(/-GGUF$/i, ""),
+      sizeBytes: row.size_bytes && row.size_bytes > 0 ? row.size_bytes : null,
+      fromHub: row.source === "hf_cache",
+    }))
+    .filter((model) => !seen.has(model.id) && seen.add(model.id))
+    .slice(0, DOWNLOADED_MODELS_SHOWN);
+}
+
+/** The quant to load from what is on disk: Q4_K_M when there is a choice. */
+export function downloadedQuant(
+  variants: readonly {
+    quant: string;
+    size_bytes: number;
+    downloaded?: boolean;
+    partial?: boolean;
+  }[],
+): { quant: string; sizeBytes: number } | null {
+  const onDisk = variants.filter((v) => v.downloaded === true && !v.partial);
+  const best =
+    onDisk.find((v) => v.quant.toUpperCase() === "Q4_K_M") ?? onDisk[0];
+  return best ? { quant: best.quant, sizeBytes: best.size_bytes } : null;
+}

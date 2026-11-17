@@ -43,7 +43,11 @@ import { Textarea } from "@/components/ui/textarea";
 // Imported directly: the feature index re-exports the Audio page, kept out of this chunk.
 import { FieldLabel } from "@/features/audio/components/field";
 import { chatLocalModelOptions, useChatRuntimeStore } from "@/features/chat";
-import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
+import {
+  getInferenceStatus,
+  listGgufVariants,
+  unloadModel,
+} from "@/features/chat/api/chat-api";
 import {
   isExternalModelId,
   parseExternalModelId,
@@ -107,6 +111,9 @@ import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
   DEDICATED_TRANSLATE_MODELS,
+  type DownloadedTranslateModel,
+  downloadedQuant,
+  downloadedTranslateModels,
   type TranslateModelId,
   dedicatedTranslateModel,
   formatModelBytes,
@@ -443,6 +450,10 @@ function ModelMenu({
   // What the server holds: loaded rows, Eject, and the chat model when Chat has no pick yet.
   const [loaded, setLoaded] = useState<string[]>([]);
   const [serverChatModel, setServerChatModel] = useState<string | null>(null);
+  const ownModel =
+    value === CUSTOM_TRANSLATE_MODEL && custom && !isExternalModelId(custom.id)
+      ? custom.id
+      : null;
   // Asks for the slot serving Chat's pick, as a run does, so the Chat row names what would run.
   const refreshLoaded = useCallback(() => {
     const local = chatPick && !isExternalModelId(chatPick) ? chatPick : "";
@@ -454,13 +465,15 @@ function ModelMenu({
           active &&
             !status.is_audio &&
             !status.is_diffusion &&
-            !isTranslationHeldSlot(active, local)
+            !isTranslationHeldSlot(active, local) &&
+            // A model this page picked and loaded is not Chat's.
+            !(ownModel && modelIdsMatch(active, ownModel))
             ? active
             : null,
         );
       })
       .catch(() => undefined);
-  }, [chatPick]);
+  }, [chatPick, ownModel]);
   const chatModelId = isExternalModelId(chatPick) ? chatPick : serverChatModel;
   const chatPickName = chatModelId
     ? (externalModelLabel(chatModelId) ?? modelDisplayName(chatModelId))
@@ -494,6 +507,30 @@ function ModelMenu({
       toast.error(error instanceof Error ? error.message : String(error));
     }
   };
+  const inventory = useDeviceInventorySources(["localModels"]);
+  const refreshInventory = inventory.refresh;
+  const localRows = inventory.localModels.rows;
+  const mine = useMemo(() => downloadedTranslateModels(localRows), [localRows]);
+  const pickMine = async (model: DownloadedTranslateModel) => {
+    let variant: string | null = null;
+    let sizeBytes = model.sizeBytes;
+    if (model.fromHub) {
+      // The quant already on disk, so picking a downloaded model never starts a download.
+      const listing = await listGgufVariants(model.id, undefined, {
+        localOnly: true,
+      }).catch(() => null);
+      const onDisk = listing ? downloadedQuant(listing.variants) : null;
+      variant = onDisk?.quant ?? null;
+      sizeBytes = onDisk?.sizeBytes ?? sizeBytes;
+    }
+    onPickCustom({ id: model.id, name: model.name, variant, sizeBytes });
+  };
+  const mineValue = (id: string) => `mine:${id}`;
+  const customIsMine =
+    value === CUSTOM_TRANSLATE_MODEL &&
+    custom !== null &&
+    mine.some((model) => modelIdsMatch(model.id, custom.id));
+  const selectedValue = customIsMine && custom ? mineValue(custom.id) : value;
   const openPickerOnClose = useRef(false);
   const label =
     value === CUSTOM_TRANSLATE_MODEL
@@ -548,7 +585,10 @@ function ModelMenu({
       />
       <DropdownMenu
         onOpenChange={(open) => {
-          if (open) refreshLoaded();
+          if (open) {
+            refreshLoaded();
+            refreshInventory();
+          }
         }}
       >
         {/* The model picker's own chip, so the two read as one control across pages. */}
@@ -583,11 +623,17 @@ function ModelMenu({
             setPickerOpen(true);
           }}
         >
-          <DropdownMenuLabel>{t("translate.model.label")}</DropdownMenuLabel>
           <DropdownMenuRadioGroup
-            value={value}
-            onValueChange={(next) => isTranslateModelId(next) && onChange(next)}
+            value={selectedValue}
+            onValueChange={(next) => {
+              const picked = mine.find((model) => mineValue(model.id) === next);
+              if (picked) void pickMine(picked);
+              else if (isTranslateModelId(next)) onChange(next);
+            }}
           >
+            <DropdownMenuLabel>
+              {t("translate.model.recommended")}
+            </DropdownMenuLabel>
             {DEDICATED_TRANSLATE_MODELS.map((model) => (
               <DropdownMenuRadioItem
                 key={model.id}
@@ -617,6 +663,10 @@ function ModelMenu({
                 </span>
               </DropdownMenuRadioItem>
             ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>
+              {t("translate.model.yourModels")}
+            </DropdownMenuLabel>
             <DropdownMenuRadioItem
               value={CHAT_TRANSLATE_MODEL}
               className="items-start"
@@ -632,7 +682,30 @@ function ModelMenu({
                 </span>
               </span>
             </DropdownMenuRadioItem>
-            {custom && (
+            {mine.map((model) => (
+              <DropdownMenuRadioItem
+                key={model.id}
+                value={mineValue(model.id)}
+                className="items-start"
+              >
+                <span className="grid min-w-0 gap-0.5">
+                  <span className="truncate text-ui-13 font-medium text-foreground">
+                    {model.name}
+                  </span>
+                  <span className="text-ui-12 leading-normal text-muted-foreground">
+                    {[
+                      isLoaded(model.id)
+                        ? t("translate.model.loaded")
+                        : t("translate.model.downloaded"),
+                      formatModelBytes(model.sizeBytes ?? 0),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </span>
+              </DropdownMenuRadioItem>
+            ))}
+            {custom && !customIsMine && (
               <DropdownMenuRadioItem
                 value={CUSTOM_TRANSLATE_MODEL}
                 className="items-start"
@@ -666,7 +739,7 @@ function ModelMenu({
               openPickerOnClose.current = true;
             }}
           >
-            {t("translate.model.other")}
+            {t("translate.model.browse")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
