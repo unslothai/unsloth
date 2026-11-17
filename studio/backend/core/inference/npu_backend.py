@@ -964,10 +964,13 @@ class LemonadeNpuBackend:
         wanted = [f for f in files.files if f.name == "config.json"] if files else []
         if not wanted:
             raise NpuError(f"FastFlowLM's file list has no config.json for {tag}.")
+        files = FlmModelFiles(folder = cached, files = tuple(wanted))
         try:
-            for _ in download_files(FlmModelFiles(folder = cached, files = tuple(wanted))):
+            for _ in download_files(files, cancel = self._load_cancelled):
                 pass
             return json.loads((cached / "config.json").read_text("utf-8"))
+        except FlmDownloadCancelled as exc:
+            raise NpuLoadCancelled(f"Loading {tag}'s base model was cancelled.") from exc
         except (FlmDownloadError, OSError, ValueError) as exc:
             raise NpuError(f"Fetching {tag}'s config.json failed: {exc}") from exc
 
@@ -1237,6 +1240,12 @@ class LemonadeNpuBackend:
         """Delete every downloaded model through lemond, so its registry matches the disk."""
         # A failed pull keeps its files to resume, but lemond calls that model not downloaded.
         on_disk = {checkpoint for _, checkpoint in self.model_folders() if checkpoint is not None}
+        # Staged conversions in any catalog layout, including share/flm ones model_folders misses.
+        on_disk |= {
+            f"{path.name}:{local_q4nx.LOCAL_SIZE}"
+            for path in self._flm_model_dir.glob(f"*/{local_q4nx.LOCAL_PREFIX}*")
+            if path.is_dir()
+        }
         try:
             rows = [
                 row

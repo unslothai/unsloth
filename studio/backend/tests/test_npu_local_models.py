@@ -342,7 +342,7 @@ def test_the_base_config_is_fetched_from_the_manifests_fastflowlm_reads(tmp_path
     (share / "model_info.json").write_text(json.dumps(info), encoding = "utf-8")
     fetched = []
 
-    def download(model):
+    def download(model, cancel = None):
         fetched.extend(f.name for f in model.files)
         model.folder.mkdir(parents = True, exist_ok = True)
         (model.folder / "config.json").write_text('{"flm_version": "1.0.12"}', encoding = "utf-8")
@@ -575,3 +575,41 @@ def test_a_conversion_waits_for_a_running_download(runtime):
     runtime._downloads = 0
     runtime.load(local.id)
     runtime.unload()
+
+
+@posix_only
+def test_a_cancelled_load_stops_the_base_config_download(runtime, monkeypatch):
+    from core.inference.flm_files import FlmDownloadCancelled, FlmFile, FlmModelFiles
+
+    seen = {}
+
+    def _download(files, cancel = None):
+        seen["cancel"] = cancel
+        raise FlmDownloadCancelled("cancelled")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        nb,
+        "read_model_files",
+        lambda *_a, **_k: FlmModelFiles(
+            folder = Path("unused"),
+            files = (FlmFile(name = "config.json", url = "", size = 1, digest = "", lfs = False),),
+        ),
+    )
+    monkeypatch.setattr(nb, "download_files", _download)
+    flm = runtime._flm_binary()
+    with pytest.raises(nb.NpuLoadCancelled):
+        runtime._base_config(
+            flm, flm.parent, {"model_path": "models"}, "x:1b", {"name": "Uncached-NPU2"}
+        )
+    assert seen["cancel"] is runtime._load_cancelled
+
+
+@posix_only
+def test_bulk_delete_clears_a_staged_copy_in_any_catalog_layout(runtime):
+    staged = runtime._flm_model_dir / "share-layout" / "local-orphan-1a2b3c4d"
+    staged.mkdir(parents = True)
+    (staged / "model.q4nx").write_bytes(b"weights")
+    _deleted, errors = runtime.delete_downloaded()
+    assert errors == []
+    assert not staged.exists()
