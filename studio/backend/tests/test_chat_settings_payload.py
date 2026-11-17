@@ -350,6 +350,20 @@ def test_an_older_clients_modified_write_keeps_every_key(tmp_path, monkeypatch):
         # An older tab still open after an upgrade, with a map already saved by a current one.
         merged = studio_db.upsert_chat_settings_merge({"activePresetSource": "modified"})
         assert merged["presetEditedKeys"] == {key: True for key in PRESET_EDITED_KEYS}
+        # The same tab picks Default without a map, then a current tab edits only the prompt.
+        studio_db.upsert_chat_settings_merge({"activePresetSource": "builtin-default"})
+        merged = studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "modified", "presetEditedKeys": {}}
+        )
+        assert not any(merged["presetEditedKeys"].values())
+        # A legacy import whose browser `modified` lost to a saved Default.
+        merged = studio_db.upsert_chat_settings_merge(
+            {
+                "activePresetSource": "builtin-default",
+                "presetEditedKeys": {key: True for key in PRESET_EDITED_KEYS},
+            }
+        )
+        assert not any(merged["presetEditedKeys"].values())
     finally:
         studio_db.close_wal_keeper()
         studio_db.reset_schema_state_for_tests()
