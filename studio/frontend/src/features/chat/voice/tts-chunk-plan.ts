@@ -43,6 +43,8 @@ export function firstClauseCut(text: string): number | null {
   for (const match of text.matchAll(CLAUSE_BOUNDARY_RE)) {
     const at = match.index;
     if (/^[.!?]/.test(match[0])) return null;
+    // "July 20, 1969": the comma inside a date is no clause, and a cut there left the year alone in the next clip.
+    if (match[0] === "," && /\d$/.test(text.slice(0, at)) && /^,\s+\d{4}\b/.test(text.slice(at))) continue;
     const cut = at + match[0].length;
     if (cut > CLAUSE_MAX_CHARS) return null;
     if (at >= CLAUSE_MIN_CHARS) return cut;

@@ -123,3 +123,11 @@ test("the player adds the pause after the clip it just scheduled", () => {
   const player = readFileSync(new URL("../src/features/chat/hooks/use-tts-player.ts", import.meta.url), "utf8");
   assert.match(player, /const start = schedule\(buffer, text, entries\);\s*\/\/[^\n]*\n\s*if \(start !== null\) playHeadRef\.current \+= pauseAfterChunk\(text\) \/ 1000;/);
 });
+
+test("the comma inside a date is not a clause cut", () => {
+  // Heard in the walkthrough: "...on July twentieth," then "1969. ..." as its own clip.
+  const text = "The first moon landing happened on July 20, 1969, at night";
+  const cut = firstClauseCut(text);
+  assert.ok(cut === null || text.slice(0, cut).includes("1969"), String(cut));
+  assert.equal(firstClauseCut("Honestly I have to say, 1969 was a big year"), "Honestly I have to say,".length);
+});
