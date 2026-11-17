@@ -60,6 +60,8 @@ EXPECTED_NODES = {
     "hunyuanimage-2.1": SHIFT_NODE_SD3,
     "hidream-i1": SHIFT_NODE_SD3,
     "moss-image": SHIFT_NODE_SD3,
+    # Fixed PDD sigma grid (one output head per step): nothing to shift.
+    "minimax-h3-image": None,
     "chroma": SHIFT_NODE_SD3,  # the template's ModelSamplingAuraFlow is the same time_snr_shift
     # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima keeps its shift 3.
     "anima": None,

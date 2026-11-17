@@ -362,7 +362,7 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
 
 
 def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
-    # Unsloth's qwen3 reads content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
+    # For templates reading content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     def is_null_call(message):

@@ -42,7 +42,11 @@ import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+import {
+  type AdapterDeployRequest,
+  useImageWorkflowStore,
+} from "@/features/images/stores/image-workflow-store";
+import { type DiffusionLoraInfo, type LoraSpecInput, listDiffusionLoras } from "@/features/images/api";
 // Images' trainer already covers the video families.
 import { DiffusionTrainPanel } from "@/features/images/train/diffusion-train-panel";
 import {
@@ -121,6 +125,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -187,7 +192,7 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { ParamSlider } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   MediaGenerationPresetControl,
   type VideoGenerationPresetParams,
@@ -228,7 +233,9 @@ import {
   downloadUrlStreaming,
   isDownloadCancelled,
 } from "@/lib/native-files";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -240,7 +247,14 @@ import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
 import { videoFailureToast } from "./generation-failure";
-import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
+import {
+  defaultVideoResolution,
+  familyFirstRenderResolution,
+  keyframeSelectsMatchSource,
+  keyframeSupport,
+  matchedCanvas,
+  requestCanvas,
+} from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -263,6 +277,15 @@ import {
   referenceVideoTrimError,
   referenceVideoTrimFeedback,
 } from "./reference-trim";
+import { useVideoDeployStore } from "./video-deploy-store";
+import {
+  bakedVideoLoraSpecs,
+  trainedLoraId,
+  videoLoraCapable,
+  videoLoraReloadNeeded,
+  videoLoraSpecs,
+} from "./video-lora";
+import { VideoLoraField } from "./video-lora-field";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
@@ -531,52 +554,55 @@ function loadFraction(p: VideoLoadProgress): number | null {
   return Math.min(1, p.downloaded_bytes / p.expected_bytes);
 }
 
-function loadToastDescription(p: VideoLoadProgress) {
+function loadStatus(p: VideoLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   const frac = loadFraction(p);
   const downloading =
     p.phase === "downloading" && (frac === null || frac < 0.999);
-  const title = downloading
-    ? "Downloading model…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
-  const hasTotal = frac !== null;
+  return {
+    title: downloading
+      ? "Downloading model…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: "Loading the model. This may include downloading its base model.",
+    progressPercent: frac !== null ? frac * 100 : null,
+    progressLabel:
+      frac !== null
+        ? `${formatBytes(p.downloaded_bytes)} of ${formatBytes(p.expected_bytes ?? 0)}`
+        : p.downloaded_bytes > 0
+          ? `${formatBytes(p.downloaded_bytes)} downloaded`
+          : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: VideoLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message="Loading the model. This may include downloading its base model."
-      progressPercent={hasTotal ? frac * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.downloaded_bytes)} of ${formatBytes(p.expected_bytes ?? 0)}`
-          : p.downloaded_bytes > 0
-            ? `${formatBytes(p.downloaded_bytes)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a load in flight; the eject is hidden then.
-function loadToastArgs(
-  p: VideoLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: VideoLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -1019,6 +1045,9 @@ function RecipePopover({
           {video.text_encoder_quant ? (
             <RecipeRow label="TE quant" value={video.text_encoder_quant} />
           ) : null}
+          {video.baked_loras?.length ? (
+            <RecipeRow label="Baked" value={video.baked_loras.join(", ")} wrap />
+          ) : null}
           {video.memory_mode ? (
             <RecipeRow
               label="Memory"
@@ -1084,12 +1113,15 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+const EMPTY_LORA_CATALOG: DiffusionLoraInfo[] = [];
 type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
 type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
   displayRepoId?: string;
+  // Baked into the denoiser at load; only a pipeline load sends them.
+  loras?: LoraSpecInput[];
 };
 /** Carries the deferred loadOrStage arguments so the H3 partition choice only adds `h3Task`. */
 type PendingH3Load = {
@@ -1272,6 +1304,8 @@ function VideoGenerator({
     FALLBACK_RESOLUTION_PRESETS[0]!,
   );
   const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
+  // Set once the user picks a size or restores a clip's recipe; a family's first-render size never replaces it.
+  const resolutionChosen = useRef(false);
   const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
@@ -1329,6 +1363,9 @@ function VideoGenerator({
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
+  // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
+  const [loraSelection, setLoraSelection] = useState<LoraSpecInput[]>([]);
+  const [loraCatalog, setLoraCatalog] = useState<DiffusionLoraInfo[]>([]);
 
   const [busy, setBusy] = useState<Busy>(null);
   const [stopping, setStopping] = useState(false);
@@ -1400,7 +1437,7 @@ function VideoGenerator({
   // The page stays mounted across tab switches, so only a true unmount flips this.
   const isMounted = useRef(true);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<VideoLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
@@ -1422,21 +1459,22 @@ function VideoGenerator({
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<VideoLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  // A ref keeps onClick stable; the toast is built before handleCancelLoad exists.
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // Requests awaiting a response compare against this and discard their result.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
   const loadSeq = useRef(0);
   // begin_load refuses a second live load, so a new pick must wait for this to settle.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // The compensating unload failed, so the load is STILL running; handleUnload reports that.
   const loadTrackingRestored = useRef(false);
@@ -1691,7 +1729,7 @@ function VideoGenerator({
     [durationOptions, durationTargets, fps, frameOffset, frameStep, maxFrames, minFrames],
   );
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution = resolutionPresets[0] ?? [768, 512];
+    const resolution = defaultVideoResolution(status?.defaults, resolutionPresets) ?? [768, 512];
     const recommended =
       pendingModelDefaults ??
       (defaultSteps != null && defaultGuidance != null
@@ -1716,7 +1754,7 @@ function VideoGenerator({
       audioFlowShift: defaultAudioFlowShift,
       fps: presetFps(null),
     };
-  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.defaults, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
@@ -1801,15 +1839,17 @@ function VideoGenerator({
     [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
-  // Select "match source" only after the staged keyframe passes the aspect-ratio check.
+  // Select "match source" only after the staged keyframe passes the aspect-ratio check, and only for a family
+  // whose keyframes do not keep the chosen canvas.
+  const autoMatchSource = keyframeSelectsMatchSource(status?.defaults);
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
     const has = canvasSource != null;
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setMatchSource(has);
-  }, [canvasSource, matchedResolution]);
+    setMatchSource(has && autoMatchSource);
+  }, [autoMatchSource, canvasSource, matchedResolution]);
 
   const prevFamilyRef = useRef<string | null>(null);
   const prevFpsRef = useRef(fps);
@@ -1824,6 +1864,16 @@ function VideoGenerator({
       videoPresets.storedRecipe,
       pickRecipeSuperseded.current?.() ?? false,
     );
+    if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {
+      // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
+      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      if (firstSize) {
+        setResolutionIntent(firstSize);
+        const matched = matchAspect(firstSize[0], firstSize[1]);
+        setAspect(matched.key);
+        setPortrait(matched.portrait);
+      }
+    }
     if (familyChanged && loadedFamily) familySeeded.current = true;
     if (familyChanged && loadedFamily && familyDefaultFrames && applyFamilyDefault) {
       const option =
@@ -1845,6 +1895,8 @@ function VideoGenerator({
     familyDefaultFrames,
     fps,
     loadedFamily,
+    resolutionPresets,
+    status?.defaults,
     videoPresets.storedRecipe,
   ]);
 
@@ -2472,6 +2524,7 @@ function VideoGenerator({
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
       const size = fitVideoSize(video.width, video.height, sizeLimits);
+      resolutionChosen.current = true;
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
       setAspect(matched.key);
@@ -2514,6 +2567,8 @@ function VideoGenerator({
 
   // null when the read failed or was superseded.
   const refreshStatus = useCallback(async (): Promise<VideoStatus | null> => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       const next = await getVideoStatus();
@@ -2699,16 +2754,16 @@ function VideoGenerator({
         return;
       }
       const sig = `${p.phase}:${p.downloaded_bytes}:${p.expected_bytes ?? 0}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor]);
 
   // The unload failed so the load still runs; restore its poll and toast. refreshStatus cannot,
   // since a first load is not resident yet.
@@ -2716,9 +2771,9 @@ function VideoGenerator({
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   const stopGenPoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -2741,7 +2796,7 @@ function VideoGenerator({
         if (p.phase === "completed" || p.phase === "failed") {
           stopGenPoll();
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
           if (p.phase === "completed" && p.video) {
             // Sorted, not prepended: a new clip is unpinned and goes after the pinned group.
@@ -2785,12 +2840,12 @@ function VideoGenerator({
       await refreshStatus();
       // Loads run on a backend daemon thread that survives navigation, so resume tracking.
       try {
-        const p = await getVideoLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getVideoLoadProgress());
         if (p.phase === "downloading" || p.phase === "finalizing") {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         }
       } catch {
@@ -2799,7 +2854,7 @@ function VideoGenerator({
       setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       try {
-        const g = await getVideoGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getVideoGenerateProgress);
         if (g.active) {
           setBusy("generating");
           setGenStep(g.phase === "queued" ? null : g);
@@ -2829,7 +2884,7 @@ function VideoGenerator({
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, cancelLoadFromToast]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, ensureThumbnail, loadToast]);
 
   // Stable because route effects depend on loadOrStage.
   const loadControlsRef = useRef({
@@ -2932,8 +2987,7 @@ function VideoGenerator({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // A load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -2951,8 +3005,8 @@ function VideoGenerator({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -2970,6 +3024,8 @@ function VideoGenerator({
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
+          // Absent unless a pipeline load names an adapter, so a plain load sends what it did before.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
           gpu_ids: advanced.gpu_ids,
           allow_oversized_load: advanced.allow_oversized_load,
         });
@@ -3013,7 +3069,7 @@ function VideoGenerator({
       pollLoadProgress,
       refreshStatus,
       dismissLoadToast,
-      cancelLoadFromToast,
+      loadToast,
       canReapply,
       currentLoadAdvanced,
       pickToast,
@@ -3135,6 +3191,8 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
           // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
           allow_oversized_load: advanced.allow_oversized_load,
+          // A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
         });
         // Superseded; report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -3415,9 +3473,11 @@ function VideoGenerator({
         filename: l.filename,
         h3Task: l.h3Task,
         displayRepoId: l.displayRepoId,
+        // The picker's current selection: adapters merge at load, so Reapply is how a new set takes.
+        loras: l.kind === "pipeline" ? videoLoraSpecs(loraSelection) : undefined,
       });
     }
-  }, [handleLoad]);
+  }, [handleLoad, loraSelection]);
 
   // Every pick supersedes the last: a staged download outlives its pick and plans may be in flight.
   const beginPick = useCallback(() => {
@@ -3594,35 +3654,129 @@ function VideoGenerator({
     ],
   );
 
+  // Load-time LoRAs: the picker reseeds from what each new resident build baked, so a plain pick clears it.
+  const loraCapable = videoLoraCapable(status);
+  const loraFamily = loraCapable ? (status?.family ?? null) : null;
+  const bakedLoraSpecs = useMemo(() => bakedVideoLoraSpecs(status), [status]);
+  const bakedLoraKey = `${status?.loaded ? (status.repo_id ?? "") : ""}|${JSON.stringify(bakedLoraSpecs)}`;
+  const [seededLoraKey, setSeededLoraKey] = useState(bakedLoraKey);
+  if (seededLoraKey !== bakedLoraKey) {
+    setSeededLoraKey(bakedLoraKey);
+    setLoraSelection(bakedLoraSpecs);
+  }
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (!loraCapable) return;
+    let cancelled = false;
+    listDiffusionLoras(loraFamily ?? undefined)
+      .then((list) => {
+        if (!cancelled) setLoraCatalog(list);
+      })
+      .catch(() => {
+        // Only the suggestions go: a typed id still loads.
+        if (!cancelled) setLoraCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loraCapable, loraFamily, trainingCompletions]);
+  const loraReloadNeeded = loraCapable && videoLoraReloadNeeded(loraSelection, status);
+
+  // Deploy from a Train panel: load the family's base with the adapter baked in, as a fresh pick.
+  const handleDeployVideoAdapter = useCallback(
+    (args: AdapterDeployRequest) => {
+      if (busy !== null) {
+        toast.error("Finish the current model load before deploying the adapter.");
+        return;
+      }
+      const loraId = trainedLoraId(args.catalogPath);
+      if (!loraId || !args.baseRepo) {
+        toast.error("Could not resolve the trained adapter or its base model.");
+        return;
+      }
+      setPageMode("create");
+      if (args.trigger.trim()) setPrompt(args.trigger.trim());
+      beginPick();
+      const token = pickGuard.claim();
+      setFamilyOverride("auto");
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
+      setQuant(null);
+      applyVideoModelDefaults(args.baseRepo, "auto");
+      const deployLoras: LoraSpecInput[] = [{ id: loraId, weight: 1 }];
+      setLoraSelection(deployLoras);
+      const opts: VideoLoadOptions = { kind: "pipeline", loras: deployLoras };
+      if (isH3PipelinePick(args.baseRepo, "pipeline")) {
+        setPendingH3Load({ repoId: args.baseRepo, opts, source: "hub", token, familyOverrideRequired: false });
+        return;
+      }
+      void loadOrStage(args.baseRepo, opts, "hub", token).then((started) => {
+        if (!started && pickGuard.holds(token)) {
+          setLoraSelection(bakedLoraSpecs);
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
+    },
+    [
+      applyVideoModelDefaults,
+      bakedLoraSpecs,
+      beginPick,
+      busy,
+      guidance,
+      loadOrStage,
+      pickGuard,
+      quant,
+      revertPick,
+      setFamilyOverride,
+      steps,
+    ],
+  );
+  const deployRequest = useVideoDeployStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployRequest) return;
+    const request = useVideoDeployStore.getState().takeDeploy();
+    if (request) handleDeployVideoAdapter(request);
+  }, [active, deployRequest, handleDeployVideoAdapter]);
+
   // True only when the backend accepted the unload.
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, or the older handler skips its compensating unload
-      // and leaves a large load running with no cancel.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+    const unload = async (): Promise<boolean> => {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, or the older handler skips its compensating unload
+        // and leaves a large load running with no cancel.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Restored tracking means the compensating unload failed and the load still runs.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Restored tracking means the compensating unload failed and the load still runs.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    };
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // A restore during the wait set "loading" deliberately; keep its Cancel controls.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // Cancelling a load IS the unload; only cache remains, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -3639,8 +3793,8 @@ function VideoGenerator({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const handleCancelGenerate = useCallback(async () => {
     setStopping(true);
@@ -3656,6 +3810,7 @@ function VideoGenerator({
   const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
   const applySize = (width: number, height: number, keepAspect = false) => {
     const size = fitVideoSize(width, height, sizeLimits);
+    resolutionChosen.current = true;
     setResolutionIntent(size);
     setMatchSource(false);
     if (keepAspect) return;
@@ -3757,8 +3912,7 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: sourceSized ? undefined : videoSize[0],
-        height: sourceSized ? undefined : videoSize[1],
+        ...requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource),
         num_frames: numFrames,
         fps,
         steps,
@@ -4090,7 +4244,8 @@ function VideoGenerator({
               activeGgufVariant={quant}
               onValueChange={handleModelSelect}
               resolveDownloadFootprint={resolveDownloadFootprint}
-              onEject={status?.loaded ? handleUnload : undefined}
+              loaded={busy === "unloading" ? false : undefined}
+              onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
               variant="ghost"
               className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={VIDEO_GEN_TASKS}
@@ -4121,6 +4276,9 @@ function VideoGenerator({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
@@ -4174,6 +4332,7 @@ function VideoGenerator({
               useImageWorkflowStore.getState().requestDeploy(args);
               void navigateToImages({ to: "/images" });
             }}
+            onDeployVideo={handleDeployVideoAdapter}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -4302,7 +4461,7 @@ function VideoGenerator({
                   </div>
                 )}
               </div>
-              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && autoMatchSource && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
@@ -4858,6 +5017,18 @@ function VideoGenerator({
               onChange={(e) => setSeed(e.target.value)}
             />
           </Field>
+
+          {loraCapable && (
+            <VideoLoraField
+              catalog={loraCapable ? loraCatalog : EMPTY_LORA_CATALOG}
+              selection={loraSelection}
+              onSelectionChange={setLoraSelection}
+              baked={status?.baked_loras ?? []}
+              reloadNeeded={loraReloadNeeded}
+              reloadDisabled={busy !== null || !canReapply}
+              onReload={handleReapply}
+            />
+          )}
 
           <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
             {advancedControls}

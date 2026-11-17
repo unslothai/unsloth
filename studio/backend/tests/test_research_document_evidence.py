@@ -74,6 +74,7 @@ def _synthesis_prompt(
     knowledge_base,
     context_length = None,
     query = "pump",
+    max_sources = 100,
 ) -> str:
     from core import research_runs as worker
 
@@ -92,7 +93,7 @@ def _synthesis_prompt(
             "question": "how does the pump work?",
             "budgets": {
                 "maxSteps": STEPS,
-                "maxSources": 100,
+                "maxSources": max_sources,
                 "modelTimeoutSeconds": 900,
                 "toolTimeoutSeconds": 10,
             },
@@ -138,6 +139,39 @@ def test_every_step_keeps_its_top_document_passage_in_the_report_prompt(research
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
 
 
+def test_web_results_do_not_use_up_the_room_for_document_passages(research_home, monkeypatch):
+    prompt = _synthesis_prompt(monkeypatch, _knowledge_base_results, max_sources = 40)
+
+    assert all(f"manual-fact-{step}" in prompt for step in range(STEPS))
+    assert all(f"Chunk ID: chunk-{step}\n" in prompt for step in range(STEPS))
+    assert len(research_db.get_run("run-1")["sources"]) == 40
+
+
+def test_small_context_keeps_passages_when_both_catalogs_fill(research_home, monkeypatch):
+    def distinct_chunks(step):
+        sources = [
+            {
+                "chunkId": f"{index:08d}-1111-4222-8333-444455556666",
+                "documentId": "9b2f6c1e-7d4a-4f0b-9c3e-2a1b5d6e7f80",
+                "filename": "manual.pdf",
+                "page": index + 1,
+                "text": _passage(index),
+            }
+            for index in range(step * 5, step * 5 + 5)
+        ]
+        return (
+            "\n\n".join(source["text"] for source in sources)
+            + RAG_SOURCES_SENTINEL
+            + json.dumps(sources)
+        )
+
+    prompt = _synthesis_prompt(monkeypatch, distinct_chunks, context_length = 8_192, max_sources = 40)
+
+    assert all(f"web-{step}-0" in prompt for step in range(STEPS))
+    assert "https://example.test/0/0" in prompt
+    assert "Chunk ID: 00000000-1111-4222-8333-444455556666" in prompt
+
+
 def test_web_results_keep_their_room_when_the_documents_match_nothing(research_home, monkeypatch):
     prompt = _synthesis_prompt(
         monkeypatch, lambda _step: "No matching chunks were found in the knowledge base."
@@ -157,3 +191,14 @@ def test_small_context_keeps_web_results_when_the_documents_match_nothing(
     )
 
     assert all(f"web-{step}-0" in prompt for step in range(STEPS))
+
+
+def test_web_only_catalog_is_not_trimmed(research_home, monkeypatch):
+    prompt = _synthesis_prompt(
+        monkeypatch,
+        lambda _step: "No matching chunks were found in the knowledge base.",
+        context_length = 4_096,
+    )
+
+    catalog = prompt.split("<source_catalog>\n", 1)[1].split("</source_catalog>", 1)[0]
+    assert catalog.count("URL: ") == len(research_db.get_run("run-1")["sources"])

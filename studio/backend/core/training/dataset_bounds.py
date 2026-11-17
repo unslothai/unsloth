@@ -240,3 +240,15 @@ def bound_dataset_rows(
     if on_bound is not None:
         on_bound(max_train_rows, total_rows)
     return bounded
+
+
+def slice_dataset_rows(dataset, start: Optional[int], end: Optional[int]):
+    """Rows [start, end] inclusive, end clamped to the last row; returns (rows, start, end)."""
+    total = len(dataset)
+    start = max(0, start or 0)
+    if start >= total:
+        raise ValueError(
+            f"Train Split Start {start} is past the last row of this dataset ({total} rows)."
+        )
+    end = max(start, min(total - 1 if end is None else end, total - 1))
+    return dataset.select(range(start, end + 1)), start, end

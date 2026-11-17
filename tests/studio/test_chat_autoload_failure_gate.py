@@ -65,6 +65,32 @@ def _load_request_source() -> str:
     return source
 
 
+# Inlined, not stubbed: auto-load admits another cache's snapshot rows by this picker rule.
+LOCAL_PATH = _source_path("studio/frontend/src/lib/local-path.ts")
+LOCAL_CACHE_SNAPSHOT = _source_path(
+    "studio/frontend/src/features/model-picker/inventory/local-cache-snapshot.ts"
+)
+
+
+def _local_cache_snapshot_source() -> str:
+    """looksLikeLocalPath and isOtherCacheSnapshot, as shipped."""
+    path_source = "\n".join(
+        line
+        for line in LOCAL_PATH.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith("import ")
+    )
+    assert "export function looksLikeLocalPath(" in path_source
+    match = re.search(
+        r"^export function isOtherCacheSnapshot\(.*?^}\n",
+        LOCAL_CACHE_SNAPSHOT.read_text(encoding = "utf-8"),
+        re.S | re.M,
+    )
+    assert (
+        match
+    ), "isOtherCacheSnapshot is no longer a top-level function in local-cache-snapshot.ts"
+    return path_source + "\n" + match.group(0)
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -434,6 +460,9 @@ function offloadWarning(counts: any) {
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
   return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
+}
+function expertSpillNote(_counts: any) {
+  return null;
 }
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
@@ -932,7 +961,13 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
+    preamble = (
+        PREAMBLE
+        + PONYFILLS
+        + _wait_gate_source()
+        + _load_request_source()
+        + _local_cache_snapshot_source()
+    )
     missing = sorted(
         name
         for name in imported

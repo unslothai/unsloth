@@ -700,6 +700,19 @@ function MermaidCopyButton({ source }: { source: string }) {
   );
 }
 
+/** A block's own wrap and expand choices, by language and code: the thread window remounts rows
+ *  it scrolls back to, and the choices would otherwise reset with the component. */
+const blockViews = new Map<string, { wrapped?: boolean; expanded?: boolean }>();
+const BLOCK_VIEWS_MAX = 500;
+
+function rememberBlockView(key: string | null, view: { wrapped?: boolean; expanded?: boolean }) {
+  if (key === null) return;
+  const next = { ...blockViews.get(key), ...view };
+  blockViews.delete(key);
+  blockViews.set(key, next);
+  if (blockViews.size > BLOCK_VIEWS_MAX) blockViews.delete(blockViews.keys().next().value as string);
+}
+
 export function CodeBlockActions({
   disabled,
   language,
@@ -714,12 +727,23 @@ export function CodeBlockActions({
 }) {
   const { copied, showCopied } = useCopiedState();
   const actionsRef = useRef<HTMLDivElement>(null);
+  const viewKey = wrappable && typeof source === "string" ? `${language ?? ""}\n${source}` : null;
+  const remembered = viewKey === null ? undefined : blockViews.get(viewKey);
   // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
   const [wrapped, setWrapped] = useState(
-    () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
+    () =>
+      remembered?.wrapped ??
+      (typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap")),
   );
   const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(() => remembered?.expanded ?? false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: restores a remembered view once, on mount
+  useLayoutEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrapper || !remembered) return;
+    if (remembered.wrapped !== undefined) wrapper.setAttribute("data-wrap", remembered.wrapped ? "on" : "off");
+    if (remembered.expanded) wrapper.toggleAttribute("data-code-expanded", true);
+  }, []);
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const wrapper = actionsRef.current?.parentElement;
@@ -759,6 +783,7 @@ export function CodeBlockActions({
             const next = !wrapped;
             // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
             actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            rememberBlockView(viewKey, { wrapped: next });
             setWrapped(next);
           }}
         >
@@ -773,6 +798,7 @@ export function CodeBlockActions({
           onClick={() => {
             const next = !expanded;
             actionsRef.current?.parentElement?.toggleAttribute("data-code-expanded", next);
+            rememberBlockView(viewKey, { expanded: next });
             setExpanded(next);
           }}
         >

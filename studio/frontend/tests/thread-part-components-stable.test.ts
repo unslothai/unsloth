@@ -36,7 +36,7 @@ test("the assistant part components are a single module-scope object", () => {
   );
   assert.match(
     THREAD_SOURCE,
-    /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>/,
+    /<MessagePrimitive\.Parts\s+components=\{ASSISTANT_PART_COMPONENTS\}\s+unstable_showEmptyOnNonTextEnd=\{false\}\s*\/>/,
     "MessagePrimitive.Parts must be given the hoisted constant by name",
   );
 });

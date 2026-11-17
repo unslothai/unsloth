@@ -61,6 +61,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedContextEnforced: null,
     loadedContextUnboundedWhenBatched: false,
     loadedParallelSlots: null,
+    loadedNpuContextFit: null,
     loadedContextBudget: null,
   });
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -72,6 +73,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedContextEnforced: null,
     loadedContextUnboundedWhenBatched: false,
     loadedParallelSlots: null,
+    loadedNpuContextFit: null,
     loadedContextBudget: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);

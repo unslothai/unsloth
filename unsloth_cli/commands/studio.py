@@ -377,23 +377,45 @@ def _openable_host_for_bind(run_mod, host: str) -> str:
     return share_host
 
 
+_SSL_CERTFILE_ENV = "UNSLOTH_STUDIO_SSL_CERTFILE"
+_SSL_KEYFILE_ENV = "UNSLOTH_STUDIO_SSL_KEYFILE"
+
+
+def _tls_pair_from_env(
+    ssl_certfile: Optional[Path], ssl_keyfile: Optional[Path]
+) -> tuple[Optional[Path], Optional[Path], bool]:
+    """The env pair, only when neither flag is given. Never for the Desktop backend: its shell talks plain HTTP to it."""
+    if ssl_certfile is not None or ssl_keyfile is not None:
+        return ssl_certfile, ssl_keyfile, False
+    if os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri":
+        return None, None, False
+    cert = os.environ.get(_SSL_CERTFILE_ENV, "").strip()
+    key = os.environ.get(_SSL_KEYFILE_ENV, "").strip()
+    return (Path(cert) if cert else None), (Path(key) if key else None), bool(cert or key)
+
+
 def _require_valid_tls_flags(
     ssl_certfile: Optional[Path],
     ssl_keyfile: Optional[Path],
     *,
     secure: bool,
     cloudflare: Optional[bool],
+    from_env: bool = False,
 ) -> None:
     """Fail on a bad --ssl-certfile/--ssl-keyfile launch before the password gate can change or strip credentials.
     run_server re-checks the same rules (utils/studio_tls.py) for direct `run.py` callers."""
     if ssl_certfile is None and ssl_keyfile is None:
         return
+    cert_name, key_name = (
+        (_SSL_CERTFILE_ENV, _SSL_KEYFILE_ENV) if from_env else ("--ssl-certfile", "--ssl-keyfile")
+    )
     if ssl_certfile is None or ssl_keyfile is None:
-        typer.echo("Error: --ssl-certfile and --ssl-keyfile must be passed together.", err = True)
+        verb = "set" if from_env else "passed"
+        typer.echo(f"Error: {cert_name} and {key_name} must be {verb} together.", err = True)
         raise typer.Exit(2)
     if secure or cloudflare:
         typer.echo(
-            "Error: --ssl-certfile/--ssl-keyfile serve HTTPS directly; do not combine them "
+            f"Error: {cert_name}/{key_name} serve HTTPS directly; do not combine them "
             "with --secure or --cloudflare.",
             err = True,
         )
@@ -1700,6 +1722,7 @@ def _load_model_via_http(
     engine_precision: str = "auto",
     engine_parallelism: str = "tensor",
     gpu_ids: Optional[List[int]] = None,
+    engram_precision: Optional[str] = None,
 ) -> dict:
     import json
     import urllib.request
@@ -1714,6 +1737,8 @@ def _load_model_via_http(
     }
     if gguf_variant:
         payload["gguf_variant"] = gguf_variant
+    if engram_precision:
+        payload["engram_precision"] = engram_precision
     if gpu_memory_mode == "manual":
         payload["gpu_memory_mode"] = "manual"
         payload["gpu_layers"] = -1
@@ -1946,7 +1971,8 @@ def studio_default(
         None,
         "--ssl-certfile",
         help = "Serve HTTPS with this certificate (PEM, full chain), e.g. a Tailscale or "
-        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare.",
+        "Let's Encrypt .crt. Needs --ssl-keyfile. Not combinable with --secure / --cloudflare. "
+        "Without either flag, UNSLOTH_STUDIO_SSL_CERTFILE + UNSLOTH_STUDIO_SSL_KEYFILE are used.",
     ),
     ssl_keyfile: Optional[Path] = typer.Option(
         None,
@@ -2053,7 +2079,10 @@ def studio_default(
         return
 
     _require_bind_host(host)
-    _require_valid_tls_flags(ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare)
+    ssl_certfile, ssl_keyfile, tls_from_env = _tls_pair_from_env(ssl_certfile, ssl_keyfile)
+    _require_valid_tls_flags(
+        ssl_certfile, ssl_keyfile, secure = secure, cloudflare = cloudflare, from_env = tls_from_env
+    )
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     runtime_gate_acquire = _studio_runtime_gate.consume_runtime_gate_acquire()
     _preserve_cloudflare_intent(cloudflare, secure)
@@ -2368,6 +2397,16 @@ def run(
         "--gguf-variant",
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "GGUF quant variant (e.g. UD-Q4_K_XL)",
+    ),
+    engram: Optional[str] = typer.Option(
+        None,
+        "--engram",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Engram table precision for a GGUF repo that publishes standalone tables "
+            "(e.g. Q8_0, MXFP8 or BF16), used in place of the quant's own table. It is "
+            "downloaded on first use. Default: the table the quant ships with."
+        ),
     ),
     verbose: bool = typer.Option(
         False,
@@ -2756,6 +2795,13 @@ def run(
             err = True,
         )
         raise typer.Exit(2)
+    if engram and (npu_path or engine != "auto" or not gguf_variant):
+        typer.echo(
+            "Error: --engram applies to a GGUF quant of a Hugging Face repo; name one with "
+            "--model repo:QUANT or --gguf-variant.",
+            err = True,
+        )
+        raise typer.Exit(2)
     if engine == "auto" and engine_parallelism != "tensor":
         typer.echo(
             "Error: --engine-parallelism applies only to --engine vllm or --engine sglang.",
@@ -2887,6 +2933,8 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        if engram:
+            args.extend(["--engram", engram])
         if speculative_type is not None:
             args.extend(["--speculative-type", speculative_type])
         if spec_draft_n_max is not None:
@@ -3047,6 +3095,7 @@ def run(
                 engine_precision = engine_precision,
                 engine_parallelism = engine_parallelism,
                 gpu_ids = gpu_ids,
+                engram_precision = engram,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)

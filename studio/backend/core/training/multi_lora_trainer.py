@@ -23,6 +23,19 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+# Copied from unsloth.models._utils.EMBEDDING_MODULES, not imported, so the route never loads unsloth.
+_EMBEDDING_TARGETS = frozenset(("embed_tokens", "lm_head"))
+
+
+def embedding_targets(target_modules) -> list[str]:
+    """Targets the single job trains fully (modules_to_save); batched LoRA cannot."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    return [
+        m
+        for m in target_modules or ()
+        if isinstance(m, str) and m.rsplit(".", 1)[-1] in _EMBEDDING_TARGETS
+    ]
 
 
 @dataclass
@@ -560,15 +573,12 @@ class _MemberLossScale:
         self.good_steps = [0] * members
         self.growth_interval = growth_interval
 
-    def scale_backward(self, logits, adapter_ids):
-        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+    def grad_scale(self, adapter_ids, device):
+        """GradScaler's loss scaling per row or token, in fp32: a logit's gradient comes only from its member's loss."""
         import torch
 
-        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
-        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
-        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
-        logits.register_hook(lambda grad: grad * per_token)
-        return logits
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = device)
+        return scale[adapter_ids.to(device).clamp_min(0)]
 
     def unscale_(self, slot: int, params: list) -> bool:
         """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
@@ -904,6 +914,12 @@ def _finish_stopped(event_queue, members, save: bool, export) -> None:
 
 
 def _run(event_queue, stop_queue, config: dict, members: list) -> None:
+    embedding = embedding_targets(config.get("target_modules"))
+    if embedding:
+        raise ValueError(
+            f"Batched LoRA training cannot train {embedding}: they train fully on their own, so run "
+            "these jobs one at a time."
+        )
     from core.import_guards import ensure_real_packages
 
     ensure_real_packages("unsloth_zoo", "unsloth")
@@ -1344,8 +1360,6 @@ def _build_sft_trainer(
                     attention_mask = inputs["attention_mask"],
                     use_cache = False,
                 ).logits
-            if self.loss_scale is not None:
-                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1353,6 +1367,9 @@ def _build_sft_trainer(
                 U,
                 model = self.model,
                 num_items_in_batch = num_items_in_batch,
+                grad_scale = None
+                if self.loss_scale is None
+                else self.loss_scale.grad_scale(ids, logits.device),
             )
             self.round_losses += per.detach().float().cpu()
             return loss
