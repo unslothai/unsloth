@@ -8385,7 +8385,7 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
         variant = (local[1] or variant) if named else None
         load_path = local[0]
         alias = local[2] or alias
-    _, override = await asyncio.to_thread(resolve_override_for_load, load_path, alias, variant)
+    key, override = await asyncio.to_thread(resolve_override_for_load, load_path, alias, variant)
     if not override:
         return request
     is_gguf = await asyncio.to_thread(local_target_is_gguf, load_path, alias)
@@ -8409,7 +8409,9 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if not fill:
         return request
     filled = LoadRequest(**request.model_dump(exclude_unset = True), **fill)
-    filled._override_alias_id = alias
+    filled.__pydantic_private__ = dict(request.__pydantic_private__ or {})
+    # Replay and the managed path check re-read the row by this alias: a repo id misses a snapshot-keyed one.
+    filled._override_alias_id = key or alias
     return filled
 
 
@@ -18215,16 +18217,20 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    if request.use_saved_settings:
-        request = await _with_saved_settings(request)
     named = request.model_path
     if _resolve_trained_run_request(request):
         # keeps the job's name as the served id, so chat and /v1/models answer to it
         request._advertised_id = request._advertised_id or named
-    return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
-        label = "Model load",
-    )
+
+    async def _load(request):
+        # Inside the padded call: a cold index makes the saved-settings lookup scan every model folder.
+        if request.use_saved_settings:
+            request = await _with_saved_settings(request)
+        return await load_model_gated(
+            request, fastapi_request, current_subject, user_initiated = True
+        )
+
+    return await _tunnel_safe_json(_load(request), label = "Model load")
 
 
 def _repo_is_in_the_hub_cache(model_ref) -> Optional[bool]:

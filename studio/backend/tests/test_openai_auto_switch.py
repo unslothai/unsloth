@@ -3524,6 +3524,64 @@ def test_the_load_route_applies_saved_settings_only_when_asked(monkeypatch):
     assert loaded == [None, "q8_0"]
 
 
+def test_saved_settings_resolve_inside_the_padded_load(monkeypatch):
+    order = []
+
+    async def _fill(request):
+        order.append("saved")
+        return request
+
+    async def _gated(request, *args, **kwargs):
+        return {}
+
+    async def _padded(coro, *, label):
+        order.append("padded")
+        return await coro
+
+    monkeypatch.setattr(inference_route, "_with_saved_settings", _fill)
+    monkeypatch.setattr(inference_route, "load_model_gated", _gated)
+    monkeypatch.setattr(inference_route, "_tunnel_safe_json", _padded)
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True)
+    asyncio.run(inference_route.load_model(request, None, "owner"))
+    assert order == ["padded", "saved"]
+
+
+def test_settings_filled_from_a_snapshot_keyed_row_are_not_replayed(monkeypatch):
+    snapshot = "/cache/models--org--A-GGUF/snapshots/rev"
+    saved = {"custom_context_length": 100000, "kv_cache_dtype": "q8_0"}
+
+    def _resolve(
+        load_id,
+        alias_id = None,
+        variant = None,
+    ):
+        if snapshot in settings.override_lookup_candidates(load_id, alias_id, variant):
+            return snapshot, dict(saved)
+        return None, {}
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", _resolve)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda *a, **k: (snapshot, None, "org/A-GGUF")
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    request = LoadRequest(model_path = "org/A-GGUF", n_parallel = 2, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.max_seq_length, filled.cache_type_kv) == (100000, "q8_0")
+    backend = types.SimpleNamespace()
+    inference_route._note_replay_launch(backend, filled)
+    # A reset saved setting must not come back from the idle-unload replay.
+    assert backend.replay_launch == {"n_parallel": 2}
+
+
+def test_filling_saved_settings_keeps_the_request_private_state(monkeypatch):
+    _saved(monkeypatch, {"kv_cache_dtype": "q8_0"})
+    request = LoadRequest(model_path = "/runs/job-1", use_saved_settings = True)
+    request._advertised_id = "job-1"
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.cache_type_kv, filled._advertised_id) == ("q8_0", "job-1")
+
+
 def test_managed_caller_may_reload_the_owners_idle_freed_projector(monkeypatch):
     _idle_unload_a_custom_launch(
         monkeypatch, launch = {"llama_extra_args": ["--mmproj", "/owner/p.gguf"]}
