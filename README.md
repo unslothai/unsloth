@@ -216,7 +216,7 @@ unsloth studio --secure
 ```
 
 #### Remote HTTPS & LAN Access
-Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
+For the `unsloth studio` launcher, server-side tools are enabled by default for every bind, so **be careful** when exposing Unsloth. Use `--disable-tools` as an absolute server-wide off switch. Without an explicit CLI override, a request can still opt out with `enable_tools: false`; the launcher no longer uses a bind-dependent confirmation prompt.
 
 **Global HTTPS Access**:
 Creates a free Cloudflare link that serves Unsloth - you can access the link globally (even on your phone!)
