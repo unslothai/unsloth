@@ -2708,7 +2708,6 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      {/* 16px off the window foot, as t3code and zeron dock theirs. */}
       <div
         ref={dockInnerRef}
         className="unsloth-composer-dock-inner relative pb-[calc(1rem*var(--ui-space-scale,1))]"

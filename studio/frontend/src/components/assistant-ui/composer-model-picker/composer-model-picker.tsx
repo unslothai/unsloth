@@ -2782,7 +2782,7 @@ export function ComposerModelPicker({
       setExpanded(true);
     }
   }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
-  // A connected model is never loaded, but ejecting it clears the pick (ejectModel), as the header picker did.
+  // Never loaded, but ejectModel clears a connected pick.
   const chosenExternal =
     !pane && Boolean(checkpoint && isExternalModelId(checkpoint));
   const chosenEjectable = chosenLoaded || chosenExternal;
@@ -5124,14 +5124,14 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
-          // The list view fits its rows (useAnimatedListHeight glides tab changes); the size is only a cap.
+          // The list view fits its rows; useAnimatedListHeight glides tab changes.
           configTarget
             ? "h-(--composer-picker-h)"
             : isExpanded &&
                 "min-h-[min(calc(240px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Capped at the room on its own side, as zeron does, so opening down it never rides up over the composer.
+          // The room on its side, so opening down it never rides up over the composer.
           "max-h-[min(var(--composer-picker-h),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {

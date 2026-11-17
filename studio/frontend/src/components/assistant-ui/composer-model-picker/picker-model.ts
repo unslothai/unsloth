@@ -476,11 +476,7 @@ export function pickerWidth(
   );
 }
 
-/**
- * How far the page is zoomed out (1 at 100% or zoomed in). The caps grow by it, so zooming out keeps the
- * picker's on-screen size while a big monitor at 100% stays capped. Browser zoom shrinks only the CSS
- * width (outerWidth stays in screen px); the desktop app zooms its webview to the interface scale.
- */
+/** Zoom-out factor (1 at 100% or zoomed in): browser zoom moves innerWidth but not outerWidth; the app zooms its webview. */
 export function pickerZoomOut(
   innerWidth: number,
   outerWidth: number,
