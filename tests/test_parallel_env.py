@@ -921,7 +921,9 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             pp_q = _q(pp = 2, pp_schedule = schedule, router_aux_loss = aux, **moe_q)
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
-    with pytest.raises(NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE only"):
+    with pytest.raises(
+        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+    ):
         caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "gpt_oss"}))
     with pytest.raises(NotImplementedError, match = r"^Unsloth: pp x schedule"):
         caps.check(_q(pp = 2, pp_schedule = "interleaved", **moe_q))
@@ -1253,7 +1255,7 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         config = types.SimpleNamespace(output_router_logits = True), router_aux_loss_coef = 0.01
     )
     stage = types.SimpleNamespace(
-        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner)),
+        ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner, config = owner.config)),
         env_layout = None,
         num_stages = 2,
     )
@@ -1261,6 +1263,16 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         pp_env._refuse_split_router_aux(stage, 2)
     pp_env._refuse_split_router_aux(stage, 1)
     owner.config.output_router_logits = False
+    pp_env._refuse_split_router_aux(stage, 2)
+
+    # A wrapper keeps both settings on its text_config.
+    text = types.SimpleNamespace(output_router_logits = True, router_aux_loss_coef = 0.01)
+    wrapper = type("Qwen4ExpForConditionalGeneration", (), {})()
+    wrapper.config = types.SimpleNamespace(text_config = text)
+    stage.ctx.moe = types.SimpleNamespace(owner = wrapper, config = text)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        pp_env._refuse_split_router_aux(stage, 2)
+    text.router_aux_loss_coef = 0.0
     pp_env._refuse_split_router_aux(stage, 2)
 
 

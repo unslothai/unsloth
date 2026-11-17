@@ -4034,6 +4034,8 @@ def install_checkpoint_attention(
 _RACE_ROWS = (4096, 300)
 _KERNEL_RACE_IMAGES = (4096, 1024)
 _KERNEL_LARGE_ROWS = 2560
+# Off: the block race wins 3-5% (L4 / G4 / A100) but 2048x2048 renders end to end run 6-13% slower.
+KERNEL_AUTO = False
 _RACE_ROUNDS = 7
 ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"
 
@@ -4174,7 +4176,11 @@ def _race_int8_kernel(
     from . import diffusion_int8_attention as int8_attention
 
     setting = int8_attention.mode()
-    if not block_modules or setting == "off" or (forced and setting != "force"):
+    if (
+        not block_modules
+        or setting == "off"
+        or (setting != "force" and (forced or not KERNEL_AUTO))
+    ):
         return 0, None
     started = time.perf_counter()
     record: dict = {"mode": setting, "incumbent": "sage" if sage else "native"}
