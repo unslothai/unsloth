@@ -159,7 +159,9 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   );
   assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
-  assert.match(picker, /const maker = rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
+  const rowOrgBody = picker.match(/function rowOrg\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  assert.match(rowOrgBody, /hubParts\(row\.id\)/);
+  assert.doesNotMatch(rowOrgBody, /lora|baseModel/);
   assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
   // A provider's own repos (`google/gemma-*`) list under it even with no owner logo entry.
   assert.equal(ownerOrgId("google"), "google");
@@ -167,7 +169,7 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   assert.equal(ownerOrgId("ibm-granite"), "ibm");
   assert.equal(ownerOrgId("CohereLabs"), "cohere");
   assert.equal(ownerOrgId("bartowski"), "bartowski");
-  assert.match(picker, /PROVIDER_LOGOS\.find\(\(logo\) => logo\.id === id\)/);
+  assert.match(rowOrgBody, /MAKER_BY_ID\.get\(ownerOrgId\(parts\.owner\)\)/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {

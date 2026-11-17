@@ -373,11 +373,11 @@ export function ChatTab() {
     (state) => state.setShowMemoryBar,
   );
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
-  const pickerOrgs = useChatRuntimeStore((state) => state.pickerOrgs);
-  const setPickerOrgs = useChatRuntimeStore((state) => state.setPickerOrgs);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
   );
+  const pickerOrgs = useChatRuntimeStore((state) => state.pickerOrgs);
+  const setPickerOrgs = useChatRuntimeStore((state) => state.setPickerOrgs);
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );

@@ -50,8 +50,8 @@ import {
   type Capability,
   CapabilityGlyph,
   DELETABLE_LOCAL_SOURCES,
-  PROVIDER_LOGOS,
   HubFailureHint,
+  PROVIDER_LOGOS,
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
@@ -574,19 +574,25 @@ function rowMaker(
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
+const MAKER_BY_ID = new Map(PROVIDER_LOGOS.map((logo) => [logo.id, logo]));
+
 /** As rowMaker, without a fine-tune's base model: an org filter lists only that org's own repos. */
 function rowOrg(row: Pick<Row, "kind" | "id">): Maker | null {
-  const maker = rowMaker({ kind: row.kind, id: row.id });
-  if (maker || row.kind === "external") {
-    return maker;
+  if (row.kind === "external") {
+    return null;
   }
-  // The logo map names few orgs by owner, so `google/gemma-*` would get no org and drop out of Google.
-  const owner = (
+  const parts =
     hubParts(row.id) ??
-    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined)
-  )?.owner;
-  const id = owner ? ownerOrgId(owner) : null;
-  return PROVIDER_LOGOS.find((logo) => logo.id === id) ?? null;
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined);
+  if (!parts) {
+    return null;
+  }
+  // The logo map names few orgs by owner, so `google/gemma-*` falls back to its owner's id.
+  return (
+    resolveOwnerProviderLogo(parts.owner, parts.name) ??
+    MAKER_BY_ID.get(ownerOrgId(parts.owner)) ??
+    null
+  );
 }
 
 // Logo files pad their art differently: scale each so its drawn part fills the box.
@@ -2340,7 +2346,8 @@ export function ComposerModelPicker({
   const makerTabs = useMemo<SourceTab[]>(() => {
     const byMaker = new Map<string, { maker: Maker; ids: Set<string> }>();
     for (const row of rows) {
-      const maker = row.tab === DEVICE_TAB && row.org ? rowOrg(row) : null;
+      const maker =
+        row.tab === DEVICE_TAB && row.org ? MAKER_BY_ID.get(row.org) : null;
       if (!maker) {
         continue;
       }

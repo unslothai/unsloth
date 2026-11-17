@@ -6451,13 +6451,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
     set({ showMemoryBar });
   },
-  setPickerOrgs: (pickerOrgs) => {
-    saveString(CHAT_PICKER_ORGS_KEY, JSON.stringify(pickerOrgs));
-    set({ pickerOrgs });
-  },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
     set({ fitOnDeviceOnly });
+  },
+  setPickerOrgs: (pickerOrgs) => {
+    saveString(CHAT_PICKER_ORGS_KEY, JSON.stringify(pickerOrgs));
+    set({ pickerOrgs });
   },
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),

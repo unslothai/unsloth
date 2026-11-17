@@ -105,7 +105,7 @@ export interface PickerRow {
   loaded?: boolean;
   onDevice?: boolean;
   groups?: string[];
-  /** The maker by the repo's own owner (or an Unsloth re-upload's known family), never a base model. */
+  /** Maker id from the repo's own owner, never a fine-tune's base model. */
   org?: string;
   section?: ListSection;
   sizeBytes?: number;
@@ -279,7 +279,6 @@ export function filterRows<T extends PickerRow>(
   });
 }
 
-/** Org filters narrow Discover and On Device only. */
 // Official Hub orgs whose name isn't the provider's id; the rest match their id (`google`, `Qwen`, ...).
 const ORG_ALIASES: Record<string, string> = {
   coherelabs: "cohere",
@@ -289,12 +288,13 @@ const ORG_ALIASES: Record<string, string> = {
   minimaxai: "minimax",
 };
 
-/** The provider id a Hub owner publishes as, for matching against the provider list. */
+/** The provider id a Hub owner publishes as. */
 export function ownerOrgId(owner: string): string {
   const key = owner.trim().toLowerCase();
   return ORG_ALIASES[key] ?? key;
 }
 
+/** Org filters narrow Discover and On Device only. */
 export function orgFilterApplies(tab: string): boolean {
   return tab === RECOMMENDED_TAB || tab === DEVICE_TAB;
 }
