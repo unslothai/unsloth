@@ -1561,11 +1561,8 @@ _GENERATE_DEPTH = [0]
 
 
 def _eager_decode_scope(stream):
-    """Decode without CUDA graphs while generate streams blocks. A streamed decode step all-gathers each
-    block (FSDP2's pre-forward unshard), so a captured decode graph holds NCCL collectives. FastModel's
-    generic decode graphs captured them and kept the graph for the next generate; while that graph was
-    alive, `destroy_process_group()` blocked until the NCCL watchdog aborted the process (2x T4).
-    Unsloth's own decode loops already refuse graphs under block swap (`_decode_graphs._eligible`)."""
+    """No CUDA graphs while streaming blocks: a captured graph holds NCCL all-gathers and hangs
+    `destroy_process_group()` until the watchdog aborts."""
     if not stream:
         return contextlib.nullcontext()
     try:

@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 (gloo CPU world of 2): a block-streamed `generate` decodes without CUDA graphs.
-
-Each streamed decode step all-gathers every decoder block, so a captured decode graph holds NCCL
-collectives. NCCL keeps a communicator with graph-captured work alive until the graph is destroyed,
-and the generic FastModel path keeps its decode graph for the next call: on 2 GPUs
-`destroy_process_group()` after a streamed generate blocked until the NCCL watchdog aborted the
-process. The NCCL hang itself needs 2 GPUs; here every decode step records whether decode graphs
-would be taken (`_decode_graphs.enabled()`, forced on with UNSLOTH_DECODE_CUDA_GRAPHS=1): off while
-blocks stream, unchanged for the whole-model gather, and on again after the call."""
+"""Native FSDP2 (gloo, 2 CPU ranks): block-streamed `generate` must decode without CUDA graphs
+(a captured graph holding NCCL all-gathers hung `destroy_process_group()` on 2 GPUs)."""
 
 import importlib
 import multiprocessing
@@ -37,8 +30,6 @@ from test_fsdp2_native_generate_streams_blocks_gloo import (  # noqa: E402
 
 
 class _RecordingNet(_LoopNet):
-    """Unsloth-shaped decode loop that records, per decode step, whether decode graphs are enabled."""
-
     def _decode_step(self, ids):
         graphs = sys.modules["unsloth.models._decode_graphs"]
         self.__dict__.setdefault("_graph_flags", []).append(graphs.enabled())
@@ -127,9 +118,7 @@ def test_streamed_generate_decodes_without_cuda_graphs():
     for rank, r in _run("block").items():
         assert r["tokens"] == want, (rank, r, want)
         assert len(r["flags"]) == NEW_TOKENS, (rank, r)
-        # Every streamed decode step all-gathers its blocks: no step may be captured into a graph.
         assert not any(r["flags"]), (rank, r)
-        # Scoped to the call: graphs are allowed again afterwards.
         assert r["enabled_after"] is True, (rank, r)
 
 
@@ -137,5 +126,4 @@ def test_whole_model_gather_keeps_cuda_graphs():
     want = _reference()
     for rank, r in _run("all").items():
         assert r["tokens"] == want, (rank, r, want)
-        # No collective in the decode step: decode graphs stay as configured.
         assert r["flags"] and all(r["flags"]), (rank, r)
