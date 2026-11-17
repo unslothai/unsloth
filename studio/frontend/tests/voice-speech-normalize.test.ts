@@ -30,11 +30,23 @@ const FAILING_FORMS: { input: string; locale: string; spoken: string }[] = [
   { input: "Call (555) 123-4567.", locale: "en", spoken: "Call five five five, one two three, four five six seven." },
   { input: "Dial +1-800-555-0199.", locale: "en", spoken: "Dial plus one, eight zero zero, five five five, zero one nine nine." },
   { input: "Save the GGUF file.", locale: "en", spoken: "Save the G G U F file." },
+  // The 13-voice sweep: every voice read these wrong ("K M", "four H thirty M", "Tue" as "two").
+  { input: "A marathon is 42.195 km.", locale: "en", spoken: "A marathon is forty two point one nine five kilometers." },
+  { input: "I ran 5km.", locale: "en", spoken: "I ran 5 kilometers." },
+  { input: "It weighs 1 kg.", locale: "en", spoken: "It weighs 1 kilogram." },
+  { input: "He is 6 ft tall.", locale: "en", spoken: "He is 6 feet tall." },
+  { input: "It is 21°C today.", locale: "en", spoken: "It is 21 degrees Celsius today." },
+  { input: "Most finish in about 4h 30m.", locale: "en", spoken: "Most finish in about 4 hours and 30 minutes." },
+  { input: "Wait 1 hr.", locale: "en", spoken: "Wait 1 hour." },
+  { input: "It takes 90 min.", locale: "en", spoken: "It takes 90 minutes." },
+  { input: "The meeting moved to Tue, Mar 4 at 3:30 PM.", locale: "en", spoken: "The meeting moved to Tuesday, March fourth at three thirty p m." },
+  { input: "Released March 15, 2024.", locale: "en", spoken: "Released March fifteenth, 2024." },
 ];
 
 test("forms the voice reads well, and look-alikes, pass through", () => {
   for (const text of ["Dr. Smith", "Update to v2.1.3.", "The score was 3-2.", "Mix in a 2:1 ratio.",
-    "Room 101.", "It finished in 00:45.", "The deadline is 5/6/2024.", "Size XL fits.", "I am here.", "5/3 is more than one."]) {
+    "Room 101.", "It finished in 00:45.", "The deadline is 5/6/2024.", "Size XL fits.", "I am here.", "5/3 is more than one.",
+    "May 5 people come?", "Sun, sea and sand.", "Set 30m.", "Use ffmpeg -h", "The h264 codec.", "Mar the finish."]) {
     assert.equal(normalizeForSpeech(text, "en"), text);
   }
 });

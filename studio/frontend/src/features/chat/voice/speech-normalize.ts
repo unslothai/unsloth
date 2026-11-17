@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure. Holds only the forms the Kokoro listening sample got wrong (all confirmed by ear): money,
-// thousands separators, decimals, clock times, fractions, ISO dates, "No.", Roman numerals, phone
-// numbers and GGUF. Each rewrites to words the voice reads correctly.
+// Pure. Holds only the forms voices got wrong when listened to: money, thousands separators, decimals,
+// clock times, fractions, ISO dates, "No.", Roman numerals, phone numbers and GGUF (the Kokoro sample);
+// units, durations, weekday and month abbreviations (a 13-voice sweep, judged by an audio model).
+// Each rewrites to words the voice reads correctly.
 
 type Spoken = string | ((match: string, ...groups: (string | undefined)[]) => string);
 
@@ -22,6 +23,24 @@ const CURRENCY: Record<string, readonly [one: string, many: string, minorOne: st
 };
 const MONEY_SCALE: Record<string, string> = { K: "thousand", M: "million", B: "billion", T: "trillion" };
 const ROMAN: Record<string, number> = { I: 1, V: 5, X: 10, L: 50 };
+// Units after a number: every voice in the listening sweep spelled "km" as letters, or read "30m" as meters.
+const UNITS: Record<string, readonly [one: string, many: string]> = {
+  km: ["kilometer", "kilometers"], kg: ["kilogram", "kilograms"], cm: ["centimeter", "centimeters"],
+  mm: ["millimeter", "millimeters"], mg: ["milligram", "milligrams"], mi: ["mile", "miles"],
+  mph: ["mile per hour", "miles per hour"], kph: ["kilometer per hour", "kilometers per hour"],
+  lb: ["pound", "pounds"], lbs: ["pound", "pounds"], oz: ["ounce", "ounces"], ft: ["foot", "feet"],
+  ml: ["milliliter", "milliliters"], mL: ["milliliter", "milliliters"], GB: ["gigabyte", "gigabytes"],
+  MB: ["megabyte", "megabytes"], TB: ["terabyte", "terabytes"], GHz: ["gigahertz", "gigahertz"],
+  MHz: ["megahertz", "megahertz"], kW: ["kilowatt", "kilowatts"],
+};
+const DAYS: Record<string, string> = { Mon: "Monday", Tue: "Tuesday", Tues: "Tuesday", Wed: "Wednesday",
+  Thu: "Thursday", Thur: "Thursday", Thurs: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday" };
+const MONTH_ABBR: Record<string, string> = { Jan: "January", Feb: "February", Mar: "March", Apr: "April",
+  Jun: "June", Jul: "July", Aug: "August", Sep: "September", Sept: "September", Oct: "October",
+  Nov: "November", Dec: "December" };
+const MONTH_WORD = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\\.?|January|February|March|April|June|July|August|September|October|November|December";
+const unit = (n: string, pair: readonly [string, string]) => `${n} ${n === "1" ? pair[0] : pair[1]}`;
+const per = (n: string, one: string, many: string) => `${n} ${n === "1" ? one : many}`;
 
 function below1000(n: number): string {
   const words: string[] = [];
@@ -113,6 +132,24 @@ function clock(match: string, hour = "", minute = "", meridiem?: string): string
 // a phone number or a date is read before its digits could match a plainer rule.
 const RULES: Readonly<Record<string, readonly (readonly [RegExp, Spoken])[]>> = {
   en: [
+    // "4h 30m", "2 hrs", "90 min", "45 sec": durations, read before "30m" could be taken for meters.
+    [/\b(\d{1,3})\s?(?:h|hrs?)\s?(\d{1,2})\s?m(?:in|ins)?\b/g,
+      (_m, h = "", m = "") => `${per(h, "hour", "hours")} and ${per(m, "minute", "minutes")}`],
+    [/\b(\d{1,3})\s?(?:h|hrs?)\b(?!\.\d|\w)/g, (_m, h = "") => per(h, "hour", "hours")],
+    [/\b(\d{1,4})\s?mins?\b/g, (_m, m = "") => per(m, "minute", "minutes")],
+    [/\b(\d{1,4})\s?secs?\b/g, (_m, s = "") => per(s, "second", "seconds")],
+    [/(\d(?:[\d,]*\d)?(?:\.\d+)?)\s?(km|kg|cm|mm|mg|mi|mph|kph|lbs?|oz|ft|ml|mL|GB|MB|TB|GHz|MHz|kW)(?![\w/])/g,
+      (_m, n = "", u = "") => unit(n, UNITS[u])],
+    [/(?<![\d.])(\d+(?:\.\d+)?)\s?°\s?([CF])\b/g,
+      (_m, n = "", scale) => `${n} ${n === "1" ? "degree" : "degrees"} ${scale === "C" ? "Celsius" : "Fahrenheit"}`],
+    // "Tue" read as "two" in most voices: a weekday abbreviation is a day only beside a date.
+    [new RegExp(`\\b(Mon|Tues?|Wed|Thu(?:rs?)?|Fri|Sat|Sun)\\.?(?=,?\\s+(?:(?:${MONTH_WORD})\\b|\\d))`, "g"),
+      (_m, d = "") => DAYS[d]],
+    // "Mar 4" and "March 4": the month in full, the day as an ordinal.
+    [/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?\s+([1-9]|[12]\d|3[01])\b(?![:.,]?\d)(?=$|[,.;:!?)]|\s+(?:\d{4}|at|to|and|through|until|from|or)\b)/g,
+      (_m, mo = "", d = "") => `${MONTH_ABBR[mo]} ${ordinal(d)}`],
+    [/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+([1-9]|[12]\d|3[01])\b(?![:.,]?\d)(?=$|[,.;:!?)]|\s+(?:\d{4}|at|to|and|through|until|from|or)\b)/g,
+      (_m, mo = "", d = "") => `${mo} ${ordinal(d)}`],
     [/(?<![\w+])(?:\+(\d{1,3})[\s.-]?)?(?:\((\d{3})\)|\b(\d{3}))[\s.-]?(\d{3})[\s.-](\d{4})\b/g,
       (_m, country, area, bare, mid, last) =>
         [country && `plus ${spellDigits(country)}`, spellDigits(area ?? bare ?? ""), spellDigits(mid ?? ""), spellDigits(last ?? "")]
