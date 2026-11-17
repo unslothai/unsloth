@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Forced float32 (float16 frozen weights, float32 LoRA) makes its GradScaler after Unsloth's tensor / pipeline
-parallel Trainer setup, which converts an fp16 run's scaler. The scaler must still unscale DTensor and local
-gradients together and agree on found_inf over the ranks: an overflow on one rank skips the step on every rank.
-gloo CPU world of 2; the CUDA scaler is swapped for a CPU one (the forced scaler is CUDA / XPU only)."""
+"""Forced float32 GradScaler (made after tp / pp Trainer setup) must unscale DTensor + local grads and agree on
+found_inf over ranks. gloo CPU world of 2; the CUDA scaler is swapped for a CPU one."""
 
 import ast
 import math
@@ -27,11 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
-_FORCED_INIT = 2.0**8  # the forced float32 start; the fake accelerator has one process
+_FORCED_INIT = 2.0**8
 
 
 def _forced_scaler_fn():
-    """_unsloth_forced_float32_grad_scaler (and its helper when present) without importing unsloth (GPU)."""
+    """Load the forced scaler functions without importing unsloth."""
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
     names = (
         "_unsloth_forced_float32_init_scale",
@@ -60,7 +58,6 @@ class _CpuScaler(torch.amp.GradScaler):
 
 
 def _forced_model(trainables):
-    """What _unsloth_forced_float32_grad_scaler inspects: a frozen float16 weight beside float32 trainables."""
     model = torch.nn.Module()
     model.frozen = torch.nn.Parameter(torch.ones(2, dtype = torch.float16), requires_grad = False)
     for i, p in enumerate(trainables):
@@ -95,15 +92,11 @@ def _tp_case(inf_rank, dtensor = True):
     mesh = init_device_mesh("cpu", (2,), mesh_dim_names = ("tp",))
     torch.manual_seed(0)
     sharded = torch.nn.Parameter(distribute_tensor(torch.randn(8, 4), mesh, [Shard(0)]))
-    if (
-        not dtensor
-    ):  # local shards only (no DTensor grads): the inf decision must still be one for all ranks
+    if not dtensor:
         sharded = torch.nn.Parameter(sharded.detach().to_local().clone())
     plain = torch.nn.Parameter(torch.randn(4, 4))
     trainer = _trainer(_forced_model([sharded, plain]))
-    tpn._tp_scaler(
-        trainer, 1
-    )  # the tp Trainer setup runs in Trainer.__init__, before the forced scaler exists
+    tpn._tp_scaler(trainer, 1)  # tp setup runs before the forced scaler exists
     scaler = _forced_scaler_fn()(trainer, trainer.model)
     assert scaler is not None and scaler is trainer.accelerator.scaler
     opt = torch.optim.AdamW([sharded, plain], lr = 1e-2, foreach = False)
@@ -113,7 +106,7 @@ def _tp_case(inf_rank, dtensor = True):
         trainer.accelerator.scaler.scale(loss).backward()
         if step == 1 and inf_rank in (rank, "all"):
             plain.grad[0, 0] = float("inf")
-        trainer.accelerator.unscale_gradients(opt)  # what tp_native's clip_grad_norm_ calls
+        trainer.accelerator.unscale_gradients(opt)
         if step == 0:
             out["unscaled"] = (
                 torch.allclose(_local(sharded.grad), 2 * _local(sharded.detach())),
@@ -138,7 +131,6 @@ def _pp_case(inf_rank):
     mesh = init_device_mesh("cpu", (2,), mesh_dim_names = ("pp",))
     pp = ppn.apply_pipeline_parallel(model, mesh["pp"], n_microbatches = 2)
     trainer = _trainer(_forced_model([torch.nn.Parameter(torch.zeros(2))]))
-    # pp_env.pp_trainer_setup records its data parallel size before the forced scaler is made.
     trainer.accelerator.__dict__["_unsloth_scaler_dp"] = 1
     scaler = _forced_scaler_fn()(trainer, trainer.model)
     opt = torch.optim.SGD(pp.parameters(), lr = 1.0)
@@ -159,7 +151,7 @@ def _pp_case(inf_rank):
 def _worker(rank, world, port, out_dir):
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port))
     torch.distributed.init_process_group("gloo", rank = rank, world_size = world)
-    torch.amp.GradScaler = _CpuScaler  # read at call time by the forced scaler
+    torch.amp.GradScaler = _CpuScaler
     _load_native()
     try:
         res = {}
@@ -198,11 +190,9 @@ def test_tp_forced_scaler_unscales_dtensor_and_agrees_on_skip(ranks, inf_rank):
     for res in ranks:
         got = res["tp", inf_rank]
         assert not isinstance(got, str), got  # main: "got mixed torch.Tensor and DTensor"
-        assert got["init"] == _FORCED_INIT, got["init"]  # tp: divided by dp (1), never by tp
+        assert got["init"] == _FORCED_INIT, got["init"]  # divided by dp, never tp
         assert got["unscaled"] == (True, True), got["unscaled"]
-        expected = (
-            3.0 if inf_rank is None else 2.0
-        )  # an overflow on any rank skips the step on every rank
+        expected = 3.0 if inf_rank is None else 2.0
         assert got["steps"] == (expected, expected), got["steps"]
         assert got["scale"] == (_FORCED_INIT if inf_rank is None else _FORCED_INIT / 2), got[
             "scale"
@@ -213,7 +203,6 @@ def test_tp_forced_scaler_unscales_dtensor_and_agrees_on_skip(ranks, inf_rank):
 
 @pytest.mark.parametrize("inf_rank", _INF, ids = _IDS)
 def test_tp_forced_scaler_local_grads_agree_on_skip(ranks, inf_rank):
-    """Without DTensor grads a per-rank GradScaler raises nothing, but one rank skips while the other steps."""
     for res in ranks:
         got = res["tp_local", inf_rank]
         assert not isinstance(got, str), got
@@ -230,7 +219,7 @@ def test_pp_forced_scaler_agrees_on_skip(ranks, inf_rank):
         got = res["pp", inf_rank]
         assert not isinstance(got, str), got
         assert got["init"] == _FORCED_INIT, got["init"]
-        assert got["unchanged"] is (inf_rank is not None), got  # both stages skip, or both step
+        assert got["unchanged"] is (inf_rank is not None), got
         assert got["scale"] == (_FORCED_INIT if inf_rank is None else _FORCED_INIT / 2), got[
             "scale"
         ]

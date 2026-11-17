@@ -1383,7 +1383,7 @@ def pp_trainer_setup(trainer):
     from .fsdp2_native import _scaler_for_native
     from .tp_native import _SCALE_DIVISOR
 
-    # Read again by a GradScaler made after this setup (forced float32: _utils._parallel_forced_scaler).
+    # Read by _utils._parallel_forced_scaler.
     accelerator.__dict__[_SCALE_DIVISOR] = dp
     try:
         scaled = _scaler_for_native(trainer)

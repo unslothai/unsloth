@@ -6177,12 +6177,8 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
 
 
 def _parallel_forced_scaler(trainer, init_scale):
-    """The GradScaler forced float32 makes, in the form Unsloth's tensor / pipeline parallel and native FSDP2 give
-    an fp16 run's scaler in their Trainer setup. That setup ran before this scaler existed (mixed precision is
-    "no", so accelerate made none), and a plain GradScaler there fails on the mix of DTensor and local
-    gradients (_amp_foreach_non_finite_check_and_unscale_: "got mixed torch.Tensor and DTensor") and decides
-    found_inf per rank. The native scaler unscales both kinds and all-reduces found_inf over the ranks, so
-    every rank steps or skips together."""
+    """Convert the forced scaler to the tp / pp / FSDP2 native one (their setup ran before it existed): a plain
+    GradScaler fails on mixed DTensor / local grads and decides found_inf per rank."""
     accelerator = trainer.accelerator
     scaler = accelerator.scaler
     try:
@@ -6197,11 +6193,11 @@ def _parallel_forced_scaler(trainer, init_scale):
     divisor = accelerator.__dict__.get(_SCALE_DIVISOR)
     fsdp2 = divisor is None and is_native_fsdp2(getattr(trainer, "model", None))
     if divisor is None and not fsdp2:
-        # DDP: gradients are averaged before unscale_, so every rank sees the same inf.
+        # DDP averages grads before unscale_: every rank sees the same inf.
         return scaler
     if not _scaler_for_native(trainer):
         return accelerator.scaler
-    # Keep the forced float32 start, already divided by the loss multiplier, over fp16's 2**16 one.
+    # Keep the forced float32 start, not fp16's 2**16.
     accelerator.scaler._init_scale = init_scale
     return accelerator.scaler
 

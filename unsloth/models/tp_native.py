@@ -4193,7 +4193,6 @@ def load_tensor_parallel(
 # turns into the token mean over the dp replicas, as for DDP on dp GPUs.
 
 _TP_DATA = "_unsloth_tp_data"
-# The data parallel size a float16 GradScaler divides its initial scale by under tensor / pipeline parallel.
 _SCALE_DIVISOR = "_unsloth_scaler_dp"
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 _DP_SYNC = "_unsloth_tp_dp_sync"
@@ -4867,7 +4866,7 @@ def _tp_scaler(trainer, dp):
     from .fsdp2_native import _scaler_for_native
 
     accelerator = trainer.accelerator
-    # Read again by a GradScaler made after this setup (forced float32: _utils._parallel_forced_scaler).
+    # Read by _utils._parallel_forced_scaler.
     accelerator.__dict__[_SCALE_DIVISOR] = dp
     if not _scaler_for_native(trainer):
         return
