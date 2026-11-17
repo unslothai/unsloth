@@ -3,13 +3,10 @@
 
 """Native FSDP2 (gloo CPU world of 2): `generate` gathers one decoder block at a time.
 
-The wrapped generate used to all-gather every unit at once and keep the whole model gathered on
-each rank next to its shards; a 12B 4-bit model after training on 2x 16 GB GPUs ran out of memory
-there. With UNSLOTH_FSDP2_GENERATE_GATHER=block (what "auto" picks when the whole gather does not
-fit) only the root (embeddings, final norm, head) stays gathered; each block is gathered when it
-runs, through its own forward (HF generate) or the decode loop's block-swap enter / leave (Unsloth's
-fast decode reads block weights without calling the block). Greedy tokens must equal one process
-and the gathered bytes must stay about one block above the root."""
+Gathering every unit at once OOMed a 12B 4-bit model after training on 2x 16 GB GPUs. With
+UNSLOTH_FSDP2_GENERATE_GATHER=block only the root stays gathered; each block is gathered via its
+forward or the decode loop's enter / leave. Greedy tokens must equal one process and gathered
+bytes must stay about one block above the root."""
 
 import multiprocessing
 import os

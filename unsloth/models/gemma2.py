@@ -531,8 +531,7 @@ def Gemma2Model_fast_forward_inference(
     norm_weight = self.model.layers[0].input_layernorm.weight
     out_weights = _LazyDeviceScratch(
         DEVICE_COUNT,
-        # Shape only: under native FSDP2 block streaming this weight is still a sharded DTensor here
-        # (before enter(0)), and empty_like would make the scratch a DTensor.
+        # Shape only: under FSDP2 block streaming this is still a DTensor; empty_like would copy that.
         lambda device: torch.empty(norm_weight.shape, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]

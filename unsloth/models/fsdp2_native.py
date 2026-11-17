@@ -2418,9 +2418,7 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
     for code that reads weights without calling the blocks (Unsloth's decode loop, `PeftModel.generate`,
     which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively.
-    stream_blocks (generate): units that are entries of a decoder-block list stay sharded; each is
-    gathered when it runs (its forward, or the decode loop's block-swap enter) and resharded after,
-    so about one block is gathered at a time next to the root's embeddings and head."""
+    stream_blocks (generate): decoder-block units stay sharded and are gathered one at a time."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model

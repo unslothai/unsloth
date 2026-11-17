@@ -3,12 +3,9 @@
 
 """Native FSDP2 (gloo CPU world of 2): the Gemma / Gemma2 / Cohere decode scratch under block streaming.
 
-These decode loops build their norm-weight scratch from layers[0].input_layernorm.weight before
-the loop's block-swap enter(0). With generate streaming the blocks, that weight is still a sharded
-DTensor there, so torch.empty_like made a DTensor scratch, and the Gemma RMS norm then mixed it with
-the gathered weights and plain activations. The scratch statements are taken from the real decode
-functions and run against a sharded tiny model; the scratch must be a plain tensor of the hidden
-size and greedy tokens must equal one process."""
+The scratch is built from layers[0].input_layernorm.weight before enter(0), when it is still a
+sharded DTensor; empty_like made a DTensor scratch that broke the RMS norm. The real scratch
+statements must yield a plain hidden-size tensor and greedy tokens must equal one process."""
 
 import multiprocessing
 import os

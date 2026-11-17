@@ -3,11 +3,8 @@
 
 """Native FSDP2 generate streams decoder blocks through a `layers._unsloth_block_swap` stand-in.
 
-A 16-bit model loaded on cuda:0 on every rank is moved to each rank's own GPU while it is sharded,
-but the per-layer device published at load still says cuda:0. The fast decode loops repair that with
-refresh_moved_layer_devices(layers, block_swap), which used to return early for any block swap, so
-the streaming stand-in turned the repair off and rank 1 moved its activations to cuda:0 next to
-weights gathered on cuda:1. Only a swapper that parks weights off the device may skip the repair.
+refresh_moved_layer_devices used to skip any block swap, so rank 1 kept the stale load device
+(cuda:0) next to weights gathered on cuda:1. Only a swapper that parks weights off device may skip.
 CPU only: fake parameters report the devices."""
 
 import ast
