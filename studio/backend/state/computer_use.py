@@ -28,6 +28,8 @@ class Session:
     apps: set = field(default_factory = set)
     used: float = 0.0
     coordinates: str = "pixels"
+    # Larger screenshots of a large screen (screen.shot_edge).
+    detail: bool = False
     frame: Any = None
     display: Optional[int] = None
     # Where the last action left the pointer, to tell the user's own move to a corner from ours.
@@ -161,9 +163,17 @@ def revoke_account(account_id: str) -> int:
         return count
 
 
-def set_coordinates(key: Key, mode: str) -> None:
+def set_coordinates(
+    key: Key,
+    mode: str,
+    *,
+    detail: bool = False,
+) -> None:
     with _lock:
-        session(key).coordinates = mode if mode in COORDINATES else "pixels"
+        found = session(key)
+        found.coordinates = mode if mode in COORDINATES else "pixels"
+        # Pixels must match the image as the model saw it, which a later resize would break.
+        found.detail = detail and found.coordinates == "grid"
 
 
 class ControlBusy(RuntimeError):

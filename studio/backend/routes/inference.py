@@ -6238,7 +6238,11 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 _computer_use_withheld: "str | None" = None
 
 
-def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+def _computer_use_tool(
+    payload,
+    can_show_and_see: bool,
+    local: bool = False,
+) -> "dict | None":
     from core.inference.computer_use import computer_tool, policy
     from state import computer_use as computer_state
 
@@ -6260,6 +6264,8 @@ def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
             getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
         ),
         mode,
+        # Providers resize and bill large pictures themselves.
+        detail = local and policy.sees_detail(getattr(payload, "model", None)),
     )
     return computer_tool(mode)
 
@@ -6272,6 +6278,7 @@ async def _select_request_tools(
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
     ui_events: bool = True,
+    provider: bool = False,
 ) -> list[dict]:
     """Empty result skips the loop, so a model-emitted built-in call cannot ride an empty allow-list."""
     from core.inference.tools import (
@@ -6304,7 +6311,7 @@ async def _select_request_tools(
         if COMPUTER_TOOL_NAME in payload.enabled_tools:
             # Only where the approval card can be shown.
             computer = await asyncio.to_thread(
-                _computer_use_tool, payload, ui_events and supports_vision
+                _computer_use_tool, payload, ui_events and supports_vision, not provider
             )
             if computer is not None:
                 # First, or a small model with code tools scripts the mouse in Python instead.
@@ -30085,6 +30092,7 @@ async def _proxy_to_external_provider(
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
                 ui_events = _ui_events,
+                provider = True,
             )
             if studio_tool_payloads:
                 # The tool loop runs only when the catalog is non-empty; its approval handshake rides control frames.
@@ -30465,6 +30473,7 @@ async def _proxy_to_external_provider(
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
             ui_events = _ui_events,
+            provider = True,
         )
     run_studio_tool_loop = bool(external_studio_tools)
     _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools

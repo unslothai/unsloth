@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from ..mcp_images import MAX_SCREENSHOT_EDGE
 from .backends import Backend, Display
 
 # Models that answer in pixels count 28 px cells on the resized image, so it is sent on that grid.
@@ -31,13 +32,26 @@ _SETTLE_STEPS = 3
 _SETTLED = 0.002
 
 
-def fit_size(width: float, height: float) -> tuple[int, int]:
-    scale = min(1.0, MAX_EDGE / max(width, height, 1))
+def fit_size(
+    width: float,
+    height: float,
+    max_edge: int = MAX_EDGE,
+) -> tuple[int, int]:
+    scale = min(1.0, max_edge / max(width, height, 1))
 
     def snap(value: float) -> int:
-        return min(MAX_EDGE, max(CELL, int(round(value * scale / CELL)) * CELL))
+        return min(max_edge, max(CELL, int(round(value * scale / CELL)) * CELL))
 
     return snap(width), snap(height)
+
+
+def shot_edge(width: int, height: int, detail: bool) -> int:
+    """Half the captured screen, for grid answers: 1008 px leaves a 4K screen's icons a few
+    pixels wide (#18137: Qwen3.8 hit 4/30 targets at 1008, 16/30 at 2016)."""
+    if not detail:
+        return MAX_EDGE
+    half = max(width, height) // 2 // CELL * CELL
+    return max(MAX_EDGE, min(MAX_SCREENSHOT_EDGE, half))
 
 
 @dataclass
@@ -82,11 +96,15 @@ class Shot:
     full: Any = field(repr = False)
 
 
-def take(backend: Backend, display: Display) -> Shot:
+def take(
+    backend: Backend,
+    display: Display,
+    detail: bool = False,
+) -> Shot:
     from PIL import Image, ImageDraw
 
     full = backend.capture(display)
-    size = fit_size(display.width, display.height)
+    size = fit_size(display.width, display.height, shot_edge(*full.size, detail))
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
     frame = Frame(display, size[0], size[1])
     # Kept without the pointer: comparing two screens must not see the pointer having moved.
@@ -184,9 +202,11 @@ def zoom(shot: Shot, region: tuple[float, float, float, float]) -> Any:
 
 
 def envelope(image: Any) -> str:
-    from ..mcp_images import SENTINEL
+    from ..mcp_images import MAX_IMAGE_EDGE, SENTINEL
 
     buffer = io.BytesIO()
     image.convert("RGB").save(buffer, format = "JPEG", quality = JPEG_QUALITY)
-    data = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return "\n" + SENTINEL + json.dumps([{"data": data, "mimeType": "image/jpeg"}])
+    entry = {"data": base64.b64encode(buffer.getvalue()).decode("ascii"), "mimeType": "image/jpeg"}
+    if max(image.size) > MAX_IMAGE_EDGE:
+        entry["maxEdge"] = max(image.size)
+    return "\n" + SENTINEL + json.dumps([entry])

@@ -259,13 +259,91 @@ def test_descriptions_never_carry_a_long_typed_text():
 @pytest.mark.parametrize(
     "size", [(1352, 878), (1280, 800), (1920, 1080), (3840, 2160), (800, 600), (1080, 1920)]
 )
-def test_the_picture_fits_the_vision_grid_and_the_shared_image_cap(size):
-    from core.inference.mcp_images import MAX_IMAGE_EDGE
+@pytest.mark.parametrize("detail", [False, True])
+def test_the_picture_fits_the_vision_grid_and_the_shared_image_cap(size, detail):
+    from core.inference.mcp_images import MAX_IMAGE_EDGE, MAX_SCREENSHOT_EDGE
 
-    width, height = screen.fit_size(*size)
+    width, height = screen.fit_size(*size, screen.shot_edge(*size, detail))
     assert width % screen.CELL == 0 and height % screen.CELL == 0
-    assert max(width, height) <= screen.MAX_EDGE <= MAX_IMAGE_EDGE
+    assert max(width, height) <= (MAX_SCREENSHOT_EDGE if detail else screen.MAX_EDGE)
+    assert screen.MAX_EDGE <= MAX_IMAGE_EDGE
     assert abs(width / height - size[0] / size[1]) < 0.06
+
+
+@pytest.mark.parametrize(
+    "size, detail, edge",
+    [
+        ((1920, 1080), True, 1008),
+        ((2560, 1440), True, 1260),
+        ((3840, 2160), True, 1904),
+        ((5120, 2880), True, 2016),
+        ((3840, 2160), False, 1008),
+    ],
+)
+def test_only_grid_answers_from_a_local_model_get_a_larger_picture_of_a_large_screen(
+    size, detail, edge
+):
+    assert screen.shot_edge(*size, detail) == edge
+
+
+def test_the_session_asks_for_detail_only_for_grid_answers():
+    key = state.session_key("detail-chat")
+    for mode, detail, wanted in [
+        ("grid", True, True),
+        ("grid", False, False),
+        ("pixels", True, False),
+        ("pixels", False, False),
+    ]:
+        state.set_coordinates(key, mode, detail = detail)
+        assert state.session(key).detail is wanted
+
+
+@pytest.mark.parametrize(
+    "model, detail",
+    [
+        ("unsloth/Qwen3.8-27B-GGUF", True),
+        ("Qwen3.8-27B-UD-Q4_K_XL.gguf", True),
+        ("unsloth/Qwen3-VL-8B-Instruct-GGUF", True),
+        ("unsloth/Qwen3.6-35B-A3B-GGUF", True),
+        ("unsloth/gemma-4-26B-A4B-it-GGUF", False),
+        ("UI-TARS-7B-DPO", False),
+        ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", False),
+        ("unsloth/Qwen3-32B-GGUF", False),
+        (None, False),
+    ],
+)
+def test_only_families_measured_to_gain_see_a_larger_picture(model, detail):
+    assert policy.sees_detail(model) is detail
+
+
+def test_a_screenshot_past_the_shared_cap_reaches_the_model_whole_but_other_images_do_not():
+    import base64, io, json
+
+    from PIL import Image
+
+    from core.inference.mcp_images import MAX_IMAGE_EDGE, content_parts
+
+    picture = Image.new("RGB", (1904, 1064), (10, 20, 30))
+    _text, images = split_images("Done." + screen.envelope(picture))
+    assert images[0]["maxEdge"] == 1904
+
+    def sent(image):
+        (part,) = content_parts([image])
+        raw = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+        return Image.open(io.BytesIO(raw)).size
+
+    assert sent(images[0]) == (1904, 1064)
+    plain = {"data": images[0]["data"], "mimeType": "image/jpeg"}
+    assert max(sent(plain)) == MAX_IMAGE_EDGE
+    big = io.BytesIO()
+    Image.new("RGB", (3000, 1600)).save(big, format = "JPEG")
+    huge = {"data": base64.b64encode(big.getvalue()).decode("ascii"), "mimeType": "image/jpeg"}
+    assert max(sent({**huge, "maxEdge": 99_999})) == 2016
+    assert max(sent({**plain, "maxEdge": True})) == MAX_IMAGE_EDGE
+    assert max(sent({**plain, "maxEdge": "1904"})) == MAX_IMAGE_EDGE
+    # A screenshot within the old cap carries nothing new.
+    small = json.loads(screen.envelope(Image.new("RGB", (1008, 560))).split(":", 1)[1])
+    assert "maxEdge" not in small[0]
 
 
 def test_a_frame_maps_picture_points_onto_a_second_display():
@@ -290,6 +368,27 @@ def test_the_picture_reaches_the_model_at_the_size_the_frame_says(desktop):
     # No second resize downstream, or the model's pixels would stop being the frame's.
     assert decoded.size == (frame.width, frame.height)
     assert is_image_tool(computer_use.COMPUTER_TOOL_NAME)
+
+
+def test_a_local_grid_model_sees_a_large_screen_at_half_its_size(desktop):
+    from core.inference.mcp_images import content_parts
+
+    desktop.chosen["coordinates"] = "grid"
+    key = state.session_key(SESSION)
+    state.set_coordinates(key, policy.coordinate_mode("whatever"), detail = True)
+    text, images = split_images(look())
+    frame = state.session(key).frame
+    # The virtual desktop captures 2560x1600, so half of it, on the 28 px grid.
+    assert (frame.width, frame.height) == (1260, 784)
+    raw = content_parts(images)[0]["image_url"]["url"].split(",", 1)[1]
+    import base64, io
+
+    from PIL import Image
+
+    assert Image.open(io.BytesIO(base64.b64decode(raw))).size == (1260, 784)
+    run({"action": "click", "x": 500, "y": 562.5})
+    _kind, x, y, *_rest = desktop.events[-1]
+    assert abs(x - 640) < 2 and abs(y - 450) < 2
 
 
 def test_the_first_call_needs_the_users_go_ahead(desktop):
@@ -538,6 +637,10 @@ def test_grid_coordinates_span_the_picture(desktop):
         ("UI-TARS-7B-DPO", "grid"),
         ("UI-TARS-1.5-7B", "pixels"),
         ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "pixels"),
+        ("nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF", "grid"),
+        ("NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf", "grid"),
+        ("unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "grid"),
+        ("unsloth/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF", "pixels"),
         ("claude-sonnet-4-5", "pixels"),
         ("gpt-5", "pixels"),
         (None, "pixels"),
@@ -1401,6 +1504,7 @@ def _selected(
     vision = True,
     ui_events = True,
     model = "some-model",
+    provider = False,
 ):
     import routes.inference as routes_mod
 
@@ -1419,9 +1523,25 @@ def _selected(
             mcp_allowed = False,
             supports_vision = vision,
             ui_events = ui_events,
+            provider = provider,
         )
     )
     return {tool["function"]["name"]: tool for tool in tools}
+
+
+def test_a_local_qwen_gets_detail_and_a_provider_or_gemma_does_not(desktop, monkeypatch):
+    import routes.inference as routes_mod
+
+    monkeypatch.setattr(routes_mod, "_enabled_agent_skills", lambda: [])
+    key = state.session_key(SESSION)
+    for model, provider, detail in [
+        ("unsloth/Qwen3.8-27B-GGUF", False, True),
+        ("unsloth/Qwen3.8-27B-GGUF", True, False),
+        ("unsloth/gemma-4-26B-A4B-it-GGUF", False, False),
+    ]:
+        assert "computer" in _selected(["computer"], model = model, provider = provider)
+        assert state.session(key).coordinates == "grid"
+        assert state.session(key).detail is detail
 
 
 def test_the_tool_is_offered_only_by_name_to_a_seeing_model_in_the_ui(desktop, monkeypatch):
