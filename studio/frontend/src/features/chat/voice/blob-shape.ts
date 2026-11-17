@@ -9,7 +9,7 @@ export const BLOB_PINCH = 0.4;
 export const BLOB_CONTROLS = 32;
 const STEP = (2 * Math.PI) / BLOB_CONTROLS;
 
-export interface BlobControls {
+interface BlobControls {
   angle: Float32Array;
   offset: Float32Array;
 }

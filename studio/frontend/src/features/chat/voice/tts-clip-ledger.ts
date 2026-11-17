@@ -61,6 +61,14 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
     if (entries.size === 0) deps.onIdle();
   };
 
+  const stopQuietly = (source: LedgerSource) => {
+    try {
+      source.stop();
+    } catch {
+      // never started
+    }
+  };
+
   const forceEnd = (e: Entry) => {
     const ctx = deps.ctx();
     deps.trace("tts.clipWatchdog", {
@@ -68,11 +76,7 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
       ms: Math.round(deps.now() - e.addedAt),
       ctx: ctx?.state,
     });
-    try {
-      e.source.stop();
-    } catch {
-      // never started
-    }
+    stopQuietly(e.source);
     remove(e);
     if (ctx && ctx.state !== "running" && !deps.frozen()) void ctx.resume().catch(() => {});
   };
@@ -138,11 +142,7 @@ export function createClipLedger(deps: ClipLedgerDeps): ClipLedger {
       for (const e of entries) {
         deps.clearTimer(e.timer);
         e.source.onended = null;
-        try {
-          e.source.stop();
-        } catch {
-          // never started
-        }
+        stopQuietly(e.source);
       }
       entries.clear();
     },

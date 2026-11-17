@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { decayFactor } from "./blob-decay.ts";
 
 export const SPECTRUM_BANDS = 32;
 const FFT_SIZE = 2048;
@@ -17,12 +18,11 @@ const RELEASE = 0.14;
 // noise in a band that is always quiet is not blown up to a full band.
 const NORM_TAU_MS = 4000;
 const NORM_FLOOR = 0.15;
-const NORM_STRENGTH = 1;
 const FLOOR_CUT = 0.9;
 
 type Side = "input" | "output";
 
-export interface BandState {
+interface BandState {
   raw: Float32Array;
   tilt: Float32Array;
   bands: Float32Array;
@@ -44,8 +44,9 @@ const READ_REUSE_MS = 8;
 
 export function bandEdges(
   sampleRate: number,
-  fftSize: number = FFT_SIZE,): Int32Array {
-  const binHz =sampleRate / fftSize;
+  fftSize: number = FFT_SIZE,
+): Int32Array {
+  const binHz = sampleRate / fftSize;
   const bins = fftSize / 2;
   const edges = new Int32Array(SPECTRUM_BANDS + 1);
   for (let i = 0; i <= SPECTRUM_BANDS; i++) {
@@ -82,7 +83,7 @@ export function shapeBands(
   const dt =
     state.lastMs < 0 ? 16 : Math.min(250, Math.max(0, nowMs - state.lastMs));
   state.lastMs = nowMs;
-  const sink = Math.exp(-dt / NORM_TAU_MS);
+  const sink = decayFactor(dt, NORM_TAU_MS);
   let sum = 0;
   let loudest = 0;
   for (let b = 0; b < SPECTRUM_BANDS; b++) {
@@ -105,7 +106,7 @@ export function shapeBands(
   let bottom = Number.POSITIVE_INFINITY;
   for (let b = 0; b < SPECTRUM_BANDS; b++) {
     out[b] =
-      state.bands[b] / Math.max(NORM_FLOOR, state.peaks[b]) ** NORM_STRENGTH;
+      state.bands[b] / Math.max(NORM_FLOOR, state.peaks[b]);
     if (out[b] > top) top = out[b];
     if (out[b] < bottom) bottom = out[b];
   }
@@ -223,8 +224,9 @@ export function readSpectrum(side: Side, out: Float32Array): number {
     out.set(tap.out);
     return tap.level;
   }
-  tap.analyser.getFloatFrequencyData(tap.raw); tap.level = shapeBands(tap, tap.out, now);
+  tap.analyser.getFloatFrequencyData(tap.raw);
+  tap.level = shapeBands(tap, tap.out, now);
   tap.readAt = now;
-  out.set (tap.out);
+  out.set(tap.out);
   return tap.level;
-  }
+}

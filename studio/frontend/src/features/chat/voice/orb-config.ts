@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
-const ORB_IDLE_GRADIENT_VALUE =
+// Theme tokens, not fixed greys: a flat mid-grey reads as disabled chrome on light and a hole on dark.
+export const ORB_IDLE_GRADIENT =
   "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
+export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
+
+// Resting: nothing to hear yet, or the user has to act.
+const IDLE_BREATHE = {
+  gradient: ORB_IDLE_GRADIENT,
+  animation: "voice-orb-breathe",
+  duration: "4.5s",
+  shadow: ORB_IDLE_SHADOW,
+} as const;
+
+// Busy without the user: a model loading, switching or downloading.
+const GREY_PULSE = {
+  gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
+  animation: "voice-orb-pulse",
+  duration: "2s",
+  shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
+} as const;
 
 export const orbConfig = {
-  waiting: {
-    gradient:
-      "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))",
-    animation: "voice-orb-breathe",
-    duration: "4.5s",
-    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
-  },
+  waiting: IDLE_BREATHE,
   listening: {
     gradient: "radial-gradient(circle at 40% 35%, #34d399, #059669)",
     animation: "voice-orb-breathe",
@@ -25,12 +36,7 @@ export const orbConfig = {
     duration: "1.4s",
     shadow: "0 0 32px 8px rgba(251,113,133,0.4)",
   },
-  loading: {
-    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
-    animation: "voice-orb-pulse",
-    duration: "2s",
-    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
-  },
+  loading: GREY_PULSE,
   transcribing: {
     gradient: "radial-gradient(circle at 40% 35%, #e879f9, #c026d3)",
     animation: "voice-orb-pulse",
@@ -61,39 +67,14 @@ export const orbConfig = {
     duration: "0.8s",
     shadow: "0 0 32px 8px rgba(56,189,248,0.35)",
   },
-  paused: {
-    gradient: ORB_IDLE_GRADIENT_VALUE,
-    animation: "voice-orb-breathe",
-    duration: "6s",
-    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
-  },
+  paused: { ...IDLE_BREATHE, duration: "6s" },
   // Not listening until a model is ready: drawn as loading, or as waiting when the user has to act.
-  switching: {
-    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
-    animation: "voice-orb-pulse",
-    duration: "2s",
-    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
-  },
-  downloading: {
-    gradient: "radial-gradient(circle at 40% 35%, #94a3b8, #475569)",
-    animation: "voice-orb-pulse",
-    duration: "2s",
-    shadow: "0 0 26px 6px rgba(148,163,184,0.3)",
-  },
-  needsDownload: {
-    gradient: ORB_IDLE_GRADIENT_VALUE,
-    animation: "voice-orb-breathe",
-    duration: "4.5s",
-    shadow: "0 0 26px 6px var(--voice-orb-idle-glow)",
-  },
+  switching: GREY_PULSE,
+  downloading: GREY_PULSE,
+  needsDownload: IDLE_BREATHE,
 } as const;
 
 export type OrbStateName = keyof typeof orbConfig;
-
-// Theme tokens, not fixed greys: a flat mid-grey reads as disabled chrome on light and a hole on dark.
-export const ORB_IDLE_GRADIENT =
-  "radial-gradient(circle at 40% 35%, var(--voice-orb-idle-from), var(--voice-orb-idle-to))";
-export const ORB_IDLE_SHADOW = "0 0 26px 6px var(--voice-orb-idle-glow)";
 
 export const SPECTRUM_SIDE: Partial<Record<OrbStateName, "input" | "output">> =
   {

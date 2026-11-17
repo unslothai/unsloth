@@ -22,6 +22,7 @@ import {
   registerComposerTextReader,
   rushVoiceReveal,
   setMicMuted,
+  setVoiceLoopPorts,
   parkVoiceTurnAudio,
   takeVoiceTurnAudio,
   voiceRevealText,
@@ -111,6 +112,7 @@ import {
 } from "@/features/chat/voice/voice-models-client";
 import { chatModelSpeaks, isChatModelVoice, voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
+import { storeVoiceLoopPorts } from "./voice-loop-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { pauseOutputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
@@ -203,11 +205,23 @@ export { VoiceOrb };
 export { VoicePanel } from "@/components/assistant-ui/voice-panel";
 export { loadVoice, servedVoice, unloadVoice, voiceServing } from "@/features/chat/voice/voice-slot";
 
+setVoiceLoopPorts(storeVoiceLoopPorts);
 registerVoiceListen(() =>
   StudioVoiceLoopAdapter.isSupported() ? new StudioVoiceLoopAdapter().listen() : null,
 );
 
 type HeardSnapshot = { messageId: string; position: number; log: PlayedChunk[]; base: number };
+
+function lastOf<T>(items: readonly T[]): T | null {
+  return items.length ? items[items.length - 1] : null;
+}
+
+function lastAssistant<M extends { role: string }>(messages: readonly M[]): M | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") return messages[i];
+  }
+  return undefined;
+}
 
 export const VoiceEngine: FC = () => {
   const aui = useAui();
@@ -254,9 +268,8 @@ export const VoiceEngine: FC = () => {
       // A typed draft ahead of a held fragment stays: only the fragment goes.
       const typed = isComposerHeldForEdit() ? null : withoutVoiceText(fresh.getState().text);
       if (typed !== null) fresh.setText(typed);
-      // Start dictation via the composer runtime, NOT by clicking the Dictate
-      // button: in voice mode that button is hidden/replaced by the orb, so a
-      // DOM query returns null and the mic never opens (silent green orb).
+      // Through the composer runtime, not the Dictate button: voice mode replaces that button with the
+      // orb, so a DOM query finds nothing and the mic never opens (a silent green orb).
       fresh.startDictation();
     };
 
@@ -287,9 +300,8 @@ export const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
-  // A click on the composer while a fragment is held means the user is about to edit
-  // it: from then on it waits for their send. Pointerdown only, since programmatic
-  // focus and caret moves must not count, and one passive listener for the page.
+  // A click into the composer while a fragment is held means the user will edit it, so it waits for
+  // their send. Pointerdown only (programmatic focus and caret moves don't count), one passive listener.
   useEffect(() => {
     if (voiceMode !== "active") return;
     registerComposerTextReader(() => auiRef.current.composer().getState().text);
@@ -417,8 +429,7 @@ export const VoiceEngine: FC = () => {
     if (f?.timer) clearTimeout(f.timer);
     fillerRef.current = null;
   }, []);
-  // An ignored or queued utterance, watched for the user saying it again inside
-  // REPEAT_WINDOW_MS: that is the one signal the interrupt verdict was wrong.
+  // An ignored or queued utterance said again within REPEAT_WINDOW_MS: the interrupt verdict was wrong.
   const pendingInterjectRef = useRef<{
     id: string;
     verdict: "ignore" | "queue";
@@ -435,32 +446,24 @@ export const VoiceEngine: FC = () => {
     reportLayaOutcome(p.id, interjectOutcomeFor(p.verdict, p.text, later, gapMs), { gap_ms: gapMs });
   }, []);
   const latestAssistantToolKinds = useCallback((): ToolKind[] => {
-    const messages = auiRef.current.thread().getState().messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role !== "assistant") continue;
-      const kinds: ToolKind[] = [];
-      for (const part of msg.content as ReadonlyArray<{ type: string; toolName?: string }>) {
-        if (part.type === "tool-call") kinds.push(toolKindOf(part.toolName ?? ""));
-      }
-      return kinds;
+    const msg = lastAssistant(auiRef.current.thread().getState().messages);
+    if (!msg) return [];
+    const kinds: ToolKind[] = [];
+    for (const part of msg.content as ReadonlyArray<{ type: string; toolName?: string }>) {
+      if (part.type === "tool-call") kinds.push(toolKindOf(part.toolName ?? ""));
     }
-    return [];
+    return kinds;
   }, []);
 
   const latestAssistantIsReasoning = useCallback((): boolean => {
-    const messages = auiRef.current.thread().getState().messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role !== "assistant") continue;
-      let reasoning = false;
-      for (const part of msg.content as Array<{ type: string; text?: string }>) {
-        if (part.type === "text" && part.text) return false;
-        if (part.type === "reasoning") reasoning = true;
-      }
-      return reasoning;
+    const msg = lastAssistant(auiRef.current.thread().getState().messages);
+    if (!msg) return false;
+    let reasoning = false;
+    for (const part of msg.content as Array<{ type: string; text?: string }>) {
+      if (part.type === "text" && part.text) return false;
+      if (part.type === "reasoning") reasoning = true;
     }
-    return false;
+    return reasoning;
   }, []);
   // No answer text yet: prefill, or thinking with reasoning off. Speech then is judged like speech during reasoning.
   const replyNotStarted = useCallback((): boolean => {
@@ -473,16 +476,12 @@ export const VoiceEngine: FC = () => {
   const [isReasoning, setIsReasoning] = useState(false);
 
   const latestAssistantText = useCallback((): string => {
-    const messages = auiRef.current.thread().getState().messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role !== "assistant") continue;
-      // "\n" between parts, so "check" + tool + "The…" is not read as "checkThe…"; trimmed at the
-      // end only, so offsets into the reply stay valid.
-      const { text } = joinTextParts(msg.content as Array<{ type: string; text?: string }>);
-      return withoutAudioPlayer(text).trimEnd();
-    }
-    return "";
+    const msg = lastAssistant(auiRef.current.thread().getState().messages);
+    if (!msg) return "";
+    // "\n" between parts, so "check" + tool + "The…" is not read as "checkThe…"; trimmed at the
+    // end only, so offsets into the reply stay valid.
+    const { text } = joinTextParts(msg.content as Array<{ type: string; text?: string }>);
+    return withoutAudioPlayer(text).trimEnd();
   }, []);
 
   const commitUtterance = useCallback((said: string, confirmedEarly = false) => {
@@ -877,7 +876,7 @@ export const VoiceEngine: FC = () => {
   function sendTranscriptImpl(text: string, typed?: boolean, meta?: VoiceSubmitMeta) {
     const composer = auiRef.current.composer();
     // Decided now so the run's request can tell the model; a reply ending in a question gets no filler.
-    const prevReply = latestAssistantText().trimEnd();
+    const prevReply = latestAssistantText();
     const prevAskedQuestion = prevReply.endsWith("?");
     const applyFiller = (decision: FillerDecision) => {
       setPendingFiller(decision);
@@ -984,9 +983,8 @@ export const VoiceEngine: FC = () => {
     const repeated = queuedUtteranceRef.current.includes(text);
     // Re-asking the pending question is impatience: restarting threw the thinking away and lengthened the wait.
     const sameAsk = isSameAsk(lastUserPrompt(), text);
-    // Something is already held for after this reply, so this is the rest of it
-    // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
-    // on its own, and the two go as one when the reply ends.
+    // Something is already held for after this reply, so this is the rest of it ("How many?" then
+    // "Too many cannolis"): it joins the hold and the two go as one when the reply ends.
     const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
     // An "ignore" drops the words; past a backchannel's length a wrong one loses a whole correction, so it waits instead.
     const tooLongToIgnore = text.trim().split(/\s+/).length > IGNORE_MAX_WORDS;
@@ -1285,7 +1283,7 @@ export const VoiceEngine: FC = () => {
       endHeldEdit();
       earlyInterjectRef.current?.reset();
       const msgs = auiRef.current.thread().getState().messages;
-      const tail = msgs.length ? msgs[msgs.length - 1] : null;
+      const tail = lastOf(msgs);
       const spoken = spokenReplyRef.current;
       if (spoken && tail?.role === "assistant" && tail.id === spoken.id && latestAssistantText() === spoken.text) {
         voiceTrace("engine.runFlicker", { id: tail.id });
@@ -1332,8 +1330,8 @@ export const VoiceEngine: FC = () => {
             _firstTokenTurn = live;
             voiceTrace("turn.firstToken", { turnId: live, approxMs: 150 });
           }
-          if (f && !f.queued) {
-          } else if (!spokenRunRef.current) {
+          // A filler still waiting to be queued holds the reply text back.
+          if (!(f && !f.queued) && !spokenRunRef.current) {
             feedTextRef.current(text);
           }
           const now = Date.now();
@@ -1437,7 +1435,7 @@ export const VoiceEngine: FC = () => {
     if (spokenRun && streamBegun && spokenClipsRef.current > 0) {
       // The reply played as it streamed: end the stream once the last chunk has.
       const endMsgs = auiRef.current.thread().getState().messages;
-      const endTail = endMsgs.length ? endMsgs[endMsgs.length - 1] : null;
+      const endTail = lastOf(endMsgs);
       spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
       const gen = streamGenRef.current;
       setTimeout(() => {
@@ -1461,7 +1459,7 @@ export const VoiceEngine: FC = () => {
         voiceTrace("engine.lateAnswer", { chars: late.length });
         if (late) {
           const lateMsgs = auiRef.current.thread().getState().messages;
-          const lateTail = lateMsgs.length ? lateMsgs[lateMsgs.length - 1] : null;
+          const lateTail = lastOf(lateMsgs);
           spokenReplyRef.current = lateTail?.role === "assistant" ? { id: lateTail.id, text: late } : null;
         }
         endStreamRef.current(late);
@@ -1469,7 +1467,7 @@ export const VoiceEngine: FC = () => {
       return;
     }
     const endMsgs = auiRef.current.thread().getState().messages;
-    const endTail = endMsgs.length ? endMsgs[endMsgs.length - 1] : null;
+    const endTail = lastOf(endMsgs);
     spokenReplyRef.current = endTail?.role === "assistant" ? { id: endTail.id, text } : null;
     // Read again after a beat: the last token can land after isRunning flipped.
     if (streamBegun) {
@@ -1514,6 +1512,15 @@ export const VoiceEngine: FC = () => {
 
   // No session-end watcher: the adapter raises requestVoiceSubmit itself.
 
+  // What turning off, a thread switch and stop-speaking all drop: the pending interject, filler and queued words.
+  const resetVoiceTail = useCallback(() => {
+    earlyInterjectRef.current?.reset();
+    clearFiller();
+    setPendingFiller(null);
+    queuedUtteranceRef.current = [];
+    pendingForVoiceRef.current = [];
+  }, [clearFiller]);
+
   const turnOff = useCallback(() => {
     // Dismissing the setup panel leaves a typed reply running: only an active voice owns the run.
     const wasActive = voiceModeRef.current === "active";
@@ -1532,11 +1539,7 @@ export const VoiceEngine: FC = () => {
     clearHeldTurn();
     forgetVoiceBox();
     clearPendingVoiceNotes();
-    earlyInterjectRef.current?.reset();
-    clearFiller();
-    setPendingFiller(null);
-    queuedUtteranceRef.current = [];
-    pendingForVoiceRef.current = [];
+    resetVoiceTail();
     clearVoiceDecisions();
     holdPlayback(false);
     if (streamPollRef.current) {
@@ -1556,7 +1559,7 @@ export const VoiceEngine: FC = () => {
     }
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
-  }, [stop, clearFiller, holdPlayback]);
+  }, [stop, resetVoiceTail, holdPlayback]);
 
   const toggle = useCallback(() => {
     if (voiceModeRef.current !== "off") {
@@ -1599,16 +1602,12 @@ export const VoiceEngine: FC = () => {
     clearHeldTurn();
     forgetVoiceBox();
     clearPendingVoiceNotes();
-    earlyInterjectRef.current?.reset();
-    clearFiller();
-    setPendingFiller(null);
-    queuedUtteranceRef.current = [];
-    pendingForVoiceRef.current = [];
+    resetVoiceTail();
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
     if (voiceModeRef.current === "active") resumeListen();
-  }, [stop, resumeListen, clearFiller, settleInterject]);
+  }, [stop, resumeListen, resetVoiceTail, settleInterject]);
 
   useEffect(() => {
     registerVoiceThreadReset(threadReset);
@@ -1671,11 +1670,7 @@ export const VoiceEngine: FC = () => {
       }
       clearHeldTurn();
       clearPendingVoiceNotes();
-      earlyInterjectRef.current?.reset();
-      clearFiller();
-      setPendingFiller(null);
-      queuedUtteranceRef.current = [];
-      pendingForVoiceRef.current = [];
+      resetVoiceTail();
       stop();
       const thread = auiRef.current.thread();
       if (thread.getState().isRunning) {
@@ -1690,7 +1685,7 @@ export const VoiceEngine: FC = () => {
       resumeListen();
     });
     return () => registerVoiceStopSpeaking(null);
-  }, [stop, resumeListen, clearFiller]);
+  }, [stop, resumeListen, resetVoiceTail]);
 
   useEffect(() => {
     registerVoicePauseToggle(() => {
@@ -1724,7 +1719,7 @@ export const VoiceEngine: FC = () => {
     if (!useVoiceSettingsStore.getState().heardCut) return null;
     const played = playedLogRef.current();
     const msgs = auiRef.current.thread().getState().messages;
-    const tail = msgs.length ? msgs[msgs.length - 1] : null;
+    const tail = lastOf(msgs);
     if (!played || tail?.role !== "assistant") return null;
     return { messageId: tail.id, position: playbackPositionRef.current(), ...played };
   }, []);
@@ -1800,7 +1795,7 @@ export const VoiceEngine: FC = () => {
     if (!snap) return;
     const msgs = auiRef.current.thread().getState().messages;
     // Only the reply still being cut: a snapshot older than the tail heard some other reply.
-    const msg = msgs.length ? msgs[msgs.length - 1] : null;
+    const msg = lastOf(msgs);
     if (!msg || msg.id !== snap.messageId) return;
     const text = withoutAudioPlayer(joinTextParts(msg.content as Array<{ type: string; text?: string }>).text);
     const cut = laterCut(
@@ -1920,9 +1915,8 @@ export const VoiceMuteButton: FC = () => {
   );
 };
 
-// Desktop only: holding the mini orb swaps the window for the floating orb
-// (orb-widget-host.ts). It opens as the hold arms, and the click that follows the
-// release is swallowed so a hold never also opens the full orb.
+// Desktop only: holding the mini orb swaps the window for the floating orb (orb-widget-host.ts) as the
+// hold arms; the click after the release is swallowed so a hold never also opens the full orb.
 function useOrbWidgetHold() {
   const firedRef = useRef(false);
   // Screen coordinates are already logical (CSS) pixels, so no scale factor applies.

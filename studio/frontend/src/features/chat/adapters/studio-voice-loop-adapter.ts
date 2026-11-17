@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The store directly: the feature barrel imports back here through the dictation dispatcher.
 import { encodeWav } from "@/features/chat/adapters/pcm-recorder";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   bargeOnset,
   createBargeGate,
@@ -75,12 +73,12 @@ import {
   turnClipSpan,
   turnClipTail,
 } from "@/features/chat/voice/turn-end";
+import type { VoiceLoopPorts } from "../voice/voice-loop-ports";
 import { voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { isTrackingSttDownload } from "@/features/settings/lib/stt-download-mirror";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
-import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -102,7 +100,7 @@ const SILENCE_RMS_MIN = 0.006;
 const SPEECH_RMS_MIN = 0.011;
 const SILENCE_OVER_FLOOR = 1.6;
 const SPEECH_OVER_FLOOR = 2.6;
-const SILENCE_HANG_MS = 1000; // silence after speech ends the utterance
+const SILENCE_HANG_MS = 1000;
 // A transcript that reads cut off is held, and the next window gets this longer hang for the rest.
 const CONTINUATION_HANG_MS = 1800;
 const CONTINUATION_FLUSH_MS = 4000;
@@ -111,10 +109,10 @@ const MAX_UTTERANCE_MS = 30000;
 const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
 const ZERO_RUN_TRACE_MS = 200;
-// Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
 // How long the capture context may take to start before voice mode says audio is blocked.
 const AUDIO_START_TIMEOUT_MS = 3000;
 const AUDIO_NOT_STARTED = "AudioNotStarted";
+// Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
 const BARGE_PREROLL_MS = 600;
 // Held while the reply plays so a barge-in keeps the words before the gate fired (bargeOnset).
 const BARGE_LOOKBACK_MS = 2500;
@@ -122,9 +120,6 @@ const BARGE_LOOKBACK_MS = 2500;
 const BARGE_GAP_MS = 350;
 const BARGE_UNCONFIRMED_MS = 450;
 const BARGE_CONFIRMED_MS = 250;
-
-// The transcriber the download prompt was last raised for as listening began: a dismissed prompt
-// is not raised again every time the mic re-arms (an utterance that needs the model still asks).
 
 // Scoped to the detector pick that failed: choosing another one asks again.
 let vadDisabled = false;
@@ -216,7 +211,7 @@ let heldEpoch = 0;
 
 let micMuted = false;
 
-// A second listen() used to leave an orphan holding the mic and the loop went deaf: the older one is cancelled.
+// A second listen() cancels the older one; an orphan would hold the mic and leave the loop deaf.
 let liveSession: { cancel: () => void; reacquire: (reason: string) => void } | null = null;
 export function setMicMuted(muted: boolean): void {
   micMuted = muted;
@@ -271,8 +266,7 @@ const sttKey = (modelId: string | undefined) => modelId ?? "";
 const readsCutOff = (text: string, modelId: string | undefined) =>
   readsUnfinished(text, punctuatingStt === sttKey(modelId));
 
-// soundedP: Smart Turn called the turn finished with this probability, and the judge must agree too
-// (the "Smart Turn + judge" lane, fuseTurn); null asks the judge alone.
+// soundedP: Smart Turn's finished probability, which the judge must also agree with (fuseTurn); null asks the judge alone.
 async function turnUnfinished(
   text: string,
   modelId: string | undefined,
@@ -325,6 +319,16 @@ export function clearHeldTurn(): void {
   heldEdit.reset();
 }
 
+// Set once by the voice engine before any listen(); the loop's state is module-wide, so its ports are too.
+let configuredPorts: VoiceLoopPorts | null = null;
+export function setVoiceLoopPorts(next: VoiceLoopPorts): void {
+  configuredPorts = next;
+}
+function loopPorts(): VoiceLoopPorts {
+  if (!configuredPorts) throw new Error("Voice loop ports are not set.");
+  return configuredPorts;
+}
+
 let readComposerText: () => string = () => "";
 export function registerComposerTextReader(read: (() => string) | null): void {
   readComposerText = read ?? (() => "");
@@ -332,7 +336,7 @@ export function registerComposerTextReader(read: (() => string) | null): void {
 
 const heldEdit = createHeldEdit({
   readBox: () => readComposerText(),
-  onChange: (owned) => useChatRuntimeStore.getState().setVoiceHeldForEdit(owned),
+  onChange: (owned) => configuredPorts?.setHeldForEdit(owned),
   // The speech kept for that draft goes with it, not into the next turn.
   onCleared: () => turnAudio.clear(),
   trace: voiceTrace,
@@ -382,6 +386,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       throw new Error("Voice mode can't use the microphone in this browser.");
     }
 
+    const ports = loopPorts();
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
       (result: DictationAdapter.Result) => void
@@ -409,7 +414,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const switchedOff = () => getVoiceMode() === "off" || voiceOffEpoch() !== offAtOpen;
     // Taken as the session opens: a clear while it still records drops what it hears.
     const epoch = heldEpoch;
-    if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
+    if (vadDisabled && ports.runtime().selectedVadModelId !== vadDisabledFor) {
       vadDisabled = false;
     }
     let noiseFloor = 0;
@@ -448,8 +453,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const preroll: Float32Array[] = [];
     // Per preroll frame: it was over the barge-in bar.
     const prerollLoud: boolean[] = [];
-    // The utterance going to a transcriber that follows along as it is spoken (live-transcript.ts):
-    // `fed` is the next chunk it has not been given.
+    // The live transcriber following this utterance (live-transcript.ts); `fed` is the next chunk it lacks.
     let live: { session: LiveTranscript; modelId: string | undefined; fed: number } | null = null;
     // A pause already took the live transcript: only more speech starts another.
     let liveTaken = false;
@@ -472,6 +476,15 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     let trackMutedAt = 0;
     let sampleRate = 16000;
     let heardSpeech = false;
+    // Both ways speech starts (plain speech, a committed barge-in) open the turn the same way.
+    const markSpeechStarted = () => {
+      heardSpeech = true;
+      startTurn();
+      utteranceInFlight = true;
+      noteSpeechStart();
+      ports.setHearing(true);
+      for (const cb of speechStartCallbacks) cb();
+    };
     const hearingHint = createHearingHint();
     let lastVoiceAt = 0;
     let startedAt = 0;
@@ -548,11 +561,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       finish("stopped");
       setTimeout(() => requestVoiceResume(), 0);
     };
-    let unsubMic: (() => void) | null = useVoiceSettingsStore.subscribe(
-      (state, prev) => {
-        if (state.micDeviceId !== prev.micDeviceId) reopen("micSwitch", { to: state.micDeviceId });
-      },
-    );
+    let unsubMic: (() => void) | null = ports.onMicDeviceChange((to) => reopen("micSwitch", { to }));
     // Output routes change too (macOS fires this when a reply plays): only a changed set of inputs reopens.
     let inputIds: string | null = null;
     const audioInputIds = async () => {
@@ -589,7 +598,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       unsubMic = null;
       navigator.mediaDevices.removeEventListener?.("devicechange", onDevicesChanged);
       window.removeEventListener("focus", onFocus);
-      useChatRuntimeStore.getState().setVoiceHearing(false);
+      ports.setHearing(false);
       if (processor) {
         processor.onaudioprocess = null;
         processor.disconnect();
@@ -641,7 +650,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       barge: boolean,
     ): Promise<{ kept: boolean; speech_ms: number } | null> => {
       if (!vadReady || vadDisabled) return null;
-      const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
+      const vadPick = ports.runtime().selectedVadModelId;
       try {
         const { speech_ms, bars } = await detectSpeech(blob, vadPick);
         return { kept: speech_ms >= minSpeechMs(bars, barge), speech_ms };
@@ -671,7 +680,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       return frameMs > 0 ? Math.ceil(SILENCE_PAD_MS / frameMs) : 0;
     };
     const clipKey = (span: { start: number; end: number }) => {
-      const rt = useChatRuntimeStore.getState();
+      const rt = ports.runtime();
       const vad = vadReady && !vadDisabled ? rt.selectedVadModelId : "off";
       return `${span.start}:${span.end}:${rt.selectedSttModelId ?? ""}:${vad}`;
     };
@@ -689,12 +698,11 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       if (!live) return;
       while (live.fed < chunks.length) live.session.feed(chunks[live.fed++]);
     };
-    // Opens a live transcript of the utterance so far and keeps it fed; a pick that cannot give
-    // one leaves `live` empty, and the clip is transcribed when it ends, as before.
+    // Opens a live transcript and keeps it fed; with none, the clip is transcribed when it ends.
     const startLive = () => {
       const span = utteranceSpan(chunkVoiced, chunkNotSilent, padFrames());
       if (!span) return;
-      const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+      const modelId = ports.runtime().selectedSttModelId ?? undefined;
       const session = openSttLive(sampleRate, modelId, (text) => {
         // Words over a reply may be its echo or an "mm-hm", and a box being edited is the user's.
         if (ended || bargedIn || !heldEdit.autoSend()) return;
@@ -713,7 +721,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       feedLive();
     };
     const turnEnd = createTurnEndCheck(
-      (wav, signal) => askTurnEnd(wav, signal, useVoiceSettingsStore.getState().dictationLanguage),
+      (wav, signal) => askTurnEnd(wav, signal, ports.settings().dictationLanguage),
       (answer, ms) => {
         turnP = answer.p;
         voiceTrace("turn.end", { ...answer, ms, turnId });
@@ -736,7 +744,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     const analyseClip = (span: { start: number; end: number }): ClipAnalysis => {
       const merged = spanSamples(span);
       const wav = wavBlob(merged, sampleRate);
-      const modelId = useChatRuntimeStore.getState().selectedSttModelId ?? undefined;
+      const modelId = ports.runtime().selectedSttModelId ?? undefined;
       let dropped = false;
       const vad = detectClip(wav, bargedIn);
       // The live transcript has heard all of this already: ending it gives the text at once.
@@ -748,9 +756,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         live = null;
         liveTaken = true;
       }
-      // A clip dropped before its transcription starts is never sent. One already in flight is left
-      // to finish: the server answers an aborted transcription by restarting the transcriber, and
-      // that model load costs the next clip far more than these few hundred milliseconds.
+      // A clip dropped before transcription starts is never sent. One in flight finishes: aborting makes
+      // the server restart the transcriber, which costs the next clip far more than a few hundred ms.
       const text = vad.then(async (v) => {
         if (v?.kept === false || dropped) return "";
         if (heard) {
@@ -779,8 +786,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       voiceTrace("session.noSpeech", { bargedIn });
       settleFinished(false);
       if (heldTurn) {
-        // The rest never came: the fragment was the whole turn after all (the
-        // submit cuts the reply it barged into, so no abort here).
+        // The rest never came, so the fragment was the whole turn (its submit cuts the barged reply: no abort).
         const text = heldTurn.text;
         const heldId = heldTurn.turnId ?? undefined;
         heldTurn = null;
@@ -856,21 +862,21 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
       try {
         const modelId = analysis.modelId;
-        const store = useChatRuntimeStore.getState();
-        store.setVoiceTranscribing(true);
+        ports.setTranscribing(true);
         let transcript = "";
         try {
           transcript = await analysis.text;
           if (ended) return;
         } catch (error) {
           if (error instanceof SttModelNotDownloadedError && !switchedOff()) {
-            const missing = modelId ?? useVoiceSettingsStore.getState().sttModel;
+            const missing = modelId ?? ports.settings().sttModel;
             const downloading = isTrackingSttDownload(missing);
             if (!downloading) requestSttDownload(missing, { voice: true });
             // Not a failed transcription: the voice waits for the transcriber (the orb and pill say so)
             // and listens again once it is loaded. This clip cannot be heard.
-            const rt = useChatRuntimeStore.getState();
-            if (rt.selectedSttModelId === missing) rt.setSttSlotDownload(downloading ? "downloading" : "needed");
+            if (ports.runtime().selectedSttModelId === missing) {
+              ports.setSttSlotDownload(downloading ? "downloading" : "needed");
+            }
             voiceTrace("stt.notDownloaded", { model: missing, downloading });
             if (bargedIn) requestVoiceBargeAbort();
             finish("cancelled");
@@ -878,7 +884,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
           throw error;
         } finally {
-          store.setVoiceTranscribing(false);
+          ports.setTranscribing(false);
         }
         // Voice was turned off while this clip was heard: its words are discarded, never held for the next session.
         if (switchedOff()) {
@@ -926,12 +932,12 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         // Decided before keeping this speech, so an emptied draft's audio is dropped first.
         let editing = !heldEdit.autoSend();
         const spokenNow = transcript;
-        const rt = useChatRuntimeStore.getState();
+        const rt = ports.runtime();
         // A clear during STT already emptied the buffer; this turn's speech must not refill it.
         if (
           transcript &&
           epoch === heldEpoch &&
-          voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)
+          voiceHearsAudio(rt, ports.settings().micTarget)
         ) {
           turnAudio.add(analysis.samples, sampleRate);
         }
@@ -940,11 +946,10 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
           heldJudgeId = null;
         }
-        // A turn that sounded finished is sent unless its words read cut off; the text judge is asked
-        // only about one that trailed off.
+        // A finished-sounding turn is sent unless it reads cut off; only that case goes to the text judge.
         voiceTrace("turn.transcript", { turnId, chars: transcript.length });
         const judged = Boolean(transcript) && !editing;
-        const { turnEnding, turnJudgeBar } = useVoiceSettingsStore.getState();
+        const { turnEnding, turnJudgeBar } = ports.settings();
         const unfinished =
           judged &&
           (soundedFinished
@@ -1052,35 +1057,39 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
     void (async () => {
       try {
-        const micDeviceId = useVoiceSettingsStore.getState().micDeviceId;
+        const micDeviceId = ports.settings().micDeviceId;
         const pinnedMic = micDeviceId && micDeviceId !== "default";
         const baseAudio: MediaTrackConstraints = {
           echoCancellation: true,
           noiseSuppression: true,
         };
-        // One open at a time; a session cancelled while it waited stops its own tracks before the next opens.
-        stream = await openMicOnce(async () => {
-          if (ended) return null;
-          let opened: MediaStream;
+        const openStream = async (): Promise<MediaStream> => {
           try {
-            opened = await navigator.mediaDevices.getUserMedia({
+            return await navigator.mediaDevices.getUserMedia({
               audio: pinnedMic
                 ? { ...baseAudio, deviceId: { exact: micDeviceId } }
                 : baseAudio,
             });
           } catch (error) {
-            // Same fallback as the Dictate adapters: a pinned headset that is
-            // unplugged must not kill the loop, just lose its pin for this turn.
+            // As in the Dictate adapters: an unplugged pinned headset loses its pin for this turn, not the loop.
             if (pinnedMic && isMissingDeviceError(error)) {
-              opened = await navigator.mediaDevices.getUserMedia({
-                audio: baseAudio,
-              });
-            } else {
-              throw error;
+              return navigator.mediaDevices.getUserMedia({ audio: baseAudio });
             }
+            throw error;
           }
-          if (ended) {
-            opened.getTracks().forEach((t) => t.stop());
+        };
+        // One open at a time; a session cancelled while it waited stops its own tracks before the next opens.
+        // A request the browser never answers (a stuck device) frees the queue once its session ends, so the
+        // next session is not stuck behind it; a stream that still arrives after that is stopped at once.
+        stream = await openMicOnce(async () => {
+          if (ended) return null;
+          const opening = openStream();
+          const opened = await Promise.race([opening, endedPromise.then(() => null)]);
+          if (!opened || ended) {
+            void opening.then(
+              (late) => late.getTracks().forEach((t) => t.stop()),
+              () => {},
+            );
             return null;
           }
           return opened;
@@ -1093,9 +1102,8 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const primed = getVoiceCaptureContext();
         ownsCtx = !primed;
         audioCtx = primed ?? new AudioCtx();
-        // Created outside the user gesture: a suspended context never fires audioprocess. Safari
-        // refuses to start one without a gesture and Firefox leaves resume() pending, so wait a
-        // bounded time: an orb on "Listening" that cannot hear is the failure B1 was about.
+        // Created outside the user gesture, a suspended context never fires audioprocess: Safari won't start
+        // one and Firefox leaves resume() pending, so the wait is bounded instead of a deaf orb on Listening.
         const started = await Promise.race([
           audioCtx.resume().then(
             () => true,
@@ -1157,47 +1165,42 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           handle.reacquire("silent");
         }, 250);
 
-        const sttPick =
-          useChatRuntimeStore.getState().selectedSttModelId ??
-          useVoiceSettingsStore.getState().sttModel;
-        const sttPicked = () => useChatRuntimeStore.getState().selectedSttModelId === sttPick;
-        // A transcriber known to be missing is not loaded again until its download ends: every
-        // listen session (one per 8 s of quiet) asked, and got a 409 each time.
-        if (useChatRuntimeStore.getState().sttSlotDownload === null) {
+        const sttPick = ports.runtime().selectedSttModelId ?? ports.settings().sttModel;
+        const sttPicked = () => ports.runtime().selectedSttModelId === sttPick;
+        // A missing transcriber isn't reloaded until its download ends: each listen session (one per 8 s of quiet) got a 409.
+        if (ports.runtime().sttSlotDownload === null) {
           void loadSttModel(sttPick, undefined, undefined, undefined, undefined, undefined, true)
             .then(() => {
-              if (sttPicked()) useChatRuntimeStore.getState().setSttSlotLoaded(true);
+              if (sttPicked()) ports.setSttSlotLoaded(true);
             })
             .catch((error: unknown) => {
               if (!sttPicked()) return;
-              const rt = useChatRuntimeStore.getState();
-              rt.setSttSlotLoaded(false);
+              ports.setSttSlotLoaded(false);
               if (!(error instanceof SttModelNotDownloadedError)) return;
               const downloading = isTrackingSttDownload(sttPick);
-              rt.setSttSlotDownload(downloading ? "downloading" : "needed");
+              ports.setSttSlotDownload(downloading ? "downloading" : "needed");
               // Asked as listening begins, not after the first utterance is lost to the missing model.
               if (!downloading) requestSttDownload(sttPick, { voice: true });
             });
         }
         // Off in Settings > Voice > Voice mode: the fixed silence wait alone ends a turn.
-        if (useVoiceSettingsStore.getState().turnEnding !== "wait") {
+        if (ports.settings().turnEnding !== "wait") {
           void loadTurnModel().then((ready) => {
             turnReady = ready;
           });
         }
         if (!vadDisabled) {
-          const vadPick = useChatRuntimeStore.getState().selectedVadModelId;
+          const vadPick = ports.runtime().selectedVadModelId;
           void loadVadModel(vadPick)
             .then(() => {
               vadReady = true;
-              useChatRuntimeStore.getState().setVadSlotLoaded(true);
+              ports.setVadSlotLoaded(true);
             })
             .catch((error: unknown) => {
-              useChatRuntimeStore.getState().setVadSlotLoaded(false);
+              ports.setVadSlotLoaded(false);
               if (!(error instanceof VadUnavailableError)) return;
               const fallback = vadFallback(vadPick);
-              // Not saved: an install that gains the detector later (a runtime update) gets the pick back.
-              if (fallback) useChatRuntimeStore.setState({ selectedVadModelId: fallback });
+              if (fallback) ports.useVadFallback(fallback);
               else disableVad(vadPick);
             });
         }
@@ -1252,7 +1255,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             const cut = stepBargeGate(bargeGate, rms, frameMs);
             prerollLoud.push(bargeGate.wasLoud);
             if (bargeConfirming) bargePeakMs = Math.max(bargePeakMs, bargeGate.loudMs);
-            const rt = useChatRuntimeStore.getState();
+            const rt = ports.runtime();
             const hint = hearingHint.step(
               bargeGate.loudMs > 0,
               rt.voiceOrbState,
@@ -1263,7 +1266,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 on: hint,
                 orb: rt.voiceOrbState,
               });
-              rt.setVoiceHearing(hint);
+              ports.setHearing(hint);
             }
             if (!cut) return;
             const commitBarge = () => {
@@ -1288,12 +1291,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
               }
               voicedMs = Math.max(bargeGate.loudMs, bargePeakMs);
               bargePeakMs = 0;
-              heardSpeech = true;
-              startTurn();
-              utteranceInFlight = true;
-              noteSpeechStart();
-              useChatRuntimeStore.getState().setVoiceHearing(true);
-              for (const cb of speechStartCallbacks) cb();
+              markSpeechStarted();
             };
             if (!vadReady || vadDisabled) {
               if (bargeGate.loudMs < BARGE_UNCONFIRMED_MS) return;
@@ -1321,7 +1319,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 bargeGate.loudMs = 0;
                 bargePeakMs = 0;
                 if (hearingHint.reject() === false)
-                  useChatRuntimeStore.getState().setVoiceHearing(false);
+                  ports.setHearing(false);
                 return;
               }
               commitBarge();
@@ -1351,11 +1349,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             !heardSpeech &&
             hearingHint.step(false, null, now) === false
           ) {
-            useChatRuntimeStore.getState().setVoiceHearing(false);
+            ports.setHearing(false);
           }
-          // notSilent keeps the utterance alive (resets the silence-hang timer);
-          // speech is the stricter bar that actually counts toward transcription,
-          // so noise/clicks between the two thresholds never reach STT.
+          // notSilent keeps the utterance alive; only speech counts toward STT.
           const speechBar = Math.max(SPEECH_RMS_MIN, noiseFloor * SPEECH_OVER_FLOOR);
           speechBarSeen = speechBar;
           const notSilent = rms >= Math.max(SILENCE_RMS_MIN, noiseFloor * SILENCE_OVER_FLOOR);
@@ -1374,12 +1370,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
             if (!heardSpeech) {
               voicedMs += prerollVoicedMs;
               prerollVoicedMs = 0;
-              heardSpeech = true;
-              startTurn();
-              utteranceInFlight = true;
-              noteSpeechStart();
-              useChatRuntimeStore.getState().setVoiceHearing(true);
-              for (const cb of speechStartCallbacks) cb();
+              markSpeechStarted();
             }
           }
           if (heardSpeech) {
@@ -1456,7 +1447,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           }
         };
 
-        // onaudioprocess only fires while the processor reaches a destination; a muted sink
+        // onaudioprocess only fires while the processor reaches a destination, so it feeds a muted sink.
         sink = audioCtx.createGain();
         sink.gain.value = 0;
         source.connect(processor);

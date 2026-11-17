@@ -31,8 +31,7 @@ const VOICE_MODE_PRIMARY_OPTIONS: ReadonlySet<string> = new Set([
   "instruction",
 ]);
 
-// Most models declare speed without a range (Kokoro: "finite and positive"), which draws a number box.
-// Voice mode gives it the range speech stays clear in, so it is a slider like the rest.
+// Speed often has no declared range (Kokoro: "finite and positive"); this clear-speech range makes it a slider.
 const VOICE_MODE_SPEED = { min: 0.5, max: 2, default: 1 };
 
 function forVoiceMode(spec: AudioOptionSpec): AudioOptionSpec {

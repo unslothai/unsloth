@@ -7,17 +7,20 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const chatPage = readSrc("features/chat/chat-page.tsx");
+const sessionStore = readSrc("features/chat/voice/voice-session-store.ts");
 
-test("voice mode going off releases the speech detector, which has no idle unload", () => {
-  assert.match(
-    chatPage,
-    /if \(voiceMode !== "off" \|\| was === "off"\) return;\s*unloadOwnVoice\(\);\s*void unloadSttModel\(\)\.catch\(\(\) => \{\}\);\s*void unloadVadModel\(\);/,
-  );
+test("Chat hands voice mode changes and its own unmount to the voice session", () => {
+  assert.match(chatPage, /useEffect\(\(\) => \{\s*voiceSession\.setMode\(voiceMode\);\s*\}, \[voiceMode, voiceSession\]\);/);
+  assert.match(chatPage, /useEffect\(\(\) => \{\s*voiceSession\.activate\(\);\s*return \(\) => voiceSession\.dispose\(\);\s*\}, \[voiceSession\]\);/);
 });
 
-test("leaving Chat with voice mode on releases the speech detector too", () => {
+test("the session's listening release is the store one", () => {
+  assert.match(sessionStore, /releaseListening: releaseVoiceModels,/);
+});
+
+test("releasing voice models includes the transcriber and the speech detector", () => {
   assert.match(
-    chatPage,
-    /if \(prevVoiceModeRef\.current === "off"\) return;\s*void unloadSttModel\(\)\.catch\(\(\) => \{\}\);\s*void unloadVadModel\(\);/,
+    sessionStore,
+    /function releaseVoiceModels\(\): void \{\s*void unloadSttModel\(\)\.catch\(\(\) => \{\}\);\s*void unloadVadModel\(\);/,
   );
 });

@@ -86,7 +86,7 @@ test("speech comes back from the model only where it speaks and is the picked vo
 
 test("the loop keeps and sends the turn's speech through the hearing gate, not the speaking one", () => {
   const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
-  assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
+  assert.match(loop, /transcript &&\s*epoch === heldEpoch &&\s*voiceHearsAudio\(rt, ports\.settings\(\)\.micTarget\)\s*\) \{\s*turnAudio\.add/);
   // An emptied edit drops its speech before this turn's is kept.
   assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
   assert.match(loop, /let editing = !heldEdit\.autoSend\(\);[\s\S]{0,400}turnAudio\.add\(analysis\.samples, sampleRate\)/);

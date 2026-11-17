@@ -28,7 +28,7 @@ export interface VoiceDecisionStatus {
   builtin_configured?: boolean;
 }
 
-const URL = "/api/inference/voice/decision";
+const DECISION_PATH = "/api/inference/voice/decision";
 async function read(res: Response): Promise<VoiceDecisionStatus> {
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -41,15 +41,15 @@ async function read(res: Response): Promise<VoiceDecisionStatus> {
   return (await res.json()) as VoiceDecisionStatus;
 }
 
-export async function fetchVoiceDecision(): Promise<VoiceDecisionStatus> {
-  return read(await authFetch(URL));
+async function fetchVoiceDecision(): Promise<VoiceDecisionStatus> {
+  return read(await authFetch(DECISION_PATH));
 }
 
 export async function setVoiceDecision(
   name: string | null,
 ): Promise<VoiceDecisionStatus> {
   return read(
-    await authFetch(URL, {
+    await authFetch(DECISION_PATH, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),

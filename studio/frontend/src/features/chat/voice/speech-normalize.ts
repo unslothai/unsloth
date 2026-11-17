@@ -4,7 +4,6 @@
 // Pure. Holds only the forms voices got wrong when listened to: money, thousands separators, decimals,
 // clock times, fractions, ISO dates, "No.", Roman numerals, phone numbers and GGUF (the Kokoro sample);
 // units, durations, weekday and month abbreviations (a 13-voice sweep, judged by an audio model).
-// Each rewrites to words the voice reads correctly.
 
 type Spoken = string | ((match: string, ...groups: (string | undefined)[]) => string);
 
@@ -61,12 +60,13 @@ function cardinal(digits: string): string {
   return groups.join(" ");
 }
 
+const IRREGULAR_ORDINALS: Readonly<Record<string, string>> = { one: "first", two: "second", three: "third",
+  five: "fifth", eight: "eighth", nine: "ninth", twelve: "twelfth" };
+
 function ordinal(digits: string): string {
   const words = cardinal(digits).split(" ");
   const last = words.pop()!;
-  const irregular: Record<string, string> = { one: "first", two: "second", three: "third", five: "fifth",
-    eight: "eighth", nine: "ninth", twelve: "twelfth" };
-  words.push(irregular[last] ?? (last.endsWith("y") ? `${last.slice(0, -1)}ieth` : `${last}th`));
+  words.push(IRREGULAR_ORDINALS[last] ?? (last.endsWith("y") ? `${last.slice(0, -1)}ieth` : `${last}th`));
   return words.join(" ");
 }
 
@@ -85,6 +85,9 @@ const decimal = (whole: string, fraction: string) => `${cardinal(whole)} point $
 // Longer than this the digits are a code or an id, which the voice reads well enough as written.
 const plain = (digits: string) => digits.replace(/,/g, "").length <= 15;
 
+// Largest first, for rebuilding a numeral's one canonical spelling.
+const ROMAN_CANONICAL = [["L", 50], ["XL", 40], ["X", 10], ["IX", 9], ["V", 5], ["IV", 4], ["I", 1]] as const;
+
 function romanValue(text: string): number | null {
   let total = 0;
   for (let i = 0; i < text.length; i++) {
@@ -93,10 +96,9 @@ function romanValue(text: string): number | null {
     total += value < next ? -value : value;
   }
   // Only the canonical spelling counts, so "IIII" or "VX" stay words.
-  const canonical = [["L", 50], ["XL", 40], ["X", 10], ["IX", 9], ["V", 5], ["IV", 4], ["I", 1]] as const;
   let rebuilt = "";
   for (let rest = total, k = 0; rest > 0; ) {
-    const [sym, val] = canonical[k];
+    const [sym, val] = ROMAN_CANONICAL[k];
     if (rest >= val) { rebuilt += sym; rest -= val; } else k++;
   }
   return rebuilt === text ? total : null;

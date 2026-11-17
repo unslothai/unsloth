@@ -17,6 +17,10 @@ import {
   voiceLoadNeedsCpu,
 } from "./voice-models";
 
+// What the server says is up: the serving list, or the older loaded list.
+const servingList = (status: Awaited<ReturnType<typeof getInferenceStatus>>) =>
+  status.serving ?? status.loaded ?? [];
+
 export async function voiceServing(id: string): Promise<boolean> {
   if (isChatModelVoice(id)) {
     // The model that answers, which may sit in a kept slot rather than the primary.
@@ -29,12 +33,12 @@ export async function voiceServing(id: string): Promise<boolean> {
     return routed && Boolean(status.speaks);
   }
   const status = await getInferenceStatus();
-  return (status.serving ?? status.loaded ?? []).some((s) => voiceIdServes(s, id));
+  return servingList(status).some((s) => voiceIdServes(s, id));
 }
 
 export async function servedVoice(): Promise<string | null> {
   const status = await getInferenceStatus();
-  return servedVoiceTtsModel(status.serving ?? status.loaded ?? []);
+  return servedVoiceTtsModel(servingList(status));
 }
 
 export async function loadVoice(id: string): Promise<void> {

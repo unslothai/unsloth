@@ -21,7 +21,7 @@ export function looksUnfinished(text: string): boolean {
   if (!t) return false;
   if (/[,;:\-–—]$|\.\.\.$|…$/.test(t)) return true;
   if (/[.!?]["')\]]?$/.test(t)) return false;
-  const words = t.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+  const words = wordsOf(t);
   const last = words[words.length - 1] ?? "";
   if (DANGLING.has(last)) return true;
   const tail = words.slice(-2).join(" ");
@@ -38,6 +38,9 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.every((w) => BACKCHANNEL.has(w) || /^(m+|h+m+|u+h+|a+h+|o+h+)$/.test(w));
 }
 
+// Letters and single spaces only, lowercased: how a whole transcript is matched against a phrase list.
+const plainSpeech = (t: string) => t.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " ");
+
 // Said over a reply to show the listener is following, not to take the turn.
 const ACKNOWLEDGEMENTS = new Set([
   "okay", "ok", "right", "sure", "alright", "all right", "i see", "got it", "wow", "really", "cool",
@@ -51,7 +54,7 @@ const ANSWER_WORDS = new Set(["yes", "yeah", "yep"]);
  * transcript must be the phrase: "okay, stop" is a request.
  */
 export function isAcknowledgement(transcript: string, reply: string): boolean {
-  const said = transcript.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " ");
+  const said = plainSpeech(transcript);
   if (ACKNOWLEDGEMENTS.has(said)) return true;
   return ANSWER_WORDS.has(said) && !reply.trim().endsWith("?");
 }
@@ -60,7 +63,7 @@ export function isAcknowledgement(transcript: string, reply: string): boolean {
 const STT_NOISE = new Set(["you", "thank you", "thank you very much", "thanks", "thanks for watching", "bye", "the end"]);
 
 export function isSttNoise(text: string): boolean {
-  return STT_NOISE.has(text.toLowerCase().replace(/[^\p{L}\s]/gu, " ").trim().replace(/\s+/g, " "));
+  return STT_NOISE.has(plainSpeech(text));
 }
 
 export function joinTurn(held: string, next: string): string {

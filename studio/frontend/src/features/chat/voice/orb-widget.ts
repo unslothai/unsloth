@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BLOB_AMP_PX } from "./blob-shape.ts";
 
 export const ORB_WIDGET_LABEL = "orb-widget";
 export const ORB_WIDGET_QUERY = "orb-widget";
 export const ORB_WIDGET_BALL = 72;
 // Reaches from voice-orb.tsx at 140 px: edge 70 + 3 + BLOB_AMP_PX; glow tail visible to 1.5x its 32 px blur.
 const K = ORB_WIDGET_BALL / 140;
-export const ORB_WIDGET_PEAK_SCALE = 1.1;
-export const ORB_WIDGET_EDGE_REACH = (70 + 3 + 22.4) * K * ORB_WIDGET_PEAK_SCALE;
+const ORB_WIDGET_PEAK_SCALE = 1.1;
+export const ORB_WIDGET_EDGE_REACH = (70 + 3 + BLOB_AMP_PX) * K * ORB_WIDGET_PEAK_SCALE;
 export const ORB_WIDGET_GLOW_REACH = (70 + 8 + 1.5 * 32) * K * ORB_WIDGET_PEAK_SCALE;
-export const ORB_WIDGET_MARGIN = 24;
+const ORB_WIDGET_MARGIN = 24;
 const HALF = Math.ceil(Math.max(ORB_WIDGET_EDGE_REACH, ORB_WIDGET_GLOW_REACH) + ORB_WIDGET_MARGIN);
 export const ORB_WIDGET_BAR_HEIGHT = 34;
-export const ORB_WIDGET_BAR_GAP = 7;
+const ORB_WIDGET_BAR_GAP = 7;
 export const ORB_WIDGET_BAR_TOP = HALF + ORB_WIDGET_BALL / 2 + ORB_WIDGET_BAR_GAP;
 export const ORB_WIDGET_WIDTH = 2 * HALF;
 export const ORB_WIDGET_HEIGHT = Math.max(2 * HALF, ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + 8);
@@ -84,7 +85,7 @@ export function sameLabels(a: OrbWidgetLabels | undefined, b: OrbWidgetLabels | 
   return a?.pause === b?.pause && a?.resume === b?.resume && a?.stop === b?.stop && a?.back === b?.back;
 }
 
-export interface OrbWidgetDecision {
+interface OrbWidgetDecision {
   id: string;
   decision: "allow" | "deny";
 }
@@ -135,12 +136,12 @@ export function sameApproval(a: OrbWidgetApproval | null, b: OrbWidgetApproval |
 export const ORB_WIDGET_POPUP_WIDTH = 156;
 export const ORB_WIDGET_POPUP_CARD_HEIGHT = 54;
 const POPUP_GAP = 6;
-export const ORB_WIDGET_POPUP_BELOW_TOP = ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + POPUP_GAP;
+const ORB_WIDGET_POPUP_BELOW_TOP = ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT + POPUP_GAP;
 export const ORB_WIDGET_GROWN_HEIGHT = Math.max(
   ORB_WIDGET_HEIGHT,
   ORB_WIDGET_POPUP_BELOW_TOP + ORB_WIDGET_POPUP_CARD_HEIGHT + POPUP_GAP,
 );
-export const ORB_WIDGET_POPUP_HEIGHT = ORB_WIDGET_GROWN_HEIGHT - ORB_WIDGET_HEIGHT;
+const ORB_WIDGET_POPUP_HEIGHT = ORB_WIDGET_GROWN_HEIGHT - ORB_WIDGET_HEIGHT;
 const SCREEN_MARGIN = 8;
 
 export interface PopupPlacement {
@@ -229,7 +230,7 @@ export interface Area {
   visibleBottom?: number;
 }
 
-export const ORB_WIDGET_BAR_BELOW_CENTER = ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT - ORB_WIDGET_CENTER.y;
+const ORB_WIDGET_BAR_BELOW_CENTER = ORB_WIDGET_BAR_TOP + ORB_WIDGET_BAR_HEIGHT - ORB_WIDGET_CENTER.y;
 
 function lowestCenter(m: Area): number {
   return Math.min(m.y + m.height - 1, (m.visibleBottom ?? m.y + m.height) - ORB_WIDGET_BAR_BELOW_CENTER);
@@ -261,6 +262,9 @@ function centreOn(p: Point, m: Area, size: { width: number; height: number }): b
 }
 
 const WIDGET_SIZE = { width: ORB_WIDGET_WIDTH, height: ORB_WIDGET_HEIGHT };
+// With no saved spot, the widget sits this far in from the screen's bottom-right corner.
+const FALLBACK_INSET_X = 24;
+const FALLBACK_INSET_Y = 72;
 
 // The saved spot only while its centre is on a connected screen: a display can be unplugged between uses.
 export function placeOrbWidget(
@@ -272,8 +276,8 @@ export function placeOrbWidget(
   if (saved && screens.some((m) => centreOn(saved, m, size))) return saved;
   if (!fallback) return null;
   return {
-    x: Math.round(fallback.x + fallback.width - size.width - 24),
-    y: Math.round(fallback.y + fallback.height - size.height - 72),
+    x: Math.round(fallback.x + fallback.width - size.width - FALLBACK_INSET_X),
+    y: Math.round(fallback.y + fallback.height - size.height - FALLBACK_INSET_Y),
   };
 }
 
@@ -297,7 +301,7 @@ export function clampToScreens(p: Point, screens: readonly Area[], center: Point
   return best;
 }
 
-export interface SpectrumFrame {
+interface SpectrumFrame {
   side: "input" | "output";
   level: number;
   bands: number[];

@@ -7,7 +7,7 @@ export const ORB_BALL_EXTENT = 96;
 export const ORB_STATUS_HEIGHT = 20;
 export const ORB_CHIP_HEIGHT = 36;
 
-export interface OrbStackLayout {
+interface OrbStackLayout {
   status: number;
   chip: number | null;
   card: number | null;

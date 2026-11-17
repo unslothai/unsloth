@@ -264,10 +264,8 @@ export const OrbWidgetView: FC = () => {
   useEffect(() => {
     let off: (() => void) | null = null;
     let disposed = false;
-    void listen<unknown>(ORB_WIDGET_SPECTRUM_EVENT, ({ payload }) => {
-      remote.level = unpackSpectrum(payload, remote.bands);
-      remote.side = (payload as { side?: string } | null)?.side ?? null;
-    }).then((unlisten) => {
+    // A listener that resolves after unmount is dropped at once; otherwise it joins the cleanup.
+    const adopt = (unlisten: () => void) => {
       if (disposed) unlisten();
       else {
         const prev = off;
@@ -276,7 +274,11 @@ export const OrbWidgetView: FC = () => {
           unlisten();
         };
       }
-    });
+    };
+    void listen<unknown>(ORB_WIDGET_SPECTRUM_EVENT, ({ payload }) => {
+      remote.level = unpackSpectrum(payload, remote.bands);
+      remote.side = (payload as { side?: string } | null)?.side ?? null;
+    }).then(adopt);
     void listen<OrbWidgetSnapshot>(ORB_WIDGET_STATE_EVENT, ({ payload }) =>
       // Only a real change re-renders; the pulse and the wave never go through React.
       setState((prev) =>
@@ -292,14 +294,7 @@ export const OrbWidgetView: FC = () => {
           : payload,
       ),
     ).then((unlisten) => {
-      if (disposed) unlisten();
-      else {
-        const prev = off;
-        off = () => {
-          prev?.();
-          unlisten();
-        };
-      }
+      adopt(unlisten);
       void emitTo("main", ORB_WIDGET_READY_EVENT).catch(() => undefined);
     });
     return () => {

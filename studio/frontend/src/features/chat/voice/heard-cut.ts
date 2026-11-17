@@ -117,6 +117,9 @@ export function keepVoiceHeard(
 }
 
 /** The last words the user heard, for the note under an interrupted reply; "" when none were. */
+// Built on first use, then reused.
+let graphemeSegmenter: Intl.Segmenter | undefined;
+
 export function heardTail(content: readonly Part[], cut: HeardCut, words = 6): string {
   // An inline player tag carries its audio as base64: blanked, or the note would show it.
   const heard = splitSpoken(joinTextParts(content).text.slice(0, cut.offset).replace(/<audio-player\b[^>]*\/>/g, " "))
@@ -127,6 +130,7 @@ export function heardTail(content: readonly Part[], cut: HeardCut, words = 6): s
     .filter(Boolean);
   // An unspaced script (ja, zh, th) has no words to count: the note keeps to a short tail by characters too.
   // By graphemes, so neither an emoji nor a letter with its marks is split.
-  const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(heard.slice(-words).join(" "));
+  graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const graphemes = graphemeSegmenter.segment(heard.slice(-words).join(" "));
   return Array.from(graphemes, (g) => g.segment).slice(-80).join("");
 }

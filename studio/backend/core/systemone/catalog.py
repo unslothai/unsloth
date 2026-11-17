@@ -695,9 +695,10 @@ def folder_decisions() -> list[Checkpoint]:
     """Decision models in the custom folders: the folder itself, its children, and grandchildren when recursive."""
     seen: dict[str, Checkpoint] = {}
     for root, recursive in _custom_roots():
-        candidates = [root, *_subdirs(root)]
+        children = _subdirs(root)
+        candidates = [root, *children]
         if recursive:
-            candidates += [g for child in _subdirs(root) for g in _subdirs(child)]
+            candidates += [g for child in children for g in _subdirs(child)]
         for folder in candidates:
             # Resolved and kept under the root, as folder_decision checks, so every listed name loads.
             real = Path(os.path.realpath(folder))

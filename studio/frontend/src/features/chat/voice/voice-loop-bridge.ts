@@ -228,7 +228,7 @@ export function requestVoiceBargeAbort(): void {
   voiceBargeAbort?.();
 }
 
-export type ToolCallInfo = { toolName: string; args: unknown };
+type ToolCallInfo = { toolName: string; args: unknown };
 let toolCallDescriber: ((toolCallId: string) => ToolCallInfo | null) | null = null;
 
 export function registerToolCallDescriber(

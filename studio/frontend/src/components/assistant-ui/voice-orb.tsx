@@ -89,7 +89,6 @@ const Dots: FC = () => (
 // Wide enough for the edge's full reach (70 + 3 + BLOB_AMP_PX), or the peaks are cut flat.
 const ORB_BOX = 196;
 const ORB_R = 70;
-const BLOB_AMP = BLOB_AMP_PX;
 const VAD_RIPPLE_BOX = 184;
 const BLOB_FRAME_MS = 1000 / 61;
 const BLOB_ATTACK = 0.45;
@@ -105,7 +104,7 @@ const blobControls = createBlobControls();
 function blobPath(bands: Float32Array, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
   foldControls(bands, 0, blobControls);
-  return `path("${blobBezierPath(blobControls, ORB_R + level * 3, BLOB_AMP, c, c, k)}")`;
+  return `path("${blobBezierPath(blobControls, ORB_R + level * 3, BLOB_AMP_PX, c, c, k)}")`;
 }
 
 function easeBands(raw: Float32Array, eased: Float32Array, dtMs: number): void {
@@ -276,23 +275,15 @@ const VadRipple: FC = () => {
   );
 };
 
+// For glyphs drawn to fill their box rather than sized by a size prop.
+const SizedGlyph: FC<{ children: React.ReactNode }> = ({ children }) => (
+  <span style={{ color: HOLE, filter: DEBOSS, display: "grid", width: 46, height: 46 }}>{children}</span>
+);
+
 const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
   if (icon === "wave") return <AudioLinesIcon size={46} strokeWidth={2.4} color={HOLE} style={{ filter: DEBOSS }} />;
   if (icon === "dots") return <Dots />;
-  if (icon === "brain")
-    return (
-      <span
-        style={{
-          color: HOLE,
-          filter: DEBOSS,
-          display: "grid",
-          width: 46,
-          height: 46,
-        }}
-      >
-        <BulbIcon className="h-full w-full" viewBox="-80 -80 1184 1184" />
-      </span>
-    );
+  if (icon === "brain") return <SizedGlyph><BulbIcon className="h-full w-full" viewBox="-80 -80 1184 1184" /></SizedGlyph>;
   if (icon === "spinner")
     return (
       // A CSS spin, not a motion tween: reduced motion slows .animate-spin (index.css) where it stops a tween dead.
@@ -324,17 +315,9 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
       </svg>
     );
   return (
-    <span
-      style={{
-        color: HOLE,
-        filter: DEBOSS,
-        display: "grid",
-        width: 46,
-        height: 46,
-      }}
-    >
+    <SizedGlyph>
       <DictateMicIcon className="h-full w-full" />
-    </span>
+    </SizedGlyph>
   );
 };
 
@@ -672,8 +655,6 @@ const ORB_KEYFRAMES = `
           100% { transform: scale(1.14); opacity: 0;   }
         }
 `;
-
-const ORB_EDGE_MAX_R = ORB_R + 3 + BLOB_AMP;
 
 const scalePx = (shadow: string, k: number) =>
   shadow.replace(/(\d+(?:\.\d+)?)px/g, (_, n: string) => `${Number(n) * k}px`);

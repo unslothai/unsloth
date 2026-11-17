@@ -34,7 +34,6 @@ import {
   requestVoiceToggle,
 } from "@/features/chat/voice/voice-loop-bridge";
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
-import { unloadSttModel } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { clearHeldTurn } from "@/features/chat/adapters/studio-voice-loop-adapter";
 import {
   type ComposerModelPickerSource,
@@ -42,17 +41,10 @@ import {
 } from "@/components/assistant-ui/composer-model-picker/context";
 import { ComposerModelPicker } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import { rowReachPx } from "@/components/assistant-ui/distant-rows";
-import { unloadTurnModel } from "@/features/chat/voice/turn-end";
-import { unloadVadModel } from "@/features/chat/voice/vad-client";
-import {
-  holdForServing,
-  releaseBeforeBorrow,
-  settleVoiceLoad,
-  type VoiceHold,
-  voiceToUnload,
-} from "@/features/chat/voice/voice-ownership";
+import { createVoiceSession } from "./voice/voice-session";
+import { storeVoiceSessionPorts } from "./voice/voice-session-store";
 import { LibraryAttachmentTargetContext } from "@/features/library";
-import { isChatModelVoice, VOICE_DEFAULT_TTS_MODEL } from "@/features/chat/voice/voice-models";
+import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -175,7 +167,7 @@ import {
   SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
-import { translate, useT } from "@/i18n";
+import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
@@ -3165,103 +3157,12 @@ export function ChatPage({
   const selectedVoiceModelId = useChatRuntimeStore(
     (s) => s.selectedVoiceModelId,
   );
-  // Only a voice this page loaded is ever unloaded; whichever is picked when a load settles ends up loaded.
-  const loadedVoiceRef = useRef<VoiceHold | null>(null);
-  const voiceLoadRef = useRef<Promise<boolean> | null>(null);
-  // Bumped whenever voice mode lets go, so a load still in flight knows it is no longer wanted.
-  const voiceEpochRef = useRef(0);
-  const ensureVoiceSlotLoaded = useCallback((): Promise<boolean> => {
-    if (useChatRuntimeStore.getState().voiceMode !== "active") return Promise.resolve(false);
-    if (voiceLoadRef.current) return voiceLoadRef.current;
-    const run = (async () => {
-      const store = useChatRuntimeStore.getState();
-      let id = store.selectedVoiceModelId;
-      const epoch = voiceEpochRef.current;
-      try {
-        const { loadVoice, servedVoice, unloadVoice, voiceServing } = await loadVoiceMode();
-        if (isChatModelVoice(id) && !(await voiceServing(id))) {
-          // A chat model that cannot speak would park every turn behind a voice that never loads.
-          if (!store.params.checkpoint || useChatRuntimeStore.getState().modelLoading) return false;
-          if (epoch !== voiceEpochRef.current) return false;
-          id = VOICE_DEFAULT_TTS_MODEL;
-          store.setSelectedVoiceModelId(id);
-          toast.info(translate("voicePanel.chatModelCannotSpeak"));
-        }
-        if (await voiceServing(id)) {
-          if (epoch !== voiceEpochRef.current) return false;
-          const release = releaseBeforeBorrow(loadedVoiceRef.current, id);
-          if (release) {
-            loadedVoiceRef.current = null;
-            await unloadVoice(release).catch(() => {});
-          }
-          loadedVoiceRef.current = holdForServing(loadedVoiceRef.current, id);
-          store.setVoiceSlotLoaded(true);
-          return true;
-        }
-        // A voice already serving becomes the pick instead of a second voice loading beside it;
-        // never for the chat model's own voice, which is the user's opt-in.
-        const served =
-          loadedVoiceRef.current === null && !isChatModelVoice(id) ? await servedVoice() : null;
-        if (served) {
-          if (epoch !== voiceEpochRef.current) return false;
-          loadedVoiceRef.current = holdForServing(null, served);
-          store.setSelectedVoiceModelId(served);
-          store.setVoiceSlotLoaded(true);
-          return true;
-        }
-        // With no chat model the voice would take the empty seat and the next chat load would replace it.
-        if (!store.params.checkpoint) return false;
-        store.setVoiceSlotLoaded(false);
-        store.setVoiceSlotLoading(true);
-        const previous = loadedVoiceRef.current;
-        if (previous && previous.id !== id) {
-          loadedVoiceRef.current = null;
-          const own = voiceToUnload(previous);
-          if (own) await unloadVoice(own).catch(() => {});
-          if (epoch !== voiceEpochRef.current) return false;
-        }
-        await loadVoice(id);
-        const settled = settleVoiceLoad(id, epoch, voiceEpochRef.current);
-        if (settled.unload) {
-          await unloadVoice(settled.unload).catch(() => {});
-          return false;
-        }
-        loadedVoiceRef.current = settled.hold;
-        useChatRuntimeStore.getState().setVoiceSlotLoaded(
-          useChatRuntimeStore.getState().selectedVoiceModelId === id,
-        );
-        return true;
-      } catch (error) {
-        toast.error(translate("voiceControls.loadFailed"), {
-          description: error instanceof Error ? error.message : undefined,
-        });
-        return false;
-      } finally {
-        useChatRuntimeStore.getState().setVoiceSlotLoading(false);
-        voiceLoadRef.current = null;
-      }
-    })();
-    voiceLoadRef.current = run;
-    return run;
-  }, []);
-
+  const [voiceSession] = useState(() => createVoiceSession(storeVoiceSessionPorts, voiceMode));
   useEffect(() => {
     const register = useChatRuntimeStore.getState().setEnsureVoiceSlotLoaded;
-    register(ensureVoiceSlotLoaded);
+    register(voiceSession.ensureVoiceSlotLoaded);
     return () => register(null);
-  }, [ensureVoiceSlotLoaded]);
-
-  const unloadOwnVoice = useCallback(() => {
-    const id = voiceToUnload(loadedVoiceRef.current);
-    loadedVoiceRef.current = null;
-    voiceEpochRef.current += 1;
-    useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
-    if (id) {
-      void loadVoiceMode()
-        .then(({ unloadVoice }) => unloadVoice(id))
-        .catch(() => {});
-    }
-  }, []);
+  }, [voiceSession]);
 
   const hasChatCheckpoint = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
   // The chat model's own voice follows the chat model: a switch or finished load re-checks that it speaks.
@@ -3270,42 +3171,17 @@ export function ChatPage({
   );
   useEffect(() => {
     if (voiceMode !== "active" || !hasChatCheckpoint) return;
-    if (loadedVoiceRef.current?.id !== selectedVoiceModelId) {
-      useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
-    }
-    const epoch = voiceEpochRef.current;
-    void (voiceLoadRef.current ?? Promise.resolve(true)).then(() =>
-      epoch === voiceEpochRef.current ? ensureVoiceSlotLoaded() : false,
-    );
-  }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceFollowsChat, ensureVoiceSlotLoaded]);
+    voiceSession.follow(selectedVoiceModelId);
+  }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceFollowsChat, voiceSession]);
 
-  const prevVoiceModeRef = useRef(voiceMode);
+  // Voice mode going off releases this page's voice and the listening models; so does leaving Chat with it on.
   useEffect(() => {
-    const was = prevVoiceModeRef.current;
-    prevVoiceModeRef.current = voiceMode;
-    if (voiceMode !== "off" || was === "off") return;
-    unloadOwnVoice();
-    void unloadSttModel().catch(() => {});
-    void unloadVadModel();
-    void unloadTurnModel();
-    useChatRuntimeStore.getState().setVadSlotLoaded(false);
-    useChatRuntimeStore.getState().setSttSlotLoaded(false);
-    useChatRuntimeStore.getState().setSttSlotDownload(null);
-  }, [voiceMode, unloadOwnVoice]);
-
-  useEffect(
-    () => () => {
-      unloadOwnVoice();
-      if (prevVoiceModeRef.current === "off") return;
-      void unloadSttModel().catch(() => {});
-      void unloadVadModel();
-      void unloadTurnModel();
-      useChatRuntimeStore.getState().setVadSlotLoaded(false);
-      useChatRuntimeStore.getState().setSttSlotLoaded(false);
-      useChatRuntimeStore.getState().setSttSlotDownload(null);
-    },
-    [unloadOwnVoice],
-  );
+    voiceSession.setMode(voiceMode);
+  }, [voiceMode, voiceSession]);
+  useEffect(() => {
+    voiceSession.activate();
+    return () => voiceSession.dispose();
+  }, [voiceSession]);
 
   // Off the chat route this page stays mounted but hidden, with no orb or pill to show a live mic. A running
   // voice pauses there (mic off, reply held, its models kept loaded) and picks up again on the way back; a

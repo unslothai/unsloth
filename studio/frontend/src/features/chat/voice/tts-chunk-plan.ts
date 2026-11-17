@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How many pending sentences the TTS player sends in one synth request. Each
-// request costs a fixed overhead on top of the audio itself (/audio/generate reports it
-// as resolve_ms), so one short sentence per request
-// leaves a gap after every clip. The first chunk
-// stays one sentence for a fast start; later ones merge sentences up to a
-// character budget, never splitting a sentence.
+// How many pending sentences the TTS player sends in one synth request. Each request costs a fixed
+// overhead on top of the audio itself (/audio/generate reports it as resolve_ms), so one short
+// sentence per request leaves a gap after every clip. The first chunk stays one sentence for a fast
+// start; later ones merge sentences up to a character budget, never splitting a sentence.
 
 export const TTS_CHUNK_TARGET_CHARS = 220;
 export const TTS_CHUNK_MAX_CHARS = 320;

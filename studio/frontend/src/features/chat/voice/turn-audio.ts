@@ -6,7 +6,7 @@
 import { joinWavBase64, pcmWavBase64 } from "../utils/wav-chunks.ts";
 
 // Audio-input models read 16 kHz; the mic runs at 48 kHz, so sending it raw is 3x the bytes.
-export const TURN_AUDIO_RATE = 16000;
+const TURN_AUDIO_RATE = 16000;
 
 /** Box-filtered decimation: each output sample averages the input window it covers. */
 export function downsample(samples: Float32Array, rate: number, target = TURN_AUDIO_RATE): Float32Array {
@@ -83,12 +83,16 @@ export function voiceTurnAttachment(wavBase64: string, id: string) {
 type Part = { type: string };
 type Message = { role: string; content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] };
 
+// A turn's audio can sit on the message itself or on one of its attachments.
+function partsOf(m: { content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] }): Part[] {
+  return [...(m.content ?? []), ...(m.attachments ?? []).flatMap((a) => a.content ?? [])];
+}
+
 export function lastUserTurnHasAudio(messages: readonly Message[]): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role !== "user") continue;
-    const parts = [...(m.content ?? []), ...(m.attachments ?? []).flatMap((a) => a.content ?? [])];
-    return parts.some((p) => p.type === "audio");
+    return partsOf(m).some((p) => p.type === "audio");
   }
   return false;
 }
@@ -96,7 +100,7 @@ export function lastUserTurnHasAudio(messages: readonly Message[]): boolean {
 type AudioPart = { type: string; audio?: { data?: string } | string };
 
 function audioOf(m: { content?: readonly Part[]; attachments?: readonly { content?: readonly Part[] }[] }): string[] {
-  const parts = [...(m.content ?? []), ...(m.attachments ?? []).flatMap((a) => a.content ?? [])] as AudioPart[];
+  const parts = partsOf(m) as AudioPart[];
   return parts
     .filter((p) => p.type === "audio")
     .map((p) => (typeof p.audio === "string" ? p.audio : (p.audio?.data ?? "")))

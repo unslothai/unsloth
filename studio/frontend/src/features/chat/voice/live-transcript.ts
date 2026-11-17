@@ -31,7 +31,7 @@ const FINISH_TIMEOUT_MS = 8000;
 const REFUSED = new Set([404, 405, 409, 501]);
 
 /** What every transcriber takes: the microphone's own rate (44.1 or 48 kHz) is refused by some. */
-export const LIVE_SAMPLE_RATE = 16000;
+const LIVE_SAMPLE_RATE = 16000;
 
 /**
  * Brings a stream of audio down to `to` Hz as it arrives. Each output sample is a windowed-sinc

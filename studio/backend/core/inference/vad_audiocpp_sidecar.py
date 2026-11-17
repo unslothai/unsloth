@@ -63,7 +63,6 @@ _WEIGHT_SUFFIXES = (".safetensors", ".gguf")
 
 # The names the routes and callers know these by.
 VadError = ClipError
-VadModelNotDownloadedError = ClipModelNotDownloadedError
 VadUnavailableError = ClipUnavailableError
 
 

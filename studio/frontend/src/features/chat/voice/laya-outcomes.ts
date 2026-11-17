@@ -6,9 +6,7 @@ export const QUICK_CONTINUE_MS = 1500;
 /** An ignored or queued utterance said again inside this means the verdict was wrong. */
 export const REPEAT_WINDOW_MS = 15000;
 
-export type JudgeOutcome = "sent" | "continued" | "continued_quickly" | "flushed";
 export type InterjectOutcome = "ok" | "repeated" | "reasked";
-export type FillerOutcome = "spoken" | "echoed" | "too_late" | "cut";
 
 const STOP = new Set(
   "a an the to of in on for and or but so um uh like you know i me my we our it its this that is are was were be do does did can could would should will please just really very with at by from as about what yeah yes no ok okay oh hmm well right sure".split(
@@ -37,11 +35,6 @@ export function sharesMostWords(earlier: string, later: string): boolean {
 
 const CORRECTION_CUE = /^\W*(?:no|nope|actually|instead|i mean|sorry|rather|wait)\b/i;
 
-/**
- * The same request again: adds no word of its own ("five minutes" for "ten minutes"), keeps the
- * order of the words it shares ("beta into alpha" reverses "alpha into beta") and opens with no
- * correction cue ("No, ...", "Actually ...").
- */
 const NEGATOR = /\b(?:no|not|never|none|nothing|without|\w+n['’]t)\b/gi;
 const negations = (text: string) => (text.match(NEGATOR) ?? []).length;
 
@@ -49,6 +42,11 @@ const negations = (text: string) => (text.match(NEGATOR) ?? []).length;
 const PARTICLE = /\b(?:on|off|in|into|onto|out|up|down|to|from|over|under|before|after|with|without)\b/gi;
 const particles = (text: string) => (text.toLowerCase().match(PARTICLE) ?? []).join(" ");
 
+/**
+ * The same request again: adds no word of its own ("five minutes" for "ten minutes"), keeps the
+ * order of the words it shares ("beta into alpha" reverses "alpha into beta") and opens with no
+ * correction cue ("No, ...", "Actually ...").
+ */
 export function isSameAsk(earlier: string, later: string): boolean {
   if (CORRECTION_CUE.test(later)) return false;
   if (particles(earlier) !== particles(later)) return false;

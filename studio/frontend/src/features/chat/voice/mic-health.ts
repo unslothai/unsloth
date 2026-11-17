@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createSerialQueue } from "../utils/serial-queue.ts";
+
 // WebKit can hand back an open track delivering only zeros; real room silence is never exactly zero.
 export const MIC_SILENT_MS = 1500;
 
@@ -45,11 +47,4 @@ export function createReacquireBackoff(limit = 3, slowMs = 10000) {
 }
 
 // Two racing getUserMedia calls returned a dead second track: each open waits for the previous to settle.
-export function createSingleFlight() {
-  let tail: Promise<unknown> = Promise.resolve();
-  return function run<T>(open: () => Promise<T>): Promise<T> {
-    const next = tail.then(open, open);
-    tail = next.catch(() => undefined);
-    return next;
-  };
-}
+export const createSingleFlight = createSerialQueue;

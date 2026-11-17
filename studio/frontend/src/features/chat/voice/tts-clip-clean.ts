@@ -33,10 +33,11 @@ export function cleanTtsClip(
 ): Float32Array[] | null {
   const first = channels[0];
   if (!first || first.length === 0) return null;
-  const win = Math.max(1, Math.round((sampleRate * BASELINE_MS) / 1000));
+  const samples = (ms: number) => Math.round((sampleRate * ms) / 1000);
+  const win = Math.max(1, samples(BASELINE_MS));
   const flat = channels.map((c) => removeBaseline(c, win));
   const ref = flat[0]!;
-  const hop = Math.max(1, Math.round((sampleRate * FRAME_MS) / 1000));
+  const hop = Math.max(1, samples(FRAME_MS));
   const frames = Math.floor(ref.length / hop);
   const db = new Float32Array(frames);
   let peak = -Infinity;
@@ -53,10 +54,10 @@ export function cleanTtsClip(
   let off = frames - 1;
   while (db[off]! <= peak - ONSET_DB) off--;
   while (off < frames - 1 && db[off + 1]! > peak - EXTEND_DB) off++;
-  const start = Math.max(0, on * hop - Math.round((sampleRate * PRE_MS) / 1000));
-  const end = Math.min(ref.length, (off + 1) * hop + Math.round((sampleRate * POST_MS) / 1000));
-  const fin = Math.round((sampleRate * FADE_IN_MS) / 1000);
-  const fout = Math.round((sampleRate * FADE_OUT_MS) / 1000);
+  const start = Math.max(0, on * hop - samples(PRE_MS));
+  const end = Math.min(ref.length, (off + 1) * hop + samples(POST_MS));
+  const fin = samples(FADE_IN_MS);
+  const fout = samples(FADE_OUT_MS);
   return flat.map((c) => {
     const y = c.slice(start, end);
     for (let i = 0; i < Math.min(fin, y.length); i++) y[i] = y[i]! * (i / fin);

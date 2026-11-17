@@ -154,7 +154,6 @@ export function CustomFoldersControls({
     handleRemoveFolder,
     browseForFolder,
   } = folders;
-  const customFoldersCollapsed = collapsed;
   return (
     <>
       <div
@@ -209,15 +208,15 @@ export function CustomFoldersControls({
           <button
             type="button"
             aria-label={
-              customFoldersCollapsed
+              collapsed
                 ? "Expand custom folders"
                 : "Collapse custom folders"
             }
-            title={customFoldersCollapsed ? "Expand" : "Collapse"}
+            title={collapsed ? "Expand" : "Collapse"}
             onClick={() => onCollapsedChange((v) => !v)}
             className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
           >
-            {customFoldersCollapsed ? (
+            {collapsed ? (
               <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
             ) : (
               <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
@@ -226,7 +225,7 @@ export function CustomFoldersControls({
         </div>
       </div>
 
-      {!customFoldersCollapsed &&
+      {!collapsed &&
         scanFolders.map((f) => {
           const problem = scanFolderStatusCopy(f.status);
           return (
@@ -266,7 +265,7 @@ export function CustomFoldersControls({
           );
         })}
 
-      {!customFoldersCollapsed &&
+      {!collapsed &&
         (() => {
           const registered = new Set(scanFolders.map((f) => f.path));
           const unregistered = recommendedFolders.filter(
@@ -292,7 +291,7 @@ export function CustomFoldersControls({
           );
         })()}
 
-      {!customFoldersCollapsed && showFolderInput && (
+      {!collapsed && showFolderInput && (
         <div className="px-2.5 pb-1 pt-0.5">
           <div className="flex items-center gap-1">
             <HugeiconsIcon

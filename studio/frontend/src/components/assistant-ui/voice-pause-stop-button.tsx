@@ -81,6 +81,7 @@ export const VoicePauseStopButton: FC = () => {
   };
 
   const holding = phase !== "idle";
+  const fadeMs = holding ? HOLD_TO_STOP_MS : 150;
   const armed = phase === "armed";
   const label = paused ? t("voiceOrb.bar.resume") : t("voiceOrb.bar.pause");
   return (
@@ -115,7 +116,7 @@ export const VoicePauseStopButton: FC = () => {
               className="col-start-1 row-start-1 grid place-items-center transition-opacity"
               style={{
                 opacity: holding ? 0 : 1,
-                transitionDuration: `${holding ? HOLD_TO_STOP_MS : 150}ms`,
+                transitionDuration: `${fadeMs}ms`,
               }}
             >
               {paused ? (
@@ -128,7 +129,7 @@ export const VoicePauseStopButton: FC = () => {
               className="col-start-1 row-start-1 grid place-items-center transition-opacity"
               style={{
                 opacity: holding ? 1 : 0,
-                transitionDuration: `${holding ? HOLD_TO_STOP_MS : 150}ms`,
+                transitionDuration: `${fadeMs}ms`,
               }}
             >
               <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" aria-hidden="true" />

@@ -204,8 +204,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
   const playHeadRef = useRef(0);
   const streamRef = useRef<Stream | null>(null);
   const asideCacheRef = useRef(new Map<string, AudioBuffer>());
-  // The voice the cached asides were made in: a new pick (model, saved voice or speaker)
-  // starts the cache over, so a filler never speaks in the voice the user moved away from.
+  // The voice the cached asides were made in; a new model, saved voice or speaker starts the cache over.
   const asideVoiceRef = useRef("");
   const asides = useCallback((): Map<string, AudioBuffer> => {
     const voice = currentVoiceKey();
@@ -298,7 +297,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
       const request = async () => {
         const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker, params } =
           useChatRuntimeStore.getState();
-        // The request text only: what the reply shows, and what Phase 4 records, stay as written.
+        // Normalized for the request only: the reply's text and the heard-cut log stay as written.
         const { speechNormalize, dictationLanguage } = useVoiceSettingsStore.getState();
         // "auto" names no language: the app's own stands in, so the default setting is not a no-op.
         const language = dictationLanguage === "auto" ? getLocale() : dictationLanguage;
@@ -556,7 +555,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
     );
   }, []);
 
-  // Asides used to queue behind sentences and came out late: one plays only on an empty timeline, from cache.
+  // An aside plays only on an empty timeline, from cache: queued behind sentences it came out late.
   const sayAside = useCallback(
     (text: string, opts?: AsideOptions) => {
       const st = streamRef.current;
@@ -785,7 +784,9 @@ function playedEntry(st: Stream, piece: SentenceEntry, chars: number): PlayedEnt
   const start = span?.start ?? 0;
   const whole = span !== undefined && piece.to === span.text.length;
   return { source: piece.source, from: start + piece.from, to: whole ? span.end : start + piece.to, chars };
-}function queueAndTrace(st: Stream, settled: readonly string[], partial: string): void {
+}
+
+function queueAndTrace(st: Stream, settled: readonly string[], partial: string): void {
   const had = st.sentences.length;
   const { mismatch, head } = queueSentences(st, settled, partial, st.clause && !st.final);
   if (head !== null) voiceTrace("tts.clauseHead", { chars: head.length });

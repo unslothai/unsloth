@@ -182,6 +182,9 @@ function loadTauri(): Promise<Tauri> {
 const mode: WidgetReturn = { floating: false };
 let warm: Promise<boolean> | null = null;
 
+// Read at call time, not at load: the store is not touched until the widget hands back.
+const collapseOrb = (collapsed: boolean) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(collapsed);
+
 function showMain(t: Tauri): void {
   void t
     .invoke("reveal_main_window")
@@ -191,7 +194,7 @@ function showMain(t: Tauri): void {
 }
 
 function reveal(t: Tauri): void {
-  returnFromWidget(mode, (c) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(c), () => showMain(t));
+  returnFromWidget(mode, collapseOrb, () => showMain(t));
 }
 
 export function prewarmOrbWidget(): Promise<boolean> {
@@ -261,7 +264,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
         const back = onMainFocus(
           focused,
           mode,
-          (c) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(c),
+          collapseOrb,
           () => showMain(t),
         );
         if (back) voiceTrace("ui.orbWidget.backByFocus");

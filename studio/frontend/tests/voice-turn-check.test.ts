@@ -35,7 +35,7 @@ test("Settings lets the owner pick the decision model, and None is a choice", ()
 test("turn detection off never loads the end-of-turn model, so the silence wait alone ends a turn", () => {
   assert.match(
     adapter,
-    /if \(useVoiceSettingsStore\.getState\(\)\.turnEnding !== "wait"\) \{\s*void loadTurnModel\(\)\.then\(\(ready\) => \{\s*turnReady = ready;/,
+    /if \(ports\.settings\(\)\.turnEnding !== "wait"\) \{\s*void loadTurnModel\(\)\.then\(\(ready\) => \{\s*turnReady = ready;/,
   );
   // askTurn needs turnReady: no model, no early end.
   assert.match(adapter, /const askTurn = turnReady && !bargedIn;/);

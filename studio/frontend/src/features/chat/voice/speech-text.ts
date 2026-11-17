@@ -35,7 +35,7 @@ export function stripForSpeech(text: string): string {
     .replace(/\n{2,}/g, "\n")
     .trim();
   // A TTS model handed bare punctuation voices it as noise.
-  return /[\p{L}\p{N}]/u.test(out) ? out : "";
+  return speakable(out) ? out : "";
 }
 
 const JSON_OPEN_RE = /^[ \t]*(?:\{|\[[ \t]*(?:[{["]|$))/;

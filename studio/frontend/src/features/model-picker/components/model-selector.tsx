@@ -491,7 +491,6 @@ function ModelSelectorContent({
   }, [showingConfig]);
 
   const panel = (
-    <>
         <TooltipProvider
           delayDuration={0}
           skipDelayDuration={0}
@@ -569,7 +568,6 @@ function ModelSelectorContent({
             </>
           )}
         </TooltipProvider>
-    </>
   );
   if (embedded) {
     return (

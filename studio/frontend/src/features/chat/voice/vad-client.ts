@@ -88,6 +88,14 @@ async function detail(response: Response): Promise<string> {
 // A load (or a detect, which loads too) still in flight would restart the detector after an unload.
 const pendingLoads = new Set<Promise<unknown>>();
 
+// 501 and 422 mean this build or model has no VAD: the caller falls back instead of retrying.
+async function assertOk(response: Response): Promise<void> {
+  if (response.ok) return;
+  const message = await detail(response);
+  if (response.status === 501 || response.status === 422) throw new VadUnavailableError(message);
+  throw new Error(message);
+}
+
 function track<T>(run: Promise<T>): Promise<T> {
   const tracked: Promise<unknown> = run
     .catch(() => {})
@@ -107,12 +115,7 @@ async function startVadModel(model: string, signal?: AbortSignal): Promise<strin
     body: JSON.stringify({ model }),
     signal,
   });
-  if (!response.ok) {
-    const message = await detail(response);
-    if (response.status === 501 || response.status === 422)
-      throw new VadUnavailableError(message);
-    throw new Error(message);
-  }
+  await assertOk(response);
   const data = (await response.json()) as { loaded_model?: string };
   return data.loaded_model ?? model;
 }
@@ -147,11 +150,6 @@ async function runDetect(
       signal,
     },
   );
-  if (!response.ok) {
-    const message = await detail(response);
-    if (response.status === 501 || response.status === 422)
-      throw new VadUnavailableError(message);
-    throw new Error(message);
-  }
+  await assertOk(response);
   return (await response.json()) as SpeechDetection;
 }

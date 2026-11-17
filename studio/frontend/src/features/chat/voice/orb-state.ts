@@ -34,7 +34,7 @@ export type VoiceOrbInputs = {
   sttDownload?: "needed" | "downloading" | null;
 };
 
-export type VoiceOrbDecision =
+type VoiceOrbDecision =
   | { kind: "set"; state: VoiceOrbState | null }
   | { kind: "hold" };
 

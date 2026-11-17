@@ -28,7 +28,7 @@ export function readsAsQuestion(text: string): boolean {
 // it goes quiet. Starting the reply in that gap answered half a sentence and restarted for the rest.
 export const TURN_CONTINUE_GRACE_MS = 1200;
 // The model reads at most this much, from the end of the turn: the rest is not worth uploading.
-export const TURN_CLIP_MAX_S = 8;
+const TURN_CLIP_MAX_S = 8;
 
 /** Whether a reply should still wait: the speaker is talking, or went quiet too recently to be done. */
 export function stillInTurn(hearing: boolean, lastHeardAt: number, now: number): boolean {

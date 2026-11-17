@@ -81,7 +81,8 @@ test("a continuation keeps the id of the fragment it joins", () => {
   assert.match(adapter, /heldTurn = \{\s*text: transcript,\s*at: heldTurn\?\.at \?\? performance\.now\(\),\s*turnId,\s*\};/);
   assert.match(adapter, /const heldId = heldTurn\.turnId \?\? undefined;[\s\S]*?submitLater\(text, \{ turnId: heldId \}\)/);
   // Both ways speech starts open the turn: plain speech and a committed barge-in.
-  assert.equal(adapter.match(/heardSpeech = true;\s*startTurn\(\);/g)?.length, 2);
+  assert.match(adapter, /const markSpeechStarted = \(\) => \{\s*heardSpeech = true;\s*startTurn\(\);/);
+  assert.equal(adapter.match(/markSpeechStarted\(\);/g)?.length, 2);
 });
 
 test("the adapter marks each stage of a spoken turn", () => {

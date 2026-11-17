@@ -415,6 +415,17 @@ def _softmax(x):
     return e / e.sum(-1, keepdims = True)
 
 
+def _onnx_feed(e, names = None) -> dict:
+    """One encoded text as ONNX inputs, limited to `names` (the graph's own inputs) when given."""
+    import numpy as np
+
+    feed = {
+        "input_ids": np.array([e.ids], dtype = np.int64),
+        "attention_mask": np.array([e.attention_mask], dtype = np.int64),
+    }
+    return feed if names is None else {k: v for k, v in feed.items() if k in names}
+
+
 class _OnnxClassifier:
     def __init__(self, d: Path):
         from tokenizers import Tokenizer
@@ -426,16 +437,8 @@ class _OnnxClassifier:
         self.inputs = {x.name for x in self.session.get_inputs()}
 
     def classify(self, text: str, prev_q: bool) -> tuple[str, float]:
-        import numpy as np
-
         e = self.tok.encode(featurize(text, prev_q))
-        feed = {
-            "input_ids": np.array([e.ids], dtype = np.int64),
-            "attention_mask": np.array([e.attention_mask], dtype = np.int64),
-        }
-        p = _softmax(
-            self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0]
-        )
+        p = _softmax(self.session.run(None, _onnx_feed(e, self.inputs))[0][0])
         i = int(p.argmax())
         return self.classes[i], float(p[i])
 
@@ -535,16 +538,8 @@ class _OnnxEchoTagger:
         self.session = _ort_session(d / "model_int8.onnx")
 
     def extract(self, text: str) -> tuple[Optional[str], float]:
-        import numpy as np
-
         e = self.tok.encode(text)
-        logits = self.session.run(
-            None,
-            {
-                "input_ids": np.array([e.ids], dtype = np.int64),
-                "attention_mask": np.array([e.attention_mask], dtype = np.int64),
-            },
-        )[0][0]
+        logits = self.session.run(None, _onnx_feed(e))[0][0]
         p = _softmax(logits)
         pred = p.argmax(-1)
         spans: list[tuple[list[int], list[float]]] = []
@@ -840,16 +835,8 @@ class _OnnxJudge:
         self("warm up")
 
     def __call__(self, text: str) -> float:
-        import numpy as np
-
         e = self.tok.encode(text)
-        feed = {
-            "input_ids": np.array([e.ids], dtype = np.int64),
-            "attention_mask": np.array([e.attention_mask], dtype = np.int64),
-        }
-        p = _softmax(
-            self.session.run(None, {k: v for k, v in feed.items() if k in self.inputs})[0][0]
-        )
+        p = _softmax(self.session.run(None, _onnx_feed(e, self.inputs))[0][0])
         return float(p[1])
 
 
