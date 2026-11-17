@@ -49,6 +49,8 @@ export interface BuiltPrompt {
   texts: string[];
   /** Whether each history entry is sent; a hidden turn followed by another user turn is not. */
   sent: boolean[];
+  /** Whether each history entry carries a note placed at a depth (author's note, character note, lore). */
+  noted: boolean[];
   stop: string[];
   speaker: PromptCharacter;
   lore: ActivatedLore;
@@ -278,6 +280,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     injections.push({ depth: speaker.depthPrompt.depth, text: macro(speaker.depthPrompt.prompt) });
   }
   injections.push(...lore.atDepth.map((entry) => ({ depth: entry.depth, text: entry.content })));
+  const noted = history.map(() => false);
   for (const injection of injections) {
     const start = Math.max(0, history.length - 1 - Math.max(0, injection.depth));
     const fits = (index: number) => history[index]?.role === "user" && sent[index];
@@ -288,6 +291,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     if (!fits(target)) continue;
     const text = injection.text.trim();
     parts[target].push(text.startsWith("[") ? text : `[${text}]`);
+    noted[target] = true;
   }
   // Final instructions ride the last user turn; after a reply there is none, so they are dropped.
   if (history.length && history[history.length - 1].role === "user") {
@@ -312,5 +316,5 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     for (const name of others) stop.push(`\n${name}:`);
   }
 
-  return { system, texts, sent, stop, speaker, lore, sections, named };
+  return { system, texts, sent, noted, stop, speaker, lore, sections, named };
 }

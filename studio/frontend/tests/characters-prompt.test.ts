@@ -154,6 +154,7 @@ test("a one-on-one prompt keeps the system block stable and puts notes on user t
   assert.equal(built.texts[3], "They matter.", "a leading name is stripped in one-on-one chats");
   // Author's note at depth 2 lands on the user turn two above the end.
   assert.equal(built.texts[2], "Mira: what about the fern?\n\n[Keep it short.]");
+  assert.deepEqual(built.noted, [false, false, true, false, true], "View prompt shows every noted turn");
   assert.equal(built.texts[4], "Tell me more.\n\n[Mira hides a secret.]\n\nStay gentle.");
   assert.deepEqual(built.stop, ["\nPat:"]);
 });

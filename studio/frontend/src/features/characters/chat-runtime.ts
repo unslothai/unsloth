@@ -34,6 +34,8 @@ export interface CharacterRun {
   messages: ThreadMessage[];
   shape: <M extends { id: string }>(message: M) => M;
   sends: (messageId: string) => boolean;
+  /** Messages that carry a note placed at a depth, so View prompt can show them. */
+  notedIds: ReadonlySet<string>;
   stop: string[];
   /** Stamped on the reply as `metadata.custom.roleplay`. */
   replyMeta: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
@@ -200,6 +202,7 @@ export async function prepareCharacterRun(args: {
     messages: messages.filter((m) => !unsent.has(m.id)).map(shape),
     shape,
     sends: (messageId) => !unsent.has(messageId),
+    notedIds: new Set(chat.filter((_m, index) => built.noted[index] && built.sent[index]).map((m) => m.id)),
     stop: built.stop,
     replyMeta: {
       kind: "reply",

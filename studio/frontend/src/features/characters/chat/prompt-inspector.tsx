@@ -36,7 +36,10 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
     };
   }, [open, threadId]);
 
-  const tail = run ? run.messages.slice(-4) : [];
+  // The last few messages, reaching back far enough to show every note placed at a depth.
+  const firstNoted = run ? run.messages.findIndex((message) => run.notedIds.has(message.id)) : -1;
+  const from = run ? Math.max(0, Math.min(run.messages.length - 4, firstNoted < 0 ? Infinity : firstNoted)) : 0;
+  const tail = run ? run.messages.slice(from) : [];
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent className="flex max-h-[min(860px,90dvh)] flex-col gap-4 sm:max-w-3xl">
