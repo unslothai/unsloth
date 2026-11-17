@@ -7,11 +7,8 @@ import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
 import { joinWavBase64 } from "../utils/wav-chunks";
 import { getVoiceMode, publishVoiceSpokenAudio } from "../voice/voice-loop-bridge";
-import {
-  reasoningForTurn,
-  wantsSpokenReply,
-  withSpokenReplyInstructions,
-} from "../voice/voice-models";
+import { reasoningForTurn, wantsSpokenReply } from "../voice/voice-models";
+import { withReplyInstruction } from "../voice/voice-instruction";
 import { useVoiceSettingsStore } from "../../settings/stores/voice-settings-store";
 import {
   consumePendingFiller,
@@ -2241,13 +2238,13 @@ export async function buildLocalTokenCountHistory(
     resolveProjectInstructions(projectId),
     resolveAgentsMd(projectId),
   ]);
-  const combinedSystemPrompt = withSpokenReplyInstructions(
+  // While voice runs, the spoken-reply instruction picked in Settings > Voice > Voice mode goes last.
+  const combinedSystemPrompt = withVoiceReplyShaping(
     composeChatInstructions({
       agentsMd,
       projectInstructions,
       systemPrompt: safeSystemPrompt,
     }),
-    getVoiceMode() === "active",
   );
   if (combinedSystemPrompt) {
     prependSystemPrompt(outboundMessages, combinedSystemPrompt);
@@ -2287,7 +2284,7 @@ export function buildLocalTokenCountReasoning(
   const reasoningEnabled = turnReasoning(thinkingSetting);
   // Same clamp the request build applies: a level the loaded template does not offer is dropped by the backend.
   const localReasoningEffort = clampReasoningEffortToLevels(
-    reasoningEffort,
+    requestReasoningEffort(reasoningEffort, reasoningEffortLevels),
     reasoningEffortLevels,
   );
   return {
@@ -2533,11 +2530,31 @@ export async function resolveChatInstructions(
     resolveProjectInstructions(projectId),
     opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
   ]);
-  return composeChatInstructions({
+  const instructions = composeChatInstructions({
     agentsMd,
     projectInstructions,
     systemPrompt: safeSystemPrompt,
   });
+  // Model-bound only, like AGENTS.md: a copy or export keeps the chat's own instructions.
+  return opts?.agentsMd ? withVoiceReplyShaping(instructions) : instructions;
+}
+
+/** The voice instruction goes last, on what the model is sent and on its token count alike. */
+function withVoiceReplyShaping(instructions: string): string {
+  // Active only: a typed message while the pill is up for choosing models is an ordinary chat turn.
+  if (getVoiceMode() !== "active") return instructions;
+  const { replyInstruction, replyInstructionCustom } = useVoiceSettingsStore.getState();
+  return withReplyInstruction(instructions, replyInstruction, replyInstructionCustom);
+}
+
+/** Voice mode with a short-reply instruction (any but "none"): no seed, and the lowest reasoning effort. */
+function voiceReplyShaping(): boolean {
+  return getVoiceMode() === "active" && useVoiceSettingsStore.getState().replyInstruction !== "none";
+}
+
+// Speech waits for the first non-thinking token, so voice asks for the model's lowest level.
+function requestReasoningEffort<T extends string>(effort: T, levels: readonly T[]): T {
+  return voiceReplyShaping() && levels.length > 0 ? levels[0] : effort;
 }
 
 // Answered once per thread and reused, so sandbox, RAG scope and instructions never mix two projects.
@@ -5451,15 +5468,12 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = withSpokenReplyInstructions(
-        await resolveChatInstructions(
-          resolvedThreadId,
-          params.systemPrompt,
-          params.systemVariables,
-          readThreadRecord,
-          { agentsMd: true },
-        ),
-        getVoiceMode() === "active",
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+        readThreadRecord,
+        { agentsMd: true },
       );
       if (combinedSystemPrompt) {
         prependSystemPrompt(outboundMessages, combinedSystemPrompt);
@@ -6387,12 +6401,12 @@ export function createOpenAIStreamAdapter(
         .reasoningEffortLevels[0] ?? "low") as RequestReasoningEffort;
       const selectedExternalEffort: RequestReasoningEffort =
         clampReasoningEffortToLevels(
-          reasoningEffort,
+          requestReasoningEffort(reasoningEffort, externalReasoningCaps.reasoningEffortLevels),
           externalReasoningCaps.reasoningEffortLevels,
         ) as RequestReasoningEffort;
       // Clamp stale values to supported levels (gpt-oss low|medium|high, GLM high|max).
       const localReasoningEffort = clampReasoningEffortToLevels(
-        reasoningEffort,
+        requestReasoningEffort(reasoningEffort, reasoningEffortLevels),
         reasoningEffortLevels,
       );
       const externalReasoningFields: ReasoningRequestFields =
@@ -7060,7 +7074,9 @@ export function createOpenAIStreamAdapter(
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
             // Omit when unset (server draws a seed) or unread, so a stale GGUF pin is never sent.
+            // Voice omits it too: a fixed seed turns llama.cpp's prompt cache off.
             ...(params.seed == null ||
+            voiceReplyShaping() ||
             !modelReadsSamplingSeed(activeModel, runtime.loadedEngine)
               ? {}
               : { seed: params.seed }),
