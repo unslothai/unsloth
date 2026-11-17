@@ -485,3 +485,15 @@ def test_training_dropout_is_detected():
     assert dps._dropout_active(model) is False
     off = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout(0.0))
     assert dps._dropout_active(off) is False
+
+
+def test_length_dependent_rope_declines():
+    from types import SimpleNamespace as NS
+
+    rope = dps._length_dependent_rope
+    assert rope(NS(rope_scaling = {"type": "longrope", "short_factor": [1.0]}))
+    assert rope(NS(rope_scaling = {"rope_type": "dynamic", "factor": 2.0}))
+    assert rope(NS(rope_parameters = {"full_attention": {"rope_type": "longrope"}}))
+    assert not rope(NS(rope_scaling = {"rope_type": "llama3", "factor": 8.0}))
+    assert not rope(NS(rope_parameters = {"rope_type": "default", "rope_theta": 1e6}))
+    assert not rope(NS(rope_scaling = None))

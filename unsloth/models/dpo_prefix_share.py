@@ -276,6 +276,24 @@ def _backbone_of(causal_lm):
     return backbone
 
 
+_LENGTH_DEPENDENT_ROPE = ("longrope", "su", "dynamic")
+
+
+def _length_dependent_rope(config):
+    """LongRoPE / dynamic NTK pick their frequencies from the sequence length, and the shared stream is
+    longer than either row, so the shared forward could cross the switch the unshared one does not."""
+    for name in ("rope_scaling", "rope_parameters"):
+        params = getattr(config, name, None)
+        if not isinstance(params, dict):
+            continue
+        # transformers 5 can nest one dict per layer type.
+        for entry in [params, *(v for v in params.values() if isinstance(v, dict))]:
+            kind = entry.get("rope_type", entry.get("type"))
+            if isinstance(kind, str) and kind.lower() in _LENGTH_DEPENDENT_ROPE:
+                return True
+    return False
+
+
 def _model_eligible(causal_lm, device):
     """Structural checks, cached per model; the device capability check runs per call."""
     cached = getattr(causal_lm, "_unsloth_dpo_prefix_share_eligible", None)
@@ -296,6 +314,7 @@ def _model_eligible(causal_lm, device):
                 and not getattr(config, "attn_logit_softcapping", None)
                 and not getattr(config, "attention_dropout", 0)
                 and not any(getattr(config, a, None) is not None for a in _SSM_MOE_ATTRS)
+                and not _length_dependent_rope(config)
                 and _backbone_of(causal_lm) is not None
                 and not any(type(p).__name__ == "DTensor" for p in causal_lm.parameters())
                 and prefix_seg_info_applied(causal_lm)
