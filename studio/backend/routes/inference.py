@@ -11388,7 +11388,9 @@ def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
 
 
 async def _npu_path_for_display_name(
-    requested_model: Optional[str], fastapi_request: Request
+    requested_model: Optional[str],
+    fastapi_request: Request,
+    serves_npu: bool = True,
 ) -> Optional[str]:
     """``lemonade:<id>`` for the NPU model name the app shows (``Qwen3-0.6B-NPU2`` or its
     ``FastFlowLM/`` repo); any other name is returned unchanged."""
@@ -11411,7 +11413,8 @@ async def _npu_path_for_display_name(
     policy = current_load_policy()
     scope = getattr(fastapi_request, "scope", None)
     may_load = (
-        (
+        serves_npu
+        and (
             policy is LoadPolicy.ANY
             or (policy is LoadPolicy.BESIDE_ONLY and not _chat_model_resident())
         )
@@ -11527,7 +11530,9 @@ async def _maybe_auto_switch_model(
     gguf_requires_vision = (
         (require_audio_input or require_video) if tool_images_only else require_vision
     )
-    requested_model = await _npu_path_for_display_name(requested_model, fastapi_request)
+    requested_model = await _npu_path_for_display_name(
+        requested_model, fastapi_request, serves_npu = serves_npu
+    )
     # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
     # What a refused load asks the user to load, and on which page.

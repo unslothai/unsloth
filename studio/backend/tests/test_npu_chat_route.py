@@ -2268,3 +2268,14 @@ def test_a_credential_that_cannot_load_never_starts_the_runtime(monkeypatch, res
         asyncio.run(routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", request))
     assert caught.value.status_code == 404
     assert npu.catalog_reads == 0
+
+
+def test_an_endpoint_that_cannot_serve_the_npu_never_starts_the_runtime(monkeypatch):
+    from routes import inference as routes
+
+    npu, _ = _shown_npu(monkeypatch, loaded = False, running = False, auto_switch = True)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            routes._npu_path_for_display_name("Qwen3-0.6B-NPU2", _request(), serves_npu = False)
+        )
+    assert npu.catalog_reads == 0
