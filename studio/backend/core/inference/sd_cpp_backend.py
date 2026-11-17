@@ -3111,6 +3111,50 @@ def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     return OFFLOAD_NONE
 
 
+def _unmeasured_card_free_mib(klass: Optional[str], description: Optional[str]) -> Optional[int]:
+    """Free MiB of the card a CPU torch never measured, read without a device context: amdgpu sysfs for an AMD
+    Vulkan device (sole card only), nvidia-smi for CUDA. None when unsure."""
+    try:
+        if klass == "cuda":
+            from core.inference.diffusion_device import smi_free_total_mib
+            return smi_free_total_mib(0)[0]
+        from core.inference.video_minimax_h3 import amdgpu_vram_free_bytes, vulkan_device_is_amd
+        if klass == "vulkan" and vulkan_device_is_amd(description):
+            free = amdgpu_vram_free_bytes()
+            return None if free is None else free >> 20
+    except Exception:  # noqa: BLE001 -- an unreadable card keeps the offload
+        pass
+    return None
+
+
+def _offload_would_exhaust_host_ram(
+    files: Any, klass: Optional[str], description: Optional[str]
+) -> bool:
+    """--offload-to-cpu forces every weight into anonymous host RAM (``*=cpu`` params, which also turns off sd.cpp's
+    auto-fit). When RAM cannot hold them, auto drops it as long as the card holds the diffusion model: auto-fit then
+    places the DiT on the card first and spills the text encoder / VAE to RAM or disk itself. Unreadable keeps it."""
+    from core.inference.diffusion_small_host import host_ram_mib, host_reserve_mib
+    from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB, TEXT_ENCODER_FIELDS, file_mib
+
+    dit = file_mib(getattr(files, "diffusion_model", None))
+    weights = dit + sum(file_mib(getattr(files, f, None)) for f in ("vae", *TEXT_ENCODER_FIELDS))
+    total, available = host_ram_mib()
+    if not dit or available is None or weights <= available - host_reserve_mib(total):
+        return False
+    free = _unmeasured_card_free_mib(klass, description)
+    if free is None or dit + CARD_RESERVE_MIB > free:
+        return False
+    logger.info(
+        "sd_cpp.placement: offloading %s MiB of weights exceeds host RAM (%s MiB available); the card's %s MiB "
+        "free holds the %s MiB diffusion model, so auto-fit places them",
+        weights,
+        available,
+        free,
+        dit,
+    )
+    return True
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -3928,6 +3972,10 @@ class SdCppDiffusionBackend:
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
                 if placed == "cpu":
                     return placed, ()
+                if unmeasured and _offload_would_exhaust_host_ram(
+                    files, klass, sd_cpp_listed_device(binary)[1] if binary else None
+                ):
+                    unmeasured = False
                 return placed, tuple(
                     offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
