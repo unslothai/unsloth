@@ -6226,23 +6226,15 @@ async def _select_request_tools(
         get_enabled_mcp_tools,
     )
 
-    # ``bash`` was published as the shell identifier in the curl guide, while the canonical
-    # schema/dispatcher name is ``terminal``. Accept the documented alias without changing the
-    # tool schema emitted to the model or the internal execution name.
-    enabled_tools = (
-        ["terminal" if name == "bash" else name for name in payload.enabled_tools]
-        if payload.enabled_tools is not None
-        else None
-    )
     if not tools_on:
         # MCP-only request: skip built-ins, leave room for MCP tools.
         tools = []
-    elif enabled_tools is not None:
-        tools = [t for t in ALL_TOOLS if t["function"]["name"] in enabled_tools]
+    elif payload.enabled_tools is not None:
+        tools = [t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools]
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
-    if tools_on and ui_events and enabled_tools is not None:
+    if tools_on and ui_events and payload.enabled_tools is not None:
         # Never in the default catalog: only a chat tab with the browser panel can run them, and it
         # asks by name. Without UI frames the action never reaches a tab, so the tool would only
         # wait out its timeout.
@@ -6250,12 +6242,12 @@ async def _select_request_tools(
         tools += [
             tool
             for tool in BROWSER_TOOLS
-            if tool["function"]["name"] in enabled_tools
+            if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
-    if tools_on and enabled_tools is not None:
+    if tools_on and payload.enabled_tools is not None:
         from core.inference.computer_use import COMPUTER_TOOL_NAME
-        if COMPUTER_TOOL_NAME in enabled_tools:
+        if COMPUTER_TOOL_NAME in payload.enabled_tools:
             # Only where the approval card can be shown.
             computer = await asyncio.to_thread(
                 _computer_use_tool, payload, ui_events and supports_vision
@@ -6263,10 +6255,10 @@ async def _select_request_tools(
             if computer is not None:
                 # First, or a small model with code tools scripts the mouse in Python instead.
                 tools.insert(0, computer)
-    if tools_on and enabled_tools is not None:
+    if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
         from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
-        media_tools = offered_media_chat_tools(enabled_tools)
+        media_tools = offered_media_chat_tools(payload.enabled_tools)
         if media_tools:
             # The tools run on a worker thread and hand the render back to this loop.
             remember_server_loop(asyncio.get_running_loop())
@@ -6285,9 +6277,9 @@ async def _select_request_tools(
         skill_tools = (READ_SKILL_TOOL,)
         if any(skill["name"] == "skill-creator" for skill in enabled_skills):
             skill_tools += (CREATE_SKILL_TOOL,)
-        if enabled_tools is not None:
+        if payload.enabled_tools is not None:
             skill_tools = tuple(
-                tool for tool in skill_tools if tool["function"]["name"] in enabled_tools
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
             )
         tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
