@@ -109,6 +109,13 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
+def _race_name(incumbent: Any) -> str:
+    """The incumbent's name in the verdict caches. A strided cuDNN pin runs a different call than the contiguous
+    cuDNN one, so its races are cached apart."""
+    name = f"dispatch:{_backend_name(incumbent)}"
+    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+
+
 class Int8Route(str):
     """Routing backend equal to the incumbent's name. ``cards`` maps each passing CUDA index to its token floor (a
     layer split or CFG replica runs the processor on a second card); ``min_tokens`` is the lowest, ``index`` the
@@ -730,7 +737,7 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = f"dispatch:{_backend_name(incumbent)}"
+        name = _race_name(incumbent)
 
         def run(
             q: Any,
