@@ -546,6 +546,11 @@ _DOWNLOAD_COMPANIONS = _DOWNLOAD_PIPE_TARGETS | frozenset(
 )
 
 
+_DOWNLOAD_OPERATORS = frozenset(
+    {";", "&&", "||", "|", "|&", "&", "(", ")", "<", ">", ">>", ">&", "&>", "&>>", ">|"}
+)
+
+
 def _unquoted(raw: str) -> str:
     out, quote = [], None
     for ch in raw:
@@ -655,6 +660,9 @@ def _is_plain_download(command: str) -> bool:
     while i < len(tokens):
         token, is_operator, start, end_offset = tokens[i]
         if is_operator:
+            # A run like &&< is two operators this reading would treat as one.
+            if token not in _DOWNLOAD_OPERATORS:
+                return False
             is_redirect = bool(set(token) & {"<", ">"})
             # A redirection before the command word (<run.sh bash) leaves the next words in command position.
             if is_redirect and at_start:
@@ -665,7 +673,8 @@ def _is_plain_download(command: str) -> bool:
             continue
         if at_start and "$" in token:
             return False
-        name = token.rsplit("/", 1)[-1]
+        # The bare name, found on the sandbox PATH (writable dirs last): ./curl may be a downloaded script.
+        name = token
         if not (at_start and name in ("curl", "wget")):
             is_assignment = _SHELL_ASSIGNMENT_RE.match(token) is not None
             is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES

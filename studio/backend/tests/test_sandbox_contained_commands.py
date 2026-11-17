@@ -367,6 +367,12 @@ def test_a_plain_download_is_contained(command):
         "curl https://example.com/x >x; >log python3 x",
         "curl https://example.com/x >x; 2>/dev/null sh x",
         ">out curl -s https://example.com",
+        "curl https://example.com/install.sh >run.sh; true&&<run.sh bash",
+        "curl https://example.com/x >x;<x bash",
+        "curl https://example.com/x >x||<x sh",
+        "curl https://example.com/install.sh -o curl; chmod +x curl; ./curl --version",
+        "/tmp/curl https://example.com",
+        "/usr/bin/curl https://example.com",
     ],
 )
 def test_any_other_download_keeps_the_block(command):
