@@ -4,7 +4,8 @@
 """Prebuilt CUTLASS int8 GEMM (C ABI, ctypes) with torchao's epilogue fused: sm75 fp16 out, sm8x bf16 out.
 
 Any load failure or tile failing the bit-exact probe keeps today's path; a tile replaces it only when it wins
-the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race."""
+the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
+``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``)."""
 
 from __future__ import annotations
 
@@ -31,6 +32,12 @@ _STATUS = {
 # ties keep today's path
 _MARGIN = 0.02
 _RACE_M = (512, 4096)
+# Video token counts (MiniMax-H3 960x544x124: 19318 rows): unswizzled tiles that win at 4096 rows lose 20-55% there
+# (A100: L2 reuse of the weight tiles collapses), so M >= _HUGE_M takes the winner of its own race at _RACE_M_HUGE.
+HUGE_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE"
+_RACE_M_HUGE = 16384
+_HUGE_M = 8192
+_LARGE_M = 1024
 _LOCK = threading.Lock()
 _LOAD_ERROR: list = [None]
 _CALLS = [0]
@@ -43,6 +50,31 @@ def mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+def huge_race_enabled() -> bool:
+    raw = (os.environ.get(HUGE_RACE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def race_points() -> tuple:
+    """Race M values for a weight shape's plan entry: ``_RACE_M`` plus ``_RACE_M_HUGE`` unless switched off."""
+    return _RACE_M + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
+
+
+def slot(m: int, entry: dict) -> Optional[int]:
+    """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
+    when the entry has one (None there keeps today's path), else the 4096-row race."""
+    if m < _LARGE_M:
+        return entry.get(min(_RACE_M))
+    if m >= _HUGE_M and _RACE_M_HUGE in entry:
+        return entry.get(_RACE_M_HUGE)
+    return entry.get(max(_RACE_M))
+
+
+def large_slots(entry: dict) -> tuple:
+    """Tiles of the entry's slots that serve M >= ``_LARGE_M``."""
+    return tuple(entry.get(m) for m in (max(_RACE_M), _RACE_M_HUGE) if m in entry)
 
 
 def family(capability: Optional[tuple]) -> Optional[int]:
@@ -428,9 +460,15 @@ def race(
     out_dtype = out_dtype_for(fam)
     dev = w.device
     k = w.shape[1]
-    g = torch.Generator(device = "cpu").manual_seed(7)
-    a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
-    xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(xs_dtype).to(dev)
+    if m >= _HUGE_M:
+        # hundreds of MB: draw on the card (a CPU draw takes seconds at load)
+        g = torch.Generator(device = dev).manual_seed(7)
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8, device = dev)
+        xs = (torch.rand(m, generator = g, device = dev) * 0.02 + 1e-4).to(xs_dtype)
+    else:
+        g = torch.Generator(device = "cpu").manual_seed(7)
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
+        xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(xs_dtype).to(dev)
     if not eligible(a, w, xs, ws, bias, out_dtype):
         return {"tile": None, "us": {}}
     cands = [

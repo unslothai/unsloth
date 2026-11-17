@@ -658,7 +658,7 @@ def _cutlass_tile(
         return None
     from . import diffusion_int8_cutlass as cut
 
-    tile = entry.get(max(cut._RACE_M) if a.shape[0] >= _CUT_LARGE_M else min(cut._RACE_M))
+    tile = cut.slot(int(a.shape[0]), entry)
     if tile is None:
         return None
     import torch
@@ -669,7 +669,7 @@ def _cutlass_tile(
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
     from . import diffusion_int8_cutlass as cut
     entry = (_CUT_PLAN.get(index) or {}).get(_cut_key(n, k, xs_dtype, ws_dtype, bias))
-    return bool(entry) and entry.get(max(cut._RACE_M)) is not None
+    return bool(entry) and any(t is not None for t in cut.large_slots(entry))
 
 
 def cutlass_wanted(capability: Optional[tuple]) -> bool:
@@ -832,8 +832,11 @@ def _cutlass_plan(
             done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
-            if isinstance(hit, dict) and all(
-                (v is None or v in cut.probed_tiles(index)) for v in hit.values()
+            points = cut.race_points()
+            if (
+                isinstance(hit, dict)
+                and {int(m) for m in hit} == set(points)
+                and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
             ):
                 plan[key] = {int(m): v for m, v in hit.items()}
                 continue
@@ -842,7 +845,17 @@ def _cutlass_plan(
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
             entry = {}
-            for m in cut._RACE_M:
+            for m in points:
+                if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
+                    # no room to time it: today's path at that size, never an untimed 4096-row winner
+                    entry[m] = None
+                    races.setdefault(skey, {})[m] = {
+                        "tile": None,
+                        "us": {},
+                        "m": m,
+                        "skipped": "memory",
+                    }
+                    continue
                 if triton_on:
                     today = lambda a, w_, x_, s_, b_: _launch_or_ref(index, a, w_, x_, s_, b_)  # noqa: E731
                 elif m >= _CUT_LARGE_M:
@@ -857,6 +870,10 @@ def _cutlass_plan(
                     r["tile"] = int(r["tile"]) if r["tile"] is not None else None
                 entry[m] = r["tile"]
                 races.setdefault(skey, {})[m] = r
+                if m == cut._RACE_M_HUGE:
+                    # hand the race's ~1-2 GB of operands / outputs back before the next shape or the first forward
+                    torch.cuda.synchronize(dev)
+                    torch.cuda.empty_cache()
             plan[key] = entry
             cached[skey] = {str(m): v for m, v in entry.items()}
             del w, wsr, br
@@ -876,6 +893,22 @@ def _cutlass_plan(
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     _CUT_RACES[index] = races
     return plan
+
+
+# free device memory the huge race needs, as a multiple of one operand + one output: today's output, the candidate
+# outputs the caching allocator keeps between timed calls, and slack for the streamed tiers' budget
+_HUGE_RACE_HEADROOM = 4.0
+
+
+def _huge_race_fits(dev: Any, m: int, n: int, k: int) -> bool:
+    import torch
+
+    try:
+        free, _total = torch.cuda.mem_get_info(dev)
+    except Exception:  # noqa: BLE001
+        return False
+    need = m * k + m * n * 2
+    return free >= _HUGE_RACE_HEADROOM * need
 
 
 def _launch_or_ref(index: int, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
