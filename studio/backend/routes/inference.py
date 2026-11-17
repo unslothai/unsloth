@@ -3909,7 +3909,11 @@ async def _alias_launch_satisfied(
     from core.inference.chat_templates import resolve_effective_chat_template_override
 
     backend = get_llama_cpp_backend()
-    if not backend.is_loaded or not backend.model_identifier:
+    if (
+        not backend.is_loaded
+        or not backend.model_identifier
+        or getattr(backend, "is_diffusion", False)
+    ):
         return False
     from utils.openai_auto_switch_settings import stored_gpu_index_kind
 
@@ -9640,6 +9644,29 @@ def _target_accepts_audio_input(load_path: str) -> bool:
         return True
 
 
+def _alias_disables_projector(
+    load_kwargs: dict,
+    target_id: str,
+    variant: Optional[str],
+    companion_roots: tuple[str, ...],
+    needs_image: bool,
+) -> bool:
+    from core.inference.llama_cpp import _extra_args_device
+
+    extra_args = load_kwargs.get("llama_extra_args")
+    if extra_args_disable_mmproj(extra_args):
+        return True
+    if not load_kwargs.get("disable_vision"):
+        return False
+    if needs_image:
+        return True
+    # Vision off keeps audio-only projectors; a custom --mmproj wins over discovery.
+    custom = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if custom is not None:
+        return not _projector_survives_vision_off(custom)
+    return _target_is_vision(target_id, variant, True, companion_roots)
+
+
 def _names_video_token(config) -> bool:
     if not isinstance(config, dict):
         return False
@@ -12442,9 +12469,15 @@ async def _maybe_auto_switch_model(
                             override, alias_kwargs = _alias_load_kwargs(
                                 target_id, variant, override_id, alias_config
                             )
-                            if (target_requires_vision or require_audio_input) and (
-                                alias_kwargs.get("disable_vision")
-                                or extra_args_disable_mmproj(alias_kwargs.get("llama_extra_args"))
+                            if (
+                                target_requires_vision or require_audio_input
+                            ) and await asyncio.to_thread(
+                                _alias_disables_projector,
+                                alias_kwargs,
+                                target_id,
+                                variant,
+                                gguf_companion_roots,
+                                target_requires_image or require_video,
                             ):
                                 raise HTTPException(
                                     status_code = 400,
@@ -19692,6 +19725,11 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None
+            if request._alias_load and getattr(llama_backend, "is_diffusion", False):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Configured aliases are not supported for DiffusionGemma models.",
+                )
             if not llama_backend.adopt_load_intent_if_matched(intent):
                 # Another account's capacity mismatch is its defaults, not a reconfig (#12365).
                 if not (

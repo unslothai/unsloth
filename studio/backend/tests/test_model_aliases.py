@@ -800,6 +800,59 @@ def test_the_reuse_check_compares_every_launch_setting(monkeypatch, config, sati
     assert _satisfied(monkeypatch, _resident(), config) is satisfied
 
 
+@pytest.mark.parametrize("config", [{"n_parallel": 8}, {"disable_vision": True}])
+def test_configured_alias_cannot_reuse_a_diffusion_runner(monkeypatch, config):
+    backend = _resident(
+        _is_diffusion = True, _requested_cache_types = ("f16", "f16"), _requested_spec_mode = "off"
+    )
+    backend._last_load_intent = None
+    assert not _satisfied(
+        monkeypatch,
+        backend,
+        {"max_seq_length": 98304, "kv_cache_dtype": "f16", "speculative_type": "off", **config},
+    )
+
+
+def test_diffusion_catalog_does_not_advertise_a_configured_alias_loaded(store, monkeypatch):
+    import routes.inference as inf
+    from core.inference import local_model_resolver as resolver
+    from utils import openai_auto_switch_settings as settings
+
+    set_model_aliases(
+        [
+            {
+                "name": "diffusion",
+                "model": "org/model",
+                "load_config": {"max_seq_length": 98304, "n_parallel": 8},
+            }
+        ]
+    )
+    backend = _resident(
+        _is_diffusion = True, _requested_cache_types = ("f16", "f16"), _requested_spec_mode = "auto"
+    )
+    backend._last_load_intent = None
+
+    async def catalog(**kwargs):
+        return [{"id": "org/model", "object": "model", "loaded": True, "context_length": 98304}]
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_model_overrides", lambda: {})
+    monkeypatch.setattr(inf, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf_for_switch",
+        lambda *a, **k: ("org/model", "Q4_K_M", "org/model"),
+    )
+    rows = asyncio.run(inf._openai_catalog_with_aliases())
+    assert next(row for row in rows if row["id"] == "diffusion") == {
+        "id": "diffusion",
+        "object": "model",
+        "loaded": False,
+        "alias_for": "org/model",
+    }
+
+
 @pytest.mark.parametrize(
     "requested, resolved_variant, satisfied",
     [

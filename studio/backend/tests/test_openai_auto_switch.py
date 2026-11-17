@@ -13361,6 +13361,81 @@ def test_alias_vision_preflight_uses_the_effective_launch(monkeypatch, saved, co
         assert len(rec.calls) == 1
 
 
+def _write_audio_projector(path, *, has_vision):
+    import struct
+    metadata = {"clip.has_audio_encoder": True, "clip.has_vision_encoder": has_vision}
+    path.write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, len(metadata))
+        + b"".join(
+            struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I?", 7, value)
+            for key, value in metadata.items()
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "has_vision, saved, config, refused",
+    [
+        (False, {}, {"disable_vision": True}, False),
+        (False, {"disable_vision": True}, {}, False),
+        (True, {}, {"disable_vision": True}, True),
+        (True, {"disable_vision": True}, {}, True),
+        (False, {"llama_extra_args": ["--no-mmproj"]}, {}, True),
+        (False, {"llama_extra_args": ["--no-mmproj-auto"]}, {}, True),
+        (True, {"disable_vision": True}, {"disable_vision": False}, False),
+    ],
+)
+def test_alias_audio_preflight_matches_the_projector_policy(
+    monkeypatch, tmp_path, has_vision, saved, config, refused
+):
+    # Vision off retains audio-only projectors; mixed ones and explicit no-mmproj flags lose audio.
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    _write_audio_projector(tmp_path / "mmproj-F16.gguf", has_vision = has_vision)
+    backend, rec = _wire_alias_config(monkeypatch, saved = saved)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda *a, **k: (str(tmp_path), "Q4_K_M", "org/Model-GGUF"),
+    )
+    kwargs = dict(require_vision = True, require_audio_input = True, require_image = False)
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            _switch_alias({**_ALIAS_LONG, **config}, **kwargs)
+        assert exc.value.status_code == 400
+        assert "disables the projector" in exc.value.detail["error"]["message"]
+        assert rec.calls == []
+        assert backend.model_identifier == "/models/model.gguf"
+    else:
+        _switch_alias({**_ALIAS_LONG, **config}, **kwargs)
+        assert len(rec.calls) == 1
+
+
+@pytest.mark.parametrize("custom_has_vision", [False, True])
+def test_alias_audio_preflight_uses_the_custom_projector(monkeypatch, tmp_path, custom_has_vision):
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    _write_audio_projector(tmp_path / "mmproj-F16.gguf", has_vision = not custom_has_vision)
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    custom = custom_dir / "mmproj-F16.gguf"
+    _write_audio_projector(custom, has_vision = custom_has_vision)
+    _, rec = _wire_alias_config(monkeypatch, saved = {"llama_extra_args": ["--mmproj", str(custom)]})
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda *a, **k: (str(tmp_path), "Q4_K_M", "org/Model-GGUF"),
+    )
+    config = {**_ALIAS_LONG, "disable_vision": True}
+    kwargs = dict(require_vision = True, require_audio_input = True, require_image = False)
+    if custom_has_vision:
+        with pytest.raises(HTTPException) as exc:
+            _switch_alias(config, **kwargs)
+        assert exc.value.status_code == 400
+        assert rec.calls == []
+    else:
+        _switch_alias(config, **kwargs)
+        assert len(rec.calls) == 1
+
+
 def test_messages_alias_with_vision_disabled_keeps_the_resident_on_image_refusal(monkeypatch):
     # A top-level Messages image must be refused before a text-only alias replaces the resident.
     from models.inference import AnthropicMessagesRequest

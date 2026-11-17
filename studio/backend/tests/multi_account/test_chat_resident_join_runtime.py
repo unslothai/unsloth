@@ -303,8 +303,9 @@ def test_configured_alias_refuses_capacity_relaxed_join(
         assert not strict.unloaded
 
 
+@pytest.mark.parametrize("resident_diffusion", [False, True])
 def test_configured_alias_refuses_a_diffusion_target_before_replacing(
-    monkeypatch, strict, accounts
+    monkeypatch, strict, accounts, resident_diffusion
 ):
     # The diffusion runner ignores the alias settings and records no load intent: refuse before teardown.
     from fastapi import HTTPException
@@ -325,7 +326,13 @@ def test_configured_alias_refuses_a_diffusion_target_before_replacing(
     monkeypatch.setattr(inference, "_resolve_inherited_extra_args", lambda *a, **k: None)
     monkeypatch.setattr(inference, "_prepare_load_placement", diffusion_placement)
     monkeypatch.setattr(inference, "_validate_reasoning_budget_preflight", stop)
-    request = LoadRequest(model_path = RESIDENT, gguf_variant = "Q8_0")
+    strict.is_diffusion = resident_diffusion
+    request = LoadRequest(
+        model_path = RESIDENT,
+        gguf_variant = VARIANT if resident_diffusion else "Q8_0",
+        n_parallel = 2,
+        tensor_parallel = True,
+    )
     fastapi_request = SimpleNamespace(
         app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
     )
@@ -341,9 +348,12 @@ def test_configured_alias_refuses_a_diffusion_target_before_replacing(
         )
 
     # Without an alias configuration the same request continues toward the launch.
-    with pytest.raises(HTTPException) as reached:
-        run()
-    assert isinstance(reached.value.__cause__ or reached.value.__context__, StopBeforeLaunch)
+    if resident_diffusion:
+        assert run().status == "already_loaded"
+    else:
+        with pytest.raises(HTTPException) as reached:
+            run()
+        assert isinstance(reached.value.__cause__ or reached.value.__context__, StopBeforeLaunch)
     request._alias_load = True
     with pytest.raises(HTTPException) as exc:
         run()
