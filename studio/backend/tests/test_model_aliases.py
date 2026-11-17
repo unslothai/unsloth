@@ -928,6 +928,25 @@ def test_alias_reuse_matches_a_resident_loaded_by_file_path(monkeypatch, request
     )
 
 
+@pytest.mark.parametrize(
+    "bundled_request, engram, satisfied",
+    [
+        # The resident was asked for the quant's own table, which the load ran as none.
+        ("Q8_0", "Q8_0", True),
+        (None, None, True),
+        # Another precision is other weights, and a resident never asked for this one is not it.
+        ("Q8_0", "BF16", False),
+        (None, "Q8_0", False),
+    ],
+)
+def test_alias_reuse_matches_the_bundled_engram_table_it_was_loaded_with(
+    monkeypatch, bundled_request, engram, satisfied
+):
+    backend = _resident(_engram_precision = None, _bundled_engram_request = bundled_request)
+    saved = {"engram_precision": engram} if engram else None
+    assert _satisfied(monkeypatch, backend, _CONFIG, saved = saved) is satisfied
+
+
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):
     # The loader records the requested mode; Auto running MTP is still Auto.
     backend = _resident(_requested_spec_mode = "auto", _speculative_type = "draft-mtp")
