@@ -618,6 +618,9 @@ def test_input_to_an_app_that_cannot_be_identified_asks_first(desktop, monkeypat
         ("linux", "ctrl+alt+esc"),
         ("linux", "ctrl+alt+f1"),
         ("linux", "ctrl+alt+F12"),
+        ("linux", "ctrl+alt+shift+delete"),
+        ("linux", "shift+ctrl+alt+Page_Down"),
+        ("linux", "ctrl+alt+shift+pgup"),
     ],
 )
 def test_keys_that_take_the_screen_away_are_never_sent(desktop, monkeypatch, platform, combo):

@@ -73,6 +73,8 @@ _BLOCKED = {
         "cmd+l", "ctrl+alt+delete", "ctrl+alt+backspace", "ctrl+alt+l",
         # Cinnamon's shut-down dialog and restart, and the X server's switch to a text console.
         "ctrl+alt+end", "ctrl+alt+escape", *(f"ctrl+alt+f{n}" for n in range(1, 13)),
+        # KDE Plasma up to 5.21: log out, shut down and reboot without confirmation.
+        "ctrl+alt+shift+delete", "ctrl+alt+shift+pagedown", "ctrl+alt+shift+pageup",
     },
 }  # fmt: skip
 _RISKY = {
