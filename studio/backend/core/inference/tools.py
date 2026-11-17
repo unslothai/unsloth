@@ -503,6 +503,10 @@ _WGET_PLAIN_VALUES = {
     "--limit-rate": None,
 }
 _PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
+# Proxied launches point these at empty rc files; a command that names them could undo that.
+_DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
+# Change what a later curl/wget word runs or which environment it gets.
+_DOWNLOAD_ALTERING_WORDS = frozenset({"source", ".", "alias", "shopt", "function", "enable"})
 
 
 def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
@@ -567,10 +571,18 @@ def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
 
 def _is_plain_download(command: str) -> bool:
     """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
-    if _DOWNLOADER_RC_ENV_RE.search(command):
+    # No $ (but $?) or backticks anywhere: a variable name built at run time could unset CURL_HOME.
+    if _DOWNLOADER_CONFIG_NAMES_RE.search(command) or set(command.replace("$?", "")) & set("$`"):
         return False
     tokens = _readable_shell_words(command)
     if tokens is None:
+        return False
+    # The words as bash reads them too: CURL_HO''ME is CURL_HOME.
+    if _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens)) or any(
+        (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
+        or (not is_operator and token in _DOWNLOAD_ALTERING_WORDS)
+        for k, (token, is_operator, _, _) in enumerate(tokens)
+    ):
         return False
     rest: list[str] = []
     copied = 0
@@ -625,7 +637,8 @@ def _is_plain_download(command: str) -> bool:
                 return False
             else:
                 break
-        if not _plain_download_args(name, args):
+        # No arguments: `curl() {...}` defines a function, not a download.
+        if not args or not _plain_download_args(name, args):
             return False
         seen += 1
         rest.append(command[copied:start] + "true")

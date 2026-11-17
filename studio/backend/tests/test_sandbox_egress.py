@@ -249,6 +249,8 @@ def test_seatbelt_reaches_only_its_proxy(tmp_path, monkeypatch):
         rc_dir = proxied.env["CURL_HOME"]
         assert os.path.getsize(os.path.join(rc_dir, ".curlrc")) == 0
         assert proxied.env["WGETRC"] == os.path.join(rc_dir, "wgetrc")
+        with open(proxied.env["WGETRC"]) as f:
+            assert f.read() == "netrc = off\n"
         assert rc_dir in proxied.argv[2] and "CURL_HOME" not in plain.env
         socket.create_connection(("127.0.0.1", port), timeout = 5).close()
     finally:

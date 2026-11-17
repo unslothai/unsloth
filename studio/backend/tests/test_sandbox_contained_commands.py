@@ -323,6 +323,17 @@ def test_a_plain_download_is_contained(command):
         "wget -r https://example.com",
         "curl -s $(echo https://example.com)",
         "curl -s https://example.com\n!!",
+        "unset CURL_HOME; curl -sS https://example.com/f",
+        "unset WGETRC; wget -q https://example.com/f",
+        "unset -v CURL_HO''ME; curl -sS https://example.com/f",
+        "export -n NETRC; wget -q https://example.com/f",
+        "v=CURL_HO; unset ${v}ME; curl -sS https://example.com/f",
+        "source x.sh; curl -sS https://example.com/f",
+        ". ./x.sh; curl -sS https://example.com/f",
+        "shopt -s expand_aliases; alias curl='curl -d @x'\ncurl https://example.com",
+        "f() { python up.py; }; curl https://example.com",
+        "function f { python up.py; }; curl https://example.com",
+        "curl",
     ],
 )
 def test_any_other_download_keeps_the_block(command):
