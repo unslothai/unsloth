@@ -623,7 +623,8 @@ def _reuse_registered_redirect_port(auth) -> None:
             stored, ours = urlsplit(str(registered[0])), urlsplit(str(current[0]))
             port = stored.port
             if (
-                (stored.scheme, stored.hostname, stored.path) != (ours.scheme, ours.hostname, ours.path)
+                (stored.scheme, stored.hostname, stored.path)
+                != (ours.scheme, ours.hostname, ours.path)
                 or not port
                 or not _loopback_port_is_free(auth._callback_host, port)
             ):

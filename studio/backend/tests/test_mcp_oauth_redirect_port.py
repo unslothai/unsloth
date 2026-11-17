@@ -146,7 +146,6 @@ def _revoke(url):
 
 def _stats(url):
     import json
-
     return json.loads(_call(url, "stats"))
 
 
@@ -165,7 +164,10 @@ def test_reauthorization_keeps_the_registered_client(server, signed_in):
 
     assert len(signed_in) == 2
     assert after["registered"] == [client_id]
-    (_, first_redirect), (again_id, again_redirect) = after["authorized"][0], after["authorized"][-1]
+    (_, first_redirect), (again_id, again_redirect) = (
+        after["authorized"][0],
+        after["authorized"][-1],
+    )
     assert again_id == client_id
     assert again_redirect == first_redirect
 
