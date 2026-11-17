@@ -180,6 +180,18 @@ def _select(**payload_kwargs) -> list[dict]:
     return asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
 
 
+def test_documented_bash_alias_selects_the_canonical_terminal_tool():
+    payload = ChatCompletionRequest(
+        model = "test-model",
+        messages = [{"role": "user", "content": "hi"}],
+        enable_tools = True,
+        enabled_tools = ["bash"],
+        stream = True,
+    )
+    selected = asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    assert [tool["function"]["name"] for tool in selected] == ["terminal"]
+
+
 @pytest.mark.parametrize("mode", ["ask", "auto", "off"])
 def test_non_full_modes_keep_the_sandboxed_schemas(mode):
     tools = _select(permission_mode = mode)
