@@ -16,7 +16,10 @@ torch = pytest.importorskip("torch")
 
 
 @pytest.fixture(autouse = True)
-def flags():
+def flags(monkeypatch):
+    # A card AOTriton's experimental kernels are verified on, unless a test says otherwise.
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1151", raising = False)
+    monkeypatch.delenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, raising = False)
     before = [
         (read(), write)
         for read, write in (
@@ -33,14 +36,14 @@ def flags():
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
-    att._ROCM_APU_SDPA_SKIP_LOGGED.clear()
+    getattr(att, "_ROCM_UNVERIFIED_LOGGED", set()).clear()
     yield
     for value, write in before:
         write(value)
     att._SDPA_PROBE_CACHE.clear()
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
-    att._ROCM_APU_SDPA_SKIP_LOGGED.clear()
+    getattr(att, "_ROCM_UNVERIFIED_LOGGED", set()).clear()
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -293,45 +296,146 @@ def test_any_completed_half_precision_probe_applies_its_answer(monkeypatch, dtyp
     assert torch.backends.cuda.mem_efficient_sdp_enabled() is not disabled
 
 
-def test_rocm_apu_skips_fused_sdpa_child_probes(monkeypatch):
-    """#17985: fused child probes hang Radeon 780M mid-load."""
-    calls = []
+def _record_children(
+    monkeypatch,
+    fused = "available",
+    calls = None,
+):
+    calls = [] if calls is None else calls
 
     def run(cmd, **kwargs):
-        calls.append(cmd[-1])
-        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + '"available"')
+        calls.append((cmd[-1], kwargs["env"].get("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL")))
+        if cmd[-1] != "MATH" and fused == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 45)
+        status = "available" if cmd[-1] == "MATH" else fused
+        return SimpleNamespace(returncode = 0, stdout = probe.RESULT_PREFIX + json.dumps(status))
 
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
-    monkeypatch.delenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, raising = False)
+    return calls
+
+
+@pytest.mark.parametrize("arch", ["gfx1103", "gfx1152", "gfx1153", "gfx1102", ""])
+def test_unverified_arch_probes_without_aotriton_experimental_kernels(monkeypatch, arch):
+    """#17985: Studio's experimental opt-in ran gfx1103's experimental AOTriton kernels in the children and hung the GPU."""
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: arch)
+    monkeypatch.setenv("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    calls = _record_children(monkeypatch, fused = "unavailable")
     assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == ("math",)
-    assert calls == []
-    assert torch.backends.cuda.flash_sdp_enabled() is False
-    assert torch.backends.cuda.mem_efficient_sdp_enabled() is False
+    assert sorted(calls) == [
+        ("EFFICIENT_ATTENTION", "0"),
+        ("FLASH_ATTENTION", "0"),
+        ("MATH", "0"),
+    ]
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    assert not torch.backends.cuda.mem_efficient_sdp_enabled()
 
 
-def test_rocm_apu_fused_probe_opt_in_still_runs_children(monkeypatch):
-    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
-    monkeypatch.setenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, "1")
-    monkeypatch.setattr(
-        att,
-        "_run_rocm_sdpa_children",
-        lambda device, dtype: ("math", "flash", "mem_efficient"),
-    )
+_VERIFIED = ("gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1151", "gfx1200", "gfx1201")
+
+
+@pytest.mark.parametrize("arch", _VERIFIED)
+def test_verified_arch_keeps_the_experimental_opt_in(monkeypatch, arch):
+    """gfx1151 / gfx1100 / gfx1201 need the opt-in on AOTriton < 0.12: their probes and fused kernels are unchanged."""
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: arch)
+    monkeypatch.setenv("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    calls = _record_children(monkeypatch)
     assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == (
         "math",
         "flash",
         "mem_efficient",
     )
+    assert {env for _, env in calls} == {"1"}
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+    assert att.ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS == frozenset(_VERIFIED)
 
 
-def test_rocm_auto_flash_skips_integrated_gpus(monkeypatch):
+def test_unverified_arch_keeps_fused_kernels_aotriton_releases(monkeypatch):
+    """Only the experimental opt-in is withheld: kernels AOTriton ships as supported still run fused."""
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1102")
+    _record_children(monkeypatch)
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.float16) == (
+        "math",
+        "flash",
+        "mem_efficient",
+    )
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
+@pytest.mark.parametrize("arch,disabled", [("gfx1103", True), ("gfx1151", False)])
+def test_unanswered_probe_fails_closed_only_on_unverified_archs(monkeypatch, arch, disabled):
+    """The parent keeps the experimental opt-in, so an unverified card keeps only fused kernels a child confirmed."""
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: arch)
+    _record_children(monkeypatch, fused = "timeout")
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == ()
+    assert torch.backends.cuda.flash_sdp_enabled() is not disabled
+    assert torch.backends.cuda.mem_efficient_sdp_enabled() is not disabled
+    assert att._SDPA_PROBE_CACHE == {}
+
+
+def test_unanswered_read_only_probe_leaves_the_flags(monkeypatch):
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1103")
+    _record_children(monkeypatch, fused = "timeout")
+    with att.read_only_sdpa_probe():
+        assert att._probe_rocm_sdpa_kernels("cuda:1", torch.bfloat16) == ()
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
+def test_allow_env_probes_what_the_parent_runs(monkeypatch):
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1103")
+    monkeypatch.setenv(att.ROCM_FUSED_SDPA_ALLOW_ENV, "1")
+    monkeypatch.setenv("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    calls = _record_children(monkeypatch, fused = "timeout")
+    att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16)
+    assert {env for _, env in calls} == {"1"}
+    assert torch.backends.cuda.flash_sdp_enabled()
+
+
+@pytest.mark.parametrize(
+    "platform,silicon,verified",
+    [
+        ("linux", ["gfx1103"], False),
+        ("linux", None, False),
+        ("linux", ["gfx1100"], True),
+        ("win32", ["gfx1103"], True),
+    ],
+)
+def test_hsa_override_is_judged_by_the_silicon(monkeypatch, platform, silicon, verified):
+    """HSA_OVERRIDE_GFX_VERSION=11.0.0 on a 780M presents gfx1100; the kernels still run on gfx1103."""
+    import sys
+
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1100")
+    monkeypatch.setattr(att, "_rocm_kfd_silicon_archs", lambda: silicon)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+    assert att._rocm_aotriton_experimental_verified("cuda:0") is verified
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION")
+    assert att._rocm_aotriton_experimental_verified("cuda:0") is True
+
+
+def test_device_arch_is_read_from_the_indexed_card(monkeypatch):
+    seen = []
+
+    def props(index):
+        seen.append(index)
+        return SimpleNamespace(gcnArchName = "gfx1103:xnack-")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    assert att._rocm_device_arch("cuda:1") == "gfx1103"
+    assert seen == [1]
+    assert att._rocm_aotriton_experimental_verified("cuda:1") is False
+
+
+def test_auto_flash_still_runs_on_integrated_gpus(monkeypatch):
+    """Strix Halo (gfx1151) is an APU too: auto flash is decided by the flash probe, not by host memory sharing."""
     monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
     monkeypatch.setattr(att, "_flash_attn_installed", lambda: True)
     monkeypatch.setattr(att, "_rocm_flash_attn_runs", lambda t: True)
-    monkeypatch.setattr(att, "_rocm_device_is_integrated", lambda device: True)
     monkeypatch.delenv(att.ROCM_FLASH_ENV, raising = False)
-    target = SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16)
-    assert att._rocm_auto_flash(target) is False
-    monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
-    assert att._rocm_auto_flash(target) is True
+    from core.inference import host_pinning
+
+    monkeypatch.setattr(host_pinning, "device_is_integrated", lambda device = None: True)
+    assert att._rocm_auto_flash(SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16))

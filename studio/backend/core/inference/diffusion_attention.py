@@ -134,39 +134,62 @@ def read_only_sdpa_probe():
         _SDPA_PROBE_READ_ONLY.reset(token)
 
 
-_ROCM_APU_SDPA_SKIP_LOGGED: list = []
+# AOTriton refuses the archs it lists as experimental unless TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1, which Studio sets
+# process-wide (main.py) so gfx1151 / gfx1100 do not fall back to MATH on AOTriton < 0.12. The opt-in is measured only on the
+# archs below. AOTriton 0.12b added the gfx1103 / gfx1152 / gfx1153 iGPUs as experimental, and on a Radeon 780M (gfx1103) those
+# kernels hung the GPU, both in the probe children and in the text encoder (#17985). Elsewhere the children probe with the
+# opt-in off, so AOTriton's own release list decides, and the parent keeps only fused kernels a child confirmed.
+ROCM_AOTRITON_EXPERIMENTAL_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS = frozenset(
+    ("gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1151", "gfx1200", "gfx1201")
+)
+_ROCM_UNVERIFIED_LOGGED: set[str] = set()
 
 
-def _rocm_device_is_integrated(device: str) -> bool:
-    """True for a ROCm APU (e.g. Radeon 780M) sharing host RAM; never raises."""
+def _rocm_device_arch(device: str) -> str:
+    """Normalised gfx target torch presents for ``device``, "" when unreadable. Never raises."""
     try:
-        from .host_pinning import device_is_integrated
-        return bool(device_is_integrated(device))
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, torch.device(device).index)
     except Exception:  # noqa: BLE001
+        return ""
+
+
+def _rocm_kfd_silicon_archs() -> Optional[list[str]]:
+    try:
+        from utils.hardware.amd import amd_kfd_gpu_gfx_targets
+        return amd_kfd_gpu_gfx_targets()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_aotriton_experimental_verified(device: str) -> bool:
+    """Whether AOTriton's experimental kernels are verified on ``device``; an unreadable arch is False."""
+    verified = ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS
+    if _rocm_device_arch(device) not in verified:
         return False
+    import sys
+
+    if sys.platform.startswith("linux") and any(
+        key.startswith("HSA_OVERRIDE_GFX_VERSION") and value.strip()
+        for key, value in os.environ.items()
+    ):
+        # The override renames the target torch reports; the kernels still run on the silicon KFD names.
+        silicon = _rocm_kfd_silicon_archs()
+        return bool(silicon) and all(arch in verified for arch in silicon)
+    return True
+
+
+def _rocm_children_experimental(device: str) -> bool:
+    # UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 leaves the parent's fused kernels on: the children then answer for what it runs.
+    return not _rocm_guard_allowed() or _rocm_aotriton_experimental_verified(device)
 
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
 
-    # ROCm APUs: concurrent fused-SDPA child probes hang the GPU and abort Studio
-    # mid-load (#17985: HW Exception … GPU Hang → SIGABRT on 780M). Keep MATH unless
-    # the user opts into fused kernels with UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1.
-    if _rocm_device_is_integrated(device) and _rocm_guard_allowed():
-        available = (SDPA_MATH,)
-        if not _ROCM_APU_SDPA_SKIP_LOGGED:
-            _ROCM_APU_SDPA_SKIP_LOGGED.append(True)
-            _module_logger().info(
-                "diffusion.attention: ROCm integrated GPU — skipping fused SDPA child probes "
-                "(they can hang the GPU); using MATH. %s=1 re-enables fused probing.",
-                ROCM_FUSED_SDPA_ALLOW_ENV,
-            )
-        if not _SDPA_PROBE_READ_ONLY.get() and str(dtype) in ("torch.float16", "torch.bfloat16"):
-            try:
-                _apply_rocm_guard(available)
-            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
-                pass
-        return available
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
@@ -185,6 +208,16 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 pass
     else:
         _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+            and not _rocm_children_experimental(device)
+        ):
+            # No child answered, and the parent would run unconfirmed fused kernels under its experimental opt-in.
+            try:
+                _apply_rocm_guard((SDPA_MATH,))
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
     return available
 
 
@@ -206,6 +239,18 @@ def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
     dll_directories = _rocm_dll_directories()
     if dll_directories:
         child_env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
+    if not _rocm_children_experimental(device):
+        # "0" is check_env's opt-out: AOTriton's experimental archs answer "No available kernel".
+        child_env[ROCM_AOTRITON_EXPERIMENTAL_ENV] = "0"
+        if device not in _ROCM_UNVERIFIED_LOGGED:
+            _ROCM_UNVERIFIED_LOGGED.add(device)
+            _module_logger().info(
+                "diffusion.attention: %s (%s) is not an arch AOTriton's experimental SDPA kernels are verified on; "
+                "probing fused SDPA with them off. %s=1 keeps them.",
+                device,
+                _rocm_device_arch(device) or "unknown arch",
+                ROCM_FUSED_SDPA_ALLOW_ENV,
+            )
 
     def probe(backend: str) -> str:
         try:
@@ -797,10 +842,6 @@ def _flash_attn_installed() -> bool:
 
 def _rocm_auto_flash(target: Any, family: Any = None) -> bool:
     if not _is_cuda_rocm(target) or _rocm_flash_mode() == "0":
-        return False
-    # Auto flash on ROCm APUs: the block probe / flash path has hung 780M GPUs during
-    # Z-Image load and encode (#17985). UNSLOTH_DIFFUSION_ROCM_FLASH=1 still forces it.
-    if _rocm_flash_mode() != "1" and _rocm_device_is_integrated(_target_device(target)):
         return False
     return _flash_attn_installed() and _rocm_flash_attn_runs(target)
 
