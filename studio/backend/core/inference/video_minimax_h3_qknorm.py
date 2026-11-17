@@ -468,8 +468,10 @@ def verdict(
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
+    # the capture query reads the current device's stream: ask it on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
     with _LOCK:
         if key not in _VERDICTS:
             with torch.cuda.device(x.device):
