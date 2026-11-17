@@ -7,7 +7,8 @@ Four micro-batches, the first three under the no_sync context the Trainer enters
 * "skip" (default): no reduce-scatter on the non-final micro-batches (one per unit per step);
 * "defer": the same gradients bitwise, and fewer all-gathers (none in the fit layout) after the first;
 * "each": a reduce-scatter on every micro-batch, the same gradients up to fp32 summation order;
-* "auto" (default): "defer" for the fit layout, "skip" for the sharded layout.
+* "auto" (default): "defer" for the fit layout, "each" for the sharded layout when most elements are
+  trainable (full fine-tuning: no whole-model reduce-dtype gradient held between micro-batches).
 For the sharded layout (full fine-tuning) and the fit layout (LoRA, root unit)."""
 
 import multiprocessing
@@ -55,6 +56,7 @@ def _run(native, perf, counts, layout, mode):
 
     units = sum(isinstance(m, FSDPModule) for m in model.modules())  # blocks + root
     per_micro = []
+    held = []
     for i in range(MICRO):
         before = dict(counts)
         ids = torch.randint(
@@ -64,6 +66,7 @@ def _run(native, perf, counts, layout, mode):
         with ctx:
             model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
         per_micro.append({k: counts[k] - before[k] for k in counts})
+        held.append(_unsharded_grad_bytes(model))
     grads = {
         n: (p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad).clone()
         for n, p in model.named_parameters()
@@ -72,9 +75,29 @@ def _run(native, perf, counts, layout, mode):
     return {
         "units": units,
         "per_micro": per_micro,
+        "held": held,
         "grads": grads,
         "fits": model._unsloth_fsdp2_layout["fits"],
     }
+
+
+def _unsharded_grad_bytes(model):
+    """Bytes of whole (unsharded) gradients FSDP2 keeps between backward passes: the reduce-dtype
+    accumulators and the unsharded parameters' own `.grad`."""
+    from torch.distributed.fsdp import FSDPModule
+
+    total = 0
+    for module in model.modules():
+        if not isinstance(module, FSDPModule):
+            continue
+        group = module._get_fsdp_state()._fsdp_param_group
+        for fsdp_param in [] if group is None else group.fsdp_params:
+            acc = fsdp_param.unsharded_accumulated_grad
+            grad = getattr(getattr(fsdp_param, "_unsharded_param", None), "grad", None)
+            for t in (acc, grad):
+                if t is not None:
+                    total += t.numel() * t.element_size()
+    return total
 
 
 def _worker(rank, world, port, out, path):
@@ -144,10 +167,15 @@ def _check(layout, res):
         assert all(m["ag"] == 0 for m in defer[1:-1]), defer
     # each: one reduce per unit per micro-batch.
     assert [m["rs"] for m in each] == [units] * MICRO, each
-    # auto (the default): defer for the fit layout, skip for the sharded one.
-    assert res["auto"]["per_micro"] == (defer if layout == "lora" else skip), res["auto"][
+    # auto (the default): defer for the fit layout, each for the sharded full fine-tune.
+    assert res["auto"]["per_micro"] == (defer if layout == "lora" else each), res["auto"][
         "per_micro"
     ]
+    if layout == "full":
+        # skip keeps every trainable weight's whole gradient between micro-batches; each and auto none.
+        assert all(b > 0 for b in res["skip"]["held"][:-1]), res["skip"]["held"]
+        assert res["each"]["held"][:-1] == [0] * (MICRO - 1), res["each"]["held"]
+        assert res["auto"]["held"][:-1] == [0] * (MICRO - 1), res["auto"]["held"]
     g_skip, g_defer, g_each = (res[m]["grads"] for m in ("skip", "defer", "each"))
     assert g_skip and g_skip.keys() == g_defer.keys() == g_each.keys()
     for n in g_skip:
