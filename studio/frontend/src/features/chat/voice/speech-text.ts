@@ -15,6 +15,9 @@ export function stripForSpeech(text: string): string {
     .replace(/\\[()[\]]/g, " ")
     .replace(/\\([A-Za-z]+)/g, " $1 ")
     .replace(/\$(?!\d)/g, " ") //                                    math $, not "$5"
+    // Inline code reads as a person says it: "list.reverse()" is "list dot reverse", "my_list[::-1]" is "my list".
+    .replace(/`([^`\n]+)`/g, (_m, code: string) =>
+      code.replace(/\(\s*\)/g, "").replace(/\[[^\]\n]*\]/g, " ").replace(/(\w)\.(?=[A-Za-z_])/g, "$1 dot ").replace(/_/g, " "))
     .replace(/(?<!\d)\/|\/(?!\d)/g, " ") //                          "and/or", "/s"; not 1/2
     .replace(SPEECH_STRIP_RE, "")
     .replace(/−(?=\d)/g, "-") //                                 a numeric minus is not a dash

@@ -116,3 +116,12 @@ test("the paused player does not resume itself when the next clip is scheduled",
   assert.match(schedule.slice(0, 600), /if \(ctx\.state !== "running" && !pausedRef\.current[^)]*\)\s*void ctx\.resume\(\)/);
 });
 
+test("inline code reads as a person says it", () => {
+  assert.equal(
+    stripForSpeech("Use `list.reverse()` to reverse in place, or `my_list[::-1]` for a copy."),
+    "Use list dot reverse to reverse in place, or my list for a copy.",
+  );
+  assert.equal(stripForSpeech("Set `os.environ` first."), "Set os dot environ first.");
+  // A version or a decimal inside code keeps its digits.
+  assert.equal(stripForSpeech("Install `torch==2.4.1`."), "Install torch==2.4.1.");
+});
