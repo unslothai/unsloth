@@ -4983,7 +4983,7 @@ def _confirm_gate_has_no_channel(
         return _confirm_gate_needs_stream(payload, selected_names)
     if ui_events:
         return False
-    if _request_states_no_tool_flag(payload):
+    if _request_states_no_tool_flag(payload) and not _memory_tool_requested(payload):
         # Never asked for tools: withdraw launcher defaults, not 400; external providers use the complement.
         return False
     return _confirm_gate_would_prompt(payload, selected_names)
@@ -5000,15 +5000,20 @@ def _confirm_gate_would_prompt(payload, selected_names = None) -> bool:
     return _confirm_gate_needs_stream(payload, selected_names)
 
 
-def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+def _launcher_tool_catalog_applies(payload, ui_events: bool) -> bool:
     """Launcher default skips streams the gate would stop, else the caller parks in wait_tool_decision."""
-    if not _request_states_no_tool_flag(payload) or _memory_tool_requested(payload):
+    if not _request_states_no_tool_flag(payload):
         return True
     if _request_states_tool_intent(payload):
         return False
     if not (getattr(payload, "stream", False) and not ui_events):
         return True
     return not _confirm_gate_would_prompt(payload)
+
+
+def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+    """Memory keeps its loop without opting into the launcher's broader tool catalog."""
+    return _memory_tool_requested(payload) or _launcher_tool_catalog_applies(payload, ui_events)
 
 
 def _reject_confirm_gate_without_channel(
@@ -6334,7 +6339,9 @@ async def _select_request_tools(
         if tools_on and _memory_tool_requested(payload)
         else []
     )
-    if memory_tools and not _base_enable_tools(payload):
+    if memory_tools and (
+        not _base_enable_tools(payload) or not _launcher_tool_catalog_applies(payload, ui_events)
+    ):
         tools = [t for t in tools if t["function"]["name"] in _MEMORY_LOOP_TOOL_NAMES]
     tools += memory_tools
     tools = _tools_for_search_images(tools)

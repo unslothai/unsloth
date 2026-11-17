@@ -351,3 +351,40 @@ def test_memory_only_auto_approval_needs_no_stream(db):
     payload.deep_research_armed = False
     payload.confirm_tool_calls = True
     assert inf._confirm_gate_needs_stream(payload)
+
+
+@pytest.mark.parametrize("ui_events", [False, True])
+@pytest.mark.parametrize("replay", [False, True])
+def test_memory_does_not_restore_unsafe_launcher_tools(db, monkeypatch, ui_events, replay):
+    import asyncio
+    from routes import inference as inf
+    from state.tool_policy import reset_tool_policy, set_tool_policy_default
+
+    reset_tool_policy()
+    set_tool_policy_default(True)
+    monkeypatch.setattr(inf, "_enabled_agent_skills", lambda: [])
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda _: False)
+    payload = ChatCompletionRequest(
+        model = "test", thread_id = "chat", stream = True,
+        studio_tool_history = replay,
+        messages = [
+            *(_history("update_memory") if replay else []),
+            {"role": "user", "content": "Remember my editor"},
+        ],
+    )
+    try:
+        assert inf._launcher_tool_default_applies(payload, ui_events)
+        tools = asyncio.run(inf._select_request_tools(
+            payload, tools_on = True, mcp_allowed = False, ui_events = ui_events,
+        ))
+        names = inf._catalog_names(tools)
+        assert "update_memory" in names
+        if ui_events and not replay:
+            assert "terminal" in names
+        else:
+            assert names == ["update_memory"]
+        assert not inf._confirm_gate_has_no_channel(payload, ui_events, names)
+        if not ui_events:
+            assert inf._confirm_gate_has_no_channel(payload, False, ["terminal"])
+    finally:
+        reset_tool_policy()
