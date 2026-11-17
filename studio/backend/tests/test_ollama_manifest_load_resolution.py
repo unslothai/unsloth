@@ -553,7 +553,6 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
 _IGNORABLE_LAYERS = (
     "application/vnd.ollama.image.draft",
     "application/vnd.ollama.image.embed",
-    # Downgrade-anchor layers newer Ollama appends to every pulled legacy manifest (#18058).
     "application/vnd.docker.distribution.manifest.v2+json",
     "application/vnd.ollama.manifest.list.v2+json",
 )

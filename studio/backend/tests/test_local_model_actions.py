@@ -114,8 +114,7 @@ def test_delete_ollama_tag_keeps_layers_another_tag_uses(lm_root, tmp_path, monk
 
 
 def _v2_store(tmp_path, monkeypatch):
-    """Newer Ollama: a pull writes manifests-v2 plus a legacy downgrade anchor; ``ollama cp`` writes
-    a v2-only alias of the same manifest blob (Windows copies the blob instead of symlinking)."""
+    """A pull's manifests-v2 tag + legacy downgrade anchor, and an ``ollama cp`` v2-only alias."""
     import hashlib
 
     from hub.services.models import ollama
@@ -176,7 +175,6 @@ def _v2_store(tmp_path, monkeypatch):
 
 
 def test_delete_v2_pulled_tag_removes_both_trees_and_keeps_a_cp_alias(tmp_path, monkeypatch):
-    # #18058: an anchored tag is listed now; deleting it must match ``ollama rm``.
     from hub.services.models import ollama
 
     store, ref, child_digest = _v2_store(tmp_path, monkeypatch)

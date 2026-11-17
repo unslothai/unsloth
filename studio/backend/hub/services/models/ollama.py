@@ -708,8 +708,7 @@ def _manifest_digests(manifest: object) -> set[str]:
 
 
 def _is_file_or_missing(path: Path) -> bool:
-    """``Path.is_file`` that raises on anything but a missing path (3.14's returns False on EIO):
-    a retention read must not take an unreadable manifest for an absent one."""
+    """``Path.is_file`` that raises unless the path is missing (3.14's returns False on EIO)."""
     try:
         return S_ISREG(path.stat().st_mode)
     except (FileNotFoundError, NotADirectoryError):
@@ -717,9 +716,8 @@ def _is_file_or_missing(path: Path) -> bool:
 
 
 def _manifest_tree_files(root: Path) -> list[Path]:
-    """Files under *root*, following directory symlinks once each. Any listing or classification
-    error raises: ``rglob`` / ``os.walk`` silently skip unreadable or symlinked directories, and a
-    skipped tag could still need a blob. Only a missing *root* (no manifests-v2 yet) is empty."""
+    """Files under *root*, following dir symlinks once; raises on any error but a missing *root*
+    (``rglob`` / ``os.walk`` silently skip unreadable and symlinked dirs)."""
     files: list[Path] = []
     pending, seen = [root], set()
     while pending:
@@ -741,8 +739,7 @@ def _manifest_tree_files(root: Path) -> list[Path]:
 
 
 def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -> set[str]:
-    """Digests *manifest* keeps alive, through manifest-list children and anchor layers.
-    ``strict`` raises on an unreadable child (a retention read must not under-count)."""
+    """Digests *manifest* keeps alive via list children and anchor layers; ``strict`` raises on an unreadable child."""
     digests: set[str] = set()
     pending, seen = [manifest], set()
     while pending:
@@ -852,7 +849,6 @@ def delete_ollama_model_ref(ref: str) -> None:
                 *(p for p in _manifest_tree_files(v2_root) if p != v2_tag),
             ]
         except OSError:
-            # A tree we cannot fully list may hold a tag that needs any blob.
             others, owned = [], set()
         for other in others:
             try:
