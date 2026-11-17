@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from core.inference import external_provider as ep_mod
+from core.inference.cloud_compaction import SUMMARY_BLOCK_HEADER
 from core.inference.external_provider import (
     ExternalProviderClient,
     _anthropic_supports_compaction,
@@ -500,7 +501,23 @@ def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
     types = [p.get("type") for p in parts if isinstance(p, dict)]
     assert "compaction" in types, parts
     compaction_part = next(p for p in parts if p.get("type") == "compaction")
-    assert compaction_part["content"] == "PRIOR SUMMARY: user asked about caching."
+    assert compaction_part["content"] == (
+        SUMMARY_BLOCK_HEADER + "PRIOR SUMMARY: user asked about caching."
+    )
+
+
+@pytest.mark.parametrize(
+    "block, expected",
+    [
+        ({"type": "compaction", "content": "S"}, SUMMARY_BLOCK_HEADER + "S"),
+        ({"type": "compaction", "content": SUMMARY_BLOCK_HEADER + "S"}, SUMMARY_BLOCK_HEADER + "S"),
+        ({"type": "compaction", "content": "S", "encrypted_content": "sig"}, "S"),
+        ({"type": "compaction", "content": None}, None),
+        ({"type": "text", "content": "S"}, "S"),
+    ],
+)
+def test_replayed_summary_opens_with_notice_once(block, expected):
+    assert ep_mod._with_summary_notice(block).get("content") == expected
 
 
 def test_compaction_content_part_accepted_by_chat_message_schema():
@@ -796,7 +813,10 @@ def _native_replay(monkeypatch, model: str, threshold) -> dict:
 def test_a_replayed_native_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
     captured = _native_replay(monkeypatch, "claude-sonnet-4-6", None)
     assistant = captured["body"]["messages"][1]
-    assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
+    assert assistant["content"][0] == {
+        "type": "compaction",
+        "content": SUMMARY_BLOCK_HEADER + "PRIOR SUMMARY",
+    }
     assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
 
 
