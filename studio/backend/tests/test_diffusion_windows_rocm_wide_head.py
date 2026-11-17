@@ -51,6 +51,26 @@ def test_windows_cuda_is_unaffected(monkeypatch):
     assert C.fused_sdpa_available(q, q, q) is True
 
 
+def test_linux_rocm_wide_head_uses_fp32_math_when_fused_dispatch_is_unavailable(
+    monkeypatch, rocm
+):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(C, "fused_sdpa_available", lambda q, k, v: False)
+    monkeypatch.setattr(C, "_rocm_untrusted_head", lambda q, torch: True)
+    monkeypatch.setattr(C, "_half_math_call", lambda q: True)
+    calls = []
+    real = C.fp32_math_sdpa
+    monkeypatch.setattr(C, "fp32_math_sdpa", lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    torch.manual_seed(0)
+    q, k, v = (torch.randn(1, 1, 64, 512).to(torch.bfloat16) for _ in range(3))
+    with C.chunked_attention_mode(budget = 1 << 30):
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+    assert calls == [1]
+    assert out.dtype == torch.bfloat16
+
+
 def test_dit_trainer_routes_its_vae_attention_on_rocm(rocm):
     diffusers = pytest.importorskip("diffusers")
     from core.training import diffusion_dit_trainer as dit

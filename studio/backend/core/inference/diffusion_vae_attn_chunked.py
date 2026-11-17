@@ -4,7 +4,8 @@
 """Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 / fp16
 VAE's math SDPA keeps its own dtype (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that
 process-wide flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the
-fp32 upcast)."""
+fp32 upcast). Linux ROCm wide heads use the fp32 path automatically because their unavailable fused kernels are not
+trusted for the default half-math route."""
 
 from __future__ import annotations
 
@@ -90,11 +91,12 @@ def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
     return max(1, mb) * 2**20
 
 
-# Widest head the Windows ROCm fused SDPA kernels compute correctly. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151
-# accepts head dim 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative
-# error 19-38 against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental
-# switch; 128 and 256 match math. That wrecked every Windows AMD VAE encode / decode (renders and training latents).
-WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
+# Maximum head width we trust for fused ROCm SDPA. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151 accepts head dim
+# 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative error 19-38
+# against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental switch;
+# 128 and 256 match math. Linux ROCm rejects these wide heads from fused dispatch, so both platforms use 256 as the
+# boundary for the safe fallback.
+ROCM_FUSED_MAX_HEAD_DIM = 256
 
 
 def windows_rocm(torch: Any = None) -> bool:
@@ -111,9 +113,21 @@ def windows_rocm(torch: Any = None) -> bool:
 
 
 def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+    import sys
+
+    return sys.platform == "win32" and _rocm_untrusted_head(q, torch)
+
+
+def _non_windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+    import sys
+
+    return sys.platform != "win32" and _rocm_untrusted_head(q, torch)
+
+
+def _rocm_untrusted_head(q: Any, torch: Any) -> bool:
     shape = getattr(q, "shape", None) or ()
     return (
-        len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
+        len(shape) > 0 and int(shape[-1]) > ROCM_FUSED_MAX_HEAD_DIM and is_rocm_torch(torch)
     )
 
 
@@ -235,6 +249,17 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
+                        if _non_windows_rocm_untrusted_head(q, torch):
+                            # Linux ROCm rejects these wide heads from fused dispatch, but its default half-math
+                            # path can overflow at full-resolution VAE decode. Match the trusted fp32 math route.
+                            cast = _autocast_dtype(q.device.type)
+                            if cast is not None:
+                                q, k, v = (t.to(cast) for t in (q, k, v))
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(fp32_math_sdpa, q, k, v, self.budget, scale)
+                                return fp32_math_sdpa(q, k, v, scale)
                         if _half_math_call(q):
                             self.half += 1
                             cast = _autocast_dtype(q.device.type)
