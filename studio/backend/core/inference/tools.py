@@ -6828,9 +6828,11 @@ _CURL_UPLOAD_LONG_FLAGS = frozenset(
         "--form-string",
         "--json",
         "--upload-file",
+        # A config file can carry any of the above.
+        "--config",
     }
 )
-_CURL_UPLOAD_SHORT_FLAGS = frozenset("dFT")
+_CURL_UPLOAD_SHORT_FLAGS = frozenset("dFTK")
 # Short options that take an argument: the rest of the cluster is that argument, not more flags.
 _CURL_SHORT_WITH_ARG = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
 # POST is omitted: already caught by the body/upload flags.
@@ -6838,7 +6840,12 @@ _WGET_METHOD_FLAGS = frozenset({"--method"})
 _CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
 _CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
 # Separate from curl's so wget -T/-F are not misread as uploads.
-_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+_WGET_UPLOAD_FLAGS = frozenset(
+    {"--post-data", "--post-file", "--body-data", "--body-file", "--config", "--execute"}
+)
+_WGET_SHORT_WITH_ARG = frozenset("aABDeiIlOoPQRtTUwX")
+# Points curl/wget at another rc file than the empty ones a proxied launch sets.
+_DOWNLOADER_RC_ENV_RE = re.compile(r"\b(?:CURL_HOME|WGETRC|XDG_CONFIG_HOME|HOME)=")
 # curl/wget output piped straight into an interpreter is remote code execution.
 _PIPE_TO_INTERPRETER_RE = re.compile(
     r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
@@ -7783,8 +7790,13 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         return True
     if "<(" in command:  # bash <(curl ...) process substitution
         return True
+    if _DOWNLOADER_RC_ENV_RE.search(command):
+        return True
     try:
-        tokens = shlex.split(command.replace("\n", " "), posix = True)
+        # Operators as their own words, so `echo ok; curl -d @f` still has a segment that starts with curl.
+        lexer = shlex.shlex(command.replace("\n", " ; "), posix = True, punctuation_chars = True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
         return True
     # Scope flags to the segment running curl/wget.
@@ -7792,6 +7804,7 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     if tokens is None:
         return False
     method_pending = False
+    query_pending = False
     for t in tokens:
         name = t.split("=", 1)[0]
         # curl -X DELETE / --request PUT mutate a remote resource; separate, attached and = forms count.
@@ -7805,8 +7818,26 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-            if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
+            uploads, method = _curl_short_cluster(t)
+            if uploads:
                 return True
+            if method is not None:
+                if method.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = not method
+                continue
+            # --url-query @file / name@file sends the file, like --data-urlencode.
+            if query_pending:
+                query_pending = False
+                if "@" in t:
+                    return True
+            if name == "--url-query":
+                if "=" in t:
+                    if "@" in t.split("=", 1)[1]:
+                        return True
+                else:
+                    query_pending = True
+                continue
         if has_wget:
             # wget --method=DELETE / --method DELETE is the same remote mutation.
             if method_pending:
@@ -7818,24 +7849,33 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-        if has_curl and (
-            name in _CURL_UPLOAD_LONG_FLAGS
-            # a curl short upload flag, attached or clustered (-d@f, -sd@f, -Ffile=@dump.sql)
-            or _curl_short_cluster_uploads(t)
-        ):
+        if has_curl and name in _CURL_UPLOAD_LONG_FLAGS:
             return True
-        if has_wget and name in _WGET_UPLOAD_FLAGS:
+        if has_wget and (name in _WGET_UPLOAD_FLAGS or _wget_short_cluster_executes(t)):
             return True
     return False
 
 
-def _curl_short_cluster_uploads(token: str) -> bool:
+def _curl_short_cluster(token: str) -> "tuple[bool, str | None]":
+    # (has an upload flag, the -X method: "" when it is the next word, None without -X), e.g. -sd@f, -sXDELETE.
+    if not token.startswith("-") or token.startswith("--"):
+        return False, None
+    for i, ch in enumerate(token[1:], 1):
+        if ch in _CURL_UPLOAD_SHORT_FLAGS:
+            return True, None
+        if ch in _CURL_SHORT_WITH_ARG:
+            return False, token[i + 1 :] if ch == "X" else None
+    return False, None
+
+
+def _wget_short_cluster_executes(token: str) -> bool:
+    # -e runs a wgetrc command (post_file = ...), attached or clustered: -e x, -qe x, -epost_file=x.
     if not token.startswith("-") or token.startswith("--"):
         return False
     for ch in token[1:]:
-        if ch in _CURL_UPLOAD_SHORT_FLAGS:
+        if ch == "e":
             return True
-        if ch in _CURL_SHORT_WITH_ARG:
+        if ch in _WGET_SHORT_WITH_ARG:
             return False
     return False
 

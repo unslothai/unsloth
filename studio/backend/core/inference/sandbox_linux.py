@@ -570,6 +570,7 @@ def _start_egress(bwrap: str, empty_proc: bool) -> "tuple[str, sandbox_egress.Eg
     directory = tempfile.mkdtemp(prefix = "us-egress-", dir = "/tmp" if os.path.isdir("/tmp") else None)
     try:
         shutil.copyfile(sandbox_egress.RELAY_SCRIPT, os.path.join(directory, "relay.py"))
+        sandbox_egress.write_empty_rc_files(directory)
         return directory, sandbox_egress.EgressProxy(os.path.join(directory, "proxy.sock"))
     except Exception:
         logger.warning("Could not start the sandbox egress proxy", exc_info = True)
@@ -1108,7 +1109,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         ]
         egress_url = f"http://127.0.0.1:{_EGRESS_PORT}" if egress else None
         if egress_url:
-            for name, value in sandbox_egress.proxy_environment(egress_url).items():
+            for name, value in sandbox_egress.proxy_environment(egress_url, _EGRESS_INNER).items():
                 argv += ["--setenv", name, value]
         argv += ["--"]
         if egress:

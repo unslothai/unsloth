@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.server
+import os
 import shutil
 import socket
 import subprocess
@@ -242,12 +243,17 @@ def test_seatbelt_reaches_only_its_proxy(tmp_path, monkeypatch):
         assert f'(allow network-outbound (remote ip "localhost:{port}"))' in proxied.argv[2]
         assert proxied.env["https_proxy"] == proxied.env["HTTP_PROXY"] == proxied.egress_proxy
         assert proxied.env["no_proxy"] == proxied.env["NO_PROXY"] == sandbox_egress.NO_PROXY
+        rc_dir = proxied.env["CURL_HOME"]
+        assert os.path.getsize(os.path.join(rc_dir, ".curlrc")) == 0
+        assert proxied.env["WGETRC"] == os.path.join(rc_dir, "wgetrc")
+        assert rc_dir in proxied.argv[2] and "CURL_HOME" not in plain.env
         socket.create_connection(("127.0.0.1", port), timeout = 5).close()
     finally:
         plain.cleanup()
         proxied.cleanup()
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", port), timeout = 5)
+    assert not os.path.exists(rc_dir)
 
 
 def _plans(monkeypatch) -> list:
@@ -374,6 +380,19 @@ def test_sandboxed_curl_cannot_reach_metadata(origin, loopback_origin_allowed):
     assert "refused" in redirected and "169.254.169.254" in redirected, redirected
     raw = _bash("curl -sS -m 5 --noproxy '*' http://169.254.169.254/; echo rc=$?")
     assert "rc=7" in raw or "rc=28" in raw, raw
+
+
+@needs_bwrap
+def test_a_workdir_curlrc_is_not_read(origin, loopback_origin_allowed):
+    workdir = tools._get_workdir(_SESSION)
+    rc = os.path.join(workdir, ".curlrc")
+    with open(rc, "w") as f:
+        f.write('write-out = "RC-APPLIED"\n')
+    try:
+        out = _bash(f"curl -sS --noproxy '' {origin}/")
+    finally:
+        os.remove(rc)
+    assert out == "hello from the host", out
 
 
 @needs_bwrap

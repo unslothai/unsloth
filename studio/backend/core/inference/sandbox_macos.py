@@ -721,16 +721,22 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
     )
     proxy = None
+    rc_dir = None
     try:
         if plan.egress_proxy:
             try:
+                # Readable, not writable, inside the profile: the empty rc files stay empty.
+                rc_dir = tempfile.mkdtemp(
+                    prefix = "us-egress-rc-", dir = "/tmp" if sys.platform == "darwin" else None
+                )
+                sandbox_egress.write_empty_rc_files(rc_dir)
                 proxy = sandbox_egress.EgressProxy()
             except OSError:
                 logger.warning("Could not start the sandbox egress proxy", exc_info = True)
         egress_url = f"http://127.0.0.1:{proxy.port}" if proxy else None
         runtime_paths = tuple(
             path for path in runtime_read_paths(workdir) if not _within(path, workdir)
-        )
+        ) + ((rc_dir,) if proxy else ())
         profile = build_profile(
             workdir = workdir,
             private_tmp = private_tmp,
@@ -740,7 +746,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         )
         env = _sandbox_environment(plan.env, workdir, private_tmp)
         if egress_url:
-            env.update(sandbox_egress.proxy_environment(egress_url))
+            env.update(sandbox_egress.proxy_environment(egress_url, rc_dir))
         return PreparedSandboxLaunch(
             argv = (SANDBOX_EXEC, "-p", profile, "--", *plan.argv),
             workdir = workdir,
@@ -748,7 +754,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             # Preserved: it is the os.setsid() tools.py's killpg teardown signals.
             preexec_fn = plan.preexec_fn,
             backend = BACKEND_NAME,
-            cleanup_paths = [private_tmp],
+            cleanup_paths = [private_tmp, *((rc_dir,) if rc_dir else ())],
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
@@ -759,5 +765,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except Exception:
         if proxy:
             proxy.close()
+        if rc_dir:
+            shutil.rmtree(rc_dir, ignore_errors = True)
         shutil.rmtree(private_tmp, ignore_errors = True)
         raise

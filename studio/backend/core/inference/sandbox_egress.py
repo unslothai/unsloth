@@ -34,7 +34,14 @@ class EgressRefused(Exception):
     pass
 
 
-def proxy_environment(url: str) -> dict[str, str]:
+def write_empty_rc_files(directory: str) -> None:
+    # curl takes the first .curlrc it finds from CURL_HOME on, so an empty one here hides the workdir's.
+    for name in (".curlrc", "wgetrc"):
+        with open(os.path.join(directory, name), "w"):
+            pass
+
+
+def proxy_environment(url: str, rc_dir: str) -> dict[str, str]:
     env = {
         name: url
         for name in (
@@ -47,6 +54,7 @@ def proxy_environment(url: str) -> dict[str, str]:
         )
     }
     env.update(no_proxy = NO_PROXY, NO_PROXY = NO_PROXY)
+    env.update(CURL_HOME = rc_dir, WGETRC = os.path.join(rc_dir, "wgetrc"))
     return env
 
 
