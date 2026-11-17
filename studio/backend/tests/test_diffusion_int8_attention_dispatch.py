@@ -334,7 +334,9 @@ def test_the_unset_speed_rule_leaves_wan_as_on_base(card, monkeypatch):
     assert (
         D.SPEED_UNSET_DITS
         == {
+            "Flux2Transformer2DModel",
             "Flux3Transformer2DModel",
+            "FluxTransformer2DModel",
             "QwenImage21Transformer2DModel",
             "ZImageTransformer2DModel",
         }
@@ -1012,10 +1014,14 @@ def test_cuda_compiled_and_graphed_dispatch_call(monkeypatch):
 
 
 def test_auto_list_matches_the_measured_families():
-    """Qwen-Image-2.1, Wan 2.2, Z-Image-Turbo and FLUX.3 (strided processors) race by default; LTX-2 (audio output)
-    has a per-step error with the kernel above its shipped INT8 weight error, so it routes only on request."""
+    """Qwen-Image-2.1, Wan 2.2, Z-Image-Turbo, FLUX.1, FLUX.2, HunyuanVideo-1.5 and FLUX.3 (strided processors) race
+    by default; LTX-2 (audio output) and Qwen-Image have a per-step error with the kernel above their shipped INT8
+    weight error, so they route only on request."""
     assert D.AUTO_DITS == {
+        "Flux2Transformer2DModel",
         "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
         "QwenImage21Transformer2DModel",
         "WanTransformer3DModel",
         "ZImageTransformer2DModel",

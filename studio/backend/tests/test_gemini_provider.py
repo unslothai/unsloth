@@ -706,6 +706,70 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
     assert fc_part.get("thoughtSignature") == "SIG-ABC", fc_part
 
 
+def _model_function_call_parts(captured) -> list[list[dict]]:
+    return [
+        [p for p in c["parts"] if "functionCall" in p]
+        for c in captured["body"]["contents"]
+        if c["role"] == "model"
+    ]
+
+
+def test_rag_autoinject_call_gets_the_dummy_thought_signature(monkeypatch):
+    """The RAG auto-inject exchange is Studio's, not Gemini's; Gemini 3 400s on its unsigned functionCall."""
+    from core.inference.tools import build_synthetic_search_exchange
+
+    exchange = build_synthetic_search_exchange(
+        tool_name = "search_knowledge_base",
+        call_prefix = "rag_auto_",
+        status_label = "Searching documents",
+        query = "what does the file say",
+        text = "passage",
+        sources = [],
+    )
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3-flash-preview",
+        messages = [{"role": "user", "content": "what does the file say"}, *exchange["messages"]],
+    )
+    [[fc_part]] = _model_function_call_parts(captured)
+    assert fc_part["functionCall"]["id"].startswith("rag_auto_"), fc_part
+    assert fc_part["thoughtSignature"] == ep_mod._GEMINI_DUMMY_THOUGHT_SIGNATURE, fc_part
+
+
+def test_dummy_thought_signature_only_fills_an_unsigned_step(monkeypatch):
+    """Gemini signs only the first of parallel calls: a signed step is left as is, an unsigned one gets one dummy."""
+
+    def _call(call_id, sig = None):
+        call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{}"},
+        }
+        if sig:
+            call["extra_content"] = {"google": {"thought_signature": sig}}
+        return call
+
+    def _results(*ids):
+        return [{"role": "tool", "tool_call_id": i, "name": "lookup", "content": "{}"} for i in ids]
+
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "lookup"},
+            {"role": "assistant", "content": "", "tool_calls": [_call("a", "SIG-A"), _call("b")]},
+            *_results("a", "b"),
+            {"role": "assistant", "content": "", "tool_calls": [_call("c"), _call("d")]},
+            *_results("c", "d"),
+        ],
+    )
+    signed, unsigned = _model_function_call_parts(captured)
+    assert [p.get("thoughtSignature") for p in signed] == ["SIG-A", None], signed
+    assert [p.get("thoughtSignature") for p in unsigned] == [
+        ep_mod._GEMINI_DUMMY_THOUGHT_SIGNATURE,
+        None,
+    ], unsigned
+
+
 def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     """A Gemini functionCall part with `thoughtSignature` must surface it on
     the outbound OpenAI tool_calls delta via
