@@ -152,8 +152,10 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
         "<ruby>東<rp>(</rp><rt>とう<rp>)</rp>京<rp>(</rp><rt>きょう<rp>)</rp></ruby>",
         "<ruby>東<rp>(<rt>とう<rp>)</rp>京<rt>きょう</ruby>",
         "<ruby><rb>東<rb>京<rt>とう<rt>きょう</ruby>",
+        "<ruby>東京<rtc>とうきょう</rtc></ruby>",
+        "<ruby><rb>東<rb>京<rtc><rt>とう<rt>きょう</rtc><rtc>Tokyo</rtc></ruby>",
     ],
-    ids = ["rt", "rp", "omitted-rt-end", "omitted-rp-end", "omitted-rb-end"],
+    ids = ["rt", "rp", "omitted-rt-end", "omitted-rp-end", "omitted-rb-end", "rtc", "double-sided"],
 )
 def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
     data = f"<html><body><p>{ruby}に行く。</p></body></html>".encode("utf-8")

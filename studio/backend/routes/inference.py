@@ -124,6 +124,7 @@ from hub.services.models.ollama import (
     is_ollama_manifest_ref,
     materialize_ollama_model_ref,
     ollama_model_ref_public_id,
+    ollama_model_ref_system_prompt,
 )
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
@@ -3448,6 +3449,7 @@ from models.inference import (
     validate_stt_context_length,
     GenerateRequest,
     DiffusionLoadRequest,
+    LoraSpec,
     MediaUnloadOutcome,
     MediaUnloadRequest,
     DiffusionLoadUnloadedResponse,
@@ -6184,6 +6186,35 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         return False
 
 
+_computer_use_withheld: "str | None" = None
+
+
+def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+    from core.inference.computer_use import computer_tool, policy
+    from state import computer_use as computer_state
+
+    if not (can_show_and_see and policy.offered()):
+        # Logged once per reason, since token counts ask as often as the user types.
+        global _computer_use_withheld
+        reason = (
+            policy.unavailable_reason()
+            or ("it is switched off in Settings" if not policy.settings()["enabled"] else None)
+            or "the model can't see images or the request is not a UI stream"
+        )
+        if reason != _computer_use_withheld:
+            _computer_use_withheld = reason
+            logger.info("computer use not offered: %s", reason)
+        return None
+    mode = policy.coordinate_mode(getattr(payload, "model", None))
+    computer_state.set_coordinates(
+        computer_state.session_key(
+            getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
+        ),
+        mode,
+    )
+    return computer_tool(mode)
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest,
     *,
@@ -6219,6 +6250,16 @@ async def _select_request_tools(
             if tool["function"]["name"] in payload.enabled_tools
             and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
         ]
+    if tools_on and payload.enabled_tools is not None:
+        from core.inference.computer_use import COMPUTER_TOOL_NAME
+        if COMPUTER_TOOL_NAME in payload.enabled_tools:
+            # Only where the approval card can be shown.
+            computer = await asyncio.to_thread(
+                _computer_use_tool, payload, ui_events and supports_vision
+            )
+            if computer is not None:
+                # First, or a small model with code tools scripts the mouse in Python instead.
+                tools.insert(0, computer)
     if tools_on and payload.enabled_tools is not None:
         # Opt-in by name too, and only while an image or video model this account may use is loaded.
         from core.inference.media_chat_tools import offered_media_chat_tools, remember_server_loop
@@ -10739,7 +10780,16 @@ def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
         return False
     source = _ollama_source_identity(ref)
     loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
-    return bool(source and source == loaded)
+    return bool(source and source == loaded) and _same_ollama_system(ref, llama_backend)
+
+
+def _same_ollama_system(ref: str, llama_backend) -> bool:
+    # Tags sharing blobs can carry different SYSTEM layers; only the resident tag's is applied.
+    try:
+        wanted = ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        wanted = ""
+    return wanted == _resident_ollama_system_prompt(llama_backend)
 
 
 def _ollama_request_is_resident(requested: str, llama_backend) -> bool:
@@ -11772,6 +11822,11 @@ async def _maybe_auto_switch_model(
         ollama_source_identity = (
             await asyncio.to_thread(_ollama_source_identity, target_id) if ollama_target else None
         )
+        ollama_same_system = (
+            await asyncio.to_thread(_same_ollama_system, target_id, backend)
+            if ollama_target
+            else True
+        )
 
         def _already_serving() -> bool:
             # Match the load path and advertised repo id, so either load style counts as already serving.
@@ -11797,6 +11852,8 @@ async def _maybe_auto_switch_model(
                 # The blobs, not the keys: an alias shares no spelling with the resident tag.
                 loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
                 if not ollama_source_identity or loaded_source != ollama_source_identity:
+                    return False
+                if not ollama_same_system:
                     return False
             elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
@@ -12056,6 +12113,9 @@ async def _maybe_auto_switch_model(
                         if ollama_target:
                             ollama_source_identity = await asyncio.to_thread(
                                 _ollama_source_identity, target_id
+                            )
+                            ollama_same_system = await asyncio.to_thread(
+                                _same_ollama_system, target_id, backend
                             )
                         if _already_serving():
                             if claim_resident:
@@ -17518,6 +17578,28 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
         return True
     # A load rewrites a materialized Ollama link to its tag; compare by ref.
     return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
+
+
+def _has_system_turn(messages) -> bool:
+    return any(m.role in ("system", "developer") for m in messages)
+
+
+def _resident_ollama_system_prompt(llama_backend) -> str:
+    ref = getattr(llama_backend, "model_identifier", None) or ""
+    if not is_ollama_manifest_ref(ref):
+        return ""
+    try:
+        return ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        return ""
+
+
+async def _with_ollama_system(messages: list[dict], llama_backend) -> list[dict]:
+    # Ollama's Messages endpoint falls back to the Modelfile SYSTEM when no system text is sent.
+    if any(m.get("role") == "system" and str(m.get("content") or "").strip() for m in messages):
+        return messages
+    system = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    return _set_or_prepend_system_message(messages, system)
 
 
 def _ollama_ref_for_link(model_path: str) -> Optional[str]:
@@ -29440,7 +29522,12 @@ def _plan_external_compaction(
     )
     plan.cut = plan.covered
     over = plan.budget is not None and count(plan.current) > plan.budget
-    if summarise and (force or over):
+    cut_off = force != "manual" and cloud_compaction.summary_was_cut_off(
+        thread_id, payload.external_model or payload.model
+    )
+    if summarise and (force or over) and cut_off:
+        plan.summary_failed = True
+    elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
         cut = cloud_compaction.tail_start(
             plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
@@ -29512,6 +29599,8 @@ async def _finish_external_compaction(
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
+            if isinstance(exc, cloud_compaction.SummaryCutOff):
+                cloud_compaction.remember_cut_off(thread_id, model)
         else:
             await asyncio.to_thread(
                 cloud_compaction.save_summary,
@@ -33283,6 +33372,9 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
             payload.messages, keep_tool_images = True
         )
+    if using_gguf and not _has_system_turn(payload.messages):
+        # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
+        system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # What renders through the processor template; the MCP scan runs off-loop (12 MB envelope).
@@ -43994,6 +44086,8 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
+    if not _has_system_turn(payload.messages):
+        _system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     _user_system_prompt = _system_prompt
     _date_controls = _template_controls(payload)
@@ -44780,6 +44874,7 @@ async def anthropic_count_tokens(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
     # on templates without tool-role support.
     openai_messages = _named_anthropic_tool_results(openai_messages)
@@ -45558,6 +45653,7 @@ async def anthropic_messages(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
     openai_messages = _named_anthropic_tool_results(openai_messages)
     _anthropic_replayed_image_parts: list = []
@@ -48166,6 +48262,8 @@ def _build_openai_passthrough_body(
         payload, vision = bool(getattr(llama_backend, "is_vision", False))
     )
     system_prompt, _, _ = _extract_content_parts(payload.messages)
+    if llama_backend is not None and not _has_system_turn(payload.messages):
+        system_prompt = _resident_ollama_system_prompt(llama_backend)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
@@ -48219,7 +48317,11 @@ async def _build_openai_passthrough_body_async(
     backend_ctx = None,
     llama_backend = None,
 ) -> dict:
-    if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
+    if (
+        _request_has_image(payload)
+        or _preserve_probe_pending(llama_backend)
+        or is_ollama_manifest_ref(getattr(llama_backend, "model_identifier", None) or "")
+    ):
         return await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
@@ -50609,6 +50711,22 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _expected_load_loras_kwarg(generate: Any, signature: Optional[tuple]) -> dict:
+    """``expected_load_loras`` for an engine whose generate() takes it (the diffusers backend), else nothing."""
+    if signature is None:
+        return {}
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+        if "expected_load_loras" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            return {"expected_load_loras": signature}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
     try:
@@ -51071,7 +51189,11 @@ async def _external_image_generation(
         _stopped_external_image_runs.discard(task)
 
 
-async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
+async def _enhance_generate_prompts(
+    backend,
+    request: DiffusionGenerateRequest,
+    probe: Optional[dict] = None,
+):
     """FLUX.3 prompt upsampling for one generate call (``EnhanceOutcome``). Every other family, and FLUX.3 with
     ``enhance_prompt=false``, passes its prompts through untouched. Never fails the generation: only a Stop during
     the upsampling surfaces, as the cancelled 409."""
@@ -51084,6 +51206,8 @@ async def _enhance_generate_prompts(backend, request: DiffusionGenerateRequest):
     except Exception as exc:  # noqa: BLE001 -- no status, no upsampling
         logger.debug("flux3.prompt_upsampler: status probe failed: %s", exc)
         status, family = {}, None
+    if probe is not None and status:
+        probe["status"] = status
     if not pup.supports_family(family):
         return pup.EnhanceOutcome(status = None)
     # A workflow the family refuses fails in the run anyway: no upsampler start (or vision load) ahead of that 400.
@@ -51284,9 +51408,10 @@ async def _generate_diffusion_image_run(
         DIFFUSION_NOT_LOADED_MSG,
         DiffusionModelReplacedError,
         load_identity,
+        load_lora_signature,
     )
 
-    from core.inference.diffusion_conditioning import LocalizedEdit
+    from core.inference.diffusion_conditioning import LocalizedEdit, omitted_txt2img_size
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
@@ -51308,6 +51433,11 @@ async def _generate_diffusion_image_run(
     size_omitted = request.workflow == "edit" and not (
         {"width", "height"} & request.model_fields_set
     )
+    txt2img_size_omitted = (
+        request.workflow is None
+        and request.init_image is None
+        and not ({"width", "height"} & request.model_fields_set)
+    )
     localized_edit = (
         LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
         if request.localized_edit is not None
@@ -51316,7 +51446,9 @@ async def _generate_diffusion_image_run(
     submitted = request
     generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
-    enhancement = await _enhance_generate_prompts(backend, request)
+    # reuse the enhance step's status read (no second read)
+    probe: dict = {}
+    enhancement = await _enhance_generate_prompts(backend, request, probe)
     if enhancement.status != "applied":
         # A warm start still launching holds the engine's generation slot: a run that is not using the upsampler does
         # not wait it out.
@@ -51328,6 +51460,7 @@ async def _generate_diffusion_image_run(
         request = submitted
         status = None
         expected_load = None
+        expected_load_loras = None
         if account_access.managed_account():
             status = backend.status()
             await asyncio.to_thread(
@@ -51354,6 +51487,59 @@ async def _generate_diffusion_image_run(
                 # A load in flight would admit this run on its new model with the schema's values.
                 # Pin to "nothing loaded" so that model is refused and the retry reads its defaults.
                 expected_load = load_identity(None, None, None)
+        if request.loras is None:
+            # Omitted = the load's adapters (as /v1/images/generations); [] renders without any.
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no load adapters: the engine's default stands
+                    logger.debug(
+                        "images.generate: status read for the omitted loras failed: %s", exc
+                    )
+        if request.loras is None and status is not None:
+            loaded = bool(status.get("loaded"))
+            pairs = _load_lora_defaults(status) if loaded else []
+            # The pin above is repo / base / family only: a same-model reload with other adapters must retry too.
+            expected_load_loras = (
+                load_lora_signature(status.get("load_lora_specs")) if loaded else ()
+            )
+            if pairs:
+                request = request.model_copy(
+                    update = {"loras": [LoraSpec(id = i, weight = w) for (i, w) in pairs]}
+                )
+            if expected_load is None:
+                # Pinned even when it resolved to none: a load swapped in before the slot retries with its own set.
+                expected_load = (
+                    load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
+                    if loaded
+                    else load_identity(None, None, None)
+                )
+        if txt2img_size_omitted:
+            if status is None:
+                status = probe.pop("status", None) if attempt == 0 else None
+            if status is None:
+                try:
+                    status = await asyncio.to_thread(backend.status)
+                except Exception as exc:  # noqa: BLE001 -- no status, no family size: the schema's stands
+                    logger.debug(
+                        "images.generate: status read for the omitted size failed: %s", exc
+                    )
+            size = (
+                omitted_txt2img_size(status.get("family"))
+                if status is not None and status.get("loaded")
+                else None
+            )
+            if size is not None:
+                request = request.model_copy(update = {"width": size[0], "height": size[1]})
+                if expected_load is None:
+                    # a replaced model retries with its own default size
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    )
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
@@ -51366,6 +51552,7 @@ async def _generate_diffusion_image_run(
                 result = await _image_generate_in_thread(
                     backend.generate,
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
@@ -53537,6 +53724,30 @@ async def openai_image_generations(
         )
 
 
+def _openai_image_loras(body: ImageGenerationRequest, status: dict) -> list[tuple[str, float]]:
+    """The request's adapters; omitted = the load's baked, else requested, adapters, so a deployed LoRA is never dropped."""
+    if body.loras is not None:
+        return [(spec.id, float(spec.weight)) for spec in body.loras]
+    return _load_lora_defaults(status)
+
+
+def _load_lora_defaults(status: dict) -> list[tuple[str, float]]:
+    """Adapters an omitted ``loras`` stands for: baked set, else the load's named set (none once compiled
+    adapter-free). The engine reads a missing selection as "none", which on a bake zeroes the adapters."""
+    pairs = []
+    specs = status.get("baked_lora_specs") or (
+        status.get("load_lora_specs") if status.get("supports_lora", True) else None
+    )
+    for spec in specs or ():
+        try:
+            lora_id, weight = str(spec["id"]), float(spec["weight"])
+        except Exception:  # noqa: BLE001 - a malformed status row names no adapter
+            continue
+        if lora_id and weight:
+            pairs.append((lora_id, weight))
+    return pairs
+
+
 def _image_generation_defaults(status: dict) -> tuple[int, float]:
     """Steps and guidance for the loaded image model: the diffusers recipe when the status reports one, else the family table (sd.cpp and MLX report none). It reads checkpoint headers, so call it off the event loop."""
     from core.inference.diffusion_content import content_variant_hint
@@ -53563,6 +53774,7 @@ async def _batched_openai_images(
     steps: int,
     guidance: float,
     expected_load: Any,
+    loras: Optional[list[tuple[str, float]]] = None,
 ) -> Optional[dict]:
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
@@ -53616,6 +53828,7 @@ async def _batched_openai_images(
                     seeds = seeds,
                     batch_size = len(seeds),
                     expected_load = expected_load,
+                    **({"loras": loras} if loras else {}),
                 )
             except Exception as exc:
                 # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
@@ -53631,6 +53844,7 @@ async def _batched_openai_images(
         steps,
         guidance,
         body.negative_prompt or None,
+        tuple(loras or ()),
     )
 
     def cancelled(exc: BaseException) -> bool:
@@ -53681,6 +53895,7 @@ async def _generate_openai_images(
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
+    from core.inference.diffusion_lora import LoraSelectionError
     from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
 
     # A replacement can commit between status() and generate(): pin the read to the generation and
@@ -53700,6 +53915,9 @@ async def _generate_openai_images(
             await asyncio.to_thread(
                 account_access.require_media_generation_access, status, "diffusion"
             )
+            # Explicit adapters authorize like /images/generate; the baked set was authorized by its load.
+            if body.loras:
+                await asyncio.to_thread(account_access.require_media_adapters, body)
 
         # An edit-only model needs an input image this API cannot supply; refuse with a 400 rather than a backend 500.
         workflows = status.get("workflows") or []
@@ -53720,11 +53938,12 @@ async def _generate_openai_images(
         expected_load = load_identity(
             status.get("repo_id"), status.get("base_repo"), status.get("family")
         )
+        loras = _openai_image_loras(body, status)
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await _batched_openai_images(
-                    backend, status, body, width, height, steps, guidance, expected_load
+                    backend, status, body, width, height, steps, guidance, expected_load, loras
                 )
                 if result is None:
                     result = await _image_generate_in_thread(
@@ -53738,6 +53957,8 @@ async def _generate_openai_images(
                         seed = body.seed,
                         batch_size = body.n,
                         expected_load = expected_load,
+                        # Only when set, so engines without the parameter keep their call shape.
+                        **({"loras": loras} if loras else {}),
                     )
             break
         except DiffusionModelReplacedError:
@@ -53759,7 +53980,12 @@ async def _generate_openai_images(
                     detail = _NO_IMAGE_MODEL_MSG,
                     headers = problem_headers("not_loaded", kind = "image"),
                 )
-            # Typed: the activation refusal is written for the caller; no other ValueError text escapes.
+            # Typed: these refusals are written for the caller; no other ValueError text escapes.
+            if isinstance(exc, LoraSelectionError):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(str(exc), status = 400, param = "loras"),
+                )
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(
                     status_code = 400,
@@ -53801,6 +54027,7 @@ async def _generate_openai_images(
         "transformer_cache": result.get("transformer_cache"),
         "cpu_offload": result.get("cpu_offload"),
         "baked_loras": list(result.get("baked_loras") or []),
+        "loras": [f"{lora_id}:{weight:g}" for lora_id, weight in loras],
         "workflow": result.get("workflow"),
         "created_at": float(created),
     }

@@ -147,6 +147,10 @@ UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "
     "no",
     "off",
 )
+# UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0 restores the old PrefixGrouper skip under vLLM.
+UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON = os.environ.get(
+    "UNSLOTH_GRPO_PREFIX_GROUPER_VLLM", "1"
+).lower() not in ("0", "false", "no", "off")
 if UNSLOTH_GRPO_PREFIX_GROUPER_ON:
     try:
         from ..utils.prefix_grouper import (
@@ -243,6 +247,22 @@ def gkd_trainer_mask_prompt(function_name, function):
 
 
 RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_mask_prompt)
+
+
+def gkd_trainer_text_tokenizer(call_args, extra_args):
+    # GKD is text only and TRL reads tokenizer attributes off processing_class: pass a processor's tokenizer.
+    if "processing_class" not in call_args:
+        return ""
+    return (
+        "from transformers import ProcessorMixin as _UnslothProcessorMixin\n"
+        "if isinstance(processing_class, _UnslothProcessorMixin) and getattr(processing_class, 'tokenizer', None) is not None:\n"
+        "    processing_class = processing_class.tokenizer\n"
+        "if isinstance(locals().get('tokenizer'), _UnslothProcessorMixin) and getattr(tokenizer, 'tokenizer', None) is not None:\n"
+        "    tokenizer = tokenizer.tokenizer\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(gkd_trainer_text_tokenizer)
 
 
 def gkd_trainer_generate_before_counting(function_name, function):
@@ -1748,6 +1768,21 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
     unwrapped._unsloth_prefix_grouper_nograd_disabled = True
+
+
+def _unsloth_grpo_refuse_rank_local_forwards(self, model):
+    """Sharded FSDP2: packing/PrefixGrouper verify forwards are rank-local and would hang the collective."""
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if not grpo_forwards_are_collective(unwrapped):
+            return False
+    except Exception:
+        return False
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
+    return True
 
 
 def _unsloth_grpo_autocast(self):
@@ -3815,6 +3850,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # A hooked output head must run as a module: score the real logits its own call returns.
             _unsloth_head_hooked = _unsloth_grpo_head_hooked(unwrapped_model)
             _unsloth_grpo_refuse_boundary_blind_packing(self, model)
+            _grpo_collective_forwards = _unsloth_grpo_refuse_rank_local_forwards(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -3946,6 +3982,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     self.args.unsloth_logit_chunk_multiplier,
                 )
                 B = total_rows // B
+                if _grpo_collective_forwards:
+                    # Sized from this rank's sequence length: agree, or the forward counts differ.
+                    from unsloth_zoo.rl_replacements import grpo_agree_mini_batch
+                    B = grpo_agree_mini_batch(B, input_ids.device)
             else:
                 B = self.args.unsloth_grpo_mini_batch
 
@@ -4024,10 +4064,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_skip_pk = False  # once a shape is PG-verified, skip the full-row forward
             _pg_forward_fn = None  # deferred PG forward (runs at the verify site below)
             _pg_num_gen = getattr(self, "num_generations", None)
-            # Env gate hoisted to module level (mirrored via RL_PRE_ITEMS). Skip PG under vLLM: the rollout dominates the step, so PG saves little and its self-verify is net overhead.
+            # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). vLLM still runs the old-policy logprob forward, so PG helps.
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
-                and not getattr(self, "use_vllm", False)
+                and (UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False))
                 # Its extract_logps always projects with lm_head.weight.
                 and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
@@ -4451,7 +4491,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )
                             if _pg_u is None:
                                 _pg_u = set()
-                            if _pg_diff >= _PG_TOL_KILL:
+                            # Kill only never-verified signatures; later mismatches are bf16 tail (1-4 nats at T ~ 20k), so fall back per batch.
+                            _pg_v = getattr(
+                                unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
+                            )
+                            if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in (
+                                _pg_v if isinstance(_pg_v, dict) else {}
+                            ):
                                 _pg_u.add(_pg_layout.signature)
                                 unwrapped_model._unsloth_prefix_grouper_nograd_unsafe = _pg_u
                             _pg_use = False
@@ -4842,6 +4888,37 @@ def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
     return source
 
 
+_GRPO_PREFIX_GROUPER_VLLM_GATE = re.compile(
+    r"""(_pg_engage\s*=\s*bool\(_pg_funcs\)\s*and\s*)not\s+getattr\(\s*trainer\s*,\s*(["'])use_vllm\2\s*,\s*False\s*\)"""
+)
+
+
+_GRPO_PREFIX_GROUPER_GRAD_KILL = re.compile(r"\bif\s+_pg_diff\s*>=\s*_PG_TOL_KILL\s*:")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_kill(source):
+    """Zoo grad self-verify: kill only never-verified signatures; bf16 outliers on verified ones fall back per batch."""
+    if "prefix_seg_info" not in source:
+        return source
+    return _GRPO_PREFIX_GROUPER_GRAD_KILL.sub(
+        "if _pg_diff >= _PG_TOL_KILL and _pg_layout.signature not in "
+        '(getattr(unwrapped_model, "_unsloth_prefix_grouper_grad_verified", None) or {}):',
+        source,
+        count = 1,
+    )
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
+    """Drop zoo's vLLM skip for gradient PrefixGrouper unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0."""
+    if "prefix_seg_info" not in source:
+        return source
+    return _GRPO_PREFIX_GROUPER_VLLM_GATE.sub(
+        r'\1(UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(trainer, "use_vllm", False))',
+        source,
+        count = 1,
+    )
+
+
 _GRPO_HIDDEN_STATES_REQUEST = re.compile(
     r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
 )
@@ -5160,6 +5237,7 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_rank_local_forwards))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -5200,9 +5278,13 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_prefix_grouper_gate(
-        _patch_grpo_accumulated_loss_head_hooks(
-            _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_kill(
+        _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
+            _patch_grpo_accumulated_loss_prefix_grouper_gate(
+                _patch_grpo_accumulated_loss_head_hooks(
+                    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+                )
+            )
         )
     )
 )
@@ -5236,6 +5318,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
     "UNSLOTH_GRPO_PREFIX_GROUPER_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER', '1').lower() not in ('0', 'false', 'no', 'off')\n"
+    "UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON = _unsloth_os.environ.get('UNSLOTH_GRPO_PREFIX_GROUPER_VLLM', '1').lower() not in ('0', 'false', 'no', 'off')\n"
     "if UNSLOTH_GRPO_PREFIX_GROUPER_ON:\n"
     "    try:\n"
     "        from unsloth.utils.prefix_grouper import build_group_layout as _pg_build_layout, prefix_grouper_enabled as _pg_enabled_fn, verify_on as _pg_verify_on, tol_ok as _pg_tol_ok, TOL_KILL as _PG_TOL_KILL\n"
@@ -5286,6 +5369,7 @@ def grpo_trainer_compute_loss(function_name, function):
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
+        _unsloth_grpo_refuse_rank_local_forwards(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).
@@ -6667,7 +6751,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
                 self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
             except Exception:
                 pass
-        return loss
+        # The head may sit on another GPU (dispatched student); the Trainer accumulates on the input device.
+        return loss.to(inputs["input_ids"].device)
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
@@ -6692,7 +6777,126 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
         except Exception:
             pass
-    return loss
+    return loss.to(inputs["input_ids"].device)
+
+
+def _unsloth_prepare_frozen_teacher(accelerator, teacher):
+    """Like accelerate's prepare_model, but keeps a frozen teacher off the training card when another GPU fits it
+    (accelerate would move it there, or refuse it if quantized). UNSLOTH_KD_TEACHER_PLACEMENT=0 disables."""
+    default = lambda: accelerator.prepare_model(teacher, evaluation_mode = True)
+    try:
+        from accelerate.utils import DistributedType
+
+        if (
+            os.environ.get("UNSLOTH_KD_TEACHER_PLACEMENT", "1") == "0"
+            or not isinstance(teacher, torch.nn.Module)
+            or accelerator.distributed_type != DistributedType.NO
+            or accelerator.device.type != "cuda"
+            or getattr(teacher, "_is_accelerate_prepared", False)
+        ):
+            return default()
+        params = list(teacher.parameters())
+        if (
+            len(params) == 0
+            or any(p.requires_grad for p in params)
+            or any(p.device.type != "cuda" for p in params)
+        ):
+            return default()
+        # Buffers may sit on CPU by design (Unsloth's rotary inv_freq); those stay where they are.
+        tensors = params + [b for b in teacher.buffers() if b.device.type == "cuda"]
+        train = accelerator.device.index
+        train = torch.cuda.current_device() if train is None else train
+        on_device = {}
+        for t in tensors:
+            on_device[t.device.index] = on_device.get(t.device.index, 0) + t.nbytes
+        if on_device.get(train, 0) > 0 and torch.cuda.device_count() > 1:
+
+            def free_total(d):
+                # NVML first: mem_get_info would open a CUDA context on every probed card.
+                try:
+                    total = torch.cuda.get_device_properties(d).total_memory
+                    return total - torch.cuda.device_memory_used(d), total
+                except Exception:
+                    return torch.cuda.mem_get_info(d)
+
+            free = {d: free_total(d) for d in range(torch.cuda.device_count()) if d != train}
+            target = max(free, key = lambda d: free[d][0])
+            available, total = free[target]
+            need = sum(n for d, n in on_device.items() if d != target)
+            if available - need >= max(2**30, total // 10):
+                from accelerate.hooks import (
+                    AlignDevicesHook,
+                    add_hook_to_module,
+                    remove_hook_from_module,
+                )
+
+                remove_hook_from_module(teacher, recurse = True)
+                device = torch.device("cuda", target)
+                teacher._apply(lambda t: t.to(device) if t.device.type == "cuda" else t)
+                skip_keys = getattr(teacher, "_skip_keys_device_placement", None)
+                add_hook_to_module(
+                    teacher,
+                    AlignDevicesHook(
+                        execution_device = target, io_same_device = True, skip_keys = skip_keys
+                    ),
+                )
+                teacher.hf_device_map = {"": target}
+                try:
+                    from unsloth_zoo.patching_utils import verify_and_set_device
+                    for module in teacher.modules():
+                        if "_per_layer_device_index" in module.__dict__:
+                            verify_and_set_device(module)
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+                on_device = {target: sum(on_device.values())}
+                print(
+                    f"Unsloth: moved the frozen teacher ({need / 2**30:.2f} GiB) to cuda:{target}, "
+                    f"off the training card cuda:{train}."
+                )
+        if train in on_device:
+            return default()
+        # accelerate's 4/8-bit device check reads hf_device_map, so hide it for the call.
+        if getattr(teacher, "_hf_hook", None) is None:
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            add_hook_to_module(
+                teacher,
+                AlignDevicesHook(
+                    execution_device = next(iter(on_device)),
+                    io_same_device = True,
+                    skip_keys = getattr(teacher, "_skip_keys_device_placement", None),
+                ),
+            )
+        hidden = [
+            (m, m.__dict__.pop("hf_device_map"))
+            for m in teacher.modules()
+            if "hf_device_map" in m.__dict__
+        ]
+        try:
+            prepared = accelerator.prepare_model(
+                teacher, device_placement = False, evaluation_mode = True
+            )
+        finally:
+            for m, device_map in hidden:
+                m.hf_device_map = device_map
+        prepared._unsloth_teacher_devices = sorted(on_device)
+        return prepared
+    except Exception as e:
+        print(f"Unsloth: frozen teacher placement skipped ({e}).")
+        return default()
+
+
+def gkd_trainer_prepare_teacher(function_name, function):
+    if function_name != "__init__":
+        return function
+    return re.sub(
+        r"self\.accelerator\.prepare_model\(\s*teacher_model\s*,\s*evaluation_mode\s*=\s*True\s*\)",
+        "_unsloth_prepare_frozen_teacher(self.accelerator, teacher_model)",
+        function,
+    )
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_prepare_teacher)
 
 
 def gkd_trainer_compute_loss(function_name, function):
@@ -6747,6 +6951,7 @@ for _gkd_item in (
     _unsloth_gkd_chunk_size,
     _unsloth_gkd_right_align,
     _unsloth_gkd_chunked_loss,
+    _unsloth_prepare_frozen_teacher,
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
 RL_PRE_ITEMS["gkd_trainer"].append(
@@ -7149,12 +7354,7 @@ def _unsloth_dpo_chunked_head(
         reason = "use_weighting needs full-vocabulary log-probs"
     elif getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         reason = "FSDP / DeepSpeed"
-    elif any(
-        k in concatenated_batch
-        for k in ("pixel_values", "pixel_attention_mask", "image_sizes", "token_type_ids")
-        + tuple(_DPO_VISION_KEYS)
-    ):
-        reason = "vision inputs"
+    # Vision inputs are fine: the head sees final hidden states, trimmed to the labels' length like LLaVA logits.
     if reason is None:
         try:
             unwrapped = self.accelerator.unwrap_model(model)

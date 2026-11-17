@@ -51,7 +51,6 @@ import {
   CapabilityGlyph,
   DELETABLE_LOCAL_SOURCES,
   HubFailureHint,
-  OwnerAvatar,
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
@@ -75,7 +74,10 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
-import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import {
+  hfCacheRepoId,
+  isStandaloneGgufPath,
+} from "@/features/hub/lib/model-identity";
 import {
   AUDIO_CATALOG,
   ConnectedModelInfoDialog,
@@ -136,6 +138,10 @@ import {
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
+import {
+  interfaceScaleToZoom,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -144,6 +150,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -162,7 +169,6 @@ import {
   Flag01Icon,
   FlashIcon,
   InformationCircleIcon,
-  LaptopIcon,
   Navigation05Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -206,7 +212,11 @@ import {
   type ListSection,
   PICKER_EDGE,
   PICKER_GAP,
-  PICKER_WIDTH,
+  pickerDropOffset,
+  pickerMinHeight,
+  pickerRoomBelow,
+  pickerWidth,
+  pickerZoomOut,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -223,7 +233,6 @@ import {
   matchesFormat,
   orderBySection,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -293,6 +302,44 @@ function readExpanded(): boolean {
 function writeExpanded(expanded: boolean): void {
   try {
     localStorage.setItem(EXPANDED_KEY, String(expanded));
+  } catch {
+    // Storage blocked.
+  }
+}
+
+// Expand choice per resident model, cleared on eject.
+const MODEL_EXPANDED_KEY = "unsloth_composer_picker_model_expanded";
+const MODEL_EXPANDED_MAX = 20;
+
+function readModelExpanded(): Record<string, boolean> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MODEL_EXPANDED_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(raw).filter(([, v]) => typeof v === "boolean"),
+    ) as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+
+function writeModelExpanded(model: string, expanded: boolean | null): void {
+  try {
+    const map = readModelExpanded();
+    delete map[model];
+    if (expanded !== null) {
+      map[model] = expanded;
+    }
+    const keys = Object.keys(map);
+    for (const key of keys.slice(
+      0,
+      Math.max(0, keys.length - MODEL_EXPANDED_MAX),
+    )) {
+      delete map[key];
+    }
+    localStorage.setItem(MODEL_EXPANDED_KEY, JSON.stringify(map));
   } catch {
     // Storage blocked.
   }
@@ -514,7 +561,11 @@ function rowMaker(
   if (!row || row.kind === "external") {
     return null;
   }
-  const parts = hubParts(row.id) ?? hubParts(row.lora?.baseModel);
+  // A cache snapshot path names its repo, so the logo shows before rows load.
+  const parts =
+    hubParts(row.id) ??
+    hubParts(row.lora?.baseModel) ??
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined);
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
@@ -653,39 +704,31 @@ function MakerMark({
   );
 }
 
-function RowMark({
-  row,
-}: {
-  row?: Pick<Row, "kind" | "providerType" | "providerName"> & {
-    id?: string;
-    lora?: LoraModelOption;
-  };
-}) {
+type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
+  id?: string;
+  label?: string;
+  lora?: LoraModelOption;
+};
+
+function rowMarkName(row?: RowMarkRow): string | undefined {
+  const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
+  return name?.trim() || undefined;
+}
+
+function hasRowMark(row?: RowMarkRow): boolean {
+  return row?.kind === "external"
+    ? Boolean(row.providerType)
+    : rowMaker(row) !== null || rowMarkName(row) !== undefined;
+}
+
+function RowMark({ row }: { row?: RowMarkRow }) {
   const size = "size-[calc(14px*var(--ui-space-scale,1))] shrink-0";
-  const parts =
-    row && row.kind !== "external"
-      ? (hubParts(row.id) ?? hubParts(row.lora?.baseModel))
-      : null;
   const provider = rowMaker(row);
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
   }
-  if (parts) {
-    // A block box: an inline one sat on the text baseline, about 2px above centre.
+  if (row?.kind === "external" && row.providerType) {
     return (
-      <span className="flex shrink-0">
-        <OwnerAvatar
-          owner={parts.owner}
-          repoName={parts.name}
-          size="xs"
-          remote={false}
-          className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px]"
-        />
-      </span>
-    );
-  }
-  if (row?.kind === "external") {
-    return row.providerType ? (
       <span className="flex shrink-0" style={opticalStyle(row.providerType)}>
         <ApiProviderLogo
           providerType={row.providerType}
@@ -693,17 +736,17 @@ function RowMark({
           className={size}
         />
       </span>
-    ) : (
-      <HugeiconsIcon icon={CloudIcon} strokeWidth={1.75} className={size} />
     );
   }
-  return (
-    <HugeiconsIcon
-      icon={row?.kind === "hub" ? Download01Icon : LaptopIcon}
-      strokeWidth={1.75}
-      className={size}
+  const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  // 2px over the slot: a solid disc reads smaller than the logos.
+  return name ? (
+    <ApiProviderLogo
+      providerType={null}
+      name={name}
+      className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
     />
-  );
+  ) : null;
 }
 
 interface SourceTab {
@@ -813,7 +856,7 @@ function TabButton({
         <span
           aria-hidden={true}
           className={cn(
-            "composer-tab-line absolute bottom-0 left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
+            "composer-tab-line absolute bottom-[calc(2px*var(--ui-space-scale,1))] left-1/2 h-[calc(2px*var(--ui-space-scale,1))] w-[calc(16px*var(--ui-space-scale,1))] -translate-x-1/2 rounded-full transition-opacity duration-150",
             shown ? "opacity-100" : "opacity-0",
           )}
         />
@@ -1517,9 +1560,14 @@ export function ComposerModelPicker({
     setConfigStandalone(false);
   };
   const [expanded, setExpandedState] = useState(readExpanded);
+  // undefined: not checked yet since mount.
+  const residentKeyRef = useRef<string | null | undefined>(undefined);
   const setExpanded = useCallback((next: boolean) => {
     setExpandedState(next);
     writeExpanded(next);
+    if (residentKeyRef.current) {
+      writeModelExpanded(residentKeyRef.current, next);
+    }
   }, []);
   const [tab, setTabState] = useState<string | null>(null);
   const [lastTab, setLastTab] = useState(readTab);
@@ -1568,6 +1616,40 @@ export function ComposerModelPicker({
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = settingsRef.current;
+    if (!(configTarget && el)) {
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      // Stuck once the row has pulled away from the eyebrow above it.
+      const row = el.querySelector<HTMLElement>("[data-config-header-row]");
+      const above = row?.previousElementSibling;
+      const stuck =
+        row != null &&
+        above != null &&
+        row.getBoundingClientRect().top - above.getBoundingClientRect().bottom >
+          Number.parseFloat(getComputedStyle(row).marginTop) + 0.5;
+      if (stuck) {
+        el.dataset.headerStuck = "";
+      } else {
+        delete el.dataset.headerStuck;
+      }
+    };
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(update);
+      }
+    };
+    schedule();
+    el.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", schedule);
+    };
+  }, [configTarget]);
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!tabStrip) {
@@ -2686,6 +2768,40 @@ export function ComposerModelPicker({
             !isExternalModelId(checkpoint) &&
             source?.loaded !== false),
       );
+  // A load starts collapsed, a resident model keeps its choice, an eject expands and forgets it.
+  const residentKey =
+    chosenLoaded && checkpoint ? `${checkpoint}\n${activeVariant ?? ""}` : null;
+  const sawLoad = useRef(false);
+  // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
+  const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
+  const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  useEffect(() => {
+    if (modelLoading) {
+      if (loadingFresh) {
+        sawLoad.current = true;
+      }
+      return;
+    }
+    const fresh = sawLoad.current;
+    sawLoad.current = false;
+    const prev = residentKeyRef.current;
+    if (residentKey === prev && !fresh) {
+      return;
+    }
+    residentKeyRef.current = residentKey;
+    if (residentKey !== null) {
+      setExpanded(
+        (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
+      );
+    } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
+      writeModelExpanded(prev, null);
+      setExpanded(true);
+    }
+  }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
+  // Never loaded, but ejectModel clears a connected pick.
+  const chosenExternal =
+    !pane && Boolean(checkpoint && isExternalModelId(checkpoint));
+  const chosenEjectable = chosenLoaded || chosenExternal;
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
@@ -3190,17 +3306,22 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
+  const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
+  const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
+  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = open && openSide === "bottom";
   useEffect(() => {
     if (!(dropsDown && panel)) {
       setDropOffset(PICKER_GAP);
+      setRoomBelow(null);
       return;
     }
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
+        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3233,8 +3354,24 @@ export function ComposerModelPicker({
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
           ) || 1
         : 1;
+      const zoomOut = pickerZoomOut(
+        window.innerWidth,
+        window.outerWidth,
+        isTauri
+          ? interfaceScaleToZoom(useInterfaceScaleStore.getState().scale)
+          : null,
+      );
+      setPickerZoomOutState(zoomOut);
+      setPickerMinBase(
+        pickerMinHeight(window.innerWidth, window.innerHeight, zoomOut),
+      );
       setAlignOffset(
-        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
+        pickerAlignOffset(
+          align,
+          rect,
+          pickerWidth(window.innerWidth, scale, zoomOut),
+          window.innerWidth,
+        ),
       );
       resetView();
       setActive(0);
@@ -3963,7 +4100,7 @@ export function ComposerModelPicker({
           >
             {resolving === row.key || npuProgress ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : (
+            ) : hasRowMark(row) ? (
               <span
                 className={cn(
                   "flex shrink-0 text-foreground",
@@ -3972,7 +4109,7 @@ export function ComposerModelPicker({
               >
                 <RowMark row={row} />
               </span>
-            )}
+            ) : null}
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <span className={cn("truncate", dimmed && DIM_CLASS)}>
                 {row.label}
@@ -4094,7 +4231,9 @@ export function ComposerModelPicker({
                         : undefined
                     }
                     items={[
-                      ...(row.loaded && canEject
+                      ...((row.loaded ||
+                        (chosenExternal && row.id === checkpoint)) &&
+                      canEject
                         ? [
                             {
                               key: "eject",
@@ -4884,7 +5023,7 @@ export function ComposerModelPicker({
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-                ) : chosenName && chosenLoaded ? (
+                ) : chosenName && chosenEjectable ? (
                   <Hint label="Eject model">
                     {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                     <span
@@ -4899,7 +5038,13 @@ export function ComposerModelPicker({
                           source?.eject();
                         }
                       }}
-                      className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                      className={cn(
+                        "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                        // No logo: the eject slot is zero-width until hover (-mr cancels the gap).
+                        hasRowMark(chosenMark)
+                          ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                          : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                      )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                         <RowMark row={chosenMark} />
@@ -4952,7 +5097,7 @@ export function ComposerModelPicker({
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : chosenName && chosenLoaded ? (
+            ) : chosenName && chosenEjectable ? (
               <Hint label="Eject model">
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                 <span
@@ -4967,7 +5112,12 @@ export function ComposerModelPicker({
                       source?.eject();
                     }
                   }}
-                  className="-m-0.5 grid size-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                  className={cn(
+                    "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                    hasRowMark(chosenMark)
+                      ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
+                      : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
+                  )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
                     <RowMark row={chosenMark} />
@@ -5002,14 +5152,23 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
+        ref={setPanel}
         sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
+        style={
+          {
+            "--picker-zoom-out": pickerZoomOutState,
+            "--picker-min-base": `${pickerMinBase}px`,
+            ...(roomBelow === null
+              ? {}
+              : { "--picker-room": `${roomBelow}px` }),
+          } as CSSProperties
+        }
         data-tour="chat-model-selector-popover"
         data-list-last={
           isExpanded && !hasFoot && !configTarget ? "" : undefined
@@ -5021,15 +5180,16 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
-          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) &&
-            "h-[calc(460px*var(--ui-space-scale,1))]",
+          "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          openSide !== "bottom" &&
+            "[--picker-floor:var(--radix-popover-content-available-height)]",
+          configTarget
+            ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
+            : isExpanded
+              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
-          openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
@@ -5127,7 +5287,7 @@ export function ComposerModelPicker({
                 ))}
               </div>
               {(!pane || pane.loaded) &&
-              (chosenLoaded || loadedModels.length > 0) &&
+              (chosenEjectable || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
                 <Button
@@ -5137,7 +5297,7 @@ export function ComposerModelPicker({
                     ejectsAll
                       ? "Eject all models"
                       : `Eject ${
-                          chosenLoaded
+                          chosenEjectable
                             ? (chosenName ?? "model")
                             : modelDisplayName(loadedModels[0]?.id ?? "model")
                         }`
@@ -5145,7 +5305,7 @@ export function ComposerModelPicker({
                   onClick={() => {
                     if (ejectsAll) {
                       source?.ejectAll();
-                    } else if (!chosenLoaded && loadedModels[0]) {
+                    } else if (!chosenEjectable && loadedModels[0]) {
                       source?.eject(
                         loadedModels[0].checkpoint ?? loadedModels[0].id,
                       );
@@ -5432,7 +5592,7 @@ export function ComposerModelPicker({
               role="listbox"
               tabIndex={-1}
               aria-label={viewedTab?.label}
-              className="composer-model-list flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-[calc(9px*var(--ui-space-scale,1))] pb-1.5"
+              className="composer-model-list flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(14px*var(--ui-space-scale,1))]"
             >
               {renderList()}
               {viewed === RECOMMENDED_TAB && hubSearch.hasMore ? (
@@ -5470,7 +5630,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </button>
-            {!pending && chosenLoaded && !modelLoading ? (
+            {!pending && chosenEjectable && !modelLoading ? (
               <Button
                 variant="destructive"
                 size="xs"

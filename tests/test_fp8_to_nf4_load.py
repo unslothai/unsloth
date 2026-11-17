@@ -260,18 +260,47 @@ def _free(*models):
     getattr(torch, dev, torch.cuda).empty_cache()
 
 
+@pytest.fixture(scope = "module")
+def dense_fp8_nf4(dense_pair):
+    """The plain fp8 -> NF4 load of the dense checkpoint, read once for every test that inspects it (each load is
+    the slow part): what it printed, its counts, fingerprint, 16-bit module and saved skip list."""
+    import contextlib
+    import io
+
+    fp8_dir, _ = dense_pair
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
+    print(out.getvalue(), end = "")
+    module = model.get_submodule(_KEEP_16BIT)
+    quantization_config = getattr(model.config, "quantization_config", None) or {}
+    if not isinstance(quantization_config, dict):
+        quantization_config = quantization_config.to_dict()
+    loaded = SimpleNamespace(
+        printed = out.getvalue(),
+        n4bit = _count_4bit(model),
+        nfp8 = _count_fp8(model),
+        marker_left = hasattr(model.config, "_unsloth_fp8_to_nf4"),
+        fingerprint = _fingerprint(model),
+        keep_type = type(module),
+        keep_weight = module.weight.detach().cpu().clone(),
+        skip_modules = list(
+            quantization_config.get("llm_int8_skip_modules") or []
+        ),  # asserted by the test
+    )
+    _free(model)
+    return loaded
+
+
 @needs_gpu
 @needs_feature
-def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, capsys):
-    fp8_dir, deq_dir = dense_pair
-    model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    printed = capsys.readouterr().out
-    assert _count_4bit(model) == 13  # 2 x (q, k, v, o, gate, up, down) minus the 16-bit o_proj
-    assert _count_fp8(model) == 0
-    assert "dequantizing each fp8 tensor" in printed
-    assert not hasattr(model.config, "_unsloth_fp8_to_nf4")
-    ours = _fingerprint(model)
-    _free(model)
+def test_dense_fp8_loads_nf4_bit_identical_to_dequantized_bf16(dense_pair, dense_fp8_nf4):
+    _, deq_dir = dense_pair
+    assert dense_fp8_nf4.n4bit == 13  # 2 x (q, k, v, o, gate, up, down) minus the 16-bit o_proj
+    assert dense_fp8_nf4.nfp8 == 0
+    assert "dequantizing each fp8 tensor" in dense_fp8_nf4.printed
+    assert not dense_fp8_nf4.marker_left
+    ours = dense_fp8_nf4.fingerprint
     reference = _load(FastLanguageModel, deq_dir, quantization_config = _reference_config())
     theirs = _fingerprint(reference)
     _free(reference)
@@ -300,26 +329,17 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
 
 @needs_gpu
 @needs_feature
-def test_checkpoint_16bit_modules_stay_16bit(dense_pair):
+def test_checkpoint_16bit_modules_stay_16bit(dense_pair, dense_fp8_nf4):
     from safetensors.torch import load_file
 
     fp8_dir, _ = dense_pair
-    model = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    module = model.get_submodule(_KEEP_16BIT)
-    assert type(module) is torch.nn.Linear
+    assert dense_fp8_nf4.keep_type is torch.nn.Linear
     stored = load_file(os.path.join(fp8_dir, "model.safetensors"))[_KEEP_16BIT + ".weight"]
     assert stored.dtype == torch.bfloat16
-    assert module.weight.dtype == _LOAD_DTYPE
-    assert torch.equal(module.weight.detach().cpu(), stored.to(_LOAD_DTYPE))
-    quantization_config = model.config.quantization_config
-    if not isinstance(quantization_config, dict):
-        quantization_config = quantization_config.to_dict()
+    assert dense_fp8_nf4.keep_weight.dtype == _LOAD_DTYPE
+    assert torch.equal(dense_fp8_nf4.keep_weight, stored.to(_LOAD_DTYPE))
     # Saved with the model, so a reload of the 4bit save keeps it in 16bit too.
-    assert any(
-        p.replace("\\", "").rstrip("$") == _KEEP_16BIT
-        for p in quantization_config["llm_int8_skip_modules"]
-    )
-    _free(model)
+    assert any(p.replace("\\", "").rstrip("$") == _KEEP_16BIT for p in dense_fp8_nf4.skip_modules)
 
 
 @needs_fp8_gpu
@@ -342,7 +362,7 @@ def test_default_load_in_4bit_and_kill_switch_keep_fp8(dense_pair, monkeypatch):
 
 @needs_gpu
 @needs_feature
-def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
+def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, dense_fp8_nf4, tmp_path):
     """MTP layers ship in fp8 but transformers drops them as unexpected (DeepSeek-V3, GLM-4 MoE,
     Qwen3-Next): they must not count as unapplied scales."""
     from safetensors.torch import load_file, save_file
@@ -359,10 +379,7 @@ def test_fp8_keys_the_model_does_not_have_are_ignored(dense_pair, tmp_path):
     assert _count_4bit(model) == 13
     ours = _fingerprint(model)
     _free(model)
-    plain = _load(FastLanguageModel, fp8_dir, load_in_4bit = True)
-    theirs = _fingerprint(plain)
-    _free(plain)
-    _assert_same(ours, theirs)
+    _assert_same(ours, dense_fp8_nf4.fingerprint)
 
 
 @needs_gpu

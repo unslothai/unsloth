@@ -37,6 +37,7 @@ INTENDED = {
     "loss_type",
     "num_generations",
     "optim",
+    "packing",
     "padding_free",
     "per_device_eval_batch_size",
     "per_device_train_batch_size",

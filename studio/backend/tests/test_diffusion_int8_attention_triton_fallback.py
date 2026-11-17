@@ -95,7 +95,7 @@ def _fake_nvidia(
         calls.append((int(q.shape[-1]), dict(config or {})))
         return I.reference_attention(q, k, v).to(v.dtype)
 
-    monkeypatch.setattr(T, "int8_attention", triton_kernel)
+    monkeypatch.setattr(T, "_int8_attention", triton_kernel)
     return calls
 
 
@@ -331,13 +331,18 @@ def test_the_attention_kernel_compiles_through_the_8bit_prefetch_fix(monkeypatch
     installed = []
     monkeypatch.setattr(P, "fix_triton_sm8x_8bit_prefetch", lambda: installed.append(1) or True)
     monkeypatch.setattr(T, "_PREFETCH_FIX_ON", None)
+    # an NVIDIA build: no HIP version and no ROCm tag (a ROCm host's own torch.__version__ carries "+rocm")
     monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu128")
     T.kernels()
     assert installed == [1] and T.prefetch_fix() is True and installed == [1]
     assert "PREFETCH_FIX" in T.kernels().attn.arg_names
-    monkeypatch.setattr(T, "_PREFETCH_FIX_ON", None)
-    monkeypatch.setattr(torch.version, "hip", "6.4")
-    assert T.prefetch_fix() is False and installed == [1]
+    # ROCm builds never install it: a HIP version, or only the tag (AMD SDK / Radeon wheels leave hip unset)
+    for hip, version in (("6.4", "2.11.0+rocm6.4"), (None, "2.11.0+rocm7.13.0")):
+        monkeypatch.setattr(T, "_PREFETCH_FIX_ON", None)
+        monkeypatch.setattr(torch.version, "hip", hip)
+        monkeypatch.setattr(torch, "__version__", version)
+        assert T.prefetch_fix() is False and installed == [1]
 
 
 def _triton_card() -> bool:

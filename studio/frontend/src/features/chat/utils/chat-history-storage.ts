@@ -21,6 +21,7 @@ import {
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
+  type SaveChatProjectOptions,
   saveChatThread,
   syncChatMessages,
   updateChatProject,
@@ -959,6 +960,7 @@ export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
   id: string = crypto.randomUUID(),
+  options: SaveChatProjectOptions = {},
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -972,7 +974,7 @@ export async function createStoredChatProject(
     archived: false,
     createdAt: now,
     updatedAt: now,
-  }, nativePathLease);
+  }, nativePathLease, options);
 }
 
 export async function updateStoredChatProject(

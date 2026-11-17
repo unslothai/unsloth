@@ -178,6 +178,7 @@ from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
 from .media_decode_phase import denoise_phase as _denoise_phase
 from . import diffusion_bg_compile
+from . import video_lora
 from . import diffusion_render_thread as render_thread
 from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
@@ -322,7 +323,6 @@ from .video_minimax_h3 import (
     H3_TASK_REFERENCES,
     fit_h3_keyframe,
     fit_h3_reference_image,
-    h3_canvas_for_aspect,
     h3_conditioning_mode,
     h3_denoiser_component,
     h3_transformer_resident_gb,
@@ -502,6 +502,19 @@ def assert_video_precision_available(
     refuse_disabled_nvfp4(
         transformer_quant = transformer_quant, text_encoder_quant = text_encoder_quant
     )
+    if getattr(fam, "name", None) == "minimax-h3" and model_kind == "pipeline":
+        # Refuse before the eviction and the pull: without bf16 every precision lands on the dense weights.
+        with diffusion_device_scope(gpu_ordinal):
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            shortfall = h3_fp16_host_shortfall(
+                fam, target, model_kind = model_kind, text_encoder_quant = text_encoder_quant
+            )
+        if shortfall is not None:
+            raise RuntimeError(shortfall)
     if precision_fallback_allowed():
         return
     pinned = normalize_transformer_quant(transformer_quant)
@@ -868,6 +881,55 @@ def _h3_hosted_fp8_native(fam: Any, target: Any, scheme: Optional[str]) -> bool:
     from .video_minimax_h3_native_quant import h3_hosted_fp8_native
 
     return h3_hosted_fp8_native(target)
+
+
+def h3_fp16_host_shortfall(
+    fam: Any,
+    target: Any,
+    *,
+    model_kind: str,
+    text_encoder_quant: Optional[str] = None,
+) -> Optional[str]:
+    """Why a MiniMax-H3 Diffusers load cannot fit a GPU without native bf16, else None. There every precision lands on
+    the released components promoted to float32 (only an explicit int8 conditioner stays int8), all held in host RAM.
+    Never raises; unreadable sizes or RAM refuse nothing."""
+    try:
+        import torch
+
+        if getattr(fam, "name", None) != "minimax-h3" or model_kind != "pipeline":
+            return None
+        if (
+            getattr(target, "device", None) != "cuda"
+            or getattr(target, "dtype", None) is not torch.float16
+        ):
+            return None
+        sizes = tuple(float(x) for x in (getattr(fam, "bf16_components_gb", None) or ()))
+        if len(sizes) != 3:
+            return None
+        scale = 2.0 if fp16_promotes_to_fp32(fam) else 1.0
+        te_scheme = (
+            None
+            if _h3_precision_unset(text_encoder_quant)
+            or _h3_precision_pinned_dense(text_encoder_quant)
+            else h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
+        )
+        te_gb = h3_te_resident_gb(te_scheme, bf16_gb = sizes[1] * scale)
+        need_gb = (sizes[0] + sizes[2]) * scale + te_gb
+        from .diffusion_memory import _host_ram_capacity_mib
+
+        host_mib = _host_ram_capacity_mib()
+        if not host_mib or need_gb * 1e9 <= host_mib * 1048576:
+            return None
+    except Exception:  # noqa: BLE001 -- a probe must never refuse a load it cannot size
+        return None
+    dtype = "float32" if scale == 2.0 else "float16"
+    return (
+        f"{getattr(fam, 'label', None) or 'MiniMax-H3'} cannot load on this GPU: it has no native bfloat16, so the "
+        f"hosted INT8 / FP8 denoisers cannot run here and every precision falls back to the released weights in "
+        f"{dtype}, about {need_gb:.0f} GB (denoiser {sizes[0] * scale:.1f}, text encoder {te_gb:.1f}, "
+        f"VAEs {sizes[2] * scale:.1f}) that must sit in system RAM, which has {host_mib / 953.674:.0f} GB. "
+        "Load the MiniMax-H3 GGUF build instead, or use a bfloat16 GPU (NVIDIA Ampere or newer)."
+    )
 
 
 def _assert_video_precision_for_target(
@@ -6116,6 +6178,7 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         allow_oversized_load: bool = False,
         nvfp4_route: Any = None,
+        loras: Any = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -6179,6 +6242,12 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        if video_lora.has_active(loras):
+            lora_refusal = video_lora.load_refusal(
+                fam, resolve_video_model_kind(gguf_filename, model_kind), transformer_quant
+            )
+            if lora_refusal:
+                raise ValueError(lora_refusal)
         if auto_ordinal:
             # Automatic, after validation: one GPU, Apple, CPU and ROCm skip every probe here.
             gpu_ordinal = auto_cuda_ordinal_for_load()
@@ -6266,6 +6335,8 @@ class VideoBackend:
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
                 _nvfp4_route = nvfp4_route,
+                # Only when sent, so a plain load runs exactly as before.
+                **({"loras": loras} if video_lora.has_active(loras) else {}),
             ),
             daemon = True,
         ).start()
@@ -6306,6 +6377,17 @@ class VideoBackend:
                 allow_network = not local_files_only,
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
+            baking_loras = video_lora.has_active(kwargs.get("loras"))
+            if baking_loras:
+                lora_refusal = video_lora.load_refusal(fam, kind, kwargs.get("transformer_quant"))
+                if lora_refusal:
+                    raise ValueError(lora_refusal)
+                # Planned as the load will run: the dense denoiser the adapters merge into.
+                kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
+                    fam, kwargs.get("transformer_quant"), kwargs.get("loras")
+                )
+            else:
+                kwargs.pop("loras", None)
             ltx25_dev = _ltx25_dev_load(
                 fam,
                 kind,
@@ -6381,6 +6463,10 @@ class VideoBackend:
                 ltx25_dev = ltx25_dev,
                 native_hosted = native_hosted_out,
             )
+            if baking_loras:
+                # LoRAs merge into dense weights: no hosted pre-quantized denoiser replaces the dense shards.
+                video_auto_denoiser = DENOISER_SEED_DECLINED
+                native_hosted_out.clear()
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
                 video_auto_denoiser = None
@@ -6909,6 +6995,7 @@ class VideoBackend:
             SdCppModelFiles,
             device_backend_flags,
             offload_flags,
+            with_h3_vae_tile_overlap,
         )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
@@ -7242,7 +7329,7 @@ class VideoBackend:
         }[requested_mode]
         # NOT --vae-on-cpu: H3 audio VAE conv1d aborts on CPU (ggml F16 im2col assert, exit 134).
         # Keep dropped even after the fork fix: under --offload-to-cpu it saves no VRAM and is 4.8x slower.
-        native_offload = tuple(
+        native_offload = with_h3_vae_tile_overlap(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
         # H3's 20.5 GB DiT and 17 GB encoder OOM in auto and fast; --max-vram segments them, and streaming needs CPU offload.
@@ -8590,6 +8677,14 @@ class VideoBackend:
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        loras = load_kwargs.pop("loras", None)
+        baking_loras = video_lora.has_active(loras)
+        if baking_loras:
+            # Planned as the load runs: the dense denoiser the adapters merge into, never a hosted quantized one.
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            if lora_refusal:
+                raise ValueError(lora_refusal)
+            transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -8634,6 +8729,9 @@ class VideoBackend:
             ltx25_dev = ltx25_dev,
             native_hosted = native_hosted_out,
         )
+        if baking_loras:
+            video_planned = None
+            native_hosted_out.clear()
         if video_planned == DENOISER_SEED_DECLINED:
             # An offloaded int8 load reads the hosted file as native Linears: plan that file, not the dense shards.
             video_planned = native_hosted_out[0] if native_hosted_out else None
@@ -9541,6 +9639,7 @@ class VideoBackend:
         _video_auto_denoiser_planned: Optional[str] = None,
         _video_native_hosted_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
+        loras: Any = None,
     ) -> dict[str, Any]:
         fam = self.validate_load_request(
             repo_id,
@@ -9555,6 +9654,27 @@ class VideoBackend:
         )
         install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        lora_specs = video_lora.active_specs(loras)
+        baked_loras: tuple = ()
+        if lora_specs:
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            if lora_refusal:
+                raise ValueError(lora_refusal)
+            transformer_quant = video_lora.dense_transformer_quant(
+                fam, transformer_quant, lora_specs
+            )
+            # The adapters merge into the dense denoiser, so no pre-quantized one may stand in for it.
+            _video_auto_denoiser_planned = DENOISER_SEED_DECLINED
+            _video_native_hosted_planned = None
+            _h3_auto_denoiser_planned = None
+            # Resolved (and downloaded) before teardown, so a bad pick leaves the resident model alone.
+            baked_loras = video_lora.resolve(
+                lora_specs,
+                family = getattr(fam, "name", None),
+                hf_token = hf_token,
+                cancel_event = self._cancel_event if _load_token is not None else None,
+                local_files_only = local_files_only,
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -9742,6 +9862,8 @@ class VideoBackend:
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
                 _nvfp4_install_outcome = _nvfp4_install_outcome,
                 transformer_cache = transformer_cache,
+                baked_loras = baked_loras,
+                lora_specs = lora_specs,
             )
 
         transformer_quant_requested = transformer_quant
@@ -10367,7 +10489,8 @@ class VideoBackend:
                 kind = kind,
                 source_dir = _base_local_dir or repo_id,
             )
-            if kind == "pipeline" and not denoiser_injected
+            # A LoRA load quantises its merged weights, never a cached build of the bare ones.
+            if kind == "pipeline" and not denoiser_injected and not baked_loras
             else None
         )
         native_config_kwargs: dict[str, Any] = (
@@ -10492,6 +10615,13 @@ class VideoBackend:
                     raise
                 logger.warning("video.cosmos3: guardrail download refused: %s", exc)
                 raise ValueError(refusal) from exc
+            if baked_loras:
+                # The live denoiser will hold merged weights: caching it as the base's cast would poison later loads.
+                cast_missed = [
+                    c
+                    for c in cast_missed
+                    if not video_lora.is_denoiser_component(getattr(c, "component", ""))
+                ]
             if cast_missed:
                 from .diffusion_cast_cache import defer_writes
 
@@ -10785,6 +10915,9 @@ class VideoBackend:
             del pipe
             clear_gpu_cache()
             raise RuntimeError("Video load was cancelled or superseded.")
+
+        if baked_loras:
+            self._bake_video_loras(pipe, baked_loras, lora_specs, fam = fam, target = target)
 
         # Dual-DiT MoE: sites cover BOTH experts (``views`` = pipe, _SecondDiTView(pipe)); single: (pipe,).
         views = _views_for(pipe, fam)
@@ -11092,7 +11225,10 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                if (
+                if baked_loras:
+                    # Quantized from merged weights: never written as a cache of the bare base model.
+                    pass
+                elif (
                     native_cache_spec is not None
                     and native_scheme == engaged[0]
                     and native_cache_spec
@@ -11851,6 +11987,10 @@ class VideoBackend:
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
+        if baked_loras:
+            # Built from merged weights: never written back as a cache of the base model.
+            _discard_resident_quant_write(self, _load_token)
+            native_writes = None
         held = (cast_writes, native_writes, _take_resident_quant_write(self, _load_token))
         if any(w is not None for w in held) and _cache_writes_after_render():
             holder = _HeldCacheWrites(
@@ -11864,6 +12004,45 @@ class VideoBackend:
         else:
             _start_cache_writes(pipe, *held)
         return self.status()
+
+    @staticmethod
+    def _bake_video_loras(
+        pipe: Any,
+        baked: tuple,
+        specs: Any,
+        *,
+        fam: Any,
+        target: Any = None,
+        component: str = "transformer",
+    ) -> int:
+        """Merge the resolved adapters into the dense denoiser in place and record them on ``pipe``."""
+        denoiser = getattr(pipe, component, None)
+        label = f"{getattr(fam, 'label', None) or getattr(fam, 'name', 'video')} denoiser"
+        if denoiser is None:
+            # A modular load_components logs a failed component and carries on, so the cause is in the log above.
+            raise ValueError(
+                f"The {label} did not load (a failed download or read, often a full disk; see the server log), "
+                "so the LoRA has nothing to bake into."
+            )
+        device = (
+            getattr(target, "torch_device", None)
+            if getattr(target, "device", None) == "cuda"
+            else None
+        )
+        merged = video_lora.bake_into_module_(
+            denoiser,
+            [(path, weight) for (_name, path, weight) in baked],
+            device = device,
+            label = label,
+        )
+        video_lora.mark_baked(pipe, baked, specs)
+        logger.info(
+            "video.lora_bake: %d adapter(s), %d layer(s) merged into the bf16 %s",
+            len(baked),
+            merged,
+            label,
+        )
+        return merged
 
     @staticmethod
     def _raise_on_modular_unified_shortfall(
@@ -11946,6 +12125,8 @@ class VideoBackend:
         transformer_cache: Optional[str] = None,
         comfy_checkpoint: Optional[str] = None,
         gguf_filename: Optional[str] = None,
+        baked_loras: tuple = (),
+        lora_specs: Any = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -12358,10 +12539,30 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
+        if baked_loras:
+            # Into the released bf16 denoiser, before the forward patch, placement, streaming or compile.
+            if transformer_quant_engaged is not None:
+                raise ValueError(
+                    f"MiniMax-H3 LoRAs merge into the released bfloat16 denoiser, but this load engaged a "
+                    f"{transformer_quant_engaged} one. Load with transformer_quant unset or 'none'."
+                )
+            self._bake_video_loras(
+                pipe,
+                baked_loras,
+                lora_specs,
+                fam = fam,
+                target = umem_target,
+                component = denoiser_component,
+            )
         # Before any offload hook wraps the denoiser's forward (the hooks then wrap this one).
         from .video_minimax_h3_forward import install_h3_forward_on_pipe
 
         install_h3_forward_on_pipe(pipe, logger = logger)
+        from .video_minimax_h3_adaln import install_h3_reference_temb
+
+        # Before any compile: a dense denoiser's time embedding is rounded the reference way.
+        for component in ("transformer", "transformer_ref"):
+            install_h3_reference_temb(getattr(pipe, component, None), logger = logger)
         # Pre-cast the decoder: fp32 VAE under fp16 autocast keeps both copies; encoder stays for keyframes.
 
         from .video_minimax_h3 import trim_h3_video_vae
@@ -12845,12 +13046,19 @@ class VideoBackend:
                 strided_install_backend(attention_engaged) or int8_wanted
             ):
                 try:
+                    from .video_minimax_h3_qknorm import video_qk_rope_rounding
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None),
                         logger = logger,
                         qk_rope = None if strided_install_backend(attention_engaged) else False,
+                        qk_rope_rounding = video_qk_rope_rounding(),
                     ):
                         h3_attn_levers += ("h3_strided_attn",)
+                        if any(
+                            getattr(getattr(m, "processor", None), "_unsloth_qk_rope_once", False)
+                            for m in getattr(pipe, denoiser_component).modules()
+                        ):
+                            h3_attn_levers += ("h3_qk_rope_once",)
                         if int8_wanted and int8_attention.install_int8_attention(
                             getattr(pipe, denoiser_component, None),
                             device = device,
@@ -12992,7 +13200,7 @@ class VideoBackend:
         try:
             from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
             install_h3_chunked_reference_encode(logger)
-        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+        except Exception as exc:  # noqa: BLE001 -- the render's recipe install retries it
             logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
@@ -13680,6 +13888,12 @@ class VideoBackend:
                     "text_encoder_quant": result.get("text_encoder_quant"),
                     "memory_mode": result.get("memory_mode"),
                     "offload_policy": result.get("offload_policy"),
+                    # Adapters baked into the denoiser at load: part of the build, so part of the recipe.
+                    **(
+                        {"baked_loras": list(result["baked_loras"])}
+                        if result.get("baked_loras")
+                        else {}
+                    ),
                     "created_at": created_at,
                 },
                 **({"video_id": video_id} if video_id is not None else {}),
@@ -14767,6 +14981,7 @@ class VideoBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
+                    "baked_loras": video_lora.baked_lora_names(state.pipe),
                 }
             except Exception as exc:
                 self._gen = {"active": False}
@@ -14812,7 +15027,8 @@ class VideoBackend:
         *,
         decoded_images: Optional[list] = None,
     ) -> tuple[Any, Any, int, int, str]:
-        """Decode keyframes onto one shared canvas; omitting both dimensions matches the source aspect."""
+        """Decode keyframes onto one shared canvas. Omitting a dimension takes the family default (MiniMax-H3: the
+        reference's fixed 1344x768, whatever the keyframe's aspect), or the nearest preset for an i2v pipeline."""
         validate_video_keyframe_conditioning(
             fam,
             h3_task,
@@ -14839,9 +15055,9 @@ class VideoBackend:
 
         if (width is None or height is None) and first is not None and i2v_pipeline:
             width, height = first_frame_canvas(fam, *first.size)
-        elif (width is None or height is None) and (first is not None or last is not None):
-            width, height = h3_canvas_for_aspect(*(first if first is not None else last).size)
         else:
+            # The reference keyframe node keeps its own size (1344x768 by default): the first frame is stretched onto
+            # it and the last centre-cropped, so an omitted size is the family default here too.
             # A custom family may declare no presets; fall back to 768x512.
             default_w, default_h = (
                 fam.resolution_presets[0] if fam.resolution_presets else (768, 512)
@@ -15531,6 +15747,7 @@ class VideoBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": "none" if render_resident else state.offload_policy,
+                    "baked_loras": video_lora.baked_lora_names(state.pipe),
                 }
             finally:
                 output_path.unlink(missing_ok = True)
@@ -15546,7 +15763,9 @@ class VideoBackend:
     ) -> bytes:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
-        what the gallery persists."""
+        what the gallery persists. A MiniMax-H3 pipeline gets the reference workflow's
+        save settings (encode_x264 reference=True: CRF 18, BT.709, float AAC)."""
+        reference = type(getattr(pipe, "vae", None)).__name__ == "AutoencoderKLMiniMaxH3"
         if audio is None:
             streamed = claim_stream(video_frames, fps)
             if streamed is not None:
@@ -15587,6 +15806,8 @@ class VideoBackend:
                     tmp.name,
                     encode_kwargs.get("audio"),
                     encode_kwargs.get("audio_sample_rate"),
+                    # only for H3, so every other family's call (and its test doubles) is unchanged
+                    **({"reference": True} if reference else {}),
                 ):
                     encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
@@ -15803,6 +16024,9 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
+                "baked_loras": [],
+                "baked_lora_specs": [],
+                "lora_refusal": None,
                 "transformer_quant_backend": None,
                 "transformer_quant_backend_reason": None,
                 "text_encoder_quant": None,
@@ -15872,6 +16096,10 @@ class VideoBackend:
                 else None
             ),
             "transformer_quant": state.transformer_quant,
+            "baked_loras": video_lora.baked_lora_names(getattr(state, "pipe", None)),
+            "baked_lora_specs": video_lora.baked_lora_specs(getattr(state, "pipe", None)),
+            # Structural refusal only (kind, two experts); the transformer_quant refusal depends on the next load.
+            "lora_refusal": video_lora.load_refusal(fam, state.kind, None),
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
@@ -15910,6 +16138,8 @@ class VideoBackend:
                 "canvas_short_edge": _keyframe_canvas(fam)[0],
                 "canvas_max_pixels": _keyframe_canvas(fam)[1],
                 "canvas_from_presets": video_family_uses_i2v_pipeline(fam),
+                "keyframe_keeps_canvas": bool(getattr(fam, "keyframes_keep_canvas", False)),
+                "default_resolution": _ui_default_resolution(fam),
                 "flow_shift": fam.default_flow_shift,
                 "audio_flow_shift": fam.default_audio_flow_shift,
                 # sd.cpp has no flag for the audio shift, so the control is only real on Diffusers.
@@ -15933,6 +16163,15 @@ def _custom_size_defaults(fam: Any) -> dict[str, Any]:
         "custom_size_max_pixels": bounds[1],
         "custom_size_max_aspect": bounds[2],
     }
+
+
+def _ui_default_resolution(fam: Any) -> Optional[list[int]]:
+    """The page's Default preset size when it is a preset (UNSLOTH_VIDEO_H3_480P=0 drops the 480p ones)."""
+    wanted = getattr(fam, "ui_default_resolution", None)
+    if not wanted:
+        return None
+    presets = {(int(w), int(h)) for w, h in (getattr(fam, "resolution_presets", ()) or ())}
+    return [int(wanted[0]), int(wanted[1])] if (int(wanted[0]), int(wanted[1])) in presets else None
 
 
 def _keyframe_canvas(fam: Any) -> tuple[Optional[int], Optional[int]]:

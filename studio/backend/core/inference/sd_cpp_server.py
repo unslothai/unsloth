@@ -253,6 +253,7 @@ class SdCppServer:
         env: Optional[dict[str, str]] = None,
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
+        rng: Optional[str] = None,
     ) -> None:
         """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
@@ -276,8 +277,12 @@ class SdCppServer:
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
                 extra_args = list(extra_args or []),
                 accelerator = binary_accelerator(self.binary),
+                rng = rng,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
+            if files.clip_l:
+                # FLUX.1 CLIP-L leaves a null encoder param; sd.cpp's LoRA cond-cache check segfaults on it.
+                run_env.setdefault("SD_COND_CACHE_STRICT", "1")
             if env:
                 run_env.update(env)
             if _verbose_native_logs():

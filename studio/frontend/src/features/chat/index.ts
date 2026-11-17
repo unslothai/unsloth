@@ -11,6 +11,7 @@ export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
   ChatThreadDeletedError,
+  createBrowseFolder,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -181,6 +182,7 @@ export {
   rewindTouchesConversation,
   rewindTouchesFiles,
 } from "./utils/rewind";
+export { isSkillsCommand } from "./utils/skills-command";
 export {
   isCompactCommand,
   requestThreadCompaction,

@@ -97,6 +97,32 @@ def test_masks_and_other_backends_take_the_stock_call(monkeypatch):
     assert len(calls) == 2  # the strided path did not call the stock processor
 
 
+def test_calls_below_the_int8_floor_take_the_stock_call(monkeypatch):
+    """A native-backend processor routed to the INT8 kernel runs calls below its token floor (raised where a plan
+    decided torch's attention) through the stock call, the same as before the install, not the strided SDPA."""
+    attn, stock = _attn()
+    new = fa.strided_processor_class()()
+    new._attention_backend = None
+    new._unsloth_int8 = True
+    calls, kernel = [], []
+    real = tf3.Flux3AttnProcessor.__call__
+    monkeypatch.setattr(
+        tf3.Flux3AttnProcessor,
+        "__call__",
+        lambda self, *a, **k: calls.append(1) or real(self, *a, **k),
+    )
+    monkeypatch.setattr(fa._i8, "int8_attention_call", lambda q, k, v: kernel.append(q.shape) or v)
+    x = torch.randn(1, 12, 64)
+    with torch.no_grad():
+        new._unsloth_int8_min_tokens = 13
+        stock._attention_backend = None
+        assert torch.equal(new(attn, x, None, _rope(12)), stock(attn, x, None, _rope(12)))
+        assert len(calls) == 2 and kernel == []
+        new._unsloth_int8_min_tokens = 12
+        new(attn, x, None, _rope(12))
+    assert len(calls) == 2 and len(kernel) == 1
+
+
 def _cuda_target(monkeypatch, probe = True):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(fa, "strided_matches", lambda *a, **k: probe)
@@ -176,6 +202,54 @@ def test_layer_split_probes_every_secondary_card(monkeypatch, secondary_ok):
     want = fa.strided_processor_class() if secondary_ok else tf3.Flux3AttnProcessor
     for attn in fa._attention_modules(pipe.transformer):
         assert type(attn.processor) is want
+        assert fa._backend_value(attn.processor._attention_backend) == "_native_cudnn"
+
+
+def test_layer_split_keeps_native_int8_processors_where_cudnn_cannot_run(monkeypatch):
+    """T4 (sm75): no card runs cuDNN attention, so the load picks native and the strided processors exist only to carry
+    the INT8 kernel. The split's per-card cuDNN probe must leave them alone (on 2x T4 it reset all 43 to stock, so
+    INT8 ran on neither card)."""
+    from core.inference import diffusion_layer_split_plan as lsp
+
+    pipe = SimpleNamespace(transformer = _tiny())
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    seen = []
+
+    def probe(device, *a, **k):
+        seen.append(device.index)
+        return False
+
+    monkeypatch.setattr(fa, "strided_matches", probe)
+    target = SimpleNamespace(device = "cuda", torch_device = "cuda:0", dtype = torch.float16)
+    n = fa.ensure_strided_processors(pipe, target)
+    assert n == len(fa._attention_modules(pipe.transformer)) > 0
+    for attn in fa._attention_modules(pipe.transformer):
+        attn.processor._unsloth_int8 = True  # what install_int8_attention sets
+    monkeypatch.setattr(lsp, "place_layer_split", lambda *a, **k: {})
+    plan = SimpleNamespace(layer_split = _split((0, 1)))
+    assert lsp.apply_layer_split_plan(pipe, plan, placement = "cuda:0")
+    cls = fa.strided_processor_class()
+    for attn in fa._attention_modules(pipe.transformer):
+        assert type(attn.processor) is cls
+        assert attn.processor._unsloth_int8
+    assert seen == []  # no cuDNN processor, nothing to probe
+
+
+def test_layer_split_reverts_only_the_cudnn_processors(monkeypatch):
+    """A failed secondary probe resets the cuDNN-backed strided processors; native-backed ones keep their class."""
+    pipe = _pipe()
+    target = _cuda_target(monkeypatch)
+    n = fa.install(pipe, "_native_cudnn", target)
+    mods = fa._attention_modules(pipe.transformer)
+    assert n == len(mods) > 1
+    native = mods[0]
+    native.processor._attention_backend = None
+    monkeypatch.setattr(fa, "strided_matches", lambda device, *a, **k: device.index == 0)
+    assert fa.verify_cards(pipe, [1]) == len(mods) - 1
+    cls = fa.strided_processor_class()
+    assert type(native.processor) is cls
+    for attn in mods[1:]:
+        assert type(attn.processor) is tf3.Flux3AttnProcessor
         assert fa._backend_value(attn.processor._attention_backend) == "_native_cudnn"
 
 

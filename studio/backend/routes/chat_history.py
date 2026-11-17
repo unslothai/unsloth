@@ -62,6 +62,7 @@ from storage.studio_db import (
     delete_chat_project,
     delete_chat_threads_with_active_runs,
     ensure_chat_project_workspace,
+    find_chat_project_by_working_folder,
     fork_chat_thread,
     fork_counts_for_thread,
     get_chat_attachment,
@@ -84,8 +85,10 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    project_working_folder_status,
     ProjectWorkingFolderConflictError,
     migrate_chat_pins,
+    PRESET_EDITED_KEYS,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -151,8 +154,9 @@ class ChatThreadSettings(BaseModel):
     deepResearchEnabled: Optional[bool] = None
     artifactsEnabled: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
-    # "full" (Full access) is session-only and never persisted, per thread or globally.
+    # Never "full": Full access granted to this chat is the separate flag below.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    fullAccess: Optional[bool] = None
     ragEnabled: Optional[bool] = None
     ragSource: Optional[
         Annotated[
@@ -322,6 +326,9 @@ class ChatProject(BaseModel):
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
     workingFolder: Optional[str] = None
+    workingFolderStatus: Optional[str] = None
+    workingFolderDisplay: Optional[str] = None
+    workingFolderBranch: Optional[str] = None
     archived: bool = False
     createdAt: SqliteInt
     updatedAt: SqliteInt
@@ -330,11 +337,62 @@ class ChatProject(BaseModel):
 
 class ChatProjectWorkingFolder(BaseModel):
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
-    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+    native_path_lease: Optional[str] = Field(default = None, alias = "nativePathLease", min_length = 1)
+    server_path: Optional[str] = Field(
+        default = None, alias = "serverPath", min_length = 1, max_length = 4096
+    )
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        if (self.native_path_lease is None) == (self.server_path is None):
+            raise ValueError("Send exactly one of nativePathLease or serverPath.")
+        return self
+
+
+class ChatProjectFolderAccess(BaseModel):
+    serverPath: bool = False
 
 
 class ChatProjectCreate(ChatProject):
     nativePathLease: Optional[str] = Field(default = None, min_length = 1)
+    reuseExisting: bool = False
+
+
+class ProjectFileEntry(BaseModel):
+    name: str
+    kind: Literal["dir", "file"]
+    size: Optional[int] = None
+    hidden: bool = False
+
+
+class ProjectFileListing(BaseModel):
+    root: str
+    path: str
+    entries: list[ProjectFileEntry]
+    truncated: bool
+    chosen: bool
+
+
+class ProjectFileMatch(BaseModel):
+    path: str
+    name: str
+
+
+class ProjectFileSearch(BaseModel):
+    results: list[ProjectFileMatch]
+    truncated: bool
+
+
+class ProjectChange(BaseModel):
+    path: str
+    status: Literal["modified", "added", "deleted", "renamed", "untracked", "conflicted"]
+
+
+class ProjectChanges(BaseModel):
+    repo: bool
+    branch: Optional[str] = None
+    changes: list[ProjectChange]
+    truncated: bool
 
 
 class ChatAgentsMd(BaseModel):
@@ -548,8 +606,12 @@ class ChatSettingsPayload(BaseModel):
     ] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
+    editCustomPresets: Optional[dict[str, Optional[ChatPreset]]] = Field(
+        default = None, max_length = 1_000
+    )
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
+    presetEditedKeys: Optional[dict[Literal[PRESET_EDITED_KEYS], bool]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -1323,6 +1385,21 @@ def delete_attachment(
     return {"ok": True}
 
 
+def _project_out(project: dict) -> ChatProject:
+    from utils.paths.folder_info import git_head_branch, tilde_path
+
+    folder = project.get("workingFolder")
+    status = project_working_folder_status(project) if folder else None
+    return ChatProject(
+        **{
+            **project,
+            "workingFolderStatus": status,
+            "workingFolderDisplay": tilde_path(folder) if folder else None,
+            "workingFolderBranch": git_head_branch(folder) if status == "ok" else None,
+        }
+    )
+
+
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
@@ -1330,8 +1407,8 @@ def list_projects(
     # Backfill only projects without a recorded root; the rest are ensured where their files are used.
     return ChatProjectListResponse(
         projects = [
-            ChatProject(
-                **{
+            _project_out(
+                {
                     **(
                         project
                         if project.get("rootPath")
@@ -1361,12 +1438,22 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     if lease is not None and not is_owner_context():
         raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        project = payload.model_dump(exclude = {"nativePathLease"})
+        project = payload.model_dump(exclude = {"nativePathLease", "reuseExisting"})
         if lease is None:
             ensure_chat_project_workspace(project["id"])
-            return ChatProject(**upsert_chat_project(project))
+            return _project_out(upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
-        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+        if payload.reuseExisting:
+            existing = find_chat_project_by_working_folder(working_folder[0])
+            if existing is not None:
+                path, (device, inode) = working_folder
+                if existing.get("workingFolderIdentity") != f"{device}:{inode}":
+                    existing = (
+                        set_chat_project_working_folder(existing["id"], path, (device, inode))
+                        or existing
+                    )
+                return _project_out(existing)
+        return _project_out(upsert_chat_project(project, working_folder = working_folder))
     except HTTPException:
         raise
     except ProjectWorkingFolderConflictError as exc:
@@ -1416,7 +1503,7 @@ def get_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.get("/agents-md", response_model = ChatAgentsMd)
@@ -1449,22 +1536,12 @@ def patch_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
-    """Studio's own roots are reserved: they hold every account's data."""
-    from core.inference.tools import list_orphaned_projects, shared_sandbox_root
     from core.rag import folder_sync
-    from storage.studio_db import list_chat_project_root_paths
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
-    from utils.project_workspace_settings import owner_project_workspaces_roots
-    from utils.paths.path_utils import is_path_within
-    from utils.paths.storage_roots import (
-        shared_project_workspaces_root,
-        shared_tmp_root,
-        studio_root,
-    )
 
     try:
         grant = verify_native_path_lease(
@@ -1476,6 +1553,41 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, int]]:
+    from core.rag import folder_sync
+    from routes.models import _build_browse_allowlist, _resolve_browse_target
+
+    if not policy.server_folder_pick_permitted():
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Choosing a folder from the browser only works on this computer with remote "
+                "access off. Use Unsloth Desktop, or turn off remote access."
+            ),
+        )
+    target = _resolve_browse_target(server_path, _build_browse_allowlist())
+    try:
+        path = folder_sync.validate_folder_path(str(target))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checked_project_folder(path)
+
+
+def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
+    """Studio's own roots are reserved: they hold every account's data."""
+    from core.inference.tools import list_orphaned_projects, shared_sandbox_root
+    from storage.studio_db import list_chat_project_root_paths
+    from utils.project_workspace_settings import owner_project_workspaces_roots
+    from utils.paths.path_utils import is_path_within
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
+
     # A saved home may also hold unrelated repositories. Reserve actual workspaces,
     # including kept/deferred-deletion folders whose project rows are already gone.
     project_roots = list_chat_project_root_paths()
@@ -1491,12 +1603,18 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         *project_roots,
     ):
         reserved = os.path.realpath(str(reserved))
-        if is_path_within(path, reserved, allow_root = True) or is_path_within(
-            reserved, path, allow_root = True
-        ):
+        if is_path_within(path, reserved, allow_root = True):
             raise HTTPException(
                 status_code = 400,
                 detail = "Unsloth's own folders cannot be used as a project folder.",
+            )
+        if is_path_within(reserved, path):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "This folder contains Unsloth's own data, so it cannot be a project folder. "
+                    "Choose a folder inside it instead."
+                ),
             )
     # Linking the home itself (or an ancestor) would expose future project workspaces.
     for home in owner_project_workspaces_roots():
@@ -1511,6 +1629,11 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     return path, (st.st_dev, st.st_ino)
 
 
+@router.get("/project-folder-access", response_model = ChatProjectFolderAccess)
+def get_project_folder_access(current_subject: str = Depends(get_current_subject)):
+    return ChatProjectFolderAccess(serverPath = policy.server_folder_pick_permitted())
+
+
 @router.put("/projects/{project_id}/working-folder", response_model = ChatProject)
 def set_project_working_folder(
     project_id: str,
@@ -1522,7 +1645,11 @@ def set_project_working_folder(
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     try:
-        path, identity = _resolve_project_working_folder(payload.native_path_lease)
+        path, identity = (
+            _resolve_project_working_folder(payload.native_path_lease)
+            if payload.native_path_lease is not None
+            else _resolve_server_working_folder(payload.server_path or "")
+        )
         project = set_chat_project_working_folder(project_id, path, identity)
     except HTTPException:
         raise
@@ -1537,7 +1664,7 @@ def set_project_working_folder(
         ) from exc
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
 
 
 @router.delete("/projects/{project_id}/working-folder", response_model = ChatProject)
@@ -1548,7 +1675,74 @@ def clear_project_working_folder(
     project = set_chat_project_working_folder(project_id, None)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    return ChatProject(**project)
+    return _project_out(project)
+
+
+def _project_files_root(project_id: str) -> tuple[str, bool]:
+    """The folder this caller's tools run in for the project, and whether it is the owner's chosen one."""
+    from core.inference.tools import project_session_id, resolve_sandbox_workdir
+    from storage.studio_db import available_project_working_folder
+
+    project = get_chat_project(project_id)
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    try:
+        root = os.path.realpath(resolve_sandbox_workdir(project_session_id(project_id)))
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
+    chosen = available_project_working_folder(project)
+    return root, bool(chosen) and os.path.normcase(os.path.realpath(chosen)) == os.path.normcase(
+        root
+    )
+
+
+@router.get("/projects/{project_id}/files", response_model = ProjectFileListing)
+def list_project_files(
+    project_id: str,
+    path: str = Query("", max_length = 4096),
+    show_hidden: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    """One directory level of the folder the project's tools run in. Paths outside it are 404."""
+    from core import project_files
+    from core.inference.tools import _INTERNAL_SANDBOX_FILES
+    from utils.paths.folder_info import tilde_path
+
+    root, chosen = _project_files_root(project_id)
+    try:
+        listing = project_files.list_directory(
+            root,
+            path,
+            show_hidden = show_hidden,
+            skip_names = frozenset() if chosen else _INTERNAL_SANDBOX_FILES,
+        )
+    except project_files.ProjectPathError as exc:
+        # 404, not 403: the answer must not confirm what exists outside the folder.
+        raise HTTPException(status_code = 404, detail = "Folder not found") from exc
+    return ProjectFileListing(root = tilde_path(root), chosen = chosen, **listing)
+
+
+@router.get("/projects/{project_id}/files/search", response_model = ProjectFileSearch)
+def search_project_files(
+    project_id: str,
+    q: str = Query("", max_length = 512),
+    limit: int = Query(50),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Files in the project's folder whose relative path matches q, best match first."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectFileSearch(**project_files.search_files(root, q, limit))
+
+
+@router.get("/projects/{project_id}/changes", response_model = ProjectChanges)
+def get_project_changes(project_id: str, current_subject: str = Depends(get_current_subject)):
+    """Changed files when the project's folder is the root of a git repository."""
+    from core import project_files
+
+    root, _ = _project_files_root(project_id)
+    return ProjectChanges(**project_files.git_changes(root))
 
 
 def _delete_project_rag_sources(project_id: str) -> None:

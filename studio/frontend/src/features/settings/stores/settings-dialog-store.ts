@@ -21,6 +21,7 @@ export const SETTINGS_TABS = [
   "agents",
   "keyboard-shortcuts",
   "browser",
+  "computer-use",
   "debugging",
   "about",
 ] as const;
@@ -37,6 +38,7 @@ export type SettingsScrollTarget =
   | "api-keys-agents"
   | "api-keys-mcp"
   | "appearance-sidebar-nav"
+  | "appearance-profile-menu"
   | "chat-composer"
   | "browser-html-network"
   | "general-hub"
@@ -191,6 +193,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "api-keys-agents": "api-keys",
   "api-keys-mcp": "api-keys",
   "appearance-sidebar-nav": "appearance",
+  "appearance-profile-menu": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",
   "general-rag-embedding": "general",

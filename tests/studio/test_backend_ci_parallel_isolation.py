@@ -174,6 +174,8 @@ BENIGN_TIMING = {
     ("test_decision_native_gpu.py", "_bare_llama_server"),
     # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
     ("test_npu_chat_route.py", "_wait_for"),
+    # A poll deadline for a Tk window and the file it writes: descheduling only delays the poll.
+    ("test_computer_use_live.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry vs the wall clock; late reads cannot make it false.
     (
@@ -191,6 +193,8 @@ BENIGN_TIMING = {
     ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
     ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
     ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
+    # A 5 s poll deadline for a request to reach the admission queue: descheduling only delays the poll.
+    ("test_anthropic_admission.py", "_until_queued"),
 }
 
 
@@ -342,15 +346,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 15, (
-        f"expected fifteen parallel pytest runs, five shards of the backend matrix and ten "
+    assert len(parallel) == 16, (
+        f"expected sixteen parallel pytest runs, five shards of the backend matrix and eleven "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 10, (
-        f"expected the ten repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 11, (
+        f"expected the eleven repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]

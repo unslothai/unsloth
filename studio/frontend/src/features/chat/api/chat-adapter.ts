@@ -40,6 +40,7 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
   isServedByLlamaCpp,
   resumesThought,
@@ -80,6 +81,8 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { computerUseAsk } from "@/features/computer-use/summary";
+import { computerUseToolsForTurn } from "@/features/computer-use/tools";
 import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -2351,6 +2354,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const computerTools = computerUseToolsForTurn();
   const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
@@ -2359,6 +2363,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    computerTools.length === 0 &&
     localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
@@ -2389,6 +2394,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...computerTools,
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
@@ -2952,7 +2958,7 @@ function isAutoLoadableLocalRow(
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
-      (admitHfCache && row.source === "hf_cache")) &&
+      (row.source === "hf_cache" && (admitHfCache || isOtherCacheSnapshot(row)))) &&
     // Absent capabilities means unclassified, not "not chat": requiring true fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
@@ -4955,6 +4961,8 @@ export function createOpenAIStreamAdapter(
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
       const browserTools = browserAgentToolsForTurn();
+      const computerTools = computerUseToolsForTurn();
+      const stepwiseTools = browserTools.length > 0 || computerTools.length > 0;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread
       // (unstable_threadId only, matching the reader's remoteId).
@@ -6827,7 +6835,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
@@ -6842,6 +6850,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...computerTools,
                       ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6868,8 +6877,8 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    // Browser use is the exception: a step announced and not taken ends the task.
-                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
+                    // Browser and computer use are the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: stepwiseTools ? runtime.nudgeToolCalls : false,
                     deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
@@ -7063,7 +7072,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
-                browserTools.length > 0 ||
+                stepwiseTools ||
                 localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
@@ -7079,6 +7088,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...computerTools,
                     ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -7806,6 +7816,7 @@ export function createOpenAIStreamAdapter(
                         confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                         cancelId,
+                        computerUseAsk(toolEvent.computer_use),
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
@@ -9105,22 +9116,22 @@ export function createOpenAIStreamAdapter(
               description: oneTurnIsTheProblem
                 ? userCanShortenIt
                   ? `This message is ${tooLong}` +
-                    'Shorten this message, or raise "Context Length" ' +
+                    'Shorten this message, or raise "Context" ' +
                     "in the chat Settings panel (⚙ in the top-right)."
                   : `The last tool result is ${tooLong}` +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or ask for less output from that tool."
                 : historyCannotHelp(irreducible)
                   ?
                     "Even with every earlier turn dropped, this prompt would still be " +
                     "too long, so shortening the conversation will not help. " +
-                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Raise "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or reduce what every request carries: the system prompt and any " +
                     "tools that are enabled."
                   // llama-server runs with --no-context-shift, so point at the control that raises the ceiling.
                   :
                     "The conversation has filled the model's context window. " +
-                    'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    'Increase "Context" in the chat Settings panel (⚙ in the top-right), ' +
                     "or start a new chat.",
               duration: 8000,
             });

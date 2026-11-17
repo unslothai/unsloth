@@ -15,7 +15,7 @@ one flat stream ``[prefix_g, suffix_g_0 .. suffix_g_{G-1}, ...]`` gathered from 
 (row, col) coordinates, so the shared prefix gets grad once (= sum of the G repeats). Completion
 logprobs are scattered back to ``orig_row * L + orig_col``, byte-compatible with the packed path.
 
-Env: UNSLOTH_GRPO_PREFIX_GROUPER (default 1, off under vLLM), _TOKR (1.3), _VERIFY (1),
+Env: UNSLOTH_GRPO_PREFIX_GROUPER (default 1), _VLLM (1; 0 = off under vLLM), _TOKR (1.3), _VERIFY (1),
 _TOL (0.7 nats), _COMPILE_CHECK (1).
 """
 

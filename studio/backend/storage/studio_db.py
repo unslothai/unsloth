@@ -371,6 +371,10 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
         raise
 
 
+# The sampling keys a model's recommendation sets, which an edited Default can keep.
+PRESET_EDITED_KEYS = ("temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens")
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -772,6 +776,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The same every-key hold _merge_settings_updates gives an older client's `modified`, for a row
+    # saved before presetEditedKeys existed. Done before any client reads, so a missing map means none.
+    conn.execute(
+        """
+        INSERT INTO chat_settings (key, value_json, updated_at)
+        SELECT 'presetEditedKeys', ?, ?
+        WHERE (SELECT value_json FROM chat_settings WHERE key = 'activePresetSource') = ?
+          AND NOT EXISTS (SELECT 1 FROM chat_settings WHERE key = 'presetEditedKeys')
+        """,
+        (
+            json.dumps({key: True for key in PRESET_EDITED_KEYS}),
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps("modified"),
+        ),
+    )
     # One row per summarised prefix, so a branch that forks before a later summary still finds its own.
     conn.execute(
         """
@@ -916,7 +935,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             reasoning_effort TEXT,
             allow_model_load INTEGER NOT NULL DEFAULT 0,
             archive_successful INTEGER NOT NULL DEFAULT 0,
-            project_id TEXT
+            project_id TEXT,
+            web_search INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -941,6 +961,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
     if "project_id" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
+    if "web_search" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )
@@ -3374,25 +3396,55 @@ def set_chat_project_working_folder(
         conn.close()
 
 
-def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
-    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+def find_chat_project_by_working_folder(path: str) -> Optional[dict]:
+    want = os.path.normcase(path)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM chat_projects WHERE archived = 0 AND working_folder IS NOT NULL "
+            "ORDER BY updated_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        if os.path.normcase(row["working_folder"]) == want:
+            return _chat_project_from_row(row)
+    return None
+
+
+def _working_folder_state(project: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
     path = (project or {}).get("workingFolder")
-    if not path or not is_owner_context():
-        return None
+    if not path:
+        return None, None
     try:
         st = os.lstat(path)
     except OSError:
-        return None
+        return "missing", None
     if not stat.S_ISDIR(st.st_mode):
-        return None
+        return "replaced", None
     identity = (project or {}).get("workingFolderIdentity")
     if identity and identity != f"{st.st_dev}:{st.st_ino}":
-        return None
+        return "replaced", None
     real = os.path.realpath(path)
     # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
     if os.path.normcase(real) != os.path.normcase(path):
+        return "replaced", None
+    return "ok", real
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    if not is_owner_context():
         return None
-    return real
+    from auth.policy import api_full_access_refused
+
+    if api_full_access_refused():
+        return None
+    return _working_folder_state(project)[1]
+
+
+def project_working_folder_status(project: Optional[dict]) -> Optional[str]:
+    return _working_folder_state(project)[0]
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:
@@ -4842,6 +4894,18 @@ def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
     return f"{base} ({n})"
 
 
+def _fork_settings_json(settings_json: Optional[str]) -> Optional[str]:
+    """A fork starts without the source chat's Full access: that grant was given to one chat."""
+    try:
+        settings = json.loads(settings_json) if settings_json else None
+    except (TypeError, ValueError):
+        return settings_json
+    if not isinstance(settings, dict) or "fullAccess" not in settings:
+        return settings_json
+    settings.pop("fullAccess")
+    return json.dumps(settings)
+
+
 def fork_chat_thread(
     source_thread_id: str,
     branch_message_id: Optional[str],
@@ -4953,7 +5017,7 @@ def fork_chat_thread(
                 branch_message_id,
                 boundary_message_id,
                 base,
-                src_dict.get("settings_json"),
+                _fork_settings_json(src_dict.get("settings_json")),
             ),
         )
         fork_messages = []
@@ -6033,10 +6097,23 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 # merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
 # to a key the command does not name survives.
 _FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+# Per preset name, its new value or None to delete, so a stale window cannot drop others' presets.
+_EDIT_PRESETS_KEY = "editCustomPresets"
 
 
 def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     updates = dict(updates)
+    edits = updates.pop(_EDIT_PRESETS_KEY, None) or {}
+    if edits:
+        saved = [preset for preset in edits.values() if preset is not None]
+        names = set(edits) | {preset["name"] for preset in saved}
+        presets = current.get("customPresets")
+        kept = [
+            preset
+            for preset in (presets if isinstance(presets, list) else [])
+            if not (isinstance(preset, dict) and preset.get("name") in names)
+        ]
+        current = {**current, "customPresets": kept + saved}
     forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
     by_model = current.get("inferenceParamsByModel")
     if forget and isinstance(by_model, dict):
@@ -6051,7 +6128,18 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
             else:
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
-    return _deep_merge_settings(current, updates)
+    merged = _deep_merge_settings(current, updates)
+    held = merged.get("presetEditedKeys")
+    if merged.get("activePresetSource") != "modified":
+        # Kept keys mean nothing outside `modified`. Cleared here because older clients and legacy
+        # imports change the source without the map, and stale keys would return on the next edit.
+        if isinstance(held, dict) and any(held.values()):
+            merged["presetEditedKeys"] = {key: False for key in PRESET_EDITED_KEYS}
+    elif "activePresetSource" in updates and "presetEditedKeys" not in updates:
+        # Current clients send the map with every source change, so this `modified` comes from an
+        # older client or a legacy import, where it kept every key.
+        merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
+    return merged
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:

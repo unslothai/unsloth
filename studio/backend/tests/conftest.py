@@ -312,6 +312,68 @@ def _forget_mcp_discovery_state():
 
 
 @pytest.fixture(autouse = True)
+def _restore_diffusers_active_attention_backend():
+    # diffusers' ModelMixin.set_attention_backend also sets the process-wide active backend, which every
+    # processor without its own backend dispatches to: a test that set "_native_cudnn" left later CPU
+    # forwards with no SDPA kernel ("No viable backend for scaled_dot_product_attention").
+    dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+    registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+    before = getattr(registry, "_active_backend", None)
+    yield
+    if registry is None:
+        dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+        registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+        if registry is None:
+            return
+        try:  # first imported during this test: its default is the environment's, read at import
+            before = dispatch.AttentionBackendName(dispatch.DIFFUSERS_ATTN_BACKEND)
+        except Exception:
+            return
+    if getattr(registry, "_active_backend", None) != before:
+        registry._active_backend = before
+
+
+_DYNAMO_PROCESS_KNOBS = ("suppress_errors", "recompile_limit", "cache_size_limit")
+
+
+def _dynamo_own_knobs(cfg):
+    # Only the config's own entries. Reading an alias (cache_size_limit -> recompile_limit on torch 2.6+) runs
+    # importlib.import_module, which at teardown re-imported torch into tests that had taken it out of
+    # sys.modules and blocked imports ("_has_torch_function already has a docstring").
+    entries = getattr(cfg, "_config", None) or {}
+    return [
+        k
+        for k in _DYNAMO_PROCESS_KNOBS
+        if k in entries and getattr(entries[k], "alias", None) is None
+    ]
+
+
+@pytest.fixture(autouse = True)
+def _restore_dynamo_process_knobs():
+    # The DiT trainer's compile step sets dynamo's suppress_errors (and a 64 recompile limit) process-wide, so a
+    # later test on the same xdist worker that turns on fail_on_recompile_limit_hit died with "Dynamo configs
+    # suppress_error and fail_on_recompile_limit_hit can not both be active at the same time".
+    dynamo = sys.modules.get("torch._dynamo")
+    cfg = getattr(dynamo, "config", None)
+    before = {k: getattr(cfg, k) for k in _dynamo_own_knobs(cfg)} if cfg is not None else None
+    yield
+    if cfg is None:
+        dynamo = sys.modules.get("torch._dynamo")
+        cfg = getattr(dynamo, "config", None)
+        if cfg is None:
+            return
+        # first imported during this test: its defaults are the module's own
+        before = {}
+        for k in _dynamo_own_knobs(cfg):
+            default = cfg._config[k].default
+            if isinstance(default, (bool, int)):
+                before[k] = default
+    for k, v in before.items():
+        if getattr(cfg, k, v) != v:
+            setattr(cfg, k, v)
+
+
+@pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
     def _forget():
         video_routes = sys.modules.get("routes.video")

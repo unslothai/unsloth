@@ -59,6 +59,17 @@ def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
 
 
+def load_lora_signature(specs) -> tuple:
+    """Comparable form of a load's ``load_lora_specs``: a same-model reload with other adapters differs."""
+    out = []
+    for spec in specs or ():
+        try:
+            out.append((str(spec["id"]), float(spec["weight"])))
+        except Exception:  # noqa: BLE001 - a malformed row names no adapter
+            continue
+    return tuple(out)
+
+
 # The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
 _pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
     "pinned_checkpoint", default = None
@@ -122,6 +133,7 @@ class DiffusionFamily:
     gguf_loadable: bool = True
     # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
+    single_file_loadable: bool = True
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
@@ -156,6 +168,8 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Default edit output side (by area); None = the build's tier.
+    edit_output_resolution: Optional[int] = None
     # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
     # (lowercased id substring, shift or None = shipped) for checkpoints whose template differs; first match wins.
@@ -244,6 +258,8 @@ class DiffusionFamily:
     sd_cpp_flow_shift: Optional[float] = None
     # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
     sd_cpp_scheduler: Optional[str] = None
+    # sd.cpp --rng; None keeps its default.
+    sd_cpp_rng: Optional[str] = None
     # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
     sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
@@ -734,6 +750,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
+        # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/flux-3-image-klein-base",),
+        deploy_base_repos = (
+            ("black-forest-labs/flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein"),
+        ),
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -1067,6 +1089,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Different architecture from qwen-image, so its own family.
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
+        label = "Qwen-Image-2.1",
         profile = FamilyProfile(
             # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so
             # the 20B MMDiT exclusion list does not apply; excluding txt_in scores LPIPS 0.064 vs
@@ -1136,6 +1159,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_output_side = 2752,
         max_output_pixels = 2400 * 1792,
         reference_resolutions = (512, 1024, 2048),
+        # 1024-area edits are over-sharpened and miss the instruction even on upstream bf16; 1536 / 2048 are clean.
+        edit_output_resolution = 2048,
         # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
         # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
         condition_pixel_weight = 0.32,
@@ -1187,6 +1212,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_arch_marker = "qwen_image_2_1",
         # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
         sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
+        # Trains on the undistilled 2.1; Turbo shares its DiT, so the adapter also runs on the 8-step Turbo.
+        trainable = True,
+        train_base_repos = ("Qwen/Qwen-Image-2.1",),
+        deploy_base_repos = (("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"),),
     ),
     DiffusionFamily(
         name = "z-image",
@@ -1462,6 +1491,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
+            compile_from_render_one = (
+                "the eager port is host-bound: 1024 px bf16 eager 14.5 s vs compiled 8.0 s per image on an RTX PRO "
+                "6000, 27.5 s vs 12.9 s on an A100, so bf16 compiles from render 1 like the INT8 default"
+            ),
         ),
         pipeline_class = "MOSSImagePipeline",
         transformer_class = "MOSSImageTransformer",
@@ -1523,9 +1556,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
             " as <Picture 1>, <Picture 2> and say what to keep and what to change."
         ),
-        # The in-tree loader reads the native shards; no single-file / GGUF denoiser load.
-        pipeline_only = True,
-        gguf_loadable = False,
+        native_transformer_files_only = True,
+        single_file_loadable = False,
         supports_torch_compile = False,
         # No te_quant_auto: the in-tree loader picks the hosted int8 Qwen3-VL itself when the encoder is unset.
         # Hosted pre-quantized DiTs: the loader checks the file exists and quantizes on the fly otherwise.
@@ -1537,6 +1569,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
             ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
         ),
+        sd_cpp_vae = ("MiniMaxAI/MiniMax-H3-Image", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (
+            ("unsloth/MiniMax-H3-GGUF", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf", "llm"),
+        ),
+        # Upstream #2324's model name; builds before it cannot load the checkpoint.
+        sd_cpp_arch_marker = "MiniMax-H3-Image",
+        sd_cpp_reference = True,
+        # No scheduler or sigmas: sd.cpp's own H3-Image schedule is the PDD grid the heads were distilled on.
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_rng = "cpu",
+        # LoRA training (diffusion_h3_image_trainer): the release itself is the base, trained as bf16 or int8.
+        trainable = True,
+        train_base_repos = ("MiniMaxAI/MiniMax-H3-Image",),
+        profile = FamilyProfile(train_scheme_deny = frozenset({"nf4", "fp8", "mxfp8"})),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
@@ -3361,6 +3407,13 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # a video repo lending its encoder stays a model
+    from .video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    for vfam in _VIDEO_FAMILIES:
+        loadable.add(vfam.base_repo)
+        if vfam.gguf_repo:
+            loadable.add(vfam.gguf_repo)
     # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
     loadable_lower = {r.strip().lower() for r in loadable if r}
     loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)

@@ -37,6 +37,8 @@ export interface AudioCppModel {
   /** uses eSpeak-ng phonemization, absent from upstream runtime bundles. */
   needsEspeak?: boolean;
   stems?: readonly string[];
+  /** Extra picker search terms for a capability the name does not show. */
+  keywords?: readonly string[];
 }
 
 /** the `audio_cpp_runtime` block of `/api/inference/audio/stt/status`. */
@@ -168,7 +170,11 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Maya1-GGUF"), task: "tts" },
   { id: folder("NeuTTS-2E-GGUF"), task: "tts" },
   { id: folder("OmniVoice-GGUF"), task: "tts", workflows: ["speak", "clone"] },
-  { id: folder("VibeVoice-1.5B-GGUF"), task: "tts" },
+  {
+    id: folder("VibeVoice-1.5B-GGUF"),
+    task: "tts",
+    keywords: ["multi-speaker", "multiple speakers", "dialogue", "conversation", "podcast"],
+  },
   { id: folder("VoxCPM1-GGUF"), task: "tts", workflows: ["speak", "clone"] },
   { id: folder("Voxtral-4B-TTS-2603-GGUF"), task: "tts" },
   { id: folder("Fish-Audio-S2-Pro-GGUF"), task: "tts", workflows: ["speak", "clone"] },

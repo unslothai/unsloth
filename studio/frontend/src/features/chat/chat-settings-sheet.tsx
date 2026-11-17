@@ -100,6 +100,7 @@ import {
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
+  editedSamplingKey,
   isSamePresetConfig,
   MAX_TOKENS_MIN,
   localMaxTokensCeiling,
@@ -448,7 +449,7 @@ function specFallbackMessage({
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Only the drafter is off: the backend substitutes zero-VRAM ngram-mod where available.
-      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context window and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_unloadable":
@@ -868,7 +869,7 @@ export function ChatSettingsPanel({
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
-      setActivePresetSource(nextSource);
+      setActivePresetSource(nextSource, editedSamplingKey(key));
       setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
@@ -1183,7 +1184,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Unsloth&apos;s free-memory estimate
+                      Context window is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,
@@ -1191,7 +1192,7 @@ export function ChatSettingsPanel({
                     </>
                   ) : (
                     <>
-                      Context length exceeds the estimated VRAM capacity (
+                      Context window exceeds the estimated VRAM capacity (
                       {maxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
                     </>

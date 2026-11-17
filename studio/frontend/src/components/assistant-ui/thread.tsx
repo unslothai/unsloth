@@ -95,9 +95,11 @@ import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import {
+  ChatSkillsDialog,
   contextReportBranch,
   isContextCommand,
   isRewindCommand,
+  isSkillsCommand,
   useContextReportStore,
   useRewindDialogStore,
 } from "@/features/chat";
@@ -440,6 +442,7 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
+import { ComputerUseMenuItem, ComputerUsePill } from "@/features/computer-use/lazy-composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -533,6 +536,10 @@ import {
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  COMPOSER_MIN_ROWS,
+  useComposerMaxRows,
+} from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
@@ -2701,7 +2708,10 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
+      <div
+        ref={dockInnerRef}
+        className="unsloth-composer-dock-inner relative pb-[calc(1rem*var(--ui-space-scale,1))]"
+      >
         <div
           ref={composerColumnRef}
           className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)"
@@ -2858,7 +2868,7 @@ const ThreadWelcome: FC<{
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "sloth" && (
             <MascotImg
               src={currentEmojiSrc}
-              className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
+              className="unsloth-welcome-sloth size-[calc(40px*var(--ui-space-scale,1))] -translate-y-[2px]"
             />
           )}
           {!incognito && greeting.kind === "text" && greeting.icon.kind === "custom" && (
@@ -2866,7 +2876,7 @@ const ThreadWelcome: FC<{
               src={greeting.icon.src}
               alt=""
               draggable={false}
-              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(44px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
+              className="unsloth-welcome-sloth unsloth-welcome-icon size-[calc(40px*var(--ui-space-scale,1))] shrink-0 -translate-y-[2px] object-contain"
             />
           )}
           <h1
@@ -2912,7 +2922,7 @@ const ThreadWelcome: FC<{
               style={{ flexGrow: `calc(var(--welcome-spacer-grow,1)*${composerPosition})` }}
             >
               {/* Padding here, not on the spacer, where it would count toward the spacer's share. */}
-              <div className="flex flex-col pb-[calc(16px*var(--ui-space-scale,1))]">{greetingRow}</div>
+              <div className="flex flex-col pb-[calc(22px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
             <div className="aui-thread-welcome-message flex w-full flex-col">
               {!hideComposer && <ComposerAnimated threadId={threadId} />}
@@ -3059,6 +3069,7 @@ const Composer: FC<{
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
   const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
     useState(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   useEffect(() => {
     if (!researchUsed) return;
     if (hasResearchMessage && researchThreadId) {
@@ -3267,7 +3278,10 @@ const Composer: FC<{
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const oneRowHeight = Math.round(40 * uiSpaceScale);
+  const minEditorHeight = Math.round(
+    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
+  );
+  const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
   const detachFromBottom = useDetachThreadFromBottom();
@@ -4035,6 +4049,10 @@ const Composer: FC<{
     registeringVideoDrops ||
     hasPendingVideoAttachments ||
     materializingDroppedVideo;
+  const hasMaterializingAttachments =
+    hasMaterializingImageAttachments ||
+    hasMaterializingAudioAttachments ||
+    hasMaterializingVideoAttachments;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
@@ -5820,6 +5838,19 @@ const Composer: FC<{
         !overlay &&
         !hasAttachments &&
         !hasPendingAudio &&
+        !hasMaterializingAttachments &&
+        isSkillsCommand(composerText)
+      ) {
+        event.preventDefault();
+        clearStoredDraft();
+        aui.composer().setText("");
+        setSkillsDialogOpen(true);
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
         isCompactCommand(composerText)
       ) {
         event.preventDefault();
@@ -6010,6 +6041,7 @@ const Composer: FC<{
       disabled,
       disableQueue,
       hasAttachments,
+      hasMaterializingAttachments,
       hasPendingAudio,
       enqueueSend,
       interceptSend,
@@ -6089,6 +6121,7 @@ const Composer: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
+        <ComputerUsePill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
         <ImagesToggle />
         <KnowledgeBaseComposerButton side={effectiveMenuSide} />
         {mcpEnabledForChat ? (
@@ -6127,6 +6160,15 @@ const Composer: FC<{
     ),
     [researchWebsiteAccessOpen, effectiveDeepResearchEnabled],
   );
+  const skillsDialog = useMemo(
+    () => (
+      <ChatSkillsDialog
+        open={skillsDialogOpen}
+        onOpenChange={setSkillsDialogOpen}
+      />
+    ),
+    [skillsDialogOpen],
+  );
 
   const composerContent = (
     <>
@@ -6160,7 +6202,7 @@ const Composer: FC<{
               className="unsloth-composer-editor"
               style={
                 {
-                  "--composer-editor-height": `${composerText.length === 0 ? oneRowHeight : Math.max(oneRowHeight, editorHeight)}px`,
+                  "--composer-editor-height": `${composerText.length === 0 ? minEditorHeight : Math.max(minEditorHeight, editorHeight)}px`,
                 } as CSSProperties
               }
             >
@@ -6174,7 +6216,7 @@ const Composer: FC<{
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
-                maxRows={12}
+                maxRows={maxRows}
                 onHeightChange={handleEditorHeightChange}
                 autoFocus={!disabled}
                 disabled={disabled}
@@ -6264,6 +6306,7 @@ const Composer: FC<{
         )}
       </div>
       {researchWebsiteAccessDialog}
+      {skillsDialog}
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
@@ -7097,6 +7140,7 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ) : null,
     browserUse: <BrowserAgentMenuItem />,
+    computerUse: <ComputerUseMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}

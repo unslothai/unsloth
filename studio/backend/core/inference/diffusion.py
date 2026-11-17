@@ -74,6 +74,7 @@ from .diffusion_families import (
     require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
+    load_lora_signature,
     local_pipeline_components_are_complete,
     _family_override_resolved,
     assert_flux2_gguf_matches_base,
@@ -286,6 +287,7 @@ from .diffusion_memory import (
     static_reference_release_mib,
     load_covered_reference_need_mib,
     measured_request_extra_mib,
+    placement_measured_activation,
     DECODE_LEND_ATTR,
     decode_lend_from_plan,
     with_workflow,
@@ -329,6 +331,7 @@ from .diffusion_speed import (
     int8_gemm_live,
     arm_graphs_after_placement,
     normalize_speed_mode,
+    int8_attention_speed_active,
     resolve_speed_mode,
     family_render_cudnn_scope,
     release_rocm_tunableop as _release_rocm_tunableop,
@@ -421,6 +424,8 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
+from .diffusion_lora import LoraSelectionError
+from .diffusion_lora_memory import price_attached_loras
 from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
@@ -633,7 +638,7 @@ def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
     if not lora_quant_merge.merged(pipe):
         return False
     if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
-        raise ValueError(
+        raise LoraSelectionError(
             "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
             "until the model is reloaded. Reload the model with the new adapter weights."
         )
@@ -656,7 +661,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise ValueError(
+        raise LoraSelectionError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
@@ -965,6 +970,57 @@ def _baked_lora_names(pipe: Any) -> list:
         if name:
             names.append(str(name))
     return names
+
+
+# Load-request (id, weight) pairs behind a baked set.
+_BAKED_LORA_SPECS_ATTR = "_unsloth_baked_lora_specs"
+
+
+def _record_baked_lora_specs(pipe: Any, loras: Any) -> None:
+    specs = []
+    for entry in loras or ():
+        try:
+            lora_id, weight = entry
+            weight = float(weight)
+        except Exception:  # noqa: BLE001 - an unrecognised entry was not baked either
+            continue
+        if lora_id and weight:
+            specs.append((str(lora_id), weight))
+    setattr(pipe, _BAKED_LORA_SPECS_ATTR, tuple(specs))
+
+
+def _baked_lora_specs(pipe: Any) -> list:
+    """The adapters a load baked in, as the ``{id, weight}`` the load requested; [] when none were baked."""
+    if not getattr(pipe, "_unsloth_loras_baked", False):
+        return []
+    return [{"id": i, "weight": w} for (i, w) in getattr(pipe, _BAKED_LORA_SPECS_ATTR, ()) or ()]
+
+
+# Every load's requested (id, weight) pairs; a dense build applies them per generation.
+_LOAD_LORA_SPECS_ATTR = "_unsloth_load_lora_specs"
+
+
+def _record_load_lora_specs(pipe: Any, loras: Any) -> None:
+    specs = []
+    for entry in loras or ():
+        try:
+            lora_id, weight = entry
+            weight = float(weight)
+        except Exception:  # noqa: BLE001 - an unrecognised entry names no adapter
+            continue
+        if lora_id and weight:
+            specs.append((str(lora_id), weight))
+    try:
+        setattr(pipe, _LOAD_LORA_SPECS_ATTR, tuple(specs))
+    except Exception:  # noqa: BLE001 - a pipe that refuses attributes just reports none
+        pass
+
+
+def _load_lora_specs(pipe: Any) -> list:
+    baked = _baked_lora_specs(pipe)
+    if baked:
+        return baked
+    return [{"id": i, "weight": w} for (i, w) in getattr(pipe, _LOAD_LORA_SPECS_ATTR, ()) or ()]
 
 
 # Adapters baked into a quantized single file; ``_unsloth_loras_baked`` also stays set after a declined quantize.
@@ -1305,6 +1361,7 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 # lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
 from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+from .family_profile import compile_from_render_one_reason  # noqa: E402
 
 _TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
@@ -2032,6 +2089,13 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     except Exception:  # noqa: BLE001 - an uncached or unreadable index carries no grid
         return None
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
+
+
+# First sd.cpp build per native-only family, named in the too-old refusal.
+_NATIVE_ONLY_FIRST_BUILD = {
+    MOSS_IMAGE_FAMILY_NAME: "upstream master-975",
+    MINIMAX_H3_IMAGE_FAMILY_NAME: "upstream master-1088",
+}
 
 
 def _family_default_ids(fam: Any) -> tuple:
@@ -5389,6 +5453,11 @@ class DiffusionBackend:
         # Too-old diffusers matters only for a diffusers build (not native sd.cpp); imported here since the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
+        if kind == "single_file" and not getattr(fam, "single_file_loadable", True):
+            raise ValueError(
+                f"'{fam.name}' has no single-file transformer load; select the pipeline repo, or a GGUF for the "
+                f"native stable-diffusion.cpp engine."
+            )
         # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
             (
@@ -5400,9 +5469,10 @@ class DiffusionBackend:
                 and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
             )
         ):
+            first_build = _NATIVE_ONLY_FIRST_BUILD.get(fam.name, "a current upstream build")
             raise ValueError(
                 f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
-                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
+                f"stable-diffusion.cpp engine, from a build that supports it ({first_build} or newer); the "
                 f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
                 f"engine available."
             )
@@ -5512,7 +5582,7 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
-        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME and kind != "gguf":
             from .diffusion_minimax_h3_image import h3_image_device_refusal
             refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
             if refusal:
@@ -7390,6 +7460,9 @@ class DiffusionBackend:
             if allow_device_probe
             else None
         )
+        if h3_image and _has_active_lora(load_kwargs.get("loras")):
+            # LoRAs merge into the dense DiT before quantization, so the load streams the released shards.
+            pipeline_planned = None
         dit_prequant = (
             self._dit_prequant_plan_source(
                 fam,
@@ -8715,6 +8788,7 @@ class DiffusionBackend:
                         text_encoder_quant = text_encoder_quant_requested,
                         text_encoder_quant_explicit = bool(text_encoder_quant_requested),
                         load_token = _load_token,
+                        loras = loras,
                     )
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
@@ -10775,6 +10849,7 @@ class DiffusionBackend:
                                     )
                                     pipe._unsloth_loras = baked
                                     pipe._unsloth_loras_baked = True
+                                    _record_baked_lora_specs(pipe, loras)
                                     logger.info(
                                         "diffusion.lora_bake: %d adapter(s) attached before the pipeline "
                                         "quantize",
@@ -10937,6 +11012,7 @@ class DiffusionBackend:
                         )
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
+                        _record_baked_lora_specs(pipe, loras)
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
                         # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
                         quant_merged = (
@@ -10998,6 +11074,23 @@ class DiffusionBackend:
                             "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
+                    # A family whose eager path is measured far slower than compiled skips the deferred profile.
+                    compile_first_reason = (
+                        compile_from_render_one_reason(fam)
+                        if speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                        else None
+                    )
+                    if compile_first_reason is not None:
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (%s)",
+                            compile_first_reason,
+                        )
+                        effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
                     # amortises. Only when speed was unset.
                     speed_deferred = (
@@ -11024,7 +11117,11 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                         requested = attention_backend,
-                        speed_active = effective_speed != SPEED_OFF,
+                        speed_active = int8_attention_speed_active(
+                            speed_mode, effective_speed, speed_deferred
+                        ),
+                        # granted by the unset-speed rule alone: only SPEED_UNSET_DITS race
+                        speed_unset_only = effective_speed == SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.
@@ -11393,10 +11490,23 @@ class DiffusionBackend:
                     peak_model = _peak_model_identity(
                         repo_id, gguf_filename, kind, base, fetch_base
                     )
-                    if getattr(pipe, "_unsloth_loras", None):
-                        peak_model = (
-                            "unknown"  # adapters baked in at load: a build the key cannot name
+                    if getattr(pipe, "_unsloth_loras", None) and (
+                        price_attached_loras(
+                            pipe,
+                            cfg = bool(getattr(fam, "uses_negative_prompt", False)),
+                            compute_bytes = _float_load_itemsize(
+                                _resolve_diffusion_compute_dtype(
+                                    fam, getattr(target, "dtype", None)
+                                )
+                            ),
+                            compute_dtype = _resolve_diffusion_compute_dtype(
+                                fam, getattr(target, "dtype", None)
+                            ),
                         )
+                        is None
+                    ):
+                        # unpriceable adapters: a build the key cannot name; priced ones' renders still record nothing
+                        peak_model = "unknown"
                     try:
                         # the phase-table seed holds only where it was measured; unpriced references size flat
                         pipe._unsloth_phase_seeds = (
@@ -11646,6 +11756,8 @@ class DiffusionBackend:
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
                                 if speed_deferred
+                                else f"auto: {compile_first_reason}"
+                                if compile_first_reason is not None
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",
@@ -11873,6 +11985,7 @@ class DiffusionBackend:
                         ),
                         te_releaser = te_releaser,
                     )
+                    _record_load_lora_specs(pipe, loras)
                     # Serialize publication with cancellation.
                     with self._load_cancel_lock:
                         self._raise_if_load_cancelled(_load_token)
@@ -11969,8 +12082,10 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str],
         load_token: Optional[int],
         text_encoder_quant_explicit: bool = False,
+        loras: Any = None,
     ) -> dict[str, Any]:
-        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted)."""
+        """MiniMax-H3-Image load under the transition slot and state lock (the previous model is already evicted).
+        LoRAs named in the load are merged into the DiT weights before quantization (``diffusion_minimax_h3_image``)."""
         from .diffusion_minimax_h3_image import (
             PLACE_RESIDENT,
             PLACE_SEQUENTIAL,
@@ -11980,8 +12095,16 @@ class DiffusionBackend:
 
         # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
         te_scheme = h3_image_te_scheme(text_encoder_quant)
+        baked: tuple = ()
+        if _has_active_lora(loras):
+            baked = self._resolve_lora_set(
+                [(i, w) for (i, w) in loras if w != 0],
+                family = getattr(fam, "name", None),
+                hf_token = hf_token,
+            )
         pipe = load_minimax_h3_image_pipeline(
             fetch_base,
+            loras = [(path, weight) for _name, path, weight in baked],
             dtype = target.dtype,
             device = target.device,
             transformer_quant = transformer_quant,
@@ -11991,6 +12114,15 @@ class DiffusionBackend:
             local_files_only = local_files_only,
             check_cancelled = lambda: self._raise_if_load_cancelled(load_token),
         )
+        if baked:
+            pipe._unsloth_loras = baked
+            pipe._unsloth_loras_baked = True
+            # /v1/images/generations reads these back; an empty set is refused (merge cannot be undone).
+            _record_baked_lora_specs(pipe, loras)
+            logger.info(
+                "diffusion.lora_bake: %d adapter(s) merged into the MiniMax-H3-Image DiT",
+                len(baked),
+            )
         report = pipe._unsloth_h3_report
         plan = report.plan
         prompt_cache.install(
@@ -12427,6 +12559,7 @@ class DiffusionBackend:
             )
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
+            _record_baked_lora_specs(pipe, lora_specs)
             logger.info(
                 "diffusion.lora_bake: %d adapter(s) attached before %s quantize",
                 len(baked),
@@ -14264,7 +14397,7 @@ class DiffusionBackend:
         # diffusers load_lora_weights takes safetensors only; reject a .gguf adapter as a clean 400.
         bad = [r.id for r in resolved if r.fmt != "safetensors"]
         if bad:
-            raise ValueError(
+            raise LoraSelectionError(
                 "GGUF LoRA adapters are not supported on the diffusers engine "
                 f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
             )
@@ -14291,6 +14424,9 @@ class DiffusionBackend:
         current = getattr(pipe, "_unsloth_loras", ())
         specs = [(i, w) for (i, w) in (loras or []) if w != 0]
 
+        if getattr(getattr(state, "family", None), "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+            self._check_h3_image_loras(state, specs, current, cancel)
+            return
         if specs:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
@@ -14317,7 +14453,7 @@ class DiffusionBackend:
 
         blocked = _lora_load_block_reason(pipe)
         if blocked:
-            raise ValueError(blocked)
+            raise LoraSelectionError(blocked)
         unavailable = diffusion_lora.lora_unavailable_reason(
             engine = "diffusers",
             family = getattr(state.family, "name", None),
@@ -14326,7 +14462,7 @@ class DiffusionBackend:
             compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
         )
         if unavailable:
-            raise ValueError(unavailable)
+            raise LoraSelectionError(unavailable)
 
         desired = self._resolve_lora_set(
             specs,
@@ -14384,6 +14520,30 @@ class DiffusionBackend:
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
 
+    def _check_h3_image_loras(
+        self, state: Any, specs: list, current: tuple, cancel: threading.Event
+    ) -> None:
+        """MiniMax-H3-Image merges its adapters into the DiT weights at load (before quantization), so a render
+        runs exactly the set the load named; any other selection or weight is a reload, refused here as a 400."""
+        if not specs and not current:
+            return
+        desired = (
+            self._resolve_lora_set(
+                specs,
+                family = getattr(state.family, "name", None),
+                hf_token = state.hf_token,
+                cancel = cancel,
+            )
+            if specs
+            else ()
+        )
+        if tuple(desired) == tuple(current):
+            return
+        raise LoraSelectionError(
+            "MiniMax-H3-Image merges LoRA adapters into its weights when the model loads, so the LoRA selection "
+            "and weights are fixed for this load. Load the model again with the new LoRA selection."
+        )
+
     def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
         """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused."""
         from . import diffusion_lora_fuse as lora_fuse
@@ -14428,7 +14588,7 @@ class DiffusionBackend:
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
-            raise ValueError(
+            raise LoraSelectionError(
                 "This quantized (int8/fp8) load was built without LoRA adapters. Reload the "
                 "model with the adapter selection to bake it into the quantized transformer."
             )
@@ -14466,7 +14626,7 @@ class DiffusionBackend:
             for (name, path, _w) in current
         )
         if any(wanted.values()):
-            raise ValueError(
+            raise LoraSelectionError(
                 "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
                 "adapters at load time. Reload the model with the new adapter selection."
             )
@@ -14831,6 +14991,8 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # load_lora_signature() of the status an omitted loras was resolved from; a reload with other adapters refuses
+        expected_load_loras: Optional[tuple] = None,
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
@@ -14874,6 +15036,10 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    if expected_load_loras is not None and tuple(
+                        expected_load_loras
+                    ) != load_lora_signature(_load_lora_specs(state.pipe)):
+                        raise DiffusionModelReplacedError(expected_load or loaded_id, loaded_id)
                     require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)
@@ -15502,6 +15668,16 @@ class DiffusionBackend:
                     # groups an earlier oversized request streamed out stay out when this one streams them all too
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
 
+                    # The measured row the placement was sized from: the load's reserve, else the same row the plan read.
+                    guard_measured = placement_measured_activation(state.pipe)
+                    if guard_measured is None and getattr(state, "calibrated_placement", False):
+                        try:
+                            guard_measured = _calibrated_activation(
+                                fam, guard_target, fp32_scaled = True
+                            )
+                        except Exception:  # noqa: BLE001 - unknown keeps the flat estimate
+                            guard_measured = None
+
                     def _guard_kwargs() -> dict:
                         return dict(
                             # Not the settled snapshot: its empty_cache() is wrong per generation (re-mallocs activations).
@@ -15522,6 +15698,7 @@ class DiffusionBackend:
                                 getattr(state, "calibrated_placement", False)
                             ),
                             controlnet = workflow == "controlnet" and control_pil is not None,
+                            measured_activation = guard_measured,
                             logger = logger,
                         )
 
@@ -16549,6 +16726,8 @@ class DiffusionBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
+            "baked_lora_specs": _baked_lora_specs(state.pipe),
+            "load_lora_specs": _load_lora_specs(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
             "packed_weights": _grouped_form_status(state.pipe),
             "graph_engagement": cuda_graph.engagement(

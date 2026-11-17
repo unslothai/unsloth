@@ -235,6 +235,25 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     }
 
 
+def _append_hosted_replay(message: dict[str, Any], hosted_text: str) -> None:
+    """Gemini replays a turn from its native answer parts instead of ``content``, so the hosted
+    output goes into both, or a turn with any answer text loses it."""
+    if not hosted_text:
+        return
+    content = message.get("content")
+    message["content"] = f"{content}\n\n{hosted_text}" if content else hosted_text
+    extra = message.get("extra_content")
+    google = extra.get("google") if isinstance(extra, dict) else None
+    answers = google.get("answer_parts") if isinstance(google, dict) else None
+    if not isinstance(answers, list) or not answers:
+        return
+    lead = "\n\n" if any(isinstance(part, dict) and part.get("text") for part in answers) else ""
+    message["extra_content"] = {
+        **extra,
+        "google": {**google, "answer_parts": [*answers, {"text": f"{lead}{hosted_text}"}]},
+    }
+
+
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
 
@@ -1898,15 +1917,12 @@ async def _stream_with_studio_tools(
                     # A hosted tool ran with no local call after it; this path skips the replay the reprompt relies on.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
-                        "content": (
-                            f"{visible_answer}\n\n{stalled_hosted}"
-                            if visible_answer
-                            else stalled_hosted
-                        ),
+                        "content": visible_answer,
                     }
                     if turn.reasoning_extra:
                         # Gemini 3 needs the text part's thoughtSignature on replay.
                         stalled_message["extra_content"] = turn.reasoning_extra
+                    _append_hosted_replay(stalled_message, stalled_hosted)
                     append_assistant_turn(
                         conversation,
                         stalled_message,
@@ -2027,6 +2043,7 @@ async def _stream_with_studio_tools(
                 never_needs = never_needs_approval,
                 sandbox_level = sandbox_level,
                 session_id = session_id,
+                thread_id = thread_id,
             )
             # Sending the user's image always asks, whatever the permission mode.
             needs_confirmation = needs_confirmation or image_share is not None
@@ -2254,6 +2271,7 @@ async def _stream_with_studio_tools(
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     ) or requires_os_isolation(
                         confirm_tool_calls = confirm_tool_calls,
                         bypass_permissions = follower_bypass,
@@ -2343,18 +2361,12 @@ async def _stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
-        hosted_text = turn.hosted_replay_text()
-        if hosted_text:
-            # Replay provider-hosted tool output as text, or the follow-up answers from local results alone; native shapes differ per provider.
-            assistant_message["content"] = (
-                f"{assistant_message['content']}\n\n{hosted_text}"
-                if assistant_message["content"]
-                else hosted_text
-            )
         if turn.reasoning:
             assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
+        # Replay provider-hosted tool output as text, or the follow-up answers from local results alone; native shapes differ per provider.
+        _append_hosted_replay(assistant_message, turn.hosted_replay_text())
         if assistant_tool_calls:
             assistant_message["tool_calls"] = assistant_tool_calls
         if assistant_message["content"] or assistant_tool_calls:

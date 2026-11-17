@@ -49,6 +49,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
@@ -285,6 +286,475 @@ _APPROVED_RM_REFUSED = (
     "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
     "nor are globs, pipes, xargs, chained commands or $ expansion."
 )
+
+# rm, rsync and recursive chmod stay blocked: the shared Hugging Face cache is writable inside the sandbox.
+# Seatbelt denies the process list (sysmond for pkill, sysctl KERN_PROC for killall): they would only fail there.
+_OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
+    {"curl", "wget", "kill", "pkill", "killall", "source", ".", "chmod"}
+) - ({"pkill", "killall"} if sys.platform == "darwin" else set())
+# The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
+_OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
+_OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
+_CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
+_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
+_CHMOD_OPERAND_UNSAFE = frozenset("*?[]{}$`~")
+_SHELL_OPERATOR_CHARS = frozenset(";&|()<>")
+_SHELL_COMMAND_PREFIXES = frozenset(
+    {"{", "}", "!", "if", "then", "elif", "else", "while", "until", "do", "time"}
+)
+# Where this reading and bash could part ways: substitutions, heredocs, ANSI-C quotes, line continuations, extglobs.
+_CHMOD_UNREADABLE_SYNTAX = ("$(", "`", "<(", ">(", "<<", "$'", "\\\n", "@(", "!(", "+(")
+
+
+def _shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
+    """(text, is_operator, start, end) per token as bash splits them; None for a comment or an open quote."""
+    tokens: list[tuple[str, bool, int, int]] = []
+    text: list[str] = []
+    start = -1
+    i, n = 0, len(command)
+    while i <= n:
+        ch = command[i] if i < n else "\n"
+        if ch in " \t\n" or ch in _SHELL_OPERATOR_CHARS:
+            if start >= 0:
+                tokens.append(("".join(text), False, start, i))
+                text, start = [], -1
+            if ch == "\n":
+                tokens.append((";", True, i, i))
+            elif ch in _SHELL_OPERATOR_CHARS:
+                end = i
+                while end < n and command[end] in _SHELL_OPERATOR_CHARS:
+                    end += 1
+                tokens.append((command[i:end], True, i, end))
+                i = end
+                continue
+            i += 1
+            continue
+        if start < 0:
+            if ch == "#":
+                return None
+            start = i
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            text.append(command[i + 1])
+            i += 2
+        elif ch in "'\"":
+            end = i + 1
+            while end < n and command[end] != ch:
+                end += 2 if ch == '"' and command[end] == "\\" else 1
+            if end >= n:
+                return None
+            text.append(command[i + 1 : end])
+            i = end + 1
+        else:
+            text.append(ch)
+            i += 1
+    return tokens
+
+
+def _readable_shell_words(command: str) -> "list[tuple[str, bool, int, int]] | None":
+    if any(marker in command for marker in _CHMOD_UNREADABLE_SYNTAX):
+        return None
+    tokens = _shell_words(command)
+    if tokens is None:
+        return None
+    # History expansion (!!, ^a^b) and fc replay lines this reading never sees.
+    if any(
+        not is_operator
+        and (word in ("history", "fc") or word.startswith("^") or ("!" in word and word != "!"))
+        for word, is_operator, _, _ in tokens
+    ):
+        return None
+    return tokens
+
+
+def _is_plain_chmod(command: str) -> bool:
+    """Every chmod is a plain `chmod [-vcf] MODE FILE...` at command position: no -R, globs or expansions."""
+    tokens = _readable_shell_words(command)
+    if tokens is None:
+        return False
+    rest: list[str] = []
+    copied = 0
+    seen = 0
+    at_start = True
+    i = 0
+    while i < len(tokens):
+        token, is_operator, start, _ = tokens[i]
+        if is_operator:
+            at_start = not set(token) & {"<", ">"}
+            i += 1
+            continue
+        if at_start and "$" in token:
+            return False
+        if not (at_start and (token == "chmod" or token.endswith("/chmod"))):
+            at_start = at_start and (
+                command[start : tokens[i][3]] in _SHELL_COMMAND_PREFIXES
+                or _SHELL_ASSIGNMENT_RE.match(token) is not None
+            )
+            i += 1
+            continue
+        end = i + 1
+        while end < len(tokens) and not tokens[end][1]:
+            end += 1
+        # A redirection does not end the command: words after it are still chmod's arguments.
+        if end < len(tokens) and set(tokens[end][0]) & {"<", ">"}:
+            return False
+        args = [word for word, _, _, _ in tokens[i + 1 : end]]
+        while args and _CHMOD_OPTION_RE.fullmatch(args[0]):
+            args.pop(0)
+        if len(args) < 2 or not _CHMOD_MODE_RE.fullmatch(args[0]):
+            return False
+        if any(arg.startswith("-") or set(arg) & _CHMOD_OPERAND_UNSAFE for arg in args[1:]):
+            return False
+        seen += 1
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
+        i = end
+    rest.append(command[copied:])
+    # Any chmod the plain form did not account for (xargs, find -exec, $(...)) keeps the block.
+    return seen > 0 and "chmod" not in _find_blocked_commands("".join(rest))
+
+
+# Allowlist, not denylist: both tools accept abbreviated long options and read data/config from files.
+_CURL_PLAIN_FLAGS = frozenset(
+    {
+        "--silent",
+        "--show-error",
+        "--location",
+        "--fail",
+        "--fail-with-body",
+        "--insecure",
+        "--head",
+        "--include",
+        "--verbose",
+        "--progress-bar",
+        "--no-progress-meter",
+        "--remote-name",
+        "--remote-header-name",
+        "--remote-time",
+        "--globoff",
+        "--compressed",
+        "--create-dirs",
+        "--no-buffer",
+        "--ipv4",
+        "--http1.1",
+        "--http2",
+        "--version",
+    }
+)
+# No -6/--ipv6: curl applies it to the IPv4-only proxy too.
+_CURL_PLAIN_SHORT_FLAGS = frozenset("sSLfkIivOJRgN4V#")
+_CURL_PLAIN_VALUES = {
+    "--output": "o",
+    "--output-dir": None,
+    "--user-agent": "A",
+    "--header": "H",
+    "--referer": "e",
+    "--range": "r",
+    "--continue-at": "C",
+    "--max-time": "m",
+    "--connect-timeout": None,
+    "--retry": None,
+    "--retry-delay": None,
+    "--retry-max-time": None,
+    "--max-filesize": None,
+    "--max-redirs": None,
+    "--limit-rate": None,
+    # Only narrows where the call can go: without the proxy it has no network.
+    "--noproxy": None,
+}
+_WGET_PLAIN_FLAGS = frozenset(
+    {
+        "--quiet",
+        "--verbose",
+        "--no-verbose",
+        "--continue",
+        "--timestamping",
+        "--no-clobber",
+        "--show-progress",
+        "--no-check-certificate",
+        "--content-disposition",
+        "--server-response",
+        "--spider",
+        "--no-directories",
+        "--force-directories",
+        "--no-proxy",
+        "--version",
+        "-nv",
+        "-nc",
+        "-nd",
+    }
+)
+_WGET_PLAIN_SHORT_FLAGS = frozenset("qvcNSxV")
+_WGET_PLAIN_VALUES = {
+    "--output-document": "O",
+    "--directory-prefix": "P",
+    "--tries": "t",
+    "--timeout": "T",
+    "--user-agent": "U",
+    "--header": None,
+    "--progress": None,
+    "--wait": None,
+    "--waitretry": None,
+    "--read-timeout": None,
+    "--connect-timeout": None,
+    "--limit-rate": None,
+}
+_PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
+# Proxied launches point these at empty rc files; a command that names them could undo that.
+_DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
+# What a download may be piped into: text tools with no option that runs a program (not sort: --compress-program).
+# A wrapper (env bash, timeout 5 sh) would hide an interpreter from the pipe-to-shell check.
+_DOWNLOAD_PIPE_TARGETS = frozenset(
+    {
+        "head",
+        "tail",
+        "jq",
+        "grep",
+        "wc",
+        "uniq",
+        "cat",
+        "tee",
+        "sha256sum",
+        "sha1sum",
+        "md5sum",
+    }
+)
+# Anything else (an interpreter, unset/export of the rc variables, source, aliases) keeps the block.
+_DOWNLOAD_COMPANIONS = _DOWNLOAD_PIPE_TARGETS | frozenset(
+    {
+        "cd",
+        "mkdir",
+        "ls",
+        "echo",
+        "pwd",
+        "test",
+        "[",
+        "true",
+        "false",
+        "sleep",
+        "mv",
+        "cp",
+        "touch",
+        "chmod",
+        "fi",
+        "done",
+    }
+)
+
+
+_DOWNLOAD_OPERATORS = frozenset(
+    {";", "&&", "||", "|", "|&", "&", "(", ")", "<", ">", ">>", ">&", "&>", "&>>", ">|"}
+)
+
+
+_DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
+
+
+def _on_safe_path(name: str) -> bool:
+    # Found ahead of the sandbox's writable package bin, which PATH lists last: a planted jq or curl is never run.
+    return shutil.which(name, path = _safe_path()[0]) is not None
+
+
+def _unquoted(raw: str) -> str:
+    out, quote = [], None
+    for ch in raw:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
+    flags, short_flags, values = (
+        (_CURL_PLAIN_FLAGS, _CURL_PLAIN_SHORT_FLAGS, _CURL_PLAIN_VALUES)
+        if name == "curl"
+        else (_WGET_PLAIN_FLAGS, _WGET_PLAIN_SHORT_FLAGS, _WGET_PLAIN_VALUES)
+    )
+    short_values = {letter: option for option, letter in values.items() if letter}
+
+    args = [word for word, _ in words]
+
+    def value_ok(value: str, raw: str) -> bool:
+        # A value read from a file (@file) is an upload; an unquoted glob or $ could expand into more options.
+        single_quoted = len(raw) >= 2 and raw[0] == raw[-1] == "'" and raw.count("'") == 2
+        return (
+            not value.startswith("@")
+            and not set(raw) & set("$`")
+            and (single_quoted or not set(raw) & set("*?[]{}~"))
+        )
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if _PLAIN_URL_RE.match(arg):
+            if set(arg) & set("$`"):
+                return False
+            continue
+        if arg in flags:
+            continue
+        if arg.startswith("--"):
+            option, has_value, value = arg.partition("=")
+            if option not in values:
+                return False
+            raw = words[i - 1][1].partition("=")[2]
+            if not has_value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            continue
+        if not arg.startswith("-") or len(arg) < 2:
+            return False
+        for position, letter in enumerate(arg[1:], 2):
+            if letter in short_flags:
+                continue
+            if letter not in short_values:
+                return False
+            value, raw = arg[position:], words[i - 1][1]
+            if not value:
+                if i >= len(args):
+                    return False
+                value, raw, i = args[i], words[i][1], i + 1
+            if not value_ok(value, raw):
+                return False
+            break
+    return True
+
+
+def _is_plain_download(command: str) -> bool:
+    """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
+    # No $ (but $?) or backticks anywhere: a variable name built at run time could unset CURL_HOME.
+    if _DOWNLOADER_CONFIG_NAMES_RE.search(command) or set(command.replace("$?", "")) & set("$`"):
+        return False
+    tokens = _readable_shell_words(command)
+    if tokens is None:
+        return False
+    # The words as bash reads them too: CURL_HO''ME is CURL_HOME.
+    if (
+        _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens))
+        or any(
+            (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
+            # A CR/LF in a header value smuggles a second request through the opaque CONNECT tunnel.
+            or (not is_operator and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in token))
+            # Brace expansion builds words at run time: unset CURL_{HOME,X}.
+            or (
+                not is_operator
+                and not _PLAIN_URL_RE.match(token)
+                and bool(set(_unquoted(command[first:last])) & {"{", "}"})
+            )
+            or (
+                is_operator
+                and token in ("|", "|&")
+                and (k + 1 >= len(tokens) or tokens[k + 1][0] not in _DOWNLOAD_PIPE_TARGETS)
+            )
+            for k, (token, is_operator, first, last) in enumerate(tokens)
+        )
+    ):
+        return False
+    rest: list[str] = []
+    copied = 0
+    seen = 0
+    at_start = True
+    i = 0
+    while i < len(tokens):
+        token, is_operator, start, end_offset = tokens[i]
+        if is_operator:
+            # A run like &&< is two operators this reading would treat as one.
+            if token not in _DOWNLOAD_OPERATORS:
+                return False
+            is_redirect = bool(set(token) & {"<", ">"})
+            # A redirection before the command word (<run.sh bash) leaves the next words in command position.
+            if is_redirect and at_start:
+                return False
+            at_start = not is_redirect
+            i += 1
+            continue
+        if at_start and "$" in token:
+            return False
+        # Quoted "fi" is a program, not the keyword; ./curl or a planted jq may be a downloaded script.
+        if at_start and command[start:end_offset] != token:
+            return False
+        if (
+            at_start
+            and (token in _DOWNLOAD_COMPANIONS or token in ("curl", "wget"))
+            and token not in _DOWNLOAD_BUILTINS
+            and not _on_safe_path(token)
+        ):
+            return False
+        name = token
+        if not (at_start and name in ("curl", "wget")):
+            is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
+            # No assignments (PATH=. picks another curl); check the command word only (jq's . is not bash's .).
+            if at_start and (
+                _SHELL_ASSIGNMENT_RE.match(token) is not None
+                or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
+            ):
+                return False
+            at_start = at_start and is_prefix
+            i += 1
+            continue
+        end = i + 1
+        while end < len(tokens) and not tokens[end][1]:
+            end += 1
+        args = [(word, command[first:last]) for word, _, first, last in tokens[i + 1 : end]]
+        # 2>&1, >out: an fd number glued to its operator and the target word are not arguments.
+        is_fd = lambda k: (
+            not tokens[k][1]
+            and tokens[k][0].isdigit()
+            and k + 1 < len(tokens)
+            and tokens[k][3] == tokens[k + 1][2]
+            and bool(set(tokens[k + 1][0]) & {"<", ">"})
+        )
+        if end - 1 > i and is_fd(end - 1):
+            args.pop()
+        while end < len(tokens):
+            if is_fd(end):
+                end += 1
+            elif tokens[end][1] and set(tokens[end][0]) & {"<", ">"}:
+                if end + 1 >= len(tokens) or tokens[end + 1][1]:
+                    return False
+                end += 2
+            elif not tokens[end][1]:
+                return False
+            else:
+                break
+        # No arguments: `curl() {...}` defines a function, not a download.
+        if not args or not _plain_download_args(name, args):
+            return False
+        seen += 1
+        rest.append(command[copied:start] + "true")
+        copied = tokens[end - 1][3]
+        i = end
+    rest.append(command[copied:])
+    # A curl/wget the plain form did not account for (xargs, find -exec, env curl) keeps the block.
+    return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
+
+
+# Without these the model reads the block as final and gives up on the download.
+_PLAIN_DOWNLOAD_HINT = (
+    "In the OS sandbox curl and wget run only as a plain download: common options, http(s) URLs, "
+    "no $ or globs, piped only into head, tail, jq, grep, wc, cat or a checksum tool. "
+    "Run the download as its own command, then unpack or run it in the next one."
+)
+_PLAIN_CHMOD_HINT = (
+    "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
+)
+
+
+def _runs_in_os_sandbox(prepared) -> bool:
+    record = getattr(prepared, "execution_record", None)
+    return bool(
+        record is not None
+        and record.os_isolation
+        and getattr(prepared, "backend", None) in _OS_SANDBOX_BACKENDS
+    )
 
 
 def _is_approvable_rm(command: str) -> bool:
@@ -6694,16 +7164,26 @@ _CURL_UPLOAD_LONG_FLAGS = frozenset(
         "--data-raw",
         "--data-urlencode",
         "--form",
+        "--form-string",
+        "--json",
         "--upload-file",
+        "--config",
     }
 )
-_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+_CURL_UPLOAD_SHORT_FLAGS = frozenset("dFTK")
+# Short options that take an argument: the rest of the cluster is that argument, not more flags.
+_CURL_SHORT_WITH_ARG = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
 # POST is omitted: already caught by the body/upload flags.
 _WGET_METHOD_FLAGS = frozenset({"--method"})
 _CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
 _CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
 # Separate from curl's so wget -T/-F are not misread as uploads.
-_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+_WGET_UPLOAD_FLAGS = frozenset(
+    {"--post-data", "--post-file", "--body-data", "--body-file", "--config", "--execute"}
+)
+_WGET_SHORT_WITH_ARG = frozenset("aABDeiIlOoPQRtTUwX")
+# Points curl/wget at another rc file than the empty ones a proxied launch sets.
+_DOWNLOADER_RC_ENV_RE = re.compile(r"\b(?:CURL_HOME|WGETRC|XDG_CONFIG_HOME|HOME)=")
 # curl/wget output piped straight into an interpreter is remote code execution.
 _PIPE_TO_INTERPRETER_RE = re.compile(
     r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
@@ -7564,7 +8044,7 @@ _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
 )
 
 
-_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&|\(|\)|;;)$")
 
 
 # Wrappers (env, timeout, nohup...) that keep the client at command position behind them.
@@ -7594,6 +8074,31 @@ _WGET_AT_CMD_RE = re.compile(
     + r"(?:\S*/)?wget\b",
     re.IGNORECASE,
 )
+
+
+_OPERATOR_MASK = {ord(ch): 0xE000 + i for i, ch in enumerate(";&|()<>")}
+_OPERATOR_UNMASK = {code: ch for ch, code in _OPERATOR_MASK.items()}
+
+
+def _mask_quoted_operators(command: str) -> str:
+    # Quoted or escaped operators are word text: shlex strips the quotes, so `-o "("` would read as a separator.
+    out: list[str] = []
+    quote = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and quote != "'" and i + 1 < len(command):
+            out += [ch, command[i + 1].translate(_OPERATOR_MASK)]
+            i += 2
+            continue
+        if quote:
+            quote = None if ch == quote else quote
+            out.append(ch if quote is None else ch.translate(_OPERATOR_MASK))
+        else:
+            quote = ch if ch in "'\"" else None
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
@@ -7648,15 +8153,26 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         return True
     if "<(" in command:  # bash <(curl ...) process substitution
         return True
+    if _DOWNLOADER_RC_ENV_RE.search(command):
+        return True
     try:
-        tokens = shlex.split(command.replace("\n", " "), posix = True)
+        # Operators as their own words, so `echo ok; curl -d @f` still has a segment that starts with curl.
+        lexer = shlex.shlex(
+            _mask_quoted_operators(command.replace("\n", " ; ")), posix = True, punctuation_chars = True
+        )
+        lexer.whitespace_split = True
+        # As shlex.split read it: a # here would swallow every later line.
+        lexer.commenters = ""
+        tokens = list(lexer)
     except ValueError:
         return True
-    # Scope flags to the segment running curl/wget.
+    # Scope flags to the segment running curl/wget; split while quoted operators are still masked.
     tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
     if tokens is None:
         return False
+    tokens = [token.translate(_OPERATOR_UNMASK) for token in tokens]
     method_pending = False
+    query_pending = False
     for t in tokens:
         name = t.split("=", 1)[0]
         # curl -X DELETE / --request PUT mutate a remote resource; separate, attached and = forms count.
@@ -7670,8 +8186,26 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-            if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
+            uploads, method = _curl_short_cluster(t)
+            if uploads:
                 return True
+            if method is not None:
+                if method.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = not method
+                continue
+            # --url-query @file / name@file sends the file, like --data-urlencode.
+            if query_pending:
+                query_pending = False
+                if "@" in t:
+                    return True
+            if name == "--url-query":
+                if "=" in t:
+                    if "@" in t.split("=", 1)[1]:
+                        return True
+                else:
+                    query_pending = True
+                continue
         if has_wget:
             # wget --method=DELETE / --method DELETE is the same remote mutation.
             if method_pending:
@@ -7683,14 +8217,34 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                     return True
                 method_pending = True
                 continue
-        if has_curl and (
-            name in _CURL_UPLOAD_LONG_FLAGS
-            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
-            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
-        ):
+        if has_curl and name in _CURL_UPLOAD_LONG_FLAGS:
             return True
-        if has_wget and name in _WGET_UPLOAD_FLAGS:
+        if has_wget and (name in _WGET_UPLOAD_FLAGS or _wget_short_cluster_executes(t)):
             return True
+    return False
+
+
+def _curl_short_cluster(token: str) -> "tuple[bool, str | None]":
+    # (has an upload flag, the -X method: "" when it is the next word, None without -X), e.g. -sd@f, -sXDELETE.
+    if not token.startswith("-") or token.startswith("--"):
+        return False, None
+    for i, ch in enumerate(token[1:], 1):
+        if ch in _CURL_UPLOAD_SHORT_FLAGS:
+            return True, None
+        if ch in _CURL_SHORT_WITH_ARG:
+            return False, token[i + 1 :] if ch == "X" else None
+    return False, None
+
+
+def _wget_short_cluster_executes(token: str) -> bool:
+    # -e runs a wgetrc command (post_file = ...), attached or clustered: -e x, -qe x, -epost_file=x.
+    if not token.startswith("-") or token.startswith("--"):
+        return False
+    for ch in token[1:]:
+        if ch == "e":
+            return True
+        if ch in _WGET_SHORT_WITH_ARG:
+            return False
     return False
 
 
@@ -9233,8 +9787,8 @@ _ISOLATED_CMD_GIT_ENV = {
 }
 
 
-def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
-    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
+    # (PATH, the trusted Windows git's extension); every entry is read-only inside the sandbox.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -9269,10 +9823,16 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
+    return os.pathsep.join(deduped), git_ext
 
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
+    """Env is built from a whitelist, not inherited; user-writable PATH entries could shadow commands."""
+    path, git_ext = _safe_path(shell)
+    venv = os.environ.get("VIRTUAL_ENV")
     temp_dir = _sandbox_temp_dir(workdir)
     env = {
-        "PATH": os.pathsep.join(deduped),
+        "PATH": path,
         "HOME": workdir,
         "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
@@ -13653,11 +14213,16 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     return chosen[:1] + [by_name[name] for name in order]
 
 
+def _runs_local_mcp(server: dict) -> bool:
+    """A local command, or a managed editor whose loopback tools run code here: both follow the stdio gate."""
+    return is_stdio(server["url"]) or server.get("builtin_id") in mcp_servers_db.MANAGED_MCP_IDS
+
+
 def _cached_mcp_catalog() -> list[dict]:
     """Every model-visible MCP tool spec already cached for this account's enabled servers."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     specs: list[dict] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
@@ -13891,7 +14456,8 @@ def _mcp_tool_search(arguments) -> str:
 
 
 def _mcp_tool_prefix(server: dict) -> str:
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    builtin_id = server.get("builtin_id")
+    server_key = builtin_id if builtin_id in mcp_servers_db.MANAGED_MCP_IDS else server["id"]
     return f"{MCP_TOOL_PREFIX}{server_key}__"
 
 
@@ -14106,7 +14672,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     """Reads only cached MCP schemas so a background count never probes servers; complete is False for an uncached server not in cool-off; callers must decline."""
     servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
 
     listed: list[tuple[dict, list[dict], list[dict]]] = []
     complete = True
@@ -14129,7 +14695,7 @@ async def get_enabled_mcp_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     if not servers:
         return []
 
@@ -14215,7 +14781,7 @@ async def mcp_search_tools(
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
-        servers = [s for s in servers if not is_stdio(s["url"])]
+        servers = [s for s in servers if not _runs_local_mcp(s)]
     found = []
     for server in servers:
         for tool in get_cached_tools(server["id"]) or ():
@@ -14353,6 +14919,15 @@ def execute_tool(
             website_policy = website_policy,
             timeout = effective_timeout,
         )
+    if is_computer_tool(name):
+        return execute_computer_tool(
+            arguments,
+            cancel_event = cancel_event,
+            # The conversation: a project's chats share session_id, and each asks for itself.
+            session_id = thread_id or session_id,
+            approved = host_access_approved,
+            full_access = disable_sandbox,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -14456,7 +15031,7 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
-        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+        if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
@@ -15677,10 +16252,6 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
-# PyMuPDF is not thread-safe.
-_WEB_PDF_LOCK = threading.Lock()
-
-
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
@@ -16791,16 +17362,23 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
+            from ..rag.parsers import MUPDF_LOCK
+
+            queued_at = time.monotonic()
+            # Indexing can hold the lock for minutes, so Stop must still work while queued.
+            while not MUPDF_LOCK.acquire(timeout = 0.25):
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Failed to fetch URL: cancelled.", "", content_type
             try:
-                queued_at = time.monotonic()
-                with _WEB_PDF_LOCK:
-                    # Time queued behind another read's PDF is not spent on this read.
-                    if deadline is not None:
-                        deadline += time.monotonic() - queued_at
-                    pdf_text = _extract_pdf_text(raw_bytes)
+                # Time queued behind another PDF is not spent on this read.
+                if deadline is not None:
+                    deadline += time.monotonic() - queued_at
+                pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
+            finally:
+                MUPDF_LOCK.release()
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", content_type
@@ -23588,6 +24166,8 @@ def _bash_exec(
             return _CMD_MULTILINE_REFUSED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
+    contained: set[str] = set()
+    hints: list[str] = []
     if not disable_sandbox:
         if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
@@ -23607,9 +24187,26 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
+        if sys.platform != "win32" and profile not in _CMD_PROFILES:
+            # Decided at launch: allowed only if this call really runs inside the OS sandbox.
+            contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
+            if "chmod" in contained and not _is_plain_chmod(command):
+                contained.discard("chmod")
+                hints.append(_PLAIN_CHMOD_HINT)
+            if contained & _OS_SANDBOX_PROXIED_COMMANDS and not _is_plain_download(command):
+                contained -= _OS_SANDBOX_PROXIED_COMMANDS
+                hints.append(_PLAIN_DOWNLOAD_HINT)
+            blocked -= contained
         if blocked:
             # Capped: the blocked list names what it found in the command, so it can exceed the room left.
-            return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
+            return _truncate(
+                f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+                + (
+                    "".join(f"\n{hint}" for hint in hints)
+                    if tool_execution_mode != "software"
+                    else ""
+                )
+            )
         # A same-UID child can read /proc/<ppid>/environ; best-effort since the child env is scrubbed.
         _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
@@ -23698,15 +24295,23 @@ def _bash_exec(
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
+                    egress_proxy = bool(contained & _OS_SANDBOX_PROXIED_COMMANDS),
                 ),
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
+            if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
+            proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
+            if proxied and not prepared.egress_proxy:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(proxied))}")
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
             _note_tool_execution(prepared.execution_record)
         else:
+            if contained:
+                return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec
