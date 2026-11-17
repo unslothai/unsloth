@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import core.inference.audio_gallery as gallery
@@ -111,8 +112,15 @@ def test_a_changed_sidecar_is_read_again(monkeypatch, change):
     if change == "rewrite":
         sidecar.write_text(json.dumps(_meta(prompt = "a longer prompt")), encoding = "utf-8")
     elif change == "same_size_same_mtime":
-        sidecar.write_text(json.dumps(_meta(prompt = "qqqq")), encoding = "utf-8")
-        os.utime(sidecar, ns = (info.st_atime_ns, info.st_mtime_ns))
+        # Only the change time tells this write apart, and a coarse filesystem clock can give it the
+        # listing's tick: write again until it moves, as any later edit would.
+        deadline = time.monotonic() + 5
+        while True:
+            sidecar.write_text(json.dumps(_meta(prompt = "qqqq")), encoding = "utf-8")
+            os.utime(sidecar, ns = (info.st_atime_ns, info.st_mtime_ns))
+            if os.stat(sidecar).st_ctime_ns != info.st_ctime_ns or time.monotonic() > deadline:
+                break
+            time.sleep(0.002)
     elif change == "replace_same_mtime":
         tmp = directory / ".a1.json.tmp"
         tmp.write_text(json.dumps(_meta(prompt = "rrrr")), encoding = "utf-8")

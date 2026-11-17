@@ -63,6 +63,8 @@ def save(
             shutil.copyfile(source_wav, source_tmp)
         sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
         os.replace(wav_tmp, wav_path)
+        # Ordered and pruned by mtime: a burst of saves must not tie.
+        gallery_flags.stamp_newest(wav_path)
         if source_wav is not None:
             os.replace(source_tmp, source_path)
         os.replace(sidecar_tmp, sidecar)
@@ -98,6 +100,8 @@ def save_file(
                 raise
             shutil.copyfile(src, wav_tmp)
             os.replace(wav_tmp, wav_path)
+        # Ordered and pruned by mtime: a burst of saves must not tie.
+        gallery_flags.stamp_newest(wav_path)
         sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
         os.replace(sidecar_tmp, sidecar)
     except BaseException:
