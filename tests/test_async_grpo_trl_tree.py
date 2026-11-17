@@ -151,7 +151,6 @@ def _async_module():
 
 @pytest.fixture
 def patched(monkeypatch):
-    # Patch the real TRL module, then put everything back.
     module = _async_module()
     if getattr(module.add_fused_lm_head, "_unsloth_async_grpo_patched", False):
         # tests/conftest.py imports unsloth, whose PatchFastRL already patched TRL: test that patch.
@@ -191,7 +190,6 @@ def _tiny_model():
 
 
 def _reference(model, samples, token_order):
-    # Per-sample unpacked log-probs and entropies, in the order of the packed row's loss terms.
     logps, entropies = [], []
     with torch.no_grad():
         per_sample = []
@@ -330,7 +328,6 @@ def test_tree_packed_row_matches_unpacked(patched):
     with torch.no_grad():
         out = model(**kwargs, **module.unpad_tree(inputs))
     call = fake.calls[-1]
-    # Unrolled: one sequence per sample, tree kwargs consumed by the head.
     assert call["packed_seq_lengths"] == [len(s["input_ids"]) for s in samples]
     assert call["tree"] == []
     index = packed["token_index"]
@@ -360,7 +357,6 @@ def test_tree_row_gradients_match_unpacked(patched):
     packed = row.pack()
     inputs = {k: v[None] for k, v in packed.items()}
     weight = model.model.layers[0].self_attn.q_proj.weight
-    # Unpacked: the sum of every trained token's log-prob.
     loss = 0
     for sample in samples:
         logits = model(input_ids = sample["input_ids"][None]).logits[0].float()

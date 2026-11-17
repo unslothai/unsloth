@@ -4630,8 +4630,7 @@ def patch_trl_rl_trainers():
     import trl.trainer
 
     all_trainers = dir(trl.trainer)
-    # async_grpo_trainer (TRL >= 1.18, promoted from trl.experimental) is patched in place by patch_trl_async_grpo,
-    # which needs TRL's own class and module globals, as on TRL 1.13-1.17.
+    # async_grpo_trainer (TRL >= 1.18) is patched in place by patch_trl_async_grpo, which needs TRL's own globals.
     all_trainers = [
         x
         for x in all_trainers
@@ -5129,17 +5128,14 @@ def _packing_honored(
 
 
 def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
-    # TRL >= 1.17 folds a row's samples into a prefix trie: a shared prompt is forwarded once and each segment attends
-    # to its root-to-segment path through TRL's tree attention, which Unsloth's attention does not run. Lay every
-    # root-to-leaf path out as its own packed sequence (each sample is one), run that, and read each trie position
-    # back from one copy. Exact, at the cost of forwarding the shared prefixes once per sample.
+    # TRL >= 1.17 prefix-trie rows need tree attention, which Unsloth lacks: unroll each root-to-leaf path into its
+    # own packed sequence and read each trie position back from one copy (exact; shared prefixes forwarded per sample).
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
     parents = tree["tree_segment_parents"]
     cu_seqlens_k = tree["tree_cu_seqlens_k"].long()
     path_lengths = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
     if bool((parents < 0).all()):
-        # Nothing shared: every segment is a sample of its own, already laid out back to back.
         f_kwargs["packed_seq_lengths"] = path_lengths.to(torch.int32)
         return head_forward(*f_args, **f_kwargs)
     length = position_ids.shape[1]
@@ -5161,7 +5157,6 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
         if torch.is_tensor(value) and value.dim() >= 2 and value.shape[:2] == (1, length):
             value = value.index_select(1, index.to(value.device))
             if key in ("shift_labels", "labels"):
-                # Score each trie position once, as the tree forward does.
                 value = value.masked_fill(~chosen.to(value.device)[None], -100)
             f_kwargs[key] = value
     f_kwargs["packed_seq_lengths"] = path_lengths[leaf.to(path_lengths.device)].to(torch.int32)
@@ -5186,8 +5181,7 @@ def _unsloth_async_grpo_lm_head(
         head_forward = target.forward
         unroll_tree = False
         if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets, and
-            # ignores the attention implementation TRL sets, so prefix-trie rows are unrolled into sequences.
+            # Unsloth attention ignores TRL's tree attention and position_ids resets, so unroll prefix-trie rows.
             unroll_tree = True
 
             def packed_kwargs(f_kwargs):
@@ -5473,8 +5467,7 @@ def _async_grpo_masked_compute_loss(compute_loss):
 
 
 def _import_trl_async_grpo_module():
-    # TRL >= 1.18 promoted the trainer to trl.trainer.async_grpo_trainer and left trl.experimental.async_grpo as a
-    # shim subclassing it, so patching the stable module covers both import paths. TRL 1.13-1.17: experimental only.
+    # TRL >= 1.18: stable module (experimental is a subclassing shim, so both are covered); 1.13-1.17: experimental.
     errors = []
     for package, name in (
         ("trl.trainer", "trl.trainer.async_grpo_trainer"),
