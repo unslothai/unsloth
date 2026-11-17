@@ -13983,6 +13983,37 @@ def test_alias_launch_check_builds_the_intent_off_the_event_loop(monkeypatch):
     assert seen == [False]
 
 
+@pytest.mark.parametrize("when", ["before_compare", "during_compare"])
+def test_alias_launch_check_is_no_match_when_teardown_races_it(monkeypatch, when):
+    # /v1/models is not held off teardown: an unload mid-check must read as no match, never a 500.
+    backend = _FakeBackend("/models/model.gguf", "Q4_K_M", "org/Model-GGUF")
+    backend.is_diffusion = False
+
+    def teardown():
+        backend.model_identifier, backend.is_loaded = None, False
+
+    async def drop_stale(*args):
+        if when == "before_compare":
+            teardown()
+
+    def intent(request, llama_backend, *, model_identifier, **kwargs):
+        if when == "during_compare":
+            teardown()
+        return llama_backend.model_identifier.lower()
+
+    backend.load_intent_satisfied = lambda value: True
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_drop_stale_override_gpu_ids", drop_stale)
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", intent)
+    monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a: 1)
+    satisfied = asyncio.run(
+        inference_route._alias_launch_satisfied(
+            {"model_path": "/models/model.gguf", "gguf_variant": "Q4_K_M"}, {}, None
+        )
+    )
+    assert satisfied is False
+
+
 def test_alias_config_does_not_replay_the_idle_unload_stash(monkeypatch):
     # A stash restores what idle-unload freed; a configured alias launches its own settings.
     backend, rec = _wire_alias_config(monkeypatch)

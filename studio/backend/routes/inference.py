@@ -3909,11 +3909,9 @@ async def _alias_launch_satisfied(
     from core.inference.chat_templates import resolve_effective_chat_template_override
 
     backend = get_llama_cpp_backend()
-    if (
-        not backend.is_loaded
-        or not backend.model_identifier
-        or getattr(backend, "is_diffusion", False)
-    ):
+    # One snapshot: catalog reads are not held off teardown, which clears these as we compare.
+    model_identifier = backend.model_identifier
+    if not backend.is_loaded or not model_identifier or getattr(backend, "is_diffusion", False):
         return False
     from utils.openai_auto_switch_settings import stored_gpu_index_kind
 
@@ -3921,25 +3919,37 @@ async def _alias_launch_satisfied(
     await _drop_stale_override_gpu_ids(
         load_kwargs,
         stored_gpu_index_kind(override) if "gpu_ids" in override else None,
-        backend.model_identifier,
+        model_identifier,
     )
+
+    def still_resident() -> bool:
+        return backend.is_loaded and backend.model_identifier == model_identifier
 
     def satisfied() -> bool:
         # Off the loop: building the intent runs drafter discovery, which reads the model's directory.
+        if not still_resident():
+            return False
         request, _extras = _normalize_launch_flags(LoadRequest(**load_kwargs))
-        intent = _active_gguf_intent(
-            request,
-            backend,
-            model_identifier = backend.model_identifier,
-            # As _load_model_impl resolves it, so a bundled family template compares equal.
-            chat_template_override = resolve_effective_chat_template_override(
-                model_identifier = backend.model_identifier,
-                user_override = request.chat_template_override,
-            ),
-            n_parallel = _resolve_parallel_slots(request, fastapi_request),
-            native_grant_backed = False,
-        )
-        return backend.load_intent_satisfied(intent)
+        try:
+            intent = _active_gguf_intent(
+                request,
+                backend,
+                model_identifier = model_identifier,
+                # As _load_model_impl resolves it, so a bundled family template compares equal.
+                chat_template_override = resolve_effective_chat_template_override(
+                    model_identifier = model_identifier,
+                    user_override = request.chat_template_override,
+                ),
+                n_parallel = _resolve_parallel_slots(request, fastapi_request),
+                native_grant_backed = False,
+            )
+            matched = backend.load_intent_satisfied(intent)
+        except (AttributeError, TypeError):
+            # A runtime torn down mid-comparison is no match; anything else is a real error.
+            if still_resident():
+                raise
+            return False
+        return matched and still_resident()
 
     return await asyncio.to_thread(satisfied)
 
