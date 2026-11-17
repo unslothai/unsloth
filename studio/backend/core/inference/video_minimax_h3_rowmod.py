@@ -276,7 +276,7 @@ def verdict(x: Any) -> Optional[dict]:
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    # the capture query reads the current device's stream: ask it on the operand's card
+    # capture query reads the current device: ask on the operand's card
     with torch.cuda.device(x.device):
         if torch.cuda.is_current_stream_capturing():
             return None

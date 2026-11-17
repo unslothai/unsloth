@@ -1046,7 +1046,6 @@ def test_gemma4_long_band_routes_to_the_interval_kernel(monkeypatch):
 
 
 def test_gemma4_long_band_past_int32_keeps_the_plain_route(monkeypatch):
-    # the interval kernel addresses in int32 (large_head_attention._INT32_MAX): longer spans keep masked SDPA
     M = _load()
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 

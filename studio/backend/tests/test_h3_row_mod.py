@@ -242,7 +242,6 @@ def test_launches_on_the_current_card_skip_the_switch(monkeypatch):
 
 
 def test_cold_verdict_asks_about_capture_on_the_operand_card(monkeypatch):
-    # card 0 current, the operand on a capturing card 1: no probe may run inside that capture
     state = {"current": 0}
 
     class _Device:

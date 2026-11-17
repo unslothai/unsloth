@@ -1397,7 +1397,6 @@ _LH_MODULE = "unsloth.kernels.large_head_attention"
 
 
 def _band_offsets_fit(query, key, value):
-    """The interval kernel's int32 address limit, which the large-head router checks on its own path."""
     lh = sys.modules.get(_LH_MODULE)
     if lh is None:  # loaded by _band_kernel_checked whenever the kernel can run
         return True

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MOSS fused q/k RMSNorm + RoPE kernel forms its row offsets in int64: ``s * sqs`` in i32 wraps once a
-fused-QKV row stride times the token index passes 2**31. CPU only: the kernel is lowered to TTIR for an sm80
-target and no scalar i32 multiply may take a stride argument or the (batch, sequence) row index."""
+"""MOSS fused q/k RMSNorm + RoPE row offsets must be int64 (checked in sm80 TTIR, CPU only)."""
 
 from __future__ import annotations
 

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold probes ask whether the operand's card is capturing: torch.cuda.is_current_stream_capturing() reads the
-current device's stream, so with card 0 current and a capture on the operand's card 1 the timing / equality probe
-must still stay out of that capture. CPU: the CUDA device API is faked."""
+"""Cold probes must check capture on the operand's card, not the current one. CPU: CUDA device API faked."""
 
 from __future__ import annotations
 
