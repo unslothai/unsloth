@@ -283,6 +283,7 @@ def test_import_list_edit_export_and_delete(client):
     assert patched.json()["name"] == "Mira II" and patched.json()["characterBook"] is None
 
     avatar = client.get(f"/api/characters/{character_id}/avatar")
+    assert avatar.headers["vary"] == "Authorization"
     assert avatar.status_code == 200 and avatar.headers["content-type"] == "image/png"
 
     exported = client.get(f"/api/characters/{character_id}/export?format=json")

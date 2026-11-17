@@ -185,6 +185,8 @@ def _image_response(data: bytes, media_type: Optional[str]) -> Response:
         media_type = media_type or cards.sniff_image_type(data) or "application/octet-stream",
         headers = {
             "Cache-Control": "private, max-age=31536000, immutable",
+            # The browser cache is shared by every account signed in on it.
+            "Vary": "Authorization",
             "X-Content-Type-Options": "nosniff",
         },
     )
