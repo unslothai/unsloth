@@ -185,3 +185,55 @@ def test_bitsandbytes_keeps_the_float32_update(sr, name):
     kept = {m: (train(m) @ ref / (ref @ ref)).item() for m in ("bf16", "sr")}
     assert kept["bf16"] < 0.5, kept
     assert abs(kept["sr"] - 1) < 0.1, kept
+
+
+def test_noncontiguous_weights_are_left_to_the_optimizer(sr):
+    p = torch.nn.Parameter(torch.randn(4, 4, dtype = torch.bfloat16).T)
+    q = torch.nn.Parameter(torch.randn(4, 4, dtype = torch.bfloat16))
+    opt = torch.optim.AdamW([p, q], lr = 1e-3)
+    assert sr.enable_bf16_stochastic_rounding(opt, verbose = False) == 1
+    p.grad, q.grad = torch.ones_like(p), torch.ones_like(q)
+    opt.step()
+    assert p.dtype == q.dtype == torch.bfloat16
+
+
+def test_scalar_weight_keeps_a_float32_step_counter(sr):
+    p = torch.nn.Parameter(torch.tensor(0.5, dtype = torch.bfloat16))
+    opt = torch.optim.AdamW([p], lr = 1e-3)
+    sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+    for _ in range(300):
+        p.grad = torch.ones_like(p)
+        opt.step()
+    step = opt.state[p]["step"]
+    assert step.dtype == torch.float32 and int(step) == 300
+    assert opt.state[p]["exp_avg"].dtype == torch.bfloat16
+
+
+def test_resume_draws_what_an_uninterrupted_run_draws(sr):
+    def run(steps, state = None):
+        params = [torch.nn.Parameter(w.to(torch.bfloat16)) for w in _weights()]
+        if state is not None:
+            for p, w in zip(params, state["weights"]):
+                p.data.copy_(w)
+        opt = torch.optim.AdamW(params, lr = 1e-5, weight_decay = 0.0)
+        if state is not None:
+            opt.load_state_dict(state["optimizer"])
+        sr.enable_bf16_stochastic_rounding(opt, verbose = False)
+        start = 0 if state is None else state["done"]
+        for step in range(start, start + steps):
+            for p, g in zip(params, _grads(step)):
+                p.grad = g.to(torch.bfloat16)
+            opt.step()
+            opt.zero_grad(set_to_none = True)
+        return params, opt
+
+    whole, _ = run(4)
+    half, opt = run(2)
+    state = {
+        "weights": [p.detach().clone() for p in half],
+        "optimizer": opt.state_dict(),
+        "done": 2,
+    }
+    resumed, _ = run(2, state)
+    for a, b in zip(whole, resumed):
+        assert torch.equal(a.view(torch.int16), b.view(torch.int16))

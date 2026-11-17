@@ -73,6 +73,7 @@ def _tracked(p):
         and p.requires_grad
         and not _is_dtensor(p)
         and p.layout == torch.strided
+        and p.is_contiguous()
         and p.device.type in ("cuda", "cpu", "xpu")
     )
 
@@ -86,6 +87,18 @@ def _generator(optimizer, device, seed):
         g.manual_seed(int(seed) + 0x5EED)
         generators[key] = g
     return generators[key]
+
+
+def _reseed(optimizer, p, seed):
+    """Seed from (parameter index, its optimizer step): a resumed run draws what an uninterrupted one would,
+    since the step lives in the checkpointed optimizer state."""
+    index = optimizer.__dict__.setdefault("_unsloth_sr_index", {})
+    i = index.setdefault(id(p), len(index))
+    step = (optimizer.state.get(p) or {}).get("step", 0)
+    step = int(step.item()) if torch.is_tensor(step) else int(step)
+    g = _generator(optimizer, p.device, seed)
+    g.manual_seed((int(seed) + 0x5EED + i * 1000003 + step * 2654435761) & 0x7FFFFFFFFFFFFFFF)
+    return g
 
 
 class _Float32Step:
@@ -108,18 +121,22 @@ class _Float32Step:
         p.grad = None
         p.data = self.data
         if exc[0] is None:
-            stochastic_round_to_bf16_(
-                self.data, stepped, _generator(self.optimizer, stepped.device, self.seed)
-            )
+            stochastic_round_to_bf16_(self.data, stepped, _reseed(self.optimizer, p, self.seed))
         p.grad = self.grad
         return False
 
 
+_MOMENT_KEYS = ("exp_avg", "exp_avg_sq", "max_exp_avg_sq")
+
+
 def _moments(state, p, dtype):
+    # By name: a scalar parameter's fp32 `step` has its shape too.
     return [
         key
-        for key, value in state.items()
-        if torch.is_tensor(value) and value.dtype == dtype and value.shape == p.shape
+        for key in _MOMENT_KEYS
+        if torch.is_tensor(state.get(key))
+        and state[key].dtype == dtype
+        and state[key].shape == p.shape
     ]
 
 
