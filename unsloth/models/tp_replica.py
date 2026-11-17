@@ -62,11 +62,9 @@ def replica_active(model):
 
 
 def _device(root):
-    for param in root.parameters():
-        if tpn._is_dtensor(param):
-            return param.to_local().device
-        return param.device
-    return torch.device("cpu")
+    # Not a host-served input embedding (tp_native._serve_embedding_from_host): it is often the first
+    # parameter, and its CPU device would send NCCL collectives CPU tensors.
+    return tpn._compute_device(root, torch.device("cpu"))
 
 
 def _gib(n):
