@@ -13,6 +13,7 @@ import os
 import dataclasses
 import functools
 import inspect
+import itertools
 import math
 import re
 import sys
@@ -1535,6 +1536,7 @@ class _StageContext:
         self.ple = None
         self.ple_input = None
         self.ple_output = None
+        self.wire_dtypes = None
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -1565,6 +1567,46 @@ class _StageContext:
         if self.carry is not None:
             return hidden
         return (hidden,) if self.tuple_format else hidden
+
+
+_WIRE_DTYPE_KEYS = itertools.count()
+
+
+class _WireDtypes:
+    """Pre-wire-cast dtypes of a stage's carried tensors, so the next stage can cast back.
+
+    Forced float32 sends a float32 wire, but some families (Qwen3.5) keep 16-bit hidden states; float32 input
+    against 16-bit weights fails ("expected mat1 and mat2 to have the same dtype"). Published in the store per
+    (boundary, mode) before the send, read after the receive, so it is always there."""
+
+    def __init__(self, group_ranks):
+        import torch.distributed as dist
+
+        key = next(_WIRE_DTYPE_KEYS)  # every rank applies the same pipelines in the same order
+        prefix = f"unsloth_pp_wire/{'-'.join(map(str, group_ranks))}/{key}/"
+        self.store = dist.PrefixStore(prefix, dist.distributed_c10d._get_default_store())
+        self.published = set()
+        self.received = {}
+
+    @staticmethod
+    def _key(boundary, mode):
+        return f"{boundary}/{int(mode[0])}{int(mode[1])}"
+
+    @torch.compiler.disable
+    def publish(self, boundary, mode, dtypes):
+        key = self._key(boundary, mode)
+        if key not in self.published:
+            self.store.set(key, ",".join(str(d).removeprefix("torch.") for d in dtypes))
+            self.published.add(key)
+
+    @torch.compiler.disable
+    def fetch(self, boundary, mode):
+        key = self._key(boundary, mode)
+        dtypes = self.received.get(key)
+        if dtypes is None:
+            raw = self.store.get(key).decode()
+            dtypes = self.received[key] = [getattr(torch, name) for name in raw.split(",")]
+        return dtypes
 
 
 class _PPStageModule(nn.Module):
@@ -1644,9 +1686,27 @@ class _PPStageModule(nn.Module):
             logits = inner.lm_head(h), labels = labels, vocab_size = inner.vocab_size, **extra
         )
 
+    def _mode(self):
+        return (self.model.training, torch.is_grad_enabled())
+
+    def _publish(self, tensors):
+        wire = self._pp_ctx.wire_dtypes
+        if wire is not None:
+            wire.publish(self._pp_ctx.end, self._mode(), [t.dtype for t in tensors])
+
+    def _restore(self, tensors):
+        wire = self._pp_ctx.wire_dtypes
+        if wire is None:
+            return tensors
+        dtypes = wire.fetch(self._pp_ctx.start, self._mode())
+        return tuple(t if t.dtype == d else t.to(d) for t, d in zip(tensors, dtypes)) + tuple(
+            tensors[len(dtypes) :]
+        )
+
     def _wire(self, tensors):
         """The carried tensors as sent: [micro-batch, seq, prod(trailing shape)], in their declared dtypes."""
         ctx = self._pp_ctx
+        self._publish(tensors)
         out = []
         for t, (shape, dtype) in zip(tensors, ctx.carry):
             if tuple(t.shape[2:]) != tuple(shape):
@@ -1656,7 +1716,7 @@ class _PPStageModule(nn.Module):
                 )
             want = dtype or self._pp_dtype
             if t.dtype != want:
-                if dtype is None and not self._pp_warned:
+                if dtype is None and not self._pp_warned and ctx.wire_dtypes is None:
                     self.__dict__["_pp_warned"] = True
                     warnings.warn(
                         f"Unsloth: pipeline stage hidden states are {t.dtype}, sent as {want} "
@@ -1726,14 +1786,14 @@ class _PPStageModule(nn.Module):
             )
             if ctx.carry is not None:
                 n = len(ctx.carry)
-                wires, carry = (x, *carry[: n - 1]), carry[n - 1 :]
+                wires, carry = self._restore((x, *carry[: n - 1])), carry[n - 1 :]
                 ctx.stage_input = tuple(
                     w.view(*w.shape[:2], *shape) for w, (shape, _) in zip(wires, ctx.carry)
                 )
+            elif ctx.ple is not None:
+                (ctx.stage_input, ctx.ple_input), carry = self._restore((x, carry[0])), carry[1:]
             else:
-                ctx.stage_input = x
-                if ctx.ple is not None:
-                    ctx.ple_input, carry = carry[0], carry[1:]
+                (ctx.stage_input,) = self._restore((x,))
         ctx.active = True
         captured = None
         try:
@@ -1772,8 +1832,14 @@ class _PPStageModule(nn.Module):
                     f"Unsloth: pipeline stage output has shape {tuple(hidden.shape)}, expected "
                     f"[micro-batch, seq, {self._pp_hidden}]."
                 ) from None
+            if ctx.wire_dtypes is not None:
+                self._publish(
+                    (hidden,)
+                    if ctx.ple is None or ctx.ple_output is None
+                    else (hidden, ctx.ple_output)
+                )
             if hidden.dtype != self._pp_dtype:
-                if not self._pp_warned:
+                if not self._pp_warned and ctx.wire_dtypes is None:
                     self.__dict__["_pp_warned"] = True
                     warnings.warn(
                         f"Unsloth: pipeline stage hidden states are {hidden.dtype}, sent as "
@@ -2966,6 +3032,8 @@ def apply_pipeline_parallel(
         stages_per_rank = stages_per_rank,
         carry = carry,
     )
+    if pp > 1 and dtype != parts.embed.weight.dtype:
+        pp_stage.ctx.wire_dtypes = _WireDtypes(pp_stage._global_ranks)
     stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
     if carry is not None and callable(stage_fn) and moe is None:
         module = sys.modules.get(type(parts.decoder).__module__)
