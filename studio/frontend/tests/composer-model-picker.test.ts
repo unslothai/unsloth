@@ -224,7 +224,10 @@ test("a loaded row ejects from its menu and the collapsed view, never its dot", 
   // The dot is only a mark: hovering it never turns it into Eject.
   assert.match(picker, /<LoadedDot \/>/);
   assert.doesNotMatch(picker, /Loaded\. Click to eject/);
-  assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
+  assert.match(
+    picker,
+    /\.\.\.\(\(row\.loaded \|\|\s+\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
@@ -324,7 +327,10 @@ test("each load starts collapsed, keeps the user's choice per model, and an ejec
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
-  assert.match(picker, /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/);
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/,
+  );
   assert.match(
     picker,
     /\(fresh \? undefined : readModelExpanded\(\)\[residentKey\]\) \?\? false/,
@@ -1567,7 +1573,7 @@ test("a model with no logo of its own shows no icon", () => {
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
   assert.match(mark, /return null;\s*\}\s*$/);
   assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
-  assert.equal(picker.match(/chosenName && chosenLoaded \? \(/g)?.length, 2);
+  assert.equal(picker.match(/chosenName && chosenEjectable \? \(/g)?.length, 2);
   assert.equal(
     picker.match(
       /: "-my-0\.5 -mr-1\.5 w-0 overflow-hidden group-hover\/chip:-mx-0\.5 group-hover\/chip:w-\[calc\(18px\*var\(--ui-space-scale,1\)\)\]"/g,
@@ -1637,5 +1643,29 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
   assert.match(
     picker,
     /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
+  );
+});
+
+test("a connected model in use offers eject, which clears the pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const chosenExternal =\s+!pane && Boolean\(checkpoint && isExternalModelId\(checkpoint\)\);\s+const chosenEjectable = chosenLoaded \|\| chosenExternal;/,
+  );
+  // The chip's hover eject (both trigger variants), the panel's Eject, and the collapsed row's Eject.
+  assert.equal(picker.match(/chosenName && chosenEjectable \?/g)?.length, 2);
+  assert.match(picker, /\(chosenEjectable \|\| loadedModels\.length > 0\)/);
+  assert.match(picker, /!pending && chosenEjectable && !modelLoading/);
+  assert.match(
+    picker,
+    /\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
+  // The runtime treats an eject of a connected model as clearing the selection.
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /if \(isExternalModelId\(checkpoint\)\) \{\s+clearCheckpoint\(\);/,
   );
 });
