@@ -83,7 +83,6 @@ test("the composer's NPU rows take the Hub's names and order and load by the -FL
     assert.equal(row.tab, row.npu.downloaded ? "device" : "recommended");
     assert.equal(row.section, "npu");
   }
-  // Both lists keep the Hub's relative order.
   for (const onDevice of [true, false]) {
     assert.deepEqual(
       npuPickerRows(backend, onDevice).map((row) => row.npu.id),
@@ -124,7 +123,6 @@ test("On Device's Recent sort keeps never-loaded NPU rows in the Hub's order", (
     pickerModel.sortDeviceRows(rows, "name", () => 0).map((row) => row.label),
     ["Gemma3-4B-IT-NPU2", "Qwen3.5-9B-NPU2", "Qwen3.8-27B-NPU2"],
   );
-  // A load still moves a model to the top.
   const loaded = rows[2].id;
   assert.equal(
     pickerModel.sortDeviceRows(rows, "recent", (row) =>
