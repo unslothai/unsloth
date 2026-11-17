@@ -590,6 +590,56 @@ def _accept_root_issuer_slash(auth) -> None:
         logger.warning("MCP OAuth: issuer slash fixup could not be applied: %s", exc)
 
 
+def _loopback_port_is_free(host: str, port: int) -> bool:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host, port))
+    except OSError:
+        return False
+    return True
+
+
+def _reuse_registered_redirect_port(auth) -> None:
+    """fastmcp binds a fresh random callback port per connection, so a re-authorization sends a
+    redirect_uri the stored DCR client never registered; the server rejects it, fastmcp re-registers,
+    and the new client gets the consent screen again. Sign in on the registered port when it is free."""
+    initialize = getattr(auth, "_initialize", None)
+    context = getattr(auth, "context", None)
+    if initialize is None or context is None or not hasattr(auth, "redirect_port"):
+        logger.warning("MCP OAuth: provider internals missing; redirect port reuse skipped")
+        return
+
+    async def _initialize():
+        await initialize()
+        if getattr(auth, "_static_client_info", None) is not None:
+            return  # A pre-registered client is rebuilt each connection, so nothing stored to match.
+        try:
+            info = context.client_info
+            registered = info.redirect_uris if info is not None else None
+            current = context.client_metadata.redirect_uris
+            if not registered or not current or registered[0] == current[0]:
+                return
+            stored, ours = urlsplit(str(registered[0])), urlsplit(str(current[0]))
+            port = stored.port
+            if (
+                (stored.scheme, stored.hostname, stored.path) != (ours.scheme, ours.hostname, ours.path)
+                or not port
+                or not _loopback_port_is_free(auth._callback_host, port)
+            ):
+                return
+            auth.redirect_port = port
+            context.client_metadata.redirect_uris = [registered[0]]
+        except Exception as exc:  # noqa: BLE001
+            # Keeping the fresh port only costs a re-registration, as before.
+            logger.warning("MCP OAuth: could not reuse the registered redirect port: %s", exc)
+
+    try:
+        auth._initialize = _initialize
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MCP OAuth: redirect port reuse could not be applied: %s", exc)
+
+
 def _oauth(
     url: str,
     oauth_client_id: Optional[str] = None,
@@ -606,6 +656,7 @@ def _oauth(
     )
     _strip_client_id_under_basic_auth(auth)
     _accept_root_issuer_slash(auth)
+    _reuse_registered_redirect_port(auth)
     return auth
 
 
