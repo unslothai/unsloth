@@ -168,7 +168,21 @@ def test_a_kill_only_reaches_the_sandbox_own_processes():
     ],
 )
 def test_what_the_sandbox_does_not_contain_stays_blocked(command, name):
-    assert tools._bash_exec(command, None, 60, _SESSION) == f"Blocked command(s) for safety: {name}"
+    out = tools._bash_exec(command, None, 60, _SESSION)
+    assert out.split("\n", 1)[0] == f"Blocked command(s) for safety: {name}", out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")
+@pytest.mark.parametrize(
+    "command,hint",
+    [
+        ("curl -LO https://go.dev/dl/go.tgz && tar -xzf go.tgz", tools._PLAIN_DOWNLOAD_HINT),
+        ("chmod -R 755 .", tools._PLAIN_CHMOD_HINT),
+    ],
+)
+def test_a_refused_contained_form_says_what_would_run(command, hint):
+    assert hint in tools._bash_exec(command, None, 60, _SESSION)
+    assert hint not in tools._bash_exec(command, None, 60, _SESSION, tool_execution_mode = "software")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "terminal runs bash here")

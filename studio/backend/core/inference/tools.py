@@ -736,6 +736,17 @@ def _is_plain_download(command: str) -> bool:
     return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
 
 
+# Without these the model reads the block as final and gives up on the download.
+_PLAIN_DOWNLOAD_HINT = (
+    "In the OS sandbox curl and wget run only as a plain download: common options, http(s) URLs, "
+    "no $ or globs, piped only into head, tail, jq, grep, wc, cat or a checksum tool. "
+    "Run the download as its own command, then unpack or run it in the next one."
+)
+_PLAIN_CHMOD_HINT = (
+    "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
+)
+
+
 def _runs_in_os_sandbox(prepared) -> bool:
     record = getattr(prepared, "execution_record", None)
     return bool(
@@ -24081,6 +24092,7 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     contained: set[str] = set()
+    hints: list[str] = []
     if not disable_sandbox:
         if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
@@ -24105,12 +24117,21 @@ def _bash_exec(
             contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
             if "chmod" in contained and not _is_plain_chmod(command):
                 contained.discard("chmod")
+                hints.append(_PLAIN_CHMOD_HINT)
             if contained & _OS_SANDBOX_PROXIED_COMMANDS and not _is_plain_download(command):
                 contained -= _OS_SANDBOX_PROXIED_COMMANDS
+                hints.append(_PLAIN_DOWNLOAD_HINT)
             blocked -= contained
         if blocked:
             # Capped: the blocked list names what it found in the command, so it can exceed the room left.
-            return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(blocked))}")
+            return _truncate(
+                f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+                + (
+                    "".join(f"\n{hint}" for hint in hints)
+                    if tool_execution_mode != "software"
+                    else ""
+                )
+            )
         # A same-UID child can read /proc/<ppid>/environ; best-effort since the child env is scrubbed.
         _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():

@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -183,10 +184,10 @@ def test_a_redirect_to_metadata_is_refused(proxy, origin, loopback_origin_allowe
     assert status == 403 and "169.254.169.254" in body
 
 
-def test_the_proxy_serves_a_unix_socket_and_stops_on_close(
-    tmp_path, origin, loopback_origin_allowed
-):
-    path = str(tmp_path / "proxy.sock")
+def test_the_proxy_serves_a_unix_socket_and_stops_on_close(origin, loopback_origin_allowed):
+    # macOS caps AF_UNIX paths at 104 bytes, which its pytest tmp_path exceeds.
+    directory = tempfile.mkdtemp(prefix = "us-egress-", dir = "/tmp")
+    path = os.path.join(directory, "proxy.sock")
     running = sandbox_egress.EgressProxy(path)
     port = origin.rsplit(":", 1)[1]
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -200,6 +201,7 @@ def test_the_proxy_serves_a_unix_socket_and_stops_on_close(
     running.close()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock, pytest.raises(OSError):
         sock.connect(path)
+    shutil.rmtree(directory, ignore_errors = True)
 
 
 def test_open_tunnels_end_with_the_proxy(origin, loopback_origin_allowed):
