@@ -159,13 +159,21 @@ def _own_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink() and within_account(path)
 
 
+def _size(path: Path) -> int:
+    # An export republishing the folder can remove a file between listing and stat.
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _describe(folder: Path, root: Path) -> LocalQ4nx:
     present = tuple(
         name
         for name in (*REQUIRED_FILES, *OPTIONAL_FILES, *VISION_FILES)
         if _own_file(folder / name)
     )
-    size = sum((folder / name).stat().st_size for name in present)
+    size = sum(_size(folder / name) for name in present)
     missing = [name for name in REQUIRED_FILES if name not in present]
     base, problem = _base_for(folder)
     if missing:

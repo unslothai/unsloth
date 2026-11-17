@@ -242,6 +242,20 @@ def test_a_text_only_conversion_drops_the_vision_tower():
     assert "vision_model_weight" not in config
 
 
+def test_a_file_removed_mid_scan_does_not_fail_the_listing(monkeypatch):
+    folder = _converted()
+    real_stat = Path.stat
+
+    def _racing_stat(self, *args, **kwargs):
+        if self.name == "tokenizer.json" and self.parent == folder:
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(nlm, "_own_file", lambda path: path.name in nlm.REQUIRED_FILES)
+    monkeypatch.setattr(Path, "stat", _racing_stat)
+    assert [m.folder for m in nlm.find_local_models(folder.parent)] == [folder]
+
+
 def test_a_text_only_gemma4_conversion_drops_the_audio_tower():
     # FastFlowLM/Gemma4-E2B-IT-NPU2's config.json names both towers; FastFlowLM 1.0.12 opens any it names.
     _converted()
