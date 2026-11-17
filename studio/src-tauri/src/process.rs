@@ -4102,8 +4102,7 @@ fn read_output_stream<R: std::io::Read>(
     }
 }
 
-/// `unsloth studio stop` cannot set `intentional_stop`, so a clean exit Desktop did not request
-/// gets its own reason instead of the generic `process_exit`.
+/// `unsloth studio stop` cannot set `intentional_stop`; label its clean exit, not `process_exit`.
 fn unrequested_exit_reason(intentional: bool, clean_exit: bool) -> Option<String> {
     (!intentional && clean_exit).then(|| "clean_exit".to_string())
 }
