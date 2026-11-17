@@ -33871,9 +33871,12 @@ async def produce_openai_chat_completions(
 
                     def _release_held_mention():
                         nonlocal prev_text, _gguf_turn_raw
+                        span = reasoning_extractor.server_wrap_span(_gguf_turn_raw)
                         clean = _held_mention_display(
-                            _gguf_display_strip, _gguf_turn_raw, _gguf_auto_heal_tool_calls
+                            _gguf_display_strip, _gguf_turn_raw[span:], _gguf_auto_heal_tool_calls
                         )
+                        if clean is not None:
+                            clean = _gguf_turn_raw[:span] + clean
                         _gguf_turn_raw = ""
                         if clean is None:
                             return []
@@ -34067,8 +34070,9 @@ async def produce_openai_chat_completions(
                         # Sanitize the full cumulative text then diff, so cross-chunk XML tags are handled.
                         raw_cumulative = event.get("text", "")
                         _gguf_turn_raw = raw_cumulative
-                        clean_cumulative = _gguf_display_strip.strip(
-                            _hold_pending_mention(raw_cumulative, _gguf_auto_heal_tool_calls)
+                        span = reasoning_extractor.server_wrap_span(raw_cumulative)
+                        clean_cumulative = raw_cumulative[:span] + _gguf_display_strip.strip(
+                            _hold_pending_mention(raw_cumulative[span:], _gguf_auto_heal_tool_calls)
                         )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
@@ -40433,6 +40437,7 @@ class _ResponsesReasoningExtractor:
         self._wrap_taken = 0
         self._after_lead = False
         self._fed = 0
+        self._lead = None
 
     def feed(
         self,
@@ -40512,7 +40517,7 @@ class _ResponsesReasoningExtractor:
             if self._single_block:
                 if self._buffer.startswith(_RESPONSES_THINK_OPEN):
                     self._buffer = self._buffer[len(_RESPONSES_THINK_OPEN) :]
-                    self._wrap = self._claim_wrap()
+                    self._wrap = self._lead = self._claim_wrap()
                     self._wrap_taken = 0
                     self._in_reasoning = self._wrap is None
                     continue
@@ -40560,6 +40565,23 @@ class _ResponsesReasoningExtractor:
             return None
         self._provenance["claimed"] = claimed + 1
         return wraps[claimed]
+
+    def server_wrap_span(self, text: str) -> int:
+        # Length of the leading server-made <think> block in text, so display sanitizing can leave it alone.
+        lead = self._lead
+        if (
+            lead is None
+            and self._provenance is not None
+            and not self._after_lead
+            and not self._in_reasoning
+            and text.startswith(_RESPONSES_THINK_OPEN)
+        ):
+            wraps = self._provenance.get("wraps") or []
+            claimed = self._provenance.get("claimed", 0)
+            lead = wraps[claimed] if claimed < len(wraps) else None
+        if lead is None:
+            return 0
+        return len(_RESPONSES_THINK_OPEN) + int(lead.get("len", 0)) + len(_RESPONSES_THINK_CLOSE)
 
     def _next_later_wrap(self):
         later = self._provenance.get("later") or []

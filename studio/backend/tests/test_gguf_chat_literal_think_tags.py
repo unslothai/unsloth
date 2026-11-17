@@ -136,3 +136,55 @@ def test_a_later_reasoning_segment_stays_reasoning(monkeypatch):
 
     assert reasoning == "Plan.Check."
     assert content == "Literal <think>x</think> first. " + _ANSWER
+
+
+def test_a_trace_quoting_tool_tags_keeps_the_answer_with_tools_on(monkeypatch):
+    trace = "Quote </think> and </function>."
+
+    class _ToolGguf(FakeLlamaCppBackend):
+        supports_tools = True
+        reasoning_always_on = True
+        supports_reasoning = True
+
+        def _request_reasoning_kwargs(self, *args, **kwargs):
+            return {}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            prov = kwargs["reasoning_provenance"]
+            prov["wrapped"] += 1
+            prov.setdefault("wraps", []).append({"len": len(trace)})
+            yield {"type": "content", "text": "<think>" + trace}
+            yield {"type": "content", "text": "<think>" + trace + "</think>OK"}
+            yield {"type": "metadata", "finish_reason": "stop"}
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _ToolGguf())
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
+
+    async def _select(payload, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    response = TestClient(app).post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "enable_tools": True,
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    reasoning = content = ""
+    for line in response.text.splitlines():
+        if not line.startswith("data: {"):
+            continue
+        for choice in json.loads(line[len("data: ") :]).get("choices") or []:
+            delta = choice.get("delta") or {}
+            reasoning += delta.get("reasoning_content") or ""
+            content += delta.get("content") or ""
+
+    assert reasoning == trace
+    assert content == "OK"
