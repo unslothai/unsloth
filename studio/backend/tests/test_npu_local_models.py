@@ -463,6 +463,23 @@ def test_a_staged_copy_whose_export_is_gone_can_still_be_deleted(runtime):
 
 
 @posix_only
+def test_a_conversion_republished_while_staging_is_refused(runtime, monkeypatch):
+    folder = _converted()
+    [local] = nlm.account_local_models()
+    real = runtime._base_config
+
+    def _republish(*args, **kwargs):
+        config = real(*args, **kwargs)
+        (folder / "model.q4nx").write_bytes(b"other weights")
+        return config
+
+    monkeypatch.setattr(runtime, "_base_config", _republish)
+    with pytest.raises(nb.NpuError, match = "changed while loading"):
+        runtime.load(local.id)
+    assert not (runtime.root / "local_q4nx" / "registered.json").exists()
+
+
+@posix_only
 def test_bulk_delete_clears_an_orphaned_staged_copy(runtime):
     import shutil
 

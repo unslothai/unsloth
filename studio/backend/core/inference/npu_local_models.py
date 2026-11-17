@@ -161,6 +161,10 @@ def _base_for(folder: Path) -> tuple[Optional[str], Optional[str]]:
     return base, None
 
 
+def base_of(folder: Path) -> Optional[str]:
+    return _base_for(folder)[0]
+
+
 def _own_file(path: Path) -> bool:
     """A plain file inside the acting account: a link could hand over another account's weights."""
     from utils.paths.storage_roots import within_account

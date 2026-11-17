@@ -881,9 +881,13 @@ class LemonadeNpuBackend:
                 f"This FastFlowLM version does not ship {local.base}, which this model needs."
             )
         staged = local_q4nx.staged_folder(self._flm_model_dir, listing, local)
+        stamp = local.stamp
         config = self._base_config(binary, listing_path.parent, listing, local.base or "", base)
         try:
             local_q4nx.link_files(local, staged)
+            # An export republishing the folder meanwhile would pair new weights with the old base.
+            if local.stamp != stamp or local_q4nx.base_of(local.folder) != local.base:
+                raise NpuError(f"{local.display} changed while loading; load it again.")
             config = local_q4nx.local_config(config, local)
             (staged / "config.json").write_text(
                 json.dumps(config, indent = 2) + "\n", encoding = "utf-8"
