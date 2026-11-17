@@ -18,7 +18,7 @@ import {
 import { useChatModelStatus } from "@/features/chat/voice/chat-model-ready";
 import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
 import { vadDisplayName } from "@/features/chat/voice/vad-client";
-import { primeVoiceCapture } from "@/features/chat/voice/voice-loop-bridge";
+import { primeVoiceCapture, requestVoiceOff } from "@/features/chat/voice/voice-loop-bridge";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { clearVoiceModelRest } from "@/features/chat/voice/voice-models-client";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
@@ -167,6 +167,9 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const [open, setOpen] = useState(composer);
   const [role, setRole] = useState<Role | null>(null);
   const rowRefs = useRef<Partial<Record<Role, HTMLButtonElement | null>>>({});
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  // Set when closing the composer's setup cancels voice mode: the trigger is gone, so focus goes to Start voice mode.
+  const focusAfterCancelRef = useRef<Element | null>(null);
   const decision = useVoiceDecision(open);
   const preset = useVoicePreset(ttsModelId, ttsLoaded);
   const vadDetectors = useVadDetectors();
@@ -398,9 +401,16 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) setRole(null);
+        // Closing the composer's setup without Start cancels it: left in "configuring", the idle orb
+        // replaced the voice and dictate buttons with no way back but the plus menu.
+        if (!next && composer && useChatRuntimeStore.getState().voiceMode === "configuring") {
+          focusAfterCancelRef.current =
+            anchorRef.current?.closest(".aui-composer-action-wrapper") ?? null;
+          requestVoiceOff();
+        }
       }}
     >
-      <div className="flex min-w-0 items-center">
+      <div ref={anchorRef} className="flex min-w-0 items-center">
         {/* The pill's status changes while voice runs (a model swap, a load): said, not only shown. */}
         {!composer && (
           <output className="sr-only" aria-live="polite" aria-atomic="true">
@@ -461,6 +471,17 @@ const VoicePanelView: FC<VoicePanelProps> = ({
             event.preventDefault();
             back();
           }
+        }}
+        onCloseAutoFocus={(event) => {
+          const wrapper = focusAfterCancelRef.current;
+          if (!wrapper) return;
+          focusAfterCancelRef.current = null;
+          const startButton = wrapper.querySelector<HTMLElement>(
+            `button[aria-label="${CSS.escape(t("voiceControls.start"))}"]`,
+          );
+          if (!startButton) return;
+          event.preventDefault();
+          startButton.focus();
         }}
         className={cn(
           "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",

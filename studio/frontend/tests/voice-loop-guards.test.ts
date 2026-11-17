@@ -478,3 +478,15 @@ test("the mic's context is made in the Start click and shared until voice mode e
   // A session must not close the shared context; it only unhooks its own nodes.
   assert.match(loop, /sink\?\.disconnect\(\);\s*sink = null;\s*if \(ownsCtx\) void audioCtx\?\.close\(\)/);
 });
+
+test("closing the composer's voice setup without Start turns voice mode off", () => {
+  const panel = readSrc("components/assistant-ui/voice-panel.tsx");
+  const change = panel.slice(panel.indexOf("onOpenChange={(next) => {"), panel.indexOf('<div ref={anchorRef}'));
+  // Left in "configuring", the idle orb stood in for the voice and dictate buttons until the plus menu.
+  assert.match(change, /!next && composer && useChatRuntimeStore\.getState\(\)\.voiceMode === "configuring"/);
+  assert.match(change, /requestVoiceOff\(\);/);
+  // Start sets "active" before closing, so it never reaches the cancel.
+  const start = panel.slice(panel.indexOf("const start = () => {"));
+  assert.ok(start.indexOf('store.setVoiceMode("active")') < start.indexOf("setOpen(false)"));
+  assert.match(panel, /onCloseAutoFocus=\{\(event\) => \{[\s\S]{0,400}voiceControls\.start[\s\S]{0,200}startButton\.focus\(\)/);
+});
