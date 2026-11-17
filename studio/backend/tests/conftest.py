@@ -335,6 +335,18 @@ def _restore_diffusers_active_attention_backend():
 _DYNAMO_PROCESS_KNOBS = ("suppress_errors", "recompile_limit", "cache_size_limit")
 
 
+def _dynamo_own_knobs(cfg):
+    # Only the config's own entries. Reading an alias (cache_size_limit -> recompile_limit on torch 2.6+) runs
+    # importlib.import_module, which at teardown re-imported torch into tests that had taken it out of
+    # sys.modules and blocked imports ("_has_torch_function already has a docstring").
+    entries = getattr(cfg, "_config", None) or {}
+    return [
+        k
+        for k in _DYNAMO_PROCESS_KNOBS
+        if k in entries and getattr(entries[k], "alias", None) is None
+    ]
+
+
 @pytest.fixture(autouse = True)
 def _restore_dynamo_process_knobs():
     # The DiT trainer's compile step sets dynamo's suppress_errors (and a 64 recompile limit) process-wide, so a
@@ -342,11 +354,7 @@ def _restore_dynamo_process_knobs():
     # suppress_error and fail_on_recompile_limit_hit can not both be active at the same time".
     dynamo = sys.modules.get("torch._dynamo")
     cfg = getattr(dynamo, "config", None)
-    before = (
-        {k: getattr(cfg, k) for k in _DYNAMO_PROCESS_KNOBS if hasattr(cfg, k)}
-        if cfg is not None
-        else None
-    )
+    before = {k: getattr(cfg, k) for k in _dynamo_own_knobs(cfg)} if cfg is not None else None
     yield
     if cfg is None:
         dynamo = sys.modules.get("torch._dynamo")
@@ -355,14 +363,9 @@ def _restore_dynamo_process_knobs():
             return
         # first imported during this test: its defaults are the module's own
         before = {}
-        for k in _DYNAMO_PROCESS_KNOBS:
-            try:
-                default = cfg._config[k].default
-            except Exception:
-                continue
-            if isinstance(
-                default, (bool, int)
-            ):  # an alias (cache_size_limit on 2.6+) has a sentinel default
+        for k in _dynamo_own_knobs(cfg):
+            default = cfg._config[k].default
+            if isinstance(default, (bool, int)):
                 before[k] = default
     for k, v in before.items():
         if getattr(cfg, k, v) != v:
