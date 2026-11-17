@@ -180,6 +180,7 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
   type Ref,
+  type WheelEvent,
   memo,
   useCallback,
   useEffect,
@@ -919,6 +920,35 @@ const TAB_DROP_CUE = {
   before: `${TAB_DROP_CUE_BASE} before:left-0`,
   after: `${TAB_DROP_CUE_BASE} before:right-0`,
 } as const;
+// A mouse wheel scrolls a tab strip sideways; a trackpad already does.
+function wheelSideways(event: WheelEvent<HTMLDivElement>) {
+  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+    event.currentTarget.scrollLeft += event.deltaY;
+  }
+}
+
+/** Marks which ends of a scrolling tab strip have more tabs past them. */
+function useStripFades(strip: HTMLDivElement | null) {
+  useEffect(() => {
+    if (!strip) {
+      return;
+    }
+    const update = () => {
+      const max = strip.scrollWidth - strip.clientWidth;
+      strip.toggleAttribute("data-fade-left", strip.scrollLeft > 1);
+      strip.toggleAttribute("data-fade-right", strip.scrollLeft < max - 1);
+    };
+    update();
+    strip.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(strip);
+    return () => {
+      strip.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [strip]);
+}
+
 type TabDrop = { value: string; edge: keyof typeof TAB_DROP_CUE };
 
 const CURRENT_ROW_BG =
@@ -1641,27 +1671,9 @@ export function ComposerModelPicker({
     };
   }, [configTarget]);
   const [tabStrip, setTabStrip] = useState<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!tabStrip) {
-      return;
-    }
-    const update = () => {
-      const max = tabStrip.scrollWidth - tabStrip.clientWidth;
-      tabStrip.toggleAttribute("data-fade-left", tabStrip.scrollLeft > 1);
-      tabStrip.toggleAttribute(
-        "data-fade-right",
-        tabStrip.scrollLeft < max - 1,
-      );
-    };
-    update();
-    tabStrip.addEventListener("scroll", update, { passive: true });
-    const observer = new ResizeObserver(update);
-    observer.observe(tabStrip);
-    return () => {
-      tabStrip.removeEventListener("scroll", update);
-      observer.disconnect();
-    };
-  }, [tabStrip]);
+  const [orgStrip, setOrgStrip] = useState<HTMLDivElement | null>(null);
+  useStripFades(tabStrip);
+  useStripFades(orgStrip);
 
   const inventory = useChatPickerInventory({ enabled: open });
   const [npuStatus, setNpuStatus] = useNpuStatus(open);
@@ -5230,12 +5242,7 @@ export function ComposerModelPicker({
                 role="tablist"
                 aria-label="Model sources"
                 className="composer-tab-strip flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-                onWheel={(event) => {
-                  // A mouse wheel scrolls the tabs sideways; a trackpad already does.
-                  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-                    event.currentTarget.scrollLeft += event.deltaY;
-                  }
-                }}
+                onWheel={wheelSideways}
               >
                 {sourceTabs.map((t) => (
                   <TabButton
@@ -5310,9 +5317,11 @@ export function ComposerModelPicker({
             </div>
             {orgTabs.length > 0 && orgFilterApplies(viewed) ? (
               <div
+                ref={setOrgStrip}
                 role="group"
                 aria-label="Filter by organization"
                 className="composer-tab-strip flex shrink-0 items-center gap-1 overflow-x-auto"
+                onWheel={wheelSideways}
               >
                 {orgTabs.map((t) => {
                   const org = t.value.slice(MAKER_PREFIX.length);

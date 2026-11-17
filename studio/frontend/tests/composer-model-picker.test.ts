@@ -147,6 +147,12 @@ test("an org filter keeps only rows attributed to that org, on Discover and On D
   assert.match(picker, /\{sourceTabs\.map\(\(t\) => \(/);
   assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgTabs\.map/);
   assert.match(picker, /aria-pressed=\{toggle \? shown : undefined\}/);
+  // An overflowing org row scrolls on a mouse wheel and fades its clipped ends, like the sources row.
+  assert.match(
+    picker,
+    /ref=\{setOrgStrip\}[\s\S]{0,200}?className="composer-tab-strip[^"]*"\s*onWheel=\{wheelSideways\}/,
+  );
+  assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
   // The org comes from the repo itself, never a fine-tune's base model.
   assert.match(picker, /return rowMaker\(\{ kind: row\.kind, id: row\.id \}\);/);
   assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
