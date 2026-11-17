@@ -119,3 +119,16 @@ def test_init_syncs_after_the_kernel_imports():
     }
     assert "_sync_tag" in lines
     assert lines["_sync_tag"] < lines["_restore_gc_threshold"]
+
+
+def test_tag_carries_the_unsloth_version(clean_tag, tmp_path, monkeypatch):
+    launch = _load()
+    monkeypatch.setattr(launch, "_version_tag", lambda: "unsloth/version:2099.1.1")
+    launch.tag_compile_cache(_kernel(tmp_path))
+    assert "unsloth/version:2099.1.1" in _CONFIG.cache_key_tag.split(",")
+
+
+def test_version_tag_reads_the_package_version():
+    source = (ROOT / "unsloth" / "kernels" / "triton_launch.py").read_text(encoding = "utf-8")
+    assert "from .._version import __version__" in source
+    assert (ROOT / "unsloth" / "_version.py").exists()

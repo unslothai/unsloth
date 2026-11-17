@@ -739,6 +739,9 @@ def _forget_the_cached_owner_identity():
         lifetime._owner_identity = None
 
 
+_REAL_OS_NAME = os.name
+
+
 @pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
@@ -751,15 +754,21 @@ def _isolate_wal_keepers():
     rag_enabled = rag_db._wal_keepers_enabled
     rag_db.start_wal_keepers()
     yield
-    for path in set(studio_db._wal_keepers) - before:
-        studio_db.close_wal_keeper_for(path)
-    studio_db._wal_unsupported.intersection_update(unsupported)
-    for path in set(rag_db._wal_keepers) - rag_before:
-        rag_db.close_wal_keeper_for(path)
-    if rag_enabled:
-        rag_db.start_wal_keepers()
-    else:
-        rag_db.close_wal_keeper()
+    # Runs before the test's monkeypatch is undone: a test faking Windows (os.name = "nt") would make
+    # close_wal_keeper_for's Path() a WindowsPath, which cannot be built here.
+    patched_os_name, os.name = os.name, _REAL_OS_NAME
+    try:
+        for path in set(studio_db._wal_keepers) - before:
+            studio_db.close_wal_keeper_for(path)
+        studio_db._wal_unsupported.intersection_update(unsupported)
+        for path in set(rag_db._wal_keepers) - rag_before:
+            rag_db.close_wal_keeper_for(path)
+        if rag_enabled:
+            rag_db.start_wal_keepers()
+        else:
+            rag_db.close_wal_keeper()
+    finally:
+        os.name = patched_os_name
 
 
 @pytest.fixture(autouse = True)
