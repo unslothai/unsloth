@@ -199,3 +199,113 @@ def store(card: str, table: dict[str, Any]) -> bool:
             except Exception:  # noqa: BLE001
                 pass
             return False
+
+
+class Namespace:
+    """Decisions of one module persisted per card in their own file (``diffusion_<name>.json``), under the same
+    fingerprint as the quant probes plus a digest of ``sources``: editing any of them, or any toolchain / card /
+    driver / ``UNSLOTH_DIFFUSION_*`` change, is a miss. ``get`` / ``put`` take string keys and JSON values; a torn,
+    absent or foreign file reads as empty, and a write never raises."""
+
+    def __init__(
+        self,
+        name: str,
+        sources: tuple,
+        max_cards: int = _MAX_ENTRIES,
+    ) -> None:
+        self.name = str(name)
+        self.sources = tuple(sources)
+        self.max_cards = int(max_cards)
+        self._digest: Optional[str] = None
+        self._tables: dict = {}  # (file, card) -> (slot key, fingerprint, table), read once per process
+
+    def _source_digest(self) -> str:
+        if self._digest is None:
+            h = hashlib.sha256()
+            here = Path(__file__).resolve().parent
+            for name in self.sources:
+                try:
+                    h.update(name.encode())
+                    h.update((here / name).read_bytes())
+                except OSError:
+                    h.update(b"<missing>")
+            self._digest = h.hexdigest()
+        return self._digest
+
+    def _path(self) -> Optional[Path]:
+        path = _cache_file()
+        return None if path is None else path.with_name(f"diffusion_{self.name}.json")
+
+    def _slot(self, card: str) -> Optional[tuple]:
+        if not enabled():
+            return None
+        path = self._path()
+        if path is None:
+            return None
+        found = self._tables.get((str(path), card))  # per file: a new storage root reads its own
+        if found is not None:
+            return found
+        fp = fingerprint(card)
+        if fp is None:
+            return None
+        fp = dict(fp, namespace = self.name, source = self._source_digest())
+        key = _key(fp)
+        entry = _read_all(path).get(key)
+        table = (
+            dict(entry.get("decisions") or {})
+            if isinstance(entry, dict) and entry.get("fingerprint") == fp
+            else {}
+        )
+        found = self._tables[(str(path), card)] = (key, fp, table)
+        return found
+
+    def get(self, card: str, key: str) -> Any:
+        slot = self._slot(card)
+        return None if slot is None else slot[2].get(str(key))
+
+    def put(self, card: str, key: str, value: Any) -> bool:
+        slot = self._slot(card)
+        if slot is None:
+            return False
+        slot_key, fp, table = slot
+        table[str(key)] = value
+        path = self._path()
+        if path is None:
+            return False
+        tmp: Optional[Path] = None
+        with _LOCK:
+            try:
+                data = _read_all(path)
+                entry = data.get(slot_key)
+                merged = (
+                    dict(entry.get("decisions") or {})
+                    if isinstance(entry, dict) and entry.get("fingerprint") == fp
+                    else {}
+                )
+                merged.update(table)
+                data[slot_key] = {"fingerprint": fp, "decisions": merged, "t": time.time()}
+                if len(data) > self.max_cards:
+                    oldest = sorted(
+                        data,
+                        key = lambda k: (data[k] or {}).get("t", 0)
+                        if isinstance(data[k], dict)
+                        else 0,
+                    )
+                    for k in oldest[: len(data) - self.max_cards]:
+                        data.pop(k, None)
+                path.parent.mkdir(parents = True, exist_ok = True)
+                tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_text(json.dumps(data, sort_keys = True), encoding = "utf-8")
+                os.replace(tmp, path)
+                return True
+            except Exception:  # noqa: BLE001 - a cache write never fails a load
+                if tmp is not None:
+                    try:
+                        tmp.unlink()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return False
+
+    def forget(self) -> None:
+        """Drop the per-process reads (tests, or after the file changed underneath)."""
+        self._tables.clear()

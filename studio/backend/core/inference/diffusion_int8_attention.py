@@ -179,6 +179,28 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
+# The card verdicts, the long / mid race floors and the sink decisions persist per card, toolchain and these sources
+# (diffusion_probe_cache.Namespace), so the check and the races run once per machine rather than once per process.
+# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PERSIST_SOURCES = (
+    "diffusion_int8_attention.py",
+    "diffusion_int8_attention_cuda.py",
+    "diffusion_int8_attention_triton.py",
+    "diffusion_int8_attention_dispatch.py",
+)
+_PERSISTED: list = [None]
+WARM_TOKENS = 128
+
+
+def persisted() -> Any:
+    if _PERSISTED[0] is None:
+        from .diffusion_probe_cache import Namespace
+        _PERSISTED[0] = Namespace("int8_attention", PERSIST_SOURCES)
+    return _PERSISTED[0]
+
+
+def card_name(index: int) -> str:
+    return f"cuda:{int(index)}"
 
 
 def _dtype_kinds() -> dict:
@@ -867,13 +889,45 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     plan["sinks"] = True
                 elif known is not None:
                     plan["sinks"] = known
+                elif (stored := _stored_sink_decision(key)) is not None:
+                    plan["sinks"] = _decisions()[key] = stored
+                    if stored == "native":
+                        _drop_routes(plan)
                 else:
                     plan["sinks"] = True if race is None else race()
                     if key is not None:
                         _decisions()[key] = plan["sinks"]
+                        if (
+                            race is not None and "sink_race" in plan
+                        ):  # timed, not an out-of-memory default
+                            _store_sink_decision(key, plan["sinks"])
                         if plan["sinks"] == "native":
                             _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
+
+
+def _sink_key(key: tuple) -> str:
+    return repr(key[1:])  # without the card index: the namespace keys the card by fingerprint
+
+
+def _stored_sink_decision(key: Optional[tuple]) -> Any:
+    """A sink race this card and toolchain already ran for the bucket (True / False / "native"), or None."""
+    if key is None:
+        return None
+    try:
+        found = persisted().get(card_name(key[0]), _sink_key(key))
+    except Exception:  # noqa: BLE001
+        return None
+    return found if found in (True, False, "native") else None
+
+
+def _store_sink_decision(key: tuple, value: Any) -> None:
+    if value not in (True, False, "native"):
+        return
+    try:
+        persisted().put(card_name(key[0]), _sink_key(key), value)
+    except Exception:  # noqa: BLE001 - persistence never fails a call
+        pass
 
 
 def _outside_capture() -> Any:
@@ -1574,6 +1628,85 @@ def _check(
     return out
 
 
+def _verdict_key(key: tuple) -> str:
+    import json
+    return json.dumps(
+        list(key[1:])
+    )  # the card is the namespace's, by fingerprint rather than by index
+
+
+def _storable(found: dict) -> bool:
+    """A verdict a later process may reuse: no exception anywhere in it (a failure may be transient), and a passing
+    timed one has both race sizes."""
+    if found.get("error") or found.get("failed") or (found.get("long") or {}).get("failed"):
+        return False
+    return not (
+        found.get("ok") and found.get("timed") and len(found.get("ms") or {}) < len(RACE_TOKENS)
+    )
+
+
+def _persist_verdict(index: int, key: tuple, found: dict) -> None:
+    if key[-1] is None or not _storable(dict(found, timed = key[-2])):
+        return
+    try:
+        persisted().put(card_name(index), _verdict_key(key), found)
+    except Exception:  # noqa: BLE001 - persistence never fails a load
+        pass
+
+
+def _warm(index: int, dtype: Any, head_dim: int, impl: str, found: dict) -> None:
+    """Load the kernels a persisted pass vouches for, as the check would have (eagerly, before any CUDA graph capture),
+    with one small call each; it raises where they no longer load or launch here."""
+    import torch
+
+    device = torch.device("cuda", index)
+    with torch.no_grad():
+        q, k, v = probe_inputs(device, dtype, WARM_TOKENS, 1, head_dim)
+        _run(q, k, v, impl, config = select_config(device_config(index, head_dim, impl), 0))
+        if (found.get("long") or {}).get("ok"):
+            config = device_config(index, head_dim, impl)
+            keys = int(config["long_keys"]) + LONG_PROBE_EXTRA
+            q, k, v = probe_inputs(device, dtype, keys, 1, head_dim, seed = keys)
+            _run(q[:, :WARM_TOKENS], k, v, impl, config = config)
+        torch.cuda.synchronize(device)
+
+
+def _adopt_verdict(index: int, dtype: Any, head_dim: int, key: tuple) -> Optional[dict]:
+    """The persisted verdict for ``key`` installed as ``_check`` would have left it (the accuracy pass recorded, the
+    long variant's check, the kernels loaded), or None: no entry, another implementation, or kernels that no longer
+    run here (the check then runs again)."""
+    import torch
+
+    impl = key[-1]
+    if impl is None:
+        return None
+    try:
+        stored = persisted().get(card_name(index), _verdict_key(key))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(stored, dict) or stored.get("impl") != impl:
+        return None
+    found = dict(stored, persisted = True)
+    found["ms"] = {
+        int(t): v for t, v in (found.get("ms") or {}).items()
+    }  # JSON keys come back as strings
+    if found.get("ok"):
+        try:
+            _warm(index, dtype, head_dim, impl, found)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception:  # noqa: BLE001 -- the kernel no longer runs here: check it again
+            return None
+        _VERIFIED.add((index, int(head_dim), str(dtype), impl))
+        long = found.get("long")
+        if isinstance(long, dict):
+            long_key = (index, int(head_dim), str(dtype), impl)
+            _LONG_CHECKS[long_key] = long
+            if long.get("ok"):
+                _LONG_VERIFIED.add(long_key)
+    return found
+
+
 def verdict(
     device: Any,
     dtype: Any,
@@ -1615,9 +1748,18 @@ def verdict(
                 _VERDICTS[key] = found
             if found is None:
                 with torch.cuda.device(index):
-                    found = _check(
-                        torch.device("cuda", index), dtype, int(heads), hd, incumbent, timed, impl
-                    )
+                    found = _adopt_verdict(index, dtype, hd, key)
+                    if found is None:
+                        found = _check(
+                            torch.device("cuda", index),
+                            dtype,
+                            int(heads),
+                            hd,
+                            incumbent,
+                            timed,
+                            impl,
+                        )
+                        _persist_verdict(index, key, found)
                 _VERDICTS[key] = found
             if impl == "cuda" and found.get("failed") and (index, hd) not in _CUDA_FAILED:
                 _CUDA_FAILED[(index, hd)] = found.get("error")

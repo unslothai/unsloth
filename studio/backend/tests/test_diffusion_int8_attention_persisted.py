@@ -1,0 +1,265 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""INT8 attention decides once per machine: the card verdict (accuracy check and race), the long / mid race floors
+and the sink decisions persist per card + toolchain + kernel sources (``diffusion_probe_cache.Namespace``), and a
+later process reuses them without probing or timing. CPU: the card, the fingerprint and the kernels are faked; each
+test gets its own UNSLOTH_STUDIO_HOME, so its own cache file."""
+
+from __future__ import annotations
+
+import contextlib
+
+import pytest
+import torch
+
+from core.inference import diffusion_int8_attention as I
+from core.inference import diffusion_int8_attention_dispatch as D
+from core.inference import diffusion_probe_cache as pc
+
+PASS = {
+    "ok": True,
+    "impl": "cuda",
+    "cos": 0.9998,
+    "rel_l1": 0.01,
+    "sharp_cos": 0.999,
+    "min_tokens": 0,
+    "ms": {4096: {"incumbent": 2.0, "int8": 1.0}, 1024: {"incumbent": 0.5, "int8": 0.3}},
+}
+
+
+@pytest.fixture
+def machine(monkeypatch):
+    """One fake card: a fixed fingerprint, the CUDA kernel serving it, kernels that load, and fresh process state."""
+    fp = {"gpu_uuid": "GPU-1", "torch": "fake"}
+    monkeypatch.setattr(pc, "fingerprint", lambda card: dict(fp, card = card))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PROBE_CACHE", raising = False)
+    monkeypatch.setattr(I, "_PERSISTED", [None], raising = False)
+    monkeypatch.setattr(I, "implementation", lambda index, hd: "cuda")
+    monkeypatch.setattr(torch.cuda, "device", lambda index: contextlib.nullcontext())
+    warmed = []
+    monkeypatch.setattr(I, "_warm", lambda *a: warmed.append(a[:4]), raising = False)
+    checks = []
+    state = {"checks": checks, "warmed": warmed, "fp": fp, "result": dict(PASS)}
+
+    def check(device, dtype, heads, hd, incumbent, timed, impl):
+        checks.append((heads, hd, timed, impl))
+        return dict(state["result"])
+
+    monkeypatch.setattr(I, "_check", check)
+
+    def new_process():
+        for name in ("_VERDICTS", "_LONG_CHECKS", "_CUDA_FAILED"):
+            monkeypatch.setattr(I, name, {})
+        for name in ("_VERIFIED", "_LONG_VERIFIED"):
+            monkeypatch.setattr(I, name, set())
+        monkeypatch.setattr(I, "_PERSISTED", [None], raising = False)
+        monkeypatch.setattr(D, "_LONG_VERDICTS", {})
+
+    new_process()
+    state["new_process"] = new_process
+    return state
+
+
+def _verdict(**kw):
+    return I.verdict("cuda:0", torch.bfloat16, 8, 128, None, kw.pop("name", "native"), **kw)
+
+
+def test_a_second_process_reuses_the_verdict_without_probing(machine):
+    first = _verdict()
+    assert first["ok"] and len(machine["checks"]) == 1 and not machine["warmed"]
+    machine["new_process"]()
+    second = _verdict()
+    assert machine["checks"] == [(8, 128, True, "cuda")]  # no second check, no second race
+    assert second["persisted"] and second["min_tokens"] == 0
+    assert second["ms"] == PASS["ms"]  # race sizes come back as ints
+    assert (0, 128, "torch.bfloat16", "cuda") in I._VERIFIED
+    assert machine["warmed"] == [(0, torch.bfloat16, 128, "cuda")]  # kernels still loaded eagerly
+
+
+def test_the_key_keeps_dtype_geometry_incumbent_and_timing_apart(machine):
+    _verdict()
+    machine["new_process"]()
+    _verdict(timed = False)
+    I.verdict("cuda:0", torch.float16, 8, 128, None, "native")
+    I.verdict("cuda:0", torch.bfloat16, 8, 128, None, "dispatch:_native_cudnn")
+    assert len(machine["checks"]) == 4
+
+
+def test_a_new_toolchain_or_card_runs_the_check_again(machine):
+    _verdict()
+    machine["new_process"]()
+    machine["fp"]["torch"] = "other"
+    _verdict()
+    assert len(machine["checks"]) == 2
+
+
+def test_a_check_that_raised_is_never_persisted(machine):
+    machine["result"] = dict(PASS, ok = False, failed = True, error = "RuntimeError('nvrtc')")
+    _verdict()
+    machine["new_process"]()
+    machine["result"] = dict(
+        PASS, ms = {4096: {"incumbent": 2.0, "int8": 1.0}}, error = "timing failed"
+    )
+    _verdict()
+    machine["new_process"]()
+    _verdict()
+    assert len(machine["checks"]) == 3
+
+
+def test_a_failed_accuracy_check_is_persisted(machine):
+    machine["result"] = {
+        "ok": False,
+        "impl": "cuda",
+        "cos": 0.5,
+        "rel_l1": 0.4,
+        "ms": {},
+        "min_tokens": None,
+    }
+    _verdict()
+    machine["new_process"]()
+    assert not _verdict()["ok"]
+    assert len(machine["checks"]) == 1 and not machine["warmed"]
+    assert not I._VERIFIED
+
+
+def test_kernels_that_no_longer_load_run_the_check_again(machine, monkeypatch):
+    _verdict()
+    machine["new_process"]()
+    monkeypatch.setattr(
+        I, "_warm", lambda *a: (_ for _ in ()).throw(RuntimeError("module load failed"))
+    )
+    assert _verdict()["ok"]
+    assert len(machine["checks"]) == 2
+
+
+def test_the_long_variant_check_comes_back_with_the_verdict(machine):
+    machine["result"] = dict(PASS, long = {"ok": True, "keys": 8100, "cos": 0.9997})
+    _verdict()
+    machine["new_process"]()
+    _verdict()
+    assert (0, 128, "torch.bfloat16", "cuda") in I._LONG_VERIFIED
+    assert I._LONG_CHECKS[(0, 128, "torch.bfloat16", "cuda")]["keys"] == 8100
+
+
+def test_the_switch_turns_persistence_off(machine, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROBE_CACHE", "0")
+    _verdict()
+    machine["new_process"]()
+    _verdict()
+    assert len(machine["checks"]) == 2
+
+
+def test_long_and_mid_races_persist_but_an_out_of_memory_loss_does_not(machine, monkeypatch):
+    timed = []
+
+    def median_ms(fns, rounds = 5):
+        timed.append(1)
+        return {"incumbent": 10.0, "int8": 5.0}
+
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    monkeypatch.setattr(I, "probe_inputs", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
+    machine["new_process"]()
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 16384)
+    assert len(timed) == 1
+
+    def oom(fns, rounds = 5):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(I, "_median_ms", oom)
+    assert not D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 8192)
+    machine["new_process"]()
+    monkeypatch.setattr(I, "_median_ms", median_ms)
+    assert D._race_wins("cuda:0", torch.bfloat16, 2, 64, None, "native", 8192)
+    assert len(timed) == 2
+
+
+class _Event:
+    def synchronize(self):
+        pass
+
+
+def _plan(decision):
+    return {
+        "sinks": None,
+        "calls": I.SINK_DECIDE_AT,
+        "checks": [(_Event(), torch.tensor([1]))],  # a head clipped V in the learning calls
+        "decision": decision,
+        "shape": (1, 4096, 4096, 24, 128),
+        "index": 0,
+        "mode": I.MODE_RACE,
+    }
+
+
+def test_a_sink_decision_is_raced_once_per_machine(machine, monkeypatch):
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_GRAPHED", [False])
+    dropped = []
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: dropped.append(plan["shape"]))
+    decision = (0, (("bn", 128),), 1, 24, 128, torch.bfloat16, None, 16, 16, I.MODE_RACE)
+    races = []
+
+    def race(plan):
+        def run():
+            races.append(1)
+            plan["sink_race"] = {"incumbent": 1.0, "sinks": 1.2, "plain": 1.1}
+            return "native"
+
+        return run
+
+    I._decisions().clear()
+    plan = _plan(decision)
+    assert I._choose_path(plan, race(plan))[0] == "native"
+    assert len(races) == 1 and len(dropped) == 1
+    I.forget_plans()
+    machine["new_process"]()
+    plan = _plan(decision)
+    assert I._choose_path(plan, race(plan))[0] == "native"
+    assert len(races) == 1  # the stored verdict, no second race
+    assert len(dropped) == 2  # and its routes leave the op as the race's did
+    I.forget_plans()
+
+
+def test_an_out_of_memory_sink_race_is_not_persisted(machine, monkeypatch):
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_GRAPHED", [False])
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    decision = (0, (("bn", 64),), 1, 8, 128, torch.bfloat16, None, 4, 4, I.MODE_RACE)
+    races = []
+
+    def race():
+        races.append(1)
+        return "native"  # _sink_race's out-of-memory answer: no "sink_race" timings on the plan
+
+    I._decisions().clear()
+    I._choose_path(_plan(decision), race)
+    I.forget_plans()
+    machine["new_process"]()
+    I._choose_path(_plan(decision), race)
+    assert len(races) == 2
+    I.forget_plans()
+
+
+def test_namespace_reads_survive_a_torn_file_and_rewrite_it(machine):
+    ns = pc.Namespace("int8_attention_test", ("diffusion_probe_cache.py",))
+    assert ns.put("cuda:0", "k", 1)
+    path = ns._path()
+    path.write_text("{not json", encoding = "utf-8")
+    fresh = pc.Namespace("int8_attention_test", ("diffusion_probe_cache.py",))
+    assert fresh.get("cuda:0", "k") is None
+    assert fresh.put("cuda:0", "k", 2)
+    assert (
+        pc.Namespace("int8_attention_test", ("diffusion_probe_cache.py",)).get("cuda:0", "k") == 2
+    )
+
+
+def test_namespace_sources_are_part_of_the_key(machine):
+    assert pc.Namespace("int8_attention_test", ("diffusion_probe_cache.py",)).put("cuda:0", "k", 1)
+    other = pc.Namespace(
+        "int8_attention_test", ("diffusion_probe_cache.py", "diffusion_int8_attention.py")
+    )
+    assert other.get("cuda:0", "k") is None

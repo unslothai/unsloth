@@ -480,7 +480,17 @@ def _race_wins(
     key = (str(device), str(dtype), int(heads), int(head_dim), name, int(tokens))
     if key in _LONG_VERDICTS:
         return _LONG_VERDICTS[key]
+    card = I8.card_name(I8._device_index(torch.device(device)))
+    stored_key = repr(("race", *key[1:]))
+    try:
+        stored = I8.persisted().get(card, stored_key)
+    except Exception:  # noqa: BLE001
+        stored = None
+    if isinstance(stored, bool):
+        _LONG_VERDICTS[key] = stored
+        return stored
     q = k = v = None
+    timed = False
     try:
         # The timing events record on the current device's stream, so a secondary card must be current here.
         with torch.no_grad(), torch.cuda.device(device):
@@ -492,12 +502,18 @@ def _race_wins(
                 }
             )
         won = ms["int8"] < I8.RACE_MARGIN * ms["incumbent"]
+        timed = True
     except torch.OutOfMemoryError:
         won = False
     finally:
         q = k = v = None
         torch.cuda.empty_cache()
     _LONG_VERDICTS[key] = won
+    if timed:  # an out-of-memory loss is this moment's, not the card's
+        try:
+            I8.persisted().put(card, stored_key, won)
+        except Exception:  # noqa: BLE001
+            pass
     return won
 
 
