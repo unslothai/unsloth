@@ -23312,6 +23312,7 @@ async def _generate_tts_wav(
     voice: Optional[str] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of the three audio generation routes; a named target is budgeted after preflight."""
+    resolve_started = time.perf_counter()
     workflow = (run_inputs or {}).get("workflow")
     if workflow == "speak" and (run_inputs or {}).get("audio_inputs"):
         # Speaking in a saved voice is cloning, as _audio_request_problem reads it.
@@ -23344,6 +23345,10 @@ async def _generate_tts_wav(
         await _route_to_kept_audio_model(workflow or "speak")
     # Recheck once a context exists: before the restore, nothing loaded passes everything.
     _raise_if_prompt_leaves_no_speech_budget(text)
+    # What a request pays before synthesis: the voice trace weighs it against synth_ms.
+    timing = {"resolve_ms": round((time.perf_counter() - resolve_started) * 1000, 1)}
+    if stats_holder is not None:
+        stats_holder["timing"] = timing
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
@@ -23510,8 +23515,10 @@ async def _generate_tts_wav(
         # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
+            synth_started = time.perf_counter()
             with _direct_llama_request(_direct_llama_tts):
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
+            timing["synth_ms"] = round((time.perf_counter() - synth_started) * 1000, 1)
         except Exception as e:
             # An idle auto-unload cancels through the backend without setting this route's event.
             if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
@@ -23728,6 +23735,7 @@ async def generate_audio(
             "clip_id": persisted_clip.get("id") if persisted_clip else None,
             "seed": stats.get("seed"),
             "ignored_options": list(stats.get("ignored_options") or []),
+            "timing": tts_stats.get("timing"),
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
             "choices": [
                 {

@@ -141,6 +141,16 @@ test("read aloud warns only when the speech stops before the end of the reply", 
   assert.deepEqual(await spoken("stop"), []);
 });
 
+test("a clip cut at the length limit in voice mode is not called read aloud", async () => {
+  const { adapter, warnings } = load("", {
+    status: 200,
+    body: { audio: { data: "UklGRg==" }, choices: [{ finish_reason: "length" }] },
+  });
+  await adapter.generateStudioTtsAudio("a sentence", undefined, { model: KOKORO, voiceId: "" });
+  assert.equal(warnings.length, 1);
+  assert.doesNotMatch(warnings[0], /read aloud/i);
+});
+
 test("read aloud sends the saved voice chosen in Settings", async () => {
   const { adapter, posted } = load("8f2c");
   await adapter.generateStudioTtsAudio("hello");

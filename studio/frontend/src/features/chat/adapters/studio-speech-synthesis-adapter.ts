@@ -264,11 +264,23 @@ function readAloudError(
   return new Error(detail);
 }
 
+/** Server time for one clip, from /audio/generate. */
+export type TtsTiming = { resolve_ms?: number; synth_ms?: number };
+
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
   options?: { model: string; voiceId: string; speaker?: string },
 ): Promise<string> {
+  return (await generateStudioTtsClip(text, signal, options)).url;
+}
+
+/** generateStudioTtsAudio with the server's timing beside the clip. */
+export async function generateStudioTtsClip(
+  text: string,
+  signal?: AbortSignal,
+  options?: { model: string; voiceId: string; speaker?: string },
+): Promise<{ url: string; timing?: TtsTiming }> {
   const ttsStudioVoiceId =
     options?.voiceId ?? useVoiceSettingsStore.getState().ttsStudioVoiceId;
   const model = options
@@ -302,16 +314,20 @@ export async function generateStudioTtsAudio(
   const data = (await response.json()) as {
     audio?: { data?: string };
     choices?: { finish_reason?: string }[];
+    timing?: TtsTiming | null;
   };
   if (!data.audio?.data) {
     throw new Error("The TTS model returned no audio.");
   }
   if (data.choices?.[0]?.finish_reason === "length") {
+    // Only a caller with no options is read aloud; voice mode and the settings test name their model.
     toast.warning(
-      "Read aloud stopped at the speech model's length limit before the end of the reply.",
+      options
+        ? "Speech stopped at the speech model's length limit before the end of the text."
+        : "Read aloud stopped at the speech model's length limit before the end of the reply.",
     );
   }
-  return `data:audio/wav;base64,${data.audio.data}`;
+  return { url: `data:audio/wav;base64,${data.audio.data}`, timing: data.timing ?? undefined };
 }
 
 export async function generateCustomTtsAudio(
