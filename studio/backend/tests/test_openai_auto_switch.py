@@ -13887,6 +13887,77 @@ def test_alias_config_restores_the_idle_unload_stash_with_switching_off(
         assert rec.calls[0].max_seq_length == 98304
 
 
+@pytest.mark.parametrize(
+    "config, alias_launch, served",
+    [
+        # The freed launch was this alias's: restored exactly, not as the saved (long) settings.
+        (_ALIAS_FAST, True, True),
+        # Another alias's freed launch is restored as it was, then this alias is refused.
+        (_ALIAS_LONG, True, False),
+        # A plain launch was freed: restored as plain restores are (saved settings), then refused.
+        (_ALIAS_FAST, False, False),
+    ],
+)
+def test_alias_restore_with_switching_off_replays_the_freed_alias_launch(
+    monkeypatch, config, alias_launch, served
+):
+    # Live: the fast alias was freed, and the restore brought back the saved long settings and 409ed.
+    backend, rec = _wire_alias_config(monkeypatch, enabled = False, saved = _ALIAS_LONG)
+    freed = inference_route._alias_load_kwargs(*_ALIAS_RESOLVED, _ALIAS_FAST)[1]
+    freed.pop("model_path"), freed.pop("gguf_variant")
+    backend.model_identifier, backend.is_loaded = None, False
+
+    async def launch_satisfied(load_kwargs, override, fastapi_request):
+        return backend.is_loaded and _launch_of(rec.calls[-1]) == _launch_of(
+            LoadRequest(**load_kwargs)
+        )
+
+    monkeypatch.setattr(inference_route, "_alias_launch_satisfied", launch_satisfied)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", _ALIAS_RESOLVED)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_intent",
+        {
+            "kwargs": {},
+            "cpu_fallback": False,
+            "alias_kwargs": dict(freed) if alias_launch else None,
+        },
+    )
+    if served:
+        _switch_alias(config)
+    else:
+        with pytest.raises(HTTPException) as exc:
+            _switch_alias(config)
+        assert exc.value.status_code == 409
+    (restored,) = rec.calls
+    expected = (53248, "q4_0", "auto") if alias_launch else (98304, "q5_1", "ngram")
+    assert (restored.max_seq_length, restored.cache_type_kv, restored.speculative_type) == expected
+    # The restored launch is an alias launch again, so the next idle unload keeps it whole too.
+    assert restored._alias_load is alias_launch
+
+
+def test_only_an_alias_load_records_its_whole_launch(monkeypatch):
+    backend = SimpleNamespace()
+    monkeypatch.setattr(
+        settings, "get_model_overrides", lambda: {"org/m:Q4_K_M": {"n_parallel": 2}}
+    )
+    request = LoadRequest(
+        model_path = "org/m", gguf_variant = "Q4_K_M", max_seq_length = 4096, n_parallel = 2
+    )
+    inference_route._note_replay_launch(backend, request)
+    # Saved settings are re-read on a plain restore, so they are not recorded.
+    assert backend.replay_launch == {"max_seq_length": 4096}
+    assert backend.replay_alias_launch is None
+    request._alias_load = True
+    inference_route._note_replay_launch(backend, request)
+    assert backend.replay_alias_launch == {"max_seq_length": 4096, "n_parallel": 2}
+    backend.is_loaded = True
+    backend.last_load_intent = None
+    assert kw.launch_to_replay(backend)["alias_kwargs"] == backend.replay_alias_launch
+
+
 def test_alias_launch_check_builds_the_intent_off_the_event_loop(monkeypatch):
     # Building the intent runs drafter discovery over the model directory: never on the loop.
     import threading

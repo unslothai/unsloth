@@ -8595,6 +8595,13 @@ def _note_replay_launch(llama_backend, request: LoadRequest) -> None:
     owned = model_override_load_kwargs(override, is_gguf = True)
     fields = (request.model_fields_set & _REPLAY_LOAD_FIELDS) - owned.keys()
     llama_backend.replay_launch = request.model_dump(include = fields)
+    # A configured alias launch is also kept whole: with switching off, a request for that alias
+    # after idle unload restores exactly it. A plain restore still re-reads the saved settings.
+    llama_backend.replay_alias_launch = (
+        request.model_dump(include = request.model_fields_set & _REPLAY_LOAD_FIELDS)
+        if request._alias_load
+        else None
+    )
 
 
 def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
@@ -12184,6 +12191,7 @@ async def _maybe_auto_switch_model(
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         stashed_mlx = False
         stashed_intent = None
+        replaying_alias_launch = False
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -12726,6 +12734,23 @@ async def _maybe_auto_switch_model(
                             # The alias's own launch, not a replay of whatever idle-unload freed.
                             load_kwargs = dict(alias_kwargs)
                             override_kwargs = alias_kwargs
+                        elif (
+                            restored_alias_config
+                            and target_is_gguf
+                            and isinstance(stashed_intent, dict)
+                            and stashed_intent.get("alias_kwargs") is not None
+                        ):
+                            # Switching off: bring back the alias launch idle unload freed, whole,
+                            # then serve only if it is this alias's (checked after the switch).
+                            replaying_alias_launch = True
+                            override_kwargs = {}
+                            load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                            load_kwargs.update(
+                                _replay_load_kwargs(
+                                    {**stashed_intent, "kwargs": stashed_intent["alias_kwargs"]},
+                                    override_kwargs,
+                                )
+                            )
                         else:
                             load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                             override_kwargs = model_override_load_kwargs(
@@ -12774,7 +12799,9 @@ async def _maybe_auto_switch_model(
 
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
-                                load_request._alias_load = bool(alias_config)
+                                load_request._alias_load = (
+                                    bool(alias_config) or replaying_alias_launch
+                                )
                                 if not beside:
                                     await _load_model_impl(
                                         load_request,

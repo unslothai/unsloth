@@ -925,7 +925,12 @@ def launch_to_replay(backend = None):
     if not backend.is_loaded or launch is None:
         return None
     intent = getattr(backend, "last_load_intent", None)
-    return {"kwargs": launch, "cpu_fallback": bool(getattr(intent, "cpu_fallback", False))}
+    return {
+        "kwargs": launch,
+        "cpu_fallback": bool(getattr(intent, "cpu_fallback", False)),
+        # A configured alias's whole launch, for that alias's restore with switching off.
+        "alias_kwargs": getattr(backend, "replay_alias_launch", None),
+    }
 
 
 def stash_for_reload(identity, launch = None) -> None:
