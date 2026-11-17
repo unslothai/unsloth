@@ -336,39 +336,67 @@ def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop(pieces, rule
     assert stop not in "".join(wrapped)
 
 
+class _ByteFallbackTokenizer(_Tokenizer):
+    pieces = {2: "Hi ", 3: b"\xf0", 4: b"\x9f", 5: b"\x99", 6: b"\x82"}
+    pieces.update({7: b"\xf0", 8: b"\x9f", 9: b"\x99", 10: b"\x83", 11: " done"})
+
+    def decode(self, ids, **kwargs):
+        # Like SentencePiece byte fallback: an unfinished byte run is all replacements.
+        out, run = [], b""
+        for token in ids:
+            piece = self.pieces[int(token)]
+            if isinstance(piece, bytes):
+                run += piece
+                continue
+            out += [self._flush(run), piece]
+            run = b""
+        return "".join(out + [self._flush(run)])
+
+    @staticmethod
+    def _flush(run):
+        try:
+            return run.decode("utf-8")
+        except UnicodeDecodeError:
+            return "\ufffd" * len(run)
+
+
 def test_an_unfinished_byte_run_is_not_settled_before_it_completes():
     inf = pytest.importorskip("core.inference.inference")
     torch = pytest.importorskip("torch")
-
-    class Tokenizer(_Tokenizer):
-        pieces = {2: "Hi ", 3: b"\xf0", 4: b"\x9f", 5: b"\x99", 6: b"\x82"}
-        pieces.update({7: b"\xf0", 8: b"\x9f", 9: b"\x99", 10: b"\x83", 11: " done"})
-
-        def decode(self, ids, **kwargs):
-            # Like SentencePiece byte fallback: an unfinished byte run is all replacements.
-            out, run = [], b""
-            for token in ids:
-                piece = self.pieces[int(token)]
-                if isinstance(piece, bytes):
-                    run += piece
-                    continue
-                out += [self._flush(run), piece]
-                run = b""
-            return "".join(out + [self._flush(run)])
-
-        @staticmethod
-        def _flush(run):
-            try:
-                return run.decode("utf-8")
-            except UnicodeDecodeError:
-                return "\ufffd" * len(run)
-
-    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    streamer = inf.TextIteratorStreamer(_ByteFallbackTokenizer(), skip_prompt = False)
     wrapped = inf._StopSequenceStreamer(streamer, ["never"])
     for token in range(2, 12):
         wrapped.put(torch.tensor([token]))
     wrapped.end()
     assert "".join(wrapped) == "Hi \U0001f642\U0001f643 done"
+
+
+def test_hidden_stop_after_an_unfinished_byte_run_keeps_the_full_decode():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_ByteFallbackTokenizer):
+        def convert_tokens_to_ids(self, token):
+            return 12 if token == "[EOS]" else None
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = True,
+            **kwargs,
+        ):
+            if not skip_special_tokens and list(ids) == [12]:
+                return "[EOS]"
+            return super().decode([i for i in ids if int(i) != 12])
+
+    tokenizer = Tokenizer()
+    streamer = inf.TextIteratorStreamer(tokenizer, skip_prompt = False, skip_special_tokens = True)
+    wrapped = inf._StopSequenceStreamer(streamer, ["[EOS]"])
+    for token in (2, 3, 4, 5, 6, 7, 12, 11):
+        wrapped.put(torch.tensor([token]))
+    wrapped.end()
+    assert wrapped.matched.is_set()
+    assert "".join(wrapped) == tokenizer.decode([2, 3, 4, 5, 6, 7])
 
 
 def test_stop_matching_decodes_a_bounded_window_per_token():
@@ -421,3 +449,119 @@ def test_harmony_stream_waits_for_split_multibyte_characters(stop):
         streamer.put(torch.tensor([token]))
     streamer.end()
     assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"
+
+
+def _registered_stop_tokenizer():
+    tokenizers = pytest.importorskip("tokenizers")
+    from transformers import PreTrainedTokenizerFast
+
+    vocabulary = {"[UNK]": 0, "alpha": 1, "[STOP]": 2, "beta": 3, "[AUX]": 4, "ST": 5}
+    backend = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocabulary, unk_token = "[UNK]"))
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object = backend,
+        unk_token = "[UNK]",
+        additional_special_tokens = ["[STOP]", "[AUX]"],
+    )
+
+
+@pytest.mark.parametrize("skip_special_tokens", [False, True])
+@pytest.mark.parametrize("batched", [False, True])
+def test_registered_special_token_stops_before_following_tokens(skip_special_tokens, batched):
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = skip_special_tokens,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]"])
+    chunks = [[1, 4, 2, 3]] if batched else [[1], [4], [2], [3]]
+
+    for chunk in chunks:
+        stopped.put(torch.tensor(chunk))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == ("alpha" if skip_special_tokens else "alpha [AUX]")
+
+
+def test_special_token_stop_flushes_an_unmatched_ordinary_stop_prefix():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = True,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]", "STOP"])
+
+    stopped.put(torch.tensor([5, 2, 3]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped) == "ST"
+
+
+def test_unrequested_special_tokens_stay_hidden_without_stopping():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    streamer = inf.IncrementalTextIteratorStreamer(
+        _registered_stop_tokenizer(),
+        skip_prompt = False,
+        skip_special_tokens = True,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["never"])
+
+    stopped.put(torch.tensor([1, 4, 3]))
+    stopped.end()
+
+    assert not stopped.matched.is_set()
+    assert "".join(stopped) == "alpha beta"
+
+
+def _unlisted_special_tokenizer():
+    # Like Qwen3 <|endoftext|> or Llama 3 <|eom_id|>: added as special, absent from all_special_tokens.
+    from tokenizers import AddedToken
+
+    tokenizer = _registered_stop_tokenizer()
+    tokenizer.add_tokens([AddedToken("[EOT]", special = True)])
+    assert "[EOT]" not in tokenizer.all_special_tokens
+    return tokenizer
+
+
+def test_hidden_added_special_token_outside_all_special_tokens_stops():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    tokenizer = _unlisted_special_tokenizer()
+    streamer = inf.IncrementalTextIteratorStreamer(
+        tokenizer, skip_prompt = False, skip_special_tokens = True
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[EOT]"])
+    eot = tokenizer.convert_tokens_to_ids("[EOT]")
+
+    for token in (1, eot, 3):
+        stopped.put(torch.tensor([token]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == "alpha"
+
+
+def test_hidden_stop_through_the_native_tool_token_decoder():
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    from core.inference.native_tool_tokens import NativeToolTokenDecoder
+
+    streamer = inf.IncrementalTextIteratorStreamer(
+        NativeToolTokenDecoder(_registered_stop_tokenizer()),
+        skip_prompt = False,
+        skip_special_tokens = False,
+    )
+    stopped = inf._StopSequenceStreamer(streamer, ["[STOP]"])
+    for token in (1, 2, 3):
+        stopped.put(torch.tensor([token]))
+    stopped.end()
+
+    assert stopped.matched.is_set()
+    assert "".join(stopped).rstrip() == "alpha"

@@ -135,6 +135,8 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "Ideogram4Transformer2DModel": FIXED_LENGTH,  # token ids left-padded into max_sequence_length 2048
     "UNet2DConditionModel": FIXED_LENGTH,  # CLIP padded to 77
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    # The same block stack and packed sequence without the audio rows: the prompt sets the packed length.
+    "MiniMaxH3ImageTransformer2DModel": _MINIMAX_H3_SOURCES,
     "MOSSImageTransformer": _MOSS_IMAGE_SOURCES,
     "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
     "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512

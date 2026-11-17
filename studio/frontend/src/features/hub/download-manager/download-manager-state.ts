@@ -167,6 +167,9 @@ function sanitizePersistedJob(
     ...(typeof value.downloadDir === "string" || value.downloadDir === null
       ? { downloadDir: value.downloadDir }
       : {}),
+    ...(typeof value.engramPrecision === "string" && value.engramPrecision
+      ? { engramPrecision: value.engramPrecision }
+      : {}),
   };
 }
 
@@ -226,6 +229,7 @@ function toPersistedJob(
       ? { cancelTransport: job.cancelTransport }
       : {}),
     ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
+    ...(job.engramPrecision ? { engramPrecision: job.engramPrecision } : {}),
   };
 }
 

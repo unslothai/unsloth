@@ -724,3 +724,15 @@ test("a kept chat model takes its size from its own slot, never from a primary t
   assert.equal(withServingResident(kept, primary), kept);
   assert.equal(withServingResident(kept, null), kept);
 });
+
+test("an NPU chat model is labelled NPU, not Transformers", () => {
+  const [row] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "qwen3.5-9b-FLM",
+      model_identifier: "lemonade:qwen3.5-9b-FLM",
+      is_npu: true,
+      loaded: ["lemonade:qwen3.5-9b-FLM"],
+    }),
+  );
+  assert.equal(row.detail, "NPU");
+});

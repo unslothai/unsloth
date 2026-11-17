@@ -331,7 +331,7 @@ condition and adds four:
 | `total_declared` / `total_matches_seeded` | every mounted `[data-role]` carries `aria-setsize`, all agreeing, equal to the number of messages the seeder wrote. Waived only when the whole thread is mounted anyway, which is the full-mount condition itself |
 | `posinset_on_every_row` | every mounted message carries `aria-posinset` |
 | `anchored_at_end` | the app reports itself at the bottom (`.aui-thread-scroll-to-bottom` carrying `invisible`), falling back to the scrollTop arithmetic only when it does not |
-| `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, i.e. the autoscroll has finished pinning |
+| `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, or unchanged since the last probe of a settled page (the autoscroll keeps its last value as residual padding until the user scrolls up) |
 
 **This is a contract the arm must meet, not a signal that exists today.** Unsloth ships no
 virtualization and no ordinal attributes anywhere in the chat thread. WAI-ARIA already requires a

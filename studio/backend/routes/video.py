@@ -165,10 +165,7 @@ async def video_download_plan(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -259,6 +256,8 @@ async def video_download_plan(
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
             allow_device_probe = not training,
+            # A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+            loras = request.loras,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -320,10 +319,7 @@ async def load_video_model_gated(
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    if request.base_repo:
-        if account_access.managed_account():
-            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+        await asyncio.to_thread(account_access.require_media_model_access, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -409,6 +405,18 @@ async def load_video_model_gated(
             text_encoder_quant = request.text_encoder_quant,
             h3_task = request.h3_task,
         )
+        if request.loras:
+            from core.inference import video_lora
+
+            # Before the GPU is touched: a LoRA this load cannot bake, or one for another family, is a 400.
+            lora_refusal = video_lora.load_refusal(fam, kind, request.transformer_quant)
+            if lora_refusal and video_lora.has_active(request.loras):
+                raise ValueError(lora_refusal)
+            await asyncio.to_thread(
+                video_lora.check_families,
+                video_lora.normalize_specs(request.loras),
+                getattr(fam, "name", None),
+            )
         # Refuse while training runs, BEFORE the precision check, whose GPU probe opens a CUDA context.
         _guard_video_load_against_training()
         # begin_load repeats this check, but inside acquire_for after chat is evicted. `auto` never refused.
@@ -467,6 +475,8 @@ async def load_video_model_gated(
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
                 allow_oversized_load = request.allow_oversized_load,
+                # Only when sent, so a plain load passes exactly what it did before.
+                **({"loras": request.loras} if request.loras else {}),
                 **_nvfp4_route_kwarg(backend.begin_load, nvfp4_route),
             )
             media_load_ids.admitted("video", backend, request.load_token, prior)
@@ -767,7 +777,10 @@ async def generate_video(
             engine = engine,
         )
         validate_video_flow_controls(
-            fam, request.flow_shift, request.audio_flow_shift, engine = engine
+            fam,
+            request.flow_shift,
+            request.audio_flow_shift,
+            engine = _flow_shift_check_engine(engine, request.audio_flow_shift),
         )
         validate_video_continuation(
             fam,
@@ -3024,3 +3037,13 @@ async def openai_delete_video(video_id: str, current_subject: str = Depends(get_
     if not await asyncio.to_thread(_forget_openai_job, video_id):
         raise _openai_video_error(500, "Could not delete the video job; retry the request.")
     return VideoJobDeleteResponse(id = video_id)
+
+
+def _flow_shift_check_engine(engine, audio_flow_shift):
+    """An installed sd.cpp that takes --audio-flow-shift applies any audio shift, so it is checked like Diffusers."""
+    if engine != "sd_cpp" or audio_flow_shift is None:
+        return engine
+    from core.inference.sd_cpp_args import sd_cpp_supports_flag
+    from core.inference.sd_cpp_engine import find_sd_cpp_binary
+
+    return None if sd_cpp_supports_flag(find_sd_cpp_binary(), "--audio-flow-shift") else engine

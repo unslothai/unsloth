@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
+import { watchCaptureRules } from "./capture-sites-store";
 import { currentEntry, setNativeWebHistory, useBrowserStore } from "./store";
 
 /** Native views need the desktop app's checking proxy (not macOS 13 and earlier). */
@@ -67,6 +68,7 @@ if (isTauri) {
       useNativeBrowser.setState({ enabled: true });
     })
     .catch(() => undefined);
+  watchCaptureRules((rules) => callNative("browser_capture_rules_set", { rules }));
 }
 
 import { onNativeViewsClosed } from "@/lib/native-browser-clear";

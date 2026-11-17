@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useRef, useState } from "react";
-import { Cancel01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import { Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import { SettingsSection } from "@/features/settings/components/settings-section
 import { SettingsRow } from "@/features/settings/components/settings-row";
 // eslint-disable-next-line no-restricted-imports
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { WallpaperAdjustDialog } from "./adjust-dialog";
 import { ChatBackground } from "./index";
 import {
 	DEFAULT_ADJUSTMENTS,
@@ -36,11 +37,9 @@ import {
 	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
-	POSITIONS,
 	SCOPES,
 	type BackgroundScope,
 	normalizedSize,
-	parsePosition,
 	validUpload,
 	type BackgroundEffect,
 } from "./model";
@@ -250,7 +249,7 @@ function LensRow() {
 	);
 }
 const SLIDERS: {
-	key: "visibility" | "conversation" | "blur" | "zoom";
+	key: "visibility" | "conversation" | "blur";
 	label: TranslationKey;
 	min: number;
 	max: number;
@@ -259,7 +258,6 @@ const SLIDERS: {
 	{ key: "visibility", label: "chatBackground.visibility", min: 0, max: 100, unit: "%" },
 	{ key: "conversation", label: "chatBackground.conversationVisibility", min: 0, max: 100, unit: "%" },
 	{ key: "blur", label: "chatBackground.blur", min: 0, max: 20, unit: "px" },
-	{ key: "zoom", label: "chatBackground.zoom", min: 100, max: 300, unit: "%" },
 ];
 const errors = {
 	storage: "chatBackground.storageError",
@@ -275,32 +273,26 @@ export function ChatBackgroundControls() {
 	const adjustments = value ?? DEFAULT_ADJUSTMENTS;
 	const { resolved } = useTheme();
 	const glass = useMaterialStore((s) => s.material !== "solid");
+	const [adjusting, setAdjusting] = useState(false);
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
 			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
 			action={
-				<div className="flex max-w-full flex-wrap items-center justify-end gap-1">
+				// With an image: one-word, icon-free actions; empty keeps the icon Upload.
+				<div className="flex max-w-full flex-wrap items-center justify-end gap-2">
 					{value && (
 						<Button
-							// Same hover wash as the outline (btn-fill) Replace button beside it.
-							className="text-foreground hover:bg-[color-mix(in_srgb,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
+							className="text-foreground"
 							type="button"
-							variant="ghost"
+							variant="outline"
 							size="sm"
 							disabled={busy}
-							onClick={() => void resetChatBackground()}
+							onClick={() => setAdjusting(true)}
 						>
-							<HugeiconsIcon
-								icon={Cancel01Icon}
-								strokeWidth={1.75}
-								className="size-4"
-								aria-hidden="true"
-							/>
-							{t("chatBackground.remove")}
+							{t("chatBackground.adjust")}
 						</Button>
 					)}
-
 					<Button
 						className="text-foreground"
 						type="button"
@@ -309,16 +301,30 @@ export function ChatBackgroundControls() {
 						disabled={!ready || busy}
 						onClick={() => input.current?.click()}
 					>
-						<HugeiconsIcon
-							icon={Upload01Icon}
-							strokeWidth={1.75}
-							className="size-4"
-							aria-hidden="true"
-						/>
+						{!value && (
+							<HugeiconsIcon
+								icon={Upload01Icon}
+								strokeWidth={1.75}
+								className="size-4"
+								aria-hidden="true"
+							/>
+						)}
 						{busy
 							? t("common.loading")
 							: t(value ? "chatBackground.replace" : "chatBackground.upload")}
 					</Button>
+					{value && (
+						<Button
+							className="px-1 text-muted-foreground hover:text-foreground hover:no-underline"
+							type="button"
+							variant="link"
+							size="sm"
+							disabled={busy}
+							onClick={() => void resetChatBackground()}
+						>
+							{t("chatBackground.remove")}
+						</Button>
+					)}
 				</div>
 			}
 		>
@@ -394,6 +400,7 @@ export function ChatBackgroundControls() {
 							<ChatBackground
 								active={!(conversation && adjustments.scope === "newChat")}
 							/>
+							{conversation && <div className="wallpaper-preview-wash absolute inset-0" />}
 							{!value && (
 								<p className="absolute inset-x-4 top-4 text-center text-xs text-muted-foreground">
 									{t("chatBackground.noBackground")}
@@ -401,7 +408,7 @@ export function ChatBackgroundControls() {
 							)}
 							<div className="wallpaper-preview-content absolute inset-x-4 bottom-4 space-y-3 text-xs">
 								{conversation && (
-									<p className="wallpaper-preview-prose rounded-lg p-3">
+									<p className="p-3">
 										{t("chatBackground.response")}
 									</p>
 								)}
@@ -461,13 +468,13 @@ export function ChatBackgroundControls() {
 							</SelectContent>
 						</Select>
 					</SettingsRow>
-					<SettingsRow label={t("chatBackground.sizingPosition")} className="items-start">
+					<SettingsRow label={t("chatBackground.sizing")} className="items-start">
 						<Popover>
 							<PopoverTrigger asChild={true}>
 								<Button
 									variant="picker"
 									disabled={!value || busy}
-									aria-label={t("chatBackground.sizingPosition")}
+									aria-label={t("chatBackground.sizing")}
 									className="w-52 justify-between font-normal"
 								>
 									{t(sizingLabels[adjustments.sizing])}
@@ -499,52 +506,6 @@ export function ChatBackgroundControls() {
 											)}
 										</button>
 									))}
-								</div>
-								<div className="-mx-1 my-1 h-px bg-border" />
-								<div className="flex flex-col gap-2 px-3 pt-1 pb-2">
-									<p className="text-xs text-muted-foreground">{t("chatBackground.position")}</p>
-									<div className="flex items-center gap-5">
-										<div
-											className="grid size-18 shrink-0 grid-cols-3 rounded-lg bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] p-1.5"
-											role="group"
-											aria-label={t("chatBackground.position")}
-										>
-											{POSITIONS.map((position) => {
-												const [x, y] = parsePosition(position)!;
-												return (
-													<button
-														key={position}
-														type="button"
-														aria-pressed={adjustments.position === position}
-														aria-label={t("chatBackground.positionValue", { x, y })}
-														title={t("chatBackground.positionValue", { x, y })}
-														className="group flex aspect-square items-center justify-center rounded-full hover:bg-[color-mix(in_srgb,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-[color-mix(in_srgb,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
-														onClick={() => patchBackground({ position })}
-													>
-														<span className="size-1 rounded-full bg-muted-foreground/60 group-aria-pressed:bg-foreground" />
-													</button>
-												);
-											})}
-										</div>
-										<div className="flex min-w-0 flex-1 flex-col gap-2">
-											{(["horizontal", "vertical"] as const).map((axis, index) => {
-												const current = parsePosition(adjustments.position) ?? [50, 50];
-												return (
-													<PositionField
-														key={axis}
-														axis={index === 0 ? "X" : "Y"}
-														label={t(`chatBackground.${axis}`)}
-														value={current[index]}
-														onCommit={(v) => {
-															const next = [...current];
-															next[index] = v;
-															patchBackground({ position: `${next[0]}% ${next[1]}%` });
-														}}
-													/>
-												);
-											})}
-										</div>
-									</div>
 								</div>
 							</PopoverContent>
 						</Popover>
@@ -584,44 +545,14 @@ export function ChatBackgroundControls() {
 					</SettingsRow>
 				</>
 			)}
-		</SettingsSection>
-	);
-}
-
-/** Accepts a cleared or partial entry while typing; commits whole percents clamped to 0-100. */
-function PositionField({
-	axis,
-	label,
-	value,
-	onCommit,
-}: {
-	axis: "X" | "Y";
-	label: string;
-	value: number;
-	onCommit: (value: number) => void;
-}) {
-	const [draft, setDraft] = useState<string | null>(null);
-	return (
-		<label className="flex items-center gap-3 text-sm">
-			<span className="w-3 shrink-0">{axis}</span>
-			<span className="btn-fill flex h-8 min-w-0 flex-1 items-center rounded-full px-3 text-xs">
-				<input
-					type="number"
-					inputMode="numeric"
-					min={0}
-					max={100}
-					aria-label={label}
-					value={draft ?? String(value)}
-					onChange={(event) => {
-						setDraft(event.target.value);
-						const parsed = Number.parseInt(event.target.value, 10);
-						if (Number.isFinite(parsed)) onCommit(Math.min(100, Math.max(0, parsed)));
-					}}
-					onBlur={() => setDraft(null)}
-					className="w-full min-w-0 bg-transparent tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+			{value && (
+				<WallpaperAdjustDialog
+					open={adjusting}
+					onOpenChange={setAdjusting}
+					value={value}
+					fade={adjustments[fadeKey(glass)]}
 				/>
-				<span className="text-xs text-muted-foreground">%</span>
-			</span>
-		</label>
+			)}
+		</SettingsSection>
 	);
 }

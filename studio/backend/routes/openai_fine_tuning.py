@@ -681,9 +681,12 @@ def _multi_lora_experts_available() -> bool:
 
 def _batchable(request: TrainingStartRequest) -> bool:
     from core.training.eval_dataset import evaluation_enabled
+    from core.training.multi_lora_trainer import embedding_targets
     from core.training.training import should_use_mlx_training_backend
+
     return (
         not should_use_mlx_training_backend()
+        and not embedding_targets(request.target_modules)
         and request.training_type == "LoRA/QLoRA"
         and request.use_lora
         and bool(request.local_datasets)

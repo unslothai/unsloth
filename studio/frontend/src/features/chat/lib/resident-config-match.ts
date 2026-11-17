@@ -5,6 +5,7 @@ import type { PerModelConfig } from "@/features/model-picker";
 import {
   normalizeMlxKvQuant,
   normalizeMlxOffload,
+  sameEngramPrecision,
 } from "@/features/model-picker/model-config/per-model-config";
 
 import {
@@ -55,6 +56,7 @@ type ResidentRuntime = Pick<
   | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
+  | "engram_precision"
   | "chat_template_override"
   | "requested_llama_extra_args"
   | "gpu_memory_mode"
@@ -375,6 +377,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => c.disableVision === (s.disable_vision ?? false),
+  },
+  {
+    // The table is part of the weights, so a different one is a different load.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) => sameEngramPrecision(c.engramPrecision, s.engram_precision),
   },
   {
     mlxComparable: true,

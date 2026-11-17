@@ -10,6 +10,7 @@ import itertools
 import re
 from pathlib import Path
 from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
+from tests.studio._playwright_robust import RUN_SETTINGS_CONTEXT_LABEL
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -768,7 +769,8 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
     assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
-    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    # Recommended wears Sparkles: the star now means Favorite in both pickers.
+    assert 'icon={SparklesIcon} className="size-3.5 shrink-0"' in selector
     assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
     assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
 
@@ -1120,7 +1122,7 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        "contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),"
         in page
     )
 
@@ -1202,12 +1204,13 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
 
 
 def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
-    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    """MLX sizes its own window, so the control is GGUF's Context (window) and states what a
     load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    assert 'const label = isMlx ? "Context" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
-    assert 'displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}' in page
+    assert "displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}" in page
+    assert 'unknownLabel = "—",' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
@@ -1238,7 +1241,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, pinsContextLength))" in page
+    assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
@@ -3149,9 +3152,11 @@ def test_picker_rows_keep_their_automation_attributes():
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
     """Match tour props exactly: the trigger's value is a prefix of the popover's, so substrings mislead."""
-    chat = _read("features/chat/chat-page.tsx")
-    assert 'triggerDataTour="chat-model-selector"' in chat
-    assert 'contentDataTour="chat-model-selector-popover"' in chat
+    # Chat's picker is the composer chip now; the tour and drivers still find it by these hooks.
+    composer = _read("components/assistant-ui/composer-model-picker/composer-model-picker.tsx")
+    # Only Chat's own chip: a Compare pane's would take the tour's model step.
+    assert composer.count('data-tour={pane ? undefined : "chat-model-selector"}') >= 1
+    assert 'data-tour="chat-model-selector-popover"' in composer
 
 
 def test_run_settings_gear_label_names_its_model():
@@ -3231,8 +3236,9 @@ def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu(
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'aria-label="Back to model list"' in page
-    assert 'ariaLabel="Context Length"' in page
-    assert 'aria-label="Context Length"' in page
+    # The Playwright drivers find the context field by this name (_playwright_robust.py).
+    assert f'ariaLabel="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
+    assert f'aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
     # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
     # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(

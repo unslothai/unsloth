@@ -4,8 +4,10 @@
 """The audio.cpp STT sidecar against a fake ``audiocpp_server`` that records requests."""
 
 import json
+import math
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -305,6 +307,41 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
     ]
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        (60.0, None),
+        (420.0, None),
+        (900.0, 10800),
+        (960.0, 11520),
+        (7200.0, 131_072 - 97_200 - 512),
+        (9700.0, None),  # the audio alone fills the context
+    ],
+)
+def test_moss_max_tokens_follow_the_clip_and_stay_inside_the_context(
+    fake, side, source, monkeypatch, duration, expected
+):
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    side.transcribe_path(source, MOSS, None, timestamps = True)
+    body = fake.bodies[-1]
+    if expected is None:
+        assert "options" not in body
+    else:
+        assert body["options"] == {"max_tokens": expected}
+        prompt = math.ceil(duration * 12.5) + duration // 5 * 5
+        assert prompt + expected <= 131_072
+
+
+def test_moss_budget_is_left_out_when_a_strict_spec_has_no_max_tokens(fake):
+    entry = stt.resolve_audio_cpp_stt_model(MOSS)
+    assert stt._request_options(entry, False, 900.0) == {"max_tokens": 10800}
+    strict = replace(entry, request_keys = frozenset({"instruct"}))
+    assert stt._request_options(strict, False, 900.0) == {}
+    qwen3 = stt.resolve_audio_cpp_stt_model(QWEN3)
+    assert stt._request_options(qwen3, False, 900.0) == {}
+    assert stt._request_options(qwen3, True, 900.0) == stt._TIMESTAMP_OPTIONS
 
 
 def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hub, monkeypatch):

@@ -11,6 +11,7 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { setDesktopFullscreen } from "@/lib/desktop-fullscreen";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
 import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons";
@@ -295,15 +296,53 @@ export function DesktopTitlebarNavigation({
   );
 }
 
+// How long the revealed fullscreen titlebar lingers after the pointer leaves it.
+const FULLSCREEN_TITLEBAR_HIDE_DELAY_MS = 400;
+
 export function WindowTitlebar({
   showSidebarSurface = false,
+  fullscreen = false,
 }: {
   showSidebarSurface?: boolean;
+  /** Fullscreen: the bar hides and slides back in over the content from the top edge. */
+  fullscreen?: boolean;
 }): ReactElement | null {
   const t = useT();
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
+  const [revealed, setRevealed] = useState(false);
+  // Entering or leaving fullscreen starts with the bar hidden again.
+  const [revealFullscreen, setRevealFullscreen] = useState(fullscreen);
+  if (revealFullscreen !== fullscreen) {
+    setRevealFullscreen(fullscreen);
+    setRevealed(false);
+  }
+  const titlebarRef = useRef<HTMLElement | null>(null);
+  const hideTimer = useRef<number | null>(null);
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+  const reveal = useCallback(() => {
+    cancelHide();
+    setRevealed(true);
+  }, [cancelHide]);
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimer.current = window.setTimeout(() => {
+      hideTimer.current = null;
+      if (titlebarRef.current?.matches(":hover, :focus-within")) return;
+      setRevealed(false);
+    }, FULLSCREEN_TITLEBAR_HIDE_DELAY_MS);
+  }, [cancelHide]);
+  const revealFromEdge = useCallback(() => {
+    setRevealed(true);
+    scheduleHide();
+  }, [scheduleHide]);
+  useEffect(() => cancelHide, [fullscreen, cancelHide]);
   const backdropOpen = useSyncExternalStore(
     enabled ? subscribeViewportBackdrop : subscribeNever,
     enabled ? getViewportBackdropOpen : backdropClosed,
@@ -423,22 +462,23 @@ export function WindowTitlebar({
 
   const handleDragMouseDown = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || event.detail > 1) {
+      // A fullscreen window cannot be moved or maximized from its titlebar.
+      if (fullscreen || event.button !== 0 || event.detail > 1) {
         return;
       }
       runWindowAction((appWindow) => appWindow.startDragging());
     },
-    [runWindowAction],
+    [fullscreen, runWindowAction],
   );
 
   const handleDragDoubleClick = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
+      if (fullscreen || event.button !== 0) {
         return;
       }
       runWindowAction((appWindow) => appWindow.toggleMaximize());
     },
-    [runWindowAction],
+    [fullscreen, runWindowAction],
   );
 
   // pointerdown: Radix dismisses modals on pointerdown, which fires before mousedown.
@@ -466,7 +506,18 @@ export function WindowTitlebar({
 
   return (
     <>
-      {showSidebarSurface && (
+      {fullscreen && !revealed && (
+        // Touching the top edge brings the hidden titlebar back, as browsers do in fullscreen.
+        <div
+          aria-hidden="true"
+          data-slot="window-titlebar-reveal-edge"
+          className="modal-pe-live pointer-events-auto fixed inset-x-0 top-0 h-[3px]"
+          style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
+          onPointerEnter={revealFromEdge}
+          onPointerMove={revealFromEdge}
+        />
+      )}
+      {showSidebarSurface && !fullscreen && (
         <div
           data-slot="window-titlebar-decoration"
           // Marks a consumer of --studio-sidebar-live-width, so scoped writes land here, not on <html>.
@@ -499,10 +550,31 @@ export function WindowTitlebar({
         </div>
       )}
       <header
+        ref={titlebarRef}
         className={cn(
           "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
+          fullscreen &&
+            "pointer-events-auto h-[34px] border-b border-sidebar-edge shadow-sm transition-transform duration-200 ease-out motion-reduce:transition-none",
+          fullscreen && !showSidebarSurface && "bg-background",
+          fullscreen &&
+            !revealed &&
+            "-translate-y-full border-transparent shadow-none",
         )}
+        data-fullscreen={fullscreen || undefined}
+        data-revealed={(fullscreen && revealed) || undefined}
+        onPointerEnter={fullscreen ? reveal : undefined}
+        onPointerLeave={fullscreen ? scheduleHide : undefined}
+        // Tabbing into the hidden bar shows it; it hides again once focus leaves.
+        onFocus={fullscreen ? reveal : undefined}
+        onBlur={
+          fullscreen
+            ? (event) => {
+                const next = event.relatedTarget as Node | null;
+                if (!event.currentTarget.contains(next)) scheduleHide();
+              }
+            : undefined
+        }
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
         data-wallpaper-sidebar-pinned={showSidebarSurface && pinned || undefined}
@@ -553,12 +625,18 @@ export function WindowTitlebar({
             <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
-            label={maximized ? t("desktopShell.restore") : t("desktopShell.maximize")}
+            label={
+              fullscreen || maximized
+                ? t("desktopShell.restore")
+                : t("desktopShell.maximize")
+            }
             onClick={() =>
-              runWindowAction((appWindow) => appWindow.toggleMaximize())
+              fullscreen
+                ? setDesktopFullscreen(false).catch(() => undefined)
+                : runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
+            <CaptionGlyph kind={fullscreen || maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
             label={t("desktopShell.close")}
@@ -570,8 +648,8 @@ export function WindowTitlebar({
           </WindowControlButton>
         </div>
       </header>
-      {/* Maximized: no edges to resize, and the corner belongs to Close. */}
-      {!maximized && (
+      {/* Maximized or fullscreen: no edges to resize, and the corner belongs to Close. */}
+      {!maximized && !fullscreen && (
         <>
           <div
             aria-hidden="true"
