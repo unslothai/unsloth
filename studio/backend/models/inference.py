@@ -120,6 +120,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Start a fresh runtime even when the active settings already match",
     )
+    use_saved_settings: bool = Field(
+        False,
+        description = "Take every load setting this request leaves unset from the model's saved launch settings",
+    )
     alongside: bool = Field(
         False,
         description = "Keep the loaded model and serve this one next to it",
