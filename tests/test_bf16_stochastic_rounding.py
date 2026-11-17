@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 STEPS = 30
 
 
@@ -147,7 +149,7 @@ def test_trainer_hook_enables_full_finetuning_only(sr):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires CUDA")
 @pytest.mark.parametrize("name", ["AdamW8bit", "PagedAdamW8bit"])
 def test_bitsandbytes_keeps_the_float32_update(sr, name):
     bnb = pytest.importorskip("bitsandbytes")
