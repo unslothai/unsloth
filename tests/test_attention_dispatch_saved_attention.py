@@ -153,3 +153,25 @@ def test_a_traced_caller_keeps_its_traced_backend_choice(monkeypatch, checkpoint
     loss.backward()
     assert seen and all(seen)
     assert SA.SAVED_ATTENTION_STATS["reused"] == 2
+
+
+def test_eager_saving_call_keeps_the_operand_device_guard(monkeypatch):
+    """The saving call runs eagerly even under a traced caller: xformers' grouped forward still needs the
+    operand's device made current (device_map), which only Inductor's own device guard provided."""
+
+    class _Device:
+        type, index = "cuda", 1
+
+    class _X:
+        is_cuda = True
+        device = _Device()
+
+    entered = []
+    monkeypatch.setattr(ad, "DEVICE_TYPE", "cuda")
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        torch.cuda, "device", lambda device: entered.append(device.index) or "guard"
+    )
+    monkeypatch.setattr(ad, "_AS_TRACED", [True])
+    assert ad._compiling()
+    assert ad._on_tensor_device(_X()) == "guard" and entered == [1]

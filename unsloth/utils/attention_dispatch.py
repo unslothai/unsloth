@@ -448,7 +448,8 @@ def _on_tensor_device(X):
     if (
         DEVICE_TYPE in ("cuda", "hip")
         and X.is_cuda
-        and not _compiling()
+        # Eager under a traced caller too: only Inductor's graph applied a device guard.
+        and not torch.compiler.is_compiling()
         and X.device.index != torch.cuda.current_device()
     ):
         return torch.cuda.device(X.device)
