@@ -80,16 +80,18 @@ def _has_role(attr_dict: dict, role: str) -> bool:
 
 def _is_hidden_element(attr_dict: dict) -> bool:
     """Any present hidden attribute counts, even hidden=false, except until-found and tab panels, which tabbed docs ship
-    hidden; aria-hidden=true and inline hiding styles count too"""
+    hidden (Headless UI adds display:none too); aria-hidden=true and inline hiding styles count too"""
+    tab_panel_shipped_hidden = False
     if "hidden" in attr_dict:
         hidden = (attr_dict["hidden"] or "").strip().lower()
-        if hidden != "until-found" and not _has_role(attr_dict, "tabpanel"):
+        tab_panel_shipped_hidden = _has_role(attr_dict, "tabpanel")
+        if hidden != "until-found" and not tab_panel_shipped_hidden:
             return True
     aria_hidden = attr_dict.get("aria-hidden")
     if aria_hidden and aria_hidden.strip().lower() == "true":
         return True
     style = attr_dict.get("style")
-    return bool(style) and _style_hides_element(style)
+    return bool(style) and not tab_panel_shipped_hidden and _style_hides_element(style)
 
 
 _MATH_INVISIBLE = {0x2061: " ", 0x2062: None, 0x2063: None, 0x2064: None}
