@@ -3287,7 +3287,6 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
-  const [sideOffset, setSideOffset] = useState(PICKER_GAP);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -3300,17 +3299,7 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      const nextSide = pickerSide(side, rect, window.innerHeight);
-      setOpenSide(nextSide);
-      // Opening down, clear the chat box's bottom edge rather than the chip's, which sits inside it.
-      const surface = trigger
-        ?.closest(".unsloth-composer-surface")
-        ?.getBoundingClientRect();
-      setSideOffset(
-        nextSide === "bottom" && rect && surface
-          ? PICKER_GAP + Math.max(0, surface.bottom - rect.bottom)
-          : PICKER_GAP,
-      );
+      setOpenSide(pickerSide(side, rect, window.innerHeight));
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -5114,7 +5103,7 @@ export function ComposerModelPicker({
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
-        sideOffset={sideOffset}
+        sideOffset={PICKER_GAP}
         data-composer-model-picker=""
         style={{ "--picker-zoom-out": pickerZoomOutState } as CSSProperties}
         data-tour="chat-model-selector-popover"
@@ -5136,7 +5125,7 @@ export function ComposerModelPicker({
                 "min-h-[min(calc(240px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Capped at the room on its own side, as zeron does, so opening down never covers the composer.
+          // Capped at the room on its own side, as zeron does, so opening down it never rides up over the composer.
           "max-h-[min(var(--composer-picker-h),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {

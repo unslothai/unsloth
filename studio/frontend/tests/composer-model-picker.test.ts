@@ -667,12 +667,12 @@ test("the open picker fits its rows, capped by the window share and the room", (
   );
 });
 
-test("the picker stops at the room on its own side instead of covering the composer", () => {
+test("the picker stops at the room on its own side instead of riding up over the composer", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
-  assert.match(picker, /sideOffset=\{sideOffset\}/);
-  assert.match(picker, /PICKER_GAP \+ Math\.max\(0, surface\.bottom - rect\.bottom\)/);
+  // Anchored to the chip, not the chat box: it hangs 8px under Select model.
+  assert.match(picker, /sideOffset=\{PICKER_GAP\}/);
   assert.match(picker, /var\(--radix-popover-content-available-height\)\)\]"/);
   assert.doesNotMatch(picker, /pickerDropOffset|100dvh-16px/);
 });
