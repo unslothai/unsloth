@@ -142,7 +142,8 @@ needs_os_sandbox = pytest.mark.skipif(not _isolated(), reason = "needs a working
             "sleep 30 & sleep 0.2; killall sleep && echo killalled",
             "killalled",
             marks = pytest.mark.skipif(
-                shutil.which("killall") is None, reason = "killall (psmisc) is not installed"
+                sys.platform == "darwin" or shutil.which("killall") is None,
+                reason = "killall stays blocked on macOS; psmisc may be absent on Linux",
             ),
         ),
     ],
@@ -459,8 +460,9 @@ def test_grouped_and_commented_uploads_still_need_confirmation(command):
     assert tools._terminal_is_high_risk(command)
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason = "macOS pkill needs sysmond")
-def test_pkill_stays_blocked_on_macos():
-    assert tools._bash_exec("pkill -x sleep", None, 60, _SESSION).startswith(
-        "Blocked command(s) for safety: pkill"
+@pytest.mark.skipif(sys.platform != "darwin", reason = "Seatbelt denies the process list")
+@pytest.mark.parametrize("name", ["pkill", "killall"])
+def test_process_name_kills_stay_blocked_on_macos(name):
+    assert tools._bash_exec(f"{name} sleep", None, 60, _SESSION).startswith(
+        f"Blocked command(s) for safety: {name}"
     )
