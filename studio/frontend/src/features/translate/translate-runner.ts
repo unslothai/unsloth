@@ -353,7 +353,7 @@ async function baseRequest(
   // A provider's own minimum can sit above this cap.
   return {
     ...base,
-    max_tokens: Math.max(base.max_tokens, TRANSLATE_MAX_TOKENS),
+    max_tokens: Math.max(base.max_tokens ?? 0, TRANSLATE_MAX_TOKENS),
   };
 }
 
