@@ -610,8 +610,7 @@ def test_stock_logps_hook_detects_overrides():
 
 
 def test_stock_logps_hook_reads_through_the_prefix_share_wrapper():
-    # rl.py wraps concatenated_forward on the Unsloth trainer class (dpo_prefix_share.wrap_preference_trainer);
-    # that scoping wrapper must not count as a user override, or ORPO / CPO lose the chunked head.
+    # The prefix-share scoping wrapper must not count as a user override (ORPO / CPO keep the chunked head).
     import functools
 
     hook = _helpers()["_unsloth_stock_logps_hook"]

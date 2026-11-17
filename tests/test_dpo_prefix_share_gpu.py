@@ -400,8 +400,7 @@ def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatc
             per_device_train_batch_size = B,
             gradient_accumulation_steps = 1,
             max_steps = 3,
-            # SGD: Adam's first steps are ~lr * sign(g), which turns fp32 noise in near-zero grad
-            # coordinates into full-size updates and makes A/A runs drift apart by step 3.
+            # Not Adam: ~lr * sign(g) amplifies fp32 noise so A/A runs drift by step 3.
             learning_rate = 1e-3,
             optim = "sgd",
             logging_steps = 1,
@@ -425,8 +424,7 @@ def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatc
             trainer.train()
         finally:
             h.remove()
-            # accelerate leaves the model's forward wrapped in the trainer's autocast (Unsloth runs an fp32
-            # model's preference training under bf16 autocast); later fp32 tests need the plain forward.
+            # accelerate leaves the forward wrapped in bf16 autocast; later fp32 tests need the plain one.
             trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False)
         losses = [x["loss"] for x in trainer.state.log_history if "loss" in x]
         return losses, seen, dps.ENGAGED_COUNT - engaged0
@@ -445,7 +443,6 @@ def test_preference_trainer_runs_shared_and_matches(loaded, tmp_path, monkeypatc
                     p.copy_(init[n])
     pg_diff = max(abs(a - b) for a, b in zip(base_losses, pg_losses))
     aa_diff = max(abs(a - b) for a, b in zip(base_losses, aa_losses))
-    # transformers 4.x logs the loss rounded to 4 decimals.
     rounded = all(abs(x * 1e4 - round(x * 1e4)) < 1e-6 for x in base_losses + pg_losses)
     print(
         f"DPS_E2E {kind} legacy={legacy} base_seen={base_seen[:4]} pg_seen={pg_seen[:4]} engaged={e1} "

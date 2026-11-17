@@ -5,12 +5,9 @@
 
 The preference trainers score ``[chosen_0 .. chosen_{B-1}, rejected_0 .. rejected_{B-1}]`` rows, and
 row ``i`` and row ``i + B`` start with the same prompt. Inside those trainers' forward methods the
-decoder backbone is hooked: the longest common prefix of each pair is run once, both completions
-attend to it through the PrefixGrouper FlexAttention mask (``prefix_seg_info``), and the final hidden
-states are gathered back to the padded ``[2B, L, H]`` layout. Everything after the backbone (TRL's
-fused head, Unsloth's fused preference loss, full logits) is unchanged, and the shared prefix gets
-the sum of both rows' gradients through the gather. Tokens per pair go from ``2 (P + C)`` to
-``P + 2 C``.
+decoder backbone is hooked: each pair's common prefix runs once, both completions attend to it via
+the PrefixGrouper FlexAttention mask, and hidden states are gathered back to ``[2B, L, H]``.
+Everything after the backbone is unchanged.
 
 Env ``UNSLOTH_DPO_PREFIX_SHARE``: ``auto`` (default: on for CUDA sm80+ when the forward applies
 ``prefix_seg_info``), ``1`` (also below sm80), ``0`` (off). A batch is shared only when it saves at
@@ -18,10 +15,8 @@ least ``_MIN_SAVED`` (default 2048) prompt tokens and ``unshared / shared`` toke
 (default 1.3). ``_VERIFY`` (default 1) compares the first shared forward of each backbone with the
 unshared one and turns the feature off for that backbone if they disagree.
 
-Train mode: a forward with any active dropout (LoRA or otherwise, p > 0) stays unshared. Sharing would
-give both rows of a pair one dropout mask on their prompt, and the log-sigmoid of the chosen minus
-rejected log-probability makes that correlation change the expected gradient. NEFTune keeps a training
-forward unshared too, since its noise is scaled by the sequence length.
+Active dropout (p > 0) or NEFTune keeps a training forward unshared: one shared prompt dropout mask
+for both rows changes the expected DPO gradient, and NEFTune noise scales with sequence length.
 """
 
 from __future__ import annotations
@@ -43,7 +38,6 @@ __all__ = [
     "prefix_share_mode",
 ]
 
-# Engagement counters, read by tests and benchmarks.
 ENGAGED_COUNT = 0
 DECLINED_COUNT = 0
 LAST_VERIFY = None
@@ -53,9 +47,7 @@ _UNSAFE = "_unsloth_dpo_prefix_share_unsafe"
 _VERIFIED = "_unsloth_dpo_prefix_share_verified"
 _ACTIVE = "_unsloth_dpo_prefix_share_active"
 
-# Hidden-state disagreement (relative L2 per token) that marks a backbone unsafe. FlexAttention vs
-# the padded forward on Qwen3-0.6B: mean 1.6e-2 / max 3.3e-2 in bf16, ~1e-6 in fp32; a completion
-# that sees its sibling: mean 8e-2 / max 0.66 (Qwen3-0.6B fp32) and 1.4 (tiny random model).
+# Relative L2 per token. Qwen3-0.6B: flex vs padded mean 1.6e-2 / max 3.3e-2 bf16; sibling leak mean 8e-2 / max 0.66.
 _VERIFY_MEAN_TOL = 0.05
 _VERIFY_MAX_TOL = 0.3
 
@@ -80,9 +72,7 @@ def _env_number(
         return cast(default)
 
 
-# Auto gate, from Qwen3-1.7B LoRA on an A100 (bs 4, C = 300): the shared path costs a fixed host
-# overhead per forward (more, smaller kernels), so it pays only once enough prompt tokens are saved.
-# 800 saved (P = 200): +14% step time; 2048 (P = 512): -8%; 4096 (P = 1024): -24%; 8192: -27%.
+# Qwen3-1.7B LoRA A100 (bs 4, C = 300): 800 tokens saved +14% step time, 2048 -8%, 4096 -24%.
 def _tokr_threshold() -> float:
     return _env_number("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.3")
 
@@ -128,11 +118,7 @@ def build_pair_layout(
     max_segment_cap = None,
 ):
     """PairLayout for ``input_ids`` ``[2B, L]`` (right padded, row ``i`` paired with ``i + B``), or
-    None when the batch is not that shape or sharing would not pay.
-
-    The shared prefix of a pair is the longest common prefix of the two real token runs, capped so
-    each row keeps at least one token of its own. Every real token keeps its own position (its
-    column), so with right padding the result is the unshared forward's, token for token.
+    None. Each row keeps at least one own token; positions stay the column index.
     """
     from ..utils.prefix_grouper_kernel import build_seg_info_multigroup
 
@@ -153,7 +139,6 @@ def build_pair_layout(
     right_padded = (keep == (ar < n_real.unsqueeze(1))).all()
     same = (input_ids[:B] == input_ids[B:]) & keep[:B] & keep[B:]
     lcp = same.to(torch.int32).cumprod(dim = 1).sum(dim = 1)
-    # One device-to-host read.
     host = torch.cat(
         [n_real.to(torch.long), lcp.to(torch.long), right_padded.to(torch.long).view(1)]
     )
@@ -231,10 +216,6 @@ def build_pair_layout(
     )
 
 
-# ---------------------------------------------------------------------------------------------
-# Eligibility
-
-
 _SSM_MOE_ATTRS = (
     "mamba_d_ssm",
     "mamba_d_state",
@@ -295,7 +276,6 @@ def _length_dependent_rope(config):
 
 
 def _model_eligible(causal_lm, device):
-    """Structural checks, cached per model; the device capability check runs per call."""
     cached = getattr(causal_lm, "_unsloth_dpo_prefix_share_eligible", None)
     if cached is None:
         cached = False
@@ -368,9 +348,6 @@ def _cp_active():
         return False
 
 
-# ---------------------------------------------------------------------------------------------
-# Backbone hooks
-
 _PASSTHROUGH_NONE = (
     "position_ids",
     "past_key_values",
@@ -392,7 +369,6 @@ _ALLOWED_KWARGS = frozenset(
 
 
 def _unknown_kwarg_set(kwargs):
-    """Any kwarg outside the known set that carries a value (tensor, True, non-zero)."""
     for name, value in kwargs.items():
         if name in _ALLOWED_KWARGS or value is None or value is False:
             continue
@@ -409,8 +385,7 @@ class _HookState:
 
 
 def _neftune_active(causal_lm):
-    """NEFTune scales its embedding noise by 1 / sqrt(seq_len * hidden), so on the flat stream it would
-    add less noise than the padded rows get, and the same noise to both rows' prompt."""
+    """NEFTune noise scales by 1 / sqrt(seq_len * hidden), so the flat stream would get less."""
     try:
         embeddings = causal_lm.get_input_embeddings()
     except Exception:
@@ -423,8 +398,7 @@ def _neftune_active(causal_lm):
 
 
 def _dropout_active(causal_lm):
-    """Any dropout module in train mode with p > 0 (LoRA dropout included): the shared forward would
-    correlate the chosen and rejected rows' prompt masks, which changes the DPO objective."""
+    """Shared prompt dropout masks would correlate chosen / rejected and change the DPO objective."""
     modules = getattr(causal_lm, "_unsloth_dps_dropouts", None)
     if modules is None:
         modules = [
@@ -452,8 +426,7 @@ def _pre_hook(module, args, kwargs):
         return None
     if kwargs.get("use_cache") or kwargs.get("output_attentions"):
         return None
-    # TRL < 1.0 DPO always asks for every layer's hidden states; those are gathered back too, which
-    # needs a ModelOutput to put them in.
+    # TRL < 1.0 DPO always requests all hidden states; gathering them back needs a ModelOutput.
     if kwargs.get("output_hidden_states") and kwargs.get("return_dict") is False:
         return None
     input_ids = kwargs.get("input_ids")
@@ -502,7 +475,6 @@ def _with_hidden(
 
 
 def _gather(hidden, layout):
-    """[1, T, H] shared stream -> [2B, L, H] padded rows."""
     if not isinstance(hidden, torch.Tensor) or hidden.dim() != 3 or hidden.shape[0] != 1:
         return hidden
     if hidden.shape[1] != layout.flat_ids.shape[1]:
@@ -568,7 +540,6 @@ def _post_hook(module, args, kwargs, output):
 
 @contextlib.contextmanager
 def preference_prefix_share(trainer, *models):
-    """Hook the backbones of ``models`` (and the trainer's policy / reference) for the duration."""
     if prefix_share_mode() == "off" or _cp_active():
         yield
         return
@@ -633,8 +604,7 @@ def preference_prefix_share(trainer, *models):
 
 
 def _compile_error_type():
-    """PrefixGrouperCompileError, or () (catches nothing) where the kernel module cannot import (torch
-    without FlexAttention): there every backbone is declined and the forward runs unshared."""
+    """PrefixGrouperCompileError, or () where the kernel cannot import (every backbone declines)."""
     try:
         from ..utils.prefix_grouper_kernel import PrefixGrouperCompileError
     except Exception:
@@ -652,8 +622,7 @@ def _wrap_method(function):
             with preference_prefix_share(self, model):
                 return function(self, model, *args, **kwargs)
         except _compile_error_type():
-            # The flex kernel failed its first-call check inside the forward (nothing backpropagated
-            # yet); compile_check_failed() now declines every backbone, so this rerun is unshared.
+            # Flex failed its first-call check; compile_check_failed() makes this rerun unshared.
             return function(self, model, *args, **kwargs)
 
     wrapped._unsloth_dpo_prefix_share = True
@@ -661,9 +630,7 @@ def _wrap_method(function):
 
 
 def wrap_preference_trainer(trainer_cls):
-    """Scope the shared-prefix forward to the preference forwards of ``trainer_cls``:
-    ``_compute_loss`` / ``compute_ref_log_probs`` (TRL >= 1.0 DPO) and ``concatenated_forward``
-    (TRL < 1.0 DPO, ORPO, CPO). Returns the names it wrapped."""
+    """Scope the shared forward to ``trainer_cls``'s preference forwards; returns the wrapped names."""
     wrapped = []
     for name in ("_compute_loss", "compute_ref_log_probs", "concatenated_forward"):
         function = trainer_cls.__dict__.get(name)

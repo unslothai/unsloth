@@ -388,8 +388,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
             if block_mask is None:
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
-            # Own saved-tensor hooks: inside a non-reentrant checkpoint the copies' backward would
-            # otherwise unpack through the checkpoint and stop its recomputation mid-forward.
+            # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
             own_hooks = torch.autograd.graph.saved_tensors_hooks(_keep_saved, _keep_saved)
             with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))

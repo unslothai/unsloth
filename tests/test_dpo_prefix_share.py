@@ -71,7 +71,6 @@ def _params(seed = 0):
 
 
 def _rope(x, pos):
-    # x [T, H, HD], pos [T]
     half = HD // 2
     freq = 1.0 / (10000 ** (torch.arange(half, dtype = torch.float64) / half))
     ang = pos.to(torch.float64)[:, None] * freq[None, :]
@@ -167,7 +166,6 @@ def _rand_tokens(rng, n):
 def _cases():
     rng = random.Random(0)
     cases = []
-    # Random batches, B = 1..4.
     for B in (1, 2, 3, 4):
         for _ in range(3):
             P = [rng.randint(1, 40) for _ in range(B)]
@@ -175,7 +173,6 @@ def _cases():
             ch = [_rand_tokens(rng, rng.randint(1, 30)) for _ in range(B)]
             rj = [_rand_tokens(rng, rng.randint(1, 30)) for _ in range(B)]
             cases.append((f"rand_B{B}", prompts, ch, rj, rng.choice([0, 0, 5])))
-    # Boundary cases.
     p = _rand_tokens(rng, 12)
     c = _rand_tokens(rng, 7)
     cases.append(("identical_rows", [p], [c], [list(c)], 0))
@@ -304,13 +301,11 @@ def test_declines():
     p, c, r = _rand_tokens(rng, 10), _rand_tokens(rng, 4), _rand_tokens(rng, 5)
     ids, am, _ = _batch([p], [c], [r])
     assert dps.build_pair_layout(ids, am, min_tok_r = 1.0, min_saved = 0) is not None
-    # Odd number of rows.
     assert dps.build_pair_layout(ids[:1], am[:1], min_tok_r = 1.0, min_saved = 0) is None
     # Left padding: real tokens do not start at column 0.
     left_ids = torch.cat([torch.zeros(2, 3, dtype = torch.long), ids], dim = 1)
     left_am = torch.cat([torch.zeros(2, 3, dtype = torch.long), am], dim = 1)
     assert dps.build_pair_layout(left_ids, left_am, min_tok_r = 1.0, min_saved = 0) is None
-    # A hole in the attention mask.
     holed = am.clone()
     holed[0, 2] = 0
     assert dps.build_pair_layout(ids, holed, min_tok_r = 1.0, min_saved = 0) is None
@@ -328,7 +323,6 @@ def test_declines():
     assert (
         dps.build_pair_layout(ids, am, min_tok_r = 1.0, min_saved = 0, max_segment_cap = 15) is not None
     )
-    # Float ids / mismatched shapes.
     assert dps.build_pair_layout(ids.float(), am, min_tok_r = 1.0, min_saved = 0) is None
     assert dps.build_pair_layout(ids, am[:, :-1], min_tok_r = 1.0, min_saved = 0) is None
 
@@ -396,7 +390,6 @@ def test_wrap_preference_trainer_scopes_model_methods():
         "concatenated_forward",
     ]
     assert dps.wrap_preference_trainer(OldDPO) == []
-    # Wrapping twice is a no-op.
     first = Base._compute_loss
     dps.wrap_preference_trainer(Base)
     assert Base._compute_loss is first
@@ -404,8 +397,7 @@ def test_wrap_preference_trainer_scopes_model_methods():
 
 
 def test_flex_compile_failure_reruns_the_forward_unshared():
-    # The first shared call raises PrefixGrouperCompileError from inside the forward (flex failed its
-    # first-call check, compile_check_failed() is now set); the wrapper must rerun it, not crash.
+    # PrefixGrouperCompileError from the first shared call: the wrapper must rerun unshared, not crash.
     calls = []
 
     class Trainer:
@@ -432,8 +424,7 @@ def test_flex_compile_failure_reruns_the_forward_unshared():
 
 
 def test_neftune_declines_in_train_mode_only():
-    # NEFTune noise is scaled by 1 / sqrt(seq_len * hidden): the flat stream would get less of it than
-    # the padded rows, so a training forward with it on stays unshared; eval forwards still share.
+    # NEFTune keeps a training forward unshared; eval forwards still share.
     rng = random.Random(6)
     ids, am, _ = _batch([_rand_tokens(rng, 30)], [_rand_tokens(rng, 5)], [_rand_tokens(rng, 6)])
 
