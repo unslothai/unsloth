@@ -224,3 +224,21 @@ test("a typed draft too long for the history keeps the entry it would have repla
     [first],
   );
 });
+
+test("swap uses the detected language when the source is Detect language", () => {
+  state().setPrefs({ from: AUTO_SOURCE, target: "en" });
+  state().setSource("Il fait beau");
+  state().swap("fr");
+  assert.equal(state().prefs.from, "en");
+  assert.equal(state().prefs.target, "fr");
+  assert.equal(state().source, "Il fait beau");
+});
+
+test("swap does nothing without a detected language, or when it is already the target", () => {
+  state().setPrefs({ from: AUTO_SOURCE, target: "en" });
+  state().swap(null);
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  state().swap("en");
+  assert.equal(state().prefs.from, AUTO_SOURCE);
+  assert.equal(state().prefs.target, "en");
+});

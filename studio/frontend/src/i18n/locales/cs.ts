@@ -5193,6 +5193,7 @@ export const cs = {
   translate: {
     title: "Překlad",
     detectLanguage: "Rozpoznat jazyk",
+    detected: "{language} (rozpoznáno)",
     sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
     recentTargets: "Nedávné",

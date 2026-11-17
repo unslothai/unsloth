@@ -259,6 +259,9 @@ async function resolveReadAloudModel(
   }
 }
 
+const NO_SPEECH_MODEL =
+  /speech model (is loaded|for read aloud is no longer loaded)/i;
+
 function readAloudError(
   detail: string,
   model: string | null,
@@ -574,7 +577,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  speak(spokenText: string, lang?: string): SpeechSynthesisAdapter.Utterance {
+  speak(
+    spokenText: string,
+    lang?: string,
+    options?: { systemFallback?: boolean },
+  ): SpeechSynthesisAdapter.Utterance {
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
@@ -623,6 +630,21 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       handleEnd("finished");
       return res;
     }
+    const speakWithSystemVoice = () => {
+      const utterance = createConfiguredUtterance(text, lang);
+      utterance.addEventListener("end", () => handleEnd("finished"));
+      utterance.addEventListener("error", (e) => handleEnd("error", e.error));
+
+      // Chrome silently drops speak() while a cancelled run's utterance is queued.
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      res.status = { type: "running" };
+
+      cancelImpl = () => {
+        window.speechSynthesis.cancel();
+        handleEnd("cancelled");
+      };
+    };
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
@@ -631,7 +653,26 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         ttsEngine === "custom"
           ? generateCustomTtsAudio
           : generateStudioTtsAudio;
-      const session = speakWithBackendAudio(generate, text, handleEnd, () => {
+      const onEnd: typeof handleEnd = (reason, error) => {
+        if (
+          reason === "error" &&
+          options?.systemFallback &&
+          ttsEngine === "studio" &&
+          error instanceof Error &&
+          NO_SPEECH_MODEL.test(error.message) &&
+          StudioSpeechSynthesisAdapter.systemVoicesSupported() &&
+          res.status.type !== "ended"
+        ) {
+          toast.info(
+            "No Unsloth speech model is loaded, so this device's voice is reading.",
+          );
+          speakWithSystemVoice();
+          for (const handler of subscribers) handler();
+          return;
+        }
+        handleEnd(reason, error);
+      };
+      const session = speakWithBackendAudio(generate, text, onEnd, () => {
         if (res.status.type === "ended") return;
         // The adapter contract drives UI state off these subscribe callbacks.
         res.status = { type: "running" };
@@ -641,19 +682,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       return res;
     }
 
-    const utterance = createConfiguredUtterance(text, lang);
-    utterance.addEventListener("end", () => handleEnd("finished"));
-    utterance.addEventListener("error", (e) => handleEnd("error", e.error));
-
-    // Chrome silently drops speak() while a cancelled run's utterance is queued.
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-    res.status = { type: "running" };
-
-    cancelImpl = () => {
-      window.speechSynthesis.cancel();
-      handleEnd("cancelled");
-    };
+    speakWithSystemVoice();
     return res;
   }
 }

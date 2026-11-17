@@ -4903,6 +4903,7 @@ export const it = {
   translate: {
     title: "Traduci",
     detectLanguage: "Rileva lingua",
+    detected: "{language} (rilevato)",
     sourceLanguage: "Traduci da",
     targetLanguage: "Traduci in",
     recentTargets: "Recenti",

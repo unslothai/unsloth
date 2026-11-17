@@ -102,6 +102,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
+import { detectLanguage } from "./detect-language";
 import { TranslateHistoryList } from "./history-list";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
@@ -166,7 +167,9 @@ const GO_BUTTON =
 const STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
 const HINT = "text-ui-12 leading-normal text-muted-foreground";
 const PANEL = "rounded-xl bg-wash-6";
-const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(30rem,calc(100dvh-18rem))]";
+const PANE_HEIGHT = "h-52 sm:h-96 md:h-[max(14rem,calc(100dvh-19rem))]";
+const PANE_HEIGHT_WITH_PROMPT =
+  "h-52 sm:h-72 md:h-[max(11rem,calc(100dvh-32rem))]";
 // The box clips and an inner element scrolls: a scrollbar on the box itself squares off its corners.
 // Its outline is an inset shadow, not a border, so the scrollbar reaches the box's very edge.
 const SOURCE_BOX =
@@ -204,11 +207,13 @@ function LanguagePicker({
   onChange,
   label,
   allowAuto,
+  detected,
 }: {
   value: string;
   onChange: (code: string) => void;
   label: string;
   allowAuto?: boolean;
+  detected?: string | null;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -219,7 +224,7 @@ function LanguagePicker({
       TRANSLATE_LANGUAGES.map((language) => ({
         ...language,
         label: translateLanguageLabel(language, locale),
-      })),
+      })).sort((a, b) => a.label.localeCompare(b.label, locale)),
     [locale],
   );
   const needle = query.trim().toLowerCase();
@@ -233,9 +238,14 @@ function LanguagePicker({
   const autoLabel = t("translate.detectLanguage");
   const showAuto =
     allowAuto === true && (!needle || autoLabel.toLowerCase().includes(needle));
+  const detectedLabel = detected
+    ? languages.find((language) => language.code === detected)?.label
+    : undefined;
   const currentLabel =
     allowAuto && value === AUTO_SOURCE
-      ? autoLabel
+      ? detectedLabel
+        ? t("translate.detected", { language: detectedLabel })
+        : autoLabel
       : (languages.find((language) => language.code === value)?.label ?? value);
   const pick = (code: string) => {
     onChange(code);
@@ -1024,6 +1034,12 @@ export function TranslatePage() {
   const outputRef = useRef<HTMLDivElement>(null);
 
   const busy = phase !== null;
+  const detected = useMemo(
+    () => (prefs.from === AUTO_SOURCE ? detectLanguage(source) : null),
+    [prefs.from, source],
+  );
+  const swapFrom = prefs.from === AUTO_SOURCE ? detected : prefs.from;
+  const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
   const stale = translationIsStale({ result, source, prefs });
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
@@ -1242,16 +1258,15 @@ export function TranslatePage() {
             onChange={(from) => setPrefs({ from })}
             label={t("translate.sourceLanguage")}
             allowAuto={true}
+            detected={detected}
           />
           <IconAction
             icon={ArrowLeftRightIcon}
             label={
-              prefs.from === AUTO_SOURCE
-                ? t("translate.swapNeedsSource")
-                : t("translate.swap")
+              swapFrom ? t("translate.swap") : t("translate.swapNeedsSource")
             }
-            disabled={prefs.from === AUTO_SOURCE || busy}
-            onClick={swap}
+            disabled={!swapFrom || swapFrom === prefs.target || busy}
+            onClick={() => swap(detected)}
           />
           <LanguagePicker
             value={prefs.target}
@@ -1295,7 +1310,7 @@ export function TranslatePage() {
             <div
               className={cn(
                 SOURCE_BOX,
-                PANE_HEIGHT,
+                paneHeight,
                 dragging && "shadow-[inset_0_0_0_1px_var(--ring)]",
               )}
             >
@@ -1385,7 +1400,7 @@ export function TranslatePage() {
             aria-busy={busy}
             className="flex flex-col gap-1.5"
           >
-            <div className={cn(PANEL, PANE_HEIGHT, "overflow-hidden")}>
+            <div className={cn(PANEL, paneHeight, "overflow-hidden")}>
               <div
                 ref={outputRef}
                 className={cn(EDGE_SCROLL, "overflow-y-auto px-3.5 py-3")}

@@ -5172,6 +5172,7 @@ export const vi = {
   translate: {
     title: "Dịch",
     detectLanguage: "Phát hiện ngôn ngữ",
+    detected: "{language} (đã phát hiện)",
     sourceLanguage: "Dịch từ",
     targetLanguage: "Dịch sang",
     recentTargets: "Gần đây",

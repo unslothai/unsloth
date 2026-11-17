@@ -5148,6 +5148,7 @@ export const fa = {
   translate: {
     title: "ترجمه",
     detectLanguage: "تشخیص زبان",
+    detected: "{language} (تشخیص داده شد)",
     sourceLanguage: "ترجمه از",
     targetLanguage: "ترجمه به",
     recentTargets: "اخیر",

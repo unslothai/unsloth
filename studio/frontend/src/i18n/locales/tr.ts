@@ -5174,6 +5174,7 @@ export const tr = {
   translate: {
     title: "Çeviri",
     detectLanguage: "Dili algıla",
+    detected: "{language} (algılandı)",
     sourceLanguage: "Kaynak dil",
     targetLanguage: "Hedef dil",
     recentTargets: "Son kullanılanlar",
