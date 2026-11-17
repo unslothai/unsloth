@@ -613,3 +613,23 @@ def test_bulk_delete_clears_a_staged_copy_in_any_catalog_layout(runtime):
     _deleted, errors = runtime.delete_downloaded()
     assert errors == []
     assert not staged.exists()
+
+
+def test_an_unchanged_cross_volume_copy_is_not_copied_again(monkeypatch, tmp_path):
+    folder = _converted()
+    [local] = nlm.account_local_models()
+
+    def _no_link(*_args):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(nlm.os, "link", _no_link)
+    staged = tmp_path / "staged"
+    nlm.link_files(local, staged)
+    copies = []
+    real = nlm.shutil.copy2
+    monkeypatch.setattr(nlm.shutil, "copy2", lambda s, t: copies.append(Path(t).name) or real(s, t))
+    nlm.link_files(local, staged)
+    assert copies == []
+    (folder / "model.q4nx").write_bytes(b"new weights")
+    nlm.link_files(local, staged)
+    assert copies == ["model.q4nx"]

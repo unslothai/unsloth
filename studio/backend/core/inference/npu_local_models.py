@@ -302,6 +302,12 @@ def staged_folder(flm_model_dir: Path, listing: dict[str, Any], model: LocalQ4nx
     return flm_model_dir / str(listing.get("model_path") or "models") / model.family
 
 
+def _same_copy(source: Path, target: Path) -> bool:
+    # copy2 keeps the mtime, so an unchanged copy across volumes is not copied again.
+    a, b = source.stat(), target.stat()
+    return a.st_size == b.st_size and a.st_mtime_ns == b.st_mtime_ns
+
+
 def link_files(model: LocalQ4nx, staged: Path) -> None:
     """Hard links where the volume allows (no copy of the weights), else copies."""
     staged.mkdir(parents = True, exist_ok = True)
@@ -318,7 +324,7 @@ def link_files(model: LocalQ4nx, staged: Path) -> None:
         if not _own_file(source):
             raise OSError(f"{name} is a link or outside this account")
         try:
-            if target.exists() and os.path.samefile(source, target):
+            if target.exists() and (os.path.samefile(source, target) or _same_copy(source, target)):
                 continue
         except OSError:
             pass
