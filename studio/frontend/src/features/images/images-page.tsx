@@ -845,6 +845,7 @@ function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
     description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
+    closeButtonAriaLabel: "Hide",
     cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };

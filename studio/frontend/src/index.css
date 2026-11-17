@@ -4981,6 +4981,7 @@ html[data-chat-font] .aui-root {
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+	border-color: var(--panel-edge, var(--border)) !important;
 }
 /* Only while loading: the finished toast keeps this class through the shared toast id. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:not([data-type='success'], [data-type='warning'], [data-type='error'], [data-type='info']) {

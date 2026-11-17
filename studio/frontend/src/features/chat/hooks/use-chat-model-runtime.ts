@@ -364,7 +364,7 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
-    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
+    "shrink-0 !h-auto !rounded-full !border !border-border !bg-transparent !px-3 !py-1 !text-ui-11 !font-normal !text-muted-foreground hover:!border-destructive hover:!bg-transparent hover:!text-destructive focus-visible:!border-destructive focus-visible:!text-destructive",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -3115,6 +3115,7 @@ export function useChatModelRuntime() {
           description,
           duration: Infinity,
           closeButton: true,
+          closeButtonAriaLabel: "Hide",
           cancel: {
             label: "Cancel",
             onClick: cancelLoading,
