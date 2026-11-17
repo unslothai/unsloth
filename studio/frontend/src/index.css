@@ -6862,9 +6862,21 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-repeat: no-repeat;
 }
 /* A masked ancestor is the backdrop root (Chromium and WebKit), so the welcome composer inside the viewport
-   blurred nothing and the image showed through it sharp. */
+   blurred nothing and the image showed through it sharp. The fade only matters once the view scrolls, so it
+   comes back from the first scrolled pixel; without scroll timelines the 0s animation ends on the fade. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
   mask-image: none;
+  animation: thread-welcome-header-fade linear both;
+  animation-timeline: scroll(self);
+  animation-range: 0 1px;
+}
+@keyframes thread-welcome-header-fade {
+  from { mask-image: none; }
+  to {
+    mask-image:
+      linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem)),
+      linear-gradient(#000, #000);
+  }
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
   position: relative;
