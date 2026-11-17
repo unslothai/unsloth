@@ -194,7 +194,6 @@ let unwatchRemoteHistory: (() => void) | null = null;
 function registerPager(pager: SidebarPager) {
   if (livePagers.size === 0 && typeof window !== "undefined") {
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
-    // Chats created, renamed or deleted on another device.
     unwatchRemoteHistory = watchRemoteHistory({});
   }
   livePagers.add(pager);

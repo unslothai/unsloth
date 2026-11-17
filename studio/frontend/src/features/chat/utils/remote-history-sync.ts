@@ -10,7 +10,6 @@ export type RemoteHistoryRevision = {
 };
 
 export type RemoteHistoryWatcher = {
-  /** The open thread's saved id; null when none is open. */
   threadId?: () => string | null | undefined;
   /** False while the view must not be rewritten (a run here, an open edit): the change waits. */
   isIdle?: () => boolean;

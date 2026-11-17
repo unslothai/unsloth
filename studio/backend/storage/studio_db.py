@@ -2580,8 +2580,7 @@ def get_chat_thread(id: str) -> Optional[dict]:
         conn.close()
 
 
-# Scope '' counts every chat write; a thread id counts that thread's. Triggers, so every writer
-# (routes, server-side runs, imports) moves them and other devices can poll one cheap row.
+# Scope '' counts every chat write, a thread id that thread's; triggers catch every writer.
 _CHAT_HISTORY_REVISION_ALL = ""
 
 
