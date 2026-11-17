@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import struct
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -767,6 +768,31 @@ class TestCachedQuantLoads:
                     engram_precision = "Q5_1",
                 )
             )
+
+    def test_the_quant_own_table_name_survives_a_replay_of_the_load(self, monkeypatch, tmp_path):
+        # Respawn and crash recovery replay the committed intent: the own-table name must survive.
+        from test_llama_cpp_placement import _backend, _launch
+
+        backend, _ = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+        snap = tmp_path / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "abc"
+        gguf = _write(snap / "M-UD-IQ1_S.gguf", (tmp_path / "model.gguf").read_bytes())
+        monkeypatch.setattr(lc, "_resolve_engram_swap", lambda *a: None)
+        _launch(backend, gguf, hf_variant = "UD-IQ1_S", engram_precision = "IQ4_NL")
+        backend_id = backend.last_load_intent.model_identifier
+        named = replace(backend.last_load_intent, engram_precision = "IQ4_NL")
+        assert backend._engram_precision is None
+        assert backend.last_load_intent.bundled_engram_request == "IQ4_NL"
+        assert backend.matches_load_source(named)
+        replayed = {
+            key: value
+            for key, value in vars(backend.last_load_intent).items()
+            if key not in ("gguf_path", "model_identifier")
+        }
+        backend.unload_model()
+        _launch(backend, gguf, model_identifier = backend_id, **replayed)
+        assert backend.last_load_intent.bundled_engram_request == "IQ4_NL"
+        assert backend.matches_load_source(named)
+        assert not backend.matches_load_source(replace(named, engram_precision = "Q5_1"))
 
     def test_a_path_load_of_a_table_skipped_quant_needs_its_table(self, monkeypatch, tmp_path):
         from test_llama_cpp_placement import _backend

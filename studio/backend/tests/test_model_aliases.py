@@ -942,7 +942,13 @@ def test_alias_reuse_matches_a_resident_loaded_by_file_path(monkeypatch, request
 def test_alias_reuse_matches_the_bundled_engram_table_it_was_loaded_with(
     monkeypatch, bundled_request, engram, satisfied
 ):
-    backend = _resident(_engram_precision = None, _bundled_engram_request = bundled_request)
+    from dataclasses import replace
+
+    backend = _resident(_engram_precision = None)
+    # In the intent itself, which a respawn or crash recovery replays unchanged.
+    backend._last_load_intent = replace(
+        backend.last_load_intent, bundled_engram_request = bundled_request
+    )
     saved = {"engram_precision": engram} if engram else None
     assert _satisfied(monkeypatch, backend, _CONFIG, saved = saved) is satisfied
 

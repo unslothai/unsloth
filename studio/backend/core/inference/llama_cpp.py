@@ -803,6 +803,9 @@ class GgufLoadIntent:
     hf_token: Optional[str] = None
     # A standalone Engram table of the Hub repo, by precision, in place of the quant's own.
     engram_precision: Optional[str] = None
+    # The precision a load named when it resolved to the quant's own table (engram_precision is then
+    # None). Kept in the intent so a respawn or recovery replays it and naming it again still matches.
+    bundled_engram_request: Optional[str] = None
     audio_codec_path: Optional[str] = None
     is_vision: bool = False
     # Text-only load: no projector on GPU or CPU, freeing its VRAM; image input is off for the session.
@@ -8635,8 +8638,6 @@ class LlamaCppBackend:
         self._vision_disabled_by_user: bool = False
         # Precision of the standalone Engram table passed with --ple; None runs the quant's own.
         self._engram_precision: Optional[str] = None
-        # The precision the load named when it resolved to the quant's own table, so naming it again matches.
-        self._bundled_engram_request: Optional[str] = None
         # Block-diffusion model, served by the diffusion runner; set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
         self._gguf_type: Optional[str] = None
@@ -20239,7 +20240,6 @@ class LlamaCppBackend:
         # A diffusion model must not report the last model's vision state.
         self._disable_vision = False
         self._engram_precision = None
-        self._bundled_engram_request = None
         self._vision_disabled_by_user = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
@@ -24221,7 +24221,6 @@ class LlamaCppBackend:
         hf_variant = intent.hf_variant
         hf_token = intent.hf_token
         engram_precision = intent.engram_precision
-        requested_engram_precision = engram_precision
         engram_swap: Optional[EngramSwap] = None
         # A cached Hub quant loaded by its path (the /v1 auto-switch) keeps its repo's tables.
         engram_repo = hf_repo or hf_cache_repo_id(intent.gguf_path)
@@ -24237,8 +24236,10 @@ class LlamaCppBackend:
                 )
             if engram_swap is None:
                 # The quant's own table: the same load as naming none, so it dedupes like one.
+                intent = replace(
+                    intent, engram_precision = None, bundled_engram_request = engram_precision
+                )
                 engram_precision = None
-                intent = replace(intent, engram_precision = None)
             else:
                 unfetchable = _engram_table_unfetchable_reason(engram_repo, engram_swap.table)
                 if unfetchable:
@@ -32554,7 +32555,6 @@ class LlamaCppBackend:
                 self._is_vision = effective_is_vision
                 self._disable_vision = bool(disable_vision)
                 self._engram_precision = engram_swap.table.precision if engram_swap else None
-                self._bundled_engram_request = None if engram_swap else requested_engram_precision
                 # is_vision, not effective_is_vision (this load detached the projector on purpose); text-only, audio-only and arg-dropped cases must not blame the switch.
                 self._vision_disabled_by_user = bool(
                     is_vision and disable_vision and _dv_dropped_image_projector
@@ -34841,9 +34841,11 @@ class LlamaCppBackend:
         # table into none only while loading (it asks the Hub), so the precision that load named
         # matches too: a reuse check cannot normalize it without that network call.
         requested_engram = (intent.engram_precision or "").upper()
+        bundled_request = getattr(
+            getattr(self, "_last_load_intent", None), "bundled_engram_request", None
+        )
         if requested_engram != (getattr(self, "_engram_precision", None) or "").upper() and (
-            not requested_engram
-            or requested_engram != (getattr(self, "_bundled_engram_request", None) or "").upper()
+            not requested_engram or requested_engram != (bundled_request or "").upper()
         ):
             return False
         custom_mmproj = _extra_args_device(intent.extra_args, {"--mmproj", "-mm"})
@@ -35022,7 +35024,6 @@ class LlamaCppBackend:
             self._disable_vision = False
             self._vision_disabled_by_user = False
             self._engram_precision = None
-            self._bundled_engram_request = None
             self._launch_ple = None
             self._is_audio = False
             self._audio_type = None
