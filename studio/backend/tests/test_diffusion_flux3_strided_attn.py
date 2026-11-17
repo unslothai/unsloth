@@ -75,7 +75,7 @@ def test_strided_processor_matches_the_cudnn_dispatch_bitwise(dtype, batch, seq)
 
 
 def test_strided_processor_hands_sdpa_the_projection_views(monkeypatch):
-    # the point of the processor: no Q / K / V copies (a restored .contiguous() must fail this)
+    # a restored .contiguous() must fail this
     attn, _stock = _attn()
     seen = []
     real = torch.nn.functional.scaled_dot_product_attention

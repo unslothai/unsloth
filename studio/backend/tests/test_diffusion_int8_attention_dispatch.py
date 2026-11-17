@@ -158,7 +158,6 @@ def test_route_survives_copies():
 
 @pytest.mark.parametrize("mode", [1, 2])
 def test_route_copies_keep_the_sink_mode(mode):
-    # CFG replicas deepcopy the transformer: a copy must keep the sink kernel mode _install chose
     route = _route(min_tokens = 2560, dtype = torch.float16, head_dim = 128)
     route.sinks = mode
     for clone in (copy.deepcopy(route), copy.copy(route), pickle.loads(pickle.dumps(route))):

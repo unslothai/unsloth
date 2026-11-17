@@ -121,7 +121,6 @@ def test_cuda_transposed_int_mm_is_exact(monkeypatch, m, k, n):
 
 
 def test_off_grid_fallback_returns_on_the_operand_card(monkeypatch):
-    # K % 8 != 0 takes the CPU matmul; its result must go back to cuda:1, not the current card ("cuda")
     fn, _seen = _patched(monkeypatch)
     moved = []
 

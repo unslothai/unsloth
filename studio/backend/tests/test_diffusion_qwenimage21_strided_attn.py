@@ -114,7 +114,6 @@ def test_marker_admits_only_its_probed_dtype(strided):
     m = Q.StridedCudnn((0,), torch.bfloat16)
     q, k, v = _qkv()
     assert Q.plain_qkv(m, (q, k, v), {}) is not None
-    # a bf16 probe says nothing about fp16 calls (an autocast or a later cast of the pipe)
     assert Q.plain_qkv(m, (q.half(), k.half(), v.half()), {}) is None
     for other in (copy.deepcopy(m), pickle.loads(pickle.dumps(m))):
         assert other.dtype is torch.bfloat16 and other.cards == m.cards

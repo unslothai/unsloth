@@ -193,7 +193,6 @@ def test_plain_tensor_is_not_eligible():
 
 @pytest.mark.parametrize("mapping, ok", [("SYMMETRIC", True), ("SYMMETRIC_NO_CLIPPING_ERR", False)])
 def test_only_plain_symmetric_activation_quant_is_eligible(mapping, ok):
-    # the fast act quant and the exact ConvRot route implement torchao's SYMMETRIC rule only
     quant_api = pytest.importorskip("torchao.quantization")
     MappingType = pytest.importorskip("torchao.quantization.quant_primitives").MappingType
     import dataclasses

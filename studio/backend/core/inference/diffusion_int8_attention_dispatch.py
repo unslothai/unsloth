@@ -110,8 +110,7 @@ def _backend_name(backend: Any) -> str:
 
 
 def _race_name(incumbent: Any) -> str:
-    """The incumbent's name in the verdict caches. A strided cuDNN pin runs a different call than the contiguous
-    cuDNN one, so its races are cached apart."""
+    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
     name = f"dispatch:{_backend_name(incumbent)}"
     return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
 
