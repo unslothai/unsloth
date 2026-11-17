@@ -37,6 +37,7 @@ def flags(monkeypatch):
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
     getattr(att, "_ROCM_UNVERIFIED_LOGGED", set()).clear()
+    getattr(att, "_ROCM_PROBE_FORCED_MATH", set()).clear()
     yield
     for value, write in before:
         write(value)
@@ -44,6 +45,7 @@ def flags(monkeypatch):
     att._ROCM_GUARD_DISABLED.clear()
     att._ROCM_PROBE_INCOMPLETE.clear()
     getattr(att, "_ROCM_UNVERIFIED_LOGGED", set()).clear()
+    getattr(att, "_ROCM_PROBE_FORCED_MATH", set()).clear()
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])
@@ -368,10 +370,33 @@ def test_unanswered_probe_fails_closed_only_on_unverified_archs(monkeypatch, arc
     """The parent keeps the experimental opt-in, so an unverified card keeps only fused kernels a child confirmed."""
     monkeypatch.setattr(att, "_rocm_device_arch", lambda device: arch)
     _record_children(monkeypatch, fused = "timeout")
-    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == ()
+    expected = ("math",) if disabled else ()
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == expected
     assert torch.backends.cuda.flash_sdp_enabled() is not disabled
     assert torch.backends.cuda.mem_efficient_sdp_enabled() is not disabled
+    # The retry backoff keeps reporting what the parent now runs.
+    assert att._probe_rocm_sdpa_kernels("cuda:0", torch.bfloat16) == expected
     assert att._SDPA_PROBE_CACHE == {}
+
+
+def test_forced_math_reads_as_math_only_and_is_retried(monkeypatch):
+    """Callers bound the score matrix while MATH is forced; a later answer replaces it instead of a memoized MATH."""
+    monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1103")
+    answers = iter([(), ("math", "flash", "mem_efficient")])
+    monkeypatch.setattr(att, "_run_rocm_sdpa_children", lambda device, dtype: next(answers))
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", att._probe_rocm_sdpa_kernels)
+    target = "cuda:0"
+    assert att._sdpa_capability(SimpleNamespace(device = target, dtype = torch.float16)) == ("math",)
+    assert att._SDPA_PROBE_CACHE == {}
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    att._ROCM_PROBE_INCOMPLETE.clear()  # backoff elapsed
+    assert att._sdpa_capability(SimpleNamespace(device = target, dtype = torch.float16)) == (
+        "math",
+        "flash",
+        "mem_efficient",
+    )
+    assert att._ROCM_PROBE_FORCED_MATH == set()
+    assert torch.backends.cuda.flash_sdp_enabled()
 
 
 def test_unanswered_read_only_probe_leaves_the_flags(monkeypatch):
@@ -407,7 +432,7 @@ def test_hsa_override_is_judged_by_the_silicon(monkeypatch, platform, silicon, v
     import sys
 
     monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1100")
-    monkeypatch.setattr(att, "_rocm_kfd_silicon_archs", lambda: silicon)
+    monkeypatch.setattr(att, "_rocm_kfd_silicon_archs", lambda device: silicon)
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
     assert att._rocm_aotriton_experimental_verified("cuda:0") is verified
@@ -439,3 +464,27 @@ def test_auto_flash_still_runs_on_integrated_gpus(monkeypatch):
 
     monkeypatch.setattr(host_pinning, "device_is_integrated", lambda device = None: True)
     assert att._rocm_auto_flash(SimpleNamespace(device = "cuda:0", dtype = torch.bfloat16))
+
+
+@pytest.mark.parametrize(
+    "env,index,expected",
+    [
+        ({}, 1, ["gfx1103"]),
+        ({"HIP_VISIBLE_DEVICES": "0"}, 0, ["gfx1100"]),
+        ({"HIP_VISIBLE_DEVICES": "1"}, 0, ["gfx1103"]),
+        ({"CUDA_VISIBLE_DEVICES": "1,0"}, 1, ["gfx1100"]),
+        ({"ROCR_VISIBLE_DEVICES": "1,0", "HIP_VISIBLE_DEVICES": "1"}, 0, ["gfx1100"]),
+        ({"HIP_VISIBLE_DEVICES": "GPU-abc"}, 0, ["gfx1100", "gfx1103"]),
+        ({"HIP_VISIBLE_DEVICES": "0"}, 3, ["gfx1100", "gfx1103"]),
+    ],
+)
+def test_kfd_silicon_is_read_for_the_requested_device(monkeypatch, env, index, expected):
+    """A gfx1100 dGPU selected by a visibility mask is judged by its own node, not an unused gfx1103 beside it."""
+    from utils.hardware import amd
+
+    for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(amd, "amd_kfd_gpu_gfx_targets", lambda: ["gfx1100", "gfx1103"])
+    assert att._rocm_kfd_silicon_archs(f"cuda:{index}") == expected

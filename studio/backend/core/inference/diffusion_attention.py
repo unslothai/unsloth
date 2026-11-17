@@ -118,6 +118,8 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 # An incomplete ROCm probe is retried, but not by every check of the same load (up to 90 s per attempt).
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
+# Probe keys whose unanswered probe put the parent on MATH: they read as math-only until a probe answers.
+_ROCM_PROBE_FORCED_MATH: set[tuple[str, str]] = set()
 
 # Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
 _SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -157,10 +159,38 @@ def _rocm_device_arch(device: str) -> str:
         return ""
 
 
-def _rocm_kfd_silicon_archs() -> Optional[list[str]]:
+def _rocm_visible_ordinals(physical: list[int]) -> Optional[list[int]]:
+    """``physical`` narrowed by ROCR_VISIBLE_DEVICES, then HIP_VISIBLE_DEVICES (else CUDA_VISIBLE_DEVICES); None when a
+    mask names a device by anything but its index (a UUID), which this cannot resolve."""
+    hip = os.environ.get("HIP_VISIBLE_DEVICES")
+    for raw in (
+        os.environ.get("ROCR_VISIBLE_DEVICES"),
+        hip if hip is not None else os.environ.get("CUDA_VISIBLE_DEVICES"),
+    ):
+        if raw is None:
+            continue
+        tokens = [t.strip() for t in raw.split(",") if t.strip()]
+        if not all(t.isdigit() for t in tokens):
+            return None
+        physical = [physical[int(t)] for t in tokens if int(t) < len(physical)]
+    return physical
+
+
+def _rocm_kfd_silicon_archs(device: str) -> Optional[list[str]]:
+    """KFD's silicon target for ``device``; every KFD GPU's when its physical node cannot be resolved."""
     try:
+        import torch
+
         from utils.hardware.amd import amd_kfd_gpu_gfx_targets
-        return amd_kfd_gpu_gfx_targets()
+
+        targets = amd_kfd_gpu_gfx_targets()
+        if not targets:
+            return targets
+        index = torch.device(device).index
+        visible = _rocm_visible_ordinals(list(range(len(targets))))
+        if visible is not None and 0 <= (index or 0) < len(visible):
+            return [targets[visible[index or 0]]]
+        return targets
     except Exception:  # noqa: BLE001
         return None
 
@@ -177,7 +207,7 @@ def _rocm_aotriton_experimental_verified(device: str) -> bool:
         for key, value in os.environ.items()
     ):
         # The override renames the target torch reports; the kernels still run on the silicon KFD names.
-        silicon = _rocm_kfd_silicon_archs()
+        silicon = _rocm_kfd_silicon_archs(device)
         return bool(silicon) and all(arch in verified for arch in silicon)
     return True
 
@@ -193,10 +223,11 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
-        return ()
+        return (SDPA_MATH,) if key in _ROCM_PROBE_FORCED_MATH else ()
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
+        _ROCM_PROBE_FORCED_MATH.discard(key)
         if (
             not _SDPA_PROBE_READ_ONLY.get()
             and _rocm_guard_allowed()
@@ -214,8 +245,11 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
             and not _rocm_children_experimental(device)
         ):
             # No child answered, and the parent would run unconfirmed fused kernels under its experimental opt-in.
+            # Report MATH so callers bound the score matrix; _sdpa_capability does not memoize it, so the probe retries.
             try:
                 _apply_rocm_guard((SDPA_MATH,))
+                _ROCM_PROBE_FORCED_MATH.add(key)
+                return (SDPA_MATH,)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
                 pass
     return available
@@ -432,9 +466,9 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
         available = ()
-    # Memoize only an answer: empty means the probe itself failed (transient).
-    if not available:
-        return ()
+    # Memoize only an answer: empty means the probe itself failed (transient), and a forced MATH is retried.
+    if not available or key in _ROCM_PROBE_FORCED_MATH:
+        return available
     with _SDPA_PROBE_LOCK:
         return _SDPA_PROBE_CACHE.setdefault(key, available)
 
