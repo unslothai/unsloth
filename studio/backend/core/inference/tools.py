@@ -505,10 +505,6 @@ _WGET_PLAIN_VALUES = {
 _PLAIN_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 # Proxied launches point these at empty rc files; a command that names them could undo that.
 _DOWNLOADER_CONFIG_NAMES_RE = re.compile(r"CURL_HOME|WGETRC|XDG_CONFIG_HOME|NETRC|\bHOME=")
-# Change what a later curl/wget word runs or which environment it gets.
-_DOWNLOAD_ALTERING_WORDS = frozenset(
-    {"source", ".", "alias", "shopt", "function", "enable", "builtin", "command", "exec", "eval"}
-)
 # What a download may be piped into: text tools with no option that runs a program (not sort: --compress-program).
 # A wrapper (env bash, timeout 5 sh) would hide an interpreter from the pipe-to-shell check.
 _DOWNLOAD_PIPE_TARGETS = frozenset(
@@ -526,6 +522,40 @@ _DOWNLOAD_PIPE_TARGETS = frozenset(
         "md5sum",
     }
 )
+# The only other commands a call with an exempted download may run. Anything else (an interpreter running what was
+# just downloaded, unset/export of the rc variables, source, aliases) keeps the block; separate calls still work.
+_DOWNLOAD_COMPANIONS = _DOWNLOAD_PIPE_TARGETS | frozenset(
+    {
+        "cd",
+        "mkdir",
+        "ls",
+        "echo",
+        "pwd",
+        "test",
+        "[",
+        "true",
+        "false",
+        "sleep",
+        "mv",
+        "cp",
+        "touch",
+        "chmod",
+        "fi",
+        "done",
+    }
+)
+
+
+def _unquoted(raw: str) -> str:
+    out, quote = [], None
+    for ch in raw:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
@@ -597,14 +627,23 @@ def _is_plain_download(command: str) -> bool:
     if tokens is None:
         return False
     # The words as bash reads them too: CURL_HO''ME is CURL_HOME.
-    if _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens)) or any(
-        (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
-        or (
-            is_operator
-            and token in ("|", "|&")
-            and (k + 1 >= len(tokens) or tokens[k + 1][0] not in _DOWNLOAD_PIPE_TARGETS)
+    if (
+        _DOWNLOADER_CONFIG_NAMES_RE.search(" ".join(token for token, _, _, _ in tokens))
+        or any(
+            (is_operator and token.startswith("(") and k > 0 and not tokens[k - 1][1])
+            # Brace expansion builds words at run time: unset CURL_{HOME,X}.
+            or (
+                not is_operator
+                and not _PLAIN_URL_RE.match(token)
+                and bool(set(_unquoted(command[first:last])) & {"{", "}"})
+            )
+            or (
+                is_operator
+                and token in ("|", "|&")
+                and (k + 1 >= len(tokens) or tokens[k + 1][0] not in _DOWNLOAD_PIPE_TARGETS)
+            )
+            for k, (token, is_operator, first, last) in enumerate(tokens)
         )
-        for k, (token, is_operator, _, _) in enumerate(tokens)
     ):
         return False
     rest: list[str] = []
@@ -624,14 +663,18 @@ def _is_plain_download(command: str) -> bool:
             return False
         name = token.rsplit("/", 1)[-1]
         if not (at_start and name in ("curl", "wget")):
-            # At command position only: jq's . filter is not bash's . builtin.
-            if at_start and token in _DOWNLOAD_ALTERING_WORDS:
-                return False
             is_assignment = _SHELL_ASSIGNMENT_RE.match(token) is not None
+            is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
+            # The command word itself, not its arguments: jq's . filter is not bash's . builtin.
+            if (
+                at_start
+                and not is_assignment
+                and not is_prefix
+                and token not in _DOWNLOAD_COMPANIONS
+            ):
+                return False
             assigned = assigned or (at_start and is_assignment)
-            at_start = at_start and (
-                command[start:end_offset] in _SHELL_COMMAND_PREFIXES or is_assignment
-            )
+            at_start = at_start and (is_prefix or is_assignment)
             i += 1
             continue
         # NAME=value curl ... sets the environment curl reads its config and proxy from.
