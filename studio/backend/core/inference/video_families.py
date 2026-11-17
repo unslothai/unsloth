@@ -1060,6 +1060,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (2.0, 5.0, 7.875),
+        # NVIDIA's default tier is 480p; without it a fresh Video page keeps its 768x512 fallback, an untrained size.
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (30.4, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",
@@ -1096,6 +1098,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             *_COSMOS3_256P,
         ),
         duration_presets = (3.0, 5.0, 6.0),
+        ui_default_resolution = (832, 480),
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
         i2v_pipeline_class = "Cosmos3OmniPipeline",

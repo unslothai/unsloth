@@ -1362,6 +1362,16 @@ def test_preset_tiers_match_the_pipelines_resolution_bins():
 
 
 @pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
+def test_the_video_page_starts_at_the_480p_tier(name):
+    # Without a first-render size the page kept its 768x512 fallback, which no Cosmos3 tier trains at.
+    fam = _fam(name)
+    assert video_mod._ui_default_resolution(fam) == [832, 480]
+    assert (768, 512) not in fam.resolution_presets
+    # A request without a size still takes resolution_presets[0].
+    assert fam.resolution_presets[0] == ((1280, 720) if name == "cosmos3-nano" else (832, 480))
+
+
+@pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
 @pytest.mark.parametrize("size", [(320, 192), (448, 256), (256, 448), (256, 256)])
 def test_256p_and_nvidias_jetson_size_are_accepted(name, size):
     fam = _fam(name)
