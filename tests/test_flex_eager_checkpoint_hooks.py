@@ -14,9 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""fix_flex_attention_eager_saved_tensor_hooks: eager flex_attention inside a non-reentrant checkpoint
-(the DDP default) traced its score_mod backward through the checkpoint's saved-tensor hooks, which
-restarted the layer's recompute mid forward (CheckpointError, or wrong input gradients)."""
+"""Eager flex_attention in a non-reentrant checkpoint must not restart the layer's recompute mid forward."""
 
 import importlib.util
 import os
@@ -34,8 +32,6 @@ _HOP = "torch._higher_order_ops.flex_attention"
 
 
 def _apply_fix(monkeypatch):
-    """Load import_fixes standalone and run the fix (a no-op where it does not exist yet), restoring
-    torch's create_fw_bw_graph after the test."""
     flex_hop = pytest.importorskip(_HOP)
     if not hasattr(flex_hop, "create_fw_bw_graph"):
         pytest.skip("this torch has no flex create_fw_bw_graph")
@@ -62,10 +58,10 @@ def test_trace_runs_under_identity_hooks_only_when_hooks_are_active(monkeypatch)
     getattr(fixes, _FIX, lambda: None)()
     getattr(fixes, _FIX, lambda: None)()
     wrapped = flex_hop.create_fw_bw_graph
-    assert getattr(wrapped, "_unsloth_original", None) is fake_create_fw_bw_graph  # wrapped once
+    assert getattr(wrapped, "_unsloth_original", None) is fake_create_fw_bw_graph
 
     assert wrapped() == "graphs"
-    assert seen[-1] is None  # no hooks: torch's own call, nothing pushed
+    assert seen[-1] is None
 
     def pack(t):
         return ("packed", t)

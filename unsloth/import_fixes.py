@@ -7633,14 +7633,9 @@ def _same_tensor(tensor):
 
 
 def fix_flex_attention_eager_saved_tensor_hooks():
-    """Eager flex_attention (what runs when Inductor cannot compile a flex call and suppress_errors falls
-    back, or Dynamo has marked flex skipped) builds its score_mod backward graph by tracing
-    torch.autograd.grad in create_fw_bw_graph during the forward. Inside a non-reentrant checkpoint (the
-    DDP default) that trace packs and unpacks through the checkpoint's saved-tensor hooks, and the unpack
-    starts the checkpointed layer's recompute in the middle of its own forward: CheckpointError
-    ("Recomputed values ... have different metadata"), or silently wrong input gradients when the shapes
-    happen to line up. The traced graph owns no activations, so it is built under identity hooks (the
-    innermost hooks win). Only while some saved-tensor hooks are active: otherwise nothing changes."""
+    """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
+    non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
+    recompute mid forward. The traced graph owns no activations, so trace it under identity hooks."""
     try:
         import torch
         flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
