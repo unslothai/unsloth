@@ -198,9 +198,10 @@ def test_the_dedupe_compares_the_requested_split_through_the_paravirtual_rewrite
         node.name: (ast.get_source_segment(SRC, node) or "")
         for node in ast.walk(TREE)
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("adopt_load_intent_if_matched", "_runtime_matches_intent")
+        and node.name in ("_matched_load_intent", "_runtime_matches_intent")
     }
-    adopt = bodies["adopt_load_intent_if_matched"]
+    # adopt_load_intent_if_matched and load_intent_satisfied share this one comparison.
+    adopt = bodies["_matched_load_intent"]
     assert "_metal_device_is_paravirtual()" in adopt
     assert "paravirtual_normalized_request(" in adopt
     # Normalized before the runtime comparison reads it, or the rewrite changes nothing.

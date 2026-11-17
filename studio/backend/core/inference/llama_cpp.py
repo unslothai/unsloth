@@ -34687,13 +34687,30 @@ class LlamaCppBackend:
 
     def adopt_load_intent_if_matched(self, intent: GgufLoadIntent) -> bool:
         """Match live state and adopt the caller's compatible GPU placement."""
-        if not self.matches_load_source(intent):
+        matched = self._matched_load_intent(intent, log = True)
+        if matched is None:
             return False
+        self._record_matching_gpu_request(
+            list(matched.gpu_ids) if matched.gpu_ids is not None else None
+        )
+        return True
+
+    def load_intent_satisfied(self, intent: GgufLoadIntent) -> bool:
+        """Whether the resident runtime already serves ``intent``; records nothing, unlike adopt_load_intent_if_matched."""
+        return self._matched_load_intent(intent, log = False) is not None
+
+    def _matched_load_intent(
+        self, intent: GgufLoadIntent, *, log: bool
+    ) -> Optional[GgufLoadIntent]:
+        """The intent as the resident runtime matched it, or None when a load would launch."""
+        if not self.matches_load_source(intent):
+            return None
         # A custom-path save leaves the model intent unchanged, but the
         # resident process still belongs to the previously selected runtime.
         if self._binary_changed_since_launch():
-            logger.info("llama-server selection changed since launch; forcing a reload")
-            return False
+            if log:
+                logger.info("llama-server selection changed since launch; forcing a reload")
+            return None
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # Budget is server-wide, so a save with same intent must reload; None if placement never used it.
         if _metal_device_is_paravirtual():
@@ -34737,8 +34754,9 @@ class LlamaCppBackend:
             self._memory_dio_applicable,
             bool(self._memory_dio_flags),
         ):
-            logger.info("Model Memory policy changed since launch; forcing a reload")
-            return False
+            if log:
+                logger.info("Model Memory policy changed since launch; forcing a reload")
+            return None
         # Use the pending marker: an in-flight load's budget was captured under the lock, not re-read.
         _launched_frac = self._vram_fraction_launched
         # The pending marker, not a fresh read: a load in flight captured its budget
@@ -34749,17 +34767,16 @@ class LlamaCppBackend:
         _pending_frac = self._vram_fraction_pending
         _active_frac = _pending_frac if _pending_frac is not None else _active_vram_fraction()
         if _launched_frac is not None and float(_launched_frac) != _active_frac:
-            logger.info("VRAM budget changed since launch; forcing a reload")
-            return False
+            if log:
+                logger.info("VRAM budget changed since launch; forcing a reload")
+            return None
         if self._hand_added_projector_since_launch(candidate_extra_args):
-            logger.info("A projector was added beside the cached weight; forcing a reload")
-            return False
+            if log:
+                logger.info("A projector was added beside the cached weight; forcing a reload")
+            return None
         if not self._runtime_matches_intent(intent, candidate_extra_args):
-            return False
-        self._record_matching_gpu_request(
-            list(intent.gpu_ids) if intent.gpu_ids is not None else None
-        )
-        return True
+            return None
+        return intent
 
     def _hand_added_projector_since_launch(self, extra_args: list) -> bool:
         """A text-only -hf launch whose repo publishes no projector, with one now
