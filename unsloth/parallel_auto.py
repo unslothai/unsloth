@@ -187,7 +187,7 @@ def _gib(n):
 
 
 def _resolve(estimate, install_trainer_init):
-    """Run once: `estimate()` -> (weights, state, held, forced_reason or None); agree over the ranks; write
+    """Run once: `estimate()` -> (weights, state, held); agree over the ranks; write
     UNSLOTH_FSDP2. Returns the choice."""
     if _STATE["choice"] is not None or not auto_requested():
         return _STATE["choice"]
@@ -196,11 +196,9 @@ def _resolve(estimate, install_trainer_init):
         _STATE.update(choice = "single", reason = "one process: nothing to choose")
         return _STATE["choice"]
     try:
-        weights, state, held, forced = estimate()
+        weights, state, held = estimate()
         capacity, total = _budget(held)
         fits, need = decide(weights, state, capacity, total)
-        if forced:
-            fits = False
         entry = dict(
             fits = bool(fits),
             need = need,
@@ -208,7 +206,6 @@ def _resolve(estimate, install_trainer_init):
             weights = weights,
             state = state,
             margin = need - weights - state,
-            why = forced,
         )
     except Exception as exc:
         entry = dict(fits = False, why = f"could not size the model ({type(exc).__name__}: {exc})")
@@ -373,7 +370,7 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
         )
         state = training_state_bytes(trainable, grad_itemsize = dtype_bytes if full else 4)
-        return weights, state, 0, None
+        return weights, state, 0
 
     return _resolve(estimate, install_trainer_init = True)
 
@@ -381,25 +378,6 @@ def resolve_for_load(loader, args, kwargs):
 # --------------------------------------------------------------------------------------------------
 # Sizing a model already built (a Trainer whose model no Unsloth load made)
 # --------------------------------------------------------------------------------------------------
-
-
-def _trainable_embedding(model):
-    """Name of a trainable embedding / output head / modules_to_save parameter, else None. DDP fails in the
-    reentrant checkpoint backward there (M2 cluster C2: Mistral CPT / Text_Completion under DDP)."""
-    import torch.nn as nn
-
-    for module_name, module in model.named_modules():
-        leaf = module_name.rsplit(".", 1)[-1]
-        if not (
-            isinstance(module, nn.Embedding)
-            or "modules_to_save" in module_name
-            or leaf in ("lm_head", "embed_out")
-        ):
-            continue
-        for name, p in module.named_parameters(recurse = False):
-            if p.requires_grad:
-                return f"{module_name}.{name}"
-    return None
 
 
 def resolve_for_trainer(model, training_args = None):
@@ -422,12 +400,6 @@ def resolve_for_trainer(model, training_args = None):
         )
         # Already resident: on CPU it is out of the available RAM _budget reads (CUDA counts reserved).
         held = weights
-        embedding = _trainable_embedding(model)
-        forced = (
-            f"{embedding} trains, and DDP fails in the reentrant checkpoint backward there"
-            if embedding
-            else None
-        )
-        return weights, state, held, forced
+        return weights, state, held
 
     return _resolve(estimate, install_trainer_init = False)

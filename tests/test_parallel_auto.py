@@ -157,15 +157,6 @@ def test_checkpoint_headers_size_the_load(clean):
     assert train_full == sum(__import__("math").prod(s) for _, _, s in tensors)
 
 
-def test_trainable_embedding_is_found(clean):
-    _, _, auto = clean
-    model = torch.nn.Sequential(torch.nn.Embedding(8, 4), torch.nn.Linear(4, 4))
-    model[0].weight.requires_grad_(False)
-    assert auto._trainable_embedding(model) is None
-    model[0].weight.requires_grad_(True)
-    assert auto._trainable_embedding(model) == "0.weight"
-
-
 # --------------------------------------------------------------------------------------------------
 # gloo world of 2
 # --------------------------------------------------------------------------------------------------
