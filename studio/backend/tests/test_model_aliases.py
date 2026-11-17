@@ -947,6 +947,37 @@ def test_alias_reuse_matches_the_bundled_engram_table_it_was_loaded_with(
     assert _satisfied(monkeypatch, backend, _CONFIG, saved = saved) is satisfied
 
 
+@pytest.mark.parametrize(
+    "config, satisfied", [(_CONFIG, True), ({**_CONFIG, "max_seq_length": 4096}, False)]
+)
+def test_alias_reuse_compares_a_resident_outside_the_scan_index(monkeypatch, config, satisfied):
+    # A file loaded from outside the scan roots has no index row; its advertised id still names it.
+    import routes.inference as inf
+    from core.inference import local_model_resolver as resolver
+    from core.inference.llama_cpp import GgufLoadIntent
+    from utils import openai_auto_switch_settings as settings
+
+    gguf = "/elsewhere/model-Q4_K_M.gguf"
+    backend = _resident(_model_identifier = gguf, _gguf_path = gguf)
+    backend._openai_advertised_id = "local/model-Q4_K_M"
+    backend._last_load_intent = GgufLoadIntent(
+        model_identifier = gguf,
+        gguf_path = gguf,
+        hf_variant = "Q4_K_M",
+        n_ctx = backend._requested_n_ctx,
+        speculative_type = backend._requested_spec_mode,
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(settings, "get_model_overrides", lambda: {})
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf_for_switch", lambda *a, **k: None)
+    requested = "local/model-Q4_K_M"
+    assert inf._loaded_satisfies(requested) is True
+    assert (
+        asyncio.run(inf._configured_alias_resident_satisfies(requested, config, None)) is satisfied
+    )
+
+
 def test_auto_speculation_matches_whatever_algorithm_auto_picked(monkeypatch):
     # The loader records the requested mode; Auto running MTP is still Auto.
     backend = _resident(_requested_spec_mode = "auto", _speculative_type = "draft-mtp")

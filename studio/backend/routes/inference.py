@@ -3994,7 +3994,16 @@ async def _configured_alias_resident_satisfies(
             resolve_local_gguf_for_switch, requested_model, include_companion_scope = True
         )
     if resolved is None:
-        return False
+        if not named_resident:
+            return False
+        # Loaded from outside the scan roots, so no index row: the resident names its own target.
+        backend = get_llama_cpp_backend()
+        identifier = backend.model_identifier
+        resolved = (
+            identifier,
+            backend.hf_variant,
+            getattr(backend, "_openai_advertised_id", None) or identifier,
+        )
     target_id, variant, override_id = resolved[:3]
     _, requested_variant = split_model_ref(requested_model)
     pinned_variant = local_gguf_pinned_variant(requested_model, allow_scan = False)
