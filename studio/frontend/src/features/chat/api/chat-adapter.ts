@@ -272,10 +272,9 @@ import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
   externalStopWindow,
-  getExternalMaxOutputTokens,
+  externalRequestMaxTokens,
   getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
-  getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
@@ -6821,6 +6820,13 @@ export function createOpenAIStreamAdapter(
                 }
               }
             }
+            // Null at "Max" on a self-hosted server: it stops at its own window.
+            const externalMaxTokens = externalRequestMaxTokens(
+              externalProvider?.providerType,
+              externalSelection?.modelId,
+              externalProvider?.maxOutputTokens,
+              params.maxTokens,
+            );
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
@@ -6839,18 +6845,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
-              // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
-              max_tokens: Math.min(
-                Math.max(
-                  params.maxTokens,
-                  getExternalMinOutputTokens(externalProvider?.providerType),
-                ),
-                getExternalMaxOutputTokens(
-                  externalProvider?.providerType,
-                  externalSelection?.modelId,
-                  externalProvider?.maxOutputTokens,
-                ),
-              ),
+              ...(externalMaxTokens == null
+                ? {}
+                : { max_tokens: externalMaxTokens }),
 
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP

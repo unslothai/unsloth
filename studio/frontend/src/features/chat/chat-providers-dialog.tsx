@@ -98,7 +98,10 @@ import {
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
-import { getExternalMinOutputTokens } from "./provider-capabilities";
+import {
+  externalMaxTokensUnboundedAtMax,
+  getExternalMinOutputTokens,
+} from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -2404,8 +2407,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Caps Max Tokens for this connection. Blank uses the model's
-                      limit, or 32,768 without one.
+                      {externalMaxTokensUnboundedAtMax(providerType, null)
+                        ? "Caps Max Tokens for this connection. Blank lets Max send no limit, so the server stops at its context window."
+                        : "Caps Max Tokens for this connection. Blank uses the model's limit, or 32,768 without one."}
                     </p>
                   </div>
                   <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">

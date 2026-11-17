@@ -29,8 +29,60 @@ const {
   externalMaxOutputTokensNeedsConnectionCap,
   getGroundedExternalMaxOutputTokens,
   getPublishedExternalMaxOutputTokens,
+  externalRequestMaxTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
+
+test("Max on llama.cpp and vLLM sends no limit; the server stops at its window", () => {
+  for (const providerType of ["llama_cpp", "vllm"]) {
+    assert.equal(
+      externalRequestMaxTokens(
+        providerType,
+        "qwen3",
+        null,
+        EXTERNAL_MAX_OUTPUT_TOKENS,
+      ),
+      null,
+    );
+    // A value carried over from a local model's Max is clamped to the top, which is Max too.
+    assert.equal(
+      externalRequestMaxTokens(providerType, "qwen3", null, 262144),
+      null,
+    );
+    assert.equal(
+      externalRequestMaxTokens(providerType, "qwen3", null, 8192),
+      8192,
+    );
+    // The connection's own limit is an explicit cap, sent as is.
+    assert.equal(
+      externalRequestMaxTokens(providerType, "qwen3", 65536, 65536),
+      65536,
+    );
+    assert.equal(
+      externalRequestMaxTokens(providerType, "qwen3", 65536, 1e6),
+      65536,
+    );
+  }
+});
+
+test("Ollama, Custom and hosted providers keep a numeric limit at the top", () => {
+  // Ollama shifts context and keeps going without one; a gateway may default low.
+  for (const providerType of ["ollama", "custom", "openrouter"]) {
+    assert.equal(
+      externalRequestMaxTokens(providerType, "some-model", null, 1e6),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+  }
+  assert.equal(
+    externalRequestMaxTokens("anthropic", "claude-opus-4-1", null, 1e6),
+    32000,
+  );
+  // The documented floor still applies.
+  assert.equal(
+    externalRequestMaxTokens("kimi", "kimi-k3", null, 1),
+    getExternalMinOutputTokens("kimi"),
+  );
+});
 
 // UI type and backend type disagree for an openai row with a custom name or base URL.
 test("the override is offered on every connection except a ChatGPT subscription", () => {
