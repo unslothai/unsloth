@@ -1606,7 +1606,7 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
   );
 });
 
-test("a model with no logo of its own shows no icon", () => {
+test("a model with no logo of its own shows a letter tile from its name", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -1615,7 +1615,18 @@ test("a model with no logo of its own shows no icon", () => {
     picker.indexOf("interface SourceTab"),
   );
   assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
-  assert.match(mark, /return null;\s*\}\s*$/);
+  // The connection fallback: ApiProviderLogo with no type draws the name's first letter.
+  assert.match(mark, /providerType=\{null\}\s+name=\{name\}/);
+  assert.match(
+    mark,
+    /-m-\[calc\(1px\*var\(--ui-space-scale,1\)\)\] size-\[calc\(16px\*var\(--ui-space-scale,1\)\)\]/,
+  );
+  assert.match(
+    picker,
+    /: rowMaker\(row\) !== null \|\| rowMarkName\(row\) !== undefined;/,
+  );
+  const logo = readSrc("features/chat/api-provider-logo.tsx");
+  assert.match(logo, /if \(!src && letter\) \{\s+return \(\s+<LetterTile/);
   assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
   assert.equal(picker.match(/chosenName && chosenEjectable \? \(/g)?.length, 2);
   assert.equal(

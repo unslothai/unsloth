@@ -475,7 +475,7 @@ export function pickerMinHeight(
   return shortLandscape ? 380 : 420;
 }
 
-/** Room under Select model for a panel opening down: the height it may grow to without riding up. */
+/** Room under Select model before a downward panel has to ride up. */
 export function pickerRoomBelow(
   triggerBottom: number,
   viewportHeight: number,

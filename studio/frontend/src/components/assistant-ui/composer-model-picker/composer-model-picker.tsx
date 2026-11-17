@@ -706,14 +706,20 @@ function MakerMark({
 
 type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   id?: string;
+  label?: string;
   lora?: LoraModelOption;
 };
 
-/** A model's own logo only; no placeholder. */
+/** The name a logo-less model's letter tile is drawn from. */
+function rowMarkName(row?: RowMarkRow): string | undefined {
+  const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
+  return name?.trim() || undefined;
+}
+
 function hasRowMark(row?: RowMarkRow): boolean {
   return row?.kind === "external"
     ? Boolean(row.providerType)
-    : rowMaker(row) !== null;
+    : rowMaker(row) !== null || rowMarkName(row) !== undefined;
 }
 
 function RowMark({ row }: { row?: RowMarkRow }) {
@@ -733,7 +739,16 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
-  return null;
+  // No maker logo (flint, a local folder): the same letter tile a connection without one gets.
+  const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  // 2px over the slot: a solid disc reads smaller than the logos beside it.
+  return name ? (
+    <ApiProviderLogo
+      providerType={null}
+      name={name}
+      className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+    />
+  ) : null;
 }
 
 interface SourceTab {
@@ -5169,10 +5184,9 @@ export function ComposerModelPicker({
         }
         className={cn(
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
-          // Opening up, the floor and room are the space above; opening down, see --picker-room.
+          // Opening up, both bounds are the space above.
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
-          // The list view fits its rows; useAnimatedListHeight glides tab changes.
           configTarget
             ? "h-(--composer-picker-min-h) max-h-(--picker-floor)"
             : isExpanded
