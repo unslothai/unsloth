@@ -419,6 +419,7 @@ function OtherModelPicker({
       externalModels,
       externalConnections,
       connections: connectionsEnabled,
+      browseOnly: true,
       onPick,
       // Translate loads and releases its model itself.
       eject: ignore,
@@ -464,7 +465,9 @@ function OtherModelPicker({
 
 function pickedModelName(id: string): string {
   const external = parseExternalModelId(id)?.modelId;
-  return external ?? id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+  if (external) return external;
+  const name = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+  return name.replace(/-GGUF$/i, "");
 }
 
 function ModelMenu({

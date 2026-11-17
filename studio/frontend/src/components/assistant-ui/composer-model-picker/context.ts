@@ -32,6 +32,8 @@ export interface ComposerModelPickerSource {
   activeModelConfig: PerModelConfig | null;
   loadedContextLength: number | null;
   loaded: boolean;
+  /** A panel opened to browse (Translate): always the full list, never collapsed to the choice. */
+  browseOnly?: boolean;
   /** False where only local models run (the API page): no Connected or provider tabs. */
   connections?: boolean;
   /** A choice owned outside Chat (Compare, API page): no reasoning controls, Eject only while `loaded`. */

@@ -2695,7 +2695,8 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName;
+  const browseOnly = source?.browseOnly === true;
+  const isExpanded = expanded || !chosenName || browseOnly;
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -5267,7 +5268,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName ? (
+              {chosenName && !browseOnly ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
