@@ -7628,6 +7628,55 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def _same_tensor(tensor):
+    return tensor
+
+
+def fix_flex_attention_eager_saved_tensor_hooks():
+    """Eager flex_attention (what runs when Inductor cannot compile a flex call and suppress_errors falls
+    back, or Dynamo has marked flex skipped) builds its score_mod backward graph by tracing
+    torch.autograd.grad in create_fw_bw_graph during the forward. Inside a non-reentrant checkpoint (the
+    DDP default) that trace packs and unpacks through the checkpoint's saved-tensor hooks, and the unpack
+    starts the checkpointed layer's recompute in the middle of its own forward: CheckpointError
+    ("Recomputed values ... have different metadata"), or silently wrong input gradients when the shapes
+    happen to line up. The traced graph owns no activations, so it is built under identity hooks (the
+    innermost hooks win). Only while some saved-tensor hooks are active: otherwise nothing changes."""
+    try:
+        import torch
+        flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
+    except Exception:
+        return
+    original = getattr(flex_hop, "create_fw_bw_graph", None)
+    top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
+    if original is None or top_hooks is None:
+        return
+    if getattr(original, "_unsloth_saved_hooks_free", False):
+        return
+
+    @functools.wraps(original)
+    def create_fw_bw_graph(*args, **kwargs):
+        try:
+            active = top_hooks(False) is not None
+        except Exception:
+            active = False
+        if not active:
+            return original(*args, **kwargs)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_same_tensor, _same_tensor)
+        try:
+            # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
+            hooks.__enter__()
+        except Exception:
+            return original(*args, **kwargs)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            hooks.__exit__(None, None, None)
+
+    create_fw_bw_graph._unsloth_saved_hooks_free = True
+    create_fw_bw_graph._unsloth_original = original
+    flex_hop.create_fw_bw_graph = create_fw_bw_graph
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is

@@ -379,6 +379,7 @@ from .import_fixes import (
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -480,6 +481,8 @@ fix_triton_compiled_kernel_missing_attrs()
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
+fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
