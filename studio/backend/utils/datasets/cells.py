@@ -62,6 +62,16 @@ def content_text(content):
     return cell_text(content)
 
 
+def _turn_text(content):
+    if (
+        isinstance(content, list)
+        and content
+        and all(isinstance(part, dict) and part.get("type") == "text" for part in content)
+    ):
+        return content_text(content)
+    return cell_text(content)
+
+
 def _message(turn):
     if not isinstance(turn, dict):
         return None
@@ -132,7 +142,7 @@ def cell_turns(
         return [
             message
             if message["content"] is None and message.get("tool_calls")
-            else {**message, "content": cell_text(message["content"])}
+            else {**message, "content": _turn_text(message["content"])}
             for message in messages
         ]
     return [{"role": role, "content": cell_text(value)}]
