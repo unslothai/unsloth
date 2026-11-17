@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from stat import S_ISREG
 
 import threading
 import uuid
@@ -734,9 +735,11 @@ def _manifest_closure_digests(blobs_dir: Path, manifest: object, strict: bool) -
             seen.add(entry["digest"])
             blob = _ollama_blob_path(blobs_dir, entry["digest"])
             try:
-                # Path.is_file raises on errors other than "missing", which strict must not skip.
-                present = blob is not None and (blob.is_file() if strict else _safe_is_file(blob))
+                present = blob is not None and S_ISREG(blob.stat().st_mode)
+            except (FileNotFoundError, NotADirectoryError):
+                present = False
             except OSError:
+                # Strict must not read an unreadable child as "not downloaded" (Path.is_file would).
                 if strict:
                     raise
                 present = False

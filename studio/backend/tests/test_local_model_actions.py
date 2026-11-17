@@ -211,6 +211,37 @@ def test_delete_v2_pulled_tag_keeps_blobs_an_inline_list_child_uses(tmp_path, mo
     assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
 
 
+def test_delete_keeps_every_blob_when_a_retained_child_cannot_be_stat(tmp_path, monkeypatch):
+    import errno
+
+    from hub.services.models import ollama
+
+    store, ref, child_digest = _v2_store(tmp_path, monkeypatch)
+    alias = store / "manifests-v2" / "ollama.com" / "library" / "alias" / "latest"
+    child_ref = {
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "digest": f"sha256:{child_digest}",
+    }
+    alias.write_text(
+        json.dumps(
+            {"mediaType": "application/vnd.ollama.manifest.list.v2+json", "manifests": [child_ref]}
+        )
+    )
+    real_stat = os.stat
+
+    # os.stat, not Path.is_file: Python 3.14's is_file returns False on EIO instead of raising.
+    def flaky_stat(path, *args, **kwargs):
+        if os.fspath(path).endswith(f"sha256-{child_digest}"):
+            raise OSError(errno.EIO, "I/O error")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", flaky_stat)
+    ollama.delete_ollama_model_ref(ref)
+    monkeypatch.setattr(os, "stat", real_stat)
+
+    assert {"sha256-cfg", "sha256-model"} <= {p.name for p in (store / "blobs").iterdir()}
+
+
 def test_delete_split_gguf_takes_every_shard(lm_root, tmp_path, monkeypatch):
     hermes = tmp_path / "hermes"
     hermes.mkdir()
