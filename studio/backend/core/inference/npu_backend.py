@@ -950,18 +950,23 @@ class LemonadeNpuBackend:
             return None
         return FlmModelFiles(folder = staged, files = files) if files else None
 
-    def _unregister_local(self, local: local_q4nx.LocalQ4nx) -> None:
+    def _drop_staged(self, family: str) -> None:
         """Drop the linked copy FastFlowLM reads; the export folder itself is left alone."""
+        if not family or "/" in family or "\\" in family or not local_q4nx.is_local_id(family):
+            return
         path = self._local_dir / "registered.json"
         try:
             registered = json.loads(path.read_text("utf-8"))
         except (OSError, ValueError):
             registered = None
-        if isinstance(registered, dict) and registered.get("family") == local.family:
+        if isinstance(registered, dict) and registered.get("family") == family:
             path.unlink(missing_ok = True)
-        for staged in self._flm_model_dir.glob(f"*/{local.family}"):
+        for staged in self._flm_model_dir.glob(f"*/{family}"):
             if staged.is_dir() and not staged.is_symlink():
                 shutil.rmtree(staged, ignore_errors = True)
+
+    def _unregister_local(self, local: local_q4nx.LocalQ4nx) -> None:
+        self._drop_staged(local.family)
         if local.stamp:
             # Keyed by weights stamp: a re-conversion lists it again; stale stamps are dropped.
             hidden = [
@@ -1073,7 +1078,11 @@ class LemonadeNpuBackend:
             if resident is not None and resident.model.id == model_id:
                 raise NpuError("Unload the model before deleting it.")
             if local_q4nx.is_local_id(model_id):
-                self._unregister_local(self._local_model(model_id))
+                try:
+                    self._unregister_local(self._local_model(model_id))
+                except NpuError:
+                    # Its export folder is gone: the staged copy is all that is left to delete.
+                    self._drop_staged(local_q4nx.family_of_id(model_id))
                 return
             server = self._ensure_running()
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
@@ -1092,7 +1101,7 @@ class LemonadeNpuBackend:
             for child in children:
                 if models is not None and child == models and child.is_dir():
                     rows.extend(
-                        (entry, checkpoints.get(entry.name))
+                        (entry, checkpoints.get(entry.name) or _local_checkpoint(entry.name))
                         for entry in sorted(child.iterdir())
                         # Studio's per-model download locks (flm_files), not models.
                         if not entry.name.endswith(".unsloth-download.lock")
@@ -1110,6 +1119,14 @@ class LemonadeNpuBackend:
     ) -> str:
         """Settings > Storage lists folders by checkpoint, chat models or not; lemond deletes by id.
         reserve(model_ids) keeps pulls of those ids out of the folder until the delete ends."""
+        if local_q4nx.is_local_checkpoint(checkpoint):
+            model_id = local_q4nx.id_of_checkpoint(checkpoint)
+            resident = self.resident()
+            if resident is not None and resident.model.id == model_id:
+                raise NpuError(f"Unload {model_id} before deleting this folder.")
+            with reserve([model_id]):
+                self.delete(model_id)
+            return model_id
         # A twin left registered would read as downloaded once its shared folder is gone.
         checkpoints = folder_checkpoints(self._flm_binary(), checkpoint)
         try:
@@ -1150,6 +1167,11 @@ class LemonadeNpuBackend:
                 errors.append(f"Unload {resident.model.id} before deleting its folder.")
             rows = [row for row in rows if row.get("checkpoint") not in held]
         model_ids = [str(row.get("id")) for row in rows]
+        held_id = resident.model.id if resident is not None else None
+        for checkpoint in sorted(on_disk):
+            local_id = local_q4nx.id_of_checkpoint(checkpoint)
+            if local_q4nx.is_local_checkpoint(checkpoint) and local_id not in (*model_ids, held_id):
+                model_ids.append(local_id)
         for model_id in model_ids:
             try:
                 self.delete(model_id)
@@ -1351,6 +1373,13 @@ class LemonadeNpuBackend:
             supports_reasoning = model.reasoning,
             context_length = resident.context_length,
         )
+
+
+def _local_checkpoint(folder_name: str) -> Optional[str]:
+    # A staged conversion is in no FastFlowLM manifest, so Storage could not delete it otherwise.
+    if local_q4nx.is_local_checkpoint(folder_name):
+        return f"{folder_name}:{local_q4nx.LOCAL_SIZE}"
+    return None
 
 
 _backend: Optional[LemonadeNpuBackend] = None

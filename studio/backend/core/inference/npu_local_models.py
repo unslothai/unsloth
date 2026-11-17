@@ -127,6 +127,14 @@ def is_local_id(model_id: str) -> bool:
     return model_id.startswith(LOCAL_PREFIX)
 
 
+def family_of_id(model_id: str) -> str:
+    return model_id.removesuffix(f"-{LOCAL_SIZE}-FLM")
+
+
+def id_of_checkpoint(checkpoint: str) -> str:
+    return f"{checkpoint.split(':', 1)[0]}-{LOCAL_SIZE}-FLM"
+
+
 def _base_for(folder: Path) -> tuple[Optional[str], Optional[str]]:
     try:
         source = json.loads((folder / SOURCE_FILE).read_text(encoding = "utf-8"))

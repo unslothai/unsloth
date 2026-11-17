@@ -445,6 +445,38 @@ def test_delete_drops_the_registration_and_keeps_the_export(runtime):
 
 
 @posix_only
+def test_a_staged_copy_whose_export_is_gone_can_still_be_deleted(runtime):
+    import shutil
+
+    folder = _converted()
+    [local] = nlm.account_local_models()
+    runtime.load(local.id)
+    runtime.unload()
+    staged = runtime._flm_model_dir / "models" / local.family
+    assert staged.is_dir()
+    shutil.rmtree(folder)
+
+    assert (staged, f"{local.family}:q4nx") in runtime.model_folders()
+    assert runtime.delete_checkpoint(f"{local.family}:q4nx") == local.id
+    assert not staged.exists()
+    assert not (runtime.root / "local_q4nx" / "registered.json").exists()
+
+
+@posix_only
+def test_bulk_delete_clears_an_orphaned_staged_copy(runtime):
+    import shutil
+
+    folder = _converted()
+    [local] = nlm.account_local_models()
+    runtime.load(local.id)
+    runtime.unload()
+    shutil.rmtree(folder)
+    _deleted, errors = runtime.delete_downloaded()
+    assert errors == []
+    assert not (runtime._flm_model_dir / "models" / local.family).exists()
+
+
+@posix_only
 def test_an_incomplete_folder_is_refused_before_touching_the_npu(runtime):
     _converted(skip = ("tokenizer.json",))
     [local] = nlm.account_local_models()
