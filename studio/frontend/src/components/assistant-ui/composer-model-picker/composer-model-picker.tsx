@@ -243,6 +243,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -2029,21 +2030,7 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2130,17 +2117,7 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
+    const npuOffers: Row[] = npuPickerRows(npuModels, false);
     const all = [...marked, ...npuOffers, ...hub, ...external];
     return browseOnly
       ? all.filter(

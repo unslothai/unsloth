@@ -26,11 +26,14 @@ def _load_scope():
 @pytest.fixture
 def scope(monkeypatch):
     monkeypatch.delenv("UNSLOTH_GC_FREEZE", raising = False)
-    if gc.get_freeze_count() != 0:
-        pytest.skip("something in this process already froze the heap")
+    # Another import may have frozen the heap already: start from an unfrozen heap and refreeze after.
+    was_frozen = gc.get_freeze_count() != 0
+    gc.unfreeze()
     module = _load_scope()
     yield module
     gc.unfreeze()
+    if was_frozen:
+        gc.freeze()
     assert module._depth == 0
 
 
@@ -219,3 +222,68 @@ def test_utils_installs_on_transformers_trainer_at_import():
             if isinstance(func, ast.Name) and func.id == "_patch_trainer_train_gc_scope":
                 found = ast.unparse(node.value.args[0]) == "transformers.trainer.Trainer"
     assert found
+
+
+def _callback_trainer_class():
+    """Fake Trainer with the callback API: train() runs `steps` steps, calling on_step_end."""
+
+    class CallbackTrainer:
+        def __init__(self, steps = 3):
+            self.callbacks = []
+            self.steps = steps
+            self.freeze_counts = []
+
+        def add_callback(self, callback):
+            self.callbacks.append(callback)
+
+        def remove_callback(self, callback):
+            self.callbacks.remove(callback)
+
+        def train(self):
+            self.freeze_at_start = gc.get_freeze_count()
+            for _ in range(self.steps):
+                self.junk = [_Cycle() for _ in range(1000)]
+                for callback in self.callbacks:
+                    callback.on_step_end(None, None, None)
+                self.freeze_counts.append(gc.get_freeze_count())
+            return "done"
+
+    return CallbackTrainer
+
+
+def test_heap_refrozen_after_first_step(scope):
+    pytest.importorskip("transformers")
+    Trainer = _callback_trainer_class()
+    assert scope.patch_trainer_train_gc_scope(Trainer) is True
+    t = Trainer()
+    assert t.train() == "done"
+    first, second, third = t.freeze_counts
+    assert first >= t.freeze_at_start + 1000
+    # Refcount frees shrink the frozen count.
+    assert third <= second <= first
+    assert gc.get_freeze_count() == 0
+    assert t.callbacks == []
+
+
+def test_after_step_opt_out(scope, monkeypatch):
+    pytest.importorskip("transformers")
+    monkeypatch.setenv("UNSLOTH_GC_FREEZE_AFTER_STEP", "0")
+    Trainer = _callback_trainer_class()
+    assert scope.patch_trainer_train_gc_scope(Trainer) is True
+    t = Trainer()
+    t.train()
+    assert max(t.freeze_counts) <= t.freeze_at_start
+    assert gc.get_freeze_count() == 0
+
+
+def test_after_step_needs_an_owned_freeze(scope):
+    assert scope.freeze_after_first_step() is False
+    gc.freeze()
+    try:
+        Trainer = _callback_trainer_class()
+        scope.patch_trainer_train_gc_scope(Trainer)
+        t = Trainer()
+        t.train()
+        assert t.callbacks == [] and max(t.freeze_counts) <= t.freeze_at_start
+    finally:
+        gc.unfreeze()

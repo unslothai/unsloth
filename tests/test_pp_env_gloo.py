@@ -788,9 +788,9 @@ def test_pp_env_layout_and_refusals():
     if res["sft"] != "no trl":
         assert res["sft"] is None, res["sft"]
         assert "packing" in (res["packing"] or ""), res["packing"]
-    assert (
-        "mixture-of-experts" in (res["moe"] or "") and "UNSLOTH_PP_SIZE=2: unset it" in res["moe"]
-    ), res["moe"]
+    # Since #18165 a mixture-of-experts model loads under pp with its router aux loss off (the default); the
+    # aux-on refusal is covered in test_pp_moe_aux_off_gloo.py.
+    assert res["moe"] is None, res["moe"]
     assert res["qwen3_moe"] is None, res["qwen3_moe"]
     assert res["act_dtype"] == (torch.float16, torch.float32), res["act_dtype"]
     assert res["stub_dtype"] == torch.float32, res["stub_dtype"]

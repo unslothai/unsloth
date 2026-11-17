@@ -272,17 +272,10 @@ def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
     import sys
 
     worker = Path(__file__).with_name("_ddp_trainable_embeddings_worker.py")
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
-    env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
-    single = subprocess.run(
-        [sys.executable, str(worker), str(tmp_path / "single")],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 600,
-    )
+    env = _rank_env(tmp_path)
+    single = _run_child([sys.executable, str(worker), str(tmp_path / "single")], env)
     assert single.returncode == 0, (single.stdout + single.stderr)[-4000:]
-    proc = subprocess.run(
+    proc = _run_child(
         [
             sys.executable,
             "-m",
@@ -294,10 +287,7 @@ def test_trainable_embeddings_train_under_ddp_reentrant_checkpointing(tmp_path):
             str(worker),
             str(tmp_path / "ddp"),
         ],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 600,
+        env,
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
@@ -477,9 +467,7 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
     import sys
 
     worker = Path(__file__).with_name("_ddp_vlm_text_only_worker.py")
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
-    env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
-    proc = subprocess.run(
+    proc = _run_child(
         [
             sys.executable,
             "-m",
@@ -491,14 +479,52 @@ def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
             str(worker),
             str(tmp_path),
         ],
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 600,
+        _rank_env(tmp_path),
+        timeout = 300,
     )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-4000:]
     assert out.count("RANK_OK find_unused=True") == 2, out[-4000:]
+
+
+# A rank's identity comes from torchrun; one leaked into this process by an earlier test (WORLD_SIZE=2 from an
+# os.environ write) made the single-process reference wait in init_process_group until pytest-timeout fired.
+_DIST_ENV = (
+    "RANK",
+    "WORLD_SIZE",
+    "LOCAL_RANK",
+    "LOCAL_WORLD_SIZE",
+    "GROUP_RANK",
+    "ROLE_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO",
+)
+
+
+def _rank_env(tmp_path):
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
+    for name in _DIST_ENV:
+        env.pop(name, None)
+    return env
+
+
+def _run_child(
+    cmd,
+    env,
+    timeout = 150,
+):
+    """Under pytest-timeout (330 s), so a hung child fails with its own output instead of a bare timeout."""
+    import subprocess
+    try:
+        return subprocess.run(cmd, env = env, capture_output = True, text = True, timeout = timeout)
+    except subprocess.TimeoutExpired as e:
+        # TimeoutExpired keeps raw bytes even with text = True, and None for a stream that wrote nothing.
+        out = "".join(
+            (s.decode(errors = "replace") if isinstance(s, bytes) else s) or ""
+            for s in (e.stdout, e.stderr)
+        )
+        pytest.fail(f"{cmd[-2:]} hung past {timeout}s:\n{out[-4000:]}")
 
 
 def _free_port():

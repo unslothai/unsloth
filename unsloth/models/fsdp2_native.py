@@ -98,9 +98,9 @@ class FSDP2Config:
     # parameters get their own unit (Gemma4 / Gemma3n `embed_tokens_per_layer`: ~40% of an E-model would sit
     # gathered in the root for the whole step). 0 disables.
     split_large_root_embeddings: float = 0.05
-    # Frozen, untied embed / head tables >= this device fraction stay replicated, out of the never-resharding
-    # root (UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 / 0 forces; UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps embed on GPU).
-    replicate_io_tables: float = 0.15
+    # Keep frozen untied embed / head whole per rank, not in the never-resharding root. True = always, float =
+    # min device fraction, False / 0 = never; env UNSLOTH_FSDP2_REPLICATE_IO_TABLES / UNSLOTH_FSDP2_EMBED_ON_CPU.
+    replicate_io_tables: Union[bool, float] = True
     # Wrap `generate` so it runs inside native_fsdp2_unsharded (Unsloth's decode loops read layer weights
     # without calling the blocks; PeftModel.generate skips the root's hooks). Collective: every rank generates.
     wrap_generate: bool = True
@@ -1415,12 +1415,17 @@ def _frozen_root_io_tables(
     fraction,
     param_dtype = None,
 ):
-    """[embed, head] to replicate instead of keeping in the root unit, or []. Both must be outside every
-    unit, frozen, untied (fused CE reads lm_head.weight, so a tied table stays) and >= `fraction` of device."""
+    """[embed, head] to replicate instead of keeping in the root unit, or []. Both outside every unit, frozen,
+    untied (fused CE reads lm_head.weight). The root is gathered all step, so whole never costs more."""
     from .fsdp2_perf import _env_tristate
 
     forced = _env_tristate("UNSLOTH_FSDP2_REPLICATE_IO_TABLES")
-    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+    always = fraction is True
+    if forced is False or (
+        forced is None
+        and not always
+        and (not fraction or isinstance(fraction, bool) or fraction <= 0)
+    ):
         return []
     embed, head = _io_embedding_modules(model)
     if embed is None or head is None or embed is head:
@@ -1458,8 +1463,10 @@ def _frozen_root_io_tables(
     if any(len(owners.get(i, ())) > 1 for i in ids[0] | ids[1]):  # shared with another module
         return []
     if forced is None:
+        if not device_bytes:  # CPU mesh: no device to relieve, layout unchanged
+            return []
         nbytes = sum(p.numel() * p.element_size() for group in params for p in group)
-        if not device_bytes or nbytes < fraction * device_bytes:
+        if not always and nbytes < fraction * device_bytes:
             return []
     return [embed, head]
 
@@ -2681,12 +2688,27 @@ def _ga_mode(model = None):
     "each" = reduce-scatter every micro-batch (torchtitan's default): no unsharded fp32 gradient
       accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
-      backward, so keeping them gathered across micro-batches adds no peak memory), else "skip"."""
+      backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
     layout = getattr(model, "_unsloth_fsdp2_layout", None) if model is not None else None
-    return "defer" if isinstance(layout, dict) and layout.get("fits") else "skip"
+    if not isinstance(layout, dict):
+        return "skip"
+    if layout.get("fits"):
+        return "defer"
+    return "each" if _mostly_trainable(model) else "skip"
+
+
+def _mostly_trainable(model):
+    trainable = frozen = 0
+    for p in model.parameters():
+        if p.requires_grad and _floating(p):
+            trainable += p.numel()
+        else:
+            frozen += p.numel()
+    return trainable > frozen
 
 
 @contextlib.contextmanager
