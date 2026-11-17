@@ -3888,7 +3888,9 @@ def _null_mask_processor_cls():
         return cached
 
     import torch
-    from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+    # read at call time, as the stock processor does, so the INT8 dispatch route sees these calls too
+    from diffusers.models import attention_dispatch
     from diffusers.models.transformers.transformer_hunyuan_video15 import (
         HunyuanVideo15AttnProcessor2_0,
     )
@@ -3947,7 +3949,7 @@ def _null_mask_processor_cls():
                 key = torch.cat([key, encoder_key], dim = 1)
                 value = torch.cat([value, encoder_value], dim = 1)
 
-            hidden_states = dispatch_attention_fn(
+            hidden_states = attention_dispatch.dispatch_attention_fn(
                 query,
                 key,
                 value,
