@@ -20,9 +20,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_grpo_packed_raw_logits_nograd as harness  # noqa: E402
 
 
+BIG_KEEP = 34
+
+
+def _big_batch(rows = 4, prompt = 3):
+    # rows x 34 completion tokens: one outlier stays under 1% of the scored tokens.
+    g = torch.Generator().manual_seed(rows)
+    ids = torch.randint(1, harness.VOCAB, (rows, prompt + BIG_KEEP), generator = g)
+    ids[0, 0] = harness.PAD_ID
+    return ids
+
+
 def _short_batch():
-    pad = harness.PAD_ID
-    return torch.tensor([[pad, pad, pad, 5, 7, 9, 11, 13], [pad, pad, 4, 6, 8, 10, 12, 14]])
+    return _big_batch(rows = 3)
+
+
+@pytest.fixture(autouse = True)
+def _big_batches():
+    # Own MonkeyPatch: _verified_model undoes the test's monkeypatch.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(harness, "_batch", _big_batch)
+        mp.setattr(harness, "KEEP", BIG_KEEP)
+        yield
 
 
 class _OutlierModel(harness._Model):
@@ -95,6 +114,22 @@ def test_repeated_outlier_disables_packing(monkeypatch):
     assert model._unsloth_seq_packing_nograd_ok is False
 
 
+@pytest.mark.parametrize("next_mode", [None, "narrow"], ids = ["clean", "second-outlier"])
+def test_recheck_previously_verified_batch_after_outlier(monkeypatch, next_mode):
+    model = _verified_model(monkeypatch)
+    assert _run(model, "narrow")["_pk_use"] is False
+    monkeypatch.setattr(harness, "_batch", _short_batch)
+    ns = _run(model, next_mode)
+    if next_mode is None:
+        assert ns["_pk_use"] is True and ns["_pk_diff"] < 0.7
+        assert model._unsloth_seq_packing_nograd_strikes == 0
+        assert "_pk_diff" not in _run(model, None)  # trusted again
+    else:
+        assert ns["_pk_use"] is False
+        assert ns["_pk_diff"] >= 1.5
+        assert model._unsloth_seq_packing_nograd_ok is False
+
+
 def test_broad_mismatch_disables_verified_packing(monkeypatch):
     model = _verified_model(monkeypatch)
     ns = _run(model, "broad")
@@ -127,3 +162,19 @@ def test_zoo_grad_verify_rewrite():
         and '_unsloth_seq_packing_verify_verdict(unwrapped_model, "grad"' in item
         for item in rl.RL_PRE_ITEMS["grpo_trainer"]
     )
+
+
+def test_half_of_a_one_token_batch_is_not_narrow(monkeypatch):
+    """The #18120 review's shape: two one-token rollouts, one off by 9 nats. That is the whole batch, not an
+    isolated bf16 outlier, so it keeps the old kill rule instead of skipping."""
+    monkeypatch.setattr(harness, "KEEP", 1)
+    model = _OutlierModel()
+    for prompt, mode in ((2, None), (3, "narrow")):
+        monkeypatch.setattr(
+            harness,
+            "_batch",
+            lambda p = prompt: torch.tensor([[3, 5, 7][:p] + [9], [3, 5, 7][:p] + [11]]),
+        )
+        ns = _run(model, mode)
+    assert int(ns["_pk_cm"].sum()) == 2 and ns["_pk_diff"] >= 1.5
+    assert model._unsloth_seq_packing_nograd_ok is False
