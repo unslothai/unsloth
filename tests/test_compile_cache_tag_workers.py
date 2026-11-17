@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Inductor's compile workers must key autotune results with the same cache_key_tag as this
-process. A worker reads the tag only from TORCH_COMPILE_CACHE_KEY_TAG, so a tag set here alone
-made workers save each .best_config under the empty tag while warm runs looked it up under the
-full one, and every warm run re-benchmarked those kernels. CPU only."""
+"""Compile workers must key autotune results with this process's cache_key_tag. CPU only."""
 
 import ast
 import importlib.util
@@ -88,7 +85,6 @@ def test_tagging_twice_adds_nothing(clean_tag, tmp_path):
 
 
 def test_sync_keeps_a_tag_set_elsewhere(clean_tag):
-    # unsloth_zoo adds its own tag through torch config only; the final sync forwards it too.
     launch = _load()
     _CONFIG.cache_key_tag = "unsloth/inductor-rand4x-off"
     assert launch.sync_compile_cache_tag_to_workers() == "unsloth/inductor-rand4x-off"
@@ -121,6 +117,5 @@ def test_init_syncs_after_the_kernel_imports():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    # At the end of the package, after every kernel module (each calls tag_compile_cache).
     assert "_sync_tag" in lines
     assert lines["_sync_tag"] < lines["_restore_gc_threshold"]

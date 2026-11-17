@@ -130,17 +130,13 @@ except Exception:  # older unsloth_zoo: current thread only
         return value
 
 
-# Inductor's compile workers are separate processes that read the tag only from
-# TORCH_COMPILE_CACHE_KEY_TAG at start-up. With the tag set in this process alone, a worker keyed
-# each kernel's autotune result (.best_config) under the empty tag while warm runs look it up here
-# under the full tag, so every warm run re-benchmarked those kernels. _WORKER_TAG changes the FX
-# graph keys once, so cached entries whose save hook still carries the worker key are rebuilt.
+# Compile workers read the tag only from the env at start-up, so without it they key autotune
+# results under the empty tag and warm runs re-benchmark. _WORKER_TAG invalidates stale entries.
 _WORKER_TAG = "unsloth/autotune-tag-v2"
 _TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
 
 
 def sync_compile_cache_tag_to_workers():
-    """Copy torch.compiler.config.cache_key_tag into the environment compile workers inherit."""
     config = getattr(torch.compiler, "config", None)
     if config is None or not hasattr(config, "cache_key_tag"):
         return None
