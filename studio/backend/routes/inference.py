@@ -8358,7 +8358,7 @@ def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
 
 
 async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
-    """``request`` with the fields it left unset taken from the model's saved launch settings, resolved as auto-switch resolves them."""
+    """``request`` with its unset fields filled from the model's saved launch settings, as auto-switch resolves them."""
     from core.inference.local_model_resolver import (
         local_target_is_gguf,
         resolve_local_gguf,
@@ -8372,7 +8372,7 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
 
     load_path, variant = request.model_path, request.gguf_variant
     alias = _snapshot_repo_or_self(load_path, require_cache = True)
-    # Look up by the on-disk copy too, as auto-switch does: a row may be keyed by the snapshot path. The scan also warms the index the GGUF check reads.
+    # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
     local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
         resolve_local_gguf, ref
@@ -8380,7 +8380,7 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
-        # A bare id resolves to a cached quant the load itself may not pick, so only a named quant is read.
+        # A bare id may resolve to a cached quant the load itself would not pick.
         named = variant or looks_like_quant(split_model_ref(load_path)[1])
         variant = (local[1] or variant) if named else None
         load_path = local[0]
@@ -8395,12 +8395,11 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
         for name, value in model_override_load_kwargs(override, is_gguf = is_gguf).items()
         if name not in sent
     }
-    # Placement is one choice: a saved layer count or split would contradict the caller's mode or GPUs.
+    # Placement is one choice: saved layers or split would contradict the sent mode or GPUs.
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
     if fill.get("llama_extra_args"):
-        # The sent fields must win over saved flags exactly as they win over inherited ones.
         fill["llama_extra_args"] = _strip_inherited_extras(request, fill["llama_extra_args"])
     if fill.get("gpu_ids") and not await _override_gpu_ids_still_resolve(
         fill["gpu_ids"], stored_gpu_index_kind(override)
@@ -8634,7 +8633,6 @@ def _strip_inherited_extras(
         strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
         strip_reasoning_budget = "reasoning_budget" in fields_set,
         strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
-        # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
         strip_batch = "n_batch" in fields_set,
         strip_ubatch = "n_ubatch" in fields_set,
         strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,

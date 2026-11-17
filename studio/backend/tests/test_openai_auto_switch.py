@@ -3450,7 +3450,6 @@ def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
     )
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert (filled.max_seq_length, filled.cache_type_kv, filled.n_parallel) == (32768, "f16", 2)
-    # The sent mode owns placement, and a saved -c would win llama.cpp's last-wins parse.
     assert "gpu_layers" not in filled.model_fields_set
     assert filled.llama_extra_args == ["-cmoe"]
 

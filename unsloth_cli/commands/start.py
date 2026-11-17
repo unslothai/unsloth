@@ -2199,7 +2199,7 @@ def _resident_serves_variant(status: dict, wanted: Optional[str]) -> bool:
     return str(resident).strip().lower() == str(wanted).strip().lower()
 
 
-# Carried load field -> the strip_shadowing_flags groups a sent copy of it makes the server strip from inherited extras. The spec group is one unit, so any spec flag keeps every spec field home.
+# Carried field -> strip_shadowing_flags groups a sent copy makes the server strip from inherited extras.
 _EXTRAS_SHADOW_GROUPS = {
     "max_seq_length": ("strip_context",),
     "cache_type_kv": ("strip_cache",),
@@ -2240,7 +2240,7 @@ def _fields_extras_override(extras, carried: dict) -> set:
     overridden = {
         name for name in carried if present.intersection(_EXTRAS_SHADOW_GROUPS.get(name, ()))
     }
-    # Stripping the tuning flags of a disabled drafter changes nothing, while leaving "off" home reloads as auto.
+    # Left home, "off" reloads as auto; stripping a disabled drafter's tuning flags changes nothing.
     if carried.get("speculative_type") == "off" and not selects_spec_type(extras):
         overridden.discard("speculative_type")
     return overridden
@@ -2550,7 +2550,7 @@ def _resolve_model(
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
             carried = _resident_runtime_payload(status_snapshot, payload) if same_checkpoint else {}
             if attach_public_id is None:
-                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip the inherited flags of its group.
+                # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
                 for name in _fields_extras_override(
                     status_snapshot.get("requested_llama_extra_args"), carried
                 ):
@@ -2566,7 +2566,7 @@ def _resolve_model(
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         if not same_checkpoint or (attach_public_id is None and loaded_match is None):
-            # Nothing of this checkpoint is resident to carry from: start from its saved launch settings, as the picker and auto-switch do. Fields named above still win.
+            # Nothing of this checkpoint is resident to carry from; named fields still win.
             payload["use_saved_settings"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
