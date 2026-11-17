@@ -294,6 +294,7 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _low_vram_whole_module,
+    keeps_denoiser_streamed,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -567,6 +568,7 @@ from .diffusion_transformer_quant import (
     native_int8_act,
     rdna_auto_w8a8_reason,
     rdna_explicit_int8_reason,
+    rdna_explicit_w8a8_reason,
     turing_auto_int8_reason,
     native_offload_host,
     native_quant_host,
@@ -3544,6 +3546,8 @@ def _whole_tier_for_request(
         state, "transformer_cache", None
     ):
         return None
+    if keeps_denoiser_streamed(getattr(state, "memory_mode", None)):
+        return None
     if int(condition_pixels or 0) > 0:
         # no learned peak covers condition images
         return None
@@ -3808,6 +3812,33 @@ def _small_host_fetch(
     if not callable(download):
         return None
     return lambda: download(repo, **pipe_kwargs)
+
+
+def _moss_small_host_fetch(
+    repo: Any, local_dir: Optional[str], local_files_only: bool, token: Any
+) -> Optional[Callable[[], Any]]:
+    """MOSS-Image's components, fetched before the small-host decision as ``_small_host_fetch`` does for diffusers
+    pipelines (the in-tree pipeline class has no Hub ``download``); None offline or with a staged snapshot."""
+    if local_files_only or local_dir or not isinstance(repo, str) or _is_local_path(repo):
+        return None
+
+    def _fetch() -> Any:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            repo,
+            cache_dir = hub_cache_dir(),
+            token = token,
+            allow_patterns = [
+                "model_index.json",
+                "*/config.json",
+                "*/*.safetensors",
+                "*/*.safetensors.index.json",
+                "scheduler/*",
+                "tokenizer/*",
+            ],
+        )
+
+    return _fetch
 
 
 def _conditioning_cache_hits(pipe: Any) -> int:
@@ -9041,7 +9072,7 @@ class DiffusionBackend:
                     )
                     transformer_quant = TQ_INT8
                 # An explicit int8 request compiles from render 1 when the denoiser stays resident; W8A8 only where the
-                # family's AUTO table measured it faster (weight-only int8 elsewhere).
+                # family's AUTO or explicit table measured it faster (weight-only int8 elsewhere).
                 rdna_explicit_int8 = (
                     rdna_explicit_int8_reason(target, getattr(fam, "name", None))
                     if rdna_auto_w8a8 is None
@@ -10160,6 +10191,22 @@ class DiffusionBackend:
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
+                                        # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
+                                        # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
+                                        small_host = self._small_host_decision(
+                                            _base_local_dir or fetch_base,
+                                            pipe_kwargs,
+                                            target,
+                                            dtype,
+                                            lora_active = _has_active_lora(loras),
+                                            dense_denoiser = small_host_dense,
+                                            fetch = _moss_small_host_fetch(
+                                                fetch_base,
+                                                _base_local_dir,
+                                                local_files_only,
+                                                hub_token,
+                                            ),
+                                        )
                                         pipe = load_moss_image_pipeline(
                                             _base_local_dir or fetch_base,
                                             dtype,
@@ -10172,6 +10219,9 @@ class DiffusionBackend:
                                             transformer = pipe_kwargs.get("transformer"),
                                             vae = pipe_kwargs.get("vae"),
                                             checkpoint = base,
+                                            storage_dtypes = small_host.storage_dtypes
+                                            if small_host is not None and small_host.engaged
+                                            else None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10910,10 +10960,16 @@ class DiffusionBackend:
                                             or rdna_auto_w8a8 is not None
                                             or (
                                                 rdna_explicit_int8 is not None
-                                                and rdna_auto_w8a8_reason(
-                                                    target, getattr(fam, "name", None)
+                                                and (
+                                                    rdna_auto_w8a8_reason(
+                                                        target, getattr(fam, "name", None)
+                                                    )
+                                                    is not None
+                                                    or rdna_explicit_w8a8_reason(
+                                                        target, getattr(fam, "name", None)
+                                                    )
+                                                    is not None
                                                 )
-                                                is not None
                                             )
                                         ),
                                     }

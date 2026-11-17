@@ -599,7 +599,13 @@ async function askInPanel(question: Question, context: Run, remember = true, off
   return answer;
 }
 
-async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+async function observe(
+  tab: BrowserTab,
+  context: Run,
+  note?: string,
+  op: Record<string, unknown> = { op: "snapshot" },
+  rereads = 2,
+): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "file") return observeFile(tab, entry, context, note, op);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
@@ -615,6 +621,9 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   const fresh = findTab(tab.id) ?? tab;
   // A page that moved during the read is one nobody checked: its words and links stay out.
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
+    // A router rewriting the address on the same entry and site (Google's results pages) is read again there.
+    const rewrote = !fresh.loading && currentEntry(fresh) === entry && siteOfUrl(tabUrl(fresh)) === siteOfUrl(tabUrl(tab));
+    if (rereads > 0 && rewrote) return observe(fresh, context, note, op, rereads - 1);
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
   if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : linkedPages(answer.links ?? []));

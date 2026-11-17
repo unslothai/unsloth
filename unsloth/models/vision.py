@@ -737,6 +737,23 @@ def _hook_no_placement_ancestors(model):
     return hooked
 
 
+def _host_read_tensor_names(model):
+    """Names of CPU input embedding tensors TP sharded loading read into host (tp_native._mark_host_loaded)."""
+    names = set()
+    try:
+        marked_model = bool(model.__dict__.get("_unsloth_tp_host_load_model", False))
+        embed = model.get_input_embeddings() if marked_model else None
+        for name, p in model.named_parameters(remove_duplicate = False):
+            if p.device.type == "cpu" and (
+                p.__dict__.get("_unsloth_tp_host_loaded", False)
+                or (embed is not None and any(p is q for q in embed.parameters()))
+            ):
+                names.add(name)
+    except Exception:
+        return set()
+    return names
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -771,6 +788,8 @@ def _attach_bnb_multidevice_hooks(
         _unplaced = no_placement_tensor_names(model)
     except Exception:
         _unplaced = set()
+    # Host-read TP embeddings are served from host: dispatch would meta-offload them.
+    _unplaced = set(_unplaced) | _host_read_tensor_names(model)
     try:
         all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
@@ -1090,7 +1109,7 @@ def _pin_device_to_decoder(model):
         def _unsloth_device(self):
             if getattr(self, "_unsloth_embedding_offloaded", False):
                 for param in self.parameters():
-                    if param.device.type != "cpu":
+                    if param.device.type not in ("cpu", "meta"):
                         return param.device
             return original.fget(self)
 
@@ -5383,6 +5402,11 @@ class FastBaseModel:
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
         # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        try:
+            from .tp_native import cast_host_read_tables
+            cast_host_read_tables(model, do_forced_float32, correct_dtype)
+        except Exception:
+            pass
         with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
             model, tokenizer = patch_model_and_tokenizer(
                 model,

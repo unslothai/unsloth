@@ -133,8 +133,11 @@ import { isCapableCheckpointQuant } from "@/features/model-picker/components/mod
 import {
   type NpuModel,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDownloadLabel,
+  npuRowTooltip,
   npuSizeLabel,
+  refreshNpuModels,
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
@@ -243,6 +246,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -1504,6 +1508,8 @@ export function ComposerModelPicker({
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
+  const browseOnly = source?.browseOnly === true;
+  const hiddenIds = source?.hiddenIds;
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -1681,6 +1687,11 @@ export function ComposerModelPicker({
       : undefined,
   );
   const npuModels = npuCatalog?.models ?? null;
+  // The picker stays mounted, so a conversion made on the Export page lists only on a fresh read.
+  const npuReady = npuStatus?.supported === true && npuStatus.ready === true;
+  useEffect(() => {
+    if (open && npuReady) void refreshNpuModels();
+  }, [open, npuReady]);
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
@@ -2027,21 +2038,7 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2128,19 +2125,18 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    const npuOffers: Row[] = npuPickerRows(npuModels, false);
+    const all = [...marked, ...npuOffers, ...hub, ...external];
+    return browseOnly
+      ? all.filter(
+          (row) =>
+            !hiddenIds?.has(row.id.toLowerCase()) &&
+            mediaPageForTask(mediaTaskById.get(row.id.toLowerCase())) === null,
+        )
+      : all;
   }, [
+    browseOnly,
+    hiddenIds,
     inventory.cachedGguf,
     inventory.cachedModels,
     npuModels,
@@ -2479,15 +2475,16 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  const chosenName =
-    shown?.label ??
-    (checkpoint
-      ? (missingExternalModel(
-          checkpoint,
-          externalModels ?? [],
-          source?.externalConnections ?? [],
-        )?.modelName ?? modelDisplayName(checkpoint))
-      : null);
+  const chosenName = browseOnly
+    ? undefined
+    : (shown?.label ??
+      (checkpoint
+        ? (missingExternalModel(
+            checkpoint,
+            externalModels ?? [],
+            source?.externalConnections ?? [],
+          )?.modelName ?? modelDisplayName(checkpoint))
+        : null));
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -2499,13 +2496,38 @@ export function ComposerModelPicker({
     !inventory.cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
+  const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
+  const [browseDevice, setBrowseDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!browseOnly) return;
+    if (!open) {
+      setBrowseDevice(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setBrowseDevice((known) => known ?? false),
+      2000,
+    );
+    return () => clearTimeout(timer);
+  }, [browseOnly, open]);
+  useEffect(() => {
+    if (browseOnly && open && inventory.cachedReady) {
+      setBrowseDevice((known) => known ?? hasDeviceRows);
+    }
+  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
-    (hasModels
-      ? ((lastTab && tabs.some((t) => t.value === lastTab) ? lastTab : null) ??
-        (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
-        DEVICE_TAB)
-      : RECOMMENDED_TAB);
+    (browseOnly
+      ? browseDevice
+        ? DEVICE_TAB
+        : RECOMMENDED_TAB
+      : hasModels
+        ? ((lastTab && tabs.some((t) => t.value === lastTab)
+            ? lastTab
+            : null) ??
+          (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
+          DEVICE_TAB)
+        : RECOMMENDED_TAB);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
@@ -3065,6 +3087,12 @@ export function ComposerModelPicker({
       isLora: false,
       isDownloaded: true,
     } as const;
+    if (model.local?.problem) {
+      toast.error("Can't load this model on the NPU", {
+        description: model.local.problem,
+      });
+      return;
+    }
     if (model.downloaded) {
       if (row.id !== chosen?.id) {
         setPending(row);
@@ -3712,7 +3740,7 @@ export function ComposerModelPicker({
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
     }
-    if (row.npu?.downloaded) {
+    if (row.npu?.downloaded && !row.npu.local?.problem) {
       return {
         source: "local",
         isLora: false,
@@ -3970,7 +3998,7 @@ export function ComposerModelPicker({
     if (npu?.downloaded && npuCatalog) {
       return {
         title: `Delete ${row.label}?`,
-        description: "This removes the model's NPU files from this device.",
+        description: npuDeleteDescription(npu),
         successMessage: `Deleted ${row.label}`,
         disabled: row.loaded || source?.deleteDisabled,
         onConfirm: () => npuCatalog.remove(npu),
@@ -4122,6 +4150,7 @@ export function ComposerModelPicker({
             // Shared with the header picker's rows: the Playwright drivers select by these.
             data-model-picker-option=""
             data-model-picker-active-option={rowActive ? "true" : undefined}
+            title={row.npu ? (npuRowTooltip(row.npu) ?? undefined) : undefined}
             onMouseMove={() => {
               setActive(index);
               setHighlight(true);

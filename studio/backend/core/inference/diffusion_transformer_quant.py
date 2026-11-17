@@ -1429,9 +1429,21 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     return reason
 
 
+_FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
+
+
+def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only)."""
+    reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
+    if reason is None or rdna_explicit_int8_reason(target, family) is None:
+        return None
+    return reason
+
+
 def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     """Why an explicit int8 request on this ROCm RDNA card compiles its denoiser from render 1, else None (eager).
-    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``);
+    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``,
+    or ``rdna_explicit_w8a8_reason`` for explicit requests only);
     eager int8 is slower than bf16 on gfx1151 for every measured family. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
     if not _rocm_cuda(target) or not native_quant_host(target):
         return None

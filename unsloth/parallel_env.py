@@ -11,7 +11,8 @@
 
 Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the world), cp_backend (auto, ulysses,
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
-is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b), pp_microbatches.
+is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b; default
+1f1b), pp_microbatches.
 transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
 efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
@@ -49,6 +50,7 @@ __all__ = [
 FLAG = "UNSLOTH_PARALLEL"
 CP_BACKENDS = ("auto", "ulysses", "ring")
 PP_SCHEDULES = ("gpipe", "1f1b")
+DEFAULT_PP_SCHEDULE = "1f1b"  # UNSLOTH_PP_SCHEDULE unset (layout.schedule_auto)
 _SIZE_KEYS = ("dp", "tp", "pp", "cp")
 _ALIASES = {
     "microbatches": "pp_microbatches",
@@ -471,9 +473,13 @@ class ParallelLayout:
         schedule = "gpipe",
         cp = 1,
         cp_backend = None,
+        schedule_auto = False,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
+        # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
+        # fully masked filler rows); an explicit schedule is kept as given.
+        self.schedule_auto = schedule_auto
         self.cp, self.cp_backend = cp, cp_backend
         self._mesh = None
         self._grad_mesh = None
@@ -611,19 +617,30 @@ def read_layout():
             f"launch with torchrun --nproc-per-node {pp * tp * cp} (or a multiple of {pp * tp * cp} for {what}), or "
             f"unset {' / '.join(name for name in names.split(' x '))}."
         )
-    microbatches, schedule = None, "gpipe"
+    microbatches, schedule, schedule_auto = None, "gpipe", False
     if pp > 1:
         microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
-        schedule = (
-            (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
-        )
+        asked = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "").strip()
+        # Default 1F1B: on 2x T4 (pp=2, 4-bit LoRA, same micro-batches) it beat GPipe by 6-12% on Llama-3.2-1B
+        # and Qwen3.5-2B / 4B and tied on Gemma-4-E2B (bound by its larger last stage), with the same losses
+        # and a lower first-stage peak.
+        schedule_auto = not asked
+        schedule = (asked or DEFAULT_PP_SCHEDULE).lower().replace("-", "")
         schedule = schedule.replace("_", "")
         if schedule not in PP_SCHEDULES:
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
                 f"{PP_SCHEDULES}."
             )
-        if schedule == "1f1b" and microbatches is not None and microbatches < pp:
+        if schedule_auto and microbatches is not None and microbatches < pp:
+            # Every step would fall back to GPipe: resolve it here so sharded loading records the same schedule.
+            schedule = "gpipe"
+        if (
+            schedule == "1f1b"
+            and microbatches is not None
+            and microbatches < pp
+            and not schedule_auto
+        ):
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE "
                 f"({microbatches} < {pp})."
@@ -657,6 +674,7 @@ def read_layout():
         schedule,
         cp = cp,
         cp_backend = cp_backend,
+        schedule_auto = schedule_auto,
     )
     from .parallel_capabilities import check_layout
 
@@ -695,7 +713,8 @@ def describe_trainer_layout(
     if pp > 1:
         mb = getattr(layout, "microbatches", None)
         parts.append(
-            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}, {mb or 'auto'} micro-batches"
+            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}"
+            f"{' (default)' if getattr(layout, 'schedule_auto', False) else ''}, {mb or 'auto'} micro-batches"
         )
     args = getattr(trainer, "args", None)
     if args is not None:

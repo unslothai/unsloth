@@ -195,16 +195,44 @@ function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
+export function findVoiceForLanguage(
+  lang: string,
+  voices: readonly SpeechSynthesisVoice[] = typeof window !== "undefined" &&
+  window.speechSynthesis
+    ? window.speechSynthesis.getVoices()
+    : [],
+): SpeechSynthesisVoice | undefined {
+  const wanted = lang.toLowerCase().replace("_", "-");
+  const tagOf = (voice: SpeechSynthesisVoice) =>
+    voice.lang.toLowerCase().replace("_", "-");
+  const score = (voice: SpeechSynthesisVoice) =>
+    (tagOf(voice) === wanted ? 1000 : 0) +
+    voiceQualityScore(voice) +
+    (LOW_QUALITY_VOICE_NAMES.has(voiceBaseName(voice)) ? -500 : 0);
+  return voices
+    .filter((voice) => langBase(tagOf(voice)) === langBase(wanted))
+    .sort((a, b) => score(b) - score(a))[0];
+}
+
 export function createConfiguredUtterance(
   text: string,
+  lang?: string,
 ): SpeechSynthesisUtterance {
   const { ttsVoiceURI, ttsRate, ttsPitch, ttsVolume } =
     useVoiceSettingsStore.getState();
   const utterance = new SpeechSynthesisUtterance(text);
-  const voice = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
+  const picked = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
+  // A voice reads another language's text with its own sounds, or not at all.
+  const voice =
+    lang && (!picked || langBase(picked.lang) !== langBase(lang))
+      ? findVoiceForLanguage(lang)
+      : picked;
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
+  } else if (lang) {
+    // No voice of that language is listed (yet): the tag lets the browser choose one.
+    utterance.lang = lang;
   }
   utterance.rate = ttsRate;
   utterance.pitch = ttsPitch;
@@ -414,7 +442,13 @@ export function readAloudChunks(text: string): string[] {
   while (pending.length > 0) {
     const take = Math.max(
       1,
-      planTtsChunk({ pending, first: chunks.length === 0, final: true, playing: false, waitedMs: 0 }),
+      planTtsChunk({
+        pending,
+        first: chunks.length === 0,
+        final: true,
+        playing: false,
+        waitedMs: 0,
+      }),
     );
     chunks.push(pending.splice(0, take).join(" "));
   }
@@ -540,7 +574,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     );
   }
 
-  speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
+  speak(spokenText: string, lang?: string): SpeechSynthesisAdapter.Utterance {
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
@@ -607,7 +641,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       return res;
     }
 
-    const utterance = createConfiguredUtterance(text);
+    const utterance = createConfiguredUtterance(text, lang);
     utterance.addEventListener("end", () => handleEnd("finished"));
     utterance.addEventListener("error", (e) => handleEnd("error", e.error));
 

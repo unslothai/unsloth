@@ -141,7 +141,8 @@ def test_guarded_wide_head_compiles_fullgraph(monkeypatch, backend):
     F = torch.nn.functional
     monkeypatch.setattr(G, "_wide_cuda_head", lambda q: q.shape[-1] > G.WIDEST_FUSED_HEAD_DIM)
     guarded = G.guard_sdpa(F.scaled_dot_product_attention)
-    q, k, v = (torch.randn(1, 2, 8, 512) for _ in range(3))
+    g = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn(1, 2, 8, 512, generator = g) for _ in range(3))
     before = attention._cur_sdpa_kernel_backends()
     want = guarded(q, k, v, is_causal = True)
     torch._dynamo.reset()
@@ -151,5 +152,7 @@ def test_guarded_wide_head_compiles_fullgraph(monkeypatch, backend):
         )(q, k, v)
     finally:
         torch._dynamo.reset()
-    assert torch.allclose(got, want, atol = 1e-6)
+    # Inductor lowers the math SDPA to its own kernel: same result to fp32 rounding (up to ~1e-6 on a
+    # 512-wide head, which a fixed 1e-6 atol failed on some CPUs), not bit for bit.
+    torch.testing.assert_close(got, want)
     assert attention._cur_sdpa_kernel_backends() == before and G._HELD == [0, None]
