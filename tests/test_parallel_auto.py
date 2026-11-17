@@ -379,6 +379,48 @@ def test_full_finetuning_counts_float32_master_weights(clean):
     ]
 
 
+def test_full_finetuning_a_prequantized_checkpoint_declines(clean):
+    """Full finetuning dequantizes a packed bitsandbytes checkpoint before training: not sized from its packed bytes."""
+    mp, _, auto = clean
+    _stub_loader_facts(auto, mp.setattr)
+    tensors = [("model.layers.0.mlp.up_proj.weight", "U8", (2048, 1))]
+    _auto_env(mp, auto, budget_mib = 4096)
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        full_finetuning = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("org/model-bnb-4bit",), {"full_finetuning": True})
+    assert got == "fsdp2", auto._STATE["reason"]
+    assert "dequantizes" in auto._STATE["reason"], auto._STATE["reason"]
+
+
+def test_fresh_lora_counts_its_adapter_parameters(clean):
+    """A fresh r = 16 adapter's float32 parameters are resident memory, not only their gradients and moments."""
+    mp, _, auto = clean
+    _stub_loader_facts(auto, mp.setattr)
+    tensors = [
+        ("model.layers.0.mlp.up_proj.weight", "BF16", (4096, 4096))
+    ]  # 32 MiB, LoRA 131072 params
+    _auto_env(mp, auto, budget_mib = 4096)
+    mp.setattr(auto, "_checkpoint_tensors", lambda *a, **k: tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    auto.resolve_for_load(from_pretrained, ("org/model",), {"load_in_4bit": False})
+    assert "weights 32.5 MiB" in auto._STATE["reason"], auto._STATE["reason"]
+
+
 def test_quantize_on_load_keeps_the_loaders_dense_modules(clean):
     """WavLM's attention projections stay dense under load_in_4bit (vision._architecture_skip_modules)."""
     mp, _, auto = clean
@@ -398,7 +440,7 @@ def test_quantize_on_load_keeps_the_loaders_dense_modules(clean):
 
     got = auto.resolve_for_load(from_pretrained, ("org/wavlm",), {})
     assert got == "fsdp2", auto._STATE["reason"]
-    assert "weights 32.0 MiB" in auto._STATE["reason"], auto._STATE["reason"]
+    assert "weights 32.5 MiB" in auto._STATE["reason"], auto._STATE["reason"]
 
 
 def test_unmodelled_loads_decline_with_a_reason(clean):

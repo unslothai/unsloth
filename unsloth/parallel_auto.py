@@ -525,6 +525,9 @@ def resolve_for_load(loader, args, kwargs):
             fp32_master = loaded != "bfloat16" or call.get("float32_mixed_precision") is True
             dtype_bytes = 4 if fp32_master else 2
         quantize = (load_in_4bit or load_in_8bit) and not load_in_16bit
+        if full and any(dt in _PACKED for _, dt, _ in tensors):
+            # _dequantize_bitsandbytes_for_full_finetuning turns packed weights dense before training.
+            raise ValueError("full finetuning a pre-quantized checkpoint dequantizes it; not sized")
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
@@ -538,6 +541,8 @@ def resolve_for_load(loader, args, kwargs):
             numel = sum(math.prod(shape) if shape else 1 for _, _, shape in adapter)
             weights += 4 * numel
             trainable = trainable if full else numel
+        elif not full:
+            weights += 4 * trainable  # the fresh adapter's float32 parameters
         state = training_state_bytes(trainable, grad_itemsize = dtype_bytes if full else 4)
         return weights, state, 0
 
