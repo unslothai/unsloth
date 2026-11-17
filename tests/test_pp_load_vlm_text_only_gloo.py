@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""pipeline_sharded_loading of a vision / audio language checkpoint (gloo pp 2): the load leaves the text-only
-decision to the split, as a full load does, so a checkpoint larger than one GPU trains text-only like one
-process; without text_only the split still refuses, and a media batch is still refused."""
+"""pipeline_sharded_loading of a VLM (gloo pp 2) defers text_only to the split; without it the split refuses."""
 
 import multiprocessing
 import os
@@ -73,7 +71,6 @@ def _case(rank, world, tmp, ckpt):
     except ValueError as exc:
         out["media_error"] = str(exc)
     out["pp"] = pipeline(model, pp, ids, labels)
-    # A sharded load without text_only: loads (the decision waits for the split), and the split refuses.
     with ppl.pipeline_sharded_loading(mesh, schedule = "gpipe"):
         other = _peft(_load(ckpt))
     try:
@@ -147,12 +144,9 @@ def test_sharded_load_of_multimodal_checkpoint_trains_text_only(arch):
         model.save_pretrained(ckpt, max_shard_size = "1MB", safe_serialization = True)
         results = _spawn(ckpt)
     for res in results:
-        assert res["repo"].startswith(REPO), (
-            res["repo"],
-            REPO,
-        )  # this tree's pp_load, not another install
+        assert res["repo"].startswith(REPO), (res["repo"], REPO)
         assert res["load_error"] is None, res["load_error"]
-        assert res["placeholders"] > 0  # the other stage's layers were not read
+        assert res["placeholders"] > 0
         assert "not dropped" in (res["media_error"] or ""), res["media_error"]
         assert "PPConfig(text_only = True)" in (res["no_flag"] or ""), res["no_flag"]
     print(arch, "worst gradient error", check_parity(results))

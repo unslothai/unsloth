@@ -142,8 +142,7 @@ def _split_for(model, mesh, schedule, config):
         )
     # The structural refusals (MoE, MLA, ...) before anything is read. Every weight of a fresh load is
     # trainable until get_peft_model freezes it: those refusals run again at apply_pipeline_parallel.
-    # at_load: a vision / audio checkpoint's text-only decision waits for the split, as after a full load
-    # (the Trainer sets it from the data, or UNSLOTH_PP_TEXT_ONLY); its towers are read whole here.
+    # at_load: a VLM's text-only decision waits for the split (Trainer / UNSLOTH_PP_TEXT_ONLY); towers load whole.
     flags = [(p, p.requires_grad) for p in model.parameters()]
     for p, _ in flags:
         p.requires_grad_(False)
