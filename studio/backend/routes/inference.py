@@ -35282,6 +35282,18 @@ async def produce_openai_chat_completions(
 
     _managed_promoted_parts: list = []
     if _managed_images:
+        if not backend.models.get(backend.active_model_name, {}).get(
+            "supports_tools"
+        ) and _only_studio_tool_history(payload):
+            # A model switch can leave Studio tool turns in a plain-chat conversation.
+            payload.messages = _folded_studio_tool_messages(payload.messages)
+            for message in payload.messages:
+                if message.tool_calls:
+                    message.content = _merge_user_content(
+                        message.content,
+                        "Tool calls: " + json.dumps(message.tool_calls, ensure_ascii = False),
+                    )
+                    message.tool_calls = None
         # Fetch remote image URLs here: the engine's own fetch has no SSRF guard.
         if _messages_have_remote_image(payload.messages):
             try:
