@@ -158,7 +158,6 @@ def _card(gib: float):
 @pytest.mark.parametrize(
     "platform, devices, weights, refused",
     [
-        ("darwin", [_card(96)], None, "Mac"),
         ("linux", [], None, "NVIDIA GPU"),
         ("linux", [_card(22.0)], None, "at least 31 GB"),
         ("linux", [_card(39.4)], "q8_0", None),
@@ -170,6 +169,26 @@ def _card(gib: float):
 )
 def test_hardware_plan(platform, devices, weights, refused):
     plan = rs.hardware_plan(platform = platform, devices = devices)
+    assert plan["weights"] == weights
+    if refused is None:
+        assert plan["refusal"] is None
+    else:
+        assert refused in plan["refusal"]
+
+
+@pytest.mark.parametrize(
+    "working_set_gib, weights, refused",
+    [
+        (None, None, "Apple Silicon"),
+        (27.0, None, "this Mac's GPU can use 27.0 GB"),
+        (36.0, "q8_0", None),
+        (96.0, "bf16", None),
+    ],
+)
+def test_hardware_plan_on_a_mac_sizes_from_the_metal_working_set(working_set_gib, weights, refused):
+    working_set = None if working_set_gib is None else int(working_set_gib * _GIB)
+    # A CUDA answer is ignored on a Mac.
+    plan = rs.hardware_plan(platform = "darwin", devices = [], working_set = working_set)
     assert plan["weights"] == weights
     if refused is None:
         assert plan["refusal"] is None

@@ -165,8 +165,13 @@ class _FakeServer:
     def is_alive(self):
         return True
 
-    def start(self, files):
+    def start(
+        self,
+        files,
+        extra_args = None,
+    ):
         self.started += 1
+        self.extra_args = extra_args
 
     def stop(self):
         pass
@@ -191,8 +196,23 @@ def _frames(n):
     return [Image.new("RGB", (64, 48), (i * 20 % 256, 0, 0)) for i in range(n)]
 
 
+@pytest.mark.parametrize(
+    "platform, paravirtual, args",
+    [
+        ("darwin", False, ["--backend", "vae=cpu"]),
+        ("darwin", True, []),
+        ("linux", False, []),
+        ("win32", False, []),
+    ],
+)
+def test_server_args_put_the_vae_on_the_cpu_only_on_metal(monkeypatch, platform, paravirtual, args):
+    monkeypatch.setattr("core.inference.sd_cpp_args.metal_is_paravirtual", lambda: paravirtual)
+    assert vr.server_args(platform) == args
+
+
 def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     server = _FakeServer(b"AVI")
+    monkeypatch.setattr(vr, "server_args", lambda: ["--host-flag"])
     runner = vr.RestyleRunner(server_factory = lambda _model: server)
     monkeypatch.setattr(
         "core.inference.video_minimax_h3.transcode_video_to_mp4",
@@ -210,6 +230,7 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     assert (state["step"], state["total"]) == (2, 2)
     assert state["eta_seconds"] is None  # cleared once decoding starts
     assert state["video"] == {"id": "v1"}
+    assert server.extra_args == ["--host-flag"]
     payload = server.payloads[0]
     assert payload["video_frames"] == 5 and len(payload["control_frames"]) == 5
     control = Image.open(io.BytesIO(base64.b64decode(payload["control_frames"][0])))
@@ -296,7 +317,7 @@ def test_cancel_aborts_a_loading_server(weights):
     released = threading.Event()
 
     class _SlowServer(_FakeServer):
-        def start(self, files):
+        def start(self, files, **_):
             started.set()
             assert released.wait(5)
             raise vr_cancelled("startup cancelled")
@@ -1080,7 +1101,7 @@ def test_a_new_server_waits_for_the_previous_one_to_stop(weights):
             stopping.set()
             assert release.wait(5)
 
-        def start(self, files):
+        def start(self, files, **_):
             started.append(release.is_set())
 
     runner = vr.RestyleRunner(server_factory = lambda _model: _Slow(b"AVI"))

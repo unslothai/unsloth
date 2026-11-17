@@ -11,6 +11,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -335,6 +336,17 @@ def binary_supports_cosmos3(binary: str) -> bool:
         *sorted(path.parent.glob("libsd*")),
     ]
     return any(c.is_file() and _file_has_marker(c) for c in candidates)
+
+
+def server_args(platform: Optional[str] = None) -> list[str]:
+    """sd-server flags for this host. On Metal the Wan2.2 VAE goes to the CPU: ggml-metal has no direct conv3d,
+    and its im2col path ran the VAE about 4.5x slower than Accelerate (a paravirtual GPU is already all-CPU)."""
+    platform = sys.platform if platform is None else platform
+    if platform != "darwin":
+        return []
+    from core.inference.sd_cpp_args import metal_is_paravirtual
+
+    return [] if metal_is_paravirtual() else ["--backend", "vae=cpu"]
 
 
 def env_overrides_weights(env: Optional[dict[str, str]] = None) -> bool:
@@ -699,7 +711,7 @@ class RestyleRunner:
         try:
             if self._cancel.is_set():
                 server.stop()
-            server.start(files)
+            server.start(files, extra_args = server_args())
         finally:
             self._loading = None
         self._server, self._server_files = server, files
