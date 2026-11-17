@@ -168,3 +168,48 @@ def test_trainer_skips_the_whole_move_for_a_streamed_encoder(monkeypatch):
     monkeypatch.setattr(ts, "place_text_encoders", lambda p, d: ["text_encoder"])
     dit._encoders_to_device(pipe, "cuda")
     assert moved == ["cuda"]
+
+
+def _tiny_qwen3():
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    torch.manual_seed(0)
+    cfg = Qwen3Config(
+        vocab_size = 256,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 8,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+    )
+    return Qwen3ForCausalLM(cfg).to(torch.bfloat16).eval()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "layer streaming needs CUDA")
+@pytest.mark.parametrize("mode", ["on", "partial"])
+def test_streamed_hidden_states_are_bit_identical_on_gpu(monkeypatch, mode):
+    ref_enc = _tiny_qwen3().to("cuda")
+    ids = [torch.randint(0, 256, (1, n), device = "cuda") for n in (5, 40, 17)]
+    with torch.no_grad():
+        ref = [ref_enc(input_ids = x, output_hidden_states = True).hidden_states for x in ids]
+    enc = _tiny_qwen3()
+    if mode == "on":
+        monkeypatch.setenv(ts.TE_STREAM_ENV, "on")
+    else:
+        monkeypatch.delenv(ts.TE_STREAM_ENV, raising = False)
+        sizes, nonlayer = _sizes(enc)
+        free = ts._MARGIN_BYTES + nonlayer + (ts.DEPTH + 1) * max(sizes) + 2 * sizes[0] + 1
+        real = torch.cuda.mem_get_info
+        monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a, **k: (free, real()[1]))
+    pipe = _Pipe(enc)
+    assert ts.place_text_encoders(pipe, "cuda") == ["text_encoder"]
+    streamer = getattr(enc, ts.STREAMER_ATTR)
+    assert len(streamer.blocks) == (8 if mode == "on" else 6)
+    with torch.no_grad():
+        for x, want in zip(ids, ref):
+            got = enc(input_ids = x, output_hidden_states = True).hidden_states
+            assert all(torch.equal(a, b) for a, b in zip(got, want))
+    assert streamer.fetches >= 3 * len(streamer.blocks)
+    ts.release_text_encoders(pipe)
+    assert streamer.registered is None and streamer.handles == []
