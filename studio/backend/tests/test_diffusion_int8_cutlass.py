@@ -578,3 +578,19 @@ def test_the_kernel_sources_do_not_shadow_the_kernels_package():
     # CI and Studio put studio/ on sys.path, where a studio/kernels folder imports as the HF ``kernels`` package.
     studio = Path(__file__).resolve().parents[2]
     assert _BUILD.is_file() and not (studio / "kernels").exists()
+
+
+def test_race_cache_key_tracks_the_sustained_timing_mode(monkeypatch):
+    """A plan raced with sustained timing is not reused after it is switched off, and the other way round."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: "NVIDIA L4")
+    monkeypatch.setattr(cut, "library_path", lambda: None)
+    monkeypatch.delenv(cut.SUSTAINED_ENV, raising = False)
+    default = g8._cut_cache_key(0)
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    off = g8._cut_cache_key(0)
+    assert default and off and default != off
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "1")
+    assert g8._cut_cache_key(0) == default
