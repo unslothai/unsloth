@@ -12,8 +12,9 @@ fit. ``UNSLOTH_FLUX_VAE_STRIPS``: ``0`` off, ``1`` every decode on any NVIDIA ca
 
 ``full_map_decode`` runs the same strip decode where the VAE would otherwise tile (speed mode off, no Triton, ROCm,
 MPS, CPU, a failed fused install, low free memory): the three Triton primitives fall back to torch ops, so every device
-decodes with whole-map GroupNorm stats. Tiles cut from a large FLUX.2 latent take their own stats and shift colour
-(2048 px: 25.6 dB vs the untiled decode). ``UNSLOTH_FLUX_VAE_FULL_MAP=0`` keeps the tiles.
+decodes with whole-map GroupNorm stats. Tiles cut from a large latent take their own stats and shift colour (FLUX.2
+2048 px: 25.6 dB vs the untiled decode). It takes every KL VAE whose structure it reproduces (``full_map_ok``), not a
+list of classes. ``UNSLOTH_FLUX_VAE_FULL_MAP=0`` keeps the tiles.
 """
 
 from __future__ import annotations
@@ -142,21 +143,26 @@ def _conv3x3_ok(conv: Any) -> bool:
     )
 
 
-def _norm_ok(norm: Any) -> bool:
+def _norm_ok(norm: Any, kernels: bool = True) -> bool:
+    """An affine GroupNorm; ``kernels`` adds the Triton primitives' limits (power-of-two channels and groups, at most
+    1024 channels). The torch fallback of ``full_map_decode`` takes any group count that divides the channels (MOSS-Image's
+    96 / 192 / 384-channel decoder)."""
     torch = fused._torch()
     if not isinstance(norm, torch.nn.GroupNorm) or not norm.affine or norm.weight is None:
         return False
     c, g = int(norm.num_channels), int(norm.num_groups)
-    return 0 < g and c % g == 0 and c & (c - 1) == 0 and g & (g - 1) == 0 and c <= 1024
+    if not (0 < g and c % g == 0):
+        return False
+    return not kernels or (c & (c - 1) == 0 and g & (g - 1) == 0 and c <= 1024)
 
 
-def _resnet_ok(block: Any) -> bool:
+def _resnet_ok(block: Any, kernels: bool = True) -> bool:
     torch = fused._torch()
     if not (
         type(block).__name__ == "ResnetBlock2D"
         and fused._resnet2d_fusable(block)
-        and _norm_ok(block.norm1)
-        and _norm_ok(block.norm2)
+        and _norm_ok(block.norm1, kernels)
+        and _norm_ok(block.norm2, kernels)
         and _conv3x3_ok(block.conv1)
         and _conv3x3_ok(block.conv2)
         and block.conv1.out_channels == block.conv2.in_channels
@@ -187,21 +193,24 @@ def _upsampler_ok(up: Any) -> bool:
     )
 
 
-def decoder_ok(decoder: Any) -> bool:
-    """Whether every stage after the mid block is a shape the strip decode reproduces exactly."""
+def decoder_ok(decoder: Any, kernels: bool = True) -> bool:
+    """Whether every stage after the mid block is a shape the strip decode reproduces exactly (``kernels``: on the Triton
+    primitives; False: on their torch fallbacks)."""
     torch = fused._torch()
     ups = getattr(decoder, "up_blocks", None)
     if (
         ups is None
         or not len(ups)
         or not isinstance(getattr(decoder, "conv_in", None), torch.nn.Conv2d)
-        or not _norm_ok(getattr(decoder, "conv_norm_out", None))
+        or not _norm_ok(getattr(decoder, "conv_norm_out", None), kernels)
         or not isinstance(getattr(decoder, "conv_act", None), torch.nn.SiLU)
         or not _conv3x3_ok(getattr(decoder, "conv_out", None))
     ):
         return False
     for up in ups:
-        if type(up).__name__ != "UpDecoderBlock2D" or not all(_resnet_ok(r) for r in up.resnets):
+        if type(up).__name__ != "UpDecoderBlock2D" or not all(
+            _resnet_ok(r, kernels) for r in up.resnets
+        ):
             return False
         ups_ = getattr(up, "upsamplers", None)
         if ups_ is not None and (len(ups_) != 1 or not _upsampler_ok(ups_[0])):
@@ -528,21 +537,73 @@ def _decode_one(decoder: Any, z: Any) -> Any:
 def _kernels_ok(decoder: Any, z: Any) -> bool:
     return (
         bool(z.is_cuda)
+        and decoder_ok(decoder)
         and fused.runtime_ok()
         and _residual_kernel() is not None
         and _call_ok(decoder, z)
     )
 
 
+def _decode_ast(fn: Any) -> Optional[str]:
+    import ast
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    except Exception:  # noqa: BLE001 - no source: not comparable
+        return None
+    node = tree.body[0] if tree.body else None
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    body = node.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(getattr(body[0], "value", None), ast.Constant)
+    ):
+        body = body[1:]  # the docstring
+    return ast.dump(ast.Module(body = body, type_ignores = []), annotate_fields = False)
+
+
+@lru_cache(maxsize = 32)
+def _plain_decode_class(cls: type) -> bool:
+    """Whether ``cls._decode`` is AutoencoderKL's, statement for statement (the tiling branch, the optional
+    post_quant_conv, then ``self.decoder``): diffusers copies that body into every KL VAE built on its Decoder."""
+    try:
+        from diffusers import AutoencoderKL
+    except Exception:  # noqa: BLE001
+        return False
+    mine = getattr(cls, "_decode", None)
+    if mine is None:
+        return False
+    if mine is AutoencoderKL._decode:
+        return True
+    reference = _decode_ast(AutoencoderKL._decode)
+    return reference is not None and _decode_ast(mine) == reference
+
+
+def _post_quant_ok(vae: Any) -> bool:
+    torch = fused._torch()
+    conv = getattr(vae, "post_quant_conv", None)
+    return conv is None or (
+        isinstance(conv, torch.nn.Conv2d) and tuple(conv.kernel_size) == (1, 1) and conv.groups == 1
+    )
+
+
 def full_map_ok(vae: Any) -> bool:
-    """Whether ``full_map_decode`` reproduces this VAE's untiled decode (the strip-shaped FLUX.2 decoder)."""
+    """Whether ``full_map_decode`` reproduces this VAE's untiled decode: read off its structure, not its class, so
+    every KL VAE built on diffusers' Decoder qualifies (FLUX.1, FLUX.2 / FLUX.3, Z-Image, HiDream, Lumina-2, Chroma,
+    SDXL, Ideogram-4, MOSS-Image, and a new family on the same pieces): a decode that is post_quant_conv then the
+    decoder, and a decoder whose every stage the strips reproduce (``decoder_ok``)."""
     decoder = getattr(vae, "decoder", None)
     return (
         vae is not None
-        and type(vae).__name__ in STRIP_VAES
         and decoder is not None
         and not full_map_disabled()
-        and decoder_ok(decoder)
+        and _plain_decode_class(type(vae))
+        and _post_quant_ok(vae)
+        and decoder_ok(decoder, kernels = False)
     )
 
 
@@ -625,11 +686,15 @@ def full_map_decode_mib(vae: Any, z: Any) -> float:
         scores = chunked.score_budget_bytes(_score_budget_mb()) / 2**20
     except Exception:  # noqa: BLE001
         scores = 1024.0
+    # the slope was measured on FLUX.2's decoder; another decoder scales with its largest feature map per latent
+    slope *= largest_pass_elems(vae.decoder, 1, 1) / _REF_PASS_ELEMS_PER_LATENT
     return slope * (elem / 2) * int(z.shape[-2]) * int(z.shape[-1]) + 8 * strip / 2**20 + scores
 
 
 # 16-bit peak MiB per latent of the strip decode (diffusion_vae_tiling.DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS).
 DECODE_STRIPS_MIB_PER_LATENT = 0.048
+# largest_pass_elems(decoder, 1, 1) of the decoder that slope was measured on (FLUX.2: 128 / 256 / 512 / 512 channels)
+_REF_PASS_ELEMS_PER_LATENT = 16384
 
 
 def largest_pass_elems(decoder: Any, height: int, width: int) -> int:
