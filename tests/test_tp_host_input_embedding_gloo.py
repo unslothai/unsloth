@@ -216,3 +216,26 @@ def test_tp2_host_embedding_fault_breaks_parity():
 
 def test_tp_narrower_than_world_keeps_the_embedding():
     assert [r["pick"] for r in _spawn("dp_x_tp")] == [False, False]
+
+
+def _load_replica():
+    import importlib
+    return importlib.import_module("unsloth.models.tp_replica")
+
+
+def test_replica_device_skips_the_host_served_embedding(monkeypatch):
+    """embed_tokens is the first parameter: once served from the CPU, the replica gather and its NCCL
+    collectives must still run on the device the model computes on (meta stands in for the GPU here)."""
+    replica = _load_replica()
+    model = _model()
+    model.to("meta")
+    embed = model.get_input_embeddings()
+    assert next(model.parameters()) is embed.weight
+    embed.to_empty(device = "cpu")
+    tpn._serve_embedding_from_host(model, embed, 0)  # CPU table: the plain CPU lookup
+    assert embed.weight.device.type == "cpu" and embed._unsloth_fsdp2_cpu_lookup
+    assert replica._device(model).type == "meta"
+    assert tpn._compute_device(model).type == "meta"
+    nccl = type("Dist", (), {"get_backend": staticmethod(lambda group = None: "nccl")})
+    monkeypatch.setattr(replica, "_dist", lambda: nccl)
+    assert replica._comm_device(None, replica._device(model)).type == "meta"

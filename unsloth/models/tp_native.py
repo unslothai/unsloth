@@ -2049,8 +2049,31 @@ def _default_mesh(model):
         raise RuntimeError(
             "Unsloth: apply_tensor_parallel needs an initialized process group (torchrun) or a tp_mesh."
         )
-    device = next(model.parameters()).device
+    device = _compute_device(model, torch.device("cpu"))
     return init_device_mesh(device.type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
+
+
+def _host_served_params(model):
+    """ids of the parameters of lookup tables served from host memory (offload_embedding hooks, the plain CPU
+    lookup): they sit on the CPU while the model computes on its accelerator."""
+    ids = set()
+    for module in model.modules():
+        if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
+            module, "_unsloth_fsdp2_cpu_lookup", False
+        ):
+            ids.update(id(p) for p in module.parameters())
+    return ids
+
+
+def _compute_device(model, default = None):
+    """The device the model computes on: its first parameter's (a DTensor's local one), skipping host-served
+    lookup tables, which may be the first registered parameter (embed_tokens)."""
+    skip = _host_served_params(model)
+    for param in model.parameters():
+        if id(param) in skip:
+            continue
+        return param.to_local().device if _is_dtensor(param) else param.device
+    return default
 
 
 def _host_input_embedding(model, tp_mesh, fraction):
