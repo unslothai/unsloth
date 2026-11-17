@@ -48,6 +48,23 @@ const SAMPLES: Record<string, string> = {
   ug: "بۈگۈن ھاۋا بەك ياخشى، مەن دوستلىرىم بىلەن باغچىغا سەيلە قىلغىلى بارىمەن.",
 };
 
+const LATIN = new Set([
+  "en",
+  "es",
+  "fr",
+  "de",
+  "pt",
+  "it",
+  "tr",
+  "nl",
+  "pl",
+  "cs",
+  "vi",
+  "id",
+  "ms",
+  "tl",
+]);
+
 test("every language Translate offers has a sample here", () => {
   assert.deepEqual(
     TRANSLATE_LANGUAGES.map((language) => language.code).sort(),
@@ -56,14 +73,50 @@ test("every language Translate offers has a sample here", () => {
 });
 
 for (const [code, sample] of Object.entries(SAMPLES)) {
-  test(`a sentence in ${code} is recognised`, () => {
-    assert.equal(detectLanguage(sample), code);
+  if (LATIN.has(code)) {
+    test(`a sentence in ${code} shares the Latin alphabet, so it is not guessed`, () => {
+      assert.equal(detectLanguage(sample), null);
+    });
+  } else {
+    test(`a sentence in ${code} is recognised`, () => {
+      assert.equal(detectLanguage(sample), code);
+    });
+  }
+}
+
+const PHRASES: [string | null, string][] = [
+  ["hi", "आप कैसे हैं?"],
+  ["mr", "तुम्ही कसे आहात?"],
+  ["ar", "كيف حالك؟"],
+  ["fa", "حال شما چطور است؟"],
+  ["ur", "آپ کیسے ہیں؟"],
+  ["uk", "Як у вас справи сьогодні?"],
+  ["ja", "ありがとう"],
+  ["ko", "안녕하세요"],
+  ["th", "สวัสดี"],
+  ["he", "שלום"],
+  ["bn", "ধন্যবাদ"],
+  ["zh", "谢谢你"],
+  ["zh-Hant", "謝謝你"],
+  // The same word in two languages, or too little to tell: nothing is better than a wrong name.
+  [null, "नमस्कार"],
+  [null, "سلام"],
+  [null, "Привет"],
+  [null, "Добрий день"],
+  [null, "Как дела?"],
+  [null, "Hello"],
+  [null, "Bom dia"],
+  [null, "Please send me the report by Friday afternoon."],
+];
+
+for (const [code, phrase] of PHRASES) {
+  test(`"${phrase}" gives ${code ?? "no guess"}`, () => {
+    assert.equal(detectLanguage(phrase), code);
   });
 }
 
 test("too little text, or none, gives no guess", () => {
-  assert.equal(detectLanguage(""), null);
-  assert.equal(detectLanguage("   "), null);
-  assert.equal(detectLanguage("ok"), null);
-  assert.equal(detectLanguage("12345 !!!"), null);
+  for (const text of ["", "   ", "ok", "12345 !!!"]) {
+    assert.equal(detectLanguage(text), null);
+  }
 });

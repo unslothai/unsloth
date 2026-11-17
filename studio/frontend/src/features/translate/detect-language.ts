@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A guess at a draft's language: a code from TRANSLATE_LANGUAGES, or null when unsure.
+// Names a draft's language only when its letters settle it: a code from TRANSLATE_LANGUAGES, or
+// null. Languages that share the Latin alphabet are never guessed.
 
 const SCRIPTS: readonly [string, RegExp][] = [
   ["kana", /[぀-ヿ]/g],
@@ -39,8 +40,12 @@ const ONE_LANGUAGE: Record<string, string> = {
 const count = (text: string, pattern: RegExp) =>
   (text.match(pattern) ?? []).length;
 
-const SIMPLIFIED = /[们这说对时会过还没为国学发经东车马门见问间关]/g;
-const TRADITIONAL = /[們這說對時會過還沒為國學發經東車馬門見問間關]/g;
+const words = (text: string) => text.trim().split(/\s+/).length;
+
+const SIMPLIFIED =
+  /[们这说对时会过还没为国学发经东车马门见问间关谢请语话让给样后来个么吗现实点电开长觉师岁书认识爱机观应该听读写买卖钱饭馆气边远进运动业产报纸华汉号码银线网医药乐欢谁岛湾龙]/g;
+const TRADITIONAL =
+  /[們這說對時會過還沒為國學發經東車馬門見問間關謝請語話讓給樣後來個麼嗎現實點電開長覺師歲書認識愛機觀應該聽讀寫買賣錢飯館氣邊遠進運動業產報紙華漢號碼銀線網醫藥樂歡誰島灣龍]/g;
 const CANTONESE = /[嘅咗喺哋冇嘢佢啲嚟噉咁乜唔]/g;
 
 function han(text: string): string {
@@ -48,334 +53,29 @@ function han(text: string): string {
   return count(text, TRADITIONAL) > count(text, SIMPLIFIED) ? "zh-Hant" : "zh";
 }
 
-function devanagari(text: string): string {
-  const marathi = count(text, /आहे|आणि|नाही|ळ|होते|आहेत|मी |तुम्ही/g);
+function devanagari(text: string): string | null {
+  const marathi = count(text, /आहे|आणि|नाही|ळ|होते|आहेत|आहात|तुम्ही/g);
   const hindi = count(text, /है|और|नहीं|हैं|था|मैं|आप |क्या/g);
-  return marathi > hindi ? "mr" : "hi";
+  if (marathi > hindi) return "mr";
+  if (hindi > marathi) return "hi";
+  return words(text) >= 3 ? "hi" : null;
 }
 
-function arabic(text: string): string {
+function arabic(text: string): string | null {
   if (count(text, /[ەۇۆۈېڭ]/g) >= 2) return "ug";
-  const urdu = count(text, /[ںےٹڈڑھ]|ہے|کے|میں|اور/g);
-  const persian = count(text, /[پچژگ]|است|که |این |را |می‌/g);
-  if (urdu >= 2 && urdu >= persian) return "ur";
-  if (persian >= 2) return "fa";
-  return "ar";
+  if (count(text, /[ںےٹڈڑہھ]/g) >= 2) return "ur";
+  if (count(text, /[پچژگ]/g) >= 1) return "fa";
+  if (count(text, /[ةىأإؤئيك]/g) >= 1) return "ar";
+  return null;
 }
 
-function cyrillic(text: string): string {
+function cyrillic(text: string): string | null {
   const lower = text.toLowerCase();
-  if (count(lower, /[әғқңұһ]/g) >= 2) return "kk";
-  if (count(lower, /[їєґ]|і/g) >= 2) return "uk";
-  if (count(lower, /[өү]|байна|нь |юм |гэж|бол /g) >= 2) return "mn";
-  return "ru";
-}
-
-const LATIN: readonly [string, RegExp, readonly string[]][] = [
-  [
-    "vi",
-    /[ơưăđạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/g,
-    [
-      "và",
-      "của",
-      "là",
-      "không",
-      "có",
-      "một",
-      "những",
-      "được",
-      "trong",
-      "tôi",
-      "bạn",
-      "này",
-    ],
-  ],
-  [
-    "tr",
-    /[ığş]/g,
-    [
-      "ve",
-      "bir",
-      "bu",
-      "için",
-      "çok",
-      "değil",
-      "ama",
-      "ben",
-      "sen",
-      "ile",
-      "gibi",
-      "var",
-    ],
-  ],
-  [
-    "pl",
-    /[łąęńśźż]/g,
-    [
-      "nie",
-      "się",
-      "jest",
-      "to",
-      "na",
-      "że",
-      "jak",
-      "ale",
-      "czy",
-      "dla",
-      "był",
-      "tak",
-    ],
-  ],
-  [
-    "cs",
-    /[řěůťďň]/g,
-    [
-      "je",
-      "se",
-      "na",
-      "že",
-      "to",
-      "jsem",
-      "ale",
-      "jako",
-      "pro",
-      "tak",
-      "by",
-      "jsou",
-    ],
-  ],
-  [
-    "de",
-    /[ßäöü]/g,
-    [
-      "der",
-      "die",
-      "und",
-      "das",
-      "ist",
-      "nicht",
-      "ich",
-      "ein",
-      "eine",
-      "mit",
-      "sie",
-      "auf",
-      "für",
-      "zu",
-      "den",
-    ],
-  ],
-  [
-    "pt",
-    /[ãõ]/g,
-    [
-      "não",
-      "que",
-      "uma",
-      "para",
-      "com",
-      "você",
-      "os",
-      "do",
-      "da",
-      "em",
-      "é",
-      "mas",
-      "isso",
-      "muito",
-      "um",
-    ],
-  ],
-  [
-    "es",
-    /[ñ¿¡]/g,
-    [
-      "que",
-      "el",
-      "los",
-      "las",
-      "una",
-      "para",
-      "con",
-      "por",
-      "es",
-      "pero",
-      "muy",
-      "está",
-      "como",
-      "más",
-      "del",
-      "y",
-    ],
-  ],
-  [
-    "fr",
-    /[èêœùû]/g,
-    [
-      "le",
-      "les",
-      "des",
-      "est",
-      "une",
-      "et",
-      "pas",
-      "pour",
-      "que",
-      "dans",
-      "je",
-      "vous",
-      "nous",
-      "avec",
-      "sur",
-      "ce",
-    ],
-  ],
-  [
-    "it",
-    /[ìò]/g,
-    [
-      "il",
-      "che",
-      "non",
-      "di",
-      "per",
-      "una",
-      "sono",
-      "con",
-      "della",
-      "gli",
-      "più",
-      "anche",
-      "è",
-      "ma",
-      "mi",
-    ],
-  ],
-  [
-    "nl",
-    /ĳ/g,
-    [
-      "de",
-      "het",
-      "een",
-      "en",
-      "van",
-      "niet",
-      "dat",
-      "ik",
-      "is",
-      "op",
-      "voor",
-      "met",
-      "zijn",
-      "maar",
-      "je",
-    ],
-  ],
-  [
-    "id",
-    /$^/g,
-    [
-      "yang",
-      "dan",
-      "tidak",
-      "dengan",
-      "untuk",
-      "ini",
-      "itu",
-      "adalah",
-      "saya",
-      "akan",
-      "dari",
-      "bisa",
-      "sudah",
-      "karena",
-    ],
-  ],
-  [
-    "ms",
-    /$^/g,
-    [
-      "yang",
-      "dan",
-      "tidak",
-      "dengan",
-      "untuk",
-      "ini",
-      "itu",
-      "ialah",
-      "saya",
-      "akan",
-      "dari",
-      "boleh",
-      "awak",
-      "kerana",
-    ],
-  ],
-  [
-    "tl",
-    /$^/g,
-    [
-      "ang",
-      "ng",
-      "sa",
-      "mga",
-      "ako",
-      "ka",
-      "hindi",
-      "ito",
-      "ay",
-      "na",
-      "po",
-      "ko",
-      "siya",
-      "kung",
-    ],
-  ],
-  [
-    "en",
-    /$^/g,
-    [
-      "the",
-      "and",
-      "is",
-      "are",
-      "to",
-      "of",
-      "in",
-      "that",
-      "it",
-      "you",
-      "for",
-      "with",
-      "was",
-      "this",
-      "not",
-      "have",
-    ],
-  ],
-];
-
-function latin(text: string): string | null {
-  const words = text.toLowerCase().match(/[\p{L}'’]+/gu) ?? [];
-  if (words.length === 0) return null;
-  let best: string | null = null;
-  let top = 0;
-  let second = 0;
-  for (const [code, marks, common] of LATIN) {
-    const known = new Set(common);
-    const score =
-      words.filter((word) => known.has(word)).length +
-      Math.min(3, count(text.toLowerCase(), marks)) * 1.5;
-    if (score > top) {
-      second = top;
-      top = score;
-      best = code;
-    } else if (score > second) {
-      second = score;
-    }
-  }
-  return top >= 2 && top > second ? best : null;
+  if (count(lower, /[әғқңұһ]/g) >= 1) return "kk";
+  if (count(lower, /[өү]/g) >= 1) return "mn";
+  if (count(lower, /[іїєґ]/g) >= 1) return "uk";
+  if (count(lower, /[ыэъё]/g) >= 1 || words(text) >= 5) return "ru";
+  return null;
 }
 
 const SAMPLE_CHARS = 2000;
@@ -399,6 +99,6 @@ export function detectLanguage(source: string): string | null {
   if (script === "han") return han(text);
   if (script === "devanagari") return devanagari(text);
   if (script === "arabic") return arabic(text);
-  if (script === "cyrillic") return letters >= 4 ? cyrillic(text) : null;
-  return latin(text);
+  if (script === "cyrillic") return cyrillic(text);
+  return null;
 }
