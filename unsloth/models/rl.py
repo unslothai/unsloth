@@ -4188,6 +4188,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_hidden_states_fallback(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap hidden-state fallback for {RLTrainer_name}: {e}")
+    if trainer_file in ("dpo_trainer", "orpo_trainer", "cpo_trainer"):
+        # Chosen and rejected share the prompt: run it once (UNSLOTH_DPO_PREFIX_SHARE, dpo_prefix_share.py).
+        try:
+            from .dpo_prefix_share import wrap_preference_trainer
+            wrap_preference_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not add the shared-prefix forward to {RLTrainer_name}: {e}"
+            )
 
 
 # The AST fused-head forward ignores UNSLOTH_RETURN_HIDDEN_STATES; unwrapped, these trainers score full logits.
