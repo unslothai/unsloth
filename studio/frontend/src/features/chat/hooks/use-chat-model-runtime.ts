@@ -161,6 +161,7 @@ import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveFitMaxSeqLength,
   isReplayedLoadContext,
   unpinnedDefaultRequest,
@@ -2667,6 +2668,7 @@ export function useChatModelRuntime() {
                   response: loadResponse,
                   modelId,
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetEditedKeys: useChatRuntimeStore.getState().presetEditedKeys,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 ...(isGguf
@@ -2881,21 +2883,17 @@ export function useChatModelRuntime() {
             });
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             syncModelCapabilities(modelId, loadResponse);
-            const p = resolveQwenThinkingParams(
-              modelId,
-              nextReasoningEnabled,
+            const store = useChatRuntimeStore.getState();
+            const p = recommendedValuesForPick(
+              resolveQwenThinkingParams(modelId, nextReasoningEnabled),
+              store.activePresetSource,
+              store.presetEditedKeys,
             );
-            if (
-              p !== null &&
-              (loadResponse.supports_reasoning ?? false)
-            ) {
-              const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
-                store.setParams({ ...store.params, ...p }, {
-                  fromModelDefaults: true,
-                  maxTokensCap: loadedContextCap,
-                });
-              }
+            if (p !== null && (loadResponse.supports_reasoning ?? false)) {
+              store.setParams({ ...store.params, ...p }, {
+                fromModelDefaults: true,
+                maxTokensCap: loadedContextCap,
+              });
             }
             await refresh({ signal: abortCtrl.signal });
             postLoadRefresh.needed = Boolean(

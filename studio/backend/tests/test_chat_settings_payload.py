@@ -14,7 +14,9 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes.chat_history import ChatSettingsPayload  # noqa: E402
+from storage import studio_db  # noqa: E402
 from storage.studio_db import (  # noqa: E402
+    PRESET_EDITED_KEYS,
     CorruptSettingsError,
     _deep_merge_settings,
     get_connection,
@@ -138,6 +140,26 @@ def test_sandbox_level_survives_the_payload(level):
 def test_max_tool_calls_off_survives_the_payload():
     payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
     assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
+
+
+def test_preset_edited_keys_round_trip_and_merge_per_key():
+    payload = ChatSettingsPayload.model_validate(
+        {"activePresetSource": "modified", "presetEditedKeys": {"temperature": True, "minP": False}}
+    )
+    assert payload.model_dump(exclude_unset = True) == {
+        "activePresetSource": "modified",
+        "presetEditedKeys": {"temperature": True, "minP": False},
+    }
+    # Per key, so another tab's kept key survives this tab's edit.
+    merged = _deep_merge_settings(
+        {"presetEditedKeys": {"temperature": True}}, {"presetEditedKeys": {"topK": True}}
+    )
+    assert merged["presetEditedKeys"] == {"temperature": True, "topK": True}
+
+
+def test_preset_edited_keys_rejects_a_key_the_recommendation_does_not_set():
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"presetEditedKeys": {"systemPrompt": True}})
 
 
 @pytest.mark.parametrize(
@@ -285,6 +307,67 @@ def test_forgetting_a_model_s_params_names_its_keys():
     }
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate({"forgetInferenceParamsByModel": ["qwen"]})
+
+
+@pytest.mark.parametrize(
+    "saved, expected",
+    [
+        # A `modified` from before the map existed kept every key.
+        ({"activePresetSource": "modified"}, {key: True for key in PRESET_EDITED_KEYS}),
+        ({"activePresetSource": "builtin-default"}, None),
+        (
+            {"activePresetSource": "modified", "presetEditedKeys": {"topK": True}},
+            {"topK": True},
+        ),
+    ],
+)
+def test_startup_spells_out_an_older_modified_hold(tmp_path, monkeypatch, saved, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    studio_db.close_wal_keeper()
+    studio_db.reset_schema_state_for_tests()
+    try:
+        studio_db.upsert_chat_settings(saved)
+        studio_db.reset_schema_state_for_tests()
+        assert studio_db.list_chat_settings().get("presetEditedKeys") == expected
+    finally:
+        studio_db.close_wal_keeper()
+        studio_db.reset_schema_state_for_tests()
+
+
+def test_an_older_clients_modified_write_keeps_every_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    studio_db.close_wal_keeper()
+    studio_db.reset_schema_state_for_tests()
+    try:
+        merged = studio_db.upsert_chat_settings_merge({"activePresetSource": "modified"})
+        assert merged["presetEditedKeys"] == {key: True for key in PRESET_EDITED_KEYS}
+        studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "builtin-default", "presetEditedKeys": {"topK": False}}
+        )
+        merged = studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "modified", "presetEditedKeys": {}}
+        )
+        assert merged["presetEditedKeys"]["topK"] is False
+        # An older tab still open after an upgrade, with a map already saved by a current one.
+        merged = studio_db.upsert_chat_settings_merge({"activePresetSource": "modified"})
+        assert merged["presetEditedKeys"] == {key: True for key in PRESET_EDITED_KEYS}
+        # The same tab picks Default without a map, then a current tab edits only the prompt.
+        studio_db.upsert_chat_settings_merge({"activePresetSource": "builtin-default"})
+        merged = studio_db.upsert_chat_settings_merge(
+            {"activePresetSource": "modified", "presetEditedKeys": {}}
+        )
+        assert not any(merged["presetEditedKeys"].values())
+        # A legacy import whose browser `modified` lost to a saved Default.
+        merged = studio_db.upsert_chat_settings_merge(
+            {
+                "activePresetSource": "builtin-default",
+                "presetEditedKeys": {key: True for key in PRESET_EDITED_KEYS},
+            }
+        )
+        assert not any(merged["presetEditedKeys"].values())
+    finally:
+        studio_db.close_wal_keeper()
+        studio_db.reset_schema_state_for_tests()
 
 
 def _put_settings(patch):
