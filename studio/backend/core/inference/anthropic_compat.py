@@ -105,6 +105,27 @@ def _pdf_document_text(data: str) -> str:
         return ""
 
 
+def warm_anthropic_pdf_documents(messages: list) -> None:
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            nested = block.get("content") if block.get("type") == "tool_result" else None
+            for item in [block, *(nested if isinstance(nested, list) else ())]:
+                source = item.get("source") if isinstance(item, dict) else None
+                if (
+                    item.get("type") == "document"
+                    and isinstance(source, dict)
+                    and source.get("type") == "base64"
+                    and source.get("media_type") == "application/pdf"
+                    and isinstance(source.get("data"), str)
+                ):
+                    _pdf_document_text(source["data"])
+
+
 def anthropic_reference_block_text(block: dict) -> str:
     btype = block.get("type")
     source = block.get("source")
