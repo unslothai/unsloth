@@ -227,10 +227,11 @@ def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
 
     monkeypatch.setattr(srv.subprocess, "Popen", spy)
     monkeypatch.delenv("GGML_CUDA_DISABLE_GRAPHS", raising = False)
-    for model in (_model("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", "nemotron_asr", "asr"), CANARY):
+    for model in (_model("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", "nemotron_asr", "asr"), CANARY, KOKORO):
         srv.AudioCppServer.start(model, str(tmp_path / "m.gguf")).stop()
     assert seen[0].get("GGML_CUDA_DISABLE_GRAPHS") == "1"
     assert "GGML_CUDA_DISABLE_GRAPHS" not in seen[1]
+    assert seen[2].get("GGML_CUDA_DISABLE_GRAPHS") == "1"
 
 
 def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp_path, monkeypatch):
