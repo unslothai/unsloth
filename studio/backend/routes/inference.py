@@ -17590,6 +17590,14 @@ def _resident_ollama_system_prompt(llama_backend) -> str:
         return ""
 
 
+async def _with_ollama_system(messages: list[dict], llama_backend) -> list[dict]:
+    # Ollama's Messages endpoint falls back to the Modelfile SYSTEM when no system text is sent.
+    if any(m.get("role") == "system" and str(m.get("content") or "").strip() for m in messages):
+        return messages
+    system = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
+    return _set_or_prepend_system_message(messages, system)
+
+
 def _ollama_ref_for_link(model_path: str) -> Optional[str]:
     from hub.services.models.ollama import ollama_manifest_ref_for_path
     try:
@@ -44060,6 +44068,8 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
+    if not _has_system_turn(payload.messages):
+        _system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     _user_system_prompt = _system_prompt
     _date_controls = _template_controls(payload)
@@ -44846,6 +44856,7 @@ async def anthropic_count_tokens(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
     # on templates without tool-role support.
     openai_messages = _named_anthropic_tool_results(openai_messages)
@@ -45624,6 +45635,7 @@ async def anthropic_messages(
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
     )
+    openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
     openai_messages = _named_anthropic_tool_results(openai_messages)
     _anthropic_replayed_image_parts: list = []

@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 import routes.inference as inference_route
 from .llama_backend_double import FakeLlamaCppBackend
 
@@ -42,6 +42,15 @@ def _ollama_ref_with_system(tmp_path: Path, monkeypatch) -> str:
     return _ollama_refs(tmp_path, monkeypatch)["ollama/pirate:latest"]
 
 
+def _client(backend, monkeypatch) -> TestClient:
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    app = FastAPI()
+    app.include_router(inference_route.router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    return TestClient(app)
+
+
 def _sent_messages(tmp_path, monkeypatch, messages):
     sent = {}
 
@@ -52,14 +61,8 @@ def _sent_messages(tmp_path, monkeypatch, messages):
             sent["messages"] = kwargs["messages"]
             yield "Arr"
 
-    backend = _OllamaBackend()
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
-
-    app = FastAPI()
-    app.include_router(inference_route.router)
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    response = TestClient(app).post(
+    response = _client(_OllamaBackend(), monkeypatch).post(
         "/chat/completions", json = {"messages": messages, "stream": False}
     )
     assert response.status_code == 200, response.text
@@ -141,3 +144,71 @@ def test_tool_passthrough_body_carries_modelfile_system_prompt(tmp_path, monkeyp
     assert sent[0]["role"] == "system" and _SYSTEM in sent[0]["content"]
     sent = body([{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}])
     assert all(_SYSTEM not in str(m["content"]) for m in sent)
+
+
+def test_context_count_prices_modelfile_system_prompt(tmp_path, monkeypatch):
+    counted = []
+
+    class _OllamaBackend(FakeLlamaCppBackend):
+        model_identifier = _ollama_ref_with_system(tmp_path, monkeypatch)
+        _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+    def _count(backend, payload, messages, *_args):
+        counted.append(messages)
+        return 1, None, None
+
+    monkeypatch.setattr(inference_route, "_count_chat_context_tokens", _count)
+    client = _client(_OllamaBackend(), monkeypatch)
+    for messages in (
+        [{"role": "user", "content": "Hi"}],
+        [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}],
+    ):
+        response = client.post("/chat/count_tokens", json = {"messages": messages})
+        assert response.status_code == 200, response.text
+
+    assert _SYSTEM in counted[0][0]["content"]
+    assert all(_SYSTEM not in str(m["content"]) for m in counted[1])
+
+
+def test_anthropic_count_falls_back_to_modelfile_system_prompt(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from models.inference import AnthropicMessagesRequest
+
+    counted = []
+
+    class _Backend:
+        is_loaded = True
+        is_vision = False
+        model_identifier = _ollama_ref_with_system(tmp_path, monkeypatch)
+        context_length = 4096
+        supports_tools = False
+        supports_tool_passthrough = False
+
+        def _request_reasoning_kwargs(self, *_args, **_kwargs):
+            return {}
+
+        def count_chat_tokens(self, messages, *_args, **_kwargs):
+            counted.append(messages)
+            return 1
+
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages/count_tokens")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
+    empty = {"type": "text", "text": ""}
+    for system in (None, [empty], [empty, empty], "Be brief."):
+        payload = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": "Hi"}], system = system
+        )
+        asyncio.run(
+            inference_route.anthropic_count_tokens(payload, request = _Request(), current_subject = "t")
+        )
+
+    assert all(m[0]["role"] == "system" and _SYSTEM in m[0]["content"] for m in counted[:3])
+    assert all(_SYSTEM not in str(m["content"]) for m in counted[3])
