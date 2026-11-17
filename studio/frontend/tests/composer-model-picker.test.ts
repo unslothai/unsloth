@@ -960,9 +960,7 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
-  // A trigger not laid out yet must not shove the panel a whole width to the right.
   assert.equal(pickerAlignOffset("end", { left: 0, right: 0 }, 520, 2000), 0);
-  // While open it re-aligns to the live trigger and the panel's real width.
   assert.match(
     readSrc(
       "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",

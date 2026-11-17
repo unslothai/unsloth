@@ -3336,7 +3336,7 @@ export function ComposerModelPicker({
       window.removeEventListener("resize", place);
     };
   }, [dropsDown, panel]);
-  // The open-time estimate is stale once the trigger moves or if it was not laid out yet.
+  // The open-time rect is stale once the trigger moves or lays out late.
   useEffect(() => {
     const trigger = triggerRef.current;
     if (!(open && panel && trigger)) {
