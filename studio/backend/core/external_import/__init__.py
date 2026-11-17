@@ -245,6 +245,12 @@ def _reread_messages(
     return pending
 
 
+def _reader(revision: str) -> str:
+    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    tag = revision.partition(":")[2]
+    return "items" if tag == "images" else tag
+
+
 def _pending_messages(
     source: Source, transcript: Transcript, existing: bool, stored: list[dict]
 ) -> list[dict]:
@@ -262,9 +268,10 @@ def _pending_messages(
     elif revision in transcript.earlier:
         ends = transcript.earlier[revision]
         pending = transcript.messages[ends[min(turns, len(ends) - 1)] :]
-    # ":images" is the newest reader; a revert to an image-free point drops back to ":items".
-    elif revision.partition(":")[2] not in (transcript.revision.partition(":")[2], "images"):
+    elif _reader(revision) != _reader(transcript.revision):
         pending = _reread_messages(transcript, turns, revision, stored)
+    elif revision.partition(":")[0] == transcript.revision.partition(":")[0]:
+        pending = transcript.messages[turns:]
     else:
         pending = transcript.messages[transcript.inherited :]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio

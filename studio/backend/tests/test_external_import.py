@@ -1229,35 +1229,68 @@ def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
     assert run_import(codex.SOURCE).messages == 1
 
 
-def test_codex_revert_past_every_image_leaves_a_deleted_turn_deleted(codex_home):
+def _image_revert(
+    home,
+    cut,
+    tail,
+    image = True,
+):
     body = [
         _completed("UserMessage", "Hello"),
         _completed("AgentMessage", "Hi"),
-        *_pasted(""),
+        *_pasted("", image),
         _completed("AgentMessage", "Blue"),
     ]
-    _rollout(codex_home, sid = "img", history_mode = "paginated", body = body)
-    assert run_import(codex.SOURCE).messages == 4
-    tid = thread_id_for(codex.SOURCE, "img")
-    kept = [m for m in _messages(codex.SOURCE, "img") if m["content"][0].get("text") != "Hi"]
-    studio_db.sync_chat_messages(tid, kept, prune_missing = True)
-
+    base = _rollout(home, sid = "img", history_mode = "paginated", body = body)
     meta = {
         "id": "img",
         "cwd": "/Users/me/app",
         "history_mode": "paginated",
-        "history_base": {"thread_id": "img", "end_ordinal_exclusive": 5},
+        "history_base": {"thread_id": "img", "end_ordinal_exclusive": cut},
     }
-    _write(
-        codex_home / "sessions" / "2026" / "09" / "22" / "rollout-2026-09-22T12-00-01-img_r2.jsonl",
-        [
-            {**x_line("session_meta", meta), "ordinal": 5},
-            {**_completed("UserMessage", "Try again"), "ordinal": 6},
-        ],
-    )
+    records = [x_line("session_meta", meta), *tail]
+    name = "rollout-2026-09-22T12-00-01-img_r2.jsonl"
+    revert = home / "sessions" / "2026" / "09" / "22" / name
+    return base, lambda: _write(revert, [{**r, "ordinal": cut + i} for i, r in enumerate(records)])
+
+
+def _texts(sid):
+    return [m["content"][-1].get("text") for m in _messages(codex.SOURCE, sid)]
+
+
+@pytest.mark.parametrize(
+    "image, tail",
+    [
+        (True, [_completed("UserMessage", "Try again")]),
+        (False, [*_pasted("")]),
+    ],
+)
+def test_codex_revert_across_image_turns_leaves_a_deleted_turn_deleted(codex_home, image, tail):
+    _, revert = _image_revert(codex_home, 5, tail, image)
+    run_import(codex.SOURCE)
+    tid = thread_id_for(codex.SOURCE, "img")
+    kept = [m for m in _messages(codex.SOURCE, "img") if m["content"][-1].get("text") != "Hi"]
+    studio_db.sync_chat_messages(tid, kept, prune_missing = True)
+
+    revert()
     assert run_import(codex.SOURCE).messages == 1
-    texts = [m["content"][-1].get("text") for m in _messages(codex.SOURCE, "img")]
-    assert "Try again" in texts and "Hi" not in texts
+    assert "Hi" not in _texts("img")
+
+
+def test_codex_deleting_an_image_base_keeps_the_revert_tail_edits(codex_home):
+    base, revert = _image_revert(codex_home, 7, [_completed("UserMessage", "Try again")])
+    revert()
+    assert run_import(codex.SOURCE).messages == 4
+    tid = thread_id_for(codex.SOURCE, "img")
+    tip = next(
+        m for m in _messages(codex.SOURCE, "img") if m["content"][-1].get("text") == "Try again"
+    )
+    edited = [{"type": "text", "text": "Edited in Studio"}]
+    studio_db.sync_chat_messages(tid, [{**tip, "content": edited}], prune_missing = False)
+
+    base.unlink()
+    assert run_import(codex.SOURCE).messages == 0
+    assert "Edited in Studio" in _texts("img")
 
 
 def test_codex_deleting_the_base_rollout_keeps_studio_edits(codex_home):
