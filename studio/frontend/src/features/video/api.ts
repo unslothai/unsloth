@@ -23,6 +23,11 @@ export interface VideoResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp and MLX): value is "on" when Studio's
+  // INT8 attention kernel engaged on this load, else "off".
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface VideoGenerationDefaults {
@@ -111,7 +116,7 @@ export interface VideoStatus {
   prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
-  // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
+  // The names are memory_mode, speed_mode, attention_backend, int8_attention and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
   // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
   baked_loras?: string[];
@@ -174,6 +179,8 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
+  // Studio's INT8 attention kernel; "auto" = no per-load override.
+  int8_attention?: "auto" | "on" | "off";
   transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Omit for the hardware ladder; "none" pins bf16. GGUF / single-file carry their own.
