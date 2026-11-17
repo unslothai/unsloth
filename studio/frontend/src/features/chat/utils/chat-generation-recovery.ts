@@ -305,12 +305,17 @@ export function generationRawContent(content: unknown): {
   let raw = "";
   let reasoningOpen = false;
   const carried: CarriedPart[] = [];
-  for (const part of content) {
+  for (const [index, part] of content.entries()) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
-    // Saved parts are already parsed: a tag inside one is literal text.
+    // Saved parts are already parsed, so their tags are literal; only the reply's very end may
+    // hold a fragment inline parsing has yet to complete.
     const text =
-      typeof record.text === "string" ? markLiteralThinkTags(record.text) : "";
+      typeof record.text === "string"
+        ? markLiteralThinkTags(record.text, {
+            pending: index < content.length - 1,
+          })
+        : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
       else raw += `${THINK_OPEN}${text}`;

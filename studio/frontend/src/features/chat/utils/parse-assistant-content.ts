@@ -10,10 +10,20 @@ const THINK_CLOSE_TAG = "</think>";
 // A noncharacter stands in for the "<" of a literal tag (or one split across deltas) so it cannot
 // parse as a marker; one char for one keeps offsets into the raw text aligned with the parts.
 const LITERAL_TAG_MARK = "\uFDD0";
-const LITERAL_TAG_START = /<(?=\/?(?:think>|t(?:h(?:i(?:nk?)?)?)?$|$))/g;
+const LITERAL_TAG = /<(?=\/?think>)/g;
+const PENDING_TAG = /<(?=\/?(?:t(?:h(?:i(?:nk?)?)?)?)?$)/;
 
-export function markLiteralThinkTags(text: string): string {
-  return text.replace(LITERAL_TAG_START, LITERAL_TAG_MARK);
+/** `pending: false` leaves a trailing tag fragment alone, as inline parsing may still complete it. */
+export function markLiteralThinkTags(
+  text: string,
+  { pending = true }: { pending?: boolean } = {},
+): string {
+  const marked = text.replace(LITERAL_TAG, LITERAL_TAG_MARK);
+  return pending ? markPendingThinkTag(marked) : marked;
+}
+
+export function markPendingThinkTag(text: string): string {
+  return text.replace(PENDING_TAG, LITERAL_TAG_MARK);
 }
 
 export function unmarkLiteralThinkTags(text: string): string {

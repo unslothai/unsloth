@@ -207,6 +207,7 @@ import {
 import {
   extractDeltaText,
   markLiteralThinkTags,
+  markPendingThinkTag,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
 import {
@@ -1537,6 +1538,8 @@ function scheduleGenerationRecovery(
     let seededApprovals: Promise<void> | null = null;
     let { raw, reasoningOpen } = stored;
     let splitReasoningSeen = metadata.splitReasoningSeen === true;
+    // The live stream marked a trailing tag fragment only when reasoning arrived split out.
+    if (splitReasoningSeen) raw = markPendingThinkTag(raw);
     let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:

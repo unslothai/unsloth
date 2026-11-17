@@ -1652,3 +1652,24 @@ test("recovery parses inline tags unless the run had split-out reasoning", async
     text: "<think>plan</think>done",
   });
 });
+
+test("recovery completes an inline opener a checkpoint saved mid-tag", async () => {
+  const later = [{ choices: [{ delta: { content: "nk>Plan.</think>Answer" } }] }];
+  const inline = await recoverRun([{ type: "text", text: "<thi" }], later);
+  assert.deepEqual(inline.content, [
+    { type: "reasoning", text: "Plan." },
+    { type: "text", text: "Answer" },
+  ]);
+  const split = await recoverRun([{ type: "text", text: "a <thi" }], [
+    { choices: [{ delta: { content: "nk> b" } }] },
+  ], { metadata: { splitReasoningSeen: true } });
+  assert.deepEqual(split.content, [{ type: "text", text: "a <think> b" }]);
+  const settled = [
+    { type: "text", text: "a <thi" },
+    { type: "tool-call", toolCallId: "c1" },
+    { type: "text", text: "nk> b" },
+  ];
+  const { raw, carried } = recovery.generationRawContent(settled);
+  assert.deepEqual(parser.parseAssistantContent(raw).map((part) => part.type), ["text"]);
+  assert.equal(carried.length, 1);
+});

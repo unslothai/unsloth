@@ -21,9 +21,9 @@ const ANSWER = 'Use re.sub(r"<think>.*?</think>", "", text).';
 function streamed(): string[] {
   return [
     "<think>",
-    ...[...TRACE].map(markLiteralThinkTags),
+    ...[...TRACE].map((char) => markLiteralThinkTags(char)),
     "</think>",
-    ...[...ANSWER].map(markLiteralThinkTags),
+    ...[...ANSWER].map((char) => markLiteralThinkTags(char)),
   ];
 }
 
