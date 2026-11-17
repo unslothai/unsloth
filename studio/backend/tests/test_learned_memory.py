@@ -260,3 +260,21 @@ def test_memory_budget_uses_serving_window_after_routing(db, monkeypatch, hosted
         asyncio.run(
             inf.produce_openai_chat_completions(payload, request, "t", cancel_on_disconnect = False)
         )
+
+
+def test_offered_memory_scopes_follow_the_chat_without_mutating_other_offers(db):
+    personal = memory.offer("chat")[0]["function"]
+    project = memory.offer("project-chat")[0]["function"]
+    assert personal["parameters"]["properties"]["scope"]["enum"] == ["personal"]
+    assert project["parameters"]["properties"]["scope"]["enum"] == ["personal", "project"]
+    assert memory.TOOL["function"]["parameters"]["properties"]["scope"]["enum"] == ["personal", "project"]
+    assert memory.execute(
+        {"scope": "project", "key": "stack", "value": "Kotlin"}, "project-chat"
+    ).startswith("Memory updated:")
+    assert memory.execute(
+        {"scope": "personal", "key": "editor", "value": "Helix"}, "project-chat"
+    ).startswith("Memory updated:")
+    assert memory.read("p")["entries"]["stack"]["value"] == "Kotlin"
+    assert "editor" not in memory.read("p")["entries"]
+    assert memory.read()["entries"]["editor"]["value"] == "Helix"
+    assert "stack" not in memory.read()["entries"]

@@ -128,7 +128,15 @@ export function LearnedMemorySection() {
   }, [scrollTarget]);
   const threadId = useChatRuntimeStore((state) => state.activeThreadId);
   const incognito = useChatRuntimeStore((state) => state.incognito);
-  const [projectId, setProjectId] = useState("");
+  const memoryScopeRequested = useSettingsDialogStore(
+    (state) => state.memoryScopeRequested,
+  );
+  const [projectId, setProjectId] = useState(memoryScopeRequested?.projectId ?? "");
+  useEffect(() => {
+    if (!memoryScopeRequested) return;
+    setProjectId(memoryScopeRequested.projectId ?? "");
+    useSettingsDialogStore.getState().consumeMemoryScopeRequest();
+  }, [memoryScopeRequested]);
   const [projects, setProjects] = useState<
     Awaited<ReturnType<typeof listChatProjects>>
   >([]);
