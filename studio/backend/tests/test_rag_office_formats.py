@@ -1619,11 +1619,14 @@ def test_ods_refuses_runaway_repeats(tmp_path):
         parsers.parse(str(path))
 
 
-def test_xml_entities_are_refused(tmp_path):
-    path = _zip(
-        tmp_path / "bomb.odt", {"content.xml": '<!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'}
-    )
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("codec", ["utf-8", "utf-16-le", "utf-16-be"])
+def test_xml_entities_are_refused(tmp_path, codec):
+    xml = '<!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'
+    if codec != "utf-8":
+        bom = "\ufeff".encode(codec)
+        xml = bom + ('<?xml version="1.0" encoding="utf-16"?>' + xml).encode(codec)
+    path = _zip(tmp_path / "bomb.odt", {"content.xml": xml})
+    with pytest.raises(ValueError, match = "entity declarations"):
         parsers.parse(str(path))
 
 

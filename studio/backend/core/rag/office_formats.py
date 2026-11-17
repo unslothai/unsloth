@@ -64,6 +64,10 @@ _STRICT_NS = {
 }
 
 
+# expat also reads UTF-16, where an ASCII search for the declaration finds nothing.
+_ENTITY_DECLS = tuple("<!ENTITY".encode(codec) for codec in ("utf-8", "utf-16-le", "utf-16-be"))
+
+
 def _transitional_name(name: str) -> str:
     namespace, separator, local = name.partition("}")
     mapped = _STRICT_NS.get(namespace[1:]) if separator else None
@@ -121,7 +125,7 @@ class _Archive:
     def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
-        if b"<!ENTITY" in data:
+        if any(decl in data for decl in _ENTITY_DECLS):
             raise ValueError("XML entity declarations are not supported")
         parser = ET.XMLPullParser((*events, "start-ns"))
         strict = False
