@@ -411,7 +411,8 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
 _MEMORY_SUMMARIES_MAX = 64
 _memory_summaries: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
 _memory_lock = threading.Lock()
-_cut_off_threads: "OrderedDict[str, None]" = OrderedDict()
+# A thinking model can spend the whole summary cap on reasoning; another model on the thread may not.
+_cut_off_summaries: "OrderedDict[tuple[str, Optional[str]], None]" = OrderedDict()
 
 
 def _remember(thread_id: str, record: dict) -> None:
@@ -422,19 +423,19 @@ def _remember(thread_id: str, record: dict) -> None:
             _memory_summaries.popitem(last = False)
 
 
-def remember_cut_off(thread_id: Optional[str]) -> None:
+def remember_cut_off(thread_id: Optional[str], model: Optional[str]) -> None:
     if not thread_id:
         return
     with _memory_lock:
-        _cut_off_threads[thread_id] = None
-        _cut_off_threads.move_to_end(thread_id)
-        while len(_cut_off_threads) > _MEMORY_SUMMARIES_MAX:
-            _cut_off_threads.popitem(last = False)
+        _cut_off_summaries[(thread_id, model)] = None
+        _cut_off_summaries.move_to_end((thread_id, model))
+        while len(_cut_off_summaries) > _MEMORY_SUMMARIES_MAX:
+            _cut_off_summaries.popitem(last = False)
 
 
-def summary_was_cut_off(thread_id: Optional[str]) -> bool:
+def summary_was_cut_off(thread_id: Optional[str], model: Optional[str]) -> bool:
     with _memory_lock:
-        return bool(thread_id) and thread_id in _cut_off_threads
+        return bool(thread_id) and (thread_id, model) in _cut_off_summaries
 
 
 def save_summary(
@@ -456,7 +457,7 @@ def save_summary(
         return record
     _remember(thread_id, record)
     with _memory_lock:
-        _cut_off_threads.pop(thread_id, None)
+        _cut_off_summaries.pop((thread_id, model), None)
     try:
         from storage import studio_db
         studio_db.save_chat_thread_summary(

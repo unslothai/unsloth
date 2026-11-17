@@ -122,8 +122,10 @@ def _saved_thread(thread_id: str) -> str:
 @pytest.fixture(autouse = True)
 def _no_remembered_summaries():
     cloud_compaction._memory_summaries.clear()
+    cloud_compaction._cut_off_summaries.clear()
     yield
     cloud_compaction._memory_summaries.clear()
+    cloud_compaction._cut_off_summaries.clear()
 
 
 # Compacts early in a window large enough for one summary call to read the whole backlog.
@@ -235,6 +237,10 @@ def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
     assert sent["messages"][-1]["content"] == "next"
     [truncation] = _truncations(chunks)
     assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    # Another model on the same thread is asked again.
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, model = "b-model", **options)
+    assert summaries
 
     _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
     assert summaries

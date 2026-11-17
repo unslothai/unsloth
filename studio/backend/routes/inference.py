@@ -29476,7 +29476,9 @@ def _plan_external_compaction(
     )
     plan.cut = plan.covered
     over = plan.budget is not None and count(plan.current) > plan.budget
-    cut_off = force != "manual" and cloud_compaction.summary_was_cut_off(thread_id)
+    cut_off = force != "manual" and cloud_compaction.summary_was_cut_off(
+        thread_id, payload.external_model or payload.model
+    )
     if summarise and (force or over) and cut_off:
         plan.summary_failed = True
     elif summarise and (force or over):
@@ -29552,7 +29554,7 @@ async def _finish_external_compaction(
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
             if isinstance(exc, cloud_compaction.SummaryCutOff):
-                cloud_compaction.remember_cut_off(thread_id)
+                cloud_compaction.remember_cut_off(thread_id, model)
         else:
             await asyncio.to_thread(
                 cloud_compaction.save_summary,
