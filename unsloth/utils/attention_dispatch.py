@@ -49,8 +49,7 @@ if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
 
-# Set while a traced block's attention runs eagerly (UNSLOTH_GC_SAVE_ATTENTION's graph break): the
-# eager call must take the backend and kernels the traced call would have taken.
+# True while a traced block's attention runs eagerly (saved-attention graph break): keep traced dispatch.
 _AS_TRACED = [False]
 
 
@@ -1614,9 +1613,7 @@ def run_attention(
     if manager is not None and manager.backend == "ulysses":
         return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
     if _SAVE_ATTENTION and context.training and manager is None:
-        # UNSLOTH_GC_SAVE_ATTENTION=1: inside an Unsloth gradient checkpoint the first pass keeps the
-        # attention kernel's output (+ logsumexp) and the backward replay reuses it. A graph break
-        # under block compile; a plain call everywhere else.
+        # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
         traced = torch.compiler.is_compiling()
         return _saved_attention_call(
             lambda Q, K, V: _run_attention_as(traced, config, context, Q, K, V),
