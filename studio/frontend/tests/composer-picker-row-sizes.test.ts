@@ -108,6 +108,13 @@ test("a favorite quant row sizes that quant, and only that quant", () => {
   assert.equal(rowOwnBytes(undefined, null, null, undefined), null);
 });
 
+test("an NPU row reads params from its lemonade id", () => {
+  assert.equal(
+    rowSizeMeta({ kind: "npu", id: "lemonade:qwen3-0.6b-FLM", sizeBytes: 0.9 * GB }).params,
+    "0.6B",
+  );
+});
+
 test("connected API models get neither", () => {
   assert.deepEqual(
     rowSizeMeta({ kind: "external", id: "meta-llama/llama-3.1-70b", sizeBytes: GB }),
@@ -153,8 +160,13 @@ test("rows only draw the columns when the setting is on", () => {
     /const hubHasSizes = useMemo\(\s*\(\) =>\s*shownRows\.some\(\s*\(row\) =>\s*row\.kind === "hub" &&\s*rowSizeMeta\(/,
   );
   assert.match(picker, /\[shownRows, hubEstimates\]/);
+  // A favorited quant is looked up on disk for every row kind, local GGUF folders too.
   assert.match(
     picker,
-    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*savedVariant \? quantBytes\(savedVariant\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.sizeBytes,\s*\)/,
+    /const favoriteOnDisk = row\.favoriteQuant\s*\?\s*onDisk\.find\(/,
+  );
+  assert.match(
+    picker,
+    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.sizeBytes,\s*\)/,
   );
 });

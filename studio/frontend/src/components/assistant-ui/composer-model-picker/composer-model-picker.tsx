@@ -4012,6 +4012,12 @@ export function ComposerModelPicker({
           : onDisk.length === 1
             ? onDisk[0]
             : undefined;
+    // Any kind, local GGUF folders included; savedVariant is gated to Hub GGUF rows for run settings.
+    const favoriteOnDisk = row.favoriteQuant
+      ? onDisk.find(
+          (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
+        )
+      : undefined;
     const sizeMeta = showModelSizes
       ? rowSizeMeta({
           kind: row.kind,
@@ -4021,7 +4027,7 @@ export function ComposerModelPicker({
           partial: row.partial,
           sizeBytes: rowOwnBytes(
             row.favoriteQuant,
-            savedVariant ? quantBytes(savedVariant) : null,
+            favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
             onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
             row.sizeBytes,
           ),
