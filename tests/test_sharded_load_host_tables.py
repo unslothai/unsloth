@@ -236,6 +236,30 @@ def test_unserved_host_read_table_returns_to_the_gpu():
     assert tpn._return_host_loaded(model, None) == 0  # idempotent
 
 
+def test_unserved_table_takes_its_peft_token_adapter_to_the_gpu():
+    """trainable_token_indices: PEFT builds its delta next to the host-read table; both must go back."""
+    from peft import LoraConfig, get_peft_model
+
+    base = _qwen3()
+    base.to("meta")
+    embed = base.get_input_embeddings()
+    embed.to_empty(device = "cpu")
+    with torch.no_grad():
+        embed.weight.normal_()
+    embed.weight.requires_grad_(False)
+    tpn._mark_host_loaded(base, embed)
+    lora = LoraConfig(r = 4, target_modules = ["q_proj"], trainable_token_indices = [1, 2])
+    model = get_peft_model(base, lora)
+    assert any(
+        p.device.type == "cpu" and p.requires_grad
+        for n, p in model.named_parameters()
+        if "token" in n
+    )
+    assert tpn._return_host_loaded(model, None) == 1
+    wrapper = model.get_input_embeddings()
+    assert all(t.device.type == "meta" for t in (*wrapper.parameters(), *wrapper.buffers()))
+
+
 def test_served_host_read_table_stays_on_the_host():
     model, base, embed = _host_loaded_peft()
     assert tpn._return_host_loaded(model, embed) == 0

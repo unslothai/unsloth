@@ -2235,6 +2235,10 @@ def _return_host_loaded(model, served):
     load without it would have put it. Returns how many modules moved."""
     marked = _host_loaded_modules(model)
     device = _host_table_home(model) if marked else None
+    try:
+        outer = model.get_input_embeddings()
+    except Exception:
+        outer = None
     moved = 0
     for module in marked:
         if module is served:
@@ -2245,9 +2249,17 @@ def _return_host_loaded(model, served):
             module, "_unsloth_fsdp2_cpu_lookup", False
         ):
             continue
+        # A PEFT wrapper around the table (trainable_token_indices) made its own tensors on the host too.
+        target = module
+        if (
+            isinstance(outer, nn.Module)
+            and outer is not module
+            and any(m is module for m in outer.modules())
+        ):
+            target = outer
         if device is not None and device.type != "cpu":
-            if any(t.device.type == "cpu" for t in (*module.parameters(), *module.buffers())):
-                module.to(device)
+            if any(t.device.type == "cpu" for t in (*target.parameters(), *target.buffers())):
+                target.to(device)
                 moved += 1
     offloaded = any(
         getattr(m, "_unsloth_offload_hooks_installed", False)
