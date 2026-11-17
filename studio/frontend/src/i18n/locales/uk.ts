@@ -5215,7 +5215,6 @@ export const uk = {
   translate: {
     title: "Переклад",
     detectLanguage: "Визначити мову",
-    detected: "{language} (визначено)",
     sourceLanguage: "Мова оригіналу",
     targetLanguage: "Мова перекладу",
     recentTargets: "Нещодавні",

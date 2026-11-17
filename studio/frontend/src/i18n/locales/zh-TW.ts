@@ -4908,7 +4908,6 @@ export const zhTW = {
   translate: {
     title: "翻譯",
     detectLanguage: "偵測語言",
-    detected: "{language}（已偵測）",
     sourceLanguage: "來源語言",
     targetLanguage: "翻譯成",
     recentTargets: "最近",

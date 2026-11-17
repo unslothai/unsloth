@@ -4736,7 +4736,6 @@ export const zhCN = {
   translate: {
     title: "翻译",
     detectLanguage: "检测语言",
-    detected: "{language}（已检测）",
     sourceLanguage: "源语言",
     targetLanguage: "翻译为",
     recentTargets: "最近",

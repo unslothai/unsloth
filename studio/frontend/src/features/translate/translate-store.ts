@@ -89,7 +89,7 @@ type TranslateState = {
   setSource: (source: string) => void;
   setPrefs: (patch: Partial<TranslatePrefs>) => void;
   setTarget: (target: string) => void;
-  swap: (detected?: string | null) => void;
+  swap: () => void;
   outputToSource: () => void;
   /** `auto` runs come from typing: each replaces the draft's previous auto entry in the history. */
   translate: (options?: { auto?: boolean }) => Promise<void>;
@@ -290,15 +290,14 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
     });
   },
 
-  swap: (detected) => {
+  swap: () => {
     const state = get();
     const { prefs, output, phase, result } = state;
-    const from = prefs.from === AUTO_SOURCE ? detected : prefs.from;
-    if (!from || from === prefs.target || phase) return;
+    if (prefs.from === AUTO_SOURCE || phase) return;
     // Only a finished translation of the current draft replaces it; an edit is never lost.
     const current = output && result !== null && !translationIsStale(state);
     get().setPrefs({ from: prefs.target });
-    get().setTarget(from);
+    get().setTarget(prefs.from);
     if (current) {
       set({
         source: clipText(output, TRANSLATE_SOURCE_MAX_CHARS),

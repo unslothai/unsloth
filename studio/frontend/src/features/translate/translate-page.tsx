@@ -96,7 +96,6 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
-import { detectLanguage } from "./detect-language";
 import { TranslateHistoryList } from "./history-list";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
@@ -201,13 +200,11 @@ function LanguagePicker({
   onChange,
   label,
   allowAuto,
-  detected,
 }: {
   value: string;
   onChange: (code: string) => void;
   label: string;
   allowAuto?: boolean;
-  detected?: string | null;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -232,14 +229,9 @@ function LanguagePicker({
   const autoLabel = t("translate.detectLanguage");
   const showAuto =
     allowAuto === true && (!needle || autoLabel.toLowerCase().includes(needle));
-  const detectedLabel = detected
-    ? languages.find((language) => language.code === detected)?.label
-    : undefined;
   const currentLabel =
     allowAuto && value === AUTO_SOURCE
-      ? detectedLabel
-        ? t("translate.detected", { language: detectedLabel })
-        : autoLabel
+      ? autoLabel
       : (languages.find((language) => language.code === value)?.label ?? value);
   const pick = (code: string) => {
     onChange(code);
@@ -1043,11 +1035,6 @@ export function TranslatePage() {
   const outputRef = useRef<HTMLDivElement>(null);
 
   const busy = phase !== null;
-  const detected = useMemo(
-    () => (prefs.from === AUTO_SOURCE ? detectLanguage(source) : null),
-    [prefs.from, source],
-  );
-  const swapFrom = prefs.from === AUTO_SOURCE ? detected : prefs.from;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
   const stale = translationIsStale({ result, source, prefs });
@@ -1267,15 +1254,16 @@ export function TranslatePage() {
             onChange={(from) => setPrefs({ from })}
             label={t("translate.sourceLanguage")}
             allowAuto={true}
-            detected={detected}
           />
           <IconAction
             icon={ArrowLeftRightIcon}
             label={
-              swapFrom ? t("translate.swap") : t("translate.swapNeedsSource")
+              prefs.from === AUTO_SOURCE
+                ? t("translate.swapNeedsSource")
+                : t("translate.swap")
             }
-            disabled={!swapFrom || swapFrom === prefs.target || busy}
-            onClick={() => swap(detected)}
+            disabled={prefs.from === AUTO_SOURCE || busy}
+            onClick={swap}
           />
           <LanguagePicker
             value={prefs.target}

@@ -4847,7 +4847,6 @@ export const en = {
   translate: {
     title: "Translate",
     detectLanguage: "Detect language",
-    detected: "{language} (detected)",
     sourceLanguage: "Translate from",
     targetLanguage: "Translate to",
     recentTargets: "Recent",

@@ -5225,7 +5225,6 @@ export const pl = {
   translate: {
     title: "Tłumacz",
     detectLanguage: "Wykryj język",
-    detected: "{language} (wykryto)",
     sourceLanguage: "Przetłumacz z",
     targetLanguage: "Przetłumacz na",
     recentTargets: "Ostatnie",

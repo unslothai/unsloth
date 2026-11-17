@@ -4825,7 +4825,6 @@ export const ko = {
   translate: {
     title: "번역",
     detectLanguage: "언어 감지",
-    detected: "{language} (감지됨)",
     sourceLanguage: "원본 언어",
     targetLanguage: "번역할 언어",
     recentTargets: "최근",

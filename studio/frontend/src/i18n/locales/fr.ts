@@ -4918,7 +4918,6 @@ export const fr = {
   translate: {
     title: "Traduire",
     detectLanguage: "Détecter la langue",
-    detected: "{language} (détecté)",
     sourceLanguage: "Traduire depuis",
     targetLanguage: "Traduire en",
     recentTargets: "Récentes",

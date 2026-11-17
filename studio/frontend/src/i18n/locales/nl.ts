@@ -5224,7 +5224,6 @@ export const nl = {
   translate: {
     title: "Vertalen",
     detectLanguage: "Taal herkennen",
-    detected: "{language} (gedetecteerd)",
     sourceLanguage: "Vertalen uit",
     targetLanguage: "Vertalen naar",
     recentTargets: "Recent",
