@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Default path: a bfloat16 full finetune through FastLanguageModel + SFTTrainer (adamw_8bit and
-adamw_torch) steps its bfloat16 weights with stochastic rounding; LoRA and
-UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 do not. Fresh process per case. Needs a GPU (import unsloth)."""
+"""Default SFTTrainer full finetune path uses stochastic rounding; LoRA and the kill switch do not. Needs a GPU."""
 
 import os
 import subprocess

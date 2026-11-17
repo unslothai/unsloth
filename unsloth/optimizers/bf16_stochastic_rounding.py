@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bfloat16 full finetuning: step bfloat16 weights in float32 and round them back stochastically.
+"""bfloat16 full finetuning: step bfloat16 weights in float32, round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
 
-bfloat16 keeps 8 mantissa bits, so a weight of magnitude ~0.02 moves in steps of ~1e-4. An AdamW update
-at lr 1e-5 is ~1e-5 per element, and round-to-nearest writes most of them back unchanged: on a
-Qwen3-0.6B full finetune at lr 1e-5 bfloat16 weights kept 7% of the update float32 masters made.
-
-For the Trainer's AdamW / Adam (torch) and bitsandbytes optimizers (adamw_8bit, paged_adamw_8bit, ...),
-each bfloat16 weight is upcast to float32 for its own update (with its gradient), stepped by the same
-optimizer, and written back with stochastic rounding (unbiased: E[round(x)] = x), so small updates
-survive in expectation. Persistent memory is unchanged: bitsandbytes state does not depend on the
-weight dtype, and torch AdamW's moments stay stored in bfloat16 (as bfloat16 AdamW keeps them), also
-written back with stochastic rounding. The transient float32 copy is one weight at a time.
-
-On by default for models loaded with full_finetuning = True whose trainable weights are bfloat16, for
-optimizers the Trainer builds or receives of the kinds above. UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 turns
-it off (round-to-nearest, the previous behaviour). Enabling twice is a no-op.
+bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller than a weight's spacing.
 """
 
 import os
@@ -44,9 +31,7 @@ def stochastic_round_to_bf16_(
     src,
     generator = None,
 ):
-    """dst (bfloat16) <- src (float32) rounded stochastically: up with probability equal to the
-    distance from the lower bfloat16 neighbour in units of the bfloat16 spacing. Inf / NaN are kept.
-    Works in chunks so the temporaries stay small."""
+    """dst (bfloat16) <- src (float32) rounded stochastically (unbiased: E[round(x)] = x)."""
     flat_src = src.reshape(-1)
     flat_dst = dst.view(-1)
     for start in range(0, flat_src.numel(), _CHUNK):
@@ -54,8 +39,6 @@ def stochastic_round_to_bf16_(
         noise = torch.randint(
             0, 1 << 16, bits.shape, dtype = torch.int32, device = bits.device, generator = generator
         )
-        # Adding 16 random low bits then truncating rounds the magnitude up with the right odds
-        # (the sign bit is untouched; a carry into the exponent is the correct rounding).
         rounded = (bits + noise) & -65536
         special = (bits & 0x7F800000) == 0x7F800000
         rounded = torch.where(special, bits, rounded)
@@ -90,8 +73,7 @@ def _generator(optimizer, device, seed):
 
 
 def _reseed(optimizer, p, seed):
-    """Seed from (parameter index, its optimizer step): a resumed run draws what an uninterrupted one would,
-    since the step lives in the checkpointed optimizer state."""
+    """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would."""
     index = optimizer.__dict__.setdefault("_unsloth_sr_index", {})
     i = index.setdefault(id(p), len(index))
     step = (optimizer.state.get(p) or {}).get("step", 0)
@@ -102,8 +84,6 @@ def _reseed(optimizer, p, seed):
 
 
 class _Float32Step:
-    """Context: one bfloat16 weight (and its gradient) is float32 while the optimizer steps it."""
-
     def __init__(self, optimizer, p, seed):
         self.optimizer, self.p, self.seed = optimizer, p, seed
 
@@ -141,14 +121,11 @@ def _moments(state, p, dtype):
 
 
 def _upcast_state(state, p):
-    """torch Adam moments are stored in bfloat16 (as a bfloat16 run keeps them): float32 for the step."""
     for key in _moments(state, p, torch.bfloat16):
         state[key] = state[key].float()
 
 
 def _store_state(optimizer, state, p, seed):
-    """Back to bfloat16 storage after the step, stochastically rounded (unbiased, so a moment decaying
-    by less than bfloat16's spacing per step still decays): no memory beyond what bfloat16 AdamW keeps."""
     for key in _moments(state, p, torch.float32):
         value = state[key]
         stored = torch.empty_like(value, dtype = torch.bfloat16)
@@ -261,8 +238,7 @@ def _full_finetuning(model):
 
 
 def patch_trainer_bf16_stochastic_rounding(Trainer):
-    """Trainer.create_scheduler runs once the optimizer exists (whoever built it) and before the LR
-    scheduler wraps its step: enable stochastic rounding there for full finetuning models."""
+    """create_scheduler: the optimizer exists and the LR scheduler has not yet wrapped its step."""
     original = Trainer.create_scheduler
     if getattr(original, _MARK, False):
         return
