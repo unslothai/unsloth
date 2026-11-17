@@ -17,7 +17,7 @@ import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { markdownToSpeechText } from "../utils/speech-text";
 import { splitIntoSentences } from "../voice/speech-text";
-import { planTtsChunk } from "../voice/tts-chunk-plan";
+import { planTtsChunk, spokenChunk } from "../voice/tts-chunk-plan";
 
 /** "default" resolves to the platform's default voice; undefined lets the browser pick. */
 export function findTtsVoice(
@@ -439,7 +439,7 @@ export function readAloudChunks(text: string): string[] {
       1,
       planTtsChunk({ pending, first: chunks.length === 0, final: true, playing: false, waitedMs: 0 }),
     );
-    chunks.push(pending.splice(0, take).join(" "));
+    chunks.push(spokenChunk(pending.splice(0, take)));
   }
   return chunks;
 }
