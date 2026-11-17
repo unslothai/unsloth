@@ -22,8 +22,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# What each pinned converter packs as is; anything else is dequantized and rounded again.
-DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": SOURCE_QUANTS}
+# Tried first: what each converter packs as is for its models; anything else is rounded again.
+DIRECT_QUANTS = {"q4nx": ("q4_0", "q4_1"), "q4k": ("q4_k_m",)}
 # Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
@@ -42,8 +42,8 @@ def _installer():
     return install_q4nx_converter
 
 
-def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
-    """The first selected source quant the architecture's converter packs as is, else the first one."""
+def source_ggufs(ggufs: List[str], quant_methods: List[str]) -> List[str]:
+    """Selected source quants to try in order: the ones the architecture's converter packs as is first."""
     candidates = [
         (quant, path)
         for quant in quant_methods
@@ -52,10 +52,10 @@ def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
         if os.path.basename(path).lower().endswith(f".{quant}.gguf")
     ]
     if not candidates:
-        return None
+        return []
     converter = _installer().converter_for_architecture(_gguf_architecture(candidates[0][1]))
     direct = DIRECT_QUANTS[converter]
-    return next((path for quant, path in candidates if quant in direct), candidates[0][1])
+    return [path for quant, path in sorted(candidates, key = lambda c: c[0] not in direct)]
 
 
 def require_converter_deps() -> None:
@@ -85,11 +85,39 @@ def _has_merged_linear_attention(gguf_path: str) -> bool:
     )
 
 
+class SourceMismatch(RuntimeError):
+    """The GGUF holds blocks the converter would pack in a layout the model does not read."""
+
+
+_MISMATCH_EXIT = 3
+# Q4_0 / Q4_1 / Q8_0 (q4k: Q4_K) blocks are packed as is, but FastFlowLM reads each slot in the
+# config's layout, so a mismatch decodes as noise: refuse it.
+_GUARD = f"""
+from gguf import GGMLQuantizationType as T
+from q4nx.gguf_tensor import GGUFTensor
+_quant = (T.Q4_0, T.Q4_1, T.Q4_K, T.Q8_0)
+_unpack = GGUFTensor.unpack
+
+def _checked_unpack(self, target):
+    packed = self.get_used_quantization_type(target)
+    if target in _quant and packed in _quant and packed != target:
+        print(
+            f"{{self.name}} is {{packed.name}}, which the Q4NX converter packs as is into a model "
+            f"that reads {{target.name}} there, so FastFlowLM would read noise. Convert a Q4_K_M "
+            f"GGUF instead{{'' if target == T.Q4_K else ' or a ' + target.name + ' one'}}.",
+            file = sys.stderr,
+        )
+        sys.exit({_MISMATCH_EXIT})
+    return _unpack(self, target)
+
+GGUFTensor.unpack = _checked_unpack
+"""
 # convert.py's __main__ overwrites sys.argv and importing it first is circular. argv[3] names the
 # family: q4k sizes Qwen3.5 by geometry only when general.name says Qwen3.x, a fine-tune's is "Model".
 _RUN_CONVERTER = (
     "import sys; from q4nx import create_converter; family = ''\n"
-    "if len(sys.argv) > 3:\n"
+    + _GUARD
+    + "if len(sys.argv) > 3:\n"
     "    from gguf import GGUFReader; from q4nx.constants import ModelArchNames\n"
     "    from q4nx.model_converter import _resolve_qwen35\n"
     "    family = ModelArchNames[_resolve_qwen35(GGUFReader(sys.argv[1]), sys.argv[3], None)][0]\n"
@@ -252,6 +280,8 @@ def convert_gguf_to_q4nx(
     _, stderr = process.communicate()
     if process.returncode != 0:
         tail = (stderr or "").strip().splitlines()
+        if process.returncode == _MISMATCH_EXIT and tail:
+            raise SourceMismatch(tail[-1])
         raise RuntimeError(
             f"The Q4NX converter exited with code {process.returncode}"
             + (f": {tail[-1]}" if tail else "")

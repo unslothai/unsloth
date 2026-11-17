@@ -81,6 +81,7 @@ function setup(
   pageUrl: string | null = null,
   anyOrigin = false,
   browserReads: (url: string) => boolean = () => false,
+  siteCookies = false,
 ) {
   let now = 0;
   // The script patches its Response's body readers: a class of its own keeps that out of other tests.
@@ -110,9 +111,10 @@ function setup(
       return null;
     }
   };
+  const cfg = { url: pageUrl, anyOrigin, siteCookies, cookieWrites: 0 };
   runInNewContext(source, {
     window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
-    cfg: { url: pageUrl, anyOrigin }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
+    cfg, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
     setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer, URLSearchParams,
     FormData, ArrayBuffer,
@@ -133,6 +135,7 @@ function setup(
     refused,
     posted,
     reply,
+    cfg,
   };
 }
 
@@ -271,6 +274,81 @@ test("a page whose site answers any origin still relays a GET its API doesn't an
   await assert.rejects(t.window.fetch("/same", { method: "POST", body: "x" }), TypeError);
   assert.equal(t.posted.length, 1);
   assert.equal(t.refused.length, 2);
+});
+
+test("once the backend holds the site's cookies, its own requests go there to carry them", async () => {
+  // The site answers any origin, so without cookies every one of these would stay the browser's.
+  const t = setup(NativeXHR, "https://site.test/", true, () => true, true);
+  const read = t.window.fetch("/api/me");
+  const write = t.window.fetch("/api/save", { method: "POST", body: "x" });
+  const xhr = new t.window.XMLHttpRequest();
+  xhr.open("GET", "/api/list");
+  xhr.send();
+  await tick();
+  assert.equal(t.native.length, 0);
+  const sent = new Map(t.posted.map((message) => [message.url, message]));
+  assert.deepEqual([...sent.keys()].sort(), ["https://site.test/api/list", "https://site.test/api/me", "https://site.test/api/save"]);
+  assert.equal(sent.get("https://site.test/api/save")?.method, "POST");
+  t.reply(sent.get("https://site.test/api/me")?.id, ok("{}"));
+  t.reply(sent.get("https://site.test/api/save")?.id, ok("{}"));
+  await Promise.all([read, write]);
+  void t.window.fetch("/api/public", { credentials: "omit" });
+  await tick();
+  assert.equal(t.native.length, 1);
+  assert.equal(t.posted.length, 3);
+});
+
+test("an answer saying the site has cookies moves its later requests to the panel, and back", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => !url.endsWith("/login"));
+  const login = t.window.fetch("/login", { method: "POST", body: "user=a" });
+  await tick();
+  t.reply(t.posted[0].id, ok("{}", { siteCookies: true }));
+  await login;
+  const me = t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 2);
+  t.reply(t.posted[1].id, ok("{}", { siteCookies: false }));
+  await me;
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 1);
+  assert.equal(t.posted.length, 2);
+});
+
+test("an older answer saying the site has no cookies can't undo a newer sign-in's", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => !url.endsWith("/login"));
+  const slow = t.window.fetch("/slow", { method: "POST", body: "x" });
+  const login = t.window.fetch("/login", { method: "POST", body: "user=a" });
+  await tick();
+  t.reply(t.posted[1].id, ok("{}", { siteCookies: true, cookiesVersion: ["e", 5] }));
+  await login;
+  t.reply(t.posted[0].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 3] }));
+  await slow;
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 3);
+});
+
+test("an answer asked for before the page set a cookie can't route its requests back to the browser", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => !url.endsWith("/save"));
+  const save = t.window.fetch("/save", { method: "POST", body: "x" });
+  await tick();
+  // The page's document.cookie write, as the shell makes it.
+  t.cfg.siteCookies = true;
+  t.cfg.cookieWrites++;
+  t.reply(t.posted[0].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 4] }));
+  await save;
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 2);
+  t.reply(t.posted[1].id, ok("{}", { siteCookies: false, cookiesVersion: ["e", 6] }));
+  await tick();
+  void t.window.fetch("/api/me");
+  await tick();
+  assert.equal(t.native.length, 1);
 });
 
 test("an own-site GET the browser can read stays the browser's, streamed as it was", async () => {

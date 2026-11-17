@@ -89,8 +89,9 @@ def _make_safe_int_mm(mod, original):
         bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
+            # back to the operand's card: a bare device type is the current card
             return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
-                input.device.type
+                input.device
             )
 
         # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads

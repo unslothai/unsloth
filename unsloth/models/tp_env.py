@@ -14,21 +14,23 @@ UNSLOTH_PARALLEL="dp=..,tp=..,pp=..,cp=.." (unsloth/parallel_env.py) sets these 
 UNSLOTH_CP_SIZE: context parallel on the same mesh. The layout (parallel_env.ParallelLayout, TPEnvLayout here) is
 read once. The world splits into pp x dp x cp x tp ranks (pp outermost, tp the inner dimension; one root
 DeviceMesh, size-1 axes left out). Tensor parallel alone:
-- FastLanguageModel / FastModel.from_pretrained: 16-bit checkpoints load through sharded_loading (each rank
-  reads its slices of the attention / MLP projections); 4-bit loads in full and is sharded at get_peft_model.
+- FastLanguageModel / FastModel.from_pretrained: 16-bit and pre-quantized bitsandbytes 4-bit checkpoints load
+  through sharded_loading (each rank reads its slices of the attention / MLP projections); quantizing on load
+  loads in full and is sharded at get_peft_model.
 - get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
 - Trainer.__init__: tensor parallel if get_peft_model did not apply it; native FSDP2 shards over mesh["dp"]
   (UNSLOTH_FSDP2=1), otherwise gradients are averaged over mesh["dp"] before clipping and the optimizer step.
 So the order is always split -> tp -> FSDP2.
 
 With UNSLOTH_PP_SIZE (models/pp_env.py) the model loads in full on every rank and stays whole until the
-Trainer: Trainer.__init__ splits it (apply_pipeline_parallel over mesh["pp"], the other stages' weights kept on
+Trainer (a checkpoint larger than the GPU loads only each rank's stages: pipeline_sharded_loading, no
+replica for generate / exports): Trainer.__init__ splits it (apply_pipeline_parallel over mesh["pp"], the other stages' weights kept on
 the CPU for the post-training cells), then applies tensor parallel inside the stage, then FSDP2 / DDP-style
 averaging over mesh["dp"], and runs every training step through the pipeline schedule.
 UNSLOTH_PP_MICROBATCHES (default 2 x pp, lowered to a divisor of the batch) and UNSLOTH_PP_SCHEDULE (gpipe,
-1f1b) tune it.
+1f1b; default 1f1b, run as gpipe on a step with fewer micro-batches than stages) tune it.
 
-UNSLOTH_TP_SHARDED_LOAD=0 loads 16-bit checkpoints in full on every rank instead (then shards them).
+UNSLOTH_TP_SHARDED_LOAD=0 loads checkpoints in full on every rank instead (then shards them).
 """
 
 from __future__ import annotations
@@ -191,11 +193,19 @@ def tensor_parallel_env_load(fn):
                 )
             )
         if layout.tp == 1:
-            # Pipeline parallel alone: a whole model on every rank (split at the Trainer), checked now.
+            # Pipeline parallel alone: a whole model on every rank (split at the Trainer), checked now; one
+            # larger than the GPU reads only this rank's stages.
             layout.mesh()
             _DEPTH["load"] += 1
             try:
-                out = fn(*args, **kwargs)
+                if _is_adapter(values) or values.get("qat_scheme") is not None:
+                    out = fn(*args, **kwargs)
+                else:
+                    from .pp_load import _pipeline_loading
+                    with _pipeline_loading(
+                        lambda: layout.pp_mesh, layout.schedule, None, auto = True
+                    ):
+                        out = fn(*args, **kwargs)
             finally:
                 _DEPTH["load"] -= 1
             return _check_pipeline_model(out, layout)
@@ -204,23 +214,29 @@ def tensor_parallel_env_load(fn):
         try:
             # QAT swaps the loaded Linears for torchao FakeQuantizedLinear copies: load in full, shard later.
             qat = values.get("qat_scheme") is not None
-            if _four_bit(values, fn) or not layout.sharded_loading or _is_adapter(values) or qat:
+            if not layout.sharded_loading or _is_adapter(values) or qat:
                 out = fn(
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
-            from .tp_native import sharded_loading
+            from .tp_native import _sharded_from_pretrained
 
             try:
-                with sharded_loading(mesh) as state:
+                # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load; a
+                # pre-quantized bitsandbytes 4-bit checkpoint loads sharded.
+                four_bit = _four_bit(values, fn)
+                with _sharded_from_pretrained(
+                    {"mesh": mesh, "plan": None, "prequantized_only": four_bit}
+                ) as state:
                     out = fn(*args, **kwargs)
             except ValueError as exc:
-                if not str(exc).startswith("Unsloth: tensor parallel sharded loading"):
+                if not str(exc).startswith("Unsloth:") or "sharded loading" not in str(exc):
                     raise
                 if _rank0():
                     print(f"{exc} Loading in full on every rank instead; get_peft_model shards it.")
-                return fn(*args, **kwargs)
-            if not state["models"] and _rank0():
+                out = fn(*args, **kwargs)
+                return _check_pipeline_model(out, layout) if layout.pp > 1 else out
+            if not state["models"] and not four_bit and _rank0():
                 print(
                     "Unsloth: UNSLOTH_TP_SIZE: this loader did not go through transformers from_pretrained; "
                     "the model loaded in full and is sharded at get_peft_model."

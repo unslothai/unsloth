@@ -472,6 +472,16 @@ export async function revealLocalModel(path: string, id?: string): Promise<void>
   await throwIfNotOk(response);
 }
 
+export async function deleteUploadedDataset(id: string): Promise<void> {
+  const response = await authFetch("/api/hub/datasets/local/upload", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  await throwIfNotOk(response);
+  bumpInventoryVersion();
+}
+
 export async function deleteLocalModel(path: string, id?: string): Promise<void> {
   const response = await authFetch("/api/hub/local/delete", {
     method: "DELETE",

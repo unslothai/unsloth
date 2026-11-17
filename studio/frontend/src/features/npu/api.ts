@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
-import { npuLocalLabel, npuSearchText } from "./display-name";
+import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
 
@@ -182,10 +182,6 @@ export function npuResumeLabel(model: NpuModel): string | null {
   return model.resume_percent == null
     ? null
     : `${model.resume_percent}% downloaded`;
-}
-
-export function npuRowLabel(model: NpuModel): string {
-  return (model.local && npuLocalLabel(model.local.folder)) || model.id;
 }
 
 export function npuRowDetails(model: NpuModel): string[] {

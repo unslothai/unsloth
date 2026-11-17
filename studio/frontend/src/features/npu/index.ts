@@ -17,7 +17,6 @@ export {
   npuMemoryWarning,
   npuResumeLabel,
   npuRowDetails,
-  npuRowLabel,
   npuRowsFor,
   npuRowTooltip,
   npuSizeLabel,

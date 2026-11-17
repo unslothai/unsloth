@@ -53,7 +53,7 @@ const broken = model("local-half-5e6f7a8b-q4nx-FLM", {
 const catalog = model("qwen3-0.6b-FLM");
 
 test("a converted folder is named after the folder and marked Converted", () => {
-  assert.equal(api.npuRowLabel(converted), "Qwen3-0.6B-ft.Q4_0-q4nx");
+  assert.equal(displayName.npuDisplayName(converted), "Qwen3-0.6B-ft.Q4_0-q4nx");
   assert.deepEqual(api.npuRowDetails(converted), [
     "NPU",
     "Converted",
@@ -66,7 +66,7 @@ test("a converted folder is named after the folder and marked Converted", () => 
 });
 
 test("catalog rows keep their id and details", () => {
-  assert.equal(api.npuRowLabel(catalog), "qwen3-0.6b-FLM");
+  assert.equal(displayName.npuDisplayName(catalog), "qwen3-0.6b-FLM");
   assert.deepEqual(api.npuRowDetails(catalog), ["NPU", "660 MB"]);
   assert.equal(api.npuRowTooltip(catalog), null);
 });
@@ -86,7 +86,7 @@ test("a conversion saved outside the exports folder shows its full path", () => 
       base: "qwen3:0.6b",
       problem: null,
     });
-    assert.equal(api.npuRowLabel(external), "Qwen3-q4nx");
+    assert.equal(displayName.npuDisplayName(external), "Qwen3-q4nx");
     assert.equal(
       api.npuRowTooltip(external),
       `Converted on the Export page, from ${folder}`,
@@ -104,7 +104,7 @@ test("a GGUF export's Q4NX folder is named after its save folder", () => {
       base: "qwen3:0.6b",
       problem: null,
     });
-    assert.equal(api.npuRowLabel(exported), "Qwen3-0.6B-ft");
+    assert.equal(displayName.npuDisplayName(exported), "Qwen3-0.6B-ft");
   }
 });
 
