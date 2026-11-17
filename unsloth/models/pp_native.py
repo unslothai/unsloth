@@ -2080,6 +2080,7 @@ class PipelineParallel:
         self.start, self.end = bounds[self.local_stages[0]]
         self.n_microbatches = n_microbatches
         self.schedule = self.spec.name
+        self.schedule_auto = False  # pp_env: the default 1F1B (UNSLOTH_PP_SCHEDULE unset)
         self.config = config
         self.parts = parts
         self._foreign_prefixes = ()  # set by apply_pipeline_parallel
@@ -2325,9 +2326,12 @@ class PipelineParallel:
                 )
             )
         cls = torch_schedule_class(self.spec)
-        if not train and not self.spec.multi:
+        if not self.spec.multi and (not train or self.step_schedule(m) == "gpipe"):
             from torch.distributed.pipelining import ScheduleGPipe
-            cls = ScheduleGPipe  # forward only (eval_loss): no backward order to keep
+
+            # forward only (eval_loss): no backward order to keep; the default 1F1B with fewer micro-batches
+            # than stages also runs as GPipe
+            cls = ScheduleGPipe
         schedule = cls(
             stages if self.spec.multi else stages[0],
             m,
@@ -2398,7 +2402,7 @@ class PipelineParallel:
             raise ValueError(
                 f"Unsloth: the batch size {bsz} must be a multiple of n_microbatches = {m}."
             )
-        if self.schedule == "1f1b" and m < self.num_stages:
+        if self.step_schedule(m) == "1f1b" and m < self.num_stages:
             raise ValueError(
                 f"Unsloth: the 1F1B schedule needs n_microbatches >= stages ({m} < {self.num_stages})."
             )
@@ -2455,9 +2459,16 @@ class PipelineParallel:
         total = self._batch_loss(m, device, dp_group)
         return total * float(loss_scale) if loss_scale != 1 else total
 
+    def step_schedule(self, m):
+        """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
+        to GPipe when m < stages; an explicit schedule is always kept."""
+        if self.schedule_auto and self.schedule == "1f1b" and m < self.num_stages:
+            return "gpipe"
+        return self.schedule
+
     def _in_flight(self, m):
         """Micro-batches this rank has forwarded but not yet backpropagated, at most."""
-        if self.schedule == "1f1b":
+        if self.step_schedule(m) == "1f1b":
             return min(m, self.num_stages - self.stage_index)
         return m  # GPipe: every forward before any backward; multi-stage schedules: bounded by m
 
