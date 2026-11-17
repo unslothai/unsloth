@@ -448,3 +448,33 @@ test("the orb's Escape stays out of other pages while Chat is hidden; speech own
   const own = synth.indexOf("if (!(await ensureVoiceSlotLoaded())) return null;");
   assert.ok(own > 0 && own < synth.indexOf("url = await request();"));
 });
+
+test("audio the browser will not start ends voice mode and says so, not that the mic was blocked", () => {
+  const open = loop.slice(loop.indexOf("const primed = getVoiceCaptureContext();"));
+  // resume() is bounded: Firefox can leave it pending, and an orb on Listening must not wait forever.
+  assert.match(open, /Promise\.race\(\[\s*audioCtx\.resume\(\)/);
+  assert.match(open, /AUDIO_START_TIMEOUT_MS/);
+  assert.match(open, /audioCtx\.state !== "running"[\s\S]{0,200}name: AUDIO_NOT_STARTED/);
+  const fail = loop.slice(loop.indexOf('console.error("Voice mic error:"'));
+  const notStarted = fail.indexOf("name === AUDIO_NOT_STARTED");
+  const blocked = fail.indexOf('name === "NotAllowedError"');
+  assert.ok(notStarted > 0 && notStarted < blocked);
+  assert.match(fail.slice(notStarted, blocked), /audioNotStarted[\s\S]*requestVoiceOff\(\)/);
+  // Safari's autoplay refusal is a NotAllowedError too: after the mic opened it is not a permission.
+  assert.match(fail, /!micGranted &&\s*\(name === "NotAllowedError"/);
+  assert.ok(loop.indexOf("micGranted = true;") < loop.indexOf("const primed = getVoiceCaptureContext();"));
+});
+
+test("the mic's context is made in the Start click and shared until voice mode ends", () => {
+  const bridge = readSrc("features/chat/voice/voice-loop-bridge.ts");
+  const panel = readSrc("components/assistant-ui/voice-panel.tsx");
+  const start = panel.slice(panel.indexOf("const start = () => {"));
+  assert.ok(start.indexOf("primeVoiceCapture();") < start.indexOf('store.setVoiceMode("active")'));
+  const toggle = engine.slice(engine.indexOf("const toggle = useCallback"));
+  assert.match(toggle.slice(0, 800), /primeAudio\(\);\s*primeVoiceCapture\(\);/);
+  assert.match(bridge, /voiceTogglesPending \+= 1;[\s\S]{0,120}primeVoiceCapture\(\);/);
+  assert.match(bridge, /next === "off" && voiceCaptureCtx\) \{\s*void voiceCaptureCtx\.close\(\)/);
+  assert.match(loop, /const primed = getVoiceCaptureContext\(\);\s*ownsCtx = !primed;\s*audioCtx = primed \?\? new AudioCtx\(\);/);
+  // A session must not close the shared context; it only unhooks its own nodes.
+  assert.match(loop, /sink\?\.disconnect\(\);\s*sink = null;\s*if \(ownsCtx\) void audioCtx\?\.close\(\)/);
+});

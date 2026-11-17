@@ -2066,6 +2066,8 @@ export const tr = {
           "Mikrofon erişimi engellendi. Bu Unsloth sayfası için mikrofon erişimine izin verin ve yeniden deneyin.",
         micAccessBlockedDesktop:
           "Mikrofon erişimi engellendi. Yeniden deneyip İzin Ver'i seçin veya sistem gizlilik ayarlarınızda mikrofonu etkinleştirin.",
+        audioNotStarted:
+          "Tarayıcı ses modu için sesi engelledi. Bu site için sese (otomatik oynatma) izin verin, ardından ses modunu yeniden başlatın.",
         micAccessUnsupported:
           "Mikrofon erişimi bu tarayıcıda veya bu bağlamda desteklenmiyor.",
         systemDefault: "Sistem varsayılanı",

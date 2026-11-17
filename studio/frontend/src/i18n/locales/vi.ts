@@ -2077,6 +2077,8 @@ export const vi = {
           "Quyền truy cập micrô đã bị chặn. Hãy cho phép truy cập micrô cho trang Unsloth này, rồi thử lại.",
         micAccessBlockedDesktop:
           "Quyền truy cập micrô đã bị chặn. Hãy thử lại và chọn Cho phép, hoặc bật micrô trong cài đặt quyền riêng tư của hệ thống.",
+        audioNotStarted:
+          "Trình duyệt đã chặn âm thanh của chế độ giọng nói. Hãy cho phép âm thanh (tự động phát) cho trang này, rồi bật lại chế độ giọng nói.",
         micAccessUnsupported:
           "Trình duyệt hoặc ngữ cảnh này không hỗ trợ truy cập micrô.",
         systemDefault: "Mặc định của hệ thống",

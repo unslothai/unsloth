@@ -2093,6 +2093,8 @@ export const nl = {
           "Microfoontoegang is geblokkeerd. Sta microfoontoegang toe voor deze Unsloth-pagina en probeer het opnieuw.",
         micAccessBlockedDesktop:
           "Microfoontoegang is geblokkeerd. Probeer het opnieuw en kies Toestaan, of schakel de microfoon in via de privacyinstellingen van je systeem.",
+        audioNotStarted:
+          "De browser heeft het geluid voor de spraakmodus geblokkeerd. Sta geluid (automatisch afspelen) toe voor deze site en start de spraakmodus opnieuw.",
         micAccessUnsupported:
           "Microfoontoegang wordt niet ondersteund in deze browser of context.",
         systemDefault: "Systeemstandaard",

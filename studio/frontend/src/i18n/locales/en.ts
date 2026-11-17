@@ -1908,6 +1908,8 @@ export const en = {
           "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
         micAccessBlockedDesktop:
           "Microphone access was blocked. Try again and choose Allow, or enable the microphone in your system privacy settings.",
+        audioNotStarted:
+          "Your browser blocked audio for voice mode. Allow sound (autoplay) for this site, then start voice mode again.",
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",

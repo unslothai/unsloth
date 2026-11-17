@@ -1903,6 +1903,8 @@ export const fr = {
           "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
         micAccessBlockedDesktop:
           "L'accès au microphone a été bloqué. Réessayez et choisissez Autoriser, ou activez le microphone dans les paramètres de confidentialité du système.",
+        audioNotStarted:
+          "Le navigateur a bloqué l'audio du mode vocal. Autorisez le son (lecture automatique) pour ce site, puis relancez le mode vocal.",
         micAccessUnsupported:
           "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
         systemDefault: "Par défaut du système",

@@ -18,6 +18,7 @@ import {
 import { useChatModelStatus } from "@/features/chat/voice/chat-model-ready";
 import { useVadDetectors } from "@/features/chat/voice/use-vad-detectors";
 import { vadDisplayName } from "@/features/chat/voice/vad-client";
+import { primeVoiceCapture } from "@/features/chat/voice/voice-loop-bridge";
 import { isChatModelVoice } from "@/features/chat/voice/voice-models";
 import { clearVoiceModelRest } from "@/features/chat/voice/voice-models-client";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
@@ -209,6 +210,8 @@ const VoicePanelView: FC<VoicePanelProps> = ({
       store.setSttSlotDownload("downloading");
       void downloadSttNow({ model: sttModelId, voice: true });
     }
+    // In the click: Safari and Firefox start the mic's audio only in a user gesture.
+    primeVoiceCapture();
     store.setVoiceOrbCollapsed(false);
     store.setVoiceMode("active");
     setOpen(false);

@@ -92,6 +92,7 @@ import {
   registerVoiceTypedSubmit,
   registerVoiceTypedSend,
   setVoiceMode as setLoopVoiceMode,
+  primeVoiceCapture,
   type VoiceSubmitMeta,
   type VoiceTurnEnd,
   dropUnsentVoiceTurn,
@@ -1568,6 +1569,7 @@ export const VoiceEngine: FC = () => {
     useChatRuntimeStore.getState().setVoiceMode("configuring");
     // The pick is not cleared: null means silence now, so voice would open mute every time.
     primeAudio();
+    primeVoiceCapture();
   }, [turnOff, primeAudio]);
 
 

@@ -2070,6 +2070,8 @@ export const id = {
           "Akses mikrofon diblokir. Izinkan akses mikrofon untuk halaman Unsloth ini, lalu coba lagi.",
         micAccessBlockedDesktop:
           "Akses mikrofon diblokir. Coba lagi dan pilih Izinkan, atau aktifkan mikrofon di pengaturan privasi sistem Anda.",
+        audioNotStarted:
+          "Browser memblokir audio untuk mode suara. Izinkan suara (putar otomatis) untuk situs ini, lalu mulai mode suara lagi.",
         micAccessUnsupported:
           "Akses mikrofon tidak didukung di browser atau konteks ini.",
         systemDefault: "Default sistem",

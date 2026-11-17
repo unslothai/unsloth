@@ -1899,6 +1899,8 @@ export const ptBR = {
           "O acesso ao microfone foi bloqueado. Permita o acesso ao microfone nesta página do Unsloth e tente novamente.",
         micAccessBlockedDesktop:
           "O acesso ao microfone foi bloqueado. Tente novamente e escolha Permitir, ou ative o microfone nas configurações de privacidade do sistema.",
+        audioNotStarted:
+          "O navegador bloqueou o áudio do modo de voz. Permita som (reprodução automática) para este site e inicie o modo de voz de novo.",
         micAccessUnsupported:
           "O acesso ao microfone não é suportado neste navegador ou contexto.",
         systemDefault: "Padrão do sistema",

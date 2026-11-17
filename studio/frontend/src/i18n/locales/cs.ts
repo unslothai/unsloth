@@ -2075,6 +2075,8 @@ export const cs = {
           "Přístup k mikrofonu byl zablokován. Povolte přístup k mikrofonu pro tuto stránku Unsloth a zkuste to znovu.",
         micAccessBlockedDesktop:
           "Přístup k mikrofonu byl zablokován. Zkuste to znovu a zvolte Povolit, nebo mikrofon povolte v nastavení soukromí systému.",
+        audioNotStarted:
+          "Prohlížeč zablokoval zvuk pro hlasový režim. Povolte pro tento web zvuk (automatické přehrávání) a spusťte hlasový režim znovu.",
         micAccessUnsupported:
           "Přístup k mikrofonu není v tomto prohlížeči nebo kontextu podporován.",
         systemDefault: "Výchozí nastavení systému",

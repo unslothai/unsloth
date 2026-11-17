@@ -2088,6 +2088,8 @@ export const pl = {
           "Zablokowano dostęp do mikrofonu. Zezwól na dostęp do mikrofonu dla tej strony Unsloth i spróbuj ponownie.",
         micAccessBlockedDesktop:
           "Zablokowano dostęp do mikrofonu. Spróbuj ponownie i wybierz Zezwól lub włącz mikrofon w systemowych ustawieniach prywatności.",
+        audioNotStarted:
+          "Przeglądarka zablokowała dźwięk trybu głosowego. Zezwól tej witrynie na dźwięk (autoodtwarzanie), a potem uruchom tryb głosowy ponownie.",
         micAccessUnsupported:
           "Dostęp do mikrofonu nie jest obsługiwany w tej przeglądarce lub w tym kontekście.",
         systemDefault: "Domyślny systemu",

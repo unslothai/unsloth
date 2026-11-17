@@ -15,6 +15,7 @@ let voiceTogglesPending = 0;
 let voiceRequested = false;
 const voiceRequestedListeners = new Set<() => void>();
 let voicePlayCtx: AudioContext | null = null;
+let voiceCaptureCtx: AudioContext | null = null;
 let voiceThreadReset: ((prevThreadId: string | null) => void) | null = null;
 let voiceResume: (() => void) | null = null;
 let voiceBargeIn: (() => void) | null = null;
@@ -82,6 +83,33 @@ export function getVoicePlayContext(): AudioContext | null {
   return voicePlayCtx;
 }
 
+/**
+ * Makes and starts the mic's context inside the click that turns voice mode on. Safari and Firefox
+ * only start audio in a user gesture, and the loop opens the mic after an await, outside it.
+ */
+export function primeVoiceCapture(): void {
+  if (typeof window === "undefined") return;
+  const Ctor =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!Ctor) return;
+  if (!voiceCaptureCtx || voiceCaptureCtx.state === "closed") {
+    try {
+      voiceCaptureCtx = new Ctor();
+    } catch {
+      voiceCaptureCtx = null;
+      return;
+    }
+  }
+  void voiceCaptureCtx.resume().catch(() => {});
+}
+
+/** The primed mic context, shared by every listening session until voice mode ends; null when none was primed. */
+export function getVoiceCaptureContext(): AudioContext | null {
+  return voiceCaptureCtx && voiceCaptureCtx.state !== "closed" ? voiceCaptureCtx : null;
+}
+
 export function voiceLoopSupported(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -109,6 +137,10 @@ export function voiceOffEpoch(): number {
 
 export function setVoiceMode(next: VoiceMode): void {
   if (next === "off" && voiceMode !== "off") offEpoch++;
+  if (next === "off" && voiceCaptureCtx) {
+    void voiceCaptureCtx.close().catch(() => {});
+    voiceCaptureCtx = null;
+  }
   voiceMode = next;
 }
 
@@ -127,6 +159,7 @@ export function requestVoiceToggle(): void {
   }
   voiceTogglesPending += 1;
   void getVoicePlayContext()?.resume().catch(() => {});
+  primeVoiceCapture();
   if (!voiceRequested) {
     voiceRequested = true;
     for (const listener of voiceRequestedListeners) listener();

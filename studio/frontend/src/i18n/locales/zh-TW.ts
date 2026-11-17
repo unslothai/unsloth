@@ -1970,6 +1970,8 @@ export const zhTW = {
           "麥克風存取已遭封鎖。請允許此 Unsloth 頁面存取麥克風，然後再試一次。",
         micAccessBlockedDesktop:
           "麥克風存取已遭封鎖。請再試一次並選擇「允許」，或在系統隱私權設定中啟用麥克風。",
+        audioNotStarted:
+          "瀏覽器封鎖了語音模式的音訊。請允許此網站播放聲音(自動播放),然後重新開始語音模式。",
         micAccessUnsupported: "此瀏覽器或環境不支援麥克風存取。",
         systemDefault: "系統預設值",
         savedMicDisconnected: "已儲存的麥克風（未連接）",

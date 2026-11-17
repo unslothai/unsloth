@@ -1890,6 +1890,8 @@ export const zhCN = {
           "麦克风访问已被阻止。请在浏览器中允许此 Unsloth 页面使用麦克风，然后重试。",
         micAccessBlockedDesktop:
           "麦克风访问已被阻止。请重试并选择允许，或在系统隐私设置中启用麦克风。",
+        audioNotStarted:
+          "浏览器阻止了语音模式的音频。请允许此网站播放声音(自动播放),然后重新开始语音模式。",
         micAccessUnsupported: "此浏览器或环境不支持访问麦克风。",
         systemDefault: "系统默认",
         savedMicDisconnected: "已保存的麦克风（未连接）",

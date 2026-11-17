@@ -52,7 +52,9 @@ import {
   requestVoiceBargeIn,
   requestVoiceEarlyInterject,
   requestVoiceResume,
+  requestVoiceOff,
   requestVoiceSubmit,
+  getVoiceCaptureContext,
   voiceLoopSupported,
 } from "@/features/chat/voice/voice-loop-bridge";
 import {
@@ -80,6 +82,7 @@ import { isTrackingSttDownload } from "@/features/settings/lib/stt-download-mirr
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { translate } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { SttModelNotDownloadedError } from "./stt-errors";
@@ -109,6 +112,9 @@ const NO_SPEECH_TIMEOUT_MS = 8000;
 const MIN_SPEECH_MS = 350;
 const ZERO_RUN_TRACE_MS = 200;
 // Audio kept from before a barge-in fires, so the first word of what cut in still reaches STT.
+// How long the capture context may take to start before voice mode says audio is blocked.
+const AUDIO_START_TIMEOUT_MS = 3000;
+const AUDIO_NOT_STARTED = "AudioNotStarted";
 const BARGE_PREROLL_MS = 600;
 // Held while the reply plays so a barge-in keeps the words before the gate fired (bargeOnset).
 const BARGE_LOOKBACK_MS = 2500;
@@ -386,8 +392,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
 
     let stream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
+    // getUserMedia answered: a NotAllowedError after this is not a microphone permission.
+    let micGranted = false;
     let processor: ScriptProcessorNode | null = null;
     let source: MediaStreamAudioSourceNode | null = null;
+    let sink: GainNode | null = null;
+    // The context primed in the Start click is shared by every session and closed when voice mode ends.
+    let ownsCtx = false;
     const chunks: Float32Array[] = [];
     const chunkVoiced: boolean[] = [];
     // The STT clip starts at the first of these before the first loud frame, so a soft opening word is kept.
@@ -589,7 +600,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
       stream?.getTracks().forEach((t) => t.stop());
       stream = null;
       detachInputSpectrum();
-      void audioCtx?.close().catch(() => {});
+      sink?.disconnect();
+      sink = null;
+      if (ownsCtx) void audioCtx?.close().catch(() => {});
       audioCtx = null;
     };
 
@@ -1076,13 +1089,34 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           teardown();
           return;
         }
-        audioCtx = new AudioCtx();
-        // Created outside the user gesture: a suspended context never fires audioprocess.
-        await audioCtx.resume();
+        micGranted = true;
+        const primed = getVoiceCaptureContext();
+        ownsCtx = !primed;
+        audioCtx = primed ?? new AudioCtx();
+        // Created outside the user gesture: a suspended context never fires audioprocess. Safari
+        // refuses to start one without a gesture and Firefox leaves resume() pending, so wait a
+        // bounded time: an orb on "Listening" that cannot hear is the failure B1 was about.
+        const started = await Promise.race([
+          audioCtx.resume().then(
+            () => true,
+            () => false,
+          ),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(false), AUDIO_START_TIMEOUT_MS),
+          ),
+        ]);
         // A cancel during that await tore the context down.
         if (ended || !audioCtx) {
           teardown();
           return;
+        }
+        if (!started || audioCtx.state !== "running") {
+          throw Object.assign(
+            new Error("The browser did not start audio for voice mode."),
+            {
+              name: AUDIO_NOT_STARTED,
+            },
+          );
         }
         sampleRate = audioCtx.sampleRate;
         for (const track of stream.getAudioTracks()) {
@@ -1423,7 +1457,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         };
 
         // onaudioprocess only fires while the processor reaches a destination; a muted sink
-        const sink = audioCtx.createGain();
+        sink = audioCtx.createGain();
         sink.gain.value = 0;
         source.connect(processor);
         processor.connect(sink);
@@ -1434,9 +1468,39 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const name = error instanceof Error ? error.name : "";
         const message = error instanceof Error ? error.message : String(error);
         voiceTrace("session.error", { name, message, ended });
-        // A session cancelled while the mic was still opening is not a mic fault.
+        if (!ended && name === AUDIO_NOT_STARTED) {
+          toast.error(translate("settings.voice.dictation.audioNotStarted"), {
+            id: "voice-audio-not-started",
+            duration: Infinity,
+          });
+          finish("error");
+          requestVoiceOff();
+          return;
+        }
+        // A session cancelled while the mic was still opening is not a mic fault, and a refusal
+        // after the mic opened is the browser's audio policy, not the microphone permission.
+        if (
+          !ended &&
+          !micGranted &&
+          (name === "NotAllowedError" || name === "SecurityError")
+        ) {
+          // Blocked for good: every later session fails the same way while the orb shows Listening,
+          // so voice mode ends and says why, in words that lead to the fix.
+          toast.error(
+            translate(
+              isTauri
+                ? "settings.voice.dictation.micAccessBlockedDesktop"
+                : "settings.voice.dictation.micAccessBlocked",
+            ),
+            // One toast however many sessions fail before voice mode is down.
+            { id: "voice-mic-blocked", duration: Infinity },
+          );
+          finish("error");
+          requestVoiceOff();
+          return;
+        }
         if (!ended) {
-          toast.error("Could not access the microphone for dictation.", {
+          toast.error("Could not access the microphone for voice mode.", {
             description: name ? `${name}: ${message}` : message,
           });
         }

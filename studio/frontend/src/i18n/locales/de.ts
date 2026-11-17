@@ -1904,6 +1904,8 @@ export const de = {
           "Der Mikrofonzugriff wurde blockiert. Erlauben Sie den Mikrofonzugriff für diese Unsloth-Seite und versuchen Sie es erneut.",
         micAccessBlockedDesktop:
           "Der Mikrofonzugriff wurde blockiert. Versuchen Sie es erneut und wählen Sie Zulassen, oder aktivieren Sie das Mikrofon in den Datenschutzeinstellungen des Systems.",
+        audioNotStarted:
+          "Der Browser hat den Ton für den Sprachmodus blockiert. Erlaube Ton (Autoplay) für diese Seite und starte den Sprachmodus erneut.",
         micAccessUnsupported:
           "Der Mikrofonzugriff wird in diesem Browser oder Kontext nicht unterstützt.",
         systemDefault: "Systemstandard",

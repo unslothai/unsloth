@@ -2001,6 +2001,8 @@ export const sv = {
           "Mikrofonåtkomsten blockerades. Tillåt mikrofonåtkomst för denna Unsloth-sida och försök sedan igen.",
         micAccessBlockedDesktop:
           "Mikrofonåtkomsten blockerades. Försök igen och välj Tillåt, eller aktivera mikrofonen i systemets integritetsinställningar.",
+        audioNotStarted:
+          "Webbläsaren blockerade ljudet för röstläget. Tillåt ljud (automatisk uppspelning) för den här webbplatsen och starta röstläget igen.",
         micAccessUnsupported:
           "Mikrofonåtkomst stöds inte i denna webbläsare eller detta sammanhang.",
         systemDefault: "Systemstandard",

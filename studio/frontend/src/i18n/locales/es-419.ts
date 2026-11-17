@@ -2088,6 +2088,8 @@ export const es419 = {
           "Se bloqueó el acceso al micrófono. Permite el acceso al micrófono para esta página de Unsloth y vuelve a intentarlo.",
         micAccessBlockedDesktop:
           "Se bloqueó el acceso al micrófono. Vuelve a intentarlo y elige Permitir, o activa el micrófono en la configuración de privacidad del sistema.",
+        audioNotStarted:
+          "El navegador bloqueó el audio del modo de voz. Permite el sonido (reproducción automática) en este sitio y vuelve a iniciar el modo de voz.",
         micAccessUnsupported:
           "El acceso al micrófono no es compatible con este navegador o contexto.",
         systemDefault: "Predeterminado del sistema",
