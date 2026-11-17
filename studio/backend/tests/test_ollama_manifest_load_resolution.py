@@ -552,6 +552,7 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
 _IGNORABLE_LAYERS = (
     "application/vnd.ollama.image.draft",
     "application/vnd.ollama.image.embed",
+    "application/vnd.docker.distribution.manifest.v2+json",
 )
 
 

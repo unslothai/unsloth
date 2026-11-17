@@ -62,6 +62,8 @@ _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.draft",
         "application/vnd.ollama.image.embed",
+        # Legacy manifests may carry an OCI manifest-reference layer alongside the GGUF.
+        "application/vnd.docker.distribution.manifest.v2+json",
     }
 )
 
