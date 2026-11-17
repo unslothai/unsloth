@@ -2175,6 +2175,30 @@ def _model_offload_fits_quantised(plan: Any) -> bool:
         return False
 
 
+def _low_vram_whole_module(
+    plan: Any,
+    reason: str = "the quantised denoiser cannot stream; whole-module offload of every component",
+) -> Optional[Any]:
+    """The whole-module form of a streamed low_vram plan, or None for any other plan."""
+    if (
+        getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
+        or (getattr(plan, "estimates", None) or {}).get("low_vram_streamed") is None
+    ):
+        return None
+    try:
+        return replace(
+            plan,
+            offload_policy = OFFLOAD_MODEL,
+            stream_text_encoders = False,
+            stream_transformer = True,
+            vae_tiling = True,
+            vae_slicing = True,
+            reasons = tuple(plan.reasons) + (reason,),
+        )
+    except Exception:  # noqa: BLE001 - a duck-typed plan keeps the old refusal
+        return None
+
+
 def torchao_offload_plan(
     plan: Any,
     scheme: Optional[str],
@@ -2191,10 +2215,12 @@ def torchao_offload_plan(
         return plan
     if policy not in (OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING):
         return None
-    if not torchao_scheme_streams(scheme, torchao_version = torchao_version):
-        return None
-    if not _torchao_stream_pinnable(plan, reclaimable_host_mib):
-        return None
+    if not torchao_scheme_streams(
+        scheme, torchao_version = torchao_version
+    ) or not _torchao_stream_pinnable(plan, reclaimable_host_mib):
+        # low_vram streams by default; a scheme that cannot stream keeps the whole-module tier it had before.
+        whole = _low_vram_whole_module(plan)
+        return whole if whole is not None and _model_offload_fits_quantised(whole) else None
     if policy != OFFLOAD_MODEL:
         return plan
     return torchao_streaming_plan(plan)
@@ -2918,8 +2944,15 @@ def plan_diffusion_memory(
         policy = OFFLOAD_GROUP
         reasons.append("balanced requested; streamed block-level transformer offload")
     elif mode == MEMORY_MODE_LOW_VRAM:
-        policy = OFFLOAD_MODEL
-        reasons.append("low_vram requested; whole-module offload of every component")
+        # Whole-module offload keeps the whole denoiser on the card for every step, which is above balanced's
+        # streamed blocks whenever the denoiser outweighs the text encoders (Cosmos3 has none: 18.9 vs 9.0 GiB).
+        # Streaming the denoiser and the text encoders is the lowest tier; a setup failure still falls back.
+        policy = OFFLOAD_GROUP
+        stream_text_encoders = True
+        estimates["low_vram_streamed"] = 1
+        reasons.append(
+            "low_vram requested; denoiser blocks and text-encoder layers streamed (the lowest tier)"
+        )
     elif budget is None or required is None:
         policy = OFFLOAD_NONE
         reasons.append("device budget or model size unknown; staying resident")
@@ -2964,7 +2997,12 @@ def plan_diffusion_memory(
 
     # VAE slicing is exact on any tier; tiling is bit-identical only for one tile (<= 1 MP).
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
-    tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
+    # low_vram keeps the tiled decode it had under whole-module offload: the decode can be the peak of a video call.
+    tile = (
+        policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+        or "low_vram_streamed" in estimates
+        or device_memory.backend in ("mps", "cpu")
+    )
     if (
         calibrated_activation is not None
         and mode == MEMORY_MODE_AUTO
@@ -6756,6 +6794,22 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
+    unet_whole = (
+        _low_vram_whole_module(
+            plan,
+            "group offload streams transformer blocks only; the U-Net takes whole-module offload",
+        )
+        if getattr(pipe, "transformer", None) is None
+        else None
+    )
+    if unet_whole is not None and getattr(pipe, "unet", None) is not None:
+        # Group offload streams only transformer blocks; a U-Net takes the whole-module tier (which streams an
+        # oversized U-Net leaf by leaf) exactly as low_vram did before it streamed by default.
+        policy = OFFLOAD_MODEL
+        try:
+            pipe._unsloth_applied_plan = unet_whole
+        except Exception:  # noqa: BLE001
+            pass
     if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
         policy = OFFLOAD_GROUP
         try:

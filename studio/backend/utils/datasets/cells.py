@@ -52,6 +52,16 @@ def cell_text(value):
 _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
 
 
+def content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
 def _message(turn):
     if not isinstance(turn, dict):
         return None

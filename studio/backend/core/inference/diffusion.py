@@ -293,6 +293,7 @@ from .diffusion_memory import (
     with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _low_vram_whole_module,
     _torchao_stream_pinnable,
     pipeline_host_mib,
     torchao_offload_plan,
@@ -1361,6 +1362,7 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
 # lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
 from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
 from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+from .family_profile import compile_from_render_one_reason  # noqa: E402
 
 _TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
@@ -3903,6 +3905,12 @@ def _inplace_torchao_placement(
     """(placement, None) for the in-place torchao quant, or (``plan``, why not). Model offload checks LOADED encoders."""
     if plan_keeps_transformer_resident(plan):
         return plan, None
+    whole = _low_vram_whole_module(plan)
+    if whole is not None and not (
+        torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan)
+    ):
+        # low_vram streams by default; a scheme that cannot stream is judged on the whole-module tier it had.
+        plan = whole
     if plan.offload_policy == OFFLOAD_MODEL:
         estimates = getattr(plan, "estimates", None) or {}
         budget = int(estimates.get("safe_device_budget_mib") or 0)
@@ -11073,6 +11081,23 @@ class DiffusionBackend:
                             "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
+                    # A family whose eager path is measured far slower than compiled skips the deferred profile.
+                    compile_first_reason = (
+                        compile_from_render_one_reason(fam)
+                        if speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                        else None
+                    )
+                    if compile_first_reason is not None:
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (%s)",
+                            compile_first_reason,
+                        )
+                        effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
                     # amortises. Only when speed was unset.
                     speed_deferred = (
@@ -11738,6 +11763,8 @@ class DiffusionBackend:
                                 else "auto: exact eager for the first two images; "
                                 "the compile profile engages on the 3rd"
                                 if speed_deferred
+                                else f"auto: {compile_first_reason}"
+                                if compile_first_reason is not None
                                 else "per-kind default"
                                 if speed_mode is None
                                 else "requested",

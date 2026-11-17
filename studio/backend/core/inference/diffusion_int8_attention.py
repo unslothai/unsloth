@@ -499,7 +499,14 @@ PLAIN_ERROR_SLACK = 1.15
 # MODE_KERNELS: forced SINK_DITS request, races only the INT8 paths, never torch.
 MODE_MAIN, MODE_RACE, MODE_KERNELS = 0, 1, 2
 SINK_DITS = frozenset(
-    {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    {
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+        "FluxTransformer2DModel",
+        "HunyuanVideo15Transformer3DModel",
+        "QwenImage21Transformer2DModel",
+        "ZImageTransformer2DModel",
+    }
 )
 _RACE = (
     threading.local()

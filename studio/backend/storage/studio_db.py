@@ -326,6 +326,10 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
         raise
 
 
+# The sampling keys a model's recommendation sets, which an edited Default can keep.
+PRESET_EDITED_KEYS = ("temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens")
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -726,6 +730,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )
         """
+    )
+    # The same every-key hold _merge_settings_updates gives an older client's `modified`, for a row
+    # saved before presetEditedKeys existed. Done before any client reads, so a missing map means none.
+    conn.execute(
+        """
+        INSERT INTO chat_settings (key, value_json, updated_at)
+        SELECT 'presetEditedKeys', ?, ?
+        WHERE (SELECT value_json FROM chat_settings WHERE key = 'activePresetSource') = ?
+          AND NOT EXISTS (SELECT 1 FROM chat_settings WHERE key = 'presetEditedKeys')
+        """,
+        (
+            json.dumps({key: True for key in PRESET_EDITED_KEYS}),
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps("modified"),
+        ),
     )
     # One row per summarised prefix, so a branch that forks before a later summary still finds its own.
     conn.execute(
@@ -6015,10 +6034,23 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 # merges, since a deep merge can only add or overwrite (#14068). Keys, not rows, so a concurrent edit
 # to a key the command does not name survives.
 _FORGET_PARAMS_KEY = "forgetInferenceParamsByModel"
+# Per preset name, its new value or None to delete, so a stale window cannot drop others' presets.
+_EDIT_PRESETS_KEY = "editCustomPresets"
 
 
 def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     updates = dict(updates)
+    edits = updates.pop(_EDIT_PRESETS_KEY, None) or {}
+    if edits:
+        saved = [preset for preset in edits.values() if preset is not None]
+        names = set(edits) | {preset["name"] for preset in saved}
+        presets = current.get("customPresets")
+        kept = [
+            preset
+            for preset in (presets if isinstance(presets, list) else [])
+            if not (isinstance(preset, dict) and preset.get("name") in names)
+        ]
+        current = {**current, "customPresets": kept + saved}
     forget = updates.pop(_FORGET_PARAMS_KEY, None) or {}
     by_model = current.get("inferenceParamsByModel")
     if forget and isinstance(by_model, dict):
@@ -6033,7 +6065,18 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
             else:
                 del pruned[model_id]
         current = {**current, "inferenceParamsByModel": pruned}
-    return _deep_merge_settings(current, updates)
+    merged = _deep_merge_settings(current, updates)
+    held = merged.get("presetEditedKeys")
+    if merged.get("activePresetSource") != "modified":
+        # Kept keys mean nothing outside `modified`. Cleared here because older clients and legacy
+        # imports change the source without the map, and stale keys would return on the next edit.
+        if isinstance(held, dict) and any(held.values()):
+            merged["presetEditedKeys"] = {key: False for key in PRESET_EDITED_KEYS}
+    elif "activePresetSource" in updates and "presetEditedKeys" not in updates:
+        # Current clients send the map with every source change, so this `modified` comes from an
+        # older client or a legacy import, where it kept every key.
+        merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
+    return merged
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:

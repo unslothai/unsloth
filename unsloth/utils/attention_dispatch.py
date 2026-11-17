@@ -1279,6 +1279,52 @@ def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tens
         return False
     if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
         return False
+    # sm_100+ xformers would run an fp32 model's attention in bf16: per-segment SDPA keeps fp32.
+    if _xformers_rejects_fp32(Q.device) and _keeps_fp32_attention(Q, K, V):
+        return False
+    return True
+
+
+def _keeps_fp32_attention(Q: Tensor, K: Tensor, V: Tensor) -> bool:
+    """fp32 Q/K/V without autocast: 16-bit-only kernels must not downcast (~1e-2 nats/token drift)."""
+    return (
+        Q.dtype == torch.float32
+        and K.dtype == torch.float32
+        and V.dtype == torch.float32
+        and not torch.is_autocast_enabled()
+    )
+
+
+def _sdpa_replaces_half_kernel(config, context) -> bool:
+    """SDPA reproduces this flash / xformers call: no softcap, no kernel-only kwargs or bias."""
+    if _configured_softcap(config) is not None or config.xformers_kwargs:
+        return False
+    sdpa_kwargs = config.sdpa_kwargs or {}
+    for kwargs in (config.flash_dense_kwargs or {}, config.flash_varlen_kwargs or {}):
+        if set(kwargs) - {"causal", "dropout_p", "softmax_scale"}:
+            return False
+        if kwargs.get("dropout_p"):
+            return False
+        if kwargs.get("softmax_scale") is not None and kwargs["softmax_scale"] != sdpa_kwargs.get(
+            "scale"
+        ):
+            return False
+    # A caller-built xformers bias other than plain causal is only consumed by xformers.
+    mask = context.causal_mask
+    if (
+        mask is not None
+        and context.seq_info is None
+        and type(mask).__name__ != "LowerTriangularMask"
+    ):
+        return False
+    # SDPA's unmasked call is causal only for square shapes: cached multi-token queries keep the kernel.
+    if (
+        context.is_causal
+        and context.seq_info is None
+        and context.attention_mask is None
+        and 1 < context.q_len != context.kv_seq_len
+    ):
+        return False
     return True
 
 
@@ -1752,6 +1798,19 @@ def _run_attention(
     # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
     ring = backend == SDPA and _ring_attention_active()
     cp_out_dtype = Q.dtype if ring else None
+    # An fp32 model must not get bf16 attention behind its back: SDPA computes fp32 natively.
+    if (
+        not ring
+        and (
+            backend in (FLASH_DENSE, FLASH_VARLEN)
+            or ((backend == XFORMERS or xformers_rerouted) and xformers_fp32_unsupported)
+        )
+        and _keeps_fp32_attention(Q, K, V)
+        and _sdpa_replaces_half_kernel(config, context)
+    ):
+        backend = SDPA
+        xformers_rerouted = False
+        packed_out_dtype = None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
         or ((backend == XFORMERS or xformers_rerouted) and xformers_fp32_unsupported)

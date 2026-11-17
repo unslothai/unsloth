@@ -609,7 +609,7 @@ _plist_string() {
          f && /<string>/ { sub(/.*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }' "$1"
 }
 
-# install.sh's shell launcher shares the bundle id, so exclude it by executable.
+# Launchers from older install.sh reuse Desktop's bundle id: exclude them by executable.
 _owns_bundle_id() {
     [ -d "$1" ] || return 1
     [ "$(_plist_string "$1/Contents/Info.plist" CFBundleIdentifier)" = "$2" ] || return 1
