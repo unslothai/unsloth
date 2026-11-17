@@ -790,7 +790,6 @@ def test_a_code_file_named_like_a_domain_opens_only_when_the_workspace_has_it(wo
 
 def test_a_malformed_file_url_is_refused_and_its_badge_does_not_raise():
     from core.inference.tool_loop_controller import status_for_tool
-
     assert status_for_tool("browser_navigate", {"url": "file://["}) == "Opening a page..."
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": "file://["})
