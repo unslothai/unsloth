@@ -450,7 +450,9 @@ const VoicePanelView: FC<VoicePanelProps> = ({
             {drillIn}
           </>
         ) : (
-          <div role="list" className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-0.5">
+            {/* Only the role rows are the list: the switch and the download notice below are not items. */}
+            <div role="list" className="flex flex-col gap-0.5">
             {ROLES.map((r) => {
               const row = rows[r];
               return (
@@ -468,7 +470,8 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                       {t(`voicePanel.roles.${r}`)}
                     </span>
                     <span
-                      className="min-w-0 flex-1 truncate whitespace-nowrap"
+                      // Two lines, not an ellipsis: at 320 px one line held about 10 characters ("Earshot V…").
+                      className="line-clamp-2 min-w-0 flex-1 leading-tight [overflow-wrap:anywhere]"
                       title={row.title ?? row.name}
                     >
                       {row.name}
@@ -495,6 +498,7 @@ const VoicePanelView: FC<VoicePanelProps> = ({
                 </div>
               );
             })}
+            </div>
             {started && sttDownload === "needed" && !sttLoaded && (
               <div className="mt-1 flex items-center gap-3 border-t border-border/60 pb-1 pl-2.5 pr-1 pt-2">
                 <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
