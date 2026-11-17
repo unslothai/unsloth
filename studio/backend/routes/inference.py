@@ -53915,6 +53915,7 @@ async def _batched_openai_images(
     guidance: float,
     expected_load: Any,
     loras: Optional[list[tuple[str, float]]] = None,
+    expected_load_loras: Optional[tuple] = None,
 ) -> Optional[dict]:
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
@@ -53968,6 +53969,7 @@ async def _batched_openai_images(
                     seeds = seeds,
                     batch_size = len(seeds),
                     expected_load = expected_load,
+                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     **({"loras": loras} if loras else {}),
                 )
             except Exception as exc:
@@ -53979,6 +53981,7 @@ async def _batched_openai_images(
     key = (
         current_account_id(),
         expected_load,
+        expected_load_loras,
         width,
         height,
         steps,
@@ -54036,7 +54039,11 @@ async def _generate_openai_images(
     backend = get_active_diffusion_engine()
     from core.inference.diffusion_memory import ImageActivationShortfallError
     from core.inference.diffusion_lora import LoraSelectionError
-    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError,
+        load_identity,
+        load_lora_signature,
+    )
 
     # A replacement can commit between status() and generate(): pin the read to the generation and
     # re-decide from fresh state once.
@@ -54079,11 +54086,28 @@ async def _generate_openai_images(
             status.get("repo_id"), status.get("base_repo"), status.get("family")
         )
         loras = _openai_image_loras(body, status)
+        # An omitted loras was resolved from this load's adapters: the identity pin above is repo / base /
+        # family only, so a same-model reload with other adapters must be refused and retried too (#17993).
+        # Only an engine reporting its load's adapters (diffusers) can check the pin.
+        expected_load_loras = (
+            load_lora_signature(status.get("load_lora_specs"))
+            if body.loras is None and "load_lora_specs" in status
+            else None
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await _batched_openai_images(
-                    backend, status, body, width, height, steps, guidance, expected_load, loras
+                    backend,
+                    status,
+                    body,
+                    width,
+                    height,
+                    steps,
+                    guidance,
+                    expected_load,
+                    loras,
+                    expected_load_loras,
                 )
                 if result is None:
                     result = await _image_generate_in_thread(
@@ -54097,6 +54121,7 @@ async def _generate_openai_images(
                         seed = body.seed,
                         batch_size = body.n,
                         expected_load = expected_load,
+                        **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
                     )
