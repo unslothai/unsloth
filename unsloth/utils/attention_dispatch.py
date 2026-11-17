@@ -49,6 +49,13 @@ if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
 
+# True while a traced block's attention runs eagerly (saved-attention graph break): keep traced dispatch.
+_AS_TRACED = [False]
+
+
+def _compiling():
+    return torch.compiler.is_compiling() or _AS_TRACED[0]
+
 
 def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
     """One tiny attention forward; True iff the xformers kernel actually runs here."""
@@ -384,7 +391,7 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
         and query.shape[-2] == 1
         and query.device.index in _NO_CUDNN_DECODE
         and (
-            torch.compiler.is_compiling()
+            _compiling()
             or _decode_picks_cudnn(
                 query,
                 key,
@@ -441,6 +448,7 @@ def _on_tensor_device(X):
     if (
         DEVICE_TYPE in ("cuda", "hip")
         and X.is_cuda
+        # Eager under a traced caller too: only Inductor's graph applied a device guard.
         and not torch.compiler.is_compiling()
         and X.device.index != torch.cuda.current_device()
     ):
@@ -454,7 +462,7 @@ _XFORMERS_PROBED: dict = {}
 
 def _xformers_runs_on(index: int) -> bool:
     if index not in _XFORMERS_PROBED:
-        if torch.compiler.is_compiling():
+        if _compiling():
             return False  # never probe inside a traced region; SDPA is always valid
         _XFORMERS_PROBED[index] = _xformers_runs_on_device(f"cuda:{index}", supports_bf16 = True)
     return _XFORMERS_PROBED[index]
@@ -634,7 +642,7 @@ class _LeanFlashVarlen(torch.autograd.Function):
 def _varlen_attn_call(Q_f, K_f, V_f, cu_seqlens, max_seqlen, *, scale, window_size, enable_gqa):
     if (
         _LEAN_VARLEN
-        and not torch.compiler.is_compiling()
+        and not _compiling()
         and not _varlen_can_use_cudnn(
             Q_f, K_f, V_f, cu_seqlens, max_seqlen, list(window_size), enable_gqa
         )
@@ -1651,7 +1659,37 @@ def run_attention(
     manager = get_cp_manager()
     if manager is not None and manager.backend == "ulysses":
         return ulysses_attention(_run_attention, config, context, Q, K, V, manager.group)
+    if _SAVE_ATTENTION and context.training and manager is None:
+        # GC replay reuses the first pass's attention output + logsumexp; graph breaks under compile.
+        traced = torch.compiler.is_compiling()
+        return _saved_attention_call(
+            lambda Q, K, V: _run_attention_as(traced, config, context, Q, K, V),
+            Q,
+            K,
+            V,
+        )
     return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
+
+
+def _run_attention_as(traced, config, context, Q, K, V):
+    previous = _AS_TRACED[0]
+    _AS_TRACED[0] = traced or previous
+    try:
+        return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
+    finally:
+        _AS_TRACED[0] = previous
+
+
+def _load_saved_attention():
+    try:
+        from unsloth_zoo.saved_attention import save_attention_enabled, saved_attention_call
+    except Exception:
+        return None
+    return saved_attention_call if save_attention_enabled() else None
+
+
+_saved_attention_call = _load_saved_attention()
+_SAVE_ATTENTION = _saved_attention_call is not None
 
 
 def _run_attention(
@@ -1754,7 +1792,7 @@ def _run_attention(
     xformers_rerouted = False
     if (
         backend == XFORMERS
-        and torch.compiler.is_compiling()
+        and _compiling()
         and context.seq_info is None
         and context.attention_mask is None
         and context.is_causal
