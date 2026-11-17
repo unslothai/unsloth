@@ -16,7 +16,13 @@ from .llama_backend_double import FakeLlamaCppBackend
 _SYSTEM = "You are Captain Hook. Answer every question as a pirate."
 
 
-def _ollama_ref_with_system(tmp_path: Path, monkeypatch) -> str:
+def _write_tag(root: Path, name: str, layers: list) -> None:
+    tag_file = root / "manifests" / "registry.ollama.ai" / "library" / name / "latest"
+    tag_file.parent.mkdir(parents = True)
+    tag_file.write_text(json.dumps({"config": {}, "layers": layers}), encoding = "utf-8")
+
+
+def _ollama_refs(tmp_path: Path, monkeypatch) -> dict:
     from hub.services.models import ollama
 
     root = tmp_path / "ollama"
@@ -24,29 +30,16 @@ def _ollama_ref_with_system(tmp_path: Path, monkeypatch) -> str:
     blobs.mkdir(parents = True)
     (blobs / f"sha256-{'a' * 64}").write_bytes(b"GGUF-not-really")
     (blobs / f"sha256-{'b' * 64}").write_text(_SYSTEM, encoding = "utf-8")
-    tag_file = root / "manifests" / "registry.ollama.ai" / "library" / "pirate" / "latest"
-    tag_file.parent.mkdir(parents = True)
-    tag_file.write_text(
-        json.dumps(
-            {
-                "config": {},
-                "layers": [
-                    {
-                        "mediaType": "application/vnd.ollama.image.model",
-                        "digest": f"sha256:{'a' * 64}",
-                    },
-                    {
-                        "mediaType": "application/vnd.ollama.image.system",
-                        "digest": f"sha256:{'b' * 64}",
-                    },
-                ],
-            }
-        ),
-        encoding = "utf-8",
-    )
+    weights = {"mediaType": "application/vnd.ollama.image.model", "digest": f"sha256:{'a' * 64}"}
+    system = {"mediaType": "application/vnd.ollama.image.system", "digest": f"sha256:{'b' * 64}"}
+    _write_tag(root, "pirate", [weights, system])
+    _write_tag(root, "plain", [weights])
     monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
-    (row,) = ollama.scan_ollama_dir(root)
-    return row.load_id
+    return {row.model_id: row.load_id for row in ollama.scan_ollama_dir(root)}
+
+
+def _ollama_ref_with_system(tmp_path: Path, monkeypatch) -> str:
+    return _ollama_refs(tmp_path, monkeypatch)["ollama/pirate:latest"]
 
 
 def _sent_messages(tmp_path, monkeypatch, messages):
@@ -95,3 +88,34 @@ def test_request_system_prompt_replaces_modelfile_system_prompt(tmp_path, monkey
     assert len(system) == 1
     assert "Be brief." in system[0]
     assert _SYSTEM not in system[0]
+
+
+def test_empty_request_system_turn_suppresses_modelfile_system_prompt(tmp_path, monkeypatch):
+    messages = _sent_messages(
+        tmp_path,
+        monkeypatch,
+        [{"role": "system", "content": ""}, {"role": "user", "content": "Hi"}],
+    )
+
+    assert all(_SYSTEM not in str(m["content"]) for m in messages)
+
+
+def test_tag_sharing_weights_but_not_system_is_not_already_resident(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+    from hub.services.models.ollama import ollama_model_ref_files
+
+    refs = _ollama_refs(tmp_path, monkeypatch)
+    pirate, plain = refs["ollama/pirate:latest"], refs["ollama/plain:latest"]
+
+    def resident(ref):
+        backend = FakeLlamaCppBackend()
+        backend.model_identifier = ref
+        backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(
+            *ollama_model_ref_files(ref)
+        )
+        return backend
+
+    assert inference_route._resident_is_still_tagged(plain, resident(plain))
+    assert inference_route._resident_is_still_tagged(pirate, resident(pirate))
+    assert not inference_route._resident_is_still_tagged(pirate, resident(plain))
+    assert not inference_route._resident_is_still_tagged(plain, resident(pirate))

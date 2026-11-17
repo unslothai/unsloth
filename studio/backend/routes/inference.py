@@ -10776,7 +10776,16 @@ def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
         return False
     source = _ollama_source_identity(ref)
     loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
-    return bool(source and source == loaded)
+    return bool(source and source == loaded) and _same_ollama_system(ref, llama_backend)
+
+
+def _same_ollama_system(ref: str, llama_backend) -> bool:
+    # Tags sharing blobs can carry different SYSTEM layers; only the resident tag's is applied.
+    try:
+        wanted = ollama_model_ref_system_prompt(ref)
+    except (OSError, ValueError):
+        wanted = ""
+    return wanted == _resident_ollama_system_prompt(llama_backend)
 
 
 def _ollama_request_is_resident(requested: str, llama_backend) -> bool:
@@ -11809,6 +11818,11 @@ async def _maybe_auto_switch_model(
         ollama_source_identity = (
             await asyncio.to_thread(_ollama_source_identity, target_id) if ollama_target else None
         )
+        ollama_same_system = (
+            await asyncio.to_thread(_same_ollama_system, target_id, backend)
+            if ollama_target
+            else True
+        )
 
         def _already_serving() -> bool:
             # Match the load path and advertised repo id, so either load style counts as already serving.
@@ -11834,6 +11848,8 @@ async def _maybe_auto_switch_model(
                 # The blobs, not the keys: an alias shares no spelling with the resident tag.
                 loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
                 if not ollama_source_identity or loaded_source != ollama_source_identity:
+                    return False
+                if not ollama_same_system:
                     return False
             elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
@@ -33330,7 +33346,7 @@ async def produce_openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
             payload.messages, keep_tool_images = True
         )
-    if using_gguf and not system_prompt:
+    if using_gguf and not any(m.role in ("system", "developer") for m in payload.messages):
         # Ollama applies a Modelfile SYSTEM only when the request has no system turn of its own.
         system_prompt = await asyncio.to_thread(_resident_ollama_system_prompt, llama_backend)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
