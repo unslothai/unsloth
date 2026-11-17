@@ -12110,6 +12110,9 @@ async def _maybe_auto_switch_model(
                             ollama_source_identity = await asyncio.to_thread(
                                 _ollama_source_identity, target_id
                             )
+                            ollama_same_system = await asyncio.to_thread(
+                                _same_ollama_system, target_id, backend
+                            )
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
