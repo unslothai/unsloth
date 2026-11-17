@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallelism over a mixture-of-experts model whose router auxiliary loss it does not carry (gpt-oss,
-Mixtral) trains when that loss is off (output_router_logits False, gpt-oss's default, or a zero coefficient):
-a gloo CPU world of 2 stages vs gradient accumulation over the same micro-batches in one process. With the loss
-on it stays refused, at the split, at Trainer init (TRL >= 1.x turns it on from the architecture's coefficient)
-and at every stage forward."""
+"""pp over an MoE whose aux loss it does not carry (gpt-oss, Mixtral) trains with that loss off (gloo pp2 vs
+one-process gradient accumulation) and is refused with it on: at split, Trainer init and every stage forward."""
 
 import multiprocessing
 import os
@@ -13,7 +10,7 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only
 
 import sys  # noqa: E402
 import tempfile  # noqa: E402
@@ -149,8 +146,8 @@ def _case_parity(
         opt.step()
         opt.zero_grad(set_to_none = True)
         losses.append(float(loss))
-    # Turned on after the split (what TRL >= 1.x does in SFTTrainer.__init__): every stage forward refuses
-    # (checked on each rank's own stage context: a raising stage would leave its peer waiting in the schedule).
+    # Turned on after the split (as TRL >= 1.x does): checked per rank's own context, since a raising stage
+    # would leave its peer waiting in the schedule.
     refused = None
     guarded = pp.ctx.uncarried_moe is not None
     if build_kw.get("coef", 0.9):

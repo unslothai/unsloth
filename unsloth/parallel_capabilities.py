@@ -881,8 +881,7 @@ _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accu
 _DSV41_PP = (
     "tests/test_parallel_deepseek_v41_gloo.py::test_deepseek_v41_parallel_matches_one_process"
 )
-# gpt-oss with its router auxiliary loss off (output_router_logits False, its default, or a zero coefficient): no
-# loss crosses a stage, so pp2 matches gradient accumulation in one process with no carry (models/pp_native.py).
+# gpt-oss with router aux loss off: nothing crosses a stage, so pp2 matches one-process gradient accumulation.
 _GPT_OSS_PP = (
     "tests/test_pp_moe_aux_off_gloo.py::"
     "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation"
@@ -892,9 +891,7 @@ _GPT_OSS_PP_CASES = {
     "lora+experts": "gpt_oss_lora_experts_logits_off_gpipe|gpt_oss_lora_experts_logits_off_1f1b_gc_reentrant",
 }
 # Its checkpoint is zoo's non-reentrant layer replay whichever function runs it (Unsloth's offloading one included).
-# gpt-oss with the auxiliary loss off captures nothing across a checkpoint: HF reentrant and non-reentrant
-# checkpointing ran in gloo, Unsloth's offloading one with 4-bit experts on 2x T4 (gpt-oss-20b bnb-4bit, pp2 vs one
-# process split over both GPUs).
+# gpt-oss: HF checkpointing measured in gloo, Unsloth's offloading one on 2x T4 (gpt-oss-20b bnb-4bit).
 _MOE_PP_MEMORY = {
     "deepseek_v41": ("none", "gc", "unsloth_offload"),
     "gpt_oss": ("none", "gc", "unsloth_offload"),
@@ -1077,8 +1074,7 @@ _MOE_EVIDENCE = {
         + ("eager: no compiled region",)
         for precision, ids in _GPT_OSS_PP_CASES.items()
     },
-    # QLoRA: the stage cut is the LoRA rows' (4-bit experts stay inside the layers); measured on 2x T4 with
-    # unsloth/gpt-oss-20b-unsloth-bnb-4bit, pp2 vs one process split over both GPUs, router_aux_loss_coef = 0.0.
+    # QLoRA: 4-bit experts stay inside the layers; measured on 2x T4, router_aux_loss_coef = 0.0.
     ("gpt_oss", "qlora", False, "pp"): (
         f"{_GPT_OSS_PP}[{_GPT_OSS_PP_CASES['lora']}] + 2x T4 gpt-oss-20b bnb-4bit pp2 vs one-process split",
     )
@@ -1221,7 +1217,6 @@ def _moe_cells():
                         if match["memory"] == _MOE_COMMON["memory"]:
                             match = {**match, "memory": _MOE_UNVERIFIED_MEMORY}
                         elif mode == "pp" and family in _MOE_PP_MEMORY:
-                            # The family's checkpointing reaches its refused rows too, so they name their reason.
                             match = {**match, "memory": _MOE_PP_MEMORY[family]}
                         cells.append(
                             Cell(
@@ -1681,7 +1676,6 @@ def _aux_loss_on(model, args, trainer_kind) -> bool:
     if coef is None:
         coef = getattr(text, "router_aux_loss_coef", None)
     if configured:
-        # Router logits on with a zero coefficient adds nothing: the pipeline split trains it as aux off.
         return coef is None or bool(coef)
     if trl_args:
         return bool(coef or 0.0) and hasattr(text, "output_router_logits")

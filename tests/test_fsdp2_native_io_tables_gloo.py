@@ -81,8 +81,7 @@ T4_BYTES = 15_636_037_632
 
 
 def test_default_keeps_tables_whole_below_the_old_fraction(monkeypatch):
-    # Flip: at gpt-oss's table share of a T4 the old 0.15 floor kept both tables in the never-resharding root
-    # (gathered for the whole step: OOM in the first forward); the default keeps them whole at any size.
+    # Flip: the old 0.15 floor kept gpt-oss's tables in the root (OOM on a T4); the default replicates them.
     monkeypatch.delenv("UNSLOTH_FSDP2_REPLICATE_IO_TABLES", raising = False)
     native = _load_native()
     model = _model()
@@ -96,14 +95,11 @@ def test_default_keeps_tables_whole_below_the_old_fraction(monkeypatch):
     assert native._frozen_root_io_tables(model, units, device, default) == [embed, head]
     assert native._frozen_root_io_tables(model, units, device, 0.15) == []  # old rule: missed
     assert native._frozen_root_io_tables(model, units, nbytes * 1000, default) == [embed, head]
-    # The size floor, when one is passed, flips exactly at the boundary.
     assert native._frozen_root_io_tables(model, units, nbytes * 4, 0.25) == [embed, head]
     assert native._frozen_root_io_tables(model, units, nbytes * 4 + 1, 0.25) == []
-    # Never on a CPU mesh (no device size), nor when off.
     assert native._frozen_root_io_tables(model, units, 0, default) == []
     assert native._frozen_root_io_tables(model, units, device, False) == []
     assert native._frozen_root_io_tables(model, units, device, 0) == []
-    # Tied / trainable tables still stay in the root under the default.
     tied = _model(tied = True)
     assert native._frozen_root_io_tables(tied, native.find_shard_units(tied), device, default) == []
     trained = _model()

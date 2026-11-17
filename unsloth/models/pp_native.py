@@ -956,7 +956,6 @@ def _forward_has_router_aux(inner):
 
 
 def _router_aux_coef_of(inner, text):
-    """The coefficient the model forward multiplies the load-balancing loss by (its own copy, else the config's)."""
     coef = getattr(inner, "router_aux_loss_coef", None)
     if not isinstance(coef, (int, float)) or isinstance(coef, bool):
         coef = getattr(text, "router_aux_loss_coef", None)
@@ -968,8 +967,7 @@ def _router_aux_off(
     text,
     output_router_logits = None,
 ):
-    """True when the forward adds no router auxiliary loss: output_router_logits off (the call's value, else the
-    config's) or a zero coefficient. Read at split time and again at every stage forward."""
+    """True when output_router_logits is off (call's value, else config's) or the coefficient is zero."""
     if not hasattr(text, "output_router_logits"):
         return False  # no transformers switch for it: not known to be off
     on = output_router_logits
@@ -979,8 +977,7 @@ def _router_aux_off(
 
 
 def _uncarried_moe_owner(model, parts = None):
-    """The mixture-of-experts CausalLM a pipeline trains only with its router auxiliary loss off (a family whose
-    loss PipelineParallel does not carry and that is not listed as having none), else None."""
+    """The MoE CausalLM whose aux loss pp does not carry (so trained only with it off), else None."""
     parts = parts if parts is not None else _find_parts(model)
     inner = parts.inner
     name = type(inner).__name__
@@ -1057,8 +1054,7 @@ def _refuse_unsupported(
         and _uncarried_moe_owner(model, parts) is not None
         and _router_aux_off(inner, text)
     ):
-        # Router auxiliary loss off (output_router_logits False, gpt-oss's default, or a zero coefficient): the
-        # stages cut nothing that would need carrying. The stage forward refuses if it is turned on later.
+        # Aux loss off: nothing to carry; the stage forward refuses if it is turned on later.
         marker = None
     if marker is not None:
         moe = _moe_aux_plan(parts) if allow_moe else None
@@ -1622,8 +1618,6 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
-        # A mixture-of-experts CausalLM split with its router auxiliary loss off (_uncarried_moe_owner): every
-        # stage forward checks it is still off.
         self.uncarried_moe = None
         self.ple = None
         self.ple_input = None

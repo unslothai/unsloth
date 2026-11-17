@@ -785,9 +785,8 @@ def pp_trainer_refusals(
 
 
 def _refuse_uncarried_router_aux_at_init(trainer_cls, args, model):
-    """A mixture-of-experts model the pipeline trains only with its router auxiliary loss off: refuse a Trainer that
-    turns it on. TRL >= 1.x SFT / DPO set output_router_logits inside their own __init__ (after this check) from
-    args.router_aux_loss_coef (None = the architecture's, 0.9 for gpt-oss); the stage forward re-checks."""
+    """Refuse a Trainer that turns on an uncarried MoE router aux loss. TRL >= 1.x sets it later in __init__
+    (coef None = architecture's), so the stage forward re-checks."""
     if not isinstance(model, nn.Module):
         return
     from ..parallel_capabilities import _trainer_kind

@@ -929,8 +929,7 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         )
     with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
         caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
-    # gpt-oss under pp with its router auxiliary loss off (tests/test_pp_moe_aux_off_gloo.py), eager attention
-    # (its sinks), checkpointing included; with the loss on it names the switch that turns it off.
+    # gpt-oss pp with aux loss off runs; with it on the note names the switch.
     gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
     for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):
         query = _q(pp = 2, pp_schedule = "gpipe", **{**gpt_oss_q, **extra})

@@ -98,12 +98,8 @@ class FSDP2Config:
     # parameters get their own unit (Gemma4 / Gemma3n `embed_tokens_per_layer`: ~40% of an E-model would sit
     # gathered in the root for the whole step). 0 disables.
     split_large_root_embeddings: float = 0.05
-    # Frozen, untied embed / head tables outside every unit stay whole on every rank instead of in the root
-    # unit. The root never reshards after forward, so a gathered table costs its full size for the whole step
-    # plus its shard (and a same-size copy while gathering); kept whole it costs at most its full size, and the
-    # input embedding is served from CPU. True = always (on an accelerator), a float = only when both tables
-    # hold at least that fraction of the device, False / 0 = never. UNSLOTH_FSDP2_REPLICATE_IO_TABLES = 1 / 0
-    # forces; UNSLOTH_FSDP2_EMBED_ON_CPU = 0 keeps the input embedding on the GPU.
+    # Keep frozen untied embed / head whole per rank, not in the never-resharding root. True = always, float =
+    # min device fraction, False / 0 = never; env UNSLOTH_FSDP2_REPLICATE_IO_TABLES / UNSLOTH_FSDP2_EMBED_ON_CPU.
     replicate_io_tables: Union[bool, float] = True
     # Wrap `generate` so it runs inside native_fsdp2_unsharded (Unsloth's decode loops read layer weights
     # without calling the blocks; PeftModel.generate skips the root's hooks). Collective: every rank generates.
@@ -1419,11 +1415,8 @@ def _frozen_root_io_tables(
     fraction,
     param_dtype = None,
 ):
-    """[embed, head] to replicate instead of keeping in the root unit, or []. Both must be outside every
-    unit, frozen and untied (fused CE reads lm_head.weight, so a tied table stays). `fraction` True: always
-    when the device size is known (an accelerator); a number: only when both together are >= that fraction of
-    the device; False / 0: never. The root unit is gathered for the whole step (reshard_after_forward=False),
-    so keeping a frozen table whole never needs more device memory than gathering it there."""
+    """[embed, head] to replicate instead of keeping in the root unit, or []. Both outside every unit, frozen,
+    untied (fused CE reads lm_head.weight). The root is gathered all step, so whole never costs more."""
     from .fsdp2_perf import _env_tristate
 
     forced = _env_tristate("UNSLOTH_FSDP2_REPLICATE_IO_TABLES")
