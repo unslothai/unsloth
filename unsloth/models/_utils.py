@@ -6086,6 +6086,26 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_forced_float32_init_scale(trainer):
+    """2**8: 2**12 and 2**10 overflowed Gemma-4 12B on T4, 2**8 matches gradients; divided by ranks since DP losses are multiplied by the process count."""
+    override = os.environ.get("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "")
+    if override:
+        try:
+            value = float(override)
+            if value > 0 and math.isfinite(value):
+                return value
+        except ValueError:
+            pass
+    ranks = 1
+    try:
+        if int(getattr(getattr(trainer, "accelerator", None), "num_processes", 1) or 1) > 1:
+            from .fsdp2_native import _loss_scale_ranks
+            ranks = max(1, int(_loss_scale_ranks(trainer)))
+    except Exception:
+        ranks = 1
+    return 2.0**8 / ranks
+
+
 def _unsloth_forced_float32_grad_scaler(trainer, model):
     """Dynamic GradScaler for forced float32 on float16 weights: without it gradients underflow and
     training diverges (E2B 2.5 -> 9.5 over 60 steps). UNSLOTH_FORCED_FLOAT32_GRAD_SCALER=0 disables."""
@@ -6123,8 +6143,7 @@ def _unsloth_forced_float32_grad_scaler(trainer, model):
             has_half = True
     if not has_half or not trainable_fp32:
         return None
-    # AMP default 65536 overflows Gemma-4 E2B's first four steps; it settles at 4096.
-    init_scale = 2.0**12
+    init_scale = _unsloth_forced_float32_init_scale(trainer)
     try:
         scaler = torch.amp.GradScaler(device_type, init_scale = init_scale)
     except (AttributeError, TypeError):
