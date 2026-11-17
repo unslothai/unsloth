@@ -2488,8 +2488,6 @@ mod tests {
             (vec![(FORCE_SHARED_MEMORY, "1")], false, false),
             (vec![(SKIA_CPU_RENDERING, "1")], false, true),
             (vec![(SKIA_CPU_RENDERING, "0")], false, false),
-            // NVIDIA Wayland paints on the GPU whether or not FORCE_DMABUF stands the patch down:
-            // the patch only moves the transport to shared memory.
             (vec![(FORCE_DMABUF, "1")], true, false),
             (vec![(FORCE_DMABUF, "0")], true, false),
             (vec![], true, false),
