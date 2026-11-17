@@ -882,6 +882,13 @@ export const en = {
     },
     builtinClassifiers: "Built-in classifiers",
     decideNotSetUp: "The built-in classifiers aren't installed on this server. Voice mode works without them, or you can pick a decision model.",
+    speedValue: "{speed}×",
+    optionsLoading: "Loading voice options…",
+    optionsUnavailable: "Voice options show up once this model is downloaded.",
+    moreOptions: "More options",
+    moreOptionsChanged: "· {n} changed",
+    optionsApplyNext: "Changes apply from the next sentence.",
+    resetOptions: "Reset to defaults",
     modelsOwnVoice: "Model's own voice",
     chatModelVoice: "Chat model's voice",
     chatModelVoiceHint: "Hears you and answers in its own voice",
@@ -2018,6 +2025,11 @@ export const en = {
       },
       voiceMode: {
         sectionTitle: "Voice mode",
+        voice: {
+          label: "Speaking voice",
+          description: "How {model} sounds in voice mode. You can set it before the model loads; the voice panel shows the same choices.",
+          modelDefaultNamed: "Model default ({name})",
+        },
         switches: {
           clauseFirstChunk: {
             label: "Start speaking sooner",

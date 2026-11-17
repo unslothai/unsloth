@@ -973,6 +973,13 @@ export const id = {
     },
     builtinClassifiers: "Pengklasifikasi bawaan",
     decideNotSetUp: "Pengklasifikasi bawaan belum terpasang di server ini. Mode suara tetap berfungsi tanpanya, atau Anda dapat memilih model keputusan.",
+    speedValue: "{speed}×",
+    optionsLoading: "Memuat opsi suara…",
+    optionsUnavailable: "Opsi suara muncul setelah model ini diunduh.",
+    moreOptions: "Opsi lainnya",
+    moreOptionsChanged: "· {n} diubah",
+    optionsApplyNext: "Perubahan berlaku mulai kalimat berikutnya.",
+    resetOptions: "Kembalikan ke default",
     modelsOwnVoice: "Suara bawaan model",
     newVoiceEachSession: "Suara baru setiap sesi",
     builtinSpeakers: "Bawaan",
@@ -2184,6 +2191,11 @@ export const id = {
       },
       voiceMode: {
         sectionTitle: "Mode suara",
+        voice: {
+          label: "Suara bicara",
+          description: "Bagaimana {model} terdengar di mode suara. Anda bisa mengaturnya sebelum model dimuat; panel suara menampilkan pilihan yang sama.",
+          modelDefaultNamed: "Default model ({name})",
+        },
         arcsLabel: "Tampilkan busur keputusan",
         arcsDescription:
           "Busur giliran, pengisi, dan interupsi di sekitar orb suara.",

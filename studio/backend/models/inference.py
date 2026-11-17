@@ -7233,6 +7233,17 @@ class AudioVoiceListResponse(BaseModel):
     voices: List[AudioVoice] = Field(default_factory = list)
 
 
+class AudioModelOptionsResponse(BaseModel):
+    """A speech model's Speak options, read from its spec without loading it."""
+
+    model: str
+    audio_family: Optional[str] = None
+    audio_options: List[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "As in status audio_options: {name, type, description, default, min, max, values, required}.",
+    )
+
+
 class AudioCatalogModel(BaseModel):
     """One audio.cpp model Unsloth Studio can offer: an umbrella folder or a Community repo."""
 

@@ -14,7 +14,8 @@ import { splitSpoken, splitStreaming, splitStreamingSpans, stripForSpeech, type 
 import type { PlayedChunk, PlayedEntry } from "../voice/heard-cut";
 import { cleanTtsClip } from "../voice/tts-clip-clean";
 import { firstClauseCut, pauseAfterChunk, planTtsChunk, spokenChunk } from "../voice/tts-chunk-plan";
-import { useVoiceSettingsStore } from "../../settings/stores/voice-settings-store";
+import { useVoiceSettingsStore, voiceTtsOptionsKey } from "../../settings/stores/voice-settings-store";
+import { voiceModeRequestOptions } from "../voice/voice-tts-options";
 import { normalizeForSpeech } from "../voice/speech-normalize";
 import { getVoicePlayContext, settleVoiceTurn } from "../voice/voice-loop-bridge";
 import { outputSpectrumNode } from "../voice/voice-spectrum";
@@ -158,10 +159,20 @@ interface Stream extends SentenceQueue {
   clips: Promise<void>;
 }
 
+/** The speech model's own options voice mode sends (speed, language...); the chat model's voice takes none. */
+function voiceModeTtsOptions(modelId: string | null | undefined) {
+  if (!modelId || isChatModelVoice(modelId)) return undefined;
+  return voiceModeRequestOptions(
+    useVoiceSettingsStore.getState().voiceTtsOptions[voiceTtsOptionsKey(modelId)],
+  );
+}
+
 function currentVoiceKey(): string {
   const { selectedVoiceModelId, selectedVoiceId, selectedVoiceSpeaker } = useChatRuntimeStore.getState();
+  // A cached filler made at another speed or language must not play after the change.
+  const options = JSON.stringify(voiceModeTtsOptions(selectedVoiceModelId) ?? {});
   // The session voice of a model with no preset speaker is redrawn each session.
-  return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}\u0000${voicePinGeneration()}`;
+  return `${selectedVoiceModelId ?? ""}\u0000${selectedVoiceId ?? ""}\u0000${selectedVoiceSpeaker ?? ""}\u0000${voicePinGeneration()}\u0000${options}`;
 }
 
 const ASIDE_MAX_LATE_MS = 4000;
@@ -302,6 +313,7 @@ export function useTtsPlayer(onPlaybackEnd?: () => void): {
             voiceId,
             speaker: selectedVoiceSpeaker,
             reference: reference ?? undefined,
+            audioOptions: voiceModeTtsOptions(selectedVoiceModelId),
           });
         // A voice with no preset speaker draws a new one per sentence: keep the first for the session.
         const clip =

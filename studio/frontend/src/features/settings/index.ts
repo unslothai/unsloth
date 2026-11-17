@@ -136,8 +136,10 @@ export {
   sttModelName,
   sttModelVariant,
   useVoiceSettingsStore,
+  voiceTtsOptionsKey,
   withSttVariant,
 } from "./stores/voice-settings-store";
+export type { VoiceTtsOptionValue, VoiceTtsOptionValues } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
 export {

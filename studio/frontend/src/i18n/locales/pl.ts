@@ -981,6 +981,13 @@ export const pl = {
     },
     builtinClassifiers: "Wbudowane klasyfikatory",
     decideNotSetUp: "Wbudowane klasyfikatory nie są zainstalowane na tym serwerze. Tryb głosowy działa bez nich, możesz też wybrać model decyzyjny.",
+    speedValue: "{speed}×",
+    optionsLoading: "Wczytywanie opcji głosu…",
+    optionsUnavailable: "Opcje głosu pojawią się po pobraniu tego modelu.",
+    moreOptions: "Więcej opcji",
+    moreOptionsChanged: "· zmienione: {n}",
+    optionsApplyNext: "Zmiany obowiązują od następnego zdania.",
+    resetOptions: "Przywróć domyślne",
     modelsOwnVoice: "Własny głos modelu",
     newVoiceEachSession: "Nowy głos w każdej sesji",
     builtinSpeakers: "Wbudowane",
@@ -2204,6 +2211,11 @@ export const pl = {
       },
       voiceMode: {
         sectionTitle: "Tryb głosowy",
+        voice: {
+          label: "Głos mówienia",
+          description: "Jak brzmi {model} w trybie głosowym. Możesz to ustawić przed załadowaniem modelu; panel głosu pokazuje te same opcje.",
+          modelDefaultNamed: "Domyślny modelu ({name})",
+        },
         arcsLabel: "Pokazuj łuki decyzji",
         arcsDescription:
           "Łuki kolejki, wtrącenia i przerwania wokół kuli głosowej.",

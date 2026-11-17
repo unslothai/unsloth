@@ -282,7 +282,20 @@ type StudioTtsOptions = {
   speaker?: string;
   /** An uploaded clip to speak in, when no saved voice is picked: voice mode's session voice. */
   reference?: VoiceReference;
+  /** The model's own options (speed, language...); speaker still wins for the voice. */
+  audioOptions?: Record<string, boolean | number | string>;
 };
+
+/** The request's audio_options: the caller's model options, with the picked speaker as the voice. */
+export function ttsAudioOptions(
+  options: Pick<StudioTtsOptions, "speaker" | "audioOptions"> | undefined,
+): { audio_options?: Record<string, boolean | number | string> } {
+  const merged = {
+    ...options?.audioOptions,
+    ...(options?.speaker ? { voice: options.speaker } : {}),
+  };
+  return Object.keys(merged).length ? { audio_options: merged } : {};
+}
 
 /** generateStudioTtsAudio with the server's timing beside the clip. */
 export async function generateStudioTtsClip(
@@ -309,7 +322,7 @@ export async function generateStudioTtsClip(
       ...(!ttsStudioVoiceId && options?.reference
         ? { reference_input_id: options.reference.inputId, reference_text: options.reference.text }
         : {}),
-      ...(options?.speaker ? { audio_options: { voice: options.speaker } } : {}),
+      ...ttsAudioOptions(options),
     }),
     signal,
   });

@@ -984,6 +984,13 @@ export const nl = {
     },
     builtinClassifiers: "Ingebouwde classificatoren",
     decideNotSetUp: "De ingebouwde classificatoren zijn niet op deze server geïnstalleerd. De spraakmodus werkt ook zonder, of je kunt een beslissingsmodel kiezen.",
+    speedValue: "{speed}×",
+    optionsLoading: "Stemopties laden…",
+    optionsUnavailable: "Stemopties verschijnen zodra dit model is gedownload.",
+    moreOptions: "Meer opties",
+    moreOptionsChanged: "· {n} gewijzigd",
+    optionsApplyNext: "Wijzigingen gelden vanaf de volgende zin.",
+    resetOptions: "Standaardwaarden herstellen",
     modelsOwnVoice: "Eigen stem van het model",
     newVoiceEachSession: "Nieuwe stem per sessie",
     builtinSpeakers: "Ingebouwd",
@@ -2208,6 +2215,11 @@ export const nl = {
       },
       voiceMode: {
         sectionTitle: "Spraakmodus",
+        voice: {
+          label: "Spreekstem",
+          description: "Hoe {model} klinkt in de spraakmodus. Je kunt dit instellen voordat het model is geladen; het spraakpaneel toont dezelfde keuzes.",
+          modelDefaultNamed: "Modelstandaard ({name})",
+        },
         arcsLabel: "Beslissingsbogen tonen",
         arcsDescription:
           "De bogen voor beurt, opvulling en onderbreking rond de spraakbol.",

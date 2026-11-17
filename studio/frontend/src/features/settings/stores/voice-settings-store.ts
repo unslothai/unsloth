@@ -183,6 +183,12 @@ export interface VoiceSettingsState extends VoiceOrbOverlayPrefs {
   voiceThinking: boolean;
   setVoiceThinking: (value: boolean) => void;
 
+  /** The speech model's own options voice mode sends (speed, language...), per model id in lower case.
+   * Kept apart from the Audio page's, and set in the voice panel or Settings before the model loads. */
+  voiceTtsOptions: Record<string, VoiceTtsOptionValues>;
+  setVoiceTtsOption: (modelId: string, name: string, value: VoiceTtsOptionValue | undefined) => void;
+  resetVoiceTtsOptions: (modelId: string) => void;
+
   /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
    * "custom": a saved connection's /audio/speech endpoint. */
   ttsEngine: TtsEngine;
@@ -406,6 +412,27 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setAutoReadAloud: (autoReadAloud) => set({ autoReadAloud }),
       voiceThinking: false,
       setVoiceThinking: (voiceThinking) => set({ voiceThinking }),
+      voiceTtsOptions: {},
+      setVoiceTtsOption: (modelId, name, value) =>
+        set((s) => {
+          const key = voiceTtsOptionsKey(modelId);
+          if (!key || !name) return s;
+          const values = { ...s.voiceTtsOptions[key] };
+          if (value === undefined) delete values[name];
+          else values[name] = value;
+          const next = { ...s.voiceTtsOptions };
+          if (Object.keys(values).length === 0) delete next[key];
+          else next[key] = values;
+          return { voiceTtsOptions: next };
+        }),
+      resetVoiceTtsOptions: (modelId) =>
+        set((s) => {
+          const key = voiceTtsOptionsKey(modelId);
+          if (!key || !(key in s.voiceTtsOptions)) return s;
+          const next = { ...s.voiceTtsOptions };
+          delete next[key];
+          return { voiceTtsOptions: next };
+        }),
 
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
@@ -524,6 +551,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           autoReadAloud: saved?.autoReadAloud === true,
           voiceThinking: saved?.voiceThinking === true,
+          voiceTtsOptions: normalizeVoiceTtsOptions(saved?.voiceTtsOptions),
           ttsEngine:
             saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
               ? saved.ttsEngine
@@ -581,6 +609,38 @@ function rolloutSettings(
   for (const key of Object.keys(out) as VoiceRolloutSetting[]) {
     const value = saved?.[key];
     if (typeof value === "boolean") out[key] = value;
+  }
+  return out;
+}
+
+export type VoiceTtsOptionValue = boolean | number | string;
+export type VoiceTtsOptionValues = Record<string, VoiceTtsOptionValue>;
+
+const MAX_VOICE_TTS_MODELS = 40;
+const MAX_VOICE_TTS_OPTIONS = 40;
+const MAX_VOICE_TTS_TEXT = 2000;
+
+/** The store key for a speech model's options: ids differ only in case across the catalog and status. */
+export function voiceTtsOptionsKey(modelId: string | null | undefined): string {
+  return (modelId ?? "").trim().toLowerCase();
+}
+
+/** Saved options as the store keeps them: primitives only, capped, so a bad entry cannot reach a request. */
+export function normalizeVoiceTtsOptions(raw: unknown): Record<string, VoiceTtsOptionValues> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, VoiceTtsOptionValues> = {};
+  for (const [model, entry] of Object.entries(raw).slice(0, MAX_VOICE_TTS_MODELS)) {
+    const key = voiceTtsOptionsKey(model);
+    if (!key || !entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const values: VoiceTtsOptionValues = {};
+    for (const [name, value] of Object.entries(entry).slice(0, MAX_VOICE_TTS_OPTIONS)) {
+      if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
+        values[name] = value;
+      } else if (typeof value === "string" && value.length <= MAX_VOICE_TTS_TEXT) {
+        values[name] = value;
+      }
+    }
+    if (Object.keys(values).length) out[key] = values;
   }
   return out;
 }

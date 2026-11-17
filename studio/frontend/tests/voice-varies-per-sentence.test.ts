@@ -44,7 +44,7 @@ test("the panel says a new voice is drawn each session until a saved voice is pi
   );
   assert.match(
     selector,
-    /newVoiceEachSession: !savedVoiceId &&\s*\(speakers\?\.family === "omnivoice" \|\| voiceVariesPerSentence\(modelId\)\),/,
+    /newVoiceEachSession: !savedVoiceId &&\s*\(spec\.family === "omnivoice" \|\| voiceVariesPerSentence\(modelId\)\),/,
   );
 });
 

@@ -2,16 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { audioVoiceLabel } from "@/features/audio/audio-options";
 import { audioModelsForTask } from "@/features/audio/catalog";
 import { VoicePicker } from "@/features/audio/components/voice-picker";
 import { pageModels } from "@/features/audio/page-models";
 import { audioRowMatchesWorkflow } from "@/features/audio/picker-filter";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
-import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
-  CHAT_MODEL_VOICE_SPEAKERS,
+  type VoiceModelSpec,
+  useVoiceModelSpec,
+  voiceSpeakerLabel,
+} from "@/features/chat/voice/use-voice-model-spec";
+import { voiceModeOptionGroups } from "@/features/chat/voice/voice-tts-options";
+import {
   VOICE_CHAT_MODEL_VOICE,
   VOICE_TTS_MODELS,
   chatModelSpeaks,
@@ -24,8 +27,11 @@ import { ModelSelector } from "@/features/model-picker";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { type FC, useEffect, useMemo, useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { VoiceSoundControls } from "./voice-sound-controls";
+import { type FC, useEffect, useMemo, useRef } from "react";
 
 interface VoiceModelSelectorProps {
   value: string;
@@ -33,9 +39,6 @@ interface VoiceModelSelectorProps {
   loaded?: boolean;
   onClose?: () => void;
 }
-
-// The family the chat model's own voice reports for its two speakers.
-const CHAT_MODEL_FAMILY = "chat_model";
 
 const VOICE_TTS_RANK = new Map(
   VOICE_TTS_MODELS.map((id, i) => [id.toLowerCase(), i]),
@@ -124,53 +127,20 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
 interface BuiltinSpeakers {
   family: string | null;
   values: string[];
+  /** The speaker the model uses when none is picked. */
+  fallback: string | null;
 }
 
-function useBuiltinSpeakers(loadedId: string): BuiltinSpeakers | null {
-  const [speakers, setSpeakers] = useState<BuiltinSpeakers | null>(null);
-  useEffect(() => {
-    setSpeakers(null);
-    if (!loadedId) return;
-    if (isChatModelVoice(loadedId)) {
-      setSpeakers({ family: CHAT_MODEL_FAMILY, values: [...CHAT_MODEL_VOICE_SPEAKERS] });
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await authFetch(
-          `/api/inference/status?model=${encodeURIComponent(loadedId)}`,
-        );
-        if (!res.ok) return;
-        const status = (await res.json()) as {
-          audio_family?: string | null;
-          audio_options?: { name?: string; values?: unknown }[] | null;
-        };
-        const voice = (status.audio_options ?? []).find((o) => o?.name === "voice");
-        const values = Array.isArray(voice?.values)
-          ? voice.values.filter((v): v is string => typeof v === "string")
-          : [];
-        if (!cancelled) setSpeakers({ family: status.audio_family ?? null, values });
-      } catch {
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadedId]);
-  return speakers;
+/** The speaker that will be heard: the pick when the model has it, else the model's own default. */
+function effectiveSpeaker(speakers: BuiltinSpeakers, picked: string): string | null {
+  if (picked && speakers.values.includes(picked)) return picked;
+  return speakers.fallback && speakers.values.includes(speakers.fallback) ? speakers.fallback : null;
 }
 
-function speakerLabel(
-  speaker: string,
-  family: string | null,
-  t: ReturnType<typeof useT>,
-): string {
-  if (family !== CHAT_MODEL_FAMILY) return audioVoiceLabel(speaker, family);
-  return t(speaker === "male" ? "voicePanel.speakerMale" : "voicePanel.speakerFemale");
-}
 
 export interface VoicePreset {
+  modelId: string;
+  spec: VoiceModelSpec;
   label: string | null;
   /** No preset speaker: voice mode draws one when it starts and keeps it (voice-pin.ts). */
   newVoiceEachSession: boolean;
@@ -184,19 +154,34 @@ export function useVoicePreset(modelId: string, loaded: boolean): VoicePreset {
   const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
   const savedVoices = useAudioVoicesStore((s) => s.voices);
   const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
-  const speakers = useBuiltinSpeakers(loaded ? modelId : "");
+  // Read before the model loads too, so the voice and its options can be set up before Start.
+  const spec = useVoiceModelSpec(modelId, loaded);
+  const voiceDefault = spec.specs.find((s) => s.name === "voice")?.default;
+  const speakers: BuiltinSpeakers | null = spec.speakers.length
+    ? {
+        family: spec.family,
+        values: spec.speakers,
+        fallback: typeof voiceDefault === "string" ? voiceDefault : null,
+      }
+    : null;
   const canClone = voiceTtsCanClone(modelId);
   const savedName = savedVoices.find((v) => v.id === savedVoiceId)?.name;
-  const builtin =
-    speakers && speakers.values.includes(speaker)
-      ? speakerLabel(speaker, speakers.family, t)
-      : null;
+  const shownSpeaker = speakers ? effectiveSpeaker(speakers, speaker) : null;
+  const builtin = speakers && shownSpeaker ? voiceSpeakerLabel(shownSpeaker, speakers.family, t) : null;
+  const { primary, more } = voiceModeOptionGroups(spec.specs);
   return {
+    modelId,
+    spec,
     label: savedName ?? builtin,
-    newVoiceEachSession: !savedVoiceId && (speakers?.family === "omnivoice" || voiceVariesPerSentence(modelId)),
+    newVoiceEachSession: !savedVoiceId && (spec.family === "omnivoice" || voiceVariesPerSentence(modelId)),
     speakers,
     canClone,
-    choosable: canClone || (speakers?.values.length ?? 0) > 1,
+    // Until the spec answers, a speech model stays openable: the drill-in says it is loading.
+    choosable:
+      canClone ||
+      (speakers?.values.length ?? 0) > 1 ||
+      primary.length + more.length > 0 ||
+      (spec.state !== "ready" && !isChatModelVoice(modelId)),
   };
 }
 
@@ -211,17 +196,34 @@ export const VoicePresetPanel: FC<{
   const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
   const setSpeaker = useChatRuntimeStore((s) => s.setSelectedVoiceSpeaker);
   const speakers = preset.speakers;
+  const heard = !savedVoiceId && speakers ? effectiveSpeaker(speakers, speaker) : null;
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (preset.canClone) void useAudioVoicesStore.getState().refresh();
   }, [preset.canClone]);
 
+  // A pick far down a long list (Kokoro has 50+ speakers) would open out of sight: bring it into view.
+  const listed = speakers?.values.length ?? 0;
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>('[aria-pressed="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [listed]);
+
   const row =
     "mb-0.5 flex w-full items-center rounded-full px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
   const heading =
     "px-2 pb-1 pt-0.5 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground";
+  const choices = (speakers && speakers.values.length > 1) || preset.canClone;
   return (
-    <div className="flex min-w-0 flex-col p-1.5">
+    // Opened More options can outgrow the space above the composer: the drill-in scrolls, never clips.
+    <div className="flex min-w-0 max-h-[calc(var(--radix-popover-content-available-height,70vh)-4rem)] flex-col overflow-y-auto overscroll-contain p-1.5">
+      {/* The list scrolls on its own so the sound settings below stay in view (Kokoro has 50+ speakers). */}
+      <div
+        ref={listRef}
+        className={cn("flex min-w-0 flex-col", choices && "max-h-[min(15rem,40vh)] overflow-y-auto overscroll-contain")}
+      >
       {speakers && speakers.values.length > 1 && (
         <>
           <div className={heading}>{labels.builtin}</div>
@@ -229,14 +231,18 @@ export const VoicePresetPanel: FC<{
             <button
               key={choice}
               type="button"
+              aria-pressed={heard === choice}
               onClick={() => {
                 setSpeaker(choice);
                 setSavedVoiceId("");
                 onClose();
               }}
-              className={cn(row, !savedVoiceId && speaker === choice && "bg-muted")}
+              className={cn(row, "justify-between gap-2", heard === choice && "bg-muted")}
             >
-              {speakerLabel(choice, speakers.family, t)}
+              <span className="truncate">{voiceSpeakerLabel(choice, speakers.family, t)}</span>
+              {heard === choice && (
+                <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 shrink-0" aria-hidden="true" />
+              )}
             </button>
           ))}
         </>
@@ -264,6 +270,12 @@ export const VoicePresetPanel: FC<{
           />
         </>
       )}
+      </div>
+      <VoiceSoundControls
+        modelId={preset.modelId}
+        spec={preset.spec}
+        className={cn(choices && "mt-1.5 border-t border-border/60 pt-3")}
+      />
     </div>
   );
 };

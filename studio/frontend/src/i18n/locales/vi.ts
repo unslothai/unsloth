@@ -977,6 +977,13 @@ export const vi = {
     },
     builtinClassifiers: "Bộ phân loại tích hợp",
     decideNotSetUp: "Bộ phân loại tích hợp chưa được cài trên máy chủ này. Chế độ giọng nói vẫn hoạt động khi không có chúng, hoặc bạn có thể chọn một mô hình quyết định.",
+    speedValue: "{speed}×",
+    optionsLoading: "Đang tải tùy chọn giọng nói…",
+    optionsUnavailable: "Tùy chọn giọng nói sẽ hiện khi mô hình này được tải xuống.",
+    moreOptions: "Tùy chọn khác",
+    moreOptionsChanged: "· Đã đổi {n}",
+    optionsApplyNext: "Thay đổi áp dụng từ câu tiếp theo.",
+    resetOptions: "Khôi phục mặc định",
     modelsOwnVoice: "Giọng riêng của mô hình",
     newVoiceEachSession: "Giọng mới cho mỗi phiên",
     builtinSpeakers: "Tích hợp",
@@ -2192,6 +2199,11 @@ export const vi = {
       },
       voiceMode: {
         sectionTitle: "Chế độ giọng nói",
+        voice: {
+          label: "Giọng nói",
+          description: "Giọng của {model} trong chế độ giọng nói. Bạn có thể đặt trước khi mô hình được tải; bảng giọng nói có cùng các lựa chọn.",
+          modelDefaultNamed: "Mặc định của mô hình ({name})",
+        },
         arcsLabel: "Hiện các cung quyết định",
         arcsDescription:
           "Các cung lượt, câu đệm và ngắt lời quanh quả cầu giọng nói.",

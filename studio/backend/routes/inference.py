@@ -3507,6 +3507,7 @@ from models.inference import (
     AudioVoice,
     AudioVoiceCreate,
     AudioVoiceListResponse,
+    AudioModelOptionsResponse,
     AudioVoicePatch,
     AudioCatalogModel,
     AudioCatalogResponse,
@@ -52124,6 +52125,49 @@ async def media_catalog(current_subject: str = Depends(get_current_subject)):
             detail = "Unsloth Studio could not list image and video models right now.",
         ) from None
     return MediaCatalogResponse(models = rows)
+
+
+# Long enough for any repo id plus a variant; anything longer is not a model id.
+_AUDIO_MODEL_ID_MAX = 512
+
+
+@studio_router.get("/audio/model-options", response_model = AudioModelOptionsResponse)
+async def get_audio_model_options(
+    model: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Speakers and options a speech model takes, before it is loaded, so voice mode can be set up first.
+
+    A downloaded model is read from disk; one that is not reads only its spec from the Hub (cached).
+    """
+    from core.inference import audio_cpp_models
+    from core.inference.audio_cpp_backend import model_info_fields
+
+    model = model.strip()
+    if not model or len(model) > _AUDIO_MODEL_ID_MAX:
+        raise HTTPException(status_code = 400, detail = "Name a speech model.")
+    hf_token = _auto_download_hf_token(request)
+
+    def _read():
+        found = audio_cpp_models.resolve(model, hf_token = hf_token, network = False)
+        if found is None or found.unsupported:
+            found = audio_cpp_models.resolve(model, hf_token = hf_token)
+        return found
+
+    try:
+        found = await asyncio.to_thread(_read)
+    except Exception:  # noqa: BLE001 - no exception text reaches the client
+        logger.debug("audio model options failed", exc_info = True)
+        found = None
+    if found is None or found.unsupported:
+        raise HTTPException(status_code = 404, detail = "This model's voice options are not available.")
+    fields = model_info_fields(found)
+    return AudioModelOptionsResponse(
+        model = model,
+        audio_family = fields.get("audio_family"),
+        audio_options = fields.get("audio_options") or [],
+    )
 
 
 @router.get("/audio/voices", response_model = AudioVoiceListResponse)

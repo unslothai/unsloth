@@ -24,7 +24,7 @@ import { clearVoiceModelRest } from "@/features/chat/voice/voice-models-client";
 import { voicePillIconClass } from "@/features/chat/voice/voice-pill-tone";
 import { ORB_IDLE_GRADIENT } from "@/features/chat/voice/orb-config";
 import { DotTag } from "@/features/hub";
-import { useVoiceSettingsStore } from "@/features/settings";
+import { useVoiceSettingsStore, voiceTtsOptionsKey } from "@/features/settings";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import { downloadSttNow } from "@/features/settings/lib/stt-download-now";
 import { isTrackingSttDownload } from "@/features/settings/lib/stt-download-mirror";
@@ -57,6 +57,8 @@ import {
 } from "./voice-model-selector";
 
 type Role = "listen" | "transcribe" | "decide" | "speak" | "voice";
+
+const SPEED_FORMAT = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 const ROLES: Role[] = ["listen", "transcribe", "decide", "speak", "voice"];
 const PICKER_ROLES = new Set<Role>(["listen", "transcribe", "decide", "speak"]);
 
@@ -172,6 +174,10 @@ const VoicePanelView: FC<VoicePanelProps> = ({
   const focusAfterCancelRef = useRef<Element | null>(null);
   const decision = useVoiceDecision(open);
   const preset = useVoicePreset(ttsModelId, ttsLoaded);
+  // Only the model's own speed is named on the row: every other option sits one tap away.
+  const voiceSpeed = useVoiceSettingsStore(
+    (s) => s.voiceTtsOptions[voiceTtsOptionsKey(ttsModelId)]?.speed,
+  );
   const vadDetectors = useVadDetectors();
   // "configuring": the pill is up for choosing models, and nothing loads until Start.
   const started = useChatRuntimeStore((s) => s.voiceMode === "active");
@@ -285,12 +291,15 @@ const VoicePanelView: FC<VoicePanelProps> = ({
     },
     voice: {
       name:
-        preset.label ??
-        t(
-          preset.newVoiceEachSession
-            ? "voicePanel.newVoiceEachSession"
-            : "voicePanel.modelsOwnVoice",
-        ),
+        (preset.label ??
+          t(
+            preset.newVoiceEachSession
+              ? "voicePanel.newVoiceEachSession"
+              : "voicePanel.modelsOwnVoice",
+          )) +
+        (typeof voiceSpeed === "number" && voiceSpeed !== 1
+          ? ` · ${t("voicePanel.speedValue", { speed: SPEED_FORMAT.format(voiceSpeed) })}`
+          : ""),
       state: ttsState,
       enabled: preset.choosable,
     },

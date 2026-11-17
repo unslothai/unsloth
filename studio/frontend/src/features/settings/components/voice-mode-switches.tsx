@@ -15,7 +15,14 @@ import { Spinner } from "@/components/ui/spinner";
 import { setVoiceDecision, useVoiceDecision } from "@/features/chat";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { VoiceSoundControls } from "@/components/assistant-ui/voice-sound-controls";
+import { useVoicePreset } from "@/components/assistant-ui/voice-model-selector";
+import { voiceSpeakerLabel } from "@/features/chat/voice/use-voice-model-spec";
+import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
+import { useChatRuntimeStore } from "@/features/chat";
+import { isChatModelVoice } from "@/features/chat/voice/voice-models";
+import { audioModelLabel } from "../../audio/audio-workspace-utils";
 import {
   TURN_JUDGE_BAR,
   VOICE_CUSTOM_INSTRUCTION_MAX,
@@ -217,10 +224,108 @@ function ReplyInstructionRow() {
   );
 }
 
+const MODEL_DEFAULT_VOICE = "__default__";
+const SAVED_PREFIX = "saved:";
+const SPEAKER_PREFIX = "speaker:";
+
+// The voice mode speech model's voice and options, set here or in the voice panel before it loads.
+function SpeakingVoiceRow() {
+  const t = useT();
+  const modelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
+  const loaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
+  const savedVoiceId = useChatRuntimeStore((s) => s.selectedVoiceId);
+  const speaker = useChatRuntimeStore((s) => s.selectedVoiceSpeaker);
+  const savedVoices = useAudioVoicesStore((s) => s.voices);
+  const preset = useVoicePreset(modelId, loaded);
+  const label = t("settings.voice.voiceMode.voice.label");
+  useEffect(() => {
+    if (preset.canClone) void useAudioVoicesStore.getState().refresh();
+  }, [preset.canClone]);
+  if (!modelId) return null;
+  const chatVoice = isChatModelVoice(modelId);
+  // Named as the voice panel names it (no "-GGUF"), so both places read the same.
+  const modelName = chatVoice
+    ? t("voicePanel.chatModelVoice")
+    : audioModelLabel(modelId).replace(/-GGUF$/i, "");
+  const speakers = preset.speakers;
+  const builtins = speakers && speakers.values.length > 1 ? speakers.values : [];
+  const saved = preset.canClone ? savedVoices : [];
+  const heard =
+    savedVoiceId && saved.some((v) => v.id === savedVoiceId)
+      ? `${SAVED_PREFIX}${savedVoiceId}`
+      : speaker && builtins.includes(speaker)
+        ? `${SPEAKER_PREFIX}${speaker}`
+        : MODEL_DEFAULT_VOICE;
+  const defaultName =
+    speakers?.fallback && builtins.includes(speakers.fallback)
+      ? voiceSpeakerLabel(speakers.fallback, speakers.family, t)
+      : null;
+  const choose = (value: string) => {
+    const store = useChatRuntimeStore.getState();
+    if (value.startsWith(SAVED_PREFIX)) {
+      store.setSelectedVoiceId(value.slice(SAVED_PREFIX.length));
+    } else {
+      store.setSelectedVoiceId("");
+      store.setSelectedVoiceSpeaker(value.startsWith(SPEAKER_PREFIX) ? value.slice(SPEAKER_PREFIX.length) : "");
+    }
+  };
+  const hasChoices = builtins.length > 0 || saved.length > 0;
+  return (
+    <SettingsRow
+      label={label}
+      description={t("settings.voice.voiceMode.voice.description", { model: modelName })}
+      below={
+        chatVoice ? null : (
+          // Nested under the voice it tunes, so it does not read as Read aloud's speed above.
+          <div className="w-full">
+            <VoiceSoundControls
+              modelId={modelId}
+              spec={preset.spec}
+              className="max-w-[calc(30rem*var(--ui-space-scale,1))] border-l-2 border-border/60 pl-4 pr-0"
+            />
+          </div>
+        )
+      }
+    >
+      {hasChoices ? (
+        <Select value={heard} onValueChange={choose}>
+          <SelectTrigger aria-label={label} className="min-w-56 max-w-72" size="sm" data-testid="voice-speaking-voice">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end" className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
+            <SelectItem value={MODEL_DEFAULT_VOICE}>
+              {defaultName
+                ? t("settings.voice.voiceMode.voice.modelDefaultNamed", { name: defaultName })
+                : t("voicePanel.modelsOwnVoice")}
+            </SelectItem>
+            {builtins
+              .filter((choice) => choice !== speakers?.fallback)
+              .map((choice) => (
+                <SelectItem key={choice} value={`${SPEAKER_PREFIX}${choice}`}>
+                  {voiceSpeakerLabel(choice, speakers?.family ?? null, t)}
+                </SelectItem>
+              ))}
+            {saved.map((voice) => (
+              <SelectItem key={voice.id} value={`${SAVED_PREFIX}${voice.id}`}>
+                {voice.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : preset.spec.state === "loading" ? (
+        <Spinner className="size-4 text-muted-foreground" />
+      ) : (
+        <span className="text-sm text-muted-foreground">{preset.label ?? t("voicePanel.modelsOwnVoice")}</span>
+      )}
+    </SettingsRow>
+  );
+}
+
 /** Each voice mode behaviour, set or switched off here. */
 export function VoiceModeSwitches() {
   return (
     <>
+      <SpeakingVoiceRow />
       <RolloutRow setting="clauseFirstChunk" />
       <TurnEndingRow />
       <DecisionModelRow />

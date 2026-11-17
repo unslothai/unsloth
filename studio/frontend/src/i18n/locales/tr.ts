@@ -969,6 +969,13 @@ export const tr = {
     },
     builtinClassifiers: "Yerleşik sınıflandırıcılar",
     decideNotSetUp: "Yerleşik sınıflandırıcılar bu sunucuda kurulu değil. Ses modu onlar olmadan da çalışır veya bir karar modeli seçebilirsiniz.",
+    speedValue: "{speed}×",
+    optionsLoading: "Ses seçenekleri yükleniyor…",
+    optionsUnavailable: "Ses seçenekleri bu model indirildikten sonra görünür.",
+    moreOptions: "Diğer seçenekler",
+    moreOptionsChanged: "· {n} değiştirildi",
+    optionsApplyNext: "Değişiklikler bir sonraki cümleden itibaren geçerli olur.",
+    resetOptions: "Varsayılanlara sıfırla",
     modelsOwnVoice: "Modelin kendi sesi",
     newVoiceEachSession: "Her oturumda yeni ses",
     builtinSpeakers: "Yerleşik",
@@ -2181,6 +2188,11 @@ export const tr = {
       },
       voiceMode: {
         sectionTitle: "Ses modu",
+        voice: {
+          label: "Konuşma sesi",
+          description: "{model} sesli modda nasıl duyulur. Model yüklenmeden önce ayarlayabilirsiniz; ses panelinde aynı seçenekler bulunur.",
+          modelDefaultNamed: "Model varsayılanı ({name})",
+        },
         arcsLabel: "Karar yaylarını göster",
         arcsDescription:
           "Ses küresinin çevresindeki sıra, dolgu ve araya girme yayları.",

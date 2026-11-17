@@ -38,6 +38,7 @@ export function AudioOptionFields({
   onChange,
   disabled,
   family,
+  idPrefix = "audio-option",
 }: {
   specs: readonly AudioOptionSpec[];
   values: AudioOptionValues;
@@ -45,11 +46,13 @@ export function AudioOptionFields({
   onChange: (name: string, value: AudioOptionValue | undefined) => void;
   disabled?: boolean;
   family?: string | null;
+  /** Keeps ids unique where two forms for the same model can be on screen. */
+  idPrefix?: string;
 }) {
   return (
     <>
       {specs.map((spec) => {
-        const id = `audio-option-${spec.name.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+        const id = `${idPrefix}-${spec.name.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
         const label = `${audioOptionLabel(spec.name)}${spec.required ? " *" : ""}`;
         const value = audioOptionDisplayValue(spec, values);
         if (spec.type === "bool") {

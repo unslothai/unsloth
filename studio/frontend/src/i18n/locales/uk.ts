@@ -980,6 +980,13 @@ export const uk = {
     },
     builtinClassifiers: "Вбудовані класифікатори",
     decideNotSetUp: "Вбудовані класифікатори не встановлено на цьому сервері. Голосовий режим працює і без них, або можна вибрати модель рішень.",
+    speedValue: "{speed}×",
+    optionsLoading: "Завантаження параметрів голосу…",
+    optionsUnavailable: "Параметри голосу з’являться після завантаження цієї моделі.",
+    moreOptions: "Інші параметри",
+    moreOptionsChanged: "· змінено: {n}",
+    optionsApplyNext: "Зміни діють з наступного речення.",
+    resetOptions: "Скинути до типових",
     modelsOwnVoice: "Власний голос моделі",
     newVoiceEachSession: "Новий голос у кожному сеансі",
     builtinSpeakers: "Вбудовані",
@@ -2199,6 +2206,11 @@ export const uk = {
       },
       voiceMode: {
         sectionTitle: "Голосовий режим",
+        voice: {
+          label: "Голос мовлення",
+          description: "Як звучить {model} у голосовому режимі. Це можна налаштувати до завантаження моделі; голосова панель показує ті самі варіанти.",
+          modelDefaultNamed: "Типовий для моделі ({name})",
+        },
         arcsLabel: "Показувати дуги рішень",
         arcsDescription:
           "Дуги черги, заповнювача й переривання навколо голосової сфери.",

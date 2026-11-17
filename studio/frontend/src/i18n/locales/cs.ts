@@ -975,6 +975,13 @@ export const cs = {
     },
     builtinClassifiers: "Vestavěné klasifikátory",
     decideNotSetUp: "Vestavěné klasifikátory nejsou na tomto serveru nainstalovány. Hlasový režim funguje i bez nich, nebo můžete vybrat rozhodovací model.",
+    speedValue: "{speed}×",
+    optionsLoading: "Načítání možností hlasu…",
+    optionsUnavailable: "Možnosti hlasu se zobrazí po stažení tohoto modelu.",
+    moreOptions: "Další možnosti",
+    moreOptionsChanged: "· změněno: {n}",
+    optionsApplyNext: "Změny platí od další věty.",
+    resetOptions: "Obnovit výchozí",
     modelsOwnVoice: "Vlastní hlas modelu",
     newVoiceEachSession: "Nový hlas pro každou relaci",
     builtinSpeakers: "Vestavěné",
@@ -2191,6 +2198,11 @@ export const cs = {
       },
       voiceMode: {
         sectionTitle: "Hlasový režim",
+        voice: {
+          label: "Hlas řeči",
+          description: "Jak zní {model} v hlasovém režimu. Můžete ho nastavit ještě před načtením modelu; hlasový panel nabízí stejné volby.",
+          modelDefaultNamed: "Výchozí modelu ({name})",
+        },
         arcsLabel: "Zobrazit oblouky rozhodnutí",
         arcsDescription:
           "Oblouky tahu, výplně a přerušení kolem hlasové koule.",

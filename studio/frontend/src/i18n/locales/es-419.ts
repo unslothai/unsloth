@@ -980,6 +980,13 @@ export const es419 = {
     },
     builtinClassifiers: "Clasificadores integrados",
     decideNotSetUp: "Los clasificadores integrados no están instalados en este servidor. El modo de voz funciona sin ellos, o puedes elegir un modelo de decisión.",
+    speedValue: "{speed}×",
+    optionsLoading: "Cargando opciones de voz…",
+    optionsUnavailable: "Las opciones de voz aparecen cuando se descarga este modelo.",
+    moreOptions: "Más opciones",
+    moreOptionsChanged: "· {n} cambiadas",
+    optionsApplyNext: "Los cambios se aplican desde la siguiente oración.",
+    resetOptions: "Restablecer valores predeterminados",
     modelsOwnVoice: "Voz propia del modelo",
     newVoiceEachSession: "Voz nueva en cada sesión",
     builtinSpeakers: "Integradas",
@@ -2203,6 +2210,11 @@ export const es419 = {
       },
       voiceMode: {
         sectionTitle: "Modo de voz",
+        voice: {
+          label: "Voz al hablar",
+          description: "Cómo suena {model} en el modo de voz. Puedes configurarla antes de que cargue el modelo; el panel de voz muestra las mismas opciones.",
+          modelDefaultNamed: "Predeterminada del modelo ({name})",
+        },
         arcsLabel: "Mostrar arcos de decisión",
         arcsDescription:
           "Los arcos de turno, relleno e interrupción alrededor del orbe de voz.",
