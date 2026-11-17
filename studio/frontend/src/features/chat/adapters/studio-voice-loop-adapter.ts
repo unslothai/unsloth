@@ -66,6 +66,7 @@ import {
   askTurnEnd,
   createTurnEndCheck,
   hasClosingMark,
+  readsAsQuestion,
   loadTurnModel,
   readsUnfinished,
   turnClipSpan,
@@ -415,6 +416,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // The end-of-turn model is up, and it called this turn finished.
     let turnReady = false;
     let soundedFinished = false;
+    // The early transcript of this clip ends on a question mark (readsAsQuestion).
+    let questionKey: string | null = null;
+    let questionReadKey: string | null = null;
     // Smart Turn's last answer for this turn, for the "Smart Turn + judge" lane.
     let turnP: number | null = null;
     // One id per turn for the voice trace; a continuation keeps the id of the fragment it joins.
@@ -1333,6 +1337,22 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
                 // An "mm-hm" or an echo: end the clip now, so the reply it paused resumes without the full wait.
                 void finalize();
                 return;
+              }
+              if (!bargedIn && questionKey === key && sinceVoice >= TURN_END_AFTER_MS) {
+                voiceTrace("turn.endByQuestion", { turnId, sinceVoice: Math.round(sinceVoice) });
+                soundedFinished = true;
+                void finalize();
+                return;
+              }
+              if (!bargedIn && questionReadKey !== key) {
+                questionReadKey = key;
+                analysis.text.then(
+                  (text) => {
+                    if (questionReadKey === key && readsAsQuestion(text))
+                      questionKey = key;
+                  },
+                  () => {},
+                );
               }
               if (bargedIn && bargeReadingKey !== key) {
                 bargeReadingKey = key;

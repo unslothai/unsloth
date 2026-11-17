@@ -15,6 +15,15 @@ export const TURN_ASK_AFTER_MS = 250;
 // sound finished too: ending at the answer (about 350 ms) split a two-clause test sentence at its
 // 570 ms comma pause in 4 turns of 5. The answer and the transcript are both in by then.
 export const TURN_END_AFTER_MS = 700;
+
+/**
+ * The early transcript ends on a question mark: the turn is over even when the end-of-turn model
+ * disagrees. It scored "When did the first moon landing happen, and what time was it?" at p = 0.06,
+ * which left the reply waiting for the full silence hang.
+ */
+export function readsAsQuestion(text: string): boolean {
+  return /[?？؟]["”’)\]]*$/.test(text.trim());
+}
 // Speech heard while a reply waits to start is still being recorded for up to the silence wait after
 // it goes quiet. Starting the reply in that gap answered half a sentence and restarted for the rest.
 export const TURN_CONTINUE_GRACE_MS = 1200;
