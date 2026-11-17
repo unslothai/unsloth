@@ -7,9 +7,9 @@ import subprocess
 
 
 def test_commands_wait_for_keep_awake_restoration(tmp_path):
-    source = (
-        Path(__file__).resolve().parents[2] / "studio/src-tauri/src/keep_awake.rs"
-    ).read_text()
+    source = (Path(__file__).resolve().parents[2] / "studio/src-tauri/src/keep_awake.rs").read_text(
+        encoding = "utf-8"
+    )
     start = source.find("fn wait_for_initialization()")
     helper = (
         source[start : source.index("\n}\n", start) + 3]
