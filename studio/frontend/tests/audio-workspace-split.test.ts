@@ -12,6 +12,7 @@ const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
 const generation = readSrc("features/audio/hooks/use-speech-generation.ts");
 const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
 const tour = readSrc("features/audio/tour/steps.tsx");
+const ttsWorkspace = readSrc("features/audio/pages/tts-workspace.tsx");
 
 test("the host calls its hooks in the order their effects ran in the single page", () => {
   const order = [
@@ -121,6 +122,17 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
     /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate :\s*ttsWorkflow === "edit" \? edit\.handleGenerate :\s*ttsWorkflow === "convert" \? convert\.handleGenerate : handleGenerate;/,
   );
   assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
+});
+
+test("Speak makes the required model choice visible above its load destination", () => {
+  assert.match(
+    host,
+    /<SpeakRail[\s\S]{0,500}?modelSelection=\{\{[\s\S]{0,240}?selectedModel: selectorValue[\s\S]{0,160}?onChooseModel: openSelector/,
+  );
+  assert.match(ttsWorkspace, /modelSelection\.onChooseModel/);
+  const picker = ttsWorkspace.indexOf("{modelSelection ? (");
+  const loadDestination = ttsWorkspace.indexOf("Load model into");
+  assert.ok(picker >= 0 && picker < loadDestination);
 });
 
 test("each page tours its own model and settings", () => {
