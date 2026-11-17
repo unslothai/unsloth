@@ -3644,11 +3644,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             + "\n"
         )
 
-    # TRL's sequence_mask multiplies the token ratios over the whole completion. Unsloth's vLLM logprobs come
-    # from the min_p / top_p kept set while the trainer scores the full vocabulary, so every token ratio is
-    # below 1 and the product shrinks with length: Qwen3-0.6B GRPO with min_p = 0.1 (L4, A100) gave a mean
-    # sequence weight of 0.06-0.07 and ESS 0.41-0.43, against 0.97 and 0.996 per token (min_p = 0: ESS 0.89
-    # vs 0.999). Token-level truncation is also what verl, SkyRL and miles use when the correction is on.
+    # sequence_mask multiplies token ratios over the completion; vLLM logprobs cover only the min_p / top_p kept set,
+    # so every ratio is < 1 and the product shrinks with length (Qwen3-0.6B min_p 0.1: ESS 0.42 vs 0.996 per token).
     if trainer_file == "grpo_trainer" and "vllm_importance_sampling_mode" in call_args:
         extra_args += (
             "if vllm_importance_sampling_mode is None:\n"
