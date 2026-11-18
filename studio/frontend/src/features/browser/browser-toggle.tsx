@@ -13,7 +13,7 @@ import {
   useShortcutLabel,
 } from "@/features/settings/hooks/use-shortcut";
 import { useT } from "@/i18n";
-import { InternetIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { InternetIcon, PictureInPictureOnIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { EnterFullViewIcon } from "./icons";
@@ -23,34 +23,41 @@ import { useBrowserStore } from "./store";
 const HOVER_OPEN_MS = 150;
 const HOVER_CLOSE_MS = 200;
 
-function openNewTab(fullView = false) {
+type Layout = "split" | "fullView" | "floating";
+
+function openNewTab(layout: Layout) {
   const state = useBrowserStore.getState();
   state.newTab();
-  if (fullView) state.setFullView(true);
+  if (layout === "fullView") state.setFullView(true);
+  if (layout === "floating") state.setFloating(true);
 }
 
-/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view.
+/** The chat header's new tab button: a click opens a tab in the current layout, hovering offers the others.
  *  Hidden while the panel is open, unless `hideWhenOpen` is false: a project's overlay may not be showing it. */
 export function BrowserToggleButton({
   active = true,
   hideWhenOpen = true,
+  floatable = false,
 }: {
   active?: boolean;
   hideWhenOpen?: boolean;
+  floatable?: boolean;
 }) {
   const t = useT();
-  const open = useBrowserStore((state) => state.open);
+  const panelOpen = useBrowserStore((state) => state.open);
+  // The floating window leaves the header free, so the button stays there.
+  const open = useBrowserStore((state) => state.open && !state.floating);
   const newTabShortcut = useShortcutLabel("newBrowserTab");
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
   const [menuOpen, setMenuOpen] = useState(false);
   const timer = useRef<number | null>(null);
   // Focus given back when the hover menu closes without opening a tab.
   const restore = useRef<HTMLElement | null>(null);
-  const openTab = (fullView = false) => {
+  const openTab = (layout: Layout = "split") => {
     clearTimer();
     restore.current = null;
     setMenuOpen(false);
-    openNewTab(fullView);
+    openNewTab(layout);
   };
   // The chat stays mounted on other pages: its shortcuts only work while it is shown.
   useShortcut(
@@ -65,9 +72,10 @@ export function BrowserToggleButton({
     "toggleBrowserFullView",
     (event) => {
       event.preventDefault();
-      openTab(true);
+      openTab("fullView");
     },
-    { enabled: active && !(hideWhenOpen && open) },
+    // The floating window's own bar takes this shortcut while it is up.
+    { enabled: active && !(hideWhenOpen && panelOpen) },
   );
   const clearTimer = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -137,7 +145,7 @@ export function BrowserToggleButton({
           {label}
           {newTabShortcut ? <DropdownMenuShortcut className="text-ui-11">{newTabShortcut}</DropdownMenuShortcut> : null}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => openTab(true)}>
+        <DropdownMenuItem onSelect={() => openTab("fullView")}>
           {/* Its corner marks sit inside the box, so at the shared size it reads smaller than the plus. */}
           <HugeiconsIcon
             icon={EnterFullViewIcon}
@@ -149,6 +157,12 @@ export function BrowserToggleButton({
             <DropdownMenuShortcut className="text-ui-11">{fullViewShortcut}</DropdownMenuShortcut>
           ) : null}
         </DropdownMenuItem>
+        {floatable ? (
+          <DropdownMenuItem onSelect={() => openTab("floating")}>
+            <HugeiconsIcon icon={PictureInPictureOnIcon} strokeWidth={1.75} className="size-icon" />
+            {t("browser.newTabFloating")}
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

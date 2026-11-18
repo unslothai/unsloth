@@ -8,8 +8,7 @@ from __future__ import annotations
 import collections
 from typing import Any, Iterable, Optional
 
-# The digest walks the thread only, so MATCH means no thread-structure change was detected, not
-# that the UI is unchanged.
+# The digest walks only the thread: MATCH means no structure change, not an unchanged UI.
 MATCH = "match"
 DIFFER = "differ"
 NOT_COMPARABLE = "not_comparable"
@@ -52,8 +51,7 @@ UNSTABLE_ACTIONS: dict[str, str] = {
 }
 
 
-# Actions whose ability to run is a race, keyed on the not_run reason: a treatment that removes a
-# control must still be caught.
+# Racy actions key on the not_run reason; a treatment removing a control must still be caught.
 RACY_EXECUTION: dict[str, tuple[str, tuple[str, ...]]] = {
     "stop_generation": (
         "needs a live stream to stop, and returns not_run when nothing was generating and a new "
@@ -678,8 +676,7 @@ def derive_unstable(
 
 
 def cross_check(derived: dict[str, dict], declared: Iterable[str]) -> dict[str, list[str]]:
-    """Reports both directions of mismatch between derived and declared unstable lists; each is a
-    finding."""
+    """Reports mismatches both ways, derived vs declared unstable lists; each is a finding."""
     declared = set(declared)
     unstable = {a for a, r in derived.items() if r["unstable"]}
     undetermined = {a for a, r in derived.items() if r["undetermined"]}
@@ -694,8 +691,7 @@ def cross_check(derived: dict[str, dict], declared: Iterable[str]) -> dict[str, 
 
 
 def mutation_detected(before: dict, after: dict) -> dict:
-    """Uses the same compare() as production, so the mutation check tests the real comparison, not a
-    copy."""
+    """Uses production compare(), so the mutation check tests the real comparison, not a copy."""
     result = compare(before, after)
     result["detected"] = result["verdict"] == DIFFER
     return result

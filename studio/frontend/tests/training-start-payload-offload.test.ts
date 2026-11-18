@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Offload layers in the start payload: off by default, a full finetune always sends it off,
-// and the VRAM budget goes out only with "auto", the one mode that sizes to it, per card when
-// training sees several GPUs.
+// Offload layers are off by default and always off for a full finetune; the VRAM budget is sent
+// only with "auto", the one mode that sizes to it, per card on multi-GPU runs.
 
 import assert from "node:assert/strict";
 import test from "node:test";

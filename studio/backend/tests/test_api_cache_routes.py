@@ -127,8 +127,7 @@ def test_recheck_asks_for_a_fresh_walk(monkeypatch, client):
 
 
 def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
-    """API key callers get the memoised read; a forced walk takes seconds per cache on an executor
-    thread."""
+    """API key callers get the memoised read, since a forced walk takes seconds per cache."""
     app = FastAPI()
     app.include_router(settings_route.router, prefix = "/api/settings")
     app.dependency_overrides[get_current_subject] = lambda: "alice"

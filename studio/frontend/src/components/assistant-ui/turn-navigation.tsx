@@ -28,13 +28,14 @@ import { createPortal } from "react-dom";
 import {
   completeProgressiveMounts,
   hasPendingProgressiveMounts,
+  revealProgressiveRow,
+  subscribeMountedRows,
 } from "@/components/assistant-ui/progressive-messages";
 import {
   threadTurns,
   turnOpenerIdAt,
 } from "@/components/assistant-ui/thread-turns";
 import { THREAD_GUTTER_SHIFT_PROPERTY } from "@/components/assistant-ui/thread-gutter";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import {
   useBookmarkedTurnsStore,
@@ -89,48 +90,26 @@ function useTurnBookmark(
   return { bookmarked, toggle: () => toggleBookmarkedTurn(threadId, openerId) };
 }
 
+type BookmarkTurnMenuItemProps = { className?: string; ownTurn?: boolean };
+
 // gated so a disabled rail mounts no thread subscriptions per message
-export const BookmarkTurnButton: FC = () => {
+export const BookmarkTurnMenuItem: FC<BookmarkTurnMenuItemProps> = (props) => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <BookmarkTurnButtonInner /> : null;
+  return enabled ? <BookmarkTurnMenuItemInner {...props} /> : null;
 };
 
-const BookmarkTurnButtonInner: FC = () => {
+const BookmarkTurnMenuItemInner: FC<BookmarkTurnMenuItemProps> = ({
+  className,
+  ownTurn = false,
+}) => {
   const t = useT();
-  const turnBookmark = useTurnBookmark(true);
-  if (!turnBookmark) {
-    return null;
-  }
-  return (
-    <TooltipIconButton
-      tooltip={t(
-        turnBookmark.bookmarked ? "turns.removeBookmark" : "turns.bookmark",
-      )}
-      aria-pressed={turnBookmark.bookmarked}
-      onClick={turnBookmark.toggle}
-    >
-      <HugeiconsIcon
-        icon={BookmarkIcon}
-        strokeWidth={1.75}
-        className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
-      />
-    </TooltipIconButton>
+  // Without the rail a bookmark has nowhere to show.
+  const railShown = useAuiState(
+    ({ thread }) =>
+      threadTurns(thread.messages).openerIds.length >= MIN_NAVIGATOR_TURNS,
   );
-};
-
-export const BookmarkTurnMenuItem: FC<{ className?: string }> = ({
-  className,
-}) => {
-  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <BookmarkTurnMenuItemInner className={className} /> : null;
-};
-
-const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
-  className,
-}) => {
-  const t = useT();
-  const turnBookmark = useTurnBookmark(false);
-  if (!turnBookmark) {
+  const turnBookmark = useTurnBookmark(ownTurn);
+  if (!railShown || !turnBookmark) {
     return null;
   }
   return (
@@ -364,6 +343,10 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       }
       const selector = `[data-message-id="${CSS.escape(messageId)}"]`;
       let target = viewport.querySelector<HTMLElement>(selector);
+      // The thread mounts only the rows near the reader; ask for this one rather than for all.
+      if (!target && revealProgressiveRow(viewport, messageId)) {
+        target = viewport.querySelector<HTMLElement>(selector);
+      }
       if (!target) {
         await completeProgressiveMounts((candidate) => candidate === viewport);
         target = viewport.querySelector<HTMLElement>(selector);
@@ -569,18 +552,30 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       },
       { root: viewport },
     );
-    const messages = new Map<string, Element>();
-    for (const message of viewport.querySelectorAll("[data-message-id]")) {
-      messages.set(message.getAttribute("data-message-id") ?? "", message);
-    }
-    for (const marker of rail.querySelectorAll<HTMLElement>("button[data-turn-id]")) {
-      const message = messages.get(marker.dataset.turnId ?? "");
-      if (message) {
-        markerFor.set(message, marker);
-        observer.observe(message);
+    // Rows mount and unmount as the reader moves, so the watched set follows them.
+    const watch = () => {
+      observer.disconnect();
+      markerFor.clear();
+      const messages = new Map<string, Element>();
+      for (const message of viewport.querySelectorAll("[data-message-id]")) {
+        messages.set(message.getAttribute("data-message-id") ?? "", message);
       }
-    }
-    return () => observer.disconnect();
+      for (const marker of rail.querySelectorAll<HTMLElement>("button[data-turn-id]")) {
+        const message = messages.get(marker.dataset.turnId ?? "");
+        if (message) {
+          markerFor.set(message, marker);
+          observer.observe(message);
+        } else {
+          marker.removeAttribute("data-in-view");
+        }
+      }
+    };
+    watch();
+    const unsubscribe = subscribeMountedRows(watch);
+    return () => {
+      unsubscribe();
+      observer.disconnect();
+    };
   }, [viewportRef, signature, turnCount]);
   const hidePreview = useCallback(() => {
     cancelHide();

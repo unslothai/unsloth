@@ -76,6 +76,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadKeepAwake, updateKeepAwake } from "../api/keep-awake";
 import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
@@ -95,6 +96,7 @@ import {
   DOWNLOAD_DIR_STORAGE_KEY,
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
+import { DownloadSpeedLimitRow } from "../components/download-speed-limit-row";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { MlWarmupSection } from "../components/ml-warmup-section";
@@ -175,6 +177,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_preferences",
   "unsloth_model_configs",
   "unsloth_model_configs_migrated",
+  "unsloth_model_config_stamps",
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
@@ -227,8 +230,15 @@ async function resetAllPrefs() {
       // ignore
     }
   }
-  // The account keeps its own scale: mark the reset default as an unsent edit so it wins after the reload.
-  writePending({ ...readPending(), scale: true });
+  // Unsent, so the defaults beat the account's saved copy after the reload.
+  writePending({
+    ...readPending(),
+    scale: true,
+    chat: true,
+    timeFormat: true,
+    spellcheck: true,
+    material: true,
+  });
   window.location.reload();
 }
 
@@ -284,6 +294,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const keepAwakeSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadKeepAwake,
+    save: updateKeepAwake,
+    loadError: t("settings.general.power.loadError"),
+    saveError: t("settings.general.power.saveError"),
   });
   const trayIconSetting = useDesktopBooleanSetting({
     enabled: isTauri,
@@ -766,6 +783,7 @@ export function GeneralTab() {
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
+        <DownloadSpeedLimitRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
@@ -913,6 +931,28 @@ export function GeneralTab() {
               </div>
             </SettingsRow>
           ) : null}
+        </SettingsSection>
+      ) : null}
+
+      {keepAwakeSetting.supported || keepAwakeSetting.error ? (
+        <SettingsSection title={t("settings.general.power.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.power.keepAwake")}
+            description={t("settings.general.power.keepAwakeDescription")}
+            below={
+              keepAwakeSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {keepAwakeSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={keepAwakeSetting.value ?? false}
+              disabled={keepAwakeSetting.value === null || keepAwakeSetting.saving}
+              onCheckedChange={(enabled) => void keepAwakeSetting.update(enabled)}
+            />
+          </SettingsRow>
         </SettingsSection>
       ) : null}
 

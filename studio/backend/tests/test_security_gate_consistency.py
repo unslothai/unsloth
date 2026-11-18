@@ -31,8 +31,7 @@ def _call_name(call: ast.Call):
 
 
 def test_capability_probes_thread_the_hf_token():
-    """Every capability-probe caller passes the token; a token-less probe misclassifies
-    a gated model (the /check-vision regression)."""
+    """Capability probes must thread the HF token; without it gated models misclassify."""
     offenders = []
     for path in _iter_caller_files():
         try:
@@ -51,8 +50,7 @@ def test_capability_probes_thread_the_hf_token():
 
 
 def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
-    """GGUF never executes auto_map, so requires_trust_remote_code is reported via the
-    resolver or False, never the raw YAML bool() (the round-6 regression)."""
+    """For GGUF, requires_trust_remote_code is inert and never taken from raw YAML bool()."""
     src = (_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8")
     assert "requires_trust_remote_code = bool(" not in src, (
         "Report requires_trust_remote_code via _resolve_loaded_trust_remote_code "
@@ -86,8 +84,7 @@ def test_capability_detection_caches_are_token_aware():
 
 
 def test_malware_and_consent_gates_cover_the_lora_base():
-    """Every worker that runs a load gate also resolves the LoRA base, so a poisoned or
-    custom-code base is never skipped."""
+    """Gated workers must resolve the LoRA base too, so a poisoned base cannot be skipped."""
     gated_workers = [
         "core/inference/worker.py",
         "core/export/worker.py",
@@ -104,9 +101,7 @@ def test_malware_and_consent_gates_cover_the_lora_base():
 
 
 def test_rag_embedding_path_runs_the_malware_gate():
-    """The RAG embedding model is set through /settings and later loaded by
-    SentenceTransformer, which deserializes pickles; both sites must run the malware gate
-    or a flagged repo loads unscanned (bypassing the normal model-load protections)."""
+    """RAG embeddings reach SentenceTransformer, which unpickles; both sites must run the malware gate."""
     offenders = []
     for rel in ("routes/settings.py", "core/rag/embeddings.py"):
         if "evaluate_file_security(" not in (_BACKEND / rel).read_text(encoding = "utf-8"):

@@ -405,8 +405,7 @@ def measures_from_records(
             and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         frames = _frame_measures(windows)
-        # Not in METRIC_BY_KEY on purpose: anchors are hashed into `weights_id`, so adding one would
-        # make every existing run incomparable.
+        # Anchors hash into `weights_id`; one added to METRIC_BY_KEY makes runs incomparable.
         stream = _stream_measures(windows)
 
         readings: dict[str, Measure] = {}

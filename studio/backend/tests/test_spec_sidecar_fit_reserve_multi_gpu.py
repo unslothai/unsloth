@@ -201,16 +201,14 @@ def test_draft_shares_follow_llama_cpps_whole_layer_split(tmp_path, extras, band
 
 
 def test_the_output_card_keeps_the_draft_compute_buffers_without_a_block(tmp_path):
-    """3:2 puts all three blocks on card 0, but the draft still runs (and writes its logits)
-    on the last card."""
+    """A 3:2 split gives the output card no block, yet the draft still runs on it."""
     backend, gguf = _three_blocks(tmp_path)
     _big, small = h.margins(h.dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
     assert small >= 1024 + _COMPUTE_FLOOR
 
 
 def test_the_output_card_keeps_the_whole_vocabulary_graph(tmp_path):
-    """The draft graph's logits over the borrowed vocabulary are sized on the output card,
-    so that part is not split by block shares."""
+    """Borrowed-vocabulary draft logits are sized on the output card, not block shares."""
     backend, gguf = _three_blocks(tmp_path, graph_gib = 3)
     _big, small = h.margins(h.dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
     assert small >= 1024 + _COMPUTE_FLOOR + 3 * 1024
@@ -283,8 +281,7 @@ def test_the_underscore_tensor_split_spelling_places_the_draft(tmp_path):
 
 
 def test_a_tensor_split_launch_gets_no_per_device_reserve(tmp_path):
-    """--split-mode tensor folds the cards into one meta device: a per-card --fit-target
-    cannot hold the sidecar."""
+    """--split-mode tensor folds cards into one meta device; no per-card --fit-target applies."""
     backend, gguf = _three_blocks(tmp_path)
     margins = h.margins(h.dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "tensor"]))
     assert all(m < 2048 for m in margins), margins
@@ -303,8 +300,7 @@ def test_shares_follow_each_cards_free_memory_past_its_own_margin(tmp_path):
 
 @pytest.mark.parametrize("order, per_card", [("FASTEST_FIRST", False), ("PCI_BUS_ID", True)])
 def test_per_card_shares_need_a_provable_device_order(tmp_path, monkeypatch, order, per_card):
-    """nvidia-smi keys free memory by PCI order; under FASTEST_FIRST the child enumerates
-    its own way."""
+    """nvidia-smi keys free memory by PCI order, so per-card shares need PCI_BUS_ID ordering."""
     monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
     monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
     monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
@@ -462,8 +458,7 @@ def test_each_card_keeps_its_budget_margin_under_the_reserve(tmp_path, _budget):
 
 @pytest.mark.parametrize("main_gpu", [[], ["--main-gpu", "1"]])
 def test_split_mode_none_keeps_the_other_cards_margins(tmp_path, _budget, main_gpu):
-    """llama.cpp keeps only devices[main_gpu] and the fitter reads margin 0 for it, so the
-    reserve goes in entry 0 whichever card is the main one."""
+    """llama.cpp keeps only devices[main_gpu]; the reserve goes in entry 0 for any main card."""
     extras = ["--split-mode", "none", *main_gpu]
     base = _base_margins(tmp_path, extra_args = extras)
     backend, gguf = h.cards(tmp_path, _MIXED)
@@ -809,8 +804,7 @@ def test_a_dflash_reserve_the_spawn_drops_is_reported_as_missing(tmp_path, monke
 
 
 def test_a_renumbered_companion_pin_is_reported_as_reserved(tmp_path):
-    """gpu_ids [1, 2] masks the child to those cards, so the request's CUDA2 reaches the
-    child as CUDA1."""
+    """gpu_ids [1, 2] masks the child, so the request's CUDA2 arrives there as CUDA1."""
     backend, gguf = h.cards(tmp_path, (*TWO, (2, 24_000, 24_000)))
     seen = h.spy_fit_sized(backend)
     cmd = h.dspark(backend, gguf, tmp_path, gpu_ids = [1, 2], extra_args = ["--device-draft", "CUDA2"])

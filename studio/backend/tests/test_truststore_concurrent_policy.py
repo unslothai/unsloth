@@ -19,8 +19,7 @@ _PACKAGE = Path(__file__).resolve().parent.parent / "vendor" / "truststore"
 
 
 def _load_vendored(name, monkeypatch):
-    # Private name: an installed truststore must not stand in; native TLS may already have
-    # injected it into ssl.
+    # Private name: an installed truststore must not stand in; native TLS may inject into ssl.
     stdlib = next(c for c in ssl._SSLContext.__subclasses__() if c.__module__ == "ssl")
     monkeypatch.setattr(ssl, "SSLContext", stdlib)
     spec = importlib.util.spec_from_file_location(

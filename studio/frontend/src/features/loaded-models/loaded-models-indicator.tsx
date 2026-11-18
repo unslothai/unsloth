@@ -249,11 +249,9 @@ export function LoadedModelsIndicator({
   const dismissed = useLoadedModelsDismissed();
   const reachable = canShowIndicator(pathname);
   const enabled = showIndicator && !dismissed && reachable;
-  // Dismissal is not part of this: a card the user closed must still hear the
-  // load that brings it back. Reachability is, because it carries the auth gate
-  // -- tracking on /login polls four protected endpoints every 5s, and each 401
-  // runs authFetch's refresh-then-redirect ladder against a session that does
-  // not exist yet.
+  // Dismissal is not part of this (a closed card must still hear the load that brings it back), but
+  // reachability is: tracking on /login polls four protected endpoints every 5s before any session
+  // exists, and each 401 runs authFetch's refresh-then-redirect ladder.
   const { entries, polledEntries, ejecting, heldByOther, eject } =
     useLoadedModels(enabled, showIndicator && reachable);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
@@ -339,7 +337,8 @@ export function LoadedModelsIndicator({
     <div
       ref={panelRef}
       className={cn(
-        "pointer-events-none",
+        // See floating-monitor.tsx: a drop must not flash at the start spot under reduce motion.
+        "pointer-events-none transition-none",
         position && "fixed z-[9999] w-fit",
         !position &&
           (positioned

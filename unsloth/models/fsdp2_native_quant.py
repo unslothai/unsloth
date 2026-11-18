@@ -30,11 +30,9 @@ def _dtensor_class():
 
 @contextlib.contextmanager
 def native_quant_context(model, dtype = None):
-    """Enter around the fully_shard calls. Yields None for a model without bitsandbytes 4-bit weights
-    (nothing is touched), else the `prepare_fsdp2_qlora` info (`params4bit`, `converted`, `patched`,
-    `storage`, `reverted`). `dtype`: the float storage of the packed bytes, the mixed precision
-    param_dtype (default: the weights' compute dtype). load_in_4bit = False models are left exactly
-    as they are."""
+    """Enter around the fully_shard calls; yields None for models without bitsandbytes 4-bit weights
+    (untouched), else the prepare_fsdp2_qlora info; dtype is the float storage of the packed
+    bytes."""
     with fsdp2_qlora_wrap(model, native = True, dtype = dtype) as info:
         yield info
 
@@ -66,9 +64,8 @@ def sharding_report(model):
 
 
 def after_native_shard(model):
-    """After `fully_shard(model)`: install the DCP state dict handling of bitsandbytes 4-bit weights,
-    and average the gradient of any trainable parameter FSDP2 does not manage over ranks (like DDP),
-    so no replica drifts. Returns `sharding_report(model)` plus `reduced` (those parameter names)."""
+    """After fully_shard: install DCP state-dict handling for bitsandbytes 4-bit weights, and
+    DDP-average grads of unmanaged trainable params so replicas do not drift."""
     from .fsdp2_save import install_dcp_bnb_state_dict, reduce_unsharded_trainable_grads
 
     if any(

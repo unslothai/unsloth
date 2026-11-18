@@ -124,6 +124,24 @@ def test_media_owner_sums_its_own_gpus_only(media_needs):
     assert gr.media_owner_held_mib(arb.VIDEO) == 9000
 
 
+class _Need(dict):
+    headroom_mib = 3000
+
+
+def test_an_idle_media_owner_holds_its_weights_not_its_generation_headroom(
+    media_needs, monkeypatch
+):
+    media_needs._residents = {arb.DIFFUSION: frozenset({0})}
+    media_needs._owner = arb.DIFFUSION
+    media_needs._media_needs = {arb.DIFFUSION: _Need({0: 7000})}
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (False, False))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) == 4000
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (False, True))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) == 7000
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (True, False))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) is None
+
+
 def test_unpriced_media_owner_is_none(media_needs):
     assert gr.media_owner_held_mib(arb.VIDEO) is None
     media_needs._media_needs = {arb.VIDEO: {0: "lots"}}
@@ -167,3 +185,106 @@ def test_a_failing_probe_leaves_the_size_unknown(monkeypatch):
 def test_a_non_gguf_status_is_not_sized_from_llama(monkeypatch):
     backend = SimpleNamespace(is_loaded = True, resident_memory_mib = lambda: 2048)
     assert _run_status(monkeypatch, backend, is_gguf = False).resident_mib is None
+
+
+def test_status_says_whether_the_size_is_gpu_buffers_or_unknown(monkeypatch):
+    # RSS (a CPU run) or unparsed buffers (Vulkan) are not known to sit on the reported GPUs.
+    on_gpu = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: 4096,
+        reclaimable_gpu_memory_gb = lambda: {0: 4.0},
+    )
+    status = _run_status(monkeypatch, on_gpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (4096, True)
+    on_cpu = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: 3072,
+        reclaimable_gpu_memory_gb = lambda: None,
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda: True))
+    status = _run_status(monkeypatch, on_cpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (3072, False)
+    # A GPU build with no parsed buffers (Vulkan, SYCL) says nothing about which pool holds the model.
+    monkeypatch.setattr(LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda: False))
+    status = _run_status(monkeypatch, on_cpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (3072, None)
+
+
+def test_an_unknown_size_says_nothing_about_its_pool(monkeypatch):
+    backend = SimpleNamespace(
+        is_loaded = True,
+        resident_memory_mib = lambda: None,
+        reclaimable_gpu_memory_gb = lambda: None,
+    )
+    status = _run_status(monkeypatch, backend)
+    assert (status.resident_mib, status.resident_on_gpu) == (None, None)
+
+
+def _npu_status(
+    monkeypatch,
+    *,
+    size_gb,
+    rss_by_pid,
+    children = (11, 12),
+):
+    """A resident NPU model: lemond (pid 10) runs FastFlowLM under it, all in system RAM."""
+    psutil = pytest.importorskip("psutil")
+    from core.inference import npu_backend as nb
+
+    model = nb.NpuModel(
+        id = "qwen3.5-9b-FLM",
+        checkpoint = "qwen3.5:9b",
+        size_gb = size_gb,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 32768,
+    )
+    npu = SimpleNamespace(
+        resident = lambda: SimpleNamespace(model = model),
+        _server = SimpleNamespace(pid = 10),
+    )
+
+    def _process(pid):
+        if pid not in rss_by_pid:
+            raise psutil.NoSuchProcess(pid)
+        return SimpleNamespace(
+            pid = pid,
+            memory_info = lambda: SimpleNamespace(rss = rss_by_pid[pid]),
+            children = lambda recursive = False: [_process(c) for c in children],
+        )
+
+    async def _slot_status(_subject):
+        return InferenceStatusResponse(
+            active_model = model.id, model_identifier = model.model_path, is_npu = True
+        )
+
+    monkeypatch.setattr(inference_route, "_slot_status", _slot_status)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+    monkeypatch.setattr("utils.process_tree.linux_descendant_pids", lambda pid: None)
+    monkeypatch.setattr(psutil, "Process", _process)
+    return asyncio.run(inference_route.get_status("tester"))
+
+
+def test_npu_status_sizes_the_model_from_lemonds_process_tree(monkeypatch):
+    gib = 1024**3
+    status = _npu_status(
+        monkeypatch, size_gb = 5.4, rss_by_pid = {10: gib // 4, 11: 6 * gib, 12: gib // 4}
+    )
+    assert (status.resident_mib, status.resident_on_gpu) == (6656, False)
+
+
+def test_npu_status_floors_at_the_catalog_size_when_rss_misses_the_buffers(monkeypatch):
+    status = _npu_status(monkeypatch, size_gb = 5.4, rss_by_pid = {10: 50 * 1024**2})
+    assert (status.resident_mib, status.resident_on_gpu) == (5149, False)
+
+
+def test_npu_status_without_a_resident_model_is_unsized(monkeypatch):
+    from core.inference import npu_backend as nb
+
+    async def _slot_status(_subject):
+        return InferenceStatusResponse(active_model = "qwen3.5-9b-FLM", is_npu = True)
+
+    monkeypatch.setattr(inference_route, "_slot_status", _slot_status)
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: None)
+    status = asyncio.run(inference_route.get_status("tester"))
+    assert (status.resident_mib, status.resident_on_gpu) == (None, None)

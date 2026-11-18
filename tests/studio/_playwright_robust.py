@@ -93,9 +93,28 @@ _VIEW_TRANSITION_KILLER_JS = """
 """
 
 
+# Reduce motion Off ignores reduced_motion emulation; System honours it.
+_FOLLOW_OS_MOTION_JS = """
+(() => {
+    try {
+        const key = "unsloth_appearance_customization";
+        if (localStorage.getItem(key) === null) {
+            localStorage.setItem(key, JSON.stringify({ state: { customization: { reduceMotion: "system" } }, version: 9 }));
+        }
+    } catch (e) { /* noop */ }
+})();
+"""
+
+
+def follow_os_reduced_motion(ctx: Any) -> None:
+    """Make Studio honour the context's reduced_motion emulation, as the old System default did."""
+    ctx.add_init_script(_FOLLOW_OS_MOTION_JS)
+
+
 def install_view_transition_killer(ctx: Any) -> None:
     """Inject the CSS view-transition killer into every page in `ctx`."""
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
+    follow_os_reduced_motion(ctx)
 
 
 # Health pre-flight; /api/health can return 200 while /api/auth still 503s.
@@ -163,7 +182,12 @@ def _require_frontend_toolchain() -> None:
     )
 
 
-def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
+def start_vite(
+    port: int,
+    *,
+    host: str = "127.0.0.1",
+    preview: bool = False,
+) -> subprocess.Popen[str]:
     """Refuses an occupied port, so the readiness poll cannot be answered by another server."""
     if _port_is_taken(port, host):
         raise RuntimeError(
@@ -178,7 +202,17 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
     # CreateProcess cannot run a bare "npm" on Windows; shutil.which resolves npm.cmd.
     npm = shutil.which("npm") or "npm"
     proc = subprocess.Popen(
-        [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        [
+            npm,
+            "run",
+            "preview" if preview else "dev",
+            "--",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--strictPort",
+        ],
         cwd = FRONTEND,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
@@ -454,6 +488,28 @@ def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:
     except PlaywrightTimeoutError:
         return None
     return locator.first
+
+
+# composer-model-picker.tsx: with a model loaded the picker opens collapsed to that model's row, whose
+# aria-label ends in this suffix; clicking it shows the "Model sources" tabs, the search and the rows.
+PICKER_SHOW_ALL_SUFFIX = ": show all models"
+PICKER_SOURCES_TABLIST = '[role="tablist"][aria-label="Model sources"]'
+# model-config-page.tsx: accessible name of the run settings context number field (and its slider).
+RUN_SETTINGS_CONTEXT_LABEL = "Context"
+
+
+def expand_collapsed_model_picker(scope: Any, *, timeout_ms: int = 10_000) -> bool:
+    """Expands an open model picker that shows only its loaded model's row. True when it clicked."""
+    # On screen only: a hidden mounted copy is neither clickable nor proof the picker expanded.
+    show_all = scope.locator(f'button[aria-label$="{PICKER_SHOW_ALL_SUFFIX}"] >> visible=true')
+    expanded = scope.locator(f"{PICKER_SOURCES_TABLIST} >> visible=true")
+    if wait_for_first(expanded.or_(show_all), timeout_ms = timeout_ms) is None:
+        return False
+    if expanded.count() or not show_all.count():
+        return False
+    show_all.first.click()
+    wait_for_first(expanded, timeout_ms = timeout_ms)
+    return True
 
 
 def is_benign_page_error(msg: str) -> bool:

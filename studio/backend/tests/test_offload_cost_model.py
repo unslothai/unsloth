@@ -93,8 +93,7 @@ def test_the_cache_is_the_worst_byte_to_move_by_an_order_of_magnitude():
 
 
 def test_ffn_is_cheaper_per_byte_than_lm_head():
-    """Which is why FFN is spilled first, even though lm_head is the smaller
-    tensor and looks like the tidier thing to move."""
+    """FFN goes first because it costs less per byte than lm_head, though lm_head is smaller."""
     per_gib = {
         access: generation_penalty_ms(Placement([TensorGroup("x", int(GIB), access)]))
         for access in (Access.CONTIGUOUS, Access.SINGLE_MATVEC, Access.SCATTERED)
@@ -132,9 +131,7 @@ def test_the_measured_marginal_cost_of_lm_head_really_does_rise():
     ],
 )
 def test_partial_spilling_is_linear(gib, measured_delta):
-    """A least-squares fit over these four points gives 5.544 ms/GiB with a
-    -0.10 ms intercept, so there is no per-split fixed cost worth modelling and
-    the planner may spill exactly the minimum that fits."""
+    """Four-point least-squares fit: 5.544 ms/GiB, -0.10 ms intercept, so partial spilling is linear."""
     predicted = generation_penalty_ms(
         Placement([TensorGroup("part", int(gib * GIB), Access.CONTIGUOUS)])
     )
@@ -194,8 +191,7 @@ def test_prefill_ignores_host_threads_while_generation_does_not():
 
 
 def test_prefill_amortises_over_the_ubatch():
-    """Weights are copied once per ubatch and reused by every token in it, which
-    is why prefill is so much cheaper per byte moved than generation."""
+    """Each ubatch copies weights once for all its tokens, so prefill is cheap per byte moved."""
     p = Placement([DENSE_FFN_G])
     assert prefill_penalty_ms_per_token(p, n_ubatch = 512) == pytest.approx(
         prefill_penalty_ms_per_token(p, n_ubatch = 256) / 2.0
@@ -204,17 +200,15 @@ def test_prefill_amortises_over_the_ubatch():
 
 
 def test_unified_memory_hosts_gain_nothing_from_spilling():
-    """Apple Silicon, AMD APUs and Vulkan iGPUs report host RAM as VRAM. Moving
-    a tensor between the two does not change which chips hold it, so the planner
-    must not pay a penalty for it -- nor claim it freed anything."""
+    """Apple Silicon, AMD APUs and Vulkan iGPUs report host RAM as VRAM: spilling frees nothing, so
+    the planner must not charge a penalty for it or claim any freed memory."""
     unified = HostProfile(unified_memory = True)
     assert generation_penalty_ms(Placement([DENSE_FFN_G, DENSE_LM_G]), unified) == 0.0
     assert generation_penalty_ms(Placement([], kv_host_bytes = DENSE_KV_BYTES), unified) == 0.0
 
 
 def test_ranking_puts_the_measured_best_placement_first():
-    """The ladder, rediscovered rather than hard-coded: resident, then FFN, then
-    FFN plus lm_head, and the cache last by a wide margin."""
+    """Ranking recovers the measured best order: resident, FFN, FFN plus lm_head, cache last."""
     resident = Placement([])
     ffn = Placement([DENSE_FFN_G])
     ffn_lm = Placement([DENSE_FFN_G, DENSE_LM_G])
@@ -224,8 +218,7 @@ def test_ranking_puts_the_measured_best_placement_first():
 
 
 def test_a_prefill_heavy_mix_can_reorder_dense_against_moe():
-    """A caller that weights prefill is answering a different question, and the
-    model must let it, rather than baking in the generation answer."""
+    """A prefill-weighted caller needs its own ranking, not the generation-only one."""
     moe, dense = Placement([MOE_EXPERT_G]), Placement([DENSE_FFN_G])
     gen_first = [p for p, _ in rank([dense, moe], n_generated = 1, n_prompt = 0)]
     pp_first = [p for p, _ in rank([dense, moe], n_generated = 0, n_prompt = 4096)]

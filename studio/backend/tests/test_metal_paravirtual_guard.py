@@ -69,8 +69,7 @@ def test_non_darwin_never_pays_for_the_probe(monkeypatch):
 
 
 def test_system_profiler_catches_it_when_mlx_is_absent(monkeypatch):
-    """MLX is not on every Mac; without this fallback a virtualised machine without it
-    would read as bare metal and emit gibberish."""
+    """Not every Mac has MLX; without this fallback, a VM without it reads as bare metal."""
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.setattr(
@@ -83,8 +82,7 @@ def test_system_profiler_catches_it_when_mlx_is_absent(monkeypatch):
 
 
 def _probe_dispatch(responses):
-    """subprocess.run stub keyed on the probe, so SPDisplaysDataType and hw.model can
-    answer differently."""
+    """Stub keyed on the probe so SPDisplaysDataType and hw.model may answer differently."""
 
     def run(cmd, *a, **k):
         key = "hw.model" if "sysctl" in cmd[0] else "spdisplays"
@@ -121,8 +119,7 @@ def test_a_physical_mac_is_not_dragged_down_by_the_model_probe(monkeypatch):
 
 
 def test_a_desktop_vm_still_answers_through_spdisplays(monkeypatch):
-    """Negative on the ordering: a VM whose hw.model does not say virtual is still caught
-    by the display probe, so adding hw.model did not narrow the net."""
+    """Even when hw.model does not say virtual, the display probe still catches a VM."""
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.setattr(
@@ -138,8 +135,7 @@ def test_a_desktop_vm_still_answers_through_spdisplays(monkeypatch):
 
 
 def test_mlx_short_circuits_before_any_subprocess(monkeypatch):
-    """Negative on cost: MLX answered, so neither probe should spawn. Roughly 40 ms for
-    MLX against 300 ms for SPDisplaysDataType."""
+    """MLX answering means no probe should spawn; SPDisplaysDataType is the slow one."""
     monkeypatch.setattr(sys, "platform", "darwin")
     parent, core = _fake_mlx("Apple Paravirtual device")
     monkeypatch.setitem(sys.modules, "mlx", parent)
@@ -300,9 +296,8 @@ def test_a_real_mac_keeps_its_offload_flags(monkeypatch):
 
 
 def test_gpu_companions_are_pinned_to_cpu_too():
-    """--gpu-layers 0 does not reach them: clip.cpp offloads on the mmproj_use_gpu
-    boolean (default true) and a separate drafter takes
-    params.speculative.draft.n_gpu_layers, default -1 = auto."""
+    """--gpu-layers 0 does not reach them: clip.cpp offloads per mmproj_use_gpu (default true), and
+    the drafter's params.speculative.draft.n_gpu_layers defaults to -1 (auto)."""
     src = _load_model_source()
     assert '"--no-mmproj-offload"' in src
     # Drafter flag name comes from the probe, never a literal; --spec-draft-ngl needs b8955 or newer.
@@ -501,8 +496,7 @@ def _mmproj_gate(
     is_vision: bool = True,
     mmproj = "/p.gguf",
 ):
-    """Run load_model's real projector-resolution statements and report what the launch
-    would see: (mmproj path, vision flag, warnings)."""
+    """Run load_model's real projector statements; report what the launch would see."""
     body = None
     for node in ast.walk(_load_model_tree()):
         stmts = getattr(node, "body", None)
@@ -555,8 +549,7 @@ def test_a_projector_that_cannot_be_pinned_is_dropped():
 
 
 def test_dropping_the_projector_does_not_double_warn():
-    """The generic "no usable mmproj" line would blame a missing projector for a
-    capability gap, so exactly one explanation reaches the user."""
+    """Exactly one warning: the generic no-usable-mmproj line would blame a missing projector."""
     _path, _vision, warnings = _mmproj_gate(paravirtual = True, caps = {})
     assert len(warnings) == 1, warnings
 
@@ -573,8 +566,7 @@ def test_a_pinnable_projector_survives_on_the_same_hardware():
 
 
 def test_a_real_mac_keeps_vision_on_a_build_without_the_flag():
-    """The drop is scoped to the virtualised device: an old llama.cpp on physical Apple
-    Silicon (or any non-Mac) must keep its projector on the GPU."""
+    """Drop is scoped to the virtualised device; physical hardware keeps the projector on GPU."""
     path, vision, warnings = _mmproj_gate(paravirtual = False, caps = {})
     assert path == "/p.gguf"
     assert vision is True
@@ -612,8 +604,7 @@ def _drafter_gate(
     drafter = "/models/mtp-gemma.gguf",
     extra_args = None,
 ):
-    """Run load_model's real unpinnable-drafter statements and report what the launch
-    would see: (resolved drafter, extra args, warnings)."""
+    """Runs load_model's real unpinnable-drafter code and reports the drafter and warnings."""
     scope, warnings = _drafter_gate_scope(
         paravirtual = paravirtual, caps = caps, drafter = drafter, extra_args = extra_args
     )
@@ -685,8 +676,7 @@ def _paravirtual_gate(
 
 @pytest.fixture(autouse = True)
 def _no_inherited_draft_env(monkeypatch):
-    """The drafter parsers fall back to os.environ, so a stray var on the host must not
-    decide these cases."""
+    """Parsers fall back to os.environ, so a stray host variable must not decide the case."""
     for var in (
         "LLAMA_ARG_SPEC_DRAFT_MODEL",
         "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
@@ -718,8 +708,7 @@ def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
 
 
 def test_the_drop_takes_a_user_owned_drafter_with_it():
-    """A user --spec-type makes _build_speculative_flags emit nothing, so clearing only
-    Unsloth's resolved path would leave their --model-draft on the device."""
+    """Under a user --spec-type nothing is emitted, so clearing the path leaves --model-draft."""
     extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf", "--top-k", "40"]
     drafter, out, warnings = _paravirtual_gate(extra_args = extras)
     assert drafter is None
@@ -757,9 +746,7 @@ def test_a_sibling_drafter_still_goes_when_unsloth_owns_the_spec_block():
 
 
 def test_a_drafter_requiring_mode_still_loses_its_drafter():
-    """draft-simple/draft-eagle3 name a separate model the child really loads, so a
-    user-owned spec type is no exemption: the drafter and the type that needs it both
-    go."""
+    """draft-simple and draft-eagle3 load a separate model, so a user-owned spec type is no exemption."""
     for mode in ("draft-simple", "draft-eagle3"):
         extras = ["--spec-type", mode, "--model-draft", "/models/d.gguf", "--top-k", "40"]
         drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
@@ -769,9 +756,7 @@ def test_a_drafter_requiring_mode_still_loses_its_drafter():
 
 
 def test_a_drafter_free_mode_that_names_its_own_drafter_still_drops_it():
-    """llama.cpp loads the draft model whenever its path is set, so a --model-draft
-    passed alongside ngram-mod still lands on the corrupt device. The exemption is for a
-    sibling the launch never emits, not for an explicit drafter."""
+    """llama.cpp loads any set draft path, so --model-draft under ngram-mod still hits the device."""
     extras = ["--spec-type", "ngram-mod", "--model-draft", "/models/d.gguf"]
     drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
     assert drafter is None
@@ -780,8 +765,7 @@ def test_a_drafter_free_mode_that_names_its_own_drafter_still_drops_it():
 
 
 def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeypatch):
-    """Same through the env the child reads directly: the drafter loads whatever
-    --spec-type says, so it cannot ride out the drop on the mode alone."""
+    """Drafter-free mode does not exempt the inherited env: child loads what --spec-type says."""
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
     drafter, _out, warnings = _paravirtual_gate(extra_args = ["--spec-type", "ngram-mod"])
     assert drafter is None
@@ -789,8 +773,7 @@ def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeyp
 
 
 def test_a_real_mac_keeps_the_sibling_and_the_mode_alike():
-    """The exemption changes nothing off the virtualised device: physical Apple Silicon
-    keeps both halves."""
+    """Exemption changes nothing off the virtualised device; physical Macs keep both."""
     extras = ["--spec-type", "ngram-mod", "--model-draft", "/models/d.gguf"]
     drafter, out, warnings = _drafter_gate(paravirtual = False, caps = {}, extra_args = extras)
     assert drafter == "/models/mtp-gemma.gguf"
@@ -825,8 +808,7 @@ def test_a_managed_spec_block_clears_the_inherited_spec_env():
 
 
 def test_the_training_guard_sizes_the_cpu_pin_not_the_raw_request():
-    """load_model rewrites a GGUF placement to CPU here, so a guard sizing the raw Auto
-    request could refuse a chat load for VRAM it never takes."""
+    """Raw Auto request overstates VRAM: load_model rewrites GGUF placement to CPU first."""
     guard_src = inspect.getsource(_routes()._guard_chat_load_against_training)
     assert "_metal_device_is_paravirtual()" in guard_src
     assert "paravirtual_normalized_request(" in guard_src
@@ -854,9 +836,8 @@ def test_a_diffusion_split_that_cannot_be_pinned_is_refused():
 
 
 def test_the_hf_diffusion_refusal_also_lands_above_the_teardown():
-    """The local path settled this before Phase 1, but an HF load has no gguf_path there,
-    so the refusal used to fire only after the healthy server was killed and the model
-    downloaded. The shim probe is cheap, so it gates the preflight too."""
+    """An HF load has no gguf_path before Phase 1, so the refusal used to fire after the healthy
+    server was killed and the model downloaded; the cheap shim probe now gates the preflight."""
     src = _load_model_source()
     probe_at = src.index("_pv_diffusion_unpinnable = bool(")
     kill_at = src.index("self._kill_process()")
@@ -910,9 +891,7 @@ def test_a_pinnable_drafter_survives_on_the_same_hardware():
     ],
 )
 def test_a_drafter_the_user_already_pinned_is_left_alone(pin):
-    """The probe only decides whether Unsloth can emit the flag. A user who passed one
-    themselves already has the drafter on the CPU, so dropping it would cost speed for
-    nothing."""
+    """The probe only decides whether the flag can be emitted; a user-pinned drafter is already on CPU."""
     extras = [*pin, "--model-draft", "/models/d.gguf"]
     drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
     assert drafter == "/models/mtp-gemma.gguf"
@@ -925,8 +904,7 @@ def test_a_drafter_the_user_already_pinned_is_left_alone(pin):
 
 
 def test_a_real_mac_keeps_its_drafter():
-    """The drop is scoped to the virtualised device: physical Apple Silicon (or any
-    non-Mac) keeps the drafter on the GPU."""
+    """Drop only hits the virtualised device; physical Apple Silicon keeps the drafter on GPU."""
     extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
     drafter, out, warnings = _drafter_gate(paravirtual = False, caps = {}, extra_args = extras)
     assert drafter == "/models/mtp-gemma.gguf"
@@ -961,9 +939,8 @@ def test_mtp_detection_reads_every_accumulated_type():
 
 
 def test_a_diffusion_load_drops_the_drafter_state_it_inherits():
-    """The diffusion path returns before the assignment that records the drafter, and
-    only unload clears it, so a drafter from the previous load would linger and the dedupe
-    would reload a healthy diffusion server."""
+    """Diffusion returns before recording the drafter; only unload clears it, so a stale drafter
+    would make the dedupe reload a healthy diffusion server."""
     src = _load_model_source()
     at = src.index("self._layer_preserves_tensor_intent = False")
     tail = src[at : at + 600]
@@ -1021,9 +998,7 @@ def test_a_pass_through_split_mode_cannot_fail_the_cpu_only_load(extra_args, exp
 
 
 def test_the_split_mode_override_is_scoped_to_the_virtualised_mac():
-    """The strongest negative: a real Mac (or any non-Mac) must keep the user's row/none
-    split, so the call site is gated on the detector, not on the zero-layer placement a
-    plain Manual load also has."""
+    """Real Macs keep the user's row/none split; the call site gates on the detector, not zero layers."""
     tree = _load_model_tree()
     calls = [
         node
@@ -1047,8 +1022,7 @@ def test_the_split_mode_override_is_scoped_to_the_virtualised_mac():
 
 
 def test_the_split_mode_override_outlives_the_pass_through_extras():
-    """llama.cpp is last-wins, so an override emitted before the user's extras would be
-    undone by the very flag it exists to neutralise."""
+    """llama.cpp is last-wins, so an override placed before the user's extras gets undone."""
     # Overridden, not stripped: comparators compare stored extras verbatim.
     assert "-sm" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
     assert "--split-mode" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
@@ -1075,9 +1049,8 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 
 
 def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
-    """An inherited draft-mtp does launch MTP, but the launch scrubs it whenever Unsloth
-    owns the spec block, so reading os.environ would describe a server that will not run MTP.
-    The env counts only when the extras own --spec-type, the one case it reaches the child."""
+    """An inherited draft-mtp is scrubbed whenever Unsloth owns the spec block, so os.environ would
+    describe a server without MTP; the env counts only when extras own --spec-type."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert llama_cpp._child_spec_env([]) == {}
     assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
@@ -1091,8 +1064,7 @@ def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
 
 
 def test_the_training_guard_does_not_shrink_itself_for_mtp():
-    """MTP launches at the slots it asked for, and a guard that under-sizes evicts the
-    training run it protects."""
+    """MTP launches at the slots it asked for; under-sizing evicts the training run it guards."""
     route_src = inspect.getsource(_routes())
     assert "_extra_args_requests_mtp(llama_extra_args" not in route_src
     assert "if diffusion_kind is True:" in route_src
@@ -1138,9 +1110,8 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
 
 
 def test_the_startup_fallback_records_the_extras_it_actually_launched():
-    """The success path stores extra_args as the launched list, but the fallback launched
-    without the spec group. Leaving the MTP list there means the next Apply that omits
-    extras inherits it and repeats the crash, so only the requested state keeps it."""
+    """The fallback launched without the spec group, so keeping the MTP list as launched lets the
+    next Apply inherit it and repeat the crash; only the requested state keeps it."""
     src = _load_model_source()
     strip_at = src.index("_fb_stripped_extras = strip_shadowing_flags(")
     swap_at = src.index("extra_args = _fb_stripped_extras")
@@ -1232,8 +1203,7 @@ def _gpu_pin_recorders():
 
 
 def test_a_forced_cpu_launch_records_no_effective_gpu_pin():
-    """--device none runs no GPU, so echoing the pin as effective misreports /status and reloads on
-    clear."""
+    """--device none runs no GPU, so an echoed pin misreports /status and reloads on clear."""
     scope = {
         "self": types.SimpleNamespace(_gpu_ids = None, _requested_gpu_ids = None),
         "_paravirtual_cpu_forced": True,
@@ -1254,9 +1224,8 @@ def test_a_forced_cpu_launch_records_no_effective_gpu_pin():
 
 
 def test_a_forced_cpu_diffusion_runner_records_no_effective_gpu_pin():
-    """A zero-layer split on virtualised Metal masks the child's devices, so the runner
-    uses none of them. Recording the pick anyway made /status name an unused device and
-    made clearing it reload the same CPU runner; the pick still has to round-trip."""
+    """A zero-layer split on virtualised Metal masks devices, so recording the pick misreports
+    /status and reloads the CPU runner on clear; the pick must still round-trip."""
     src = inspect.getsource(llama_cpp.LlamaCppBackend._start_diffusion_server)
     assert "_pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()" in src
     assert "self._gpu_ids = _pinned if not _pv_diffusion_cpu else None" in src
@@ -1280,9 +1249,7 @@ def test_a_real_mac_still_records_the_gpu_it_pinned(monkeypatch):
 
 
 def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeypatch, tmp_path):
-    """The drop clears the launched drafter, but the file stays on disk and the caller
-    keeps supplying it, so comparing against the stored None would respawn the same
-    drafter-free server on every repeat Apply."""
+    """Caller keeps sending the drafter after a drop; comparing with stored None respawns on each Apply."""
     backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
     backend._mtp_draft_path = None
     backend._mtp_draft_suppressed_path = str(drafter)
@@ -1313,8 +1280,7 @@ def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeyp
 
 
 def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path):
-    """The route re-detects the sibling before load_model runs, so handling it on the
-    backend path alone would still reload on every Apply."""
+    """Route re-detects the sibling; backend-only handling would still reload on every Apply."""
     from models.inference import LoadRequest
     from routes.inference import _active_gguf_intent
 
@@ -1355,8 +1321,7 @@ def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path
 
 
 def test_a_drafter_that_genuinely_appeared_still_reloads(monkeypatch, tmp_path):
-    """The negative that matters most: without a suppression on record, a drafter dropped
-    next to the weights must still force the reload that engages it."""
+    """No suppression on record: a drafter dropped beside the weights still forces reload."""
     backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
     backend._mtp_draft_path = None
     backend._mtp_draft_suppressed_path = None
@@ -1364,8 +1329,7 @@ def test_a_drafter_that_genuinely_appeared_still_reloads(monkeypatch, tmp_path):
 
 
 def test_only_the_drafter_that_was_suppressed_dedupes(monkeypatch, tmp_path):
-    """A different drafter, or the suppressed one disappearing, is a real change: the fast
-    path is scoped to the exact file the load decided not to launch."""
+    """Another drafter, or the suppressed one vanishing, is a real change; the match is exact."""
     backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
     backend._mtp_draft_path = None
     backend._mtp_draft_suppressed_path = str(drafter)
@@ -1377,9 +1341,7 @@ def test_only_the_drafter_that_was_suppressed_dedupes(monkeypatch, tmp_path):
 
 
 def test_the_suppression_does_not_outlive_the_server(monkeypatch, tmp_path):
-    """Unload clears it beside the launched path: a stale record would dedupe the next
-    load of a different model, and an update (the only way to lift the suppression)
-    unloads first."""
+    """Unload clears the suppression beside the launched path; an update unloads first to lift it."""
     backend, _gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
     backend._mtp_draft_suppressed_path = str(drafter)
     backend.unload_model()
@@ -1387,8 +1349,7 @@ def test_the_suppression_does_not_outlive_the_server(monkeypatch, tmp_path):
 
 
 def test_a_launched_drafter_records_no_suppression(monkeypatch, tmp_path):
-    """The negative on the recording side: a build that can pin the drafter launches it,
-    so nothing is suppressed and the ordinary comparison applies."""
+    """A build that can pin the drafter launches it, so nothing is suppressed."""
     backend, _gguf, _drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
     assert backend.mtp_draft_suppressed_path is None
     src = _load_model_source()
@@ -1458,8 +1419,7 @@ def test_a_real_mac_keeps_its_inherited_projector():
 
 
 def test_the_env_scrub_lands_before_the_spawn():
-    """The env is built once and handed to Popen, so a scrub after the spawn would leave
-    the projector loaded on the device it just dropped."""
+    """Env is built once and given to Popen; a scrub after spawn leaves the projector loaded."""
     src = _load_model_source()
     scrub = 'for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")'
     assert src.index(scrub) < src.index("_spawn_and_wait(")
@@ -1469,15 +1429,13 @@ def test_the_env_scrub_lands_before_the_spawn():
 
 
 def _routes():
-    """routes/inference.py, imported lazily so the cheap AST tests do not pay for
-    FastAPI."""
+    """routes/inference.py is imported lazily so cheap AST tests do not pay for FastAPI."""
     from routes import inference as routes_inference
     return routes_inference
 
 
 def _paravirtual_everywhere(monkeypatch):
-    """The route imports the detector by value, so patching only the llama_cpp attribute
-    would leave the route comparator on real hardware."""
+    """The route imports the detector by value, so patching llama_cpp alone misses it."""
     _paravirtual(monkeypatch)
     monkeypatch.setattr(_routes(), "_metal_device_is_paravirtual", lambda: True)
 
@@ -1510,8 +1468,7 @@ def test_the_normalizer_pins_every_placement_knob_to_cpu():
 
 
 def test_the_normalizer_is_idempotent():
-    """load_model normalizes, then calls a comparator that normalizes again (and a respawn
-    replays the raw kwargs): a second pass must change nothing."""
+    """load_model and the comparator both normalize; a second pass must change nothing."""
     once = _normalized(
         gpu_memory_mode = "auto", gpu_layers = -1, extra_args = ["-ot", ".*=Metal", "--top-k", "40"]
     )
@@ -1547,8 +1504,7 @@ def test_the_normalizer_keeps_extras_it_has_no_business_touching():
 
 
 def test_the_launch_normalizes_a_manual_cpu_request_too(monkeypatch):
-    """End-to-end: the flags reaching the duplicate-load check are the ones that launch,
-    for a request that already said Manual + 0."""
+    """Duplicate-load check sees the flags that launch, even for a Manual + 0 request."""
     _paravirtual(monkeypatch)
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
@@ -1583,8 +1539,7 @@ def test_the_launch_normalizes_a_manual_cpu_request_too(monkeypatch):
 
 
 def test_a_real_mac_keeps_its_tensor_override_on_a_manual_cpu_load(monkeypatch):
-    """None of this applies to physical Apple Silicon, where a deliberate -ot must reach
-    llama-server exactly as written."""
+    """Physical Apple Silicon is exempt: a deliberate -ot must reach llama-server as written."""
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
@@ -1651,9 +1606,7 @@ def _cpu_server(
 
 
 def _route_matches(request, backend):
-    """What the route now does: rebuild the intent from the request, then let the single
-    backend comparator judge it. The dedupe moved off the route in #7663, so this is the
-    route-side path end to end."""
+    """The route rebuilds intent from the request; the single backend comparator judges it."""
     intent = _routes()._active_gguf_intent(
         request,
         backend,
@@ -1680,9 +1633,8 @@ def _load_request(gguf, **overrides):
 
 
 def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkeypatch, tmp_path):
-    """Both comparators. An API client, a second tab or a saved preset keeps sending Auto:
-    the browser adopting the normalized echo does not cover them, and never covers the
-    extras box, which the UI does not round-trip."""
+    """API clients, a second tab and saved presets keep sending Auto, which the browser normalized
+    echo does not cover; it never covers the extras box, which the UI does not round-trip."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(
@@ -1725,9 +1677,8 @@ def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
 
 
 def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch, tmp_path):
-    """The pin overrides --split-mode at the launch rather than stripping it, so the stored
-    extras still say tensor while nothing tensor ever launched; judging the raw extras
-    would reload on every Apply."""
+    """Pin overrides --split-mode at launch rather than stripping it, so stored extras still say
+    tensor while nothing tensor launched; judging the raw extras would reload on every Apply."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["-sm", "tensor"])
     request = _load_request(gguf, llama_extra_args = ["-sm", "tensor"], tensor_parallel = True)
@@ -1739,9 +1690,8 @@ def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch,
 
 
 def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatch, tmp_path):
-    """The drop strips the whole spec group from extra_args and stores the rewrite, but the
-    caller keeps sending its own list, so comparing launched-vs-requested mismatched on
-    every Apply and reloaded without bound."""
+    """Drop strips the spec group and stores the rewrite, but a caller resending its own list
+    mismatches the launched one and reloads on every Apply without bound."""
     _paravirtual_everywhere(monkeypatch)
     asked = ["--draft-max", "8", "--top-k", "40"]
     backend, gguf = _cpu_server(
@@ -1755,9 +1705,7 @@ def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatc
 def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
     monkeypatch, tmp_path
 ):
-    """The browser never sends llama_extra_args, so the route inherits the LAUNCHED list and
-    the comparison would judge it against the INVOKED one. After the drafter drop those
-    differ by the whole spec group, so every Apply from the UI tore the server down."""
+    """Browser omits llama_extra_args, so the route inherits the launched list and tears down on Apply."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(
         monkeypatch,
@@ -1772,8 +1720,7 @@ def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
 
 
 def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, tmp_path):
-    """Requested-vs-requested must still notice a real change to the flags the drop
-    removed."""
+    """Requested-vs-requested must still catch a real change to the flags the drop removed."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(
         monkeypatch,
@@ -1811,8 +1758,7 @@ def test_the_drop_records_the_requested_extras_before_rewriting_them():
 
 
 def _restore_requested_spec_mode(*, requested_extras):
-    """Run load_model's real spec-mode restore against a backend whose
-    _build_speculative_flags already judged the stripped list."""
+    """Runs load_model's real spec-mode restore; the backend already judged the stripped list."""
     block = _if_block(
         lambda test: "_pv_suppressed_spec_extra_args" in _names(test),
     )
@@ -1840,8 +1786,7 @@ def test_a_user_owned_spec_type_survives_the_drafter_drop():
 
 
 def test_the_restore_is_scoped_to_a_drop_that_owned_spec_type():
-    """No drop, or a drop whose extras never set --spec-type, must leave the mode
-    _build_speculative_flags resolved exactly as it is."""
+    """No drop, or a drop whose extras never set --spec-type, must leave the mode as resolved."""
     assert _restore_requested_spec_mode(requested_extras = None) == "auto"
     assert _restore_requested_spec_mode(requested_extras = ["--draft-max", "8"]) == "auto"
 
@@ -1866,8 +1811,7 @@ def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override(
 
 
 def test_the_drop_records_only_the_drafter_it_removed():
-    """Extras trigger this drop with none of ours launched, where recording the launched
-    None would erase a record an earlier drop made."""
+    """Extras can trigger it with none launched; recording None would erase an earlier record."""
     earlier = "/cache/snapshots/abc/mtp-model.gguf"
     scope, _warnings = _drafter_gate_scope(
         paravirtual = True,

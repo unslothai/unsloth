@@ -130,6 +130,8 @@
     "sparsebundle",
     "sparseimage",
     "sys",
+    "tcsh",
+    "term",
     "terminal",
     "theme",
     "themepack",

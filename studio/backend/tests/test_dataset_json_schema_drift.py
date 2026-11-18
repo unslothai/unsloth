@@ -110,3 +110,69 @@ def test_explicit_features_are_not_overridden(tmp_path, monkeypatch):
             features = Features({"messages": [{"role": Value("string")}]}),
             **_SMALL_BLOCKS,
         )
+
+
+@pytest.mark.parametrize("bom_files", [("first",), ("second",), ("first", "second")])
+@pytest.mark.parametrize("drift", ["column", "message_field"])
+def test_jsonl_bom_does_not_disable_schema_recovery(tmp_path, bom_files, drift):
+    first, second = _chat(0), _chat(1)
+    first["messages"][0]["content"] = "Keep \ufeff inside café text"
+    if drift == "column":
+        second["source"] = "new shard"
+    else:
+        second["messages"][1]["weight"] = 0
+    files = []
+    for name, row in (("first", first), ("second", second)):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(
+            json.dumps(row, ensure_ascii = False) + "\n",
+            encoding = "utf-8-sig" if name in bom_files else "utf-8",
+        )
+        files.append(str(path))
+
+    dataset = _load(files, tmp_path)
+
+    assert len(dataset) == 2
+    for index, row in enumerate((first, second)):
+        assert [(t["role"], t["content"]) for t in dataset[index]["messages"]] == [
+            (t["role"], t["content"]) for t in row["messages"]
+        ]
+    if drift == "column":
+        assert dataset[0]["source"] is None
+        assert dataset[1]["source"] == "new shard"
+    else:
+        assert dataset[0]["messages"][1]["weight"] is None
+        assert dataset[1]["messages"][1]["weight"] == 0
+
+
+def test_optional_message_key_after_a_bom_first_block_loads(tmp_path):
+    rows = [_chat(i) for i in range(40)] + [_chat(40, weight = 0)]
+    path = tmp_path / "bom.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8-sig")
+
+    dataset = _load(str(path), tmp_path, **_SMALL_BLOCKS)
+
+    assert len(dataset) == 41
+    assert dataset[0]["messages"][1]["weight"] is None
+    assert dataset[40]["messages"][1]["weight"] == 0
+
+
+def test_bom_jsonl_with_a_fixed_schema_keeps_its_text(tmp_path):
+    rows = [{"text": "café"}, {"text": "\ufeffkeep this character"}]
+    path = tmp_path / "fixed.jsonl"
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii = False) + "\n" for row in rows),
+        encoding = "utf-8-sig",
+    )
+    assert _load(str(path), tmp_path).to_list() == rows
+
+
+def test_bom_schema_recovery_keeps_invalid_utf8_as_an_error(tmp_path):
+    import codecs
+
+    first = _write_jsonl(tmp_path / "first.jsonl", [{"text": "valid"}])
+    path = tmp_path / "invalid.jsonl"
+    path.write_bytes(codecs.BOM_UTF8 + b'{"text":"bad\xff","source":"new"}\n')
+    assert json_rows_features([first, str(path)]) is None
+    with pytest.raises(DatasetGenerationError):
+        _load([first, str(path)], tmp_path)

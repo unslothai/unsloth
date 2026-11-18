@@ -308,8 +308,7 @@ def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
 
 
 def test_detect_dspark_file_rejects_a_weight_copy_in_the_dspark_folder(tmp_path):
-    """A published drafter NAME is required even inside ``dspark/``: a weight
-    copy parked there would otherwise launch as --model-draft."""
+    """Even in dspark/, a published name is required, or a weight copy runs as --model-draft."""
     weight = tmp_path / "model-Q4_K_M.gguf"
     weight.write_bytes(b"target")
     folder = tmp_path / "dspark"
@@ -335,8 +334,7 @@ def test_detect_dspark_file_does_not_cross_attach_a_sibling_family(tmp_path):
 
 
 def test_detect_dspark_file_skips_an_incomplete_split_set(tmp_path):
-    """A partial split would fail llama-server's draft startup and disable
-    speculation, so a complete lower-precision copy wins instead."""
+    """A partial split fails draft startup, so a complete lower-precision copy wins instead."""
     weight = tmp_path / "model-Q4_K_M.gguf"
     weight.write_bytes(b"target")
     (tmp_path / "dspark-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x")
@@ -362,8 +360,7 @@ def test_detect_dspark_file_sums_shards_so_a_split_cannot_outrank_a_smaller_copy
 
 
 def test_detect_dspark_file_keeps_a_split_sidecar_on_its_snapshot_path(tmp_path):
-    """llama-server opens the sibling shards implicitly, and the blob target of
-    a cache symlink has no sibling shard names, so a split must NOT resolve."""
+    """Split sidecars stay on the snapshot path: blob targets lack the sibling shard names."""
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "abc"
     blobs.mkdir()
@@ -1163,9 +1160,8 @@ def _dspark_download_probe(
 
 
 def test_download_dspark_skips_the_fetch_when_the_binary_cannot_run_it(monkeypatch):
-    """The sidecar is ~11 GB and _build_speculative_flags drops DSpark outright on
-    a binary without --spec-type draft-dspark (every prebuilt in the known-broken
-    window included), so the capability must be checked BEFORE the download."""
+    """The sidecar is ~11 GB; DSpark is dropped on any binary without --spec-type draft-dspark,
+    known-broken prebuilts included, so check capability before download."""
     got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False)
     assert got is None
     assert reached is False
@@ -1178,8 +1174,7 @@ def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
 
 
 def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
-    """The reuse check retries a failed fetch but must never retry a repo that
-    ships none, so the two "returned None" cases have to stay distinguishable."""
+    """Failed fetches retry, a repo shipping no sidecar never does; the two None cases differ."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1218,9 +1213,8 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
 
 
 def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tmp_path):
-    """A listing that never completed says nothing about the repo. Recording it as
-    a definitive absence would suppress the reuse check's retry, so DSpark would
-    never be fetched once connectivity returned."""
+    """A listing that never completed says nothing about the repo; recording it as absent would stop
+    the reuse retry, so DSpark is never fetched after connectivity returns."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1317,8 +1311,7 @@ def test_root_mtp_candidates_are_ranked_not_taken_in_directory_order(tmp_path):
 
 
 def test_root_mtp_ranking_spans_the_search_root(tmp_path):
-    """Same ordering hazard across the two scanned directories: the base sits in
-    the model's own folder and the exact match only in the search root."""
+    """Base in the model's folder, exact match in the search root: rank across both dirs."""
     home = tmp_path / "home"
     root = tmp_path / "root"
     home.mkdir()
@@ -1334,9 +1327,8 @@ def test_root_mtp_ranking_spans_the_search_root(tmp_path):
 
 
 def test_a_more_specific_subdir_drafter_beats_a_base_family_root_one(tmp_path):
-    """Specificity has to be compared across layouts, not only within one: the
-    root file names a different family, so it is not this weight's drafter at all
-    and root preference must not save it."""
+    """Specificity is compared across layouts, not only within one: a root file naming another
+    family is not this weight's drafter, so root preference cannot save it."""
     weight = tmp_path / "model_v2-Q4_K_M.gguf"
     weight.write_bytes(b"target")
     (tmp_path / "mtp-model.gguf").write_bytes(b"base")
@@ -1349,8 +1341,7 @@ def test_a_more_specific_subdir_drafter_beats_a_base_family_root_one(tmp_path):
 
 
 def test_root_still_wins_when_both_layouts_name_the_same_family(tmp_path):
-    """Negative control: equal specificity is every published layout, and there
-    the root copy keeps its long-standing preference."""
+    """Negative control: at equal specificity, every published layout keeps root preference."""
     weight = tmp_path / "model-Q4_K_M.gguf"
     weight.write_bytes(b"target")
     root = tmp_path / "mtp-model.gguf"
@@ -1363,9 +1354,8 @@ def test_root_still_wins_when_both_layouts_name_the_same_family(tmp_path):
 
 
 def test_an_unusable_candidate_does_not_win_the_tier_comparison(tmp_path):
-    """Tier order is decided by specificity, so an unusable candidate that
-    outranks everything would put its tier first and then be skipped, handing
-    back a less specific sibling instead of the usable copy next door."""
+    """Tier order follows specificity, so an unusable candidate must not win the tier comparison; it
+    would hand back a less specific sibling."""
     import os
 
     weight = tmp_path / "model_v2_release-Q4_K_M.gguf"
@@ -1409,8 +1399,7 @@ def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
 
 
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
-    """llama-server takes shard 1 as the model path, so a split MTP/ copy must
-    not resolve to whichever shard happens to be smallest."""
+    """Split MTP/ drafter resolves to shard 1, the path llama-server takes, not the smallest."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1423,8 +1412,7 @@ def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
 
 
 def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
-    """skip_root is how a native load recovers when the root drafter is out
-    of bounds for its grant."""
+    """skip_root is the native load's recovery when the root drafter exceeds its grant."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -1442,8 +1430,7 @@ def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
 
 
 def test_detect_mtp_file_rejects_weight_copy_inside_mtp_dir(tmp_path):
-    """Everything under MTP/ counts as a drafter for menu exclusion, but only
-    a published drafter name may be launched as --model-draft."""
+    """MTP/ contents are hidden from menus; only a published name may launch as --model-draft."""
     weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1466,8 +1453,7 @@ def test_detect_mtp_file_pairs_k_quant_subdir_drafter(tmp_path):
 
 
 def test_detect_mtp_file_keeps_snapshot_path_for_sharded_subdir_drafter(tmp_path):
-    """A split copy stored as HF snapshot symlinks must launch from the
-    snapshot path: the blob target has no sibling shard names."""
+    """Split symlinked copies launch from the snapshot path; blob targets lack sibling shards."""
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "abc"
     sub = snapshot / "MTP"
@@ -1494,8 +1480,7 @@ def test_detect_mtp_file_keeps_snapshot_path_for_sharded_subdir_drafter(tmp_path
 
 
 def test_detect_mtp_file_pairs_sharded_old_scheme_subdir_drafter(tmp_path):
-    """An old-scheme split copy is <model>-Q8_0-MTP-00001-of-00002.gguf, whose
-    stem does not end in -mtp until the shard suffix comes off."""
+    """Old-scheme split shards end in -mtp only once the shard suffix comes off the stem."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1546,8 +1531,7 @@ def test_detect_mtp_file_pairs_bpw_qualified_subdir_drafter(tmp_path):
 
 
 def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
-    """An incomplete shard set fails llama-server's draft startup, so a
-    complete copy must win rather than MTP being disabled."""
+    """Incomplete shard sets fail draft startup; a complete copy must win over disabling MTP."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1560,8 +1544,7 @@ def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
 
 
 def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
-    """Candidates collapse to shard 1, so a split copy must be summed or it
-    outranks a smaller single file. Both sides are Q8_0: precision now outranks size."""
+    """Split copies are summed (candidates collapse to shard 1); precision outranks size."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1575,8 +1558,7 @@ def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
 
 
 def test_companion_search_root_promotes_bpw_quant_directory(tmp_path):
-    """A bpw-qualified quant directory must resolve to the repository root, or
-    the repo-root MTP/ copy is never in scope for it."""
+    """bpw-qualified quant dirs resolve to the repo root, so its MTP/ copy stays in scope."""
     quant_dir = tmp_path / "IQ4_XS-3.53bpw"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -1626,8 +1608,7 @@ def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
 
 
 def test_a_root_dflash_drafter_is_not_a_quant():
-    """ggml-org/Qwen3.6-27B-GGUF ships a 3 GB dflash- drafter beside the real
-    54 GB BF16; merging them hands llama.cpp the drafter as the model."""
+    """A root dflash- drafter is not a quant; merged, llama.cpp would load it as the model."""
     plans = build_gguf_variant_plans(
         [
             _sib("Qwen3.6-27B-BF16.gguf", 54_000, "bf16"),
@@ -1640,17 +1621,15 @@ def test_a_root_dflash_drafter_is_not_a_quant():
 
 
 def test_gemma_mtp_is_still_auto_downloaded():
-    """Filtering only removes drafters from the quant list; the root mtp-*.gguf
-    is still fetched with every variant so MTP speculative decoding works."""
+    """Filtering only prunes quants; the root MTP drafter still downloads with each variant."""
     plans = build_gguf_variant_plans(GEMMA_SIBLINGS)
     for plan in plans.values():
         assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
 
 
 def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
-    """_cached_repo_mtp_drafter uses the predicate inversely, to pick a drafter to
-    launch with --spec-type draft-mtp. DSpark needs draft-dspark, so broadening
-    that predicate must not widen what is launched."""
+    """_cached_repo_mtp_drafter uses the predicate inversely to pick a --spec-type draft-mtp
+    drafter; DSpark needs draft-dspark, so broadening it must not widen launches."""
     import core.inference.llama_cpp as llama_cpp_module
 
     def _snapshot(files):
@@ -1707,8 +1686,7 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
 
 
 def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monkeypatch):
-    """Everything under MTP/ classifies as an mtp drafter: right for excluding
-    companions from menus, wrong for choosing what to launch."""
+    """MTP/ contents are drafters: right to hide companions, wrong to pick a launch file."""
     import core.inference.llama_cpp as llama_cpp_module
 
     snap = tmp_path / "snap"
@@ -1852,9 +1830,8 @@ def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
 
 
 def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
-    """Unsloth downloads the sidecar itself once the user opts in, and companion
-    filtering keeps it out of the variant menu, so leaving it behind is an
-    invisible ~11 GB allocation. Nothing can launch it with no main GGUF left."""
+    """Unsloth downloads the sidecar on opt-in and companion filtering hides it from menus, so
+    deleting the last variant must reclaim its ~11 GB, as nothing can launch it."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -1898,8 +1875,7 @@ def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
 
 
 def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
-    """Negative control: dflash is a family name a user picks for real weights,
-    and Unsloth never fetches it as a companion, so it is not reclaimable."""
+    """Negative control: dflash is a family name for real weights, never a companion, so kept."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -2006,9 +1982,8 @@ def test_probe_server_capabilities_reports_dflash(tmp_path, spec_line, expected)
 
 
 def test_missing_binary_reports_no_dflash():
-    """The not-found dict is returned before any parsing, so it has to carry the
-    key: a caller reading it with .get() would otherwise treat "absent" as False
-    only by luck, and _estimate_gguf_required_gb default-denies on it."""
+    """The not-found dict returns before parsing, so it must carry the key: .get() callers read
+    absent as False only by luck; _estimate_gguf_required_gb default-denies on it."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     caps = LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server")
@@ -2060,9 +2035,7 @@ def _spec_flags(backend, **kwargs):
 
 
 def test_auto_launches_dflash_when_a_sidecar_is_present(monkeypatch):
-    """The headline behaviour: unlike DSpark, DFlash needs no opt-in. On a
-    B200 with the published 1.52 GiB sidecar this is 1.21x-1.36x decode over
-    spec-off at n_max=2, at 61-77% draft acceptance."""
+    """Unlike DSpark, DFlash is launched with no opt-in when its sidecar is present."""
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
 
@@ -2095,8 +2068,7 @@ def test_a_user_draft_depth_override_reaches_dflash(monkeypatch):
 
 
 def test_auto_does_not_emit_dflash_when_the_binary_cannot_run_it(monkeypatch):
-    """A --spec-type the binary does not know aborts the launch, so the sidecar
-    being on disk is not enough. Published prebuilts predate the arch."""
+    """An unknown --spec-type aborts launch, and published prebuilts predate the arch."""
     backend = _spec_backend(monkeypatch, supports_dflash = False)
     flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
 
@@ -2184,9 +2156,8 @@ def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
 
 
 def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
-    """Mirrors llama.cpp's own downloader, which ranks dspark ahead of dflash.
-    In practice a repo ships one kind or neither; this pins that adding DFlash
-    did not reorder the existing choice."""
+    """Mirrors llama.cpp's downloader, which ranks dspark ahead of dflash; a repo ships one kind or
+    neither, and this pins that adding DFlash did not change DSpark's first refusal."""
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(
         backend,
@@ -2258,8 +2229,7 @@ def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):
 
 
 def test_detect_dflash_file_rejects_a_real_model_that_is_merely_named_dflash(tmp_path):
-    """Two layers have to hold: the prefix rule (this file does not start with
-    dflash-) and the header check behind it."""
+    """Two layers must hold: the dflash- name prefix rule and the header check behind it."""
     weight = _write_gguf(tmp_path / "Qwen3.6-27B-Q4_K_M.gguf", "qwen3")
     _write_gguf(tmp_path / "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", "qwen3moe")
 
@@ -2267,8 +2237,7 @@ def test_detect_dflash_file_rejects_a_real_model_that_is_merely_named_dflash(tmp
 
 
 def test_detect_dflash_file_rejects_a_dflash_prefixed_file_of_another_architecture(tmp_path):
-    """The prefix alone is not enough: someone may name real weights that way,
-    and --model-draft on a full model is a silent 15 GB allocation."""
+    """Prefix alone is not enough; a real weight named that way would load as --model-draft."""
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
 
@@ -2276,9 +2245,8 @@ def test_detect_dflash_file_rejects_a_dflash_prefixed_file_of_another_architectu
 
 
 def test_detect_dflash_file_ignores_a_dflash_directory(tmp_path):
-    """dflash/ is a folder name a user picks for the family they downloaded, so
-    unlike dspark/ it is never scanned. Reaching in would hand llama-server a
-    real weight as --model-draft."""
+    """dflash/ is a user-picked family folder, so unlike dspark/ it is never scanned; reaching into
+    it would hand llama-server a real weight as --model-draft."""
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     sub = tmp_path / "dflash"
     sub.mkdir()
@@ -2288,8 +2256,7 @@ def test_detect_dflash_file_ignores_a_dflash_directory(tmp_path):
 
 
 def test_detect_dflash_file_prefers_the_sidecar_that_names_this_weight(tmp_path):
-    """Both schemes are published. In a multi-model folder the family-named one
-    wins for the weight it names, so a foreign sidecar cannot attach first."""
+    """Both schemes are published; the sidecar naming this weight wins over a foreign one."""
     weight = _write_gguf(tmp_path / "Qwen3.6-27B-Q4_K_M.gguf", "qwen3")
     _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
     paired = _write_gguf(tmp_path / "dflash-Qwen3.6-27B-Q8_0.gguf", "dflash")
@@ -2386,8 +2353,7 @@ def test_download_dflash_fetches_when_the_binary_supports_it(tmp_path, monkeypat
 
 
 def test_download_dflash_skips_the_fetch_when_the_binary_cannot_run_it(tmp_path, monkeypatch):
-    """Same gate as DSpark: _build_speculative_flags drops DFlash outright on a
-    binary without --spec-type draft-dflash, so the file would never be opened."""
+    """Gated like DSpark: without --spec-type draft-dflash the sidecar is never opened."""
     got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash = False)
     assert got is None
     assert reached.get("hit", False) is False
@@ -2404,8 +2370,7 @@ def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(tmp_path, 
 
 
 def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
-    """Most repos publish none, and retrying that on every Apply would relaunch
-    an identical server forever; a failed fetch must still be retried."""
+    """Repos without a sidecar are not re-listed on every Apply; failed fetches still retry."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -2445,8 +2410,7 @@ def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatc
 
 
 def test_a_cached_dflash_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
-    """Each kind needs its own --spec-type, so the offline MTP reuse scan must
-    not pick up a DFlash sidecar sitting in the same snapshot."""
+    """Each kind needs its own --spec-type, so offline MTP reuse must skip DFlash sidecars."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
@@ -2513,8 +2477,7 @@ def _dflash_download_pick(monkeypatch, *, listing, near_path):
 
 
 def test_download_dflash_skips_a_sidecar_named_after_another_weight(monkeypatch):
-    """Model B must get the generic sidecar, not the higher-precision one that
-    names model A."""
+    """Model B must get the generic sidecar, not the higher-precision one that names model A."""
     assert (
         _dflash_download_pick(
             monkeypatch,
@@ -2558,8 +2521,7 @@ def test_download_dflash_keeps_the_single_published_sidecar(monkeypatch, sidecar
 
 
 def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypatch):
-    """The offline reuse must reach the same file the download would have
-    fetched, or a reload swaps drafters as soon as the cache is warm."""
+    """Offline reuse must pick what a download would fetch, or reloads swap drafters."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
@@ -2599,9 +2561,8 @@ def test_cached_dflash_lookup_keeps_the_single_published_sidecar(tmp_path, monke
 
 
 def test_local_and_remote_dflash_pairing_agree(tmp_path):
-    """One rule, three call sites: the local scan, the download picker and the
-    cache lookup all go through dflash_repo_preference_key /
-    _drafter_names_other_weight."""
+    """One rule, three call sites: the local scan, download picker and cache lookup all go through
+    dflash_repo_preference_key and _drafter_names_other_weight."""
     from utils.models.drafters import dflash_repo_preference_key
 
     others = ["model-A-Q4_K_M.gguf", "model-B-Q4_K_M.gguf"]
@@ -2642,8 +2603,7 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
 
 
 def test_deleting_the_last_bonsai_variant_reclaims_its_dspark_drafter(tmp_path):
-    """The menu hides <model>-dspark-<quant>.gguf as a companion, so once the last real
-    variant is deleted nothing could ever launch it; its blob must go too."""
+    """The menu hides the dspark companion, so deleting the last variant must reclaim it."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -2669,8 +2629,7 @@ def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):
 
 
 def test_detect_dflash_file_still_prefers_a_sidecar_that_names_this_weight(tmp_path):
-    """The skip above must not cost the paired case: a sidecar naming THIS
-    weight's family still wins over the generic one."""
+    """The skip must not cost the paired case: a sidecar naming this weight beats generic."""
     weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
     paired = _write_gguf(tmp_path / "dflash-Muse-Glimmer-30B-Q8_0.gguf", "dflash")
     _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
@@ -2721,8 +2680,7 @@ def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_
 
 
 def test_detect_dflash_file_still_checks_the_header_of_an_accepted_candidate(tmp_path):
-    """The reorder must not cost the architecture check every other caller relies
-    on: an accepted candidate that is not a dflash model is still dropped."""
+    """The reorder keeps the architecture check; an accepted non-dflash file is still dropped."""
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
 
@@ -2803,8 +2761,7 @@ def test_download_dflash_falls_through_a_candidate_that_is_not_a_dflash_model(
 
 
 def test_download_dflash_reports_no_sidecar_when_every_candidate_is_a_weight(tmp_path, monkeypatch):
-    """A repo whose only dflash-*.gguf is an ordinary model publishes no sidecar,
-    so the absence is recorded and the next Apply does not re-list forever."""
+    """A dflash-named weight is no sidecar; the absence is recorded so Apply stops re-listing."""
     _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     _write_gguf(tmp_path / "dflash-model-Q8_0.gguf", "llama")
 
@@ -2820,8 +2777,7 @@ def test_download_dflash_reports_no_sidecar_when_every_candidate_is_a_weight(tmp
 
 
 def test_download_dflash_validates_the_snapshot_sibling_it_reuses(tmp_path, monkeypatch):
-    """The reuse path never downloads anything, but it hands the same file to
-    --model-draft, so it applies the same header rule and keeps scanning."""
+    """Reuse never downloads, yet its file goes to --model-draft, so the header rule applies."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
@@ -2847,8 +2803,7 @@ def test_download_dflash_validates_the_snapshot_sibling_it_reuses(tmp_path, monk
 
 
 def test_cached_dflash_lookup_skips_a_prefixed_file_of_another_architecture(tmp_path, monkeypatch):
-    """The offline cache lookup ranks by name too, so a cached weight named like
-    a sidecar would be launched as the drafter with nothing left to catch it."""
+    """Offline lookup also ranks by name, so a weight named like a sidecar must be skipped."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
@@ -2997,8 +2952,7 @@ def _dflash_fetch_during_auto_load(
 
 
 def test_auto_still_fetches_dflash_when_the_binary_cannot_run_dspark(monkeypatch):
-    """The regression: a cached DSpark sidecar this binary cannot launch is not
-    a reason to skip the drafter it CAN launch."""
+    """A cached DSpark sidecar this binary cannot run must not block a DFlash drafter it can."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,
@@ -3009,8 +2963,7 @@ def test_auto_still_fetches_dflash_when_the_binary_cannot_run_dspark(monkeypatch
 
 
 def test_auto_stands_down_on_dflash_for_a_dspark_it_can_launch(monkeypatch):
-    """Unchanged where the stand-down was right: DSpark takes first refusal, so
-    the ~1.5 GiB DFlash fetch would buy a file the load never opens."""
+    """DSpark takes first refusal, so a ~1.5 GiB DFlash fetch would buy an unopened file."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = True,
@@ -3021,8 +2974,7 @@ def test_auto_stands_down_on_dflash_for_a_dspark_it_can_launch(monkeypatch):
 
 
 def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
-    """Positive control: nothing about the DSpark capability gates a repo that
-    publishes only the DFlash companion."""
+    """Positive control: DSpark's capability does not gate a repo shipping only DFlash."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = True,
@@ -3190,9 +3142,8 @@ def test_explicit_dflash_still_fetches_under_tensor_split(monkeypatch):
 
 
 def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monkeypatch):
-    """All three kinds, not only the one that reads a header: they are the same
-    discovery, and a kind that skipped the check would hand the load route a
-    sidecar it has to reject a second time."""
+    """All three kinds, not only the header reader, share one discovery, so each gets the boundary
+    check; skipping it hands the load a sidecar to reject twice."""
     import utils.models.model_config as mc
 
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
@@ -3235,8 +3186,7 @@ def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monk
 
 
 def test_from_identifier_without_a_boundary_scans_exactly_as_before(tmp_path, monkeypatch):
-    """Every caller that has no lease to impose passes nothing, and must see the
-    same candidates in the same order."""
+    """Callers with no lease to impose must see the same candidates in the same order."""
     import utils.models.model_config as mc
 
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
@@ -3259,8 +3209,7 @@ def test_from_identifier_without_a_boundary_scans_exactly_as_before(tmp_path, mo
 
 
 def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, monkeypatch):
-    """End to end: the escaping symlink's target is never opened, and the config
-    reports no DFlash sidecar rather than one the load route would reject."""
+    """Escaping symlink target is never opened; the config reports no DFlash sidecar."""
     import os
 
     # Patch the module that resolves the name, not the re-exporter, or the patch never intercepts.
@@ -3314,8 +3263,7 @@ def test_is_root_dflash_drafter_path(path, expected):
 
 
 def test_the_basename_predicate_keeps_its_own_semantics():
-    """The root check is a separate predicate on purpose: _is_dflash_drafter_path
-    is shared with callers that only ever have a bare filename."""
+    """Kept separate: _is_dflash_drafter_path also serves callers that have only a filename."""
     from core.inference.llama_cpp import _is_dflash_drafter_path
 
     assert _is_dflash_drafter_path("quants/dflash-kquant.gguf") is True
@@ -3323,9 +3271,7 @@ def test_the_basename_predicate_keeps_its_own_semantics():
 
 
 def test_download_dflash_never_fetches_a_nested_dflash_named_weight(tmp_path, monkeypatch):
-    """The regression: the nested file is an ordinary weight the local scan would
-    never offer, and picking it spent its entire download before the header check
-    could turn it away."""
+    """Regression: a nested dflash-named weight was fetched in full before the header check rejected it."""
     _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
 
     b, got, fetched = _dflash_repo_download(
@@ -3355,8 +3301,7 @@ def test_download_dflash_still_takes_the_root_sidecar_beside_a_nested_one(tmp_pa
 
 
 def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, monkeypatch):
-    """Same rule on the offline cache scan, which hands its answer straight to
-    --model-draft with no download to be rejected first."""
+    """Same rule for the offline cache scan, which feeds --model-draft directly."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
@@ -3429,8 +3374,7 @@ def test_download_companion_gguf_fetches_every_shard_of_a_split_sidecar(tmp_path
 
 
 def test_download_companion_gguf_leaves_a_single_file_sidecar_alone(tmp_path, monkeypatch):
-    """Every companion published today is one file, so the split handling must be
-    a no-op for them: exactly one fetch, same path back."""
+    """Single-file companions skip split handling: one fetch, and the same path comes back."""
     got, fetched = _split_companion_download(
         tmp_path, monkeypatch, ["model-Q4_K_M.gguf", "dflash-kquant.gguf"]
     )
@@ -3440,9 +3384,7 @@ def test_download_companion_gguf_leaves_a_single_file_sidecar_alone(tmp_path, mo
 
 
 def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
-    """The reuse scan is the other half: a snapshot holding shard 1 alone is not
-    a reuse. Reporting it would skip the download that completes the set and
-    leave the load with a drafter llama-server cannot open."""
+    """A snapshot holding only shard 1 is no reuse: that would skip the download completing the set."""
     from core.inference.llama_cpp import _companion_snapshot_sibling
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
@@ -3462,8 +3404,7 @@ def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
 
 
 def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeypatch):
-    """The offline cache lookup is the third way a shard can reach --model-draft,
-    and offline there is no fetch left to complete the set."""
+    """Offline, the cache lookup is a third route for a shard to reach --model-draft."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -3519,8 +3460,7 @@ def test_cached_dflash_lookup_skips_an_incomplete_split_set(tmp_path, monkeypatc
 
 
 def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp_path, monkeypatch):
-    """Skipped, not fatal, exactly as the header check is: the half set merely
-    ranks first, and the snapshot still holds a sidecar that can be launched."""
+    """A half set is skipped, not fatal, as the header check does; a whole sidecar loads."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
@@ -3582,8 +3522,7 @@ def test_download_dflash_asks_again_after_a_listing_that_never_answered(tmp_path
 
 
 def test_download_dflash_asks_again_after_a_download_that_dropped(tmp_path, monkeypatch):
-    """The listing named the file, so this repo definitely publishes one: the bytes
-    are all that is missing."""
+    """The listing names the file, so the repo does publish it; only the bytes are missing."""
 
     def _fetch(
         repo,
@@ -3608,8 +3547,7 @@ def test_download_dflash_asks_again_after_a_download_that_dropped(tmp_path, monk
 
 
 def test_download_dflash_does_not_ask_again_after_a_permanent_hub_error(tmp_path, monkeypatch):
-    """A repo that is gone, gated, or being asked about offline is answered for good;
-    retrying it on every Apply would relaunch an identical server forever."""
+    """Gone, gated or offline repos are final, since retrying would relaunch the same server."""
 
     class RepositoryNotFoundError(Exception):
         pass
@@ -3624,9 +3562,7 @@ def test_download_dflash_does_not_ask_again_after_a_permanent_hub_error(tmp_path
 
 
 def test_download_dflash_does_not_ask_again_when_this_machine_is_the_problem(tmp_path, monkeypatch):
-    """A full disk or an unwritable cache stays that way, and the retry costs a full
-    unload plus another ~1.5 GiB attempt. Classified on errno, since the Hub client
-    raises OSError subclasses for network trouble too."""
+    """Disk-full or unwritable cache is final; classify by errno, since Hub network errors are OSError."""
     import errno
 
     def _fetch(
@@ -3676,9 +3612,7 @@ def test_download_dflash_treats_a_header_rejection_as_settled(tmp_path, monkeypa
 
 
 def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, monkeypatch):
-    """The other half of the same rule: the rejection only removes that one name from
-    the pool, so the sidecar ranked behind it is still fetched and nothing is flagged
-    for a retry."""
+    """Rejecting an impostor removes only its name, so the real sidecar ranked behind it is fetched."""
 
     def _fetch(
         repo,
@@ -3707,8 +3641,7 @@ def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, m
 
 
 def test_variant_plans_carry_every_shard_of_a_split_dflash_sidecar():
-    """The loader refuses a companion whose split set is incomplete, so planning
-    shard 1 alone reports the variant complete and then loses DFlash."""
+    """Loader refuses an incomplete split set, so planning shard 1 alone would lose DFlash."""
     plans = build_gguf_variant_plans(
         [
             _sib("model-Q4_K_M.gguf", 15_000, "main"),
@@ -3722,8 +3655,7 @@ def test_variant_plans_carry_every_shard_of_a_split_dflash_sidecar():
 
 
 def test_variant_plans_pair_dflash_with_the_weight_family_they_keep():
-    """_one_shard_family keeps the lexicographically first family, so ranking the
-    sidecar against the listing's first weight pairs the discarded one."""
+    """Pair the sidecar with the family _one_shard_family keeps, not the first listed weight."""
     plans = build_gguf_variant_plans(
         [
             _sib("QwQ-32B.BF16-00001-of-00002.gguf", 30_000, "b1"),
@@ -3743,9 +3675,8 @@ def test_variant_plans_pair_dflash_with_the_weight_family_they_keep():
 
 
 def test_variant_plans_skip_a_dflash_prefixed_file_too_big_to_be_a_drafter():
-    """dflash- is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a
-    listing cannot read the architecture, so size is the only bound available: a
-    drafter is a few layers of its target and cannot outweigh it."""
+    """dflash- is a prefix real weights carry and a listing cannot read architecture, so size is the
+    only bound: a drafter is a few layers of its target and cannot outweigh it"""
     plans = build_gguf_variant_plans(
         [
             _sib("Qwen3.6-27B-Q4_K_M.gguf", 15_000, "main"),
@@ -3770,9 +3701,8 @@ def test_variant_plans_still_carry_the_published_dflash_sidecar():
 
 
 def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch, tmp_path):
-    """The runtime picker needs the bound the plan has: a root dflash-*.gguf that is
-    an ordinary weight passes the filename test, and the header can only answer once
-    the whole object is on disk."""
+    """Runtime picker needs the plan's size bound: a root dflash-*.gguf weight passes the name test,
+    and the header only answers once the whole object is on disk"""
     from core.inference.llama_cpp import LlamaCppBackend
 
     weight = tmp_path / "Qwen3.6-27B-Q4_K_M.gguf"
@@ -3796,8 +3726,7 @@ def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch
 
 
 def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkeypatch):
-    """The snapshot and cache paths both refuse half a split companion; the download
-    path returned shard 1 and handed llama-server a set it cannot open."""
+    """Download refuses a half split set, not returning shard 1 that llama-server cannot open."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
     import huggingface_hub
@@ -3832,8 +3761,7 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
 
 
 def test_variant_plans_skip_a_half_published_split_sidecar():
-    """Planning a set the listing only half carries reports the download complete and
-    then loses DFlash, since the loader refuses the partial set."""
+    """Planning a half-listed split set reports it complete, then the loader refuses it."""
     plans = build_gguf_variant_plans(
         [
             _sib("model-Q4_K_M.gguf", 15_000, "main"),
@@ -3844,8 +3772,7 @@ def test_variant_plans_skip_a_half_published_split_sidecar():
 
 
 def test_variant_plans_fall_through_to_a_usable_sidecar_behind_an_oversized_one():
-    """Both plan rules filter before the ranking, so the impostor at the top of the
-    order steps aside instead of taking the whole plan down with it."""
+    """Filters run before ranking, so a top impostor steps aside instead of sinking the plan."""
     plans = build_gguf_variant_plans(
         [
             _sib("model-B-Q4_K_M.gguf", 15_000, "main"),
@@ -3924,8 +3851,7 @@ def test_download_companion_records_an_incomplete_listing_as_settled():
 def test_download_dflash_reaches_the_complete_family_behind_an_incomplete_one(
     monkeypatch, tmp_path
 ):
-    """A shard from a half-published set makes _download_companion_gguf answer None,
-    which ends the loop, so the complete sidecar behind it was never reached."""
+    """A half-published shard makes _download_companion_gguf return None and end the loop."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     weight = tmp_path / "model-B-Q4_K_M.gguf"
@@ -3958,9 +3884,8 @@ def test_split_completeness_reads_shard_indices_not_a_shard_count():
 
 
 def test_split_completeness_is_scoped_to_the_files_own_directory():
-    """A repo laid out by quant can hold half of one broken set beside half of
-    another. Matching basenames alone calls both of them one whole set, and the
-    fetch then cannot load either."""
+    """Completeness is per directory: matching basenames across quant folders would pair unrelated
+    halves."""
     from utils.models.drafters import split_listing_is_complete
 
     names = ["Q4/model-00001-of-00002.gguf", "Q8/model-00002-of-00002.gguf"]

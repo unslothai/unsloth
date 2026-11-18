@@ -114,8 +114,7 @@ class TestMediaIsCharged:
         ), "image bytes must be bounded but still charged"
 
     def test_every_builder_forwards_exactly_what_admission_charged(self):
-        """Every builder must send exactly what admission charged; only the echo of an image may be
-        dropped."""
+        """Each builder sends exactly what admission charged, except the dropped image echo."""
         from models.inference import ChatCompletionRequest
         from routes.inference import (
             _openai_llama_admission_media_tokens,
@@ -788,8 +787,7 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
                 )
 
     def test_the_charge_matches_what_the_translation_actually_sends(self):
-        """The charge tracks what the translation actually sends, so dropping whole tool_result
-        blocks fails."""
+        """Charge tracks what translation sends: dropping whole tool_result blocks must fail."""
         data = _image_b64(64)
         for text_first in (True, False):
             for name, block in self._blocks(data).items():
@@ -892,8 +890,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
     """A tool loop opens at an equal share and re-costs each round, so the whole cache is not reserved."""
 
     def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
-        """A loop with no client tools array is still a tool loop; keying on payload.tools
-        undercharges it."""
+        """Keying the tool loop on payload.tools undercharges a loop with no client tools."""
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
@@ -904,8 +901,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
         assert cost == 1024, cost
 
     def test_four_tool_chats_fit_the_cache_at_once(self):
-        """Four equal shares are exactly the budget, so four tool chats are admitted
-        together instead of one at a time."""
+        """Four equal shares fill the budget exactly, so four tool chats are admitted together."""
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
@@ -1061,8 +1057,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
 
     def test_round_zero_keeps_a_top_level_system_prompt(self):
-        """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that
-        route this is most of the prompt."""
+        """Anthropic keeps system and tools out of messages, so round zero must charge them."""
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
             system = "You are a careful assistant that cites its sources. " * 200,

@@ -12,6 +12,10 @@ export interface ResolvedControl {
   // "applied" | "fell_back" | "unsupported". Absent on older backends, which only ever applied.
   status?: string;
   reason: string;
+  // int8_attention only: whether Studio's INT8 attention kernel engaged, which build, how many modules.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export type ResolvedBadgeTone = "auto" | "warn";
@@ -136,6 +140,7 @@ export function resolvedSeedKey(
     part(resolved.text_encoder_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.int8_attention, true),
     part(resolved.family_override, true),
   ].join("|");
 }

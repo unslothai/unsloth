@@ -6,8 +6,10 @@ boto3 is faked as in test_s3_dataset.py."""
 
 import csv
 import importlib.util
+import io
 import json
 import os
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -58,8 +60,29 @@ class _FakeS3Client:
         callback = kwargs.get("Callback")
         if callback is not None:
             callback(1)
-        with open(local_path, "w", encoding = "utf-8") as f:
-            f.write(self._contents.get(key, f"content-of:{key}"))
+        content = self._contents.get(key, f"content-of:{key}")
+        if key.lower().endswith(".parquet") and isinstance(content, str):
+            content = _parquet_bytes([{"text": content}])
+        if isinstance(content, bytes):
+            Path(local_path).write_bytes(content)
+        else:
+            with open(local_path, "w", encoding = "utf-8", newline = "") as f:
+                f.write(content)
+
+
+def _parquet_bytes(rows, schema = None):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    buffer = io.BytesIO()
+    table = rows if isinstance(rows, pa.Table) else pa.Table.from_pylist(rows, schema = schema)
+    pq.write_table(table, buffer)
+    return buffer.getvalue()
+
+
+def _parquet_rows(path):
+    import pyarrow.parquet as pq
+    return pq.ParquetFile(path).read().to_pylist()
 
 
 def _install(
@@ -135,6 +158,24 @@ def test_audio_with_no_manifest_names_whats_missing(monkeypatch, tmp_path):
     _install(monkeypatch, ["datasets/audio/a.wav", "datasets/audio/b.mp3"])
     with pytest.raises(ValueError, match = "manifest"):
         s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids = ["lf", "crlf"])
+def test_s3_json_lines_preserves_unicode_transcript(monkeypatch, tmp_path, suffix, newline):
+    rows = [
+        {"audio": "audio/a.wav", "text": "first\u0085second\u2028third\u2029fourth"},
+        {"audio": "audio/a.wav", "text": "last"},
+    ]
+    manifest = "".join(json.dumps(row, ensure_ascii = False) + newline for row in rows)
+    key = f"datasets/train{suffix}"
+    _install(monkeypatch, [key, "datasets/audio/a.wav"], contents = {key: manifest})
+
+    result = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    audio_path = tmp_path / "audio" / "a.wav"
+    assert audio_path.is_file()
+    assert _rows(result.files[0]) == [{**row, "audio": str(audio_path)} for row in rows]
 
 
 def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path):
@@ -360,3 +401,484 @@ def test_ordinary_keys_stay_inside_the_download_dir(parts, tmp_path):
     if "\\" not in parts[-1]:
         win = s3_dataset._contained_local_path("C:\\data\\download", parts, pathmod = ntpath)
         assert win == ntpath.join("C:\\data\\download", *parts)
+
+
+@pytest.mark.parametrize("manifest_format", ["jsonl", "json", "csv"])
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("audio/clip.wav", "audio//clip.wav"),
+        ("audio/clip.wav", "audio/./clip.wav"),
+        ("audio/A.wav", "audio/a.wav"),
+        ("audio/caf\u00e9.wav", "audio/cafe\u0301.wav"),
+        ("Audio/clip.wav", "audio/clip.wav"),
+        ("caf\u00e9/clip.wav", "cafe\u0301/clip.wav"),
+    ],
+)
+def test_audio_aliases_keep_each_recording_and_its_transcript(
+    monkeypatch, tmp_path, names, manifest_format
+):
+    keys = [f"datasets/{name}" for name in names]
+    records = [
+        {"audio": f"s3://my-bucket/{key}", "text": f"transcript-{i}, heard"}
+        for i, key in enumerate(keys)
+    ]
+    if manifest_format == "csv":
+        handle = io.StringIO()
+        writer = csv.DictWriter(handle, fieldnames = ["audio", "text"])
+        writer.writeheader()
+        writer.writerows(records)
+        manifest = handle.getvalue()
+    elif manifest_format == "json":
+        manifest = json.dumps(records)
+    else:
+        manifest = "\n".join(map(json.dumps, records))
+    manifest_key = f"datasets/train.{manifest_format}"
+    _install(
+        monkeypatch,
+        [manifest_key, *keys],
+        contents = {
+            manifest_key: manifest + "\n",
+            keys[0]: "FIRST",
+            keys[1]: "SECOND",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    if manifest_format == "csv":
+        with open(files[0], encoding = "utf-8", newline = "") as handle:
+            rows = list(csv.DictReader(handle))
+    elif manifest_format == "json":
+        rows = json.loads(Path(files[0]).read_text(encoding = "utf-8"))
+    else:
+        rows = _rows(files[0])
+    paths = [row["audio"] for row in rows]
+    assert len({unicodedata.normalize("NFC", path).casefold() for path in paths}) == 2
+    assert [Path(path).read_text() for path in paths] == ["FIRST", "SECOND"]
+    assert [row["text"] for row in rows] == ["transcript-0, heard", "transcript-1, heard"]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [("train.jsonl", "./train.jsonl"), ("TRAIN.jsonl", "train.jsonl")],
+)
+def test_manifest_aliases_keep_all_training_rows(monkeypatch, tmp_path, names):
+    keys = [f"datasets/{name}" for name in names]
+    _install(
+        monkeypatch,
+        [*keys, "datasets/audio/clip.wav"],
+        contents = {
+            key: json.dumps({"audio": "audio/clip.wav", "text": f"transcript-{i}"}) + "\n"
+            for i, key in enumerate(keys)
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert len({unicodedata.normalize("NFC", path).casefold() for path in files}) == 2
+    assert [row["text"] for path in files for row in _rows(path)] == [
+        "transcript-0",
+        "transcript-1",
+    ]
+    assert all(Path(_rows(path)[0]["audio"]).is_file() for path in files)
+
+
+def test_audio_alias_suffixes_do_not_overwrite_another_object(monkeypatch, tmp_path):
+    keys = ["datasets/audio/clip.wav", "datasets/audio//clip.wav", "datasets/audio/clip_1.wav"]
+    _install(
+        monkeypatch,
+        ["datasets/metadata.jsonl", *keys],
+        contents = {
+            "datasets/metadata.jsonl": "\n".join(
+                json.dumps({"audio": f"s3://my-bucket/{key}"}) for key in keys
+            )
+            + "\n",
+            **{key: f"recording-{i}" for i, key in enumerate(keys)},
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert [Path(row["audio"]).read_text() for row in _rows(files[0])] == [
+        "recording-0",
+        "recording-1",
+        "recording-2",
+    ]
+
+
+@pytest.mark.parametrize("existing_name", ["metadata.jsonl", "audio/clip.wav"])
+def test_structured_download_keeps_existing_local_files(monkeypatch, tmp_path, existing_name):
+    existing = tmp_path / existing_name
+    existing.parent.mkdir(parents = True, exist_ok = True)
+    existing.write_text("KEEP")
+    _install(
+        monkeypatch,
+        ["datasets/metadata.jsonl", "datasets/audio/clip.wav"],
+        contents = {
+            "datasets/metadata.jsonl": '{"audio":"audio/clip.wav","text":"new sample"}\n',
+            "datasets/audio/clip.wav": "NEW",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert existing.read_text() == "KEEP"
+    assert Path(_rows(files[0])[0]["audio"]).read_text() == "NEW"
+
+
+@pytest.mark.parametrize("names", [("clip.wav", "/clip.wav"), ("A.wav", "a.wav")])
+def test_parquet_audio_aliases_download_every_object(monkeypatch, tmp_path, names):
+    keys = [f"datasets/audio/{name}" for name in names]
+    _install(
+        monkeypatch,
+        ["datasets/train.parquet", *keys],
+        contents = {keys[0]: "FIRST", keys[1]: "SECOND"},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    audio = sorted(path.read_text() for path in (tmp_path / "audio").iterdir())
+    assert audio == ["FIRST", "SECOND"]
+
+
+def test_parquet_download_keeps_existing_audio(monkeypatch, tmp_path):
+    existing = tmp_path / "clip.wav"
+    existing.write_text("KEEP")
+    _install(monkeypatch, ["datasets/train.parquet", "datasets/clip.wav"])
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    assert existing.read_text() == "KEEP"
+    assert (tmp_path / "clip_1.wav").read_text() == "content-of:datasets/clip.wav"
+
+
+@pytest.mark.parametrize("second_key", ["./train.parquet", "TRAIN.parquet"])
+def test_parquet_manifest_aliases_keep_both_shards(monkeypatch, tmp_path, second_key):
+    _install(
+        monkeypatch,
+        ["datasets/train.parquet", f"datasets/{second_key}", "datasets/clip.wav"],
+        contents = {
+            "datasets/train.parquet": "FIRST",
+            f"datasets/{second_key}": "SECOND",
+        },
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert [_parquet_rows(path)[0]["text"] for path in files] == ["FIRST", "SECOND"]
+    assert (tmp_path / "clip.wav").is_file()
+
+
+def test_parquet_audio_without_collisions_keeps_its_paths(monkeypatch, tmp_path):
+    _install(monkeypatch, ["datasets/train.parquet", "datasets/audio/clip.wav"])
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    assert (tmp_path / "audio" / "clip.wav").read_text() == "content-of:datasets/audio/clip.wav"
+
+
+@pytest.mark.parametrize("layout", ["string", "struct", "list"])
+@pytest.mark.parametrize(
+    "reference", ["audio/a.wav", "./audio/a.wav", "s3://my-bucket/datasets/train/audio/a.wav"]
+)
+def test_parquet_audio_references_resolve_to_the_downloaded_recording(
+    monkeypatch, tmp_path, layout, reference
+):
+    value = reference if layout == "string" else {"path": reference, "bytes": None}
+    if layout == "list":
+        value = [value, None]
+    row = {"audio": value, "text": "transcript", "speaker_id": 7}
+    _install(
+        monkeypatch,
+        ["datasets/train/rows.parquet", "datasets/train/audio/a.wav"],
+        contents = {"datasets/train/rows.parquet": _parquet_bytes([row])},
+    )
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    path = str(tmp_path / "train" / "audio" / "a.wav")
+    expected = path if layout == "string" else {"path": path, "bytes": None}
+    if layout == "list":
+        expected = [expected, None]
+    assert _parquet_rows(download.files[0]) == [{**row, "audio": expected}]
+    assert Path(path).is_file()
+
+
+def test_parquet_rewrite_preserves_hf_audio_schema_and_embedded_bytes(monkeypatch, tmp_path):
+    import struct
+    import wave
+
+    import datasets
+    import pyarrow.parquet as pq
+
+    features = datasets.Features(
+        {"audio": datasets.Audio(decode = False), "text": datasets.Value("string")}
+    )
+    rows = [
+        {"audio": {"path": "a.wav", "bytes": None}, "text": "external"},
+        {"audio": {"path": None, "bytes": b"embedded recording"}, "text": "embedded"},
+        {"audio": None, "text": "missing"},
+    ]
+    schema = features.arrow_schema.with_metadata(
+        {**features.arrow_schema.metadata, b"source": b"keep metadata"}
+    )
+    recording = io.BytesIO()
+    samples = struct.pack("<4h", 42, 2048, -42, -2048)
+    with wave.open(recording, "wb") as wav:
+        wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        wav.writeframes(samples)
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {
+            "datasets/rows.parquet": _parquet_bytes(rows, schema),
+            "datasets/a.wav": recording.getvalue(),
+        },
+    )
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    assert pq.ParquetFile(download.files[0]).schema_arrow.equals(schema, check_metadata = True)
+    loaded = datasets.load_dataset("parquet", data_files = download.files, split = "train")
+    assert loaded.features == features
+    assert loaded[0]["audio"]["path"] == str(tmp_path / "a.wav")
+    with wave.open(loaded[0]["audio"]["path"], "rb") as wav:
+        assert wav.getframerate() == 16000
+        assert wav.readframes(4) == samples
+    assert loaded[1] == rows[1] and loaded[2] == rows[2]
+
+
+def test_parquet_rewrite_uses_the_allocated_names_for_colliding_audio(monkeypatch, tmp_path):
+    keys = ["datasets/audio/clip.wav", "datasets/audio//clip.wav"]
+    rows = [{"audio": f"s3://my-bucket/{key}", "text": key} for key in keys]
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", *keys],
+        contents = {
+            "datasets/rows.parquet": _parquet_bytes(rows),
+            keys[0]: "FIRST",
+            keys[1]: "SECOND",
+        },
+    )
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    loaded = _parquet_rows(download.files[0])
+    assert loaded[0]["audio"] != loaded[1]["audio"]
+    assert [Path(row["audio"]).read_text() for row in loaded] == ["FIRST", "SECOND"]
+    assert [row["text"] for row in loaded] == keys
+
+
+def test_parquet_without_matching_references_stays_byte_identical(monkeypatch, tmp_path):
+    rows = [
+        {"audio": None, "text": "keep"},
+        {"audio": "https://example.com/a.wav", "text": "remote"},
+    ]
+    original = _parquet_bytes(rows)
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    assert Path(download.files[0]).read_bytes() == original
+
+
+def test_parquet_ambiguity_in_a_later_batch_preserves_the_manifest(monkeypatch, tmp_path):
+    rows = [{"audio": "s3://my-bucket/datasets/a.wav", "text": "safe"}] * 1100
+    rows.append({"audio": "a.wav", "text": "ambiguous"})
+    original = _parquet_bytes(rows)
+    client = _install(
+        monkeypatch,
+        ["datasets/train/rows.parquet", "datasets/a.wav", "datasets/train/a.wav"],
+        contents = {"datasets/train/rows.parquet": original},
+    )
+    with pytest.raises(ValueError, match = "Ambiguous audio reference"):
+        s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    manifest = tmp_path / "train" / "rows.parquet"
+    assert manifest.read_bytes() == original
+    assert list(manifest.parent.iterdir()) == [manifest]
+    assert [key for _, key, _ in client.downloaded] == ["datasets/train/rows.parquet"]
+
+
+def test_parquet_write_failure_preserves_the_manifest_and_removes_staging(monkeypatch, tmp_path):
+    import errno
+    import pyarrow.parquet as pq
+
+    original = _parquet_bytes([{"audio": "a.wav", "text": "keep on failure"}])
+    client = _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    def full_disk(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(pq.ParquetWriter, "write_table", full_disk)
+    with pytest.raises(OSError, match = "disk full"):
+        s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+    manifest = tmp_path / "rows.parquet"
+    assert manifest.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [manifest]
+    assert [key for _, key, _ in client.downloaded] == ["datasets/rows.parquet"]
+
+
+@pytest.mark.parametrize("kind", ["time", "timestamp", "uuid"])
+@pytest.mark.parametrize("reference", ["a.wav", "other.wav"])
+def test_parquet_rewrite_keeps_unrelated_arrow_columns(monkeypatch, tmp_path, kind, reference):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if kind == "uuid":
+        metadata = pa.array([bytes(range(16)), None], type = pa.uuid())
+    else:
+        value, dtype = (
+            (45_296_789_123_456, pa.time64("ns"))
+            if kind == "time"
+            else (253_402_300_800_000, pa.timestamp("ms"))
+        )
+        metadata = pa.array([value, None], type = pa.int64()).cast(dtype)
+    schema = pa.schema(
+        [pa.field("audio", pa.string()), pa.field("metadata", metadata.type)],
+        metadata = {b"source": b"keep metadata"},
+    )
+    table = pa.Table.from_arrays([pa.array([reference, None]), metadata], schema = schema)
+    original = _parquet_bytes(table)
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    actual = pq.read_table(download.files[0])
+    assert actual.schema.equals(schema, check_metadata = True)
+    assert actual["metadata"].equals(table["metadata"])
+    expected = str(tmp_path / "a.wav") if reference == "a.wav" else reference
+    assert actual["audio"].to_pylist() == [expected, None]
+    if reference != "a.wav":
+        assert Path(download.files[0]).read_bytes() == original
+
+
+@pytest.mark.parametrize("layout", ["struct", "list", "large-list", "fixed-list"])
+@pytest.mark.parametrize("kind", ["time", "timestamp"])
+def test_parquet_audio_path_keeps_its_nested_metadata(monkeypatch, tmp_path, layout, kind):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    value, dtype = (
+        (45_296_789_123_456, pa.time64("ns"))
+        if kind == "time"
+        else (253_402_300_800_000, pa.timestamp("ms"))
+    )
+    metadata = pa.array([value, None, value + 1, value + 2], type = pa.int64()).cast(dtype)
+
+    def audio(paths):
+        values = pa.StructArray.from_arrays(
+            [pa.array(paths), metadata, pa.array(["a.wav"] * 4)],
+            names = ["path", "metadata", "label"],
+            mask = pa.array([False, True, False, False]),
+        )
+        if layout == "struct":
+            return values
+        if layout == "fixed-list":
+            return pa.FixedSizeListArray.from_arrays(values, 2)
+        if layout == "large-list":
+            return pa.LargeListArray.from_arrays(pa.array([0, 2, 2, 4], type = pa.int64()), values)
+        return pa.ListArray.from_arrays(pa.array([0, 2, 2, 4], type = pa.int32()), values)
+
+    original = _parquet_bytes(
+        pa.Table.from_arrays([audio(["a.wav", None, "remote.wav", "a.wav"])], names = ["audio"])
+    )
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    local = str(tmp_path / "a.wav")
+    expected = pq.read_table(
+        io.BytesIO(
+            _parquet_bytes(
+                pa.Table.from_arrays([audio([local, None, "remote.wav", local])], names = ["audio"])
+            )
+        )
+    )
+    assert pq.read_table(download.files[0]).equals(expected, check_metadata = True)
+
+
+@pytest.mark.parametrize("kind", ["large-string", "string-view", "dictionary"])
+def test_parquet_rewrite_keeps_supported_string_types(monkeypatch, tmp_path, kind):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = {
+        "large-string": pa.large_string(),
+        "string-view": pa.string_view(),
+        "dictionary": pa.dictionary(pa.int8(), pa.string()),
+    }[kind]
+    original = _parquet_bytes(pa.table({"audio": pa.array(["a.wav", None], type = dtype)}))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    actual = pq.read_table(download.files[0])
+    assert actual.schema.equals(pq.read_schema(io.BytesIO(original)), check_metadata = True)
+    assert actual["audio"].to_pylist() == [str(tmp_path / "a.wav"), None]
+
+
+def test_parquet_nested_audio_metadata_survives_batch_boundaries(monkeypatch, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    count = 1100
+    metadata = pa.array(range(45_296_789_123_456, 45_296_789_123_456 + count * 2)).cast(
+        pa.time64("ns")
+    )
+
+    def audio(path):
+        values = pa.StructArray.from_arrays(
+            [pa.array([path, None] * count), metadata], names = ["path", "metadata"]
+        )
+        return pa.ListArray.from_arrays(pa.array(range(0, count * 2 + 1, 2)), values)
+
+    original = _parquet_bytes(pa.Table.from_arrays([audio("a.wav")], names = ["audio"]))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    expected = pq.read_table(
+        io.BytesIO(
+            _parquet_bytes(pa.Table.from_arrays([audio(str(tmp_path / "a.wav"))], names = ["audio"]))
+        )
+    )
+    assert pq.read_table(download.files[0]).equals(expected, check_metadata = True)
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_parquet_rewrite_accepts_sliced_list_batches(monkeypatch, tmp_path, large):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    dtype = pa.large_list(pa.string()) if large else pa.list_(pa.string())
+    rows = [[], ["a.wav"], None, ["other.wav"]]
+    original = _parquet_bytes(pa.table({"audio": pa.array(rows, type = dtype)}))
+    _install(
+        monkeypatch,
+        ["datasets/rows.parquet", "datasets/a.wav"],
+        contents = {"datasets/rows.parquet": original},
+    )
+    iterate = pq.ParquetFile.iter_batches
+
+    def sliced_batches(self, *args, **kwargs):
+        for batch in iterate(self, *args, **kwargs):
+            padded = pa.RecordBatch.from_arrays(
+                [pa.concat_arrays([pa.nulls(1, type = col.type), col]) for col in batch.columns],
+                schema = batch.schema,
+            )
+            yield padded.slice(1)
+
+    monkeypatch.setattr(pq.ParquetFile, "iter_batches", sliced_batches)
+
+    download = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    assert _parquet_rows(download.files[0]) == [
+        {"audio": []},
+        {"audio": [str(tmp_path / "a.wav")]},
+        {"audio": None},
+        {"audio": ["other.wav"]},
+    ]

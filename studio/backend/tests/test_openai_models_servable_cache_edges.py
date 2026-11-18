@@ -276,8 +276,7 @@ def test_an_invalidation_during_a_scan_is_not_stamped_in(monkeypatch):
 
 
 def test_the_generation_only_moves_on_invalidation(monkeypatch):
-    """A quiet process must still get the cache: if the generation drifted on its own,
-    every request would rescan and the fix would undo the performance work."""
+    """The generation changes only on invalidation, else every request rescans the filesystem."""
     before = resolver.index_generation()
     catalog = _catalog(3, "s")
     monkeypatch.setattr(
@@ -319,9 +318,8 @@ def test_a_hub_cache_deletion_leaves_the_listing(monkeypatch):
 
 
 def test_a_hardware_redetect_reveals_newly_servable_checkpoints(monkeypatch):
-    """local_servable_model decides non-GGUF servability from hardware.DEVICE. An Apple
-    Silicon MLX self-repair flips CPU to MLX after startup, so an early /v1/models must
-    not pin 'unservable' for the rest of the catalog TTL."""
+    """hardware.DEVICE drives non-GGUF servability and an Apple MLX self-repair flips CPU to MLX
+    after startup, so an early /v1/models must not pin 'unservable' for the catalog TTL."""
     from utils.hardware import hardware as hw
 
     catalog = _catalog(1, "k")
@@ -340,8 +338,7 @@ def test_a_hardware_redetect_reveals_newly_servable_checkpoints(monkeypatch):
 
 
 def test_the_generation_key_names_all_three_signals():
-    """A missing counter would silently pin the key and undo the invalidation, so the
-    shape is asserted rather than left to the two behavioural tests above."""
+    """A missing counter would pin the key and undo invalidation, so all three are asserted."""
     from core.inference.local_model_resolver import index_generation
     from hub.utils.inventory_scan import hf_cache_scans_epoch
     from utils.hardware import hardware as hw
@@ -419,9 +416,8 @@ def test_a_generation_bump_while_waiting_for_the_lock_is_not_accepted(monkeypatc
 
 
 def test_the_invalidation_helper_stays_off_the_event_loop():
-    """invalidate_index takes the resolver lock and _index() holds it across a full
-    multi-root filesystem scan, so an async route calling it inline would stall unrelated
-    requests and in-flight inference streams behind a rebuild."""
+    """invalidate_index takes the resolver lock that _index() holds across a full filesystem scan,
+    so an async route calling it inline would stall requests and inference streams."""
     import asyncio as _asyncio
     import inspect
 

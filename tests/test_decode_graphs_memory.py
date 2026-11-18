@@ -481,7 +481,7 @@ def test_keep_only_keeps_the_batch_size_decode_used(G):
     assert [k[0] for k in state.graphs] == [4]
 
 
-@pytest.mark.parametrize("model_type", ["mistral", "qwen2", "gemma", "gemma2"])
+@pytest.mark.parametrize("model_type", ["cohere", "gemma", "gemma2"])
 def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_type):
     model = _Model()
     model.config.model_type = model_type
@@ -685,3 +685,145 @@ def test_cache_growth_cap_uses_the_planned_length():
     assert args["start_generation"][0].id == "plan_len"
     assert args["short_call"][1].id == "plan_len"
     assert args["plan_call"][4].id == "plan_len"
+
+
+def _graphed(
+    G,
+    model,
+    bsz = 4,
+):
+    model.keep(bsz, 512)
+    G._state(model).graphs[(bsz,)] = object()
+    model.__dict__[G.HELD] = True
+
+
+def _keep_env(
+    G,
+    monkeypatch,
+    steps,
+    peak = 5 * GB,
+    allocated = 2 * GB,
+    free = 10 * GB,
+):
+    monkeypatch.setattr(G, "_held", lambda model: (GB, CUDA0))
+    monkeypatch.setattr(G, "_optimizer_steps", lambda: steps[0])
+    monkeypatch.setattr(G, "_allocator", lambda device: (allocated, 0, peak))
+    monkeypatch.setattr(G, "_free_bytes", lambda device: free)
+
+
+def test_auto_keeps_graphs_through_training_only_after_a_measured_step(G, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", raising = False)
+    steps = [0]
+    _keep_env(G, monkeypatch, steps)
+    model = _Model()
+    _graphed(G, model)
+    assert G.release_for_training(model) is True
+    assert model.held() == 0 and not G._state(model).graphs
+    steps[0] += 1
+    _graphed(G, model)
+    # Training needs peak - allocated + held = 4 GB <= half of the 10 GB free: keep graphs and buffers.
+    assert G.release_for_training(model) is False
+    assert model.held() == 1 and G._state(model).graphs
+    # The store holds the buffers; the training forward sees no decode attributes (as after a release).
+    assert not any("paged_attention" in a.__dict__ for a in model.attns)
+    assert model.__dict__[G.KEEP_CASTS] is True
+    assert G.release_if_training(model) is False and G._state(model).graphs
+    monkeypatch.setattr(G, "_free_bytes", lambda device: 7 * GB)
+    assert G.release_for_training(model) is True
+    assert model.held() == 0 and not model.__dict__.get(G.KEEP_CASTS)
+
+
+@pytest.mark.parametrize("mode, kept", [("0", False), ("1", True)])
+def test_keep_for_training_modes(G, monkeypatch, mode, kept):
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", mode)
+    _keep_env(G, monkeypatch, [0], free = 0)
+    model = _Model()
+    _graphed(G, model)
+    assert G.release_for_training(model) is (not kept)
+    assert bool(G._state(model).graphs) is kept
+    # force (the OOM redo) always frees.
+    _graphed(G, model)
+    assert G.release_for_training(model, force = True) is True
+    assert model.held() == 0 and not G._state(model).graphs
+
+
+def test_nothing_to_keep_releases(G, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", "1")
+    _keep_env(G, monkeypatch, [0])
+    model = _Model()
+    model.keep(4, 512)  # buffers, no graph
+    assert G.keep_for_training(model) is False
+
+
+def test_freed_cublas_workspaces_invalidate_every_graph(G, monkeypatch):
+    # Inductor's CUDA graph trees free the cuBLAS workspaces captured decode steps wrote into.
+    calls = []
+    monkeypatch.setattr(
+        torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False
+    )
+    G._watch_cublas_workspaces()
+    buffers, weights = G.BUFFER_EPOCH, G.WEIGHTS_EPOCH
+    torch._C._cuda_clearCublasWorkspaces()
+    assert calls == [1] and G.BUFFER_EPOCH == buffers + 1 and G.WEIGHTS_EPOCH == weights + 1
+    G._watch_cublas_workspaces()  # wraps once
+    torch._C._cuda_clearCublasWorkspaces()
+    assert calls == [1, 1] and G.BUFFER_EPOCH == buffers + 2
+
+
+class _FakeVMM:
+    """Stands in for _decode_vmm: every graph KV cache is a VMM range."""
+
+    def __init__(self, busy = False):
+        self.busy, self.asleep, self.woken = busy, set(), 0
+
+    def buffer_of(self, tensor):
+        return self if isinstance(tensor, torch.Tensor) and tensor.dim() == 5 else None
+
+    def in_use(self, tensor):
+        return self.busy
+
+    def sleep(self, tensor):
+        self.asleep.add(id(tensor))
+        return tensor.numel()
+
+    def wake(self, tensor):
+        if id(tensor) in self.asleep:
+            self.asleep.discard(id(tensor))
+            self.woken += 1
+            return True
+        return False
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_vmm_caches_sleep_through_training_from_the_first_round(G, monkeypatch, busy):
+    monkeypatch.delenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", raising = False)
+    vmm = _FakeVMM(busy)
+    monkeypatch.setattr(G, "_vmm_module", lambda: vmm)
+    monkeypatch.setattr(G, "_total_bytes", lambda device: 80 * GB)
+    _keep_env(G, monkeypatch, [0], free = 0)  # no measured step, no headroom: only sleeping can keep
+    monkeypatch.setattr(G, "_held", lambda model: (0, CUDA0))
+    model = _Model()
+    _graphed(G, model)
+    caches = [bufs[0] for a in model.attns for bufs in a._unsloth_graph_buffers.values()]
+    released = G.release_for_training(model)
+    if busy:
+        # A caller still views a cache (a returned past_key_values): released as before, nothing slept.
+        assert released is True and model.held() == 0 and not vmm.asleep
+        return
+    assert released is False and G._state(model).graphs and model.held() == 1
+    assert vmm.asleep == {id(t) for t in caches}
+    assert not any("paged_attention" in a.__dict__ for a in model.attns)
+
+
+@pytest.mark.parametrize("awake", [True, False])
+def test_a_sleeping_cache_gets_no_reuse_credit(G, monkeypatch, awake):
+    # A slept VMM cache gave its pages to training; the next generate must map them again.
+    model = torch.nn.Module()
+    model.attn = _Attn()
+    buf = torch.zeros(8, 4)
+    model.attn.__dict__["_unsloth_graph_buffers"] = {"k": (buf,)}
+    monkeypatch.setattr(G, "_vmm_buffer", lambda t: types.SimpleNamespace(awake = awake))
+    assert G._kept_buffers(model, "k", 4) == (
+        True,
+        buf.numel() * buf.element_size() if awake else 0,
+    )

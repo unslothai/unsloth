@@ -20,8 +20,7 @@ from collections.abc import Mapping
 import torch
 from transformers import TrainerCallback
 
-# Dense (no sparsity) 16 bit tensor core TFLOPs per GPU, from the vendor datasheets.
-# Order matters: the first substring found in the device name wins.
+# Dense 16-bit tensor TFLOPs per GPU; the first substring found in the device name wins.
 _PEAK_TFLOPS_16BIT = (
     ("H100 PCIE", 756.0),
     ("H100 NVL", 835.0),
@@ -29,17 +28,11 @@ _PEAK_TFLOPS_16BIT = (
     ("H200 NVL", 835.5),
     ("H200", 989.0),
     ("GH200", 989.0),
-    # Dense = half NVIDIA's sparse figure (nvidia.com/en-us/data-center/hgx, gb200-nvl72).
-    # GB* first: the B200 / B300 keys would match inside their names.
+    # Dense is half the sparse figure; GB* first, since B200/B300 match inside GB200/GB300.
     ("GB300", 2500.0),
     ("GB200", 2500.0),
     ("B300", 2250.0),
     ("B200", 2250.0),
-    # sm120. NVIDIA RTX PRO Blackwell GPU Architecture whitepaper v1.1, Table 4 (dense FP16 / BF16
-    # tensor with FP32 accumulate): Workstation 503.8, Max-Q 438.9. Server Edition: nvidia.com
-    # rtx-pro-6000-blackwell-server-edition lists 1 PFLOP FP16 / BF16 with sparsity -> 500 dense.
-    # GeForce RTX 5090: NVIDIA RTX Blackwell GPU Architecture whitepaper v1.1, Table 3, 209.5 dense
-    # with FP32 accumulate (GeForce runs FP32 accumulate at half the FP16 accumulate rate).
     # Specific editions first; every key needs "PRO", so "RTX 6000 Ada Generation" never matches.
     ("RTX PRO 6000 BLACKWELL MAX-Q", 438.9),
     ("RTX PRO 6000 BLACKWELL SERVER", 500.0),
@@ -363,9 +356,8 @@ def _unsupported_setup(
     args,
     trainer_name = "",
 ):
-    """True where the per-token count does not describe the step, so nothing is reported:
-    diffusion objectives (extra no-grad passes, encoder + canvas, recomputed heads) and
-    single-process DataParallel (the hook runs once per replica, concurrently)."""
+    """True for diffusion and single-process DataParallel steps, where the per-token count misleads,
+    so nothing is reported."""
     model_type = str(getattr(_model_config(model), "model_type", "") or "")
     if "diffusion" in model_type.lower() or "Diffusion" in trainer_name:
         return True
@@ -500,8 +492,7 @@ class UnslothMFUCallback(TrainerCallback):
         elif self._paused and self._last_step_end is not None:
             paused = now - self._last_step_end
             if self._step_end_events:
-                # The step's kernels may still be queued at on_step_end: exclude only the time
-                # after every GPU finished them.
+                # Queued kernels may outlive on_step_end: pause only once every GPU is done.
                 gaps = []
                 for index, start in self._step_end_events:
                     end = torch.cuda.Event(enable_timing = True)

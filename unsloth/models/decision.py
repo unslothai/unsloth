@@ -31,6 +31,7 @@ from ._utils import (
 from .loader_utils import is_distributed
 from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
+from ._lean_lora import apply_lean_lora as _lean_lora, lean_lora_forward as _lean_lora_forward
 from ._decision_common import *  # noqa: F401,F403
 
 HEAD_LEARNING_RATE = 1e-4
@@ -122,45 +123,6 @@ def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
             model.encoder.enable_input_require_grads()
     else:
         model.encoder.gradient_checkpointing_disable()
-
-
-def _lean_lora_forward(self, x, *args, **kwargs):
-    adapter = self._unsloth_adapter
-    if (
-        self.disable_adapters
-        or self.merged
-        or args
-        or kwargs
-        or (
-            not torch.is_autocast_enabled(x.device.type)
-            and x.dtype != self.lora_A[adapter].weight.dtype
-        )
-    ):
-        return self._unsloth_peft_forward(x, *args, **kwargs)
-    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
-    # dtype, and the multiply when scaling is 1.
-    lora = self.lora_B[adapter](self.lora_A[adapter](x))
-    scaling = self.scaling[adapter]
-    return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
-
-
-def _lean_lora(encoder) -> None:
-    # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
-    from peft.tuners.lora.layer import Linear
-
-    # Unsloth's compiler (a FastModel load earlier in this process) already gave PEFT a compiled forward.
-    if Linear.forward.__name__ == "unsloth_forward":
-        return
-    for module in encoder.modules():
-        if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
-            continue
-        adapter = next(iter(module.lora_A))
-        if not isinstance(module.lora_dropout[adapter], torch.nn.Identity):
-            continue
-        # Bound methods, so the deepcopy that merges for saving rebinds them to the copy.
-        module._unsloth_adapter = adapter
-        module._unsloth_peft_forward = module.forward
-        module.forward = types.MethodType(_lean_lora_forward, module)
 
 
 def _soft_cross_entropy(logits, target, mask):
@@ -752,9 +714,8 @@ def _load_clef(
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
-        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path:
-        # float16 linear weights, float32 activations, no autocast (the gated delta net NaNs in pure float16).
-        # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
+        # float16 or no bfloat16 sends Qwen3.5 to a float32 path (float16 linear weights, float32
+        # activations, no autocast): pure float16 NaNs in its gated delta net
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -886,8 +847,7 @@ def _staging(output: Path):
 
 
 def _fold_temperature(state: dict, temperature: float) -> bool:
-    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
-    # rescaled log-scales stay under the head's clamp(max = log 100).
+    # Folding T is exact while the rescaled log scales stay under the clamp at log 100.
     cap = math.log(100.0)
     scales = {}
     for name in ("prior_logit_scale", "joint_logit_scale"):
@@ -934,8 +894,7 @@ def _clef_head_weights(self, exact = False) -> tuple:
             config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        # The logit scales stay float32: a folded temperature moves them, and bfloat16's 8 bit
-        # mantissa would turn that into a few percent on every logit.
+        # Logit scales stay float32: bfloat16 would blur a folded temperature in every logit.
         value = value.to(torch.float32 if value.dim() == 0 else torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
@@ -1099,6 +1058,9 @@ def push_to_hub_clef(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1267,6 +1229,8 @@ class DecisionTrainer(Trainer):
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
+            if hasattr(args, "activation_checkpointing"):
+                args.activation_checkpointing = False
             if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
@@ -1540,6 +1504,9 @@ def push_to_hub_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)

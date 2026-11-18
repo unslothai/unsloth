@@ -261,3 +261,19 @@ def test_s3config_requires_credentials_or_iam():
 def test_s3config_iam_role_needs_no_keys():
     cfg = S3Config.model_validate({"bucket": "b", "useIamRole": True})
     assert cfg.use_iam_role is True
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Train.parquet", "train.parquet"),
+        ("caf\u00e9.parquet", "cafe\u0301.parquet"),
+    ],
+)
+def test_local_paths_are_reserved_before_downloads_create_files(tmp_path, names):
+    used_paths = set()
+    first = s3_dataset._unique_local_path(str(tmp_path), names[0], used_paths)
+    second = s3_dataset._unique_local_path(str(tmp_path), names[1], used_paths)
+    assert os.path.basename(second).endswith("_1.parquet")
+    assert not Path(first).exists()
+    assert not Path(second).exists()

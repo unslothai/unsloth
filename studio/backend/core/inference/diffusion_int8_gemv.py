@@ -10,6 +10,7 @@ torchao's forward. Opaque to Inductor and M is the batch, so no recompiles or CU
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from functools import lru_cache
@@ -25,7 +26,9 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_wo_gemv"
 # (BLOCK_N, BLOCK_K, warps, stages), first that launches wins; the first needs ~40 KB smem, the second fits any card.
 _CONFIGS = ((128, 128, 8, 3), (64, 64, 4, 2))
+# (device index, scale group or 0 per row) -> index into _plans of the plan that launched
 _DEVICE_CFG: dict = {}
+GROUP_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMV_GROUP_TILES"
 _LOCK = threading.Lock()
 # Engagement evidence for benches.
 COUNTS = {"gemv": 0, "fallback": 0}
@@ -46,7 +49,8 @@ def _kernel() -> Any:
     except Exception:  # noqa: BLE001 - no Triton: stock path
         return None
 
-    @triton.jit
+    # M and KO only bound masks
+    @triton.jit(do_not_specialize = ["M", "KO"])
     def i8_wo_gemv(
         x_ptr,
         q_ptr,
@@ -64,6 +68,7 @@ def _kernel() -> Any:
         stride_sn,
         stride_on,
         stride_ym,
+        GS,
         HAS_BIAS: tl.constexpr,  # bias present
         HAS_OUT: tl.constexpr,  # bf16 outlier columns present
         GROUPED: tl.constexpr,  # per-group weight scales
@@ -86,7 +91,8 @@ def _kernel() -> Any:
             # int8 -> bf16 is exact and bf16 x bf16 products are exact in the float32 accumulator
             part = tl.dot(x, tl.trans(q.to(tl.bfloat16)), out_dtype = tl.float32)
             if GROUPED:
-                s = tl.load(s_ptr + rn * stride_sn + k0 // BLOCK_K, mask = n_ok, other = 0.0)
+                # GS (the scale group) is a multiple of BLOCK_K
+                s = tl.load(s_ptr + rn * stride_sn + k0 // GS, mask = n_ok, other = 0.0)
                 acc += part * s.to(tl.float32)[None, :]
             else:
                 acc += part
@@ -150,6 +156,27 @@ def reference(
     return y.to(torch.bfloat16)
 
 
+def _group_tiles() -> bool:
+    return (os.environ.get(GROUP_TILES_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _plans(group: int) -> tuple:
+    """Tiles to try in order; grouped: one group per K tile first (the old tile), then _CONFIGS' K tiles inside it."""
+    if not group:
+        return _CONFIGS
+    whole = tuple((bn, group, w, st) for bn, _bk, w, st in _CONFIGS)
+    if not _group_tiles():
+        return whole
+    return whole + tuple(
+        (bn, bk, w, st) for bn, bk, w, st in _CONFIGS if group > bk and group % bk == 0
+    )
+
+
 def _launch(x: Any, q: Any, s2: Any, bias: Any, oidx: Any, ow: Any, cfg: tuple) -> Any:
     import torch
 
@@ -157,37 +184,39 @@ def _launch(x: Any, q: Any, s2: Any, bias: Any, oidx: Any, ow: Any, cfg: tuple) 
     block_n, block_k, warps, stages = cfg
     m, k = x.shape
     n, groups = s2.shape
-    if groups > 1:
-        block_k = k // groups
     ko = 0 if oidx is None else int(oidx.numel())
     y = torch.empty((m, n), device = x.device, dtype = torch.bfloat16)
-    fn[(triton.cdiv(n, block_n),)](
-        x,
-        q,
-        s2,
-        bias if bias is not None else y,
-        oidx if ko else y,
-        ow if ko else y,
-        y,
-        m,
-        n,
-        k,
-        ko,
-        x.stride(0),
-        q.stride(0),
-        s2.stride(0),
-        ow.stride(0) if ko else 0,
-        y.stride(0),
-        HAS_BIAS = bias is not None,
-        HAS_OUT = ko > 0,
-        GROUPED = groups > 1,
-        # tl.dot wants >= 16 rows: the masked pad rows load zeros and are never stored
-        BLOCK_M = 16,
-        BLOCK_N = block_n,
-        BLOCK_K = block_k,
-        num_warps = warps,
-        num_stages = stages,
-    )
+    # Triton launches on the current device, not the tensor's
+    other_card = x.is_cuda and x.device.index != torch.cuda.current_device()
+    with torch.cuda.device(x.device) if other_card else contextlib.nullcontext():
+        fn[(triton.cdiv(n, block_n),)](
+            x,
+            q,
+            s2,
+            bias if bias is not None else y,
+            oidx if ko else y,
+            ow if ko else y,
+            y,
+            m,
+            n,
+            k,
+            ko,
+            x.stride(0),
+            q.stride(0),
+            s2.stride(0),
+            ow.stride(0) if ko else 0,
+            y.stride(0),
+            k // groups,
+            HAS_BIAS = bias is not None,
+            HAS_OUT = ko > 0,
+            GROUPED = groups > 1,
+            # tl.dot wants >= 16 rows: the masked pad rows load zeros and are never stored
+            BLOCK_M = 16,
+            BLOCK_N = block_n,
+            BLOCK_K = block_k,
+            num_warps = warps,
+            num_stages = stages,
+        )
     return y
 
 
@@ -205,13 +234,15 @@ def _run(
     block_k = k // groups if groups > 1 else _CONFIGS[-1][1]
     ko = 0 if oidx is None else int(oidx.numel())
     index = x.device.index if x.is_cuda else None
-    start = _DEVICE_CFG.get(index, 0)
+    key = (index, block_k if groups > 1 else 0)
+    plans = _plans(key[1])
+    start = _DEVICE_CFG.get(key, 0)
     if (
         index is None
         or _kernel() is None
-        or start >= len(_CONFIGS)
+        or start >= len(plans)
         or k % block_k
-        or (groups == 1 and k % _CONFIGS[start][1])
+        or (groups == 1 and k % plans[start][1])
         or q.stride(-1) != 1
         or block_k & (block_k - 1)
         or block_k < 16
@@ -224,15 +255,15 @@ def _run(
     s2 = s.reshape(n, groups)
     if s2.stride(-1) != 1:
         s2 = s2.contiguous()
-    for pos in range(start, len(_CONFIGS)):
+    for pos in range(start, len(plans)):
         try:
-            y = _launch(x, q, s2, bias, oidx, ow, _CONFIGS[pos])
+            y = _launch(x, q, s2, bias, oidx, ow, plans[pos])
         except Exception:  # noqa: BLE001 - a tile this card cannot hold (shared memory): the next, smaller one
             continue
-        _DEVICE_CFG[index] = pos
+        _DEVICE_CFG[key] = pos
         COUNTS["gemv"] += 1
         return y
-    _DEVICE_CFG[index] = len(_CONFIGS)
+    _DEVICE_CFG[key] = len(plans)
     COUNTS["fallback"] += 1
     return reference(x, q, s, bias, oidx, ow)
 

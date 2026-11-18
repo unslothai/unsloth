@@ -333,7 +333,7 @@ test("the sidebar's mutating chords refuse to fire under a dialog", async () => 
   assert.match(APP_SIDEBAR, /isSurfaceBackgrounded\(SIDEBAR_SELECTOR\)/);
   assert.match(
     APP_SIDEBAR,
-    /document\.querySelector\(SIDEBAR_SELECTOR\) === null &&\n\s*isSurfaceBackgrounded\("#root"\)/,
+    /surfaceElements\(SIDEBAR_SELECTOR\)\.length === 0 &&\n\s*isSurfaceBackgrounded\("#root"\)/,
   );
 });
 

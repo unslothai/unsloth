@@ -181,8 +181,7 @@ class TestSetupServerDiskLogging:
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         body = src.index("def run_server")
         reject_idx = src.index("--secure requires the Cloudflare tunnel", body)
-        # Anchor on the assignment, not the bare name: a comment mentioning the call
-        # would otherwise satisfy this.
+        # Anchor on the assignment, since a comment naming the call would also match.
         tee_idx = src.index("_session_log = _setup_server_disk_logging()", body)
         assert reject_idx < tee_idx, (
             "the --secure/--no-cloudflare rejection must run before the tee is installed; "

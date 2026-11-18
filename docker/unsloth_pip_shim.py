@@ -341,9 +341,8 @@ def _canon(token):
 
 
 def _local_project_name(token):
-    """Name pip/uv would build for a local project dir, falling back to the basename
-    only when the dir is an installable project at all. None for a metadata-less dir,
-    so ordinary paths pass through."""
+    """Name pip or uv would build for a local project dir, falling back to the basename only for an
+    installable project; None for a metadata-less dir so ordinary paths pass through."""
     # Resolve from uv's --directory, not our cwd, or the project is misclassified as unknown.
     path = _resolve_read_path(token.split("#", 1)[0])
     if not os.path.isdir(path):
@@ -377,11 +376,8 @@ def _local_project_name(token):
 
 
 def _marker_is_false(token):
-    """True when this requirement carries a PEP 508 marker that does not hold here.
-
-    Both real tools then skip it entirely, so it pins nothing and must not reach the
-    sidecar marker file. packaging is treated as optional, as it is elsewhere: if it
-    is missing or the token does not parse, nothing is vetoed."""
+    """True when the PEP 508 marker fails here: pip and uv skip such a requirement, so it must not
+    reach the sidecar marker file; without packaging, or on a parse error, nothing is vetoed."""
     try:
         from packaging.requirements import Requirement
         req = Requirement(token)
@@ -547,10 +543,9 @@ def _uv_working_dir(tool, argv):
 
 
 def _resolve_read_path(path):
-    """Read a relative requirements path from where the real tool will read it.
-    Reading it from our cwd instead makes open() miss, and a miss is silent: the
-    original relative path is forwarded unfiltered and uv, now chdir'd, installs a
-    file we never inspected and never recorded a transformers pin from."""
+    """Resolves a relative requirements path against the real tool's working dir; reading from our
+    cwd would miss silently, forwarding an unfiltered file uv installs without recording its
+    transformers pin."""
     if not _WORKING_DIR or os.path.isabs(path):
         return path
     return os.path.join(_WORKING_DIR, path)
@@ -939,11 +934,10 @@ def _uninstall(tool, argv, i):
 
 
 def _positionals(argv):
-    """(index, token) for every positional, skipping options AND their values.
-
-    `--flag=value` carries its own value; a bare value flag eats the next token.
-    _VALUE_FLAGS is the same set the tail scanner uses and _selfcheck_value_flags()
-    holds it to the real CLIs at build time."""
+    """Returns (index, token) for every positional, skipping options and their values; --flag=value
+    carries its own value while a bare value flag eats the next token; _VALUE_FLAGS is shared
+    with the tail scanner and checked against the real CLIs at build time by
+    _selfcheck_value_flags()."""
     out = []
     skip = False
     for i, tok in enumerate(argv):
@@ -959,12 +953,9 @@ def _positionals(argv):
 
 
 def _is_uv_pip_sync(argv):
-    """`uv pip sync` is an install path we cannot make safe by filtering.
-
-    It UNINSTALLS every package absent from the requirements file, so unlike install
-    there is nothing to strip: keeping a protected package out of the file is exactly
-    what deletes it, and --constraint only bounds versions, never prevents a removal.
-    """
+    """uv pip sync cannot be made safe by filtering: it uninstalls every package absent from the
+    requirements file, so keeping a protected package out deletes it, and --constraint never
+    prevents removal."""
     return [tok for _, tok in _positionals(argv)][:2] == ["pip", "sync"]
 
 

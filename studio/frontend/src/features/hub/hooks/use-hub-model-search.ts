@@ -31,6 +31,7 @@ import {
 } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
 import { LruMap } from "../lib/lru-map";
+import { parseOwnerSearchQuery } from "../lib/search-text";
 import {
   type UnslothSupport,
   type UnslothSupportStatus,
@@ -109,8 +110,11 @@ export interface HfModelResult {
   gated?: false | "auto" | "manual";
   totalParams?: number;
   estimatedSizeBytes?: number;
+  estimatedResidentGb?: number;
+  smallestResidentGb?: number;
   curatedSizeBytes?: number;
   isGguf: boolean;
+  ggufArchitecture?: string;
   baseModel?: string | null;
   tags?: string[];
   pipelineTag?: string;
@@ -274,6 +278,7 @@ function makeMapModel(
         (m.gguf ? ggufRepoParams(m.name, m.gguf.total) : undefined),
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
+      ggufArchitecture: m.gguf?.architecture,
       baseModel: detectBaseModel(m.tags),
       tags: m.tags,
       pipelineTag,
@@ -288,11 +293,8 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
-const UNSLOTH_PINNED_PREFETCH = 4;
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
-/** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
-const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
 
 /** Public models also prime the anonymous slot; gated/private only under the caller's token. */
 function primeFromListing(
@@ -316,7 +318,6 @@ async function* mergedModelIterator(
   query: string,
   task?: HfTaskFilter,
   accessToken?: string,
-  pinnedId?: string,
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
@@ -352,22 +353,7 @@ async function* mergedModelIterator(
     signal,
   );
 
-  // Start the pinned lookup now so it runs in parallel with Phase 1.
-  const pinnedPromise = pinnedId
-    ? cachedModelInfo({
-        hubUrl: getHfEndpoint(),
-        name: pinnedId,
-        additionalFields: ALL_FIELDS,
-        fetch: makeHfFetch(signal),
-        ...(accessToken ? { credentials: { accessToken } } : {}),
-      }).catch(() => null)
-    : null;
-
-  const limit = pinnedId
-    ? UNSLOTH_PINNED_PREFETCH
-    : query.trim()
-      ? UNSLOTH_QUERY_PREFETCH
-      : UNSLOTH_PREFETCH;
+  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
 
   // Phase 1: unsloth models first
   const seen = new Set<string>();
@@ -391,20 +377,6 @@ async function* mergedModelIterator(
     if (count >= limit) break;
   }
 
-  // Phase 1b: pinned publisher model before general results
-  if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
-    const pinned = await pinnedPromise;
-    if (pinned) {
-      // Record raw input and HF's canonical name so dedup survives casing differences.
-      seen.add(pinnedId);
-      const canonicalName = (pinned as { name?: string }).name;
-      if (canonicalName && canonicalName !== pinnedId) {
-        seen.add(canonicalName);
-      }
-      yield pinned;
-    }
-  }
-
   // Phase 2: general results, skipping already-seen models
   for await (const model of generalIter) {
     const m = model as { name?: string };
@@ -413,6 +385,73 @@ async function* mergedModelIterator(
       primeFromListing(m.name, accessToken, model);
     }
     yield model;
+  }
+}
+
+/** One owner's repos, the exact `pinnedId` repo first. The Hub's owner filter is case-sensitive. */
+async function* ownerModelIterator(
+  owner: string,
+  query: string,
+  accessToken?: string,
+  pinnedId?: string,
+  sortBy: HfSortKey = "downloads",
+  direction: HfSortDirection = "desc",
+  signal?: AbortSignal,
+  parameterFilter = "",
+  tags?: string[],
+): AsyncGenerator<unknown> {
+  const credentials = accessToken ? { credentials: { accessToken } } : {};
+  const listing = (author: string) =>
+    listModels({
+      hubUrl: getHfEndpoint(),
+      search: { owner: author, ...(query ? { query } : {}), ...(tags ? { tags } : {}) },
+      fetch: makeSortFetch(sortBy, direction, signal, parameterFilter),
+      additionalFields: ALL_FIELDS,
+      ...credentials,
+    }) as AsyncGenerator<unknown>;
+
+  const seen = new Set<string>();
+  if (pinnedId) {
+    const pinned = (await cachedModelInfo({
+      hubUrl: getHfEndpoint(),
+      name: pinnedId,
+      additionalFields: ALL_FIELDS,
+      fetch: makeHfFetch(signal),
+      ...credentials,
+    }).catch(() => null)) as { name?: string } | null;
+    if (pinned?.name) {
+      seen.add(pinned.name);
+      owner = pinned.name.split("/")[0];
+      yield pinned;
+    }
+  }
+
+  for (let author: string | null = owner; author; ) {
+    for await (const model of listing(author)) {
+      const name = (model as { name?: string }).name;
+      if (name && seen.has(name)) continue;
+      if (name) {
+        seen.add(name);
+        primeFromListing(name, accessToken, model);
+      }
+      yield model;
+    }
+    if (seen.size > 0 || author !== owner) return;
+    // Nothing under the typed spelling: retry once under the owner's canonical casing.
+    author = null;
+    for await (const model of listModels({
+      hubUrl: getHfEndpoint(),
+      search: { query: `${owner}/` },
+      limit: 20,
+      fetch: makeHfFetch(signal),
+      ...credentials,
+    })) {
+      const canonical: string = model.name.split("/")[0];
+      if (canonical !== owner && canonical.toLowerCase() === owner.toLowerCase()) {
+        author = canonical;
+        break;
+      }
+    }
   }
 }
 
@@ -892,17 +931,19 @@ export function useHubModelSearch(
     [priorityIdsKey],
   );
 
-  const { isPublisherQuery, searchQuery, pinnedId, trimmed } = useMemo(() => {
+  const { publisher, searchQuery, pinnedId, trimmed } = useMemo(() => {
     const t = query.trim();
-    const m = PUBLISHER_RE.exec(t);
-    const is = !!m && m[1].toLowerCase() !== "unsloth";
+    const parsed = parseOwnerSearchQuery(t);
+    const unslothOwned = parsed?.owner.toLowerCase() === "unsloth";
     return {
-      isPublisherQuery: is,
-      searchQuery: is ? m![2] : t,
-      pinnedId: is ? t : undefined,
+      publisher: parsed,
+      // The Unsloth-only org search matches a whole unsloth/ id, and another owner's repo by name.
+      searchQuery: parsed && !unslothOwned ? parsed.query : t,
+      pinnedId: parsed?.query ? t : undefined,
       trimmed: t,
     };
   }, [query]);
+  const isPublisherQuery = publisher !== null;
 
   // An owner/repo query names one repo; only a bare maker name widens to its Unsloth uploads.
   const queryProvider = useMemo(
@@ -924,6 +965,21 @@ export function useHubModelSearch(
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
     (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
+      // An explicit owner lists that owner, within a tag-only channel too. Unsloth-only scope keeps
+      // searching the org for the typed repo name.
+      if (publisher && !unslothOnly && !channelOwner && !channelQuery) {
+        return ownerModelIterator(
+          publisher.owner,
+          publisher.query,
+          accessToken,
+          hasFilters || channelTagsKey ? undefined : pinnedId,
+          sortBy,
+          sortDirection,
+          signal,
+          filterRange,
+          channelTagsKey ? channelTagsKey.split("|") : undefined,
+        );
+      }
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -1006,7 +1062,6 @@ export function useHubModelSearch(
             "",
             task,
             accessToken,
-            undefined,
             sortBy,
             sortDirection,
             signal,
@@ -1063,13 +1118,11 @@ export function useHubModelSearch(
           : orgSearch;
       }
       // Typed query: drop the task filter so searched models appear despite wrong/missing HF task
-      // metadata. For an "owner/repo" query, strip the org prefix so unsloth variants surface, then
-      // pin the original publisher model. Unsloth-owned queries are left as-is.
+      // metadata.
       const merged = mergedModelIterator(
         searchQuery,
         undefined,
         accessToken,
-        hasFilters ? undefined : pinnedId,
         sortBy,
         sortDirection,
         signal,
@@ -1086,6 +1139,7 @@ export function useHubModelSearch(
     },
     [
       trimmed,
+      publisher,
       searchQuery,
       pinnedId,
       queryProvider,

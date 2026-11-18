@@ -85,7 +85,7 @@ jobs:
       pure_count: ${{ steps.plan.outputs.pure_count }}
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           disable-sudo: true
@@ -147,7 +147,7 @@ jobs:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -381,9 +381,8 @@ jobs:
           Get-CimInstance Win32_PageFileUsage | Format-Table Name, AllocatedBaseSize, CurrentUsage -AutoSize
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } } -AutoSize
 
-      # 10 GB of swap. nvcc's peak RSS on the sm_100 flash-attn kernels is the reason MAX_JOBS is
-      # 1; swap is what keeps a single job that briefly exceeds the runner's 16 GB from being
-      # OOM-killed four hours in.
+      # 10 GB of swap: nvcc's peak RSS on the sm_100 flash-attn kernels is why MAX_JOBS is 1, and
+      # swap keeps a job briefly over the runner's 16 GB from being OOM-killed hours in.
       - name: Set up swap space
         if: runner.os == 'Linux'
         run: |
@@ -545,7 +544,7 @@ jobs:
       - name: Harden runner (audit)
         # Audit egress because package downloads use changing endpoints. Its agent is Linux-only.
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -883,9 +882,8 @@ jobs:
           echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
           if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Git Bash puts /usr/bin first, and its coreutils `link.exe` (hard links) shadows MSVC's
-            # linker: setuptools found it on PATH and every object compiled, then the final link
-            # failed. MSVC's own bin goes back in front for this step.
+            # Git Bash puts /usr/bin first, so its coreutils link.exe (hard links) shadows MSVC's
+            # linker and the final link fails; MSVC's own bin is put back in front for this step.
             host="Hostx64\\x64"
             if [ "$WHEEL_PLATFORM" = "win_arm64" ]; then host="Hostarm64\\arm64"; fi
             PATH="$(cygpath -u "${VCToolsInstallDir}bin\\${host}"):$PATH"
@@ -1063,7 +1061,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.pure_matrix) }}
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -1243,7 +1241,7 @@ jobs:
       contents: read
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -1336,7 +1334,7 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 

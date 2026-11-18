@@ -31,13 +31,29 @@ test("leaving a pinned bottom as the page changes height, with no key or pointer
   const body = between("const onScroll = () => {", "\n      };");
   assert.match(
     body,
-    /const clamped =\s*lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&\s*scrollHeight !== lastScrollHeight &&\s*!keyed &&\s*!pointerHeld;/,
+    /const clamped =\s*lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&\s*\(scrollHeight !== lastScrollHeight \|\| rowsToggledSinceScroll\) &&\s*!keyed &&\s*!pointerHeld;/,
     "a row below shrinking as the next one lands pulls scrollTop up in the same event; detaching there stops the stream following",
   );
   assert.match(HOOK, /el\.addEventListener\("pointerdown", onPointerDown, \{ passive: true \}\);/, "a scrollbar drag starts with a pointerdown on the viewport");
   assert.match(HOOK, /el\.ownerDocument\.addEventListener\("pointerup", onPointerUp, true\);/);
   assert.match(HOOK, /el\.removeEventListener\("pointerdown", onPointerDown\);/);
   assert.match(HOOK, /el\.ownerDocument\.removeEventListener\("pointerup", onPointerUp, true\);/);
+});
+
+test("a distant row skipped or released at a pinned bottom is a clamp, even when scrollHeight reads unchanged", () => {
+  // Chromium, 200 turns, fresh load: a row swapping in or out of content-visibility moved scrollTop
+  // up 259 px with scrollHeight the same by the scroll event; read as a scroll up, the chat opened
+  // up to 23,000 px above its last message in half of the loads.
+  assert.match(HOOK, /import \{ ROW_DISTANT_ATTRIBUTE \} from "@\/components\/assistant-ui\/distant-rows";/);
+  const observe = between("mutationObserver.observe(el, {", "});");
+  assert.match(observe, /attributeFilter: \[[^\]]*ROW_DISTANT_ATTRIBUTE,?\s*\]/, "the toggle reaches the hook");
+  const mutation = between("const onMutation = (records: MutationRecord[]): void => {", "\n      };");
+  assert.match(
+    mutation,
+    /if \(records\.some\(\(record\) => record\.attributeName === ROW_DISTANT_ATTRIBUTE\)\) \{\s*rowsToggledSinceScroll = true;\s*\}/,
+  );
+  const body = between("const onScroll = () => {", "\n      };");
+  assert.match(body, /rowsToggledSinceScroll = false;\s*lastScrollTop = scrollTop;/, "one scroll event consumes the toggle");
 });
 
 test("the correction resyncs the height baseline with the others", () => {

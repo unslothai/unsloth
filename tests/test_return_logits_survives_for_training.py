@@ -45,6 +45,41 @@ def _torch_or_stub():
     return torch
 
 
+class _RelativeImports(ast.NodeTransformer):
+    """Rewrite `from ..pkg.mod import a` as `a = _relative_import("pkg.mod", "a")`."""
+
+    def visit_ImportFrom(self, node):
+        if not node.level:
+            return node
+        assigns = []
+        for alias in node.names:
+            key = (node.module or "", alias.name)
+            call = ast.Call(
+                func = ast.Name("_relative_import", ast.Load()),
+                args = [ast.Constant(key[0]), ast.Constant(key[1])],
+                keywords = [],
+            )
+            target = ast.Name(alias.asname or alias.name, ast.Store())
+            assigns.append(ast.copy_location(ast.Assign(targets = [target], value = call), node))
+        return assigns
+
+
+def _resolve_relative_imports(module):
+    return ast.fix_missing_locations(_RelativeImports().visit(module))
+
+
+def _relative_importer(table):
+    def resolve(module, name):
+        # Raised only when a fake reaches the import, so guarded branches it never takes need no stub.
+        assert (
+            module,
+            name,
+        ) in table, f"stub the relative import {(module, name)} lifted from unsloth/models"
+        return table[(module, name)]
+
+    return resolve
+
+
 def _fast_base_model():
     tree = ast.parse((MODELS / "vision.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastBaseModel")
@@ -81,7 +116,12 @@ def _fast_base_model():
         "_pipeline_keeps_replica": lambda model: False,
         "enable_fp8_lora": lambda model: [],
         "restore_fp8_lora_for_inference": lambda model: None,
+        # for_training frees kept decode graphs and their cache; none exist for these fakes.
+        "_decode_graphs": types.SimpleNamespace(release_for_training = lambda model: None),
     }
+    # A relative import inside a lifted body (for_inference clearing the NF4 dequant cache, #18285)
+    # resolves through this table; an import missing from it fails here, naming what to stub.
+    relative = {("kernels.dequant_cache", "clear_dequant_cache"): lambda: None}
     lifted = {n.name for n in wanted} | set(stubbed)
     todo = list(wanted)
     while todo:
@@ -95,7 +135,8 @@ def _fast_base_model():
     namespace = _Namespace(
         os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools, **stubbed
     )
-    module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
+    namespace["_relative_import"] = _relative_importer(relative)
+    module = _resolve_relative_imports(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
     for name in ("for_inference", "for_training"):
         methods[name] = namespace[name]
