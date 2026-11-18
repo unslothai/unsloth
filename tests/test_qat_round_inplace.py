@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""LoRA + a weight-only QAT scheme rounds the frozen base onto the fake quantization grid once, in place
-(unsloth/models/_qat_round.py).
-
-The stored weight is the quantizer's own output and the quantizer is switched off, so outputs and LoRA
-gradients must be bitwise identical to UNSLOTH_QAT_ROUND_INPLACE=0 (which fake quantizes per call), the
-weight must keep its storage (vLLM shares it), and activation schemes, trainable and tied weights must be left
-alone.
-"""
+"""In-place QAT base rounding (_qat_round.py) must be bitwise identical to UNSLOTH_QAT_ROUND_INPLACE=0 and keep storage."""
 
 import pytest
 import torch
@@ -106,14 +99,13 @@ def test_bitwise_and_engaged(scheme, dtype, monkeypatch):
     off = _model(scheme, monkeypatch, mode = "0", dtype = dtype)
     assert _quantizers_on(off) == 2  # kill switch: per-call fake quant as before
     ref = _run(off, x)
-    assert _equal(ref, _run(off, x))  # A/A
+    assert _equal(ref, _run(off, x))
 
     on = _model(scheme, monkeypatch, mode = "1", dtype = dtype)
     assert _quantizers_on(on) == 0  # engaged: both base layers rounded, quantizers off
     assert engaged(on)["qat_round_inplace"]["modules"] == 2
     for _ in range(3):
         assert _equal(ref, _run(on, x))
-    # The stored weight is exactly what the per-call quantizer produced.
     for a, b in zip(_bases(off), _bases(on)):
         with torch.no_grad():
             assert torch.equal(a.weight_fake_quantizer(a.weight), b.weight)
@@ -160,7 +152,7 @@ def test_trainable_tied_and_plain_weights_skipped(monkeypatch):
         _Tied(), peft.LoraConfig(r = 8, target_modules = ["head", "proj"], lora_dropout = 0.0)
     )
     inner = model.base_model.model
-    inner.proj.base_layer.weight.requires_grad_(True)  # a trainable base weight
+    inner.proj.base_layer.weight.requires_grad_(True)
     before = inner.embed.weight.clone()
     model = _prepare_model_for_qat(model, "int4")
     assert inner.head.base_layer.weight_fake_quantizer.enabled  # tied
@@ -171,8 +163,6 @@ def test_trainable_tied_and_plain_weights_skipped(monkeypatch):
 
 
 def test_residual_init_bases_keep_per_call_fake_quant(monkeypatch):
-    # Resuming a LoRA-GA / PiSSA checkpoint rebases the frozen base in place; a rounded base with its quantizer off
-    # would then train on fake_quant(W) + delta, so residual-init layers are never rounded.
     model = _model("int4", monkeypatch, residual = ("up_proj",))
     on = {
         n.rsplit(".", 2)[-2]: m.weight_fake_quantizer.enabled
@@ -183,6 +173,5 @@ def test_residual_init_bases_keep_per_call_fake_quant(monkeypatch):
 
 
 def test_dora_bases_keep_per_call_fake_quant(monkeypatch):
-    # DoRA's weight norm reads base_layer.weight directly: rounding it would change the norm and the gradients.
     model = _model("int4", monkeypatch, use_dora = True)
     assert _quantizers_on(model) == 2

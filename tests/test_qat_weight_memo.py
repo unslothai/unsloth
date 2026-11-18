@@ -58,7 +58,6 @@ def _model(
     arm = True,
 ):
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", mode)
-    # Weight-only schemes would round the frozen base in place and switch the quantizer off (_qat_round.py).
     monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", "0")
     torch.manual_seed(0)
     model = peft.get_peft_model(

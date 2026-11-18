@@ -14,34 +14,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Round a frozen QAT base weight onto its fake quantization grid once, in place.
+"""Round a frozen LoRA base weight onto its weight-only QAT grid once, in place, and disable its quantizer.
 
-With LoRA + a weight-only `qat_scheme` (int4, int8, cactus) the base weight is frozen, and torchao's
-weight fake quantizer is a pure function of it, so every forward recomputes the same fake_quant(W).
-Writing fake_quant(W) into W once and switching the quantizer off gives the trainer bitwise the
-same weight it computed per call before, with no per-call cost and no extra copy.
-
-It also fixes fast_inference: vLLM shares the base weight storage with the trainer, so before this
-vLLM sampled from the unrounded W while the trainer optimised fake_quant(W) (a train / rollout
-mismatch nothing corrected by default). After rounding both read the same tensor.
-
-Only the stored base weight changes. Exports that merge LoRA read the base from the checkpoint on
-disk (merged_16bit, save_pretrained_torchao, GGUF), so they are unchanged; an in-memory
-merge_and_unload or QATConfig(step = "convert") now holds the fake quantized base the model trained
-against instead of the unrounded one.
-
-Only the base_layer of a PEFT LoRA layer is rounded. Skipped (keep fake quantizing per call): plain
-Linears outside LoRA (lm_head, frozen layers of a full fine-tune), activation schemes (int8-int4, fp8-int4, fp8-fp8, the
-input is quantized per call anyway), nvfp4 / mxfp8 (no weight_fake_quantizer), adapters and any
-weight that requires grad (full fine-tuning), range learning or static scales, tensor subclasses and
-DTensors, CPU weights of a model that also has accelerator weights (an offloaded weight is fake
-quantized on the accelerator at forward time; rounding it on the CPU could differ), and weights whose memory another parameter or buffer also uses (a tied
-lm_head would round the input embedding too).
-
-Residual inits (LoRA-GA, PiSSA, ...) are skipped: resuming one rebases its frozen base in place. Any other
-weight rewritten in place after this (other than vLLM's exact merged rollout fold / restore) is no longer fake
-quantized.
-UNSLOTH_QAT_ROUND_INPLACE=0 turns it off."""
+Bitwise equal to per-call fake quant for the trainer, and vLLM (which shares the storage) now samples
+the same weights. Disk-based exports are unchanged; in-memory merges now hold the rounded base.
+Skipped: non-LoRA Linears, activation / nvfp4 / mxfp8 schemes, trainable, residual-init, DoRA,
+subclass, offloaded CPU and memory-shared (tied) weights. UNSLOTH_QAT_ROUND_INPLACE=0 disables."""
 
 import heapq
 import os
@@ -85,7 +63,6 @@ def _weight_only_quantizer(quantizer):
         return True
     if cls is IntxFakeQuantizer:
         config = quantizer.config
-        # Static scales and range learning hold state beside the weight; recompute-per-call only.
         return bool(getattr(config, "is_dynamic", True)) and not bool(
             getattr(config, "range_learning", False)
         )
@@ -119,7 +96,7 @@ def _shared_memory_keys(model):
                     spans.append((span[0], span[1], tensor.device, (id(module), name)))
     spans.sort(key = lambda x: (str(x[2]), x[0]))
     shared = set()
-    active = []  # (end, key) of spans that started earlier, on this device
+    active = []
     device = None
     for start, end, dev, key in spans:
         if dev != device:
@@ -148,10 +125,7 @@ def round_frozen_qat_weights(model):
         _is_lora_adapter_name = lambda fqn: any(p.startswith("lora_") for p in fqn.split("."))
 
     on_accelerator = any(p.device.type not in ("cpu", "meta") for p in model.parameters())
-    # Residual inits (LoRA-GA, PiSSA, ...) keep a snapshot of their initial factors, and resuming such a checkpoint
-    # into a re-initialized model rebases the frozen base in place (_native_from_converted). A rounded base with its
-    # quantizer off would then train on fake_quant(W) + delta instead of fake_quant(W + delta), so keep those per call.
-    # DoRA reads base_layer.weight outside the quantizer for its weight norm, so rounding would change that norm.
+    # Residual-init resume rebases the base in place (would give fake_quant(W) + delta); DoRA reads W unquantized.
     residual = {
         f"{name}.base_layer" if name else "base_layer"
         for name, module in model.named_modules()
@@ -165,9 +139,7 @@ def round_frozen_qat_weights(model):
             continue
         if not getattr(quantizer, "enabled", True):
             continue
-        # Only the frozen base of a PEFT LoRA layer: its exports merge from the checkpoint on disk. A frozen
-        # plain Linear (lm_head, a frozen layer of a full fine-tune) is converted from memory, where a rounded
-        # int8 / cactus weight would requantize to other codes, so it keeps fake quantizing per call.
+        # Plain Linears convert from memory, where a rounded int8 / cactus weight would requantize differently.
         if _is_lora_adapter_name(name) or name.rsplit(".", 1)[-1] != "base_layer":
             continue
         if name in residual:
