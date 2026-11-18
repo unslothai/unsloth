@@ -882,13 +882,15 @@ class _TabLabelScan(HTMLParser):
         self._selected_panels: set[str] = set()
         self._parts: list[str] = []
         self._list_at = -1  # _open index of the tablist being read
-        self._list_tabs: list[str] = []
+        self._list_tabs: list[str | None] = []
         self._list_explicit = (
             False  # a tab names its panel by aria-controls, so order is not trusted
         )
-        self._closed_list: tuple[int, list[str]] | None = None  # until its next sibling opens
+        self._closed_list: tuple[int, list[str | None]] | None = (
+            None  # until its next sibling opens
+        )
         # (_open index of the panels' wrapper, its tab ids, its panels' ids so far), innermost last
-        self._groups: list[tuple[int, list[str], list[str | None]]] = []
+        self._groups: list[tuple[int, list[str | None], list[str | None]]] = []
 
     def _finish_tab(self) -> None:
         # capped here too, so joining many long labels per panel stays linear
@@ -944,14 +946,18 @@ class _TabLabelScan(HTMLParser):
             self._list_at = len(self._open) - 1
             self._list_tabs = []
             self._list_explicit = False
-        if self._tab_at < 0 and attr_dict.get("id") and _has_role(attr_dict, "tab"):
-            self._tab_at = len(self._open) - 1
-            self._tab_id = attr_dict["id"]
-            self._tab_controls = attr_dict.get("aria-controls") or ""
-            self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
+        if self._tab_at < 0 and _has_role(attr_dict, "tab"):
             if self._list_at >= 0:
-                self._list_tabs.append(self._tab_id)
-                self._list_explicit |= bool(self._tab_controls.strip())
+                # an id-less tab still takes its slot, or every panel after it would shift
+                self._list_tabs.append(attr_dict.get("id"))
+                self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
+            if attr_dict.get("id"):
+                self._tab_at = len(self._open) - 1
+                self._tab_id = attr_dict["id"]
+                self._tab_controls = attr_dict.get("aria-controls") or ""
+                self._tab_selected = (
+                    attr_dict.get("aria-selected") or ""
+                ).strip().lower() == "true"
         if (
             self._groups
             and self._groups[-1][0] == len(self._open) - 2
@@ -964,7 +970,7 @@ class _TabLabelScan(HTMLParser):
         # order only pairs when every tab has its panel; a missing one would shift every label after it
         if len(panel_ids) == len(tab_ids):
             for tab_id, panel_id in zip(tab_ids, panel_ids):
-                label = self.labels.get(tab_id)
+                label = tab_id and self.labels.get(tab_id)
                 if label and panel_id:
                     self._order_labels.setdefault(panel_id, label)
 
@@ -2003,10 +2009,14 @@ class _MarkdownRenderer(HTMLParser):
             and _has_role(attr_dict, "tabpanel")
         ):
             ids = dict.fromkeys((attr_dict.get("aria-labelledby") or "").split())
-            # capped, so repeating an id cannot multiply the page
-            label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
-                :_MAX_TAB_LABEL_CHARS
-            ] or self.panel_labels.get(attr_dict.get("id") or "", "")
+            # capped, so repeating an id cannot multiply the page; a panel naming its tab never takes a guess
+            label = (
+                " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
+                    :_MAX_TAB_LABEL_CHARS
+                ]
+                if ids
+                else self.panel_labels.get(attr_dict.get("id") or "", "")
+            )
             if label:
                 self._emit(f"\n\n**{label}**\n\n")
 
