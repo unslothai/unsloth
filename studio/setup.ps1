@@ -4008,6 +4008,16 @@ function Test-CudaMaskHidesNvidia {
 function Test-RocmTorchExplicitlyRequested {
     return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
 }
+# Mirrors install.sh's _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
+function Write-CudaMaskHidesAmdWarning {
+    Write-StudioLine ""
+    Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
+    Write-StudioLine "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." -ForegroundColor Yellow
+    Write-StudioLine ""
+}
 $nvMaskHidesAll = Test-CudaMaskHidesNvidia
 if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
     try {
@@ -4593,6 +4603,11 @@ if ($script:ProbeAmdBesideNvidia) {
         $HasNvidiaSmi = $false
         $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
         substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
+        # install.ps1 (SKIP_STUDIO_BASE=1) already warned.
+        if (-not (Test-RocmTorchExplicitlyRequested) -and $null -eq $env:HIP_VISIBLE_DEVICES -and
+            $env:SKIP_STUDIO_BASE -ne "1") {
+            Write-CudaMaskHidesAmdWarning
+        }
     } else {
         if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
             substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"

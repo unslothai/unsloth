@@ -39,6 +39,7 @@ _MASK_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
+    "SKIP_STUDIO_BASE",
 )
 
 INSTALL_HELPERS = functions(
@@ -46,11 +47,18 @@ INSTALL_HELPERS = functions(
     "Test-CudaMaskHidesNvidia",
     "Test-RocmTorchExplicitlyRequested",
     "Get-MixedHostTorchRoute",
+    "Get-MixedHostNoticeArch",
+    "Write-CudaMaskHidesAmdWarning",
     "Write-MixedHostCudaNotice",
 )
 SETUP_HELPERS = functions(
-    SETUP_SRC, "Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested"
+    SETUP_SRC,
+    "Test-CudaMaskHidesNvidia",
+    "Test-RocmTorchExplicitlyRequested",
+    "Write-CudaMaskHidesAmdWarning",
 )
+# The wheel tables Get-MixedHostNoticeArch reads, sliced from the live script.
+INSTALL_WHEEL_MAPS = slice_between(INSTALL_SRC, "    $archFamilyMap = @{", "    $MultiArchIndexBase")
 
 COLLECT = _script(
     "$script:Said = @()",
@@ -79,12 +87,15 @@ def _env(**values) -> str:
     return _script(*lines)
 
 
-def _install_decision(arch, wheels, **env):
-    """The install.ps1 decision on an NVIDIA host whose AMD probe found `arch`."""
+def _install_decision(arch, wheels, hip_arches = (), **env):
+    """The install.ps1 decision on an NVIDIA host whose AMD probe found `arch` (hipinfo listed `hip_arches`)."""
+    listed = ", ".join(repr(a) for a in hip_arches)
     return _ps_kv(
         _script(
             COLLECT,
             INSTALL_HELPERS,
+            INSTALL_WHEEL_MAPS,
+            f"$_hipAllArches = @({listed})",
             _env(**env),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
@@ -125,6 +136,14 @@ class TestInstallPs1Decision:
     @pytest.mark.parametrize("arch", ["gfx1036", "gfx1103", "gfx1151", "gfx1150"])
     def test_an_integrated_gpu_gets_no_notice(self, arch):
         kv = _install_decision(arch, True)
+        assert kv["ROUTE"] == "cuda" and kv["NOTICE"] == ""
+
+    def test_an_igpu_listed_first_does_not_hide_the_discrete_card(self):
+        kv = _install_decision("gfx1036", True, hip_arches = ("gfx1036", "gfx1201"))
+        assert kv["ROUTE"] == "cuda-notice" and kv["NOTICE"] == "gfx1201"
+
+    def test_a_card_with_no_wheels_is_not_named(self):
+        kv = _install_decision("gfx1036", True, hip_arches = ("gfx1036", "gfx803"))
         assert kv["ROUTE"] == "cuda" and kv["NOTICE"] == ""
 
     def test_force_without_a_wheel_route_keeps_cuda(self):
@@ -219,7 +238,6 @@ def _setup_decision(arch, wheels, **env):
             COLLECT,
             SETUP_HELPERS,
             _env(**env),
-            "Remove-Item Env:SKIP_STUDIO_BASE -ErrorAction SilentlyContinue",
             "$HasNvidiaSmi = $true; $script:ProbeAmdBesideNvidia = $true",
             f"$script:ROCmGfxArch = {'$null' if arch is None else repr(arch)}",
             f"$AmdHasGpuWheels = ${str(wheels).lower()}",
@@ -240,9 +258,18 @@ class TestSetupPs1Decision:
         assert kv["NVIDIA"] == "False" and kv["ARCH"] == "gfx1201"
         assert "UNSLOTH_FORCE_ROCM_TORCH is set" in kv["SAID"]
 
-    def test_mask_alone_also_keeps_rocm(self):
+    def test_mask_alone_also_keeps_rocm_and_warns_on_update(self):
         kv = _setup_decision("gfx1100", True, CUDA_VISIBLE_DEVICES = "-1")
         assert kv["NVIDIA"] == "False" and "CUDA_VISIBLE_DEVICES hides" in kv["SAID"]
+        assert "ROCm reads CUDA_VISIBLE_DEVICES too" in kv["SAID"]
+
+    def test_no_second_mask_warning_inside_install_ps1(self):
+        kv = _setup_decision("gfx1100", True, CUDA_VISIBLE_DEVICES = "-1", SKIP_STUDIO_BASE = "1")
+        assert "ROCm reads" not in kv["SAID"]
+
+    def test_no_mask_warning_when_hip_chooses_the_card(self):
+        kv = _setup_decision("gfx1100", True, CUDA_VISIBLE_DEVICES = "-1", HIP_VISIBLE_DEVICES = "0")
+        assert "ROCm reads" not in kv["SAID"]
 
     def test_force_without_a_wheel_route_resets_the_amd_probe(self):
         kv = _setup_decision("gfx803", False, UNSLOTH_FORCE_ROCM_TORCH = "1")
@@ -294,7 +321,10 @@ def test_the_amd_probe_runs_beside_nvidia_only_when_it_can_matter(src, gate, env
     assert kv["PROBE"] == expected
 
 
-@pytest.mark.parametrize("name", ["Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested"])
+@pytest.mark.parametrize(
+    "name",
+    ["Test-CudaMaskHidesNvidia", "Test-RocmTorchExplicitlyRequested", "Write-CudaMaskHidesAmdWarning"],
+)
 def test_install_and_setup_keep_one_copy_of_each_helper(name):
     install, setup = _ps_copies(name)
     assert install == setup
@@ -347,3 +377,39 @@ class TestStackWindowsForce:
 
     def test_unforced_mixed_host_keeps_cuda_untouched(self):
         assert not self._run(force = False).called
+
+
+HIPINFO_CALL = slice_between(
+    INSTALL_SRC,
+    "                # Beside NVIDIA a device-naming CUDA mask",
+    "                if ($hipOut -match",
+)
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "beside, env, seen",
+    [
+        (True, {"CUDA_VISIBLE_DEVICES": "0"}, "<unset>"),
+        (False, {"CUDA_VISIBLE_DEVICES": "0"}, "0"),
+        (True, {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "1"}, "0"),
+        (True, {"CUDA_VISIBLE_DEVICES": "-1"}, "-1"),
+    ],
+    ids = ["nvidia-mask-beside-nvidia", "amd-only-host", "hip-mask-wins", "hiding-mask"],
+)
+def test_hipinfo_beside_nvidia_ignores_a_cuda_mask_naming_nvidia_cards(beside, env, seen):
+    kv = _ps_kv(
+        _script(
+            SETUP_HELPERS,
+            _env(**env),
+            "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
+            f"$ProbeAmdBesideNvidia = ${str(beside).lower()}",
+            "function Invoke-FakeHipinfo { if ($null -eq $env:CUDA_VISIBLE_DEVICES) { '<unset>' } else { $env:CUDA_VISIBLE_DEVICES } }",
+            "$hipinfoExe = [pscustomobject]@{ Source = 'Invoke-FakeHipinfo' }",
+            HIPINFO_CALL,
+            'Write-Output "SEEN=$($hipOut.Trim())"',
+            'Write-Output "AFTER=$env:CUDA_VISIBLE_DEVICES"',
+        )
+    )
+    assert kv["SEEN"] == seen
+    assert kv["AFTER"] == env["CUDA_VISIBLE_DEVICES"]
