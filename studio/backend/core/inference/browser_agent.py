@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import re
+import stat
 import sys
 import unicodedata
 from typing import Any, Callable, Optional
@@ -637,6 +638,43 @@ def _workspace_file_named(target: str, session_id: Optional[str]) -> Optional[st
     return path if os.path.isfile(os.path.join(workdir, path)) else None
 
 
+def _read_inside(full: str, workdir: str) -> Optional[bytes]:
+    """The bytes of `full`, None if too large; OSError unless it is still a regular file in the
+    workspace. A workspace writer racing the checks above can swap the file or a parent for a link,
+    so the open walks from a held root without following links, as view_image does."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    if os.open in os.supports_dir_fd:
+        directory = os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parts = os.path.relpath(full, workdir).split(os.sep)
+            for part in parts[:-1]:
+                child = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = directory
+                )
+                os.close(directory)
+                directory = child
+            handle = os.open(parts[-1], flags, dir_fd = directory)
+        finally:
+            os.close(directory)
+    else:
+        handle = os.open(full, flags)
+    with os.fdopen(handle, "rb") as source:
+        info = os.fstat(source.fileno())
+        checked_path = os.path.realpath(full)
+        checked = os.stat(checked_path)
+        if (
+            os.path.commonpath([workdir, checked_path]) != workdir
+            or not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) != (checked.st_dev, checked.st_ino)
+        ):
+            raise OSError("not a regular file inside the workspace")
+        if info.st_size > _MAX_WORKSPACE_FILE_BYTES:
+            return None
+        data = source.read(_MAX_WORKSPACE_FILE_BYTES + 1)
+    return None if len(data) > _MAX_WORKSPACE_FILE_BYTES else data
+
+
 def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
     """The panel's open_file action for a file in this chat's tool workspace, or ValueError
     telling the model what to do instead."""
@@ -664,14 +702,15 @@ def _workspace_file_request(path: str, session_id: Optional[str]) -> dict:
             f"there is no file {shown} in the workspace ({workdir}). Write it there with python "
             "or terminal first, then open it by that name."
         )
-    size = os.path.getsize(full)
-    if size > _MAX_WORKSPACE_FILE_BYTES:
+    try:
+        data = _read_inside(full, workdir)
+    except OSError:
+        raise ValueError(f"{shown} could not be read inside the workspace ({workdir}).") from None
+    if data is None:
         raise ValueError(
-            f"{shown} is {size // 1024} KB, and the browser opens workspace files up to "
-            f"{_MAX_WORKSPACE_FILE_BYTES // (1024 * 1024)} MB."
+            f"{shown} is over {_MAX_WORKSPACE_FILE_BYTES // (1024 * 1024)} MB, the most the "
+            "browser opens from the workspace."
         )
-    with open(full, "rb") as handle:
-        data = handle.read(_MAX_WORKSPACE_FILE_BYTES + 1)
     content_type = mimetypes.guess_type(full)[0] or "text/plain"
     return {
         "op": "open_file",

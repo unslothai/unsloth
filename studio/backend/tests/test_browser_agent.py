@@ -8,7 +8,9 @@ import sys
 import threading
 import types
 
+import os
 import re
+import shutil
 
 import pytest
 
@@ -725,7 +727,7 @@ def test_a_missing_or_large_workspace_file_says_what_to_do(workspace, monkeypatc
     with pytest.raises(ValueError, match = "no file mandelbrot.html in the workspace"):
         _request("browser_navigate", {"url": "mandelbrot.html"})
     monkeypatch.setattr(browser_agent, "_MAX_WORKSPACE_FILE_BYTES", 4)
-    with pytest.raises(ValueError, match = "up to"):
+    with pytest.raises(ValueError, match = "is over"):
         _request("browser_navigate", {"url": "draw.html"})
 
 
@@ -861,3 +863,30 @@ def test_a_windows_file_url_keeps_its_drive(monkeypatch):
     )
     monkeypatch.setattr(browser_agent, "_WINDOWS", False)
     assert browser_agent.workspace_path_of("file:///C:/x.html") == "/C:/x.html"
+
+
+@pytest.mark.parametrize("swap", ["file", "parent"])
+def test_a_link_swapped_in_after_the_checks_is_not_read(workspace, monkeypatch, swap):
+    outside = workspace.parent / "outside"
+    outside.mkdir()
+    (outside / "pic.svg").write_text("secret")
+    real_isfile = os.path.isfile
+
+    def isfile_then_swap(path):
+        found = real_isfile(path)
+        if swap == "file":
+            os.remove(workspace / "sub" / "pic.svg")
+            os.symlink(outside / "pic.svg", workspace / "sub" / "pic.svg")
+        else:
+            shutil.rmtree(workspace / "sub")
+            os.symlink(outside, workspace / "sub")
+        return found
+
+    monkeypatch.setattr(browser_agent.os.path, "isfile", isfile_then_swap)
+    try:
+        request = _request("browser_navigate", {"url": "sub/pic.svg"})
+    except ValueError as exc:
+        assert "could not be read" in str(exc)
+    else:
+        assert b"secret" not in __import__("base64").b64decode(request["data"])
+        pytest.fail("a swapped link was opened")
