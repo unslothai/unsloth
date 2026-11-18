@@ -185,8 +185,80 @@ class BudgetedCheckpoint:
         return changed
 
     @property
+    def can_retry(self) -> bool:
+        """A fully checkpointed rerun would use less memory than this step: measuring, or blocks kept."""
+        return not self.disabled and (self.probing or bool(self.keep))
+
+    @property
     def total_blocks(self) -> int:
         return len(self.block_class)
+
+
+def _to_host(obj: Any, pin: bool) -> Any:
+    import torch
+
+    if isinstance(obj, torch.Tensor):
+        if obj.device.type == "cpu":
+            return obj.detach().clone()
+        host = torch.empty(obj.shape, dtype = obj.dtype, pin_memory = pin)
+        # Pinned + non_blocking: queued on the current stream, so it is complete before any later copy back.
+        return host.copy_(obj.detach(), non_blocking = pin)
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(_to_host(o, pin) for o in obj)
+    if isinstance(obj, dict):
+        return {k: _to_host(v, pin) for k, v in obj.items()}
+    return obj
+
+
+def _to_device(obj: Any, device: Any) -> Any:
+    import torch
+
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device, non_blocking = obj.is_pinned())
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(_to_device(o, device) for o in obj)
+    if isinstance(obj, dict):
+        return {k: _to_device(v, device) for k, v in obj.items()}
+    return obj
+
+
+class StepReplay:
+    """One optimizer step's micro-batch inputs, kept on the host, and the CPU / CUDA RNG state right before each
+    micro-batch's forward, so an out-of-memory rerun replays the step exactly: same inputs, same dropout masks and
+    in-forward draws, and the RNG left where one successful pass would have left it. The device copies are not kept,
+    so gradient accumulation still holds only one micro-batch's inputs on the card."""
+
+    def __init__(self, device: str):
+        self.device = device
+        self.entries: list = []
+
+    def clear(self) -> None:
+        self.entries.clear()
+
+    def _rng_state(self) -> tuple:
+        import torch
+        cuda = torch.cuda.get_rng_state() if self.device == "cuda" else None
+        return torch.get_rng_state(), cuda
+
+    def _set_rng_state(self, state: tuple) -> None:
+        import torch
+
+        cpu, cuda = state
+        torch.set_rng_state(cpu)
+        if cuda is not None:
+            torch.cuda.set_rng_state(cuda)
+
+    def record(self, inputs: tuple) -> None:
+        """Call right before the micro-batch's forward."""
+        self.entries.append((_to_host(inputs, pin = self.device == "cuda"), self._rng_state()))
+
+    def replay(self, fn: Any) -> list:
+        """Rerun every recorded micro-batch through ``fn``; returns its results in order."""
+        out = []
+        for host, state in self.entries:
+            self._set_rng_state(state)
+            out.append(fn(*_to_device(host, self.device)))
+        return out
 
 
 def is_out_of_memory(exc: BaseException) -> bool:

@@ -37,7 +37,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from core.training.diffusion_gc_budget import enable_budgeted_checkpointing, is_out_of_memory
+from core.training.diffusion_gc_budget import (
+    StepReplay,
+    enable_budgeted_checkpointing,
+    is_out_of_memory,
+)
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
 from core.training.diffusion_train_common import (
@@ -3446,7 +3450,7 @@ def _train_dit(
         (loss / cfg.gradient_accumulation_steps).backward()
         return loss
 
-    def _retry_fully_checkpointed(micro_inputs):
+    def _retry_fully_checkpointed():
         # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
         gc_budget.fall_back()
         optimizer.zero_grad(set_to_none = True)
@@ -3461,10 +3465,13 @@ def _train_dit(
             ),
         )
         acc = None
-        for inputs in micro_inputs:
-            acc = accumulate_loss(acc, _forward_backward(*inputs), cfg.gradient_accumulation_steps)
+        for loss in replay.replay(_forward_backward):
+            acc = accumulate_loss(acc, loss, cfg.gradient_accumulation_steps)
+        replay.clear()
         return acc
 
+    # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
+    replay = StepReplay(device) if gc_budget is not None else None
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
@@ -3473,8 +3480,8 @@ def _train_dit(
             break
         optimizer.zero_grad(set_to_none = True)
         step_acc = None
-        # This step's drawn inputs, so an out-of-memory retry reruns it from the same draws.
-        micro_inputs = []
+        if replay is not None:
+            replay.clear()
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
             if canvases is not None:
@@ -3525,20 +3532,22 @@ def _train_dit(
                 weight_dtype,
                 pad_to = qwen_pad_to,
             )
-            micro_inputs.append((latents, noise, timesteps, sigmas, noisy, embeds))
+            inputs = (latents, noise, timesteps, sigmas, noisy, embeds)
             if gc_budget is not None and not gc_budget.planned and canvases is not None:
                 # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
                 gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
+            if replay is not None and gc_budget.can_retry:
+                replay.record(inputs)
             oom = False
             try:
-                loss = _forward_backward(*micro_inputs[-1])
+                loss = _forward_backward(*inputs)
             except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
-                if gc_budget is None or gc_budget.disabled or not is_out_of_memory(exc):
+                if replay is None or not gc_budget.can_retry or not is_out_of_memory(exc):
                     raise
                 oom = True
             if oom:
                 # Handled outside the except block, so the failed step's tensors are already released.
-                step_acc = _retry_fully_checkpointed(micro_inputs)
+                step_acc = _retry_fully_checkpointed()
             else:
                 step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
