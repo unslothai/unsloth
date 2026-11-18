@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -341,13 +342,13 @@ def _trusted_tool_folder_roots() -> "tuple[str, ...]":
         return ()
     from . import os_sandbox
 
-    global _trusted_roots_built
-    _trusted_roots_built = os_sandbox.trusted_tool_folder_roots()
-    return _trusted_roots_built
+    _trusted_roots_built.roots = os_sandbox.trusted_tool_folder_roots()
+    return _trusted_roots_built.roots
 
 
-# The trusted roots behind the cached allowlist: a swap for a link must not wait out the TTL.
-_trusted_roots_built: "tuple[str, ...]" = ()
+# The trusted roots behind the allowlist this thread is building, so a swap for a link need not wait
+# out the TTL. Per thread: a concurrent build for another caller must not overwrite the snapshot.
+_trusted_roots_built = threading.local()
 
 
 def _trusted_roots_moved(roots) -> bool:
@@ -393,13 +394,12 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         and not _trusted_roots_moved(cached[4])
     ):
         return cached[2], cached[3]
-    global _trusted_roots_built
-    _trusted_roots_built = ()
+    _trusted_roots_built.roots = ()
     try:
         read_roots, write_roots = _build_silent_roots()
     except Exception:  # noqa: BLE001 - no allowlist is the fail-closed direction (more prompts)
         read_roots, write_roots = (), ()
-    _silent_roots_cache = (now, account, read_roots, write_roots, _trusted_roots_built)
+    _silent_roots_cache = (now, account, read_roots, write_roots, _trusted_roots_built.roots)
     return read_roots, write_roots
 
 

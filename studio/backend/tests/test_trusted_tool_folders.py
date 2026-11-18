@@ -531,3 +531,55 @@ def test_a_folder_holding_what_the_gate_calls_a_credential_is_not_granted(folder
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_text("x")
     assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_a_concurrent_api_key_build_keeps_the_owners_swap_check(folder, scratch, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(gate, "_studio_db_revision", lambda identity = (): 0)
+    gate._silent_roots_cache = None
+    inside, release = threading.Event(), threading.Event()
+    real_build = gate._build_silent_roots
+
+    # The owner's build finishes, then waits before its allowlist is cached.
+    def owner_build_waits():
+        roots = real_build()
+        if threading.current_thread().name == "owner":
+            inside.set()
+            release.wait(10)
+        return roots
+
+    monkeypatch.setattr(gate, "_build_silent_roots", owner_build_waits)
+
+    def owner():
+        token = bind_account(OWNER)
+        try:
+            gate._silent_roots()
+        finally:
+            reset_account(token)
+
+    def api_key():
+        token = bind_account(as_api_caller(OWNER))
+        try:
+            gate._silent_roots_cache = None
+            gate._silent_roots()
+        finally:
+            reset_account(token)
+
+    owner_thread = threading.Thread(target = owner, name = "owner")
+    owner_thread.start()
+    assert inside.wait(10)
+    api_thread = threading.Thread(target = api_key, name = "api")
+    api_thread.start()
+    api_thread.join(10)
+    release.set()
+    owner_thread.join(10)
+    assert os.path.realpath(folder) in gate._silent_roots_cache[4]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "case-insensitive Windows paths")
+def test_a_mixed_case_auth_folder_is_not_granted(folder):
+    path = folder / "Auth" / "session.json"
+    path.parent.mkdir()
+    path.write_text("x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
