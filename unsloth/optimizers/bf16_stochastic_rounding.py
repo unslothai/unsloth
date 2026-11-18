@@ -57,7 +57,13 @@ if triton is not None:
         return tl.where(special, bits, rounded).to(tl.float32, bitcast = True).to(tl.bfloat16)
 
     @triton.jit(do_not_specialize = ["N", "SEED"])
-    def _round_kernel(DST, SRC, N, SEED, BLOCK: tl.constexpr):
+    def _round_kernel(
+        DST,
+        SRC,
+        N,
+        SEED,
+        BLOCK: tl.constexpr,  # elements per program, fixed at _BLOCK
+    ):
         i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         valid = i < N
         x = tl.load(SRC + i, valid, 0).to(tl.float32)
@@ -80,7 +86,7 @@ if triton is not None:
         NEG_STEP,  # -lr / (1 - beta1**t)
         BC2_SQRT,  # sqrt(1 - beta2**t)
         EPS,
-        BLOCK: tl.constexpr,
+        BLOCK: tl.constexpr,  # elements per program, fixed at _BLOCK
     ):
         # torch.optim.AdamW's foreach float32 arithmetic, op for op, then one rounding per output.
         i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
