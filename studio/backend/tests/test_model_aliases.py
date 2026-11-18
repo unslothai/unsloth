@@ -72,7 +72,7 @@ def test_load_settings_are_stored_and_survive_a_client_that_does_not_send_them(s
     assert (
         set_model_aliases(
             [
-                {"name": "long", "model": model, "load_settings": {**_LONG, "n_parallel": 4}},
+                {"name": "long", "model": model, "load_settings": _LONG},
                 {"name": "plain", "model": model, "load_settings": {"kv_cache_dtype": None}},
             ]
         )
@@ -122,7 +122,17 @@ def test_the_settings_page_gets_the_revision_of_the_aliases_it_was_sent(store, m
 
 @pytest.mark.parametrize(
     "load_settings",
-    [{"kv_cache_dtype": "q9"}, {"max_seq_length": 0}, {"speculative_type": "fast"}, "q4_0"],
+    [
+        {"kv_cache_dtype": "q9"},
+        {"max_seq_length": 0},
+        {"speculative_type": "fast"},
+        "q4_0",
+        # Unknown keys are refused, not dropped: a misspelling would save a plain alias.
+        {"cache_type_kv": "q4_0"},
+        {**_LONG, "n_parallel": 4},
+        # An MLX-only mode: a GGUF load reads it as no mode.
+        {"speculative_type": "eagle3"},
+    ],
 )
 def test_normalize_rejects_bad_load_settings(load_settings):
     with pytest.raises(ValueError):

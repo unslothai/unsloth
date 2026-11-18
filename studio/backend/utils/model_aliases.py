@@ -35,16 +35,21 @@ _LOAD_SETTING_KEYS = ("max_seq_length", "kv_cache_dtype", "speculative_type")
 
 
 def _normalize_load_settings(name: str, raw: Any) -> dict[str, Any]:
-    from utils.openai_auto_switch_settings import normalize_model_override
+    from utils.openai_auto_switch_settings import MLX_ONLY_SPEC_TYPES, normalize_model_override
 
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ValueError(f"Alias '{name}' has invalid load settings.")
+    # A misspelled or unsupported key would otherwise save an alias without the setting.
+    for key in raw:
+        if key not in _LOAD_SETTING_KEYS:
+            raise ValueError(f"Alias '{name}' has an unknown load setting: {key}.")
     sent = {key: raw[key] for key in _LOAD_SETTING_KEYS if raw.get(key) is not None}
     settings = normalize_model_override(sent)
     for key in sent:
-        if key not in settings:
+        # Load settings are for GGUF models, which read an MLX-only mode as no mode.
+        if key not in settings or settings[key] in MLX_ONLY_SPEC_TYPES:
             raise ValueError(f"Alias '{name}' has an invalid load setting: {key}.")
     return settings
 
