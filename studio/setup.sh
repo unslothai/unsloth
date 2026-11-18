@@ -3856,14 +3856,20 @@ EOF
     printf '%s' "$_apdg_pick"
 }
 
-# Skip AMD probes on a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
+# Skip AMD probes on a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py),
+# unless ROCm torch is forced or installed: then llama.cpp follows AMD, as the prebuilt helper does.
 if _setup_has_physical_nvidia_gpu; then
     _setup_nvidia_physical=true
 fi
 if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
-if [ "$_setup_nvidia_usable" != true ]; then
+_setup_follow_rocm_torch=false
+if [ "$_setup_nvidia_usable" = true ] && \
+   python "$SCRIPT_DIR/install_llama_prebuilt.py" --follows-rocm-torch >/dev/null 2>&1; then
+    _setup_follow_rocm_torch=true
+fi
+if [ "$_setup_nvidia_usable" != true ] || [ "$_setup_follow_rocm_torch" = true ]; then
     if command -v rocminfo >/dev/null 2>&1; then
         _setup_amd_records=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_records || true)
         _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
@@ -3901,6 +3907,13 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_amd_detected=true
         _setup_amd_records=""
     fi
+fi
+# Live AMD only: a stale ROCm torch on an NVIDIA-only host keeps CUDA. Physical stays true, so a
+# source build with no hipcc still falls back to CUDA rather than the CPU.
+if [ "$_setup_follow_rocm_torch" = true ] && [ "$_setup_amd_detected" = true ]; then
+    _setup_nvidia_usable=false
+else
+    _setup_follow_rocm_torch=false
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
@@ -4167,6 +4180,9 @@ EOF
         substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
     fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
+    if [ "$_setup_follow_rocm_torch" = true ]; then
+        substep "ROCm torch is installed or requested, so llama.cpp uses this GPU over the NVIDIA one"
+    fi
 elif [ "$_setup_xpu_ready" = true ]; then
     step "gpu" "Intel GPU detected (XPU runtime)"
     substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
