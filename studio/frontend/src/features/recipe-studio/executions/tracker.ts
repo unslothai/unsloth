@@ -26,6 +26,7 @@ import {
 import {
   appendExecutionLogLine,
   applyExecutionStatusSnapshot,
+  toEpochMs,
   toExecutionLogLine,
 } from "./runtime";
 
@@ -152,7 +153,10 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "completed",
-          finishedAt: Date.now(),
+          finishedAt:
+            latestExecution.finishedAt ??
+            toEpochMs(event.payload.ts) ??
+            Date.now(),
           artifact_path:
             typeof event.payload.artifact_path === "string"
               ? event.payload.artifact_path
@@ -169,7 +173,10 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "error",
-          finishedAt: Date.now(),
+          finishedAt:
+            latestExecution.finishedAt ??
+            toEpochMs(event.payload.ts) ??
+            Date.now(),
           error:
             typeof event.payload.error === "string"
               ? event.payload.error
@@ -194,7 +201,10 @@ export async function trackRecipeExecution({
         latestExecution = {
           ...latestExecution,
           status: "cancelled",
-          finishedAt: Date.now(),
+          finishedAt:
+            latestExecution.finishedAt ??
+            toEpochMs(event.payload.ts) ??
+            Date.now(),
           error: latestExecution.error ?? "Run cancelled.",
         };
         onUpsert(latestExecution);
