@@ -76,6 +76,17 @@ test("a value picked while MCP is on survives turning MCP off", async (t) => {
   assert.equal(cap(runtime), 30);
 });
 
+test("Max picked by hand while MCP is on stays after turning MCP off", async (t) => {
+  const runtime = await boot(t);
+  const state = () => runtime.useChatRuntimeStore.getState();
+  state().setMaxToolCallsPerMessage(12);
+  state().setMcpEnabledForChat(true);
+  state().setMaxToolCallsPerMessage(30);
+  state().setMaxToolCallsPerMessage(MAX);
+  state().setMcpEnabledForChat(false);
+  assert.equal(cap(runtime), MAX);
+});
+
 test("Off and Max are restored as they were", async (t) => {
   const runtime = await boot(t);
   const state = () => runtime.useChatRuntimeStore.getState();

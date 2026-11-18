@@ -3847,7 +3847,7 @@ function getHydratedSettingsState(
   return nextState;
 }
 
-/** MCP chains (editor tools, tool search) run long, so turning MCP on lifts the tool-call cap to Max; turning it off restores the saved value unless the slider moved off Max meanwhile. */
+/** MCP chains (editor tools, tool search) run long, so turning MCP on lifts the tool-call cap to Max; turning it off restores the saved value unless the user set the cap meanwhile. */
 function mcpToolCallCapPatch(
   state: ChatRuntimeStore,
   mcpOn: boolean,
@@ -6426,6 +6426,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
+      // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
+      writeStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY, "");
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,
