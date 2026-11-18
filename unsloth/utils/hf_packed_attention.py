@@ -972,7 +972,6 @@ def _varlen_in_graph_probe(device_index, dtype, head_dim, n_heads, n_kv_heads, w
             cu_seqlens = torch.tensor([0, 7, 16], dtype = torch.int32, device = device)
             out = _flash_varlen(query, key, key, cu_seqlens, 9, 1.0, window)
             out.float().sum().backward()
-            # The graph checks the op's outputs against its fake kernel at run time.
             return _flash_meta_matches(query, key, cu_seqlens, 9, window)
         except Exception:
             return False
