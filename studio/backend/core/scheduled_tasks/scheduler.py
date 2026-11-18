@@ -67,6 +67,8 @@ class Answer:
     checkpoint: Optional[str] = None
     gguf_variant: Optional[str] = None
     provider: Optional[dict] = None
+    # The task chat's message the history ended on; the answer is saved under it.
+    chat_parent_id: Optional[str] = None
 
 
 @dataclass
@@ -220,15 +222,16 @@ def _message_text(message: dict) -> str:
     ).strip()
 
 
-def _chat_history(task: dict) -> list[dict]:
-    """Text turns, alternating and opening on the user as chat templates expect."""
+def _chat_history(task: dict) -> tuple[list[dict], Optional[str]]:
+    """Text turns, alternating and opening on the user as chat templates expect, and the branch's leaf id."""
     from storage import studio_db
 
     thread = _target_chat(task)
     if thread is None:
-        return []
+        return [], None
+    branch = _shown_branch(studio_db.list_chat_messages(thread["id"]))
     turns: list[dict] = []
-    for message in _shown_branch(studio_db.list_chat_messages(thread["id"])):
+    for message in branch:
         text = _message_text(message)
         if message.get("role") not in ("user", "assistant") or not text:
             continue
@@ -248,7 +251,7 @@ def _chat_history(task: dict) -> list[dict]:
         kept.pop(0)
     if kept and kept[-1]["role"] == "user":
         kept.pop()
-    return kept
+    return kept, (branch[-1]["id"] if branch else None)
 
 
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
@@ -701,7 +704,7 @@ async def generate_answer(
                 model_fields = {"model": kept}
             # A project folder on a stalled mount must not keep the scheduler from every other task.
             try:
-                instructions, history = await asyncio.wait_for(
+                instructions, (history, chat_parent_id) = await asyncio.wait_for(
                     asyncio.to_thread(
                         lambda: (_run_instructions(task, db.now_ms()), _chat_history(task))
                     ),
@@ -843,6 +846,7 @@ async def generate_answer(
         checkpoint = serving.get("checkpoint"),
         gguf_variant = serving.get("gguf_variant"),
         provider = provider,
+        chat_parent_id = chat_parent_id,
     )
 
 
@@ -867,8 +871,13 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
     if target is not None:
         thread_id = target["id"]
         user_message_id, answer_message_id = db.message_ids_for_run(run["id"])
-        branch = _shown_branch(studio_db.list_chat_messages(thread_id))
-        parent_id = branch[-1]["id"] if branch else None
+        messages = studio_db.list_chat_messages(thread_id)
+        # Under the turns the model read, even if the chat moved on while it answered.
+        if any(message["id"] == answer.chat_parent_id for message in messages):
+            parent_id = answer.chat_parent_id
+        else:
+            branch = _shown_branch(messages)
+            parent_id = branch[-1]["id"] if branch else None
     else:
         thread_id = db.chat_id_for_run(run["id"])
         user_message_id, answer_message_id = str(uuid.uuid4()), str(uuid.uuid4())

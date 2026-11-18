@@ -2933,3 +2933,20 @@ def test_an_edited_turn_newer_than_its_reply_still_ends_on_the_reply(monkeypatch
     scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
     prompt_id, _ = db.message_ids_for_run(run["id"])
     assert studio_db.get_chat_message("edited", prompt_id)["parentId"] == "e2"
+
+
+def test_an_answer_stays_under_the_turns_it_read_when_the_chat_moves_on(monkeypatch):
+    make_chat()
+    task = make_task(threadId = "chat-1")
+    answer = generate(monkeypatch, FakeProducer(completion("Summary.")), task = task)
+    assert answer.chat_parent_id == "chat-1-a"
+    _chat_with(
+        "chat-1", [("chat-1-q2", "chat-1-a", "user", "Sent while it answered.", 30)]
+    )
+    db.request_run(task["id"])
+    _task, run = claim()
+
+    scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
+
+    prompt_id, _ = db.message_ids_for_run(run["id"])
+    assert studio_db.get_chat_message("chat-1", prompt_id)["parentId"] == "chat-1-a"
