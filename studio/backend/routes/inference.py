@@ -352,7 +352,8 @@ _LOST_CONNECTION_MSG = (
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
-_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned 4\d\d: (.*)", _re.DOTALL)
+# 501 is llama-server's not_supported_error (e.g. chat on a decision-only model).
+_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
