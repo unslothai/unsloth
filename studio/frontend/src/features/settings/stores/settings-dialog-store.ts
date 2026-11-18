@@ -18,6 +18,7 @@ export const SETTINGS_TABS = [
   "data",
   "api-keys",
   "remote-lan",
+  "machines",
   "agents",
   "keyboard-shortcuts",
   "browser",

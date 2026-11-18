@@ -153,6 +153,12 @@ def dropped_worker_notice() -> Optional[str]:
         if plan is not None and held
         else "running on this machine only"
     )
+    if all("only through a relay" in str(dropped[name] or "") for name in missing):
+        return (
+            f"Paired worker {named} {verb} reachable only through a relay, which is too slow to serve "
+            f"models, so this model is {where}. Put it on the same network, or let the two machines "
+            "connect directly (a router or firewall is blocking it), then reload the model."
+        )
     return (
         f"Paired worker {named} {verb} not reachable, so this model is {where}. "
         f"Start `unsloth worker` on {named} ({_LIST_HINT}), then reload the model to use it.{mac}"

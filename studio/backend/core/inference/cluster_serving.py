@@ -756,6 +756,7 @@ class Node:
     name: Optional[str] = None
     native_port: int = 0
     tls_fp: Optional[str] = None
+    via: str = ""  # "tailnet": host is this machine's end of a tailcat forward, never recorded
 
     @property
     def endpoint(self) -> str:
@@ -1025,6 +1026,8 @@ _LINKS_LOCK = threading.RLock()
 _LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
 _NATIVE: Dict[str, int] = {}
 LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
+LINK_VIA: Dict[str, str] = {}  # node_id -> "local network" | "direct internet connection" | ...
+_TUNNELLED: set = set()  # node_ids last verified through a tailcat forward
 
 
 def _link_identity() -> Any:
@@ -1191,7 +1194,9 @@ def _native_port_open(host: str, port: int) -> bool:
         return False
 
 
-def _go_native(relays: Any, peer: Any, status: Dict[str, Any], host: str) -> Optional[int]:
+def _go_native(
+    relays: Any, peer: Any, status: Dict[str, Any], host: Optional[str]
+) -> Optional[int]:
     offer = status.get("native") if isinstance(status, dict) else None
     if not isinstance(offer, dict) or not offer.get("available") or not _local_tls_client():
         return None
@@ -1211,7 +1216,7 @@ def _go_native(relays: Any, peer: Any, status: Dict[str, Any], host: str) -> Opt
         port = 0
     if not 0 < port < 65536:
         return None
-    if not _native_port_open(host, port):
+    if host is not None and not _native_port_open(host, port):
         # A firewall in front of the TLS port must not cost a worker whose relay works.
         logger.info(
             "cluster link: %s:%s is not reachable; %s stays on the relay", host, port, peer.node_id
@@ -1253,6 +1258,50 @@ def _same_link_worker(endpoint: str, node: "Node") -> bool:
     return False
 
 
+def _ensure_helper() -> bool:
+    try:
+        from studio.cluster_link import remote
+        return remote.ensure_helper()
+    except Exception:
+        return False
+
+
+def _remote() -> Any:
+    try:
+        from studio.cluster_link import remote
+        return remote if remote.enabled() else None
+    except Exception:
+        return None
+
+
+def _verified_through_tailnet(
+    relays: Any, peer: Any, default_port: int
+) -> Tuple[Optional[Tuple[str, int, Dict[str, Any]]], Optional[str]]:
+    """LAN failed: the worker's agent through a tailcat forward, or (None, why it cannot serve)."""
+    if not getattr(peer, "tc_addr", "") or not _ensure_helper():
+        return None, None
+    remote = _remote()
+    if remote is None:
+        return None, None
+    local = remote.forward(peer.node_id, peer.tc_addr, int(peer.agent_port or default_port))
+    if local is None:
+        return None, None
+    verified = _first_verified(relays, peer.node_id, [("127.0.0.1", local)])
+    if verified is None:
+        return None, None
+    info = remote.path(peer.node_id)
+    if not remote.usable(info):
+        try:
+            relays.remove(peer.node_id)
+        except Exception:
+            pass
+        remote.drop(peer.node_id)
+        return None, remote.RELAYED
+    direct = bool(getattr(info, "direct", False))
+    LINK_VIA[peer.node_id] = remote.DIRECT if direct else "relayed internet connection"
+    return verified, None
+
+
 def _revoke_native(relays: Any, node_id: str) -> None:
     try:
         relays.native_close(node_id)
@@ -1276,7 +1325,12 @@ def _drop_stale_relays(current: set, wait: bool = True) -> None:
             return
         for endpoint, _node_id in stale:
             _LINK_ENDPOINTS.pop(endpoint, None)
+    remote = _remote()
     for endpoint, node_id in stale:
+        LINK_VIA.pop(node_id, None)
+        _TUNNELLED.discard(node_id)
+        if remote is not None:
+            remote.drop(node_id)
         if _NATIVE.pop(node_id, None) is not None:
             if wait:
                 _revoke_native(relays, node_id)
@@ -1320,16 +1374,33 @@ def _link_nodes(verify: bool = True) -> List[Node]:
         for recorded in _peer_addresses(peer, AGENT_PORT_DEFAULT):
             if recorded not in candidates:
                 candidates.append(recorded)
-        if not candidates:
+        if not candidates and not getattr(peer, "tc_addr", ""):
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
-        verified = None
+        verified, tunnelled = None, False
         if verify:
-            verified = _first_verified(relays, peer.node_id, candidates)
+            verified = _first_verified(relays, peer.node_id, candidates) if candidates else None
+            if verified is not None:
+                LINK_VIA[peer.node_id] = "local network"
+            else:
+                verified, why = _verified_through_tailnet(relays, peer, AGENT_PORT_DEFAULT)
+                tunnelled = verified is not None
+                if why:
+                    LINK_DROPPED[label] = why
+                    _UNVERIFIED.pop(peer.node_id, None)
+                    _TUNNELLED.discard(peer.node_id)
+                    continue
+            (_TUNNELLED.add if tunnelled else _TUNNELLED.discard)(peer.node_id)
             if verified is None:
                 _UNVERIFIED.setdefault(peer.node_id, time.monotonic())
             else:
                 _UNVERIFIED.pop(peer.node_id, None)
+        if not verified and not candidates:
+            current = relays.destination(peer.node_id) if not verify else None
+            if current is None:
+                LINK_DROPPED[label] = "not reachable on the LAN or through tailcat"
+                continue
+            candidates = [current]
         host, port = (verified[0], verified[1]) if verified else candidates[0]
         try:
             with _LINKS_LOCK:
@@ -1344,7 +1415,16 @@ def _link_nodes(verify: bool = True) -> List[Node]:
             continue
         native_port = None
         if verified is not None:
-            native_port = _go_native(relays, peer, verified[2], host)
+            # A tunnelled worker is reached through its forward, which is itself the reachability check.
+            native_port = _go_native(relays, peer, verified[2], None if tunnelled else host)
+            if native_port is not None and tunnelled:
+                # llama-server dials tls://fp@127.0.0.1:<forward>, not the worker's own port.
+                remote = _remote()
+                native_port = (
+                    remote.forward(peer.node_id, peer.tc_addr, native_port) if remote else None
+                )
+                if native_port is None:
+                    relays.native_close(peer.node_id)
             if native_port is None:
                 _NATIVE.pop(peer.node_id, None)
             else:
@@ -1360,6 +1440,7 @@ def _link_nodes(verify: bool = True) -> List[Node]:
             name = getattr(peer, "name", None),
             native_port = native_port or 0,
             tls_fp = str(peer.fingerprint).lower() if native_port else None,
+            via = "tailnet" if peer.node_id in _TUNNELLED else "",
         )
         with _LINKS_LOCK:
             _LINK_ENDPOINTS[node.endpoint] = peer.node_id
@@ -1445,6 +1526,13 @@ def _stop_links() -> None:
         _LINK_ENDPOINTS.clear()
     _NATIVE.clear()
     LINK_DROPPED.clear()
+    LINK_VIA.clear()
+    _TUNNELLED.clear()
+    try:
+        from studio.cluster_link import remote
+        remote.close()
+    except Exception:
+        pass
 
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
@@ -1931,6 +2019,8 @@ class ClusterServing:
             LINK_DROPPED[node.name or node.node_id] = why
             return False
         self._link_status[node.endpoint] = answer
+        if node.via == "tailnet":
+            return True
         identity = _link_identity()
         try:
             await asyncio.to_thread(

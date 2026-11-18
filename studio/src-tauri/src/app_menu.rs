@@ -72,6 +72,7 @@ const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-sandbox", "Sandbox", ""),
     Row::Action("settings-api-keys", "API", ""),
     Row::Action("settings-remote-lan", "Remote & LAN", ""),
+    Row::Action("settings-machines", "Machines", ""),
     Row::Action("settings-connections", "Connections", ""),
     Row::Action("settings-accounts", "Accounts", ""),
     Row::Action("settings-agents", "Agents", ""),
