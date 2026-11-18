@@ -513,10 +513,26 @@ def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Op
     )
 
 
+def resolved_attn_implementation(cfg) -> Optional[str]:
+    """The attention backend the model built from ``cfg`` will use, or None when it cannot be told.
+
+    A config that never named one reads back ``None`` from ``AutoConfig``; the model constructor then
+    takes SDPA when its class supports it and eager otherwise."""
+    impl = getattr(cfg, "_attn_implementation", None)
+    if impl:
+        return impl
+    try:
+        from transformers import AutoModelForCausalLM
+        model_class = AutoModelForCausalLM._model_mapping[type(cfg)]
+    except Exception:
+        return None
+    return "sdpa" if getattr(model_class, "_supports_sdpa", False) else "eager"
+
+
 def legacy_attention_problem(cfg, seq: int) -> Optional[str]:
     """Why the legacy backend cannot reproduce this model's attention, or None."""
-    impl = getattr(cfg, "_attn_implementation", "sdpa")
-    if impl not in ("sdpa", "flash_attention_2", "flash_attention_3"):
+    impl = resolved_attn_implementation(cfg)
+    if impl is not None and impl not in ("sdpa", "flash_attention_2", "flash_attention_3"):
         return (
             f"--pp-backend legacy calls decoder blocks without an attention mask, which is "
             f"causal only under sdpa or flash. This model is loaded with {impl!r}, where "
