@@ -31,6 +31,7 @@ import {
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
 import { useIsAccountOwner } from "@/features/auth";
+import { useLinkedInstancesOverview } from "@/features/settings/hooks/use-linked-instances-overview";
 import { isNpuModelId, useNpuDisplayNames } from "@/features/npu";
 import {
   loadLanAccess,
@@ -89,6 +90,7 @@ import {
   useApiExampleChoices,
 } from "./components/api-example-box";
 import { ApiExampleDialog } from "./components/api-example-dialog";
+import { LinkedInstancesRail } from "./components/linked-instances-rail";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
@@ -1040,6 +1042,8 @@ export function ApiMonitorPage(): ReactElement {
     reloadReadySent.current = true;
     signalReady();
   }, [loading, signalReady]);
+  const isOwner = useIsAccountOwner();
+  const linked = useLinkedInstancesOverview(isOwner);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const lanUrls = usePlatformStore((s) => s.lanUrls);
@@ -1738,6 +1742,10 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
         </section>
+
+        {isOwner && linked.instances.length > 0 ? (
+          <LinkedInstancesRail overview={linked} />
+        ) : null}
 
         {error ? <Banner>{error}</Banner> : null}
         {unloadError ? (
