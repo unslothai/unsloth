@@ -114,7 +114,7 @@ class WaylandBackend(LinuxBackend):
         self._check_stopped()
         if self._session is None:
             session = _portal.PortalSession(self._version, self._token_file, self._answer_timeout)
-            streams = session.open()
+            streams = session.start()
             self._session = session
             self._primed = False
             self._displays = [

@@ -207,7 +207,7 @@ class PortalSession:
         except OSError:
             pass
 
-    def open(self) -> list[Stream]:
+    def start(self) -> list[Stream]:
         jeepney, open_dbus_connection = _jeepney()
         self._conn = open_dbus_connection(bus = "SESSION", enable_fds = True)
         try:
