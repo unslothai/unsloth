@@ -212,7 +212,7 @@ export function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span className="min-w-0 truncate">{quant}</span>
+        <span className="cap-centered min-w-0 truncate">{quant}</span>
       </span>
     ) : (
       // Keep the quant label from collapsing; trailing status tags are clipped instead.
@@ -224,7 +224,7 @@ export function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="cap-centered">{quant}</span>
       </span>
     );
   if (!showFit || tooltipMode === "none") return inner;
@@ -290,7 +290,7 @@ function GgufVariantSizeLabel({
   footprint: GgufVariantFootprint | null;
   downloaded?: boolean;
 }) {
-  if (!footprint) return <>{label}</>;
+  if (!footprint) return <span className="cap-centered">{label}</span>;
   const companion = formatFootprintBytes(footprint.companionBytes);
   return (
     <Tooltip delayDuration={0}>
@@ -300,11 +300,13 @@ function GgufVariantSizeLabel({
           data-model-needs-required-assets={downloaded || undefined}
           className="inline-flex items-center gap-1"
         >
-          {downloaded
-            ? `${companion} more to run`
-            : formatFootprintBytes(
-                footprint.checkpointBytes + footprint.companionBytes,
-              )}
+          <span className="cap-centered">
+            {downloaded
+              ? `${companion} more to run`
+              : formatFootprintBytes(
+                  footprint.checkpointBytes + footprint.companionBytes,
+                )}
+          </span>
           {/* Align the icon with the digits. */}
           <HugeiconsIcon
             icon={HelpCircleIcon}

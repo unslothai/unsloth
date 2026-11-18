@@ -5,12 +5,17 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
+import re
 from typing import Callable, Optional
 from urllib.parse import quote
 
 NPU_MODEL_PREFIX = "lemonade:"
+# FastFlowLM publishes its NPU builds as FastFlowLM/<name>-NPU2, the name Unsloth Studio shows.
+_NPU_REPO_OWNER = "fastflowlm/"
+_NPU_NAME_SUFFIX = re.compile(r"-npu\d*$", re.IGNORECASE)
 
 
 class NpuCliError(RuntimeError):
@@ -18,17 +23,49 @@ class NpuCliError(RuntimeError):
 
 
 def npu_model_path(model: Optional[str]) -> Optional[str]:
-    """`lemonade:<id>` for an NPU model path or bare id: Lemonade's NPU ids end in `-FLM`, no slash."""
+    """`lemonade:<name>` for an NPU model path, a bare Lemonade id (`-FLM`), the name Unsloth Studio
+    shows (`-NPU2`) or its `FastFlowLM/` repo; `prepare_npu_model` resolves the name to an id."""
     if not model:
         return None
     text = model.strip()
     if text.startswith(NPU_MODEL_PREFIX):
         return text if len(text) > len(NPU_MODEL_PREFIX) else None
-    if "/" in text or "\\" in text or ":" in text or not text.lower().endswith("-flm"):
+    if "\\" in text or ":" in text or os.path.exists(text):
         return None
-    if os.path.exists(text):
+    if text.lower().startswith(_NPU_REPO_OWNER):
+        name = text[len(_NPU_REPO_OWNER) :]
+        return NPU_MODEL_PREFIX + text if name and "/" not in name else None
+    if "/" in text or not (text.lower().endswith("-flm") or _NPU_NAME_SUFFIX.search(text)):
         return None
     return NPU_MODEL_PREFIX + text
+
+
+def _resolve_npu_model(models: list, name: str) -> dict:
+    """The catalog row whose id, Hugging Face repo or repo name (as Unsloth Studio shows it) is name."""
+    rows = [m for m in models if isinstance(m, dict) and m.get("id")]
+    wanted = name.lower()
+    names: dict[str, str] = {}
+    matches = []
+    for row in rows:
+        repo = str(row.get("hf_repo") or "").strip()
+        aliases = [alias for alias in (str(row["id"]), repo, repo.rsplit("/", 1)[-1]) if alias]
+        for alias in aliases:
+            names.setdefault(alias.lower(), alias)
+        if any(alias.lower() == wanted for alias in aliases):
+            matches.append(row)
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        ids = ", ".join(sorted(str(m["id"]) for m in matches))
+        raise NpuCliError(f"{name} names more than one NPU model: {ids}. Pick one by its id.")
+    close = difflib.get_close_matches(wanted, list(names), n = 3, cutoff = 0.6)
+    if close:
+        raise NpuCliError(
+            f"No NPU model named {name}. Did you mean: {', '.join(names[c] for c in close)}?"
+        )
+    available = sorted(str(m["id"]) for m in rows)
+    listed = ", ".join(available[:12]) + (", ..." if len(available) > 12 else "")
+    raise NpuCliError(f"No NPU model named {name}. Available: {listed}")
 
 
 def npu_needs_studio_message(npu_path: str, *, no_server: bool) -> str:
@@ -62,12 +99,12 @@ def _read_json(response) -> dict:
 
 def prepare_npu_model(
     request: Callable[..., object], model_path: str, echo: Callable[[str], None]
-) -> None:
+) -> str:
     """Enable the NPU runtime and download model_path on the Studio behind request(method, path,
-    payload, timeout), which returns an open HTTP response."""
+    payload, timeout), which returns an open HTTP response; returns the `lemonade:<id>` to load."""
     import http.client
     try:
-        _prepare_npu_model(request, model_path, echo)
+        return _prepare_npu_model(request, model_path, echo)
     except (OSError, http.client.HTTPException) as exc:
         # A refused or dropped connection, or a timeout: Studio stopped or restarted mid-way.
         raise NpuCliError(f"Lost the connection to Unsloth Studio: {exc}") from None
@@ -75,7 +112,7 @@ def prepare_npu_model(
 
 def _prepare_npu_model(
     request: Callable[..., object], model_path: str, echo: Callable[[str], None]
-) -> None:
+) -> str:
     model_id = model_path[len(NPU_MODEL_PREFIX) :]
     status = _read_json(_call(request, "GET", "/api/npu/status", 60))
     if not status.get("supported"):
@@ -101,13 +138,10 @@ def _prepare_npu_model(
             raise NpuCliError(f"Could not enable the NPU runtime: {detail}")
 
     models = _read_json(_call(request, "GET", "/api/npu/models", 120)).get("models") or []
-    entry = next((m for m in models if isinstance(m, dict) and m.get("id") == model_id), None)
-    if entry is None:
-        available = sorted(str(m.get("id")) for m in models if isinstance(m, dict))
-        listed = ", ".join(available[:12]) + (", ..." if len(available) > 12 else "")
-        raise NpuCliError(f"No NPU model named {model_id}. Available: {listed}")
+    entry = _resolve_npu_model(models, model_id)
+    model_id = str(entry["id"])
     if entry.get("downloaded"):
-        return
+        return NPU_MODEL_PREFIX + model_id
 
     size = entry.get("size_gb")
     echo(
@@ -149,3 +183,4 @@ def _prepare_npu_model(
         raise NpuCliError(
             f"The download of {model_id} ended early. Run the command again to resume it."
         )
+    return NPU_MODEL_PREFIX + model_id

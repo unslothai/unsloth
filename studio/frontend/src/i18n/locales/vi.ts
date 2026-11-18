@@ -977,6 +977,7 @@ export const vi = {
   chatMenu: {
     more: "Tùy chọn cuộc trò chuyện",
     copy: "Sao chép",
+    addScheduledTask: "Thêm tác vụ đã lên lịch…",
     compact: "Thu gọn cuộc trò chuyện",
     compactQueued: "Sẽ thu gọn ở tin nhắn tiếp theo",
     compactEmpty: "Chưa có gì để thu gọn",
@@ -2300,7 +2301,7 @@ export const vi = {
       modelAliases: {
         sectionTitle: "Bí danh mô hình (OpenAI API)",
         description:
-          "Tên cố định cho các ứng dụng khách API, chẳng hạn fast-chat hoặc code. Yêu cầu dùng một bí danh sẽ được phục vụ bởi mô hình mà bí danh trỏ tới, nên các ứng dụng đã kết nối vẫn hoạt động khi bạn đổi mô hình. Hãy bật “Chuyển mô hình theo yêu cầu” để bí danh có thể nạp mô hình của nó.",
+          "Tên ngắn mà các ứng dụng khách API có thể dùng thay cho tên đầy đủ của mô hình.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Tên bí danh",
         modelAriaLabel: "Mô hình mà bí danh trỏ tới",
@@ -2309,6 +2310,13 @@ export const vi = {
         add: "Thêm bí danh",
         loadError: "Không thể tải bí danh mô hình.",
         saveError: "Không thể lưu bí danh mô hình.",
+        contextLength: "Độ dài ngữ cảnh",
+        kvCacheType: "Loại bộ nhớ đệm KV",
+        speculativeDecoding: "Giải mã suy đoán",
+        savedSetting: "Cài đặt đã lưu",
+        loadSettings: "Cài đặt nạp",
+        loadSettingsHint:
+          "Chỉ dành cho mô hình GGUF. Các trường để trống dùng cài đặt đã lưu của mô hình.",
       },
       previewSharing: {
         sectionTitle: "Chia sẻ bản xem trước",
@@ -5318,6 +5326,7 @@ export const vi = {
       intervalHours: "Khoảng cách (giờ)",
       hourlyNote: "Lần chạy đầu tiên diễn ra sau một khoảng cách kể từ khi lưu. Thay đổi khoảng cách hoặc tiếp tục sẽ bắt đầu lại thời gian chờ.",
       createTitle: "Lên lịch tác vụ",
+      repliesInChat: "Mỗi lần chạy sẽ trả lời trong “{title}”.",
       editTitle: "Sửa tác vụ theo lịch",
       name: "Tên",
       namePlaceholder: "Tên (không bắt buộc)",
