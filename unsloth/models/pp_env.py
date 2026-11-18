@@ -993,7 +993,8 @@ def _split_router_aux_message(env_vars, n_microbatches):
         "micro-batches, and the pipeline adds the router load-balancing loss per micro-batch, which is not the "
         "loss the Trainer forms over the whole batch on one GPU. Set UNSLOTH_PP_MICROBATCHES=1 with "
         "UNSLOTH_PP_SCHEDULE=gpipe (where this torch allows one micro-batch), or turn the auxiliary loss off "
-        "(model.config.output_router_logits = False, or router_aux_loss_coef = 0.0 in SFTConfig)."
+        "(router_aux_loss_coef = 0.0 in SFTConfig, or model.config.output_router_logits = False with a plain "
+        "Trainer)."
         f"{_hint()}"
     )
 
