@@ -7916,6 +7916,11 @@ html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-con
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
 }
+/* The connection model list's edge fade is a mask, which leaves its pinned header's frost see-through. */
+html[data-glass] ul:has(> [data-fold-header][data-stuck]) {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
 /* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block: one blurred layer per row frosts what scrolls under it instead. */
 html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {
   background: none;
