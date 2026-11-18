@@ -16,12 +16,49 @@ _BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
 _DEFAULT_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
 
 
+_MASTER_ROOT_NOTE = ".unsloth-master-root"
+
+
+def _resolved(value: str) -> Path:
+    path = Path(value).expanduser()
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
 def _studio_root() -> Path:
     for var in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
-        value = os.environ.get(var)
+        value = (os.environ.get(var) or "").strip()
         if value:
             return Path(value).expanduser()
-    return Path.home() / ".unsloth" / "studio"
+    return _DEFAULT_STUDIO_ROOT
+
+
+def _master_root(studio: Path) -> Optional[Path]:
+    """UNSLOTH_HOME, else the root setup recorded in the Studio tree; llama.cpp sits beside studio/ there."""
+    override = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if override:
+        return _resolved(override)
+    try:
+        recorded = (studio / "share" / _MASTER_ROOT_NOTE).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    if not recorded:
+        return None
+    master = _resolved(recorded)
+    try:
+        here = studio.resolve()
+        # Honoured as storage_roots honours it: only while it exists, holds studio, and is not the legacy tree.
+        if (
+            master.is_dir()
+            and (here == master or master in here.parents)
+            and here != _DEFAULT_STUDIO_ROOT.resolve()
+        ):
+            return master
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
 
 
 def _on_windows(windows: Optional[bool] = None) -> bool:
@@ -55,6 +92,9 @@ def llama_bundle_dir() -> Path:
     if override:
         return Path(override).expanduser()
     root = _studio_root()
+    master = _master_root(root)
+    if master is not None:
+        return master / "llama.cpp"
     try:
         is_default = root.resolve() == _DEFAULT_STUDIO_ROOT.resolve()
     except (OSError, ValueError, RuntimeError):
