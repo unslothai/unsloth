@@ -241,7 +241,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
-          pip install 'transformers>=4.51,<=5.17.0'
+          pip install 'transformers>=4.51,<=5.18.0'
           # peft is needed or importorskips of core/inference silently skip (a stub breaks find_spec).
           # Install after CPU torch; version from extras-no-deps.txt.
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
@@ -426,6 +426,13 @@ jobs:
               tests/test_[!dfimpstu]*gloo*.py
               tests/test_f[!s]*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          # On 2026-11-16 the gloo shard reached the 2100 s cap again (interrupted at 2089 to 2096 s
+          # with 251 to 258 tests passed, upstream and on staging) after #17886, #17930 and the
+          # DeepSeek-V4.1 tests landed. The non-native tensor parallel files (tp_env, tp_eval,
+          # tp_full_finetune, tp_replica, ...) were over half of its measured time, so they run on
+          # their own.
+          - shard: gloo-tp-env
+            selection: >-
               tests/test_tp_[!n]*gloo*.py
           # #16407 grew test_parallel_cp_compose_gloo.py to about a third of the gloo shard's time
           # (1143 of 3605 test-seconds measured per file), which took the shard to 1922 s of the
@@ -493,7 +500,7 @@ jobs:
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
           # sentence-transformers rides the transformers pin so it cannot raise the ceiling, and
           # makes tests/test_st_modules_json_trust_gate.py run instead of skip.
-          pip install 'transformers>=4.51,<=5.17.0' sentence-transformers
+          pip install 'transformers>=4.51,<=5.18.0' sentence-transformers
           # bitsandbytes: hard import in unsloth/models/_utils.py; recent versions import on CPU.
           pip install 'bitsandbytes>=0.45'
           # zoo from git main (needed by the conftest preload), with deps so triton is installed.

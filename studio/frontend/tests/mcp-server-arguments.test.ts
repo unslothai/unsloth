@@ -754,8 +754,8 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
 
   assert.equal(
     MCP_SERVERS_API.match(/return trackMcpServerMutation\(/g)?.length,
-    5,
-    "create, update, delete, import, and managed Blender updates must register at the API boundary",
+    6,
+    "create, update, delete, import, and managed Blender and editor updates must register at the API boundary",
   );
   assert.match(
     listApi,

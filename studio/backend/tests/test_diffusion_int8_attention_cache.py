@@ -204,6 +204,10 @@ def test_paths_with_spaces_and_non_ascii_names(chain, tmp_path, monkeypatch):
 
 def test_old_versions_and_extra_images_are_pruned(chain, tmp_path, monkeypatch):
     cache = tmp_path / "cache"
+    # private as the module makes it: under a group-writable umask (002, as on the gfx1151 Linux runners) a root
+    # made by mkdir's default mode is refused, rightly, and nothing is written or pruned
+    cache.mkdir(mode = 0o700)
+    os.chmod(cache, 0o700)
     for i in range(6):
         old = cache / f"v{i}-{i:016x}"
         old.mkdir(parents = True)

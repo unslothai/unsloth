@@ -446,6 +446,7 @@ def resolve_one(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
     catalog: Optional[dict[str, LoraCatalogEntry]] = None,
+    local_files_only: bool = False,
 ) -> ResolvedLora:
     """Enforces family tags here, not only in the picker, so direct API calls cannot skip them."""
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
@@ -469,7 +470,11 @@ def resolve_one(
         if not entry.repo_id or not entry.weight_name:
             raise LoraSelectionError(f"LoRA '{spec_id}' has no downloadable weight")
         path = hf_hub_download_with_xet_fallback(
-            entry.repo_id, entry.weight_name, hf_token, cancel_event = cancel_event
+            entry.repo_id,
+            entry.weight_name,
+            hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
         )
         return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
 
@@ -487,12 +492,18 @@ def resolve_one(
             ):
                 raise ValueError(f"invalid LoRA weight file path '{weight_name}'")
         if weight_name is None:
-            weight_name = _pick_repo_weight_file(repo_id, hf_token)
+            weight_name = _pick_repo_weight_file(
+                repo_id, hf_token, local_files_only = local_files_only
+            )
         ext = os.path.splitext(weight_name)[1].lower()
         if ext not in _ALL_EXTS:
             raise ValueError(f"unsupported LoRA file '{weight_name}' (need .safetensors/.gguf)")
         path = hf_hub_download_with_xet_fallback(
-            repo_id, weight_name, hf_token, cancel_event = cancel_event
+            repo_id,
+            weight_name,
+            hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
         )
         fmt = "gguf" if ext == ".gguf" else "safetensors"
         return ResolvedLora(spec_id, sanitize_alias(repo_id), path, fmt, weight)
@@ -502,13 +513,32 @@ def resolve_one(
     )
 
 
-def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
-    """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
+def _pick_repo_weight_file(
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> str:
+    """Pick the single LoRA weight file in an HF repo (prefer safetensors); cache-only lists the cached snapshot."""
     from huggingface_hub import HfApi
 
     from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
-    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
+    if local_files_only:
+        from huggingface_hub import snapshot_download
+
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        # Raises LocalEntryNotFoundError (a FileNotFoundError, so a 400) when the repo is not cached.
+        root = snapshot_download(
+            repo_id,
+            token = hf_token,
+            local_files_only = True,
+            cache_dir = str(get_hf_cache_paths().hub_cache),
+        )
+        listed = sorted(os.listdir(root))
+    else:
+        listed = list(HfApi(token = hf_token).list_repo_files(repo_id))
+    files = drop_shadowed_appledouble_names(listed)
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
@@ -541,6 +571,7 @@ def resolve_specs(
     family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    local_files_only: bool = False,
 ) -> list[ResolvedLora]:
     """Maps not-found and gated Hub errors to 400 (URL scrubbed), not base HfHubHTTPError so a Hub 5xx stays 500; mid-download cancel is 409."""
     from huggingface_hub.errors import (
@@ -565,6 +596,7 @@ def resolve_specs(
                     hf_token = hf_token,
                     cancel_event = cancel_event,
                     catalog = catalog,
+                    local_files_only = local_files_only,
                 )
             )
     except (
@@ -582,11 +614,140 @@ def resolve_specs(
     return out
 
 
+# sd.cpp maps FLUX.1 q/k/v(/proj_mlp) onto fused weights as numbered pieces, stops at the first missing
+# piece, and on quantized GGUFs drops a fused target its pieces do not cover. Staging adds rank-1 zero
+# pairs for missing pieces so e.g. a to_q/to_k/to_v-only adapter keeps its single-block updates.
+_FLUX1_SPLIT_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
+_FLUX1_SPLIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v")),
+    ("transformer_blocks", ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj")),
+    ("single_transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp")),
+)
+_FLUX1_SPLIT_KEY_RE = re.compile(
+    r"^(?P<block>(?:transformer\.)?(?P<kind>single_transformer_blocks|transformer_blocks)\.\d+\.)"
+    r"(?P<mod>attn\.to_[qkv]|attn\.add_[qkv]_proj|proj_mlp)\.lora_(?P<ab>[AB])\.weight$"
+)
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1,
+    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+}  # fmt: skip
+_FLUX1_MLP_RATIO = 4
+
+
+def _read_safetensors_header(path: str) -> tuple[int, dict]:
+    with open(path, "rb") as f:
+        raw = f.read(8)
+        if len(raw) != 8:
+            raise ValueError("not a safetensors file")
+        n = int.from_bytes(raw, "little")
+        if n <= 0 or n > 100 * 1024 * 1024:
+            raise ValueError("implausible safetensors header size")
+        header = json.loads(f.read(n))
+    if not isinstance(header, dict):
+        raise ValueError("safetensors header is not an object")
+    return n, header
+
+
+def flux1_missing_split_pieces(header: dict) -> dict[str, tuple[str, list[int]]]:
+    """New zero tensors (name -> (dtype, shape)) completing every partially-targeted FLUX.1 fused split."""
+    present: dict[tuple[str, str], dict[str, dict]] = {}
+    kinds: dict[str, str] = {}
+    for name, info in header.items():
+        m = _FLUX1_SPLIT_KEY_RE.match(name)
+        if m is None or not isinstance(info, dict):
+            continue
+        present.setdefault((m.group("block"), m.group("mod")), {})[m.group("ab")] = info
+        kinds[m.group("block")] = m.group("kind")
+    out: dict[str, tuple[str, list[int]]] = {}
+    for block in sorted(kinds):
+        kind = kinds[block]
+        for group_kind, mods in _FLUX1_SPLIT_GROUPS:
+            if group_kind != kind:
+                continue
+            have = [present.get((block, mod), {}) for mod in mods]
+            ref = next((p for p in have if "A" in p and "B" in p), None)
+            if ref is None:
+                continue
+            a_shape = ref["A"].get("shape") or []
+            if len(a_shape) != 2:
+                continue
+            hidden = int(a_shape[1])
+            dtype = str(ref["A"].get("dtype") or "F32")
+            if dtype not in _SAFETENSORS_DTYPE_BYTES:
+                continue
+            for mod, pair in zip(mods, have):
+                if "A" in pair and "B" in pair:
+                    continue
+                out_dim = hidden * _FLUX1_MLP_RATIO if mod == "proj_mlp" else hidden
+                out[f"{block}{mod}.lora_A.weight"] = (dtype, [1, hidden])
+                out[f"{block}{mod}.lora_B.weight"] = (dtype, [out_dim, 1])
+    return out
+
+
+def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
+    """Write ``src`` plus missing zero split pieces to ``dst``; False (nothing written) if unneeded or unreadable."""
+    try:
+        header_len, header = _read_safetensors_header(src)
+        extra = flux1_missing_split_pieces(header)
+        if not extra:
+            return False
+        data_end = 0
+        for name, info in header.items():
+            if name == "__metadata__" or not isinstance(info, dict):
+                continue
+            offsets = info.get("data_offsets") or [0, 0]
+            data_end = max(data_end, int(offsets[1]))
+    except (OSError, ValueError, TypeError, IndexError, KeyError):
+        return False
+    new_header = dict(header)
+    cursor = data_end
+    for name, (dtype, shape) in extra.items():
+        nbytes = _SAFETENSORS_DTYPE_BYTES[dtype] * shape[0] * shape[1]
+        new_header[name] = {
+            "dtype": dtype,
+            "shape": shape,
+            "data_offsets": [cursor, cursor + nbytes],
+        }
+        cursor += nbytes
+    blob = json.dumps(new_header, separators = (",", ":")).encode("utf-8")
+    blob += b" " * (-len(blob) % 8)
+    tmp = dst.with_name(dst.name + ".partial")
+    try:
+        with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            fout.write(len(blob).to_bytes(8, "little"))
+            fout.write(blob)
+            fin.seek(8 + header_len)
+            remaining = data_end
+            while remaining > 0:
+                chunk = fin.read(min(remaining, 16 * 1024 * 1024))
+                if not chunk:
+                    raise ValueError("truncated safetensors data")
+                fout.write(chunk)
+                remaining -= len(chunk)
+            fout.write(b"\0" * (cursor - data_end))
+        os.replace(tmp, dst)
+    except (OSError, ValueError):
+        _unlink_quietly(tmp)
+        return False
+    except BaseException:
+        _unlink_quietly(tmp)
+        raise
+    return True
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def materialize_native_dir(
     resolved: list[ResolvedLora],
     dest: Path,
     *,
     real_files: bool = False,
+    family: Optional[str] = None,
 ) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
@@ -596,6 +757,7 @@ def materialize_native_dir(
     ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
     each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
     LoRA cache is never listed and a request naming it is rejected.
+    ``family``: FLUX.1 adapters with an incomplete fused split are staged as a completed copy.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -611,9 +773,16 @@ def materialize_native_dir(
             ".gguf" if r.fmt == "gguf" else ".safetensors"
         )
         link = dest / f"{alias}{ext}"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        if (
+            family in _FLUX1_SPLIT_FAMILIES
+            and ext == ".safetensors"
+            and write_flux1_split_complete_copy(r.path, link)
+        ):
+            out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
+            continue
         try:
-            if link.exists() or link.is_symlink():
-                link.unlink()
             if real_files:
                 os.link(os.path.realpath(r.path), link)
             else:
@@ -667,8 +836,8 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
-# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
+# Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:

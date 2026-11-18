@@ -47,6 +47,7 @@ INTENDED = {
     "steps_per_generation",
     "torch_empty_cache_steps",
     "vllm_importance_sampling_correction",
+    "vllm_importance_sampling_mode",
     "vllm_mode",
     "warmup_ratio",
     "warmup_steps",

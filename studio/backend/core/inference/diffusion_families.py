@@ -59,6 +59,17 @@ def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
 
 
+def load_lora_signature(specs) -> tuple:
+    """Comparable form of a load's ``load_lora_specs``: a same-model reload with other adapters differs."""
+    out = []
+    for spec in specs or ():
+        try:
+            out.append((str(spec["id"]), float(spec["weight"])))
+        except Exception:  # noqa: BLE001 - a malformed row names no adapter
+            continue
+    return tuple(out)
+
+
 # The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
 _pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
     "pinned_checkpoint", default = None
@@ -338,6 +349,14 @@ _QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image 
 _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
+)
+# rdna_explicit_w8a8: an explicit int8 request on gfx1151 (ROCm 7.13, 1024^2, 16 steps, compiled) runs W8A8 with Q / K / V
+# and the MLP input on one shared rotation + act quant per block (diffusion_flux_convrot_fused); AUTO keeps bf16. Device
+# time per step, two repeats each: W8A8 shared 1.364 / 1.367 s, weight-only int8 1.422 / 1.413, W8A8 with a quant per
+# Linear 1.419 (the quant was the whole deficit), bf16 1.364 / 1.371. LPIPS vs bf16 0.012 (weight-only 0.024).
+_FLUX3_KLEIN_RDNA_EXPLICIT_W8A8 = (
+    "compiled int8 W8A8 with one shared act quant per block measured 1.365 vs 1.418 s/step against compiled "
+    "weight-only int8 on gfx1151 (1024^2, 16 steps), LPIPS 0.012 vs bf16"
 )
 # FLUX.3 renders black in plain float16; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
 _FLUX3_FP16_INCOMPATIBLE = (
@@ -754,6 +773,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
+            rdna_explicit_w8a8 = _FLUX3_KLEIN_RDNA_EXPLICIT_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -1480,6 +1500,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
+            compile_from_render_one = (
+                "the eager port is host-bound: 1024 px bf16 eager 14.5 s vs compiled 8.0 s per image on an RTX PRO "
+                "6000, 27.5 s vs 12.9 s on an A100, so bf16 compiles from render 1 like the INT8 default"
+            ),
         ),
         pipeline_class = "MOSSImagePipeline",
         transformer_class = "MOSSImageTransformer",
@@ -1501,7 +1525,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_excluded_bases = ("openmoss-team/moss-image-base",),
         # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
         te_quant_auto = "int8",
-        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image", "kromoss"),
         prompt_hint = (
             "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
         ),
@@ -2350,6 +2374,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
     ("mossimage", 25, 2.5),
+    ("kromoss", 25, 2.5),
     # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),

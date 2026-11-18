@@ -10,8 +10,18 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
+from integrations import editors
+from integrations import unreal as unreal_tools
 from integrations.blender import service as blender
-from models.mcp_servers import BlenderSettings, BlenderSetup, McpBuiltinResponse
+from models.mcp_servers import (
+    BlenderSettings,
+    BlenderSetup,
+    EditorSetup,
+    EditorTest,
+    McpBuiltinResponse,
+    UnrealToolsInstall,
+    UnrealToolsInstallResult,
+)
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -136,6 +146,19 @@ def _validate_url(url: str) -> str:
     return trimmed
 
 
+def _http_origin(url: str) -> tuple:
+    try:
+        parsed = urlparse((url or "").strip())
+        scheme = parsed.scheme.lower()
+        return (
+            scheme,
+            (parsed.hostname or "").lower(),
+            parsed.port or {"http": 80, "https": 443}.get(scheme),
+        )
+    except ValueError:
+        return (url,)
+
+
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
@@ -188,7 +211,12 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         builtin_id = row.get("builtin_id"),
         display_name = row["display_name"],
         url = row["url"],
-        headers = (parse_server_headers(row) or {}) if include_headers else {},
+        # A managed editor row's headers carry the editor's capability token, which no client needs.
+        headers = (
+            (parse_server_headers(row) or {})
+            if include_headers and row.get("builtin_id") not in editors.EDITORS
+            else {}
+        ),
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         oauth_client_id = row.get("oauth_client_id"),
@@ -200,9 +228,9 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
     )
 
 
-def _blender_row():
+def _builtin_row(builtin_id: str = "blender"):
     return next(
-        (row for row in mcp_servers_db.list_servers() if row.get("builtin_id") == "blender"), None
+        (row for row in mcp_servers_db.list_servers() if row.get("builtin_id") == builtin_id), None
     )
 
 
@@ -234,13 +262,15 @@ def list_builtins(
     no_credential: WithoutCredential = False,
 ):
     if via_api_key or no_credential:
-        item = blender.catalog_item()
-        item.available = False
-        item.unavailable_reason = (
-            "An authenticated Unsloth Studio UI session is required for Blender MCP."
-        )
-        return [item]
-    return [blender.catalog_item(_blender_row())]
+        items = [blender.catalog_item(), *(editors.catalog_item(key) for key in editors.EDITORS)]
+        for item in items:
+            item.available = False
+            item.unavailable_reason = f"An authenticated Unsloth Studio UI session is required for {item.display_name} MCP."
+        return items
+    return [
+        blender.catalog_item(_builtin_row()),
+        *(editors.catalog_item(key, _builtin_row(key)) for key in editors.EDITORS),
+    ]
 
 
 @router.post("/builtins/blender/test", response_model = McpServerProbeResult)
@@ -252,7 +282,7 @@ async def test_blender(
     no_credential: WithoutCredential = False,
 ):
     _require_managed_access(via_api_key, no_credential, executes = True)
-    row = _blender_row()
+    row = _builtin_row()
     config = json.loads(row.get("builtin_config_json") or "{}") if row else {}
     if not (config.get("consent") or payload.consent):
         raise HTTPException(
@@ -274,7 +304,7 @@ async def setup_blender(
     no_credential: WithoutCredential = False,
 ):
     _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
-    old = _blender_row()
+    old = _builtin_row()
     config = json.loads(old.get("builtin_config_json") or "{}") if old else {}
     if payload.is_enabled and not (config.get("consent") or payload.consent):
         raise HTTPException(
@@ -307,6 +337,107 @@ async def setup_blender(
             raise HTTPException(status_code = 400, detail = result.error)
         mcp_servers_db.update_server(server_id, {"is_enabled": True})
     return blender.catalog_item(mcp_servers_db.get_server(server_id))
+
+
+def _editor_or_404(builtin_id: str) -> None:
+    if builtin_id not in editors.EDITORS:
+        raise HTTPException(status_code = 404, detail = "Unknown managed MCP integration")
+
+
+def _consented(row) -> bool:
+    return bool(json.loads(row.get("builtin_config_json") or "{}").get("consent")) if row else False
+
+
+# {editor}, not {builtin_id}: these are owner-only integration slots, not per-account objects.
+@router.post("/builtins/{editor}/test", response_model = McpServerProbeResult)
+@serialize_mcp_server_mutation
+async def test_editor(
+    editor: str,
+    payload: EditorTest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    builtin_id = editor
+    _editor_or_404(builtin_id)
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    row = _builtin_row(builtin_id)
+    name = editors.EDITORS[builtin_id].display_name
+    if not (_consented(row) or payload.consent):
+        raise HTTPException(
+            status_code = 400, detail = f"Explicit consent is required before testing {name} MCP."
+        )
+    settings = editors.normalize(builtin_id, payload)
+    on_tools = None
+    if row and editors.settings_for(builtin_id, row) == settings:
+        on_tools = lambda tools: cache_tools(row["id"], tools)
+    return await editors.probe(builtin_id, settings, on_tools = on_tools)
+
+
+@router.post("/builtins/unreal/install-tools", response_model = UnrealToolsInstallResult)
+def install_unreal_tools(
+    payload: UnrealToolsInstall,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    # The editor runs what lands in Content/Python, so this follows the editor-tools gate.
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    try:
+        files = unreal_tools.install(payload.project_path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400, detail = f"Could not write to the project: {exc}"
+        ) from exc
+    return UnrealToolsInstallResult(files = files)
+
+
+@router.put("/builtins/{editor}", response_model = McpBuiltinResponse)
+@serialize_mcp_server_mutation
+async def setup_editor(
+    editor: str,
+    payload: EditorSetup,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    builtin_id = editor
+    _editor_or_404(builtin_id)
+    _require_managed_access(via_api_key, no_credential, executes = payload.is_enabled)
+    old = _builtin_row(builtin_id)
+    name = editors.EDITORS[builtin_id].display_name
+    consent = _consented(old) or payload.consent
+    if payload.is_enabled and not consent:
+        raise HTTPException(
+            status_code = 400, detail = f"Explicit consent is required before enabling {name} MCP."
+        )
+    settings = editors.normalize(builtin_id, payload)
+    config = json.dumps({**settings.model_dump(), "consent": bool(consent)})
+    server_id = old["id"] if old else uuid.uuid4().hex[:16]
+    if old:
+        mcp_servers_db.update_server(
+            server_id, {"builtin_config_json": config, "is_enabled": False}
+        )
+    else:
+        mcp_servers_db.create_server(
+            server_id, name, "", is_enabled = False, builtin_id = builtin_id, builtin_config_json = config
+        )
+    invalidate_tool_cache(server_id)
+    if old:
+        await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+    if payload.is_enabled:
+        result = await editors.probe(
+            builtin_id,
+            settings,
+            check_editor = False,
+            on_tools = lambda tools: cache_tools(server_id, tools),
+        )
+        if not result.ok:
+            raise HTTPException(status_code = 400, detail = result.error)
+        mcp_servers_db.update_server(server_id, {"is_enabled": True})
+    return editors.catalog_item(builtin_id, mcp_servers_db.get_server(server_id))
 
 
 @router.post("/stdio/decode", response_model = McpStdioCommand)
@@ -492,6 +623,15 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
+    # Saved headers belong to one origin: repointing an http row elsewhere drops them unless resent.
+    if (
+        "url" in changes
+        and "headers_json" not in changes
+        and not is_stdio(old["url"])
+        and not is_stdio(changes["url"])
+        and _http_origin(changes["url"]) != _http_origin(old["url"])
+    ):
+        changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"])
@@ -582,7 +722,7 @@ async def refresh_mcp_server_tools(
     if server.get("builtin_id"):
         raise HTTPException(
             status_code = 400,
-            detail = "Use the managed integration Test action to check Blender readiness.",
+            detail = f"Use the managed integration Test action to check {server['display_name']} readiness.",
         )
     # Refresh uses the stored address.
     if is_stdio(server["url"]):
@@ -722,7 +862,8 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if not server.get("is_enabled"):
         raise HTTPException(status_code = 400, detail = "MCP server is disabled")
-    if is_stdio(server["url"]):
+    # Managed editors run code here over loopback HTTP, so they take the stdio gate too.
+    if is_stdio(server["url"]) or server.get("builtin_id") in editors.EDITORS:
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
             raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())

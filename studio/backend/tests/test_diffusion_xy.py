@@ -374,7 +374,8 @@ def test_string_zero_lora_weight_drops_the_adapter_and_renders_last():
             xy = {"x": {"field": "lora_weight", "index": 0, "values": ["0", "1"]}},
         )
     )
-    assert [c.request.loras for c in plan.cells][0] is None
+    # [] (none), not None: an omitted list renders with the adapters the model was loaded with.
+    assert [c.request.loras for c in plan.cells][0] == []
     assert plan.order == [1, 0]
 
 

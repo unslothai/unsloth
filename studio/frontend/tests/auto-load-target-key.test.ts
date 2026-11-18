@@ -102,3 +102,47 @@ test("startup remembers an inactive quant through the logical chat inventory tar
   await local.listVariants();
   assert.equal(scopes.at(-1), localPath);
 });
+
+test("a remembered repo still ranks first when only its Hugging Face cache path is listed", () => {
+  const declarations = [
+    "normalizeTarget",
+    "buildAutoLoadSources",
+    "rememberedMatch",
+    "rememberedSources",
+    "orderAutoLoadSources",
+  ].map((name) => {
+    const begin = source.indexOf(`function ${name}(`);
+    assert.ok(begin >= 0, `${name} is no longer defined in chat-adapter.ts`);
+    return source.slice(begin, source.indexOf("\n}", begin) + 2);
+  }).join("\n");
+  const helpers = new Function(
+    "listGgufVariants", "isGgufLocalRow",
+    `${ts.transpileModule(declarations, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText}; return { buildAutoLoadSources, orderAutoLoadSources };`,
+  )(async () => ({ variants: [] }), () => true);
+  const cacheRow = (repo: string, size: number) => {
+    const path = `/home/a/.cache/huggingface/hub/models--${repo.replace("/", "--")}`;
+    return {
+      id: path, path, load_id: path, source: "hf_cache", model_id: repo,
+      size_bytes: size, capabilities: { requires_variant: true },
+    };
+  };
+  const sources = helpers.buildAutoLoadSources([], [], [
+    cacheRow("unsloth/gemma-4-E2B-it-GGUF", 3_000_000_000),
+    cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000),
+  ], 8192);
+  const remembered = { id: "unsloth/gemma-4-26B-A4B-it-GGUF", kind: "gguf" };
+  const [first] = helpers.orderAutoLoadSources(sources, remembered);
+  assert.equal(first.repoId, "unsloth/gemma-4-26B-A4B-it-GGUF");
+
+  const studioRow = { ...cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000), source: "models_dir" };
+  const [studioFirst] = helpers.orderAutoLoadSources(
+    helpers.buildAutoLoadSources([], [], [
+      cacheRow("unsloth/gemma-4-E2B-it-GGUF", 3_000_000_000),
+      studioRow,
+    ], 8192),
+    remembered,
+  );
+  assert.equal(studioFirst.repoId, "unsloth/gemma-4-E2B-it-GGUF");
+});

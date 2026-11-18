@@ -108,6 +108,16 @@ def api_full_access_refused() -> bool:
     return via_api_key_context() and os.environ.get("UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS") != "1"
 
 
+def server_folder_pick_permitted() -> bool:
+    """Path-named folders run tools unsandboxed: only on a loopback bind with no tunnel/LAN (the bind decides, not the MCP env)."""
+    from utils.account_context import is_owner_context, via_api_key_context
+    from utils.host_policy import serves_this_machine_only
+
+    if not is_owner_context() or via_api_key_context():
+        return False
+    return serves_this_machine_only()
+
+
 def _forbid(detail: str) -> HTTPException:
     return HTTPException(status_code = status.HTTP_403_FORBIDDEN, detail = detail)
 
