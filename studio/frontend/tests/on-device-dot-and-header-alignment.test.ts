@@ -18,6 +18,10 @@ function read(path: string): string {
 const PICKERS = read(
   "../src/features/model-picker/components/model-selector/pickers.tsx",
 );
+const VERDICTS = read(
+  "../src/features/model-picker/components/model-selector/fit-verdict.ts",
+);
+const PICKERS_AND_VERDICTS = `${PICKERS}\n${VERDICTS}`;
 const MODELS_TABLE = read("../src/features/hub/catalog/models-table.tsx");
 const HUB_CARD = read("../src/features/hub/catalog/gguf-download-card.tsx");
 const HUB_PAGE = read("../src/features/hub/hub-page.tsx");
@@ -182,11 +186,11 @@ test("an over budget row dims instead of putting a pill on every line", () => {
 
 test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   assert.equal(
-    PICKERS.split("const VRAM_VERDICT").length - 1,
+    PICKERS_AND_VERDICTS.split("const VRAM_VERDICT").length - 1,
     1,
     "one verdict table",
   );
-  assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
+  assert.ok(!PICKERS_AND_VERDICTS.includes("!text-red-700"), "no red fit badge left");
   assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
   assert.match(
     PICKERS,
@@ -353,28 +357,28 @@ test("chat and the Hub answer the fit question with one formula", () => {
 });
 
 test("each fit verdict is an info mark that explains itself", () => {
-  assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
-  assert.ok(PICKERS.includes("marginal: MIGHT_FIT"));
-  assert.ok(PICKERS.includes("partial: OFFLOADS"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("icon={InformationCircleIcon}"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("marginal: MIGHT_FIT"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("partial: OFFLOADS"));
   // llama-server never refuses on size (--fit offloads), so all over-budget GGUFs say offloads.
-  assert.ok(PICKERS.includes("oom: OFFLOADS"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("oom: OFFLOADS"));
   // A torch pipeline has no --fit, so that one keeps a refusal.
-  assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("exceeds: WONT_FIT"));
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       "hint: \"Estimated memory exceeds this device's usable capacity. Try a smaller model or free memory.\"",
     ),
   );
-  assert.ok(!PICKERS.includes("Larger than your VRAM and system RAM together"));
+  assert.ok(!PICKERS_AND_VERDICTS.includes("Larger than your VRAM and system RAM together"));
   // `tight` comes from checkVramFit's torch estimate that still fits the card.
-  assert.ok(PICKERS.includes("tight: DEVICE_TIGHT"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("tight: DEVICE_TIGHT"));
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
     ),
   );
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       'hint: "Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
@@ -386,16 +390,16 @@ test("each fit verdict is an info mark that explains itself", () => {
   // Marginal always takes --fit even on an idle card, so it must not promise a resident load.
   const mightFitHint =
     "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.";
-  assert.ok(PICKERS.includes(mightFitHint));
+  assert.ok(PICKERS_AND_VERDICTS.includes(mightFitHint));
   assert.ok(HUB_CARD.includes(mightFitHint));
   assert.ok(
-    !PICKERS.includes("If other apps are using VRAM"),
+    !PICKERS_AND_VERDICTS.includes("If other apps are using VRAM"),
     "no conditional offload copy",
   );
   assert.ok(!HUB_CARD.includes("If other apps are using VRAM"));
-  assert.ok(!PICKERS.includes('label: "Might fit"'));
+  assert.ok(!PICKERS_AND_VERDICTS.includes('label: "Might fit"'));
   assert.ok(!HUB_CARD.includes('label: "Might fit"'));
-  assert.ok(!PICKERS.includes("Loading can fail while other apps"));
+  assert.ok(!PICKERS_AND_VERDICTS.includes("Loading can fail while other apps"));
   assert.ok(!HUB_CARD.includes("Within the last GB of VRAM headroom"));
   assert.ok(!HUB_CARD.includes('label: "Won\'t fit"'));
   assert.equal(
@@ -406,29 +410,29 @@ test("each fit verdict is an info mark that explains itself", () => {
     "partial and oom both",
   );
 
-  assert.ok(PICKERS.includes('label: "Over budget"'));
-  assert.ok(PICKERS.includes('label: "Does not fit"'));
+  assert.ok(PICKERS_AND_VERDICTS.includes('label: "Over budget"'));
+  assert.ok(PICKERS_AND_VERDICTS.includes('label: "Does not fit"'));
   // Torch inference raises on any CPU/disk offload (raise_if_offloaded), so exceeds won't load.
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       "hint: \"Estimated memory exceeds this device's usable capacity. Try a smaller model or free memory.\"",
     ),
   );
-  assert.ok(PICKERS.includes("aria-label={verdict.label}"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("aria-label={verdict.label}"));
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       "`Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`",
     ),
   );
   assert.ok(
-    !PICKERS.includes("VRAM (GPU:"),
+    !PICKERS_AND_VERDICTS.includes("VRAM (GPU:"),
     "no VRAM wording on an overage",
   );
-  assert.ok(PICKERS.includes("} VRAM (tight fit on ${formatGiB(gpuGb)})"));
+  assert.ok(PICKERS_AND_VERDICTS.includes("} VRAM (tight fit on ${formatGiB(gpuGb)})"));
   assert.ok(
-    PICKERS.includes(
+    PICKERS_AND_VERDICTS.includes(
       'return status === "partial" || status === "ram" || status === "oom" || status === "exceeds";',
-    ) || /function isOverBudget[\s\S]{0,320}"exceeds"/.test(PICKERS),
+    ) || /function isOverBudget[\s\S]{0,320}"exceeds"/.test(PICKERS_AND_VERDICTS),
     "dimming covers the orange verdicts only",
   );
 });

@@ -344,7 +344,11 @@ def test_the_real_flashinfer_verifies_bit_identical():
 
 
 @pytest.mark.parametrize("m,k,n", CUDA_SHAPES)
-def test_the_cached_dispatch_matches_the_public_api_exactly(m, k, n):
+def test_the_cached_dispatch_matches_the_public_api_exactly(m, k, n, monkeypatch):
+    # Exact-length mode: both arms then read the tactic from FlashInfer's own AutoTuner, so the bits
+    # must agree. The bucketed default picks its own (equally valid) tactic per bucket; it is covered
+    # in test_diffusion_nvfp4_tactics.py.
+    monkeypatch.setenv("UNSLOTH_NVFP4_TACTIC_CACHE", "0")
     torch = _cuda_or_skip()
     import flashinfer
 

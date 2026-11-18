@@ -313,11 +313,11 @@ test("a script-driven animation holds its surface through the running controller
 
 // --- wiring and CSS contract -----------------------------------------------------------------------
 
-test("glass motion runs only with software compositing, where glass blurs: never solid, out of scope or WebKitGTK, and Transparent only on Windows Desktop", () => {
+test("glass motion runs only with software compositing, where glass blurs: never solid or out of scope, and Transparent only on Windows Desktop", () => {
   assert.match(MATERIAL, /import \{ startGlassMotion \} from "\.\/glass-motion";/);
   assert.match(
     MATERIAL,
-    /const clearBlur =\s*material === "transparent" &&\s*root\.classList\.contains\("tauri"\) &&\s*root\.classList\.contains\("client-windows"\);\s*const on =\s*!WEBKIT_GTK &&\s*material !== "solid" &&\s*\(material !== "transparent" \|\| clearBlur\) &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
+    /const clearBlur =\s*material === "transparent" &&\s*root\.classList\.contains\("tauri"\) &&\s*root\.classList\.contains\("client-windows"\);\s*const on =\s*material !== "solid" &&\s*\(material !== "transparent" \|\| clearBlur\) &&\s*here &&\s*softwareCompositing\(\);\s*document\.documentElement\.toggleAttribute\("data-glass-motion", on\);\s*return on \? startGlassMotion\(\)\.stop : undefined;\s*\}, \[material, here\]\);/,
   );
 });
 

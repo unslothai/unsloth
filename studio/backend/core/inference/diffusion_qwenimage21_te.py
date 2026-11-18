@@ -59,9 +59,9 @@ def skip_text_encoder_kv_cache(pipe: Any, logger: Any = None) -> bool:
             handle.remove()
 
     setattr(_get_qwen_prompt_embeds, _MARK, True)
-    from .diffusion_prompt_cache import TRANSPARENT_WRAPPER_ATTR
+    from .diffusion_prompt_cache import mark_transparent_wrapper
 
-    setattr(_get_qwen_prompt_embeds, TRANSPARENT_WRAPPER_ATTR, True)
+    mark_transparent_wrapper(_get_qwen_prompt_embeds)
     pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
     if logger is not None:
         logger.info(
@@ -103,6 +103,10 @@ def select_final_hidden_state(pipe: Any, logger: Any = None) -> bool:
 
     setattr(_get_qwen_prompt_embeds, _SELECT_MARK, True)
     setattr(_get_qwen_prompt_embeds, _MARK, getattr(original, _MARK, False))
+    from .diffusion_prompt_cache import is_transparent_wrapper, mark_transparent_wrapper
+
+    if is_transparent_wrapper(original):
+        mark_transparent_wrapper(_get_qwen_prompt_embeds)
     pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
     if logger is not None:
         logger.info(

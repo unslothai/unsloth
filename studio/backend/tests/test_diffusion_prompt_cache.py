@@ -541,6 +541,56 @@ def test_an_edited_image_object_misses_after_in_place_change():
     assert pipe.calls == 2
 
 
+class _VisionPipe:
+    def __init__(self):
+        self.calls = 0
+        self._execution_device = torch.device("cpu")
+        self.text_encoder = torch.nn.Linear(2, 2)
+
+    def encode_prompt(
+        self,
+        prompt,
+        vision_images = None,
+    ):
+        self.calls += 1
+        return torch.full((2,), float(self.calls)), torch.zeros(2, dtype = torch.long)
+
+
+def test_float_reference_picture_is_cached_by_content():
+    np = pytest.importorskip("numpy")
+    pipe = _VisionPipe()
+    assert prompt_cache.install(pipe)
+    picture = np.linspace(0.0, 1.0, 4 * 6 * 3, dtype = np.float32).reshape(4, 6, 3)
+    pipe.encode_prompt("a cat", [picture])
+    pipe.encode_prompt("a cat", [picture.copy()])
+    assert pipe.calls == 1
+    changed = picture.copy()
+    changed[0, 0, 0] = np.nextafter(changed[0, 0, 0], np.float32(1.0))
+    pipe.encode_prompt("a cat", [changed])
+    pipe.encode_prompt("a cat", [picture.astype(np.float64)])
+    assert pipe.calls == 3
+    stats = pipe._unsloth_prompt_cache.describe()
+    assert stats["bypassed"] == 0 and stats["hits"] == 1
+
+
+def test_h3_wide_source_vision_copy_hits_the_prompt_cache():
+    np = pytest.importorskip("numpy")
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference import diffusion_minimax_h3_image as h3
+
+    pixels = np.random.default_rng(0).integers(0, 255, (1024, 4096, 3), dtype = np.uint8)
+    _, vision = h3.MiniMaxH3ImagePipeline.prepare_references(
+        Image.fromarray(pixels), source_resize = True
+    )
+    assert isinstance(vision[0], np.ndarray) and vision[0].dtype == np.float32
+    pipe = _VisionPipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", vision)
+    pipe.encode_prompt("a cat", vision)
+    assert pipe.calls == 1
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 0
+
+
 def test_bypassed_encoder_error_is_not_chained_onto_the_key_error():
     class Boom(_EncodePipe):
         def encode_prompt(
@@ -1041,6 +1091,55 @@ def test_an_unmarked_wrapper_of_the_same_helper_keeps_the_full_key(monkeypatch):
 
     pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
     assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+
+
+def test_a_wraps_copy_of_the_transparent_marker_keeps_the_full_key(monkeypatch):
+    # functools.wraps copies the no-K/V wrapper's marker onto this denoiser-reading wrapper
+    import functools
+
+    from core.inference.diffusion_qwenimage21_te import skip_text_encoder_kv_cache
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    pipe = _Qwen21LikePipe({"transformer": ["style"]})
+    assert skip_text_encoder_kv_cache(pipe)
+    original = pipe._get_qwen_prompt_embeds
+
+    @functools.wraps(original)
+    def _get_qwen_prompt_embeds(prompt):
+        return original(prompt) * pipe.transformer.weight.detach().mean()
+
+    pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
+    assert not prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
+    prompt_cache.install(pipe)
+    out = []
+    for strength in (0.25, 0.75):
+        pipe._unsloth_loras = (("style", "/x/style.safetensors", strength),)
+        with torch.no_grad():
+            pipe.transformer.weight.fill_(strength)
+        out.append(float(pipe.encode_prompt("same")[0].flatten()[0]))
+    assert out[0] != out[1] and pipe.calls == 2
+
+
+class _Qwen21SelectablePipe(_Qwen21LikePipe):
+    def _get_qwen_prompt_embeds(self, prompt):
+        # select_final_hidden_state markers: norm.register_forward_hook outputs.hidden_states[-1]
+        return self.text_encoder(torch.full((1, 2), float(len(prompt))))
+
+
+def test_final_state_wrapper_over_the_no_kv_wrapper_keeps_the_scoped_key(monkeypatch):
+    from core.inference.diffusion_qwenimage21_te import (
+        select_final_hidden_state,
+        skip_text_encoder_kv_cache,
+    )
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_QWEN21_TE_NO_KV", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_TE_SELECT_HIDDEN", raising = False)
+    pipe = _Qwen21SelectablePipe({"transformer": ["style"]})
+    assert skip_text_encoder_kv_cache(pipe)
+    assert select_final_hidden_state(pipe)
+    assert prompt_cache._encode_skips_denoisers(type(pipe), "encode_prompt", pipe)
 
 
 def test_a_marked_wrapper_around_a_foreign_callable_keeps_the_full_key(monkeypatch):

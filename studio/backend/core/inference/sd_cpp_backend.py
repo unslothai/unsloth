@@ -52,6 +52,7 @@ from core.inference.sd_cpp_multigpu import split_for_load
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    sd_cpp_flow_shift_for,
     MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -572,10 +573,33 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+# Successful ``--help`` text per (path, size, mtime_ns); a rewritten binary changes the key.
+_HELP_TEXT_CACHE: dict[tuple[str, int, int], str] = {}
+_HELP_TEXT_CACHE_MAX = 8
+_help_text_cache_lock = threading.Lock()
+
+
+def _help_cache_key(binary: str) -> Optional[tuple[str, int, int]]:
+    # A bare name is resolved by the spawn through PATH, not by stat; only explicit paths are cached.
+    if not os.path.dirname(binary):
+        return None
+    try:
+        st = os.stat(binary)
+    except (OSError, ValueError):
+        return None
+    return (os.path.abspath(binary), int(st.st_size), int(st.st_mtime_ns))
+
+
 def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     """Identifying output settles it whatever the exit code (old builds exit 1); else only a clean exit is evidence, and rc 127 from the loader is not."""
     import subprocess
 
+    cache_key = _help_cache_key(str(binary)) if args == ("--help",) else None
+    if cache_key is not None:
+        with _help_text_cache_lock:
+            cached = _HELP_TEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         with windows_loader_error_boxes_suppressed():
             proc = subprocess.run(
@@ -592,7 +616,16 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
         return None
     if proc.returncode != 0:
         return None
-    return (proc.stdout or "") + (proc.stderr or "")
+    text = (proc.stdout or "") + (proc.stderr or "")
+    # Re-stat: a binary replaced while it ran must not leave this text under the old build's key.
+    if cache_key is not None and _help_cache_key(str(binary)) == cache_key:
+        with _help_text_cache_lock:
+            for stale in [k for k in _HELP_TEXT_CACHE if k[0] == cache_key[0]]:
+                del _HELP_TEXT_CACHE[stale]
+            while len(_HELP_TEXT_CACHE) >= _HELP_TEXT_CACHE_MAX:
+                del _HELP_TEXT_CACHE[next(iter(_HELP_TEXT_CACHE))]
+            _HELP_TEXT_CACHE[cache_key] = text
+    return text
 
 
 # --ref-video arrived with H3 upstream; --version is "unknown" on release prebuilts.
@@ -630,12 +663,16 @@ def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
     return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
+# Older builds register --auto-fit as a bare boolean, so "--auto-fit off" fails as "unknown argument: off".
+_AUTO_FIT_ON_OFF = re.compile(r"--auto-fit\s+on\|off")
+
+
 def _layer_split_supported(binary: Optional[str]) -> bool:
     """Whether ``binary`` takes a per-device ``--max-vram`` and ``--auto-fit off`` (a two-card block split)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
-    return text is not None and "--max-vram" in text and "--auto-fit" in text
+    return text is not None and "--max-vram" in text and _AUTO_FIT_ON_OFF.search(text) is not None
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
@@ -1630,12 +1667,6 @@ _RUNTIME_FINGERPRINT_MEMO: Optional[dict] = None
 _HOST_FINGERPRINT_MEMO: Optional[dict] = None
 
 
-def _reset_host_fingerprint() -> None:
-    global _HOST_FINGERPRINT_MEMO, _RUNTIME_FINGERPRINT_MEMO
-    _HOST_FINGERPRINT_MEMO = None
-    _RUNTIME_FINGERPRINT_MEMO = None
-
-
 def _runtime_fingerprint() -> dict:
     global _RUNTIME_FINGERPRINT_MEMO
     if _RUNTIME_FINGERPRINT_MEMO is not None:
@@ -2431,24 +2462,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
 
 
 _ARCH_MARKER_CACHE: dict[tuple[str, int, int, str], bool] = {}
+_SD_CPP_LIBS = ("stable-diffusion.dll", "libstable-diffusion.so", "libstable-diffusion.dylib")
 
 
-def binary_carries_marker(
-    binary: Optional[str],
-    marker: Optional[str],
-    *,
-    unreadable: bool = True,
-) -> bool:
-    """No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the caller passes unreadable=False."""
-    if not marker:
-        return True
-    if not binary:
-        return False
+def _file_carries_marker(path: str, marker: str) -> Optional[bool]:
     try:
-        st = os.stat(binary)
-        key = (str(binary), int(st.st_size), int(st.st_mtime_ns), marker)
+        st = os.stat(path)
+        key = (str(path), int(st.st_size), int(st.st_mtime_ns), marker)
     except OSError:
-        return unreadable
+        return None
     hit = _ARCH_MARKER_CACHE.get(key)
     if hit is not None:
         return hit
@@ -2456,7 +2478,7 @@ def binary_carries_marker(
     chunk = 8 << 20
     found = False
     try:
-        with open(binary, "rb") as fh:
+        with open(path, "rb") as fh:
             tail = b""
             while True:
                 block = fh.read(chunk)
@@ -2467,9 +2489,31 @@ def binary_carries_marker(
                     break
                 tail = block[-(len(needle) - 1) :] if len(needle) > 1 else b""
     except OSError:
-        return unreadable
+        return None
     _ARCH_MARKER_CACHE[key] = found
     return found
+
+
+def binary_carries_marker(
+    binary: Optional[str],
+    marker: Optional[str],
+    *,
+    unreadable: bool = True,
+) -> bool:
+    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
+    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
+    caller passes unreadable=False."""
+    if not marker:
+        return True
+    if not binary:
+        return False
+    found = _file_carries_marker(binary, marker)
+    if found is None:
+        return unreadable
+    return found or any(
+        _file_carries_marker(os.path.join(os.path.dirname(binary), lib), marker)
+        for lib in _SD_CPP_LIBS
+    )
 
 
 def _native_output_image(fam: Any, im: Any) -> Any:
@@ -2902,6 +2946,7 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    scheduler: Optional[str] = None
     # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
     sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
@@ -2926,9 +2971,13 @@ class _SdState:
     gpu_explicit: bool = False
     multi_gpu: Optional[dict[str, Any]] = None
     split_physical_gpu_id: Optional[int] = None
+    vram_budget: Optional[str] = None
 
     def spawn_env(self) -> Optional[dict[str, str]]:
         return dict(self.child_env) or None
+
+    def vram_budget_args(self) -> list[str]:
+        return ["--max-vram", self.vram_budget] if self.vram_budget else []
 
     @property
     def placed_ordinal(self) -> Optional[int]:
@@ -3103,6 +3152,12 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _family_rng_kwargs(fam: Any) -> dict[str, str]:
+    """``rng=`` for an sd-server start when the family pins one (``sd_cpp_rng``), else nothing."""
+    rng = getattr(fam, "sd_cpp_rng", None)
+    return {"rng": rng} if rng else {}
+
+
 def _request_extra_sample_args(state: Any) -> Optional[str]:
     """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
     if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
@@ -3115,8 +3170,15 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_scheduler(state: Any) -> Optional[str]:
+    """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
+    if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
+        return None
+    return getattr(state, "scheduler", None)
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
-    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    """The family's ``--flow-shift``; Krea 2 Raw follows output size, variants apply under the family scheduler."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
         state.gguf_filename,
         getattr(state, "display_repo_id", None),
@@ -3124,6 +3186,14 @@ def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
         state.base_repo,
     ):
         return krea2_sd_cpp_flow_shift(width, height)
+    if _request_scheduler(state) and getattr(state.family, "sd_cpp_flow_shift_variants", ()):
+        # Not base_repo: an unnamed dev GGUF can fall back to the family's schnell base.
+        return sd_cpp_flow_shift_for(
+            state.family,
+            getattr(state, "gguf_filename", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "display_repo_id", None),
+        )
     return state.flow_shift
 
 
@@ -4007,6 +4077,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
+                            **_family_rng_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -4102,6 +4173,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    scheduler = fam.sd_cpp_scheduler,
                     sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
@@ -4848,7 +4920,7 @@ class SdCppDiffusionBackend:
                         model_kind = "gguf",
                         transformer_quant = None,
                     ):
-                        raise ValueError(
+                        raise diffusion_lora.LoraSelectionError(
                             f"LoRA is not supported for {state.family.name} on the native "
                             "sd.cpp engine."
                         )
@@ -5009,7 +5081,10 @@ class SdCppDiffusionBackend:
             stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
             lora_stages.append(stage)
             materialized = diffusion_lora.materialize_native_dir(
-                lora_resolved, stage, real_files = True
+                lora_resolved,
+                stage,
+                real_files = True,
+                family = getattr(state.family, "name", None),
             )
             return [
                 {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
@@ -5023,6 +5098,7 @@ class SdCppDiffusionBackend:
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
         device_losses = 0
+        vram_restarted = False
         hires_payload: Optional[dict] = None
         hires_staged: list[Path] = []
 
@@ -5068,6 +5144,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
@@ -5095,10 +5172,12 @@ class SdCppDiffusionBackend:
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
-                    # fresh device: respawn the same build once. Any other death propagates.
+                    # fresh device: respawn the same build once. A VRAM refusal restarts once under a smaller
+                    # budget. Any other death propagates.
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
+                        vram_budget: Optional[str] = None
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
@@ -5116,10 +5195,17 @@ class SdCppDiffusionBackend:
                                     state, str(exc), cancel
                                 )
                                 device_respawned = server is not None
+                        if server is None and not vram_restarted:
+                            server, vram_budget = self._restart_server_with_vram_headroom(
+                                state, str(exc), cancel
+                            )
+                            vram_restarted = server is not None
                         if server is None:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if vram_budget is not None:
+                            state = replace(state, vram_budget = vram_budget)
                         if moved_to_cpu:
                             # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
@@ -5235,7 +5321,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs)
+            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -5283,7 +5369,59 @@ class SdCppDiffusionBackend:
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
+            extra_args = state.vram_budget_args(),
         )
+
+    def _restart_server_with_vram_headroom(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
+        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
+        restarted while another application held the card planned too little to halve, and keeps refusing."""
+        if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
+            return None, None
+        if state.device == "cpu" or self._cpu_backend_forced:
+            return None, None
+        if state.server is None or cancel.is_set():
+            return None, None
+        binary = state.server.binary
+        # A two-card split already carries per-device budgets, and an older build rejects the flag.
+        if "--max-vram" in state.offload_flags or "--max-vram" not in sd_cpp_graph_cut_options(
+            binary
+        ):
+            return None, None
+        planned = dict(getattr(state.server, "planned_free_vram_mib", None) or {})
+        budget = state.vram_budget or sd_cpp_args_mod.image_vram_retry_budget(
+            planned, _backend_devices(state.offload_flags)
+        )
+        if budget is None or ("=" in budget and not _layer_split_supported(binary)):
+            return None, None
+        if not self._begin_replacement(state):
+            return None, None
+        logger.warning(
+            "sd-server refused the render for VRAM; restarting it with --max-vram %s (half the free VRAM this "
+            "load first planned with; the refusing server planned with, in MiB: %s) and retrying once. "
+            "Details: %s",
+            budget,
+            planned,
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(binary)
+        with self._lock:
+            self._pending_server = server
+        started = self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = state.offload_flags,
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+            extra_args = ["--max-vram", budget],
+        )
+        return started, (budget if started is not None else None)
 
     def _restart_server_on_cpu_backend(
         self,
@@ -5407,7 +5545,9 @@ class SdCppDiffusionBackend:
             lora_dir: Optional[str] = None
             if lora_resolved:
                 materialized = diffusion_lora.materialize_native_dir(
-                    lora_resolved, Path(tmpdir) / "loras"
+                    lora_resolved,
+                    Path(tmpdir) / "loras",
+                    family = getattr(state.family, "name", None),
                 )
                 eff_prompt = diffusion_lora.inject_prompt_tags(prompt, materialized)
                 lora_dir = str(Path(tmpdir) / "loras")
@@ -5433,11 +5573,13 @@ class SdCppDiffusionBackend:
                     guidance = flux_guidance,
                     seed = seed_i,
                     sampling_method = state.sampling_method,
+                    scheduler = _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
                     qwen_image_layers = layers,
+                    rng = getattr(state.family, "sd_cpp_rng", None),
                 )
                 # Hold installs off while sd-cli runs; injected engines may have no binary.
                 with _tree_reader(getattr(engine, "binary", None), cancel):

@@ -85,6 +85,9 @@ def _plain(value: Any) -> Any:
     image = _image_fingerprint(value)
     if image is not None:
         return image
+    array = _array_fingerprint(value)
+    if array is not None:
+        return array
     raise TypeError(type(value).__name__)
 
 
@@ -97,6 +100,25 @@ def _image_fingerprint(value: Any) -> Optional[list]:
         return None
     digest = hashlib.sha256(value.tobytes()).hexdigest()
     return ["PIL.Image", str(value.mode), list(value.size), digest]
+
+
+def _array_fingerprint(value: Any) -> Optional[list]:
+    """Float reference pictures (NumPy arrays) key by dtype, shape and their exact bytes, so precision is kept."""
+    module = type(value).__module__ or ""
+    if not (hasattr(value, "dtype") and hasattr(value, "shape") and hasattr(value, "tobytes")):
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not isinstance(value, np.ndarray) or value.dtype.kind not in "biuf":
+        return None
+    digest = getattr(value, "digest", None) if not module.startswith("numpy") else None
+    if not isinstance(digest, str):
+        digest = hashlib.blake2b(
+            np.ascontiguousarray(value).reshape(-1).view(np.uint8), digest_size = 16
+        ).hexdigest()
+    return ["ndarray", value.dtype.str, list(value.shape), digest]
 
 
 def _is_tensor(obj: Any) -> bool:
@@ -230,6 +252,16 @@ _MAX_FOLLOWED_METHODS = 64
 TRANSPARENT_WRAPPER_ATTR = "_unsloth_prompt_cache_transparent"
 
 
+def mark_transparent_wrapper(fn: Any) -> Any:
+    """Self-reference, so a ``functools.wraps`` copy on an outer wrapper is not trusted."""
+    setattr(fn, TRANSPARENT_WRAPPER_ATTR, fn)
+    return fn
+
+
+def is_transparent_wrapper(fn: Any) -> bool:
+    return fn is not None and getattr(fn, TRANSPARENT_WRAPPER_ATTR, None) is fn
+
+
 def _scoped_lora_key() -> bool:
     return (os.environ.get(_ENV_SCOPED_LORA_KEY) or "").strip().lower() not in _FALSE_TOKENS
 
@@ -345,7 +377,7 @@ def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool
     if not callable(value):
         return False
     for _ in range(8):
-        if not getattr(value, TRANSPARENT_WRAPPER_ATTR, False):
+        if not is_transparent_wrapper(value):
             break
         value = getattr(value, "__wrapped__", None)
     else:

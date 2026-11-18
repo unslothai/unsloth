@@ -34,7 +34,7 @@ def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_decode_audio_mono",
-        lambda raw: (decoded.append(raw) or np.zeros(0, np.float32), 16_000),
+        lambda raw: (decoded.append(raw) or np.zeros(16_000, np.float32), 16_000),
     )
     monkeypatch.setattr(
         inference_route,
@@ -661,6 +661,48 @@ def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
     )
     assert container == "wav"
     assert base64.b64decode(encoded) == short_wav
+
+
+def test_a_one_sample_wav_is_refused_before_llama_server(monkeypatch):
+    """mtmd aborts llama-server on a clip that decodes to one sample, so it never leaves here."""
+    one_sample = _wav_header(16_000, 1, 16, 2) + b"\x00\x00"
+    assert len(one_sample) == 46
+    # three samples at 48 kHz resample to one at 16 kHz
+    three_at_48k = _wav_header(48_000, 1, 16, 6) + bytes(6)
+    for wav in (one_sample, three_at_48k):
+        with pytest.raises(inference_route._AudioTooShortError):
+            inference_route._prepare_audio_for_llama(base64.b64encode(wav).decode())
+
+    ten_ms = _wav_header(16_000, 1, 16, 320) + bytes(320)
+    encoded, container = inference_route._prepare_audio_clips_for_llama(
+        [base64.b64encode(ten_ms).decode(), base64.b64encode(ten_ms).decode()]
+    )[1]
+    assert container == "wav"
+    assert base64.b64decode(encoded) == ten_ms
+
+
+def test_a_transcoded_clip_that_decodes_to_one_sample_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        inference_route, "_decode_audio_mono", lambda raw: (np.zeros(1, np.float32), 16_000)
+    )
+    with pytest.raises(inference_route._AudioTooShortError):
+        inference_route._prepare_audio_for_llama(base64.b64encode(b"OggS tiny").decode())
+
+
+def test_a_switch_preflight_names_too_short_audio(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    one_sample = _wav_header(16_000, 1, 16, 2) + b"\x00\x00"
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"clips": [base64.b64encode(one_sample).decode()]}, True
+            )
+        )
+    assert caught.value.status_code == 400
+    assert inference_route._AUDIO_TOO_SHORT_DETAIL in str(caught.value.detail)
 
 
 def test_an_inflated_block_align_cannot_shorten_a_forwarded_wav():

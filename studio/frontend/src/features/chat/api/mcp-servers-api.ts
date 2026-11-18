@@ -39,8 +39,10 @@ export interface McpServerProbeResult {
   error: string | null;
 }
 
+export type EditorMcpId = "unity" | "unreal" | "godot" | "figma" | "roblox";
+
 export interface McpBuiltinConfig {
-  builtin_id: "blender";
+  builtin_id: "blender" | EditorMcpId;
   display_name: string;
   server_id: string | null;
   is_enabled: boolean;
@@ -48,7 +50,9 @@ export interface McpBuiltinConfig {
   unavailable_reason: string | null;
   port: number;
   blender_path: string;
-  min_blender_version: string;
+  min_blender_version: string | null;
+  project_path?: string;
+  installed?: boolean | null;
 }
 
 export interface BlenderMcpSettings {
@@ -85,6 +89,32 @@ export function testBlenderMcp(
     method: "POST",
     body: payload,
   });
+}
+
+export interface EditorMcpSettings {
+  port: number | null;
+  project_path: string;
+}
+
+export function updateEditorMcp(
+  id: EditorMcpId,
+  payload: EditorMcpSettings & { is_enabled: boolean; consent: boolean },
+): Promise<McpBuiltinConfig> {
+  return trackMcpServerMutation(
+    mcpRequest(`/builtins/${id}`, { method: "PUT", body: payload }),
+  );
+}
+
+export function testEditorMcp(
+  id: EditorMcpId,
+  payload: EditorMcpSettings & { consent: boolean },
+): Promise<
+  McpServerProbeResult & {
+    editor_ready?: boolean | null;
+    editor_error?: string | null;
+  }
+> {
+  return mcpRequest(`/builtins/${id}/test`, { method: "POST", body: payload });
 }
 
 export interface McpServerImportResult {

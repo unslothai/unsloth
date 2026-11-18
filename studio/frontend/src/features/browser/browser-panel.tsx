@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
+import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
 import {
@@ -2537,7 +2537,7 @@ export const BrowserPanel = memo(function BrowserPanel({
       ref={sectionRef}
       data-slot="browser-panel"
       data-browser-document={documentShown || undefined}
-      data-windows-browser={!floating && usesWindowsTitlebar() ? (documentShown ? "document" : "web") : undefined}
+      data-windows-browser={!floating && shouldUseCustomWindowTitlebar() ? (documentShown ? "document" : "web") : undefined}
       aria-label={t("browser.title")}
       // The chat's find skips the browser's chrome; the page is searched as its own target.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}

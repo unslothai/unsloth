@@ -1414,3 +1414,53 @@ def test_rocm_probe_dtype_packed_projection_with_fp32_norm_synthetic():
     pipe = _Pipe()
     pipe.transformer = dit
     assert lsp._rocm_attention_dtype(pipe) == torch.bfloat16
+
+
+def _refine_rocm_split(monkeypatch, limit_mib):
+    monkeypatch.setattr(lsp, "_is_rocm", lambda: True)
+    monkeypatch.setattr(lsp, "engine_available", lambda: True)
+    monkeypatch.setattr(
+        lsp, "_rocm_discrete_secondaries", lambda pipe, primary, cards, logger: (1,)
+    )
+    monkeypatch.setattr(
+        lsp,
+        "_denoiser_layouts",
+        lambda pipe: {"transformer": L(1000, (1000,) * 23)},
+    )
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    plan = _plan()
+    return plan, lsp.refine_plan_for_layer_split(
+        pipe,
+        plan,
+        selection = mg.make_selection(0, [0, 1]),
+        sizes = {"transformer": (24_000, "dit")},
+        primary_limit_mib = limit_mib,
+        secondary_limit_mib = lambda _o: limit_mib,
+        headroom_mib = 2000,
+        overhead_mib = 500,
+    )
+
+
+def test_rocm_split_declined_on_memory_keeps_the_primarys_fused_sdpa(
+    _real_rocm_sdpa_probe, monkeypatch
+):
+    # cuda:1 lacks flash, but the split does not fit, so the one-card load keeps flash on.
+    from core.inference import diffusion_attention as da
+
+    flags = _real_rocm_sdpa_probe
+    monkeypatch.setattr(
+        da,
+        "_run_rocm_sdpa_children",
+        lambda device, dtype: (
+            (da.SDPA_MATH, da.SDPA_FLASH, da.SDPA_MEM_EFFICIENT)
+            if device == "cuda:0"
+            else (da.SDPA_MATH, da.SDPA_MEM_EFFICIENT)
+        ),
+    )
+    plan, refined = _refine_rocm_split(monkeypatch, 4000)
+    assert refined is plan
+    assert flags() == (True, True)
+    plan, refined = _refine_rocm_split(monkeypatch, 20_000)
+    assert refined is not plan and refined.layer_split.cards == (0, 1)
+    assert flags() == (False, True)

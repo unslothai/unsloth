@@ -4,6 +4,8 @@
 // eslint-disable-next-line no-restricted-imports
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
 // eslint-disable-next-line no-restricted-imports
+import { useMaterialStore } from "@/features/chat-background/material";
+// eslint-disable-next-line no-restricted-imports
 import { startChatBackgroundSync } from "@/features/chat-background/sync";
 // eslint-disable-next-line no-restricted-imports
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
@@ -66,6 +68,8 @@ export function prefsFromRemote(remote: Prefs, defaults: Prefs): Prefs {
 
 // The notification needs this browser's permission; the files panel is layout state.
 const LOCAL_CHAT_PREFS = new Set(["notifyWhenReplyFinishes", "filesPanelCollapsed"]);
+// Whether native vibrancy worked and whether this route is in scope belong to this window.
+const LOCAL_MATERIAL = new Set(["nativeFailed", "here"]);
 
 type Section = {
   field: keyof ClientPreferencesChanges;
@@ -122,6 +126,7 @@ function sections(): Record<keyof Pending, Section> {
     browser: storeSection("browser", useBrowserPrefsStore),
     chat: storeSection("chat", useChatPreferencesStore, LOCAL_CHAT_PREFS),
     plusMenu: storeSection("plusMenu", usePlusMenuPrefsStore),
+    material: storeSection("material", useMaterialStore, LOCAL_MATERIAL),
     timeFormat: {
       field: "timeFormat",
       fallback: "system",

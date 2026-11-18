@@ -1534,14 +1534,8 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    # Include special tokens too: native render resolves bos_token; else a dropped tool stays
-    # listed.
-    native = model_markup(
-        native_tpl,
-        _vocabulary_of(tokenizer),
-        tools,
-        specials = _special_token_strings(getattr(tokenizer, "tokenizer", tokenizer)),
-    )
+    # Profiled with special tokens: the native render resolves bos_token.
+    native = _native_markup_for_tokenizer(tokenizer, native_tpl, tools)
     if native is None:
         return safe
     kept = catalog_tool_names(neutralize_tool_descriptions(tools, cache, native))
@@ -2337,6 +2331,68 @@ def _special_token_strings(tokenizer) -> dict:
     return specials
 
 
+_NATIVE_MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _template_key(template):
+    """Hashable form of a template; a named-template dict is not."""
+    if isinstance(template, str):
+        return template
+    try:
+        return json.dumps(template, sort_keys = True, default = str)
+    except (TypeError, ValueError):
+        return repr(template)
+
+
+def _cached_markup(store, tokenizer, key, build):
+    """build() memoised per tokenizer under *key*, at most 4 keys each; unweakrefable tokenizers are not cached."""
+    try:
+        entry = store.get(tokenizer)
+    except TypeError:
+        entry = None
+    if isinstance(entry, dict):
+        hit = entry.get(key, _UNPARSED)
+        if hit is not _UNPARSED:
+            return hit
+    profile = build()
+    try:
+        entry = entry if isinstance(entry, dict) else {}
+        if len(entry) >= 4:
+            entry.clear()
+        entry[key] = profile
+        store[tokenizer] = entry
+    except TypeError:
+        pass
+    return profile
+
+
+def _vocabulary_size_key(inner):
+    # Not len(): on a fast tokenizer it builds the whole vocabulary map, the cost this cache avoids.
+    try:
+        return (inner.vocab_size, len(getattr(inner, "added_tokens_decoder", None) or ()))
+    except Exception:
+        return None
+
+
+def _native_markup_for_tokenizer(tokenizer, native_tpl, tools) -> Optional[ModelMarkup]:
+    """model_markup of the native fallback template, which walks the whole vocabulary, cached per tokenizer.
+    model_markup reads tools only for truthiness."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    specials = _special_token_strings(inner)
+    key = (
+        _template_key(native_tpl),
+        bool(tools),
+        _vocabulary_size_key(inner),
+        tuple(sorted(specials.items())),
+    )
+    return _cached_markup(
+        _NATIVE_MARKUP_BY_TOKENIZER,
+        tokenizer,
+        key,
+        lambda: model_markup(native_tpl, _vocabulary_of(tokenizer), tools, specials = specials),
+    )
+
+
 def markup_for_tokenizer(
     tokenizer,
     tools = None,
@@ -2345,10 +2401,6 @@ def markup_for_tokenizer(
     """Profile tokenizer markers, cached per tokenizer; None when unreadable, so curated patterns apply."""
     if tokenizer is None:
         return None
-    try:
-        cached = _MARKUP_BY_TOKENIZER.get(tokenizer)
-    except TypeError:  # not weak-referenceable
-        cached = None
     # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     # An explicit template is what this request renders with; load-time profiling lagged it (#7066).
@@ -2356,47 +2408,24 @@ def markup_for_tokenizer(
         template = getattr(tokenizer, "chat_template", None)
     if not template:
         template = getattr(inner, "chat_template", None)
-    # Keyed on template too (a mapped template lands on the same object at generate time) and on tools presence, since named dicts emit different literals.
     is_processor = _is_processor(tokenizer)
     # A processor always renders default, so tools do not change its profile or the cache key.
     selector = bool(tools) and not is_processor
-    # A named-template dict is unhashable, so the key is a stable serialization of it; without this the cache write
-    # raised TypeError and every call rebuilt the profile.
-    if not isinstance(template, str):
-        try:
-            template_key = json.dumps(template, sort_keys = True, default = str)
-        except (TypeError, ValueError):
-            template_key = repr(template)
-    else:
-        template_key = template
-    if isinstance(cached, dict):
-        hit = cached.get((template_key, selector), _UNPARSED)
-        if hit is not _UNPARSED:
-            return hit
-    else:
-        cached = None
-    tokens = None
-    tokens = _tokenizer_strings(inner)
     # ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it renders "default" unless
     # chat_template= names another. Profiling with the tokenizer rule left a processor's own default-template boundary
     # unswept while the render emitted it (#7066).
-    profile = model_markup(
-        template,
-        tokens,
-        tools,
-        prefer_tool_use = not is_processor,
-        specials = _special_token_strings(inner),
+    return _cached_markup(
+        _MARKUP_BY_TOKENIZER,
+        tokenizer,
+        (_template_key(template), selector),
+        lambda: model_markup(
+            template,
+            _tokenizer_strings(inner),
+            tools,
+            prefer_tool_use = not is_processor,
+            specials = _special_token_strings(inner),
+        ),
     )
-    try:
-        entry = cached if isinstance(cached, dict) else {}
-        # Two selectors per template; trim if a tokenizer somehow cycles templates.
-        if len(entry) >= 4:
-            entry.clear()
-        entry[(template_key, selector)] = profile
-        _MARKUP_BY_TOKENIZER[tokenizer] = entry
-    except TypeError:
-        pass
-    return profile
 
 
 def trailing_assistant_text(messages: list) -> Optional[str]:

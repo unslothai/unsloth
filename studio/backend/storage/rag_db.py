@@ -28,6 +28,14 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+# Han, Kana and Hangul. unicode61 keeps an unspaced run as one token, so chunks_fts holds them one per token.
+CJK = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff66-\uff9f\U00020000-\U0002fa1f"
+_CJK_CHAR = re.compile(f"[{CJK}]")
+
+
+def fts_text(text: str) -> str:
+    return _CJK_CHAR.sub(r" \g<0> ", text)
+
 
 class RagExtensionUnavailable(RuntimeError):
     """sqlite-vec is installed but its native library will not load (a missing vec0 binary in the venv is the
@@ -282,6 +290,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+        conn.executemany(
+            "UPDATE chunks_fts SET text=? WHERE rowid=?",
+            [
+                (fts_text(text), rowid)
+                for rowid, text in conn.execute("SELECT rowid, text FROM chunks_fts")
+                if text and _CJK_CHAR.search(text)
+            ],
+        )
+        conn.execute("PRAGMA user_version = 1")
     conn.commit()
 
 
@@ -601,20 +619,41 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# Under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
+_DOC_ID_BATCH = 900
+
+
+def _id_batches(ids):
+    ids = list(dict.fromkeys(ids))
+    for start in range(0, len(ids), _DOC_ID_BATCH):
+        batch = ids[start : start + _DOC_ID_BATCH]
+        yield batch, ",".join("?" * len(batch))
+
+
 def _delete_document_chunks(conn, document_id: str) -> None:
     """Deletes chunk rows, keeps the documents row; retrieval filters by scope, so leftovers stay
     citable."""
-    if (
-        conn.execute("SELECT 1 FROM chunks WHERE document_id=? LIMIT 1", (document_id,)).fetchone()
-        is None
-    ):
-        return
-    # chunk_id is unindexed in fts5 and vec0: one IN scan per table, not one scan per chunk.
-    owned = "SELECT id FROM chunks WHERE document_id=?"
-    conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", (document_id,))
-    if vec_table_exists(conn):
-        conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", (document_id,))
-    conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+    _delete_documents_chunks(conn, [document_id])
+
+
+def _delete_documents_chunks(
+    conn,
+    document_ids,
+    *,
+    vec: bool = True,
+) -> None:
+    """chunk_id is unindexed in fts5 and vec0: one full scan per id batch, not per document."""
+    has_vec = None if vec else False
+    for batch, marks in _id_batches(document_ids):
+        owned = f"SELECT id FROM chunks WHERE document_id IN ({marks})"
+        if conn.execute(f"{owned} LIMIT 1", batch).fetchone() is None:
+            continue
+        conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({owned})", batch)
+        if has_vec is None:
+            has_vec = vec_table_exists(conn)
+        if has_vec:
+            conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({owned})", batch)
+        conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", batch)
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:

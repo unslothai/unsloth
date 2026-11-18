@@ -178,7 +178,9 @@ def test_an_unknown_nvfp4_file_keeps_its_dit_precision_but_not_its_te_pick(
     [
         ("FLUX.2-klein-9B-NVFP4.safetensors", "black-forest-labs/FLUX.2-klein-9B"),
         ("flux-2-klein-4b-nvfp4.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
-        ("qwen-image-2.1-turbo-nvfp4.safetensors", "Qwen/Qwen-Image-2.1-Turbo"),
+        ("Qwen-Image-2.1-NVFP4.safetensors", "Qwen/Qwen-Image-2.1"),
+        # Spells a base, but no official NVFP4 file has this name: kept.
+        ("qwen-image-2.1-turbo-nvfp4.safetensors", None),
         ("flux1-dev-nvfp4.safetensors", "black-forest-labs/FLUX.1-dev"),
         # Spells a variant whose canonical spelling the family never states: kept, never another model.
         ("flux1-krea-dev-nvfp4.safetensors", None),
@@ -233,6 +235,109 @@ def test_a_video_file_is_replaced_only_by_the_same_model(
     else:
         assert got.updates["model_path"] == base
         assert got.updates["transformer_quant"] == "int8"
+
+
+def _finetune_file(
+    folder,
+    name,
+    base_model = None,
+):
+    import json
+
+    import torch
+    from safetensors.torch import save_file
+
+    meta = {"scheme": "nvfp4", "family": "flux.2-klein"}
+    if base_model:
+        meta["base_model_id"] = base_model
+    save_file(
+        {"w": torch.tensor([42.0])},
+        str(folder / name),
+        metadata = {
+            "unsloth_format": "unsloth_prequant_transformer_state_dict_v1",
+            "unsloth_metadata": json.dumps(meta),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "model_path,name,base_model",
+    [
+        ("local", "flux-2-klein-4b-my-finetune-nvfp4.safetensors", None),
+        ("local", "flux-2-klein-4b-my-finetune-nvfp4.safetensors", "my-team/personal-finetune"),
+        # The official file name, but the header names another base.
+        ("local", "flux-2-klein-4b-nvfp4.safetensors", "my-team/personal-finetune"),
+        # The official file name, but cached from someone else's repo.
+        ("hf_cache", "flux-2-klein-4b-nvfp4.safetensors", None),
+        ("my-team/FLUX.2-klein-4B-personal-finetune", "flux-2-klein-4b-nvfp4.safetensors", None),
+        ("my-team/FLUX.2-klein-4B-personal-finetune-nvfp4", None, None),
+    ],
+)
+def test_a_custom_nvfp4_checkpoint_keeps_its_own_weights(
+    monkeypatch, tmp_path, model_path, name, base_model
+):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    if model_path in ("local", "hf_cache"):
+        folder = tmp_path / "models"
+        if model_path == "hf_cache":
+            folder = tmp_path / "hub" / "models--my-team--klein-ft" / "snapshots" / "abc"
+        folder.mkdir(parents = True)
+        _finetune_file(folder, name, base_model)
+        model_path = str(folder)
+    got = route.plan_nvfp4_route(
+        model_path = model_path, gguf_filename = name, model_kind = "single_file"
+    )
+    assert got is None or "model_path" not in got.updates, dict(got.updates)
+
+
+@pytest.mark.parametrize(
+    "model_path,name,base",
+    [
+        (
+            "black-forest-labs/FLUX.2-klein-4b-nvfp4",
+            "flux-2-klein-4b-nvfp4.safetensors",
+            "black-forest-labs/FLUX.2-klein-4B",
+        ),
+        ("black-forest-labs/FLUX.2-klein-9b-nvfp4", None, "black-forest-labs/FLUX.2-klein-9B"),
+        ("unsloth/Z-Image-Turbo-NVFP4", None, "Tongyi-MAI/Z-Image-Turbo"),
+        ("hf_cache", "flux-2-klein-4b-nvfp4.safetensors", "black-forest-labs/FLUX.2-klein-4B"),
+        ("local_header", "Z-Image-Turbo-NVFP4.safetensors", "Tongyi-MAI/Z-Image-Turbo"),
+    ],
+)
+def test_an_official_nvfp4_checkpoint_is_still_replaced(
+    monkeypatch, tmp_path, model_path, name, base
+):
+    _fake_device(monkeypatch, "cuda", (8, 9))
+    if model_path == "hf_cache":
+        folder = (
+            tmp_path
+            / "hub"
+            / "models--black-forest-labs--FLUX.2-klein-4b-nvfp4"
+            / "snapshots"
+            / "a"
+        )
+        folder.mkdir(parents = True)
+        (folder / name).write_bytes(b"\0" * 64)
+        model_path = str(folder)
+    elif model_path == "local_header":
+        folder = tmp_path / "models"
+        folder.mkdir()
+        _finetune_file(folder, name, "Tongyi-MAI/Z-Image-Turbo")
+        model_path = str(folder)
+    got = route.plan_nvfp4_route(
+        model_path = model_path, gguf_filename = name, model_kind = "single_file"
+    )
+    assert got.updates["model_path"] == base
+    assert got.updates["transformer_quant"] == "int8"
+
+
+def test_every_trusted_nvfp4_file_resolves_to_a_family():
+    """A vendor row whose base no family knows would be dead: it must name a base a family loads."""
+    for media in ("image", "video"):
+        rows = route.trusted_nvfp4_files(media)
+        vendor = [r for r in route._VENDOR_NVFP4_FILES if r[0] == media]
+        assert len([r for r in rows if not r[0].lower().startswith("unsloth/")]) == len(vendor)
+        assert any(r[0].lower().startswith("unsloth/") for r in rows)
 
 
 def test_a_family_that_denies_int8_gets_auto(monkeypatch):

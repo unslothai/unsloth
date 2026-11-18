@@ -222,8 +222,10 @@ def test_llama_decode_scratch_only_on_layer_devices(monkeypatch):
 
 def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
     made = []
-    empty_like = torch.empty_like
+    empty_like, empty = torch.empty_like, torch.empty
 
+    # The scratch is sized from the norm weight: empty_like before #18038, empty(weight.shape) since (a DTensor
+    # weight under FSDP2 block streaming must not be copied). Record the device of either allocator.
     def recording_empty_like(
         t,
         *args,
@@ -233,6 +235,14 @@ def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
         made.append(device)
         return empty_like(t, *args, **kwargs)
 
+    def recording_empty(
+        *args,
+        device = None,
+        **kwargs,
+    ):
+        made.append(device)
+        return empty(*args, **kwargs)
+
     class _Stop(Exception):
         pass
 
@@ -240,6 +250,7 @@ def test_gemma2_decode_norm_scratch_only_on_layer_devices(monkeypatch):
         raise _Stop
 
     monkeypatch.setattr(torch, "empty_like", recording_empty_like)
+    monkeypatch.setattr(torch, "empty", recording_empty)
     monkeypatch.setattr(g2, "DEVICE_COUNT", 3)
     monkeypatch.setattr(llama, "DEVICE_TYPE_TORCH", "cpu")
     monkeypatch.setattr(g2, "HAS_FLASH_ATTENTION_SOFTCAPPING", False)

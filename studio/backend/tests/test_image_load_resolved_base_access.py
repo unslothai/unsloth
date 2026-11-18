@@ -16,6 +16,7 @@ if _TESTS_DIR not in sys.path:
 
 import core.inference.diffusion as diffusion_module  # noqa: E402
 from hub.services.models import account_access  # noqa: E402
+from hub.utils import hf_tokens  # noqa: E402
 from test_diffusion_routes import client  # noqa: E402,F401 -- the shared fake-backend client fixture
 
 KREA_GGUF = {
@@ -100,6 +101,88 @@ def test_the_same_resident_is_refused_by_generate_without_the_grant(client, mana
     assert _generate(client).status_code == 404
 
 
+@pytest.fixture
+def hub(monkeypatch, managed):
+    import types
+
+    readers = {"hf_reader": {"krea/krea-2-turbo", "gated-org/krea-2-turbo-gguf"}}
+
+    class _Hub:
+        def repo_info(self, repo_id, *, repo_type, token, timeout):
+            return types.SimpleNamespace(gated = "auto")
+
+        def auth_check(self, repo_id, *, repo_type, token):
+            raise AssertionError("auth_check has no timeout")
+
+    monkeypatch.setattr(account_access, "HfApi", _Hub)
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda repo_id, token, repo_type, **_: repo_id.lower() in readers.get(token, set()),
+    )
+    hf_tokens.reset_repo_access_cache()
+    monkeypatch.setattr(
+        account_access,
+        "record_model_grant",
+        lambda repo_id, repo_type = "model": managed.add(
+            account_access._grant_key(repo_id, repo_type)
+        ),
+    )
+    return managed
+
+
+def test_a_saved_token_that_can_read_the_gated_base_lets_the_load_through(client, hub):
+    resp = client.post("/api/inference/images/load", json = {**KREA_GGUF, "hf_token": "hf_reader"})
+    assert resp.status_code == 200, resp.text
+    assert account_access._grant_key("krea/Krea-2-Turbo", "model") in hub
+
+
+def test_a_token_that_cannot_read_the_gated_base_is_still_refused(client, hub):
+    resp = client.post("/api/inference/images/load", json = {**KREA_GGUF, "hf_token": "hf_other"})
+    assert resp.status_code == 403, resp.text
+    assert not hub
+
+
+GATED_GGUF = {
+    "model_path": "gated-org/Krea-2-Turbo-GGUF",
+    "gguf_filename": "Krea-2-Turbo-Q8_0.gguf",
+    "family_override": "krea-2",
+}
+
+
+def test_download_plan_of_a_gated_repo_uses_the_accounts_token(client, hub):
+    assert client.post("/api/inference/images/download-plan", json = GATED_GGUF).status_code == 404
+    resp = client.post(
+        "/api/inference/images/download-plan", json = {**GATED_GGUF, "hf_token": "hf_reader"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert account_access._grant_key(GATED_GGUF["model_path"], "model") in hub
+
+
+def test_load_of_a_gated_repo_uses_the_accounts_token(client, hub):
+    assert client.post("/api/inference/images/load", json = GATED_GGUF).status_code == 404
+    resp = client.post("/api/inference/images/load", json = {**GATED_GGUF, "hf_token": "hf_reader"})
+    assert resp.status_code == 200, resp.text
+    assert account_access._grant_key(GATED_GGUF["model_path"], "model") in hub
+
+
+def test_download_plan_with_a_token_that_cannot_read_the_repo_stays_not_found(client, hub):
+    resp = client.post(
+        "/api/inference/images/download-plan", json = {**GATED_GGUF, "hf_token": "hf_other"}
+    )
+    assert resp.status_code == 404, resp.text
+    assert not hub
+
+
+def test_a_token_does_not_open_a_repo_off_the_allowlist(client, hub, monkeypatch):
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: ("unsloth/*",))
+    resp = client.post(
+        "/api/inference/images/download-plan", json = {**GATED_GGUF, "hf_token": "hf_reader"}
+    )
+    assert resp.status_code == 403, resp.text
+    assert not hub
+
+
 def test_a_public_base_still_loads_for_a_managed_account(client, managed):
     resp = client.post(
         "/api/inference/images/load",
@@ -139,7 +222,7 @@ def allowed(monkeypatch):
     ok: set[str] = set()
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
 
-    def _check(repo):
+    def _check(repo, **_):
         if repo not in ok:
             raise HTTPException(status_code = 404, detail = "Not found")
 

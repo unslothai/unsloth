@@ -582,18 +582,22 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     assert "5555 MiB of activations" in reason
 
 
-# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB.
+# Z-Image-Turbo fp16 on two cards: a split priced with the flat estimate declines when each card is held to 85% of
+# its safe budget; with the primary at the one-card budget it fits, every card within its limit.
 _ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
 _ZIMAGE_FLAT = 6963
 
 
-def test_zimage_on_two_t4s_flat_estimate_declines_the_layer_split(monkeypatch):
+def test_zimage_on_two_t4s_flat_estimate_fits_the_layer_split_at_the_one_card_budget(monkeypatch):
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
-    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert d.plan.layer_split is None and d.plan.offload_policy != dm.OFFLOAD_NONE
-    layer = [r["reason"] for r in _placement(d)["rejected"] if r["kind"] == "layer_split"]
-    assert layer and "11931 MiB of denoiser and VAE weights" in layer[0]
-    assert "6963 MiB of activations" in layer[0] and "short by about" in layer[0]
+    d = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT, place = False)
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1)
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    for ordinal, required in split.card_required_mib:
+        assert required <= dict(split.card_limit_mib)[ordinal] <= budget
+    # the primary still carries the flat activation figure beside its weights
+    assert dict(split.card_required_mib)[0] >= dict(split.card_weights_mib)[0] + _ZIMAGE_FLAT
 
 
 def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkeypatch):
@@ -632,4 +636,62 @@ def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypa
     assert "calibrated_split_headroom_mib" in split.one_card.estimates
     assert not plan_is_calibrated(split.one_card)
     flat = decide(monkeypatch, host, _sizes(**_ZIMAGE_T4), headroom = _ZIMAGE_FLAT)
-    assert flat.plan.layer_split is None and not plan_is_calibrated(flat.plan)
+    # a split priced with the flat figure is not a calibrated placement
+    assert not plan_is_calibrated(flat.plan)
+
+
+# Wan2.2-TI2V-5B fp16 with a forced split on two cards: holding the split's primary to 85% of its safe budget left
+# no room for a block beside the stems, the VAE, the overhead and the clip's headroom, though a one-card resident
+# plan is priced at the full budget.
+_WAN5B_T4 = dict(dit = 9582, te = 10836, vae = 1631)
+_WAN5B_BLOCKS = {"transformer": lsp.DenoiserLayout(192, (313,) * 30)}
+_WAN5B_HEADROOM = 7839  # estimate_video_runtime_mib at the family default 1280x704, 121 frames
+_WAN5B_USED = (554, 732)  # nvidia-smi used on each card once torch holds its context
+
+
+def _wan5b_forced_split(monkeypatch):
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    return decide(
+        monkeypatch,
+        host,
+        _sizes(**_WAN5B_T4),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+
+
+def test_wan5b_forced_split_on_two_t4s_prices_the_primary_with_the_one_card_budget(monkeypatch):
+    d = _wan5b_forced_split(monkeypatch)
+    assert d.one_card.offload_policy != dm.OFFLOAD_NONE
+    split = d.plan.layer_split
+    assert split is not None and split.cards == (0, 1), d.status["layer_split"]
+    budget = int(d.one_card.estimates["safe_device_budget_mib"])
+    limits = dict(split.card_limit_mib)
+    required = dict(split.card_required_mib)
+    # the primary is held to the budget a one-card resident plan gets there, never more
+    assert limits[0] == budget and required[0] <= budget
+    # the secondary keeps 85% of its safe budget
+    assert limits[1] == mg.secondary_resident_limit_mib(1, "auto") and required[1] <= limits[1]
+    # expected cut: 3 blocks beside the stems and the VAE, 27 on cuda:1
+    assert [(r.start, r.stop, r.card) for r in split.ranges] == [(0, 3, 0), (3, 30, 1)]
+    weights = dict(split.card_weights_mib)
+    assert required[0] >= weights[0] + _WAN5B_HEADROOM
+
+
+def test_layer_split_primary_never_exceeds_the_one_card_budget(monkeypatch):
+    # a primary already carrying a model too large for its budget is still refused: nothing above the budget is lent
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    d = decide(
+        monkeypatch,
+        host,
+        _sizes(dit = 9582, te = 10836, vae = 6000),
+        headroom = _WAN5B_HEADROOM,
+        blocks = _WAN5B_BLOCKS,
+        gpu_ids = [0, 1],
+        place = False,
+    )
+    assert d.plan.layer_split is None

@@ -184,6 +184,34 @@ test("a speech model in the slot clears the pick even while idle unload is armed
   assert.deepEqual(cleared, ["cleared"]);
 });
 
+test("a model Translate loaded does not become the chat model", () => {
+  for (const checkpoint of [null, "unsloth/gemma-4-E2B-it-GGUF"]) {
+    const adopted = adoptResidentModelStatus(
+      { checkpointId: "unsloth/Hy-MT2-1.8B-GGUF", ggufVariant: "Q4_K_M" },
+      emptyStore({ checkpoint, activeGgufVariant: checkpoint && "Q4_K_M" }),
+      refusing({
+        setCheckpoint: "Translate holds the slot; chat keeps its own pick",
+        clearCheckpoint: "Chat settles its own pick against the slot",
+        applyStatus: "its status describes a model chat is not talking to",
+      }),
+    );
+    assert.equal(adopted, false);
+  }
+});
+
+test("a translation model picked in Chat is still adopted", () => {
+  const { calls, actions } = spies();
+  adoptResidentModelStatus(
+    { checkpointId: "unsloth/Hy-MT2-1.8B-GGUF", ggufVariant: "Q4_K_M" },
+    emptyStore({ checkpoint: "unsloth/Hy-MT2-1.8B-GGUF", activeGgufVariant: "Q8_0" }),
+    actions,
+  );
+  assert.deepEqual(calls, [
+    "setCheckpoint:unsloth/Hy-MT2-1.8B-GGUF:Q4_K_M",
+    "applyStatus",
+  ]);
+});
+
 test("a speech model does not fight a load this tab started", () => {
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null, speechOnly: true },
@@ -223,14 +251,20 @@ test("an empty status does not fight a load this tab started", () => {
 test("coming back to the window re-reads inference status", () => {
   // An API request can auto-switch at any time and the Hub only reads on mount.
   const targets = fakeTargets();
+  let clock = 0;
   let reads = 0;
-  subscribeResidentStatusRefresh(() => {
-    reads += 1;
-  }, targets);
+  subscribeResidentStatusRefresh(
+    () => {
+      reads += 1;
+    },
+    targets,
+    () => clock,
+  );
 
   assert.equal(reads, 0, "subscribing must not read on its own");
   targets.fire("window", "focus");
   assert.equal(reads, 1);
+  clock += 5_000;
   targets.fire("document", "visibilitychange");
   assert.equal(reads, 2);
 });

@@ -32,6 +32,7 @@ from models.auth import (
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
     RefreshTokenRequest,
+    UpdateApiKeyRequest,
 )
 from models.users import Token
 from auth import storage, hashing, policy
@@ -135,7 +136,6 @@ _LOGIN_BUCKETS_LOCK = threading.Lock()
 _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
-_LOGIN_LOCKOUT_SECONDS = 60
 # On overflow, reclaim expired buckets, then use sharded overflow rather than evict a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
 # Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
@@ -758,6 +758,9 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
         expires_at = row.get("expires_at"),
         is_active = bool(row["is_active"]),
         purpose = row.get("purpose"),
+        access = storage.API_KEY_ACCESS_INFERENCE
+        if row.get("access") not in (None, storage.API_KEY_ACCESS_FULL)
+        else storage.API_KEY_ACCESS_FULL,
     )
 
 
@@ -806,6 +809,7 @@ async def create_api_key(
             purpose = storage.UNSLOTH_START_API_KEY_PURPOSE
             if payload.name == storage.UNSLOTH_START_API_KEY_NAME
             else None,
+            access = payload.access,
         )
     except storage.CredentialRotated:
         raise HTTPException(
@@ -844,6 +848,22 @@ def list_api_keys(
     return ApiKeyListResponse(
         api_keys = [_row_to_api_key_response(r) for r in rows],
     )
+
+
+@router.patch("/api-keys/{key_id}", response_model = ApiKeyResponse)
+async def update_api_key(
+    key_id: int,
+    payload: UpdateApiKeyRequest,
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> ApiKeyResponse:
+    """Change a key's access (full or inference only); takes effect on its next request."""
+    row = storage.set_api_key_access(
+        current_subject, key_id, payload.access, account_id = _key_account_scope()
+    )
+    if row is None:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "API key not found")
+    return _row_to_api_key_response(row)
 
 
 @router.delete("/api-keys/{key_id}")

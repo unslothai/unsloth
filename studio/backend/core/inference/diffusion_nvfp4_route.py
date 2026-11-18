@@ -381,55 +381,162 @@ def _stem(repo: str) -> str:
     return _fold(re.sub(r"-diffusers$", "", repo.rsplit("/", 1)[-1], flags = re.IGNORECASE))
 
 
-def _named_base(fam: Any, names: list) -> Optional[str]:
-    """Longest matching base wins (Qwen-Image-2512 never reads as Qwen-Image); canonical spelling only."""
-    known = _known_bases(fam)
-    stems = [(b, _stem(b)) for b in _all_bases(fam)]
-    for name in reversed(names):
-        folded = _fold(os.path.basename(str(name).replace("\\", "/").rstrip("/")) or name)
-        hits = [(len(stem), b) for b, stem in stems if stem and stem in folded]
-        if hits:
-            return known.get(max(hits)[1])
+# Vendor NVFP4 checkpoints (media, repo, file, base whose INT8 build replaces it). Only these and the
+# hosted files are replaced: a name spelling a base does not make a fine-tune the base's weights.
+_VENDOR_NVFP4_FILES = (
+    (
+        "image",
+        "black-forest-labs/FLUX.2-klein-4b-nvfp4",
+        "flux-2-klein-4b-nvfp4.safetensors",
+        "black-forest-labs/FLUX.2-klein-4B",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.2-klein-9b-nvfp4",
+        "flux-2-klein-9b-nvfp4.safetensors",
+        "black-forest-labs/FLUX.2-klein-9B",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.2-klein-base-4b-nvfp4",
+        "flux-2-klein-base-4b-nvfp4.safetensors",
+        "black-forest-labs/FLUX.2-klein-base-4B",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.2-klein-base-9b-nvfp4",
+        "flux-2-klein-base-9b-nvfp4.safetensors",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.1-dev-NVFP4",
+        "flux1-dev-nvfp4.safetensors",
+        "black-forest-labs/FLUX.1-dev",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.1-Kontext-dev-NVFP4",
+        "flux1-kontext-dev-nvfp4.safetensors",
+        "black-forest-labs/FLUX.1-Kontext-dev",
+    ),
+    (
+        "image",
+        "black-forest-labs/FLUX.2-dev-NVFP4",
+        "flux2-dev-nvfp4.safetensors",
+        "black-forest-labs/FLUX.2-dev",
+    ),
+    (
+        "video",
+        "Lightricks/LTX-2.5",
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors",
+        "Lightricks/LTX-2.5-Diffusers",
+    ),
+)
+
+
+def _family_of_base(media: str, base: str) -> Optional[tuple]:
+    hits = []
+    for fam in _families(media):
+        canonical = _known_bases(fam).get(base.lower())
+        if canonical:
+            hits.append((fam, canonical))
+    return hits[0] if len(hits) == 1 else None
+
+
+def trusted_nvfp4_files(media: str) -> list:
+    rows: list = []
+    for row_media, repo, name, base in _VENDOR_NVFP4_FILES:
+        if row_media == media:
+            hit = _family_of_base(media, base)
+            if hit is not None:
+                rows.append((repo, name, *hit))
+    for fam in _families(media):
+        known = _known_bases(fam)
+        named = [
+            r[-1]
+            for r in getattr(fam, "prequant_filenames", ()) or ()
+            if isinstance(r, tuple) and r and is_nvfp4(r[0])
+        ]
+        for row in getattr(fam, "prequant_variant_repos", ()) or ():
+            if isinstance(row, tuple) and len(row) == 3 and is_nvfp4(row[1]):
+                base = known.get(str(row[0]).strip().lower())
+                if base:
+                    rows.append(
+                        (row[2], f"{str(row[2]).rsplit('/', 1)[-1]}.safetensors", fam, base)
+                    )
+        for row in getattr(fam, "prequant_repos", ()) or ():
+            if isinstance(row, tuple) and len(row) == 2 and is_nvfp4(row[0]):
+                base = getattr(fam, "base_repo", None)
+                if base:
+                    for name in named or (f"{str(row[1]).rsplit('/', 1)[-1]}.safetensors",):
+                        rows.append((row[1], name, fam, base))
+    return rows
+
+
+def _hf_cache_repo(path: str) -> Optional[str]:
+    for part in str(path).replace("\\", "/").split("/"):
+        if part.startswith("models--") and part.count("--") >= 2:
+            return "/".join(part[len("models--") :].split("--", 1))
     return None
 
 
-def _family_int8_base(
+def _recorded_base(path: str) -> Optional[str]:
+    try:
+        from .prequant_safetensors import read_prequant_header
+        meta = (read_prequant_header(path) or {}).get("metadata") or {}
+    except Exception:  # noqa: BLE001 -- no header: nothing recorded
+        return None
+    for key in ("base_model_id", "base_model", "base_repo"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def trusted_nvfp4_checkpoint(
+    model_path: Optional[str],
     media: str,
-    fam: Any,
-    base_repo: Optional[str],
-    model_path: Optional[str] = None,
+    *,
     filename: Optional[str] = None,
-) -> Optional[str]:
-    """None unless the pick provably names it: a different size, version or distill must never load in its place."""
-    names = [n for n in (model_path, filename) if n]
-    if media == "video":
-        return _video_int8_base(fam, base_repo, names)
-    explicit = str(base_repo or "").strip()
-    if explicit:
-        return explicit
-    return _named_base(fam, names)
-
-
-def _name_tokens(names: Iterable[str]) -> set:
-    return {
-        t for n in names for t in re.split(r"[^a-z0-9.]+", os.path.basename(str(n)).lower()) if t
-    }
-
-
-def _video_int8_base(fam: Any, base_repo: Optional[str], names: list) -> Optional[str]:
-    """LTX-2.5 pack is distilled-only; ``ltx-2`` spans 2.0-2.3 on a 2.0 pipeline, so never replaced."""
-    name = str(getattr(fam, "name", "") or "")
-    pack = str(getattr(fam, "base_repo", "") or "").strip()
-    if not pack:
+    family_override: Optional[str] = None,
+) -> Optional[tuple]:
+    """``(family, base)`` only for an official NVFP4 checkpoint (vendor or hosted); None for anything else."""
+    raw = str(model_path or "").strip()
+    if not raw:
         return None
-    if name == "ltx-2.5":
-        return pack if "distilled" in _name_tokens(names) else None
-    if name == "ltx-2":
+    rows = trusted_nvfp4_files(media)
+    local = os.path.join(os.path.expanduser(raw), filename) if filename else os.path.expanduser(raw)
+    if os.path.isfile(local):
+        repo = _hf_cache_repo(local)
+        name = _fold(os.path.basename(local))
+        hits = [
+            r
+            for r in rows
+            if _fold(os.path.basename(r[1])) == name
+            and (repo is None or r[0].lower() == repo.lower())
+        ]
+        recorded = _recorded_base(local)
+        if recorded:
+            # A header naming another base is that model, whatever its file is called.
+            hits = [r for r in hits if _stem(recorded) == _stem(r[3])]
+    elif _looks_local(raw):
         return None
-    named = _named_base(fam, names)
-    if named is None or named.lower() != pack.lower():
-        return None
-    return str(base_repo or "").strip() or pack
+    else:
+        key = raw.strip("/").lower()
+        if filename:
+            name = _fold(os.path.basename(str(filename)))
+            hits = [
+                r for r in rows if r[0].lower() == key and _fold(os.path.basename(r[1])) == name
+            ]
+        else:
+            # A bare repo id is its one file only when the repo is a dedicated NVFP4 repo.
+            hits = [r for r in rows if r[0].lower() == key and key.endswith("-nvfp4")]
+    if family_override:
+        wanted = str(family_override).strip().lower()
+        hits = [r for r in hits if str(getattr(r[2], "name", "")).lower() == wanted]
+    picks = {(id(r[2]), r[3]): (r[2], r[3]) for r in hits}
+    return next(iter(picks.values())) if len(picks) == 1 else None
 
 
 def _int8_denied(fam_name: Optional[str], base_repo: Optional[str]) -> bool:
@@ -540,21 +647,14 @@ def plan_nvfp4_route(
             hosted = hosted_nvfp4_repo_base(
                 model_path, media, filename = gguf_filename, family_override = family_override
             )
+            if hosted is None:
+                hosted = trusted_nvfp4_checkpoint(
+                    model_path, media, filename = gguf_filename, family_override = family_override
+                )
             if hosted is not None:
                 fam, base = hosted
-            else:
-                fam = _detect_family(
-                    media, str(model_path), gguf_filename, family_override, model_kind
-                )
-                base = (
-                    _family_int8_base(media, fam, base_repo, str(model_path), gguf_filename)
-                    if fam
-                    else None
-                )
             if fam is None or not base:
-                why = (
-                    "Studio cannot tell which model it is, so there is no INT8 build of it to load"
-                )
+                why = "it is not a known official NVFP4 checkpoint, so its own weights are loaded"
         if why is None:
             target = _dit(getattr(fam, "name", None), base)
             replaced = f"nvfp4:{name}"

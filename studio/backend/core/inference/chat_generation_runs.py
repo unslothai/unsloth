@@ -773,23 +773,28 @@ class ChatGenerationSupervisor:
                     raw = next_raw_task.result()
                 except StopAsyncIteration:
                     next_raw_task = None
-                    break
-                next_raw_task = asyncio.create_task(iterator.__anext__())
-                text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
-                if _ADMISSION_DONE_MARKER in text:
-                    last_keepalive = time.monotonic()
-                    await self._try_touch_progress(run_id)
-                elif (
-                    _ADMISSION_WAIT_MARKER in text
-                    or _TOOL_HEARTBEAT_MARKER in text
-                    or _PREFILL_PROGRESS_MARKER in text
-                ):
-                    now_s = time.monotonic()
-                    if now_s - last_keepalive >= _renew_interval_seconds():
-                        last_keepalive = now_s
+                    raw = None
+                if raw is None:
+                    # A stream truncated mid-event still gets its last event before the run is judged.
+                    events = decoder.flush()
+                else:
+                    next_raw_task = asyncio.create_task(iterator.__anext__())
+                    events = decoder.feed(raw)
+                    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                    # `: keep-alive` means nothing was produced, so renewing on it would keep a wedged run alive.
+                    if _ADMISSION_DONE_MARKER in text:
+                        last_keepalive = time.monotonic()
                         await self._try_touch_progress(run_id)
-                for encoded in decoder.feed(raw):
+                    elif (
+                        _ADMISSION_WAIT_MARKER in text
+                        or _TOOL_HEARTBEAT_MARKER in text
+                        or _PREFILL_PROGRESS_MARKER in text
+                    ):
+                        now_s = time.monotonic()
+                        if now_s - last_keepalive >= _renew_interval_seconds():
+                            last_keepalive = now_s
+                            await self._try_touch_progress(run_id)
+                for encoded in events:
                     if encoded.strip() == "[DONE]":
                         saw_done = True
                         break
@@ -803,26 +808,8 @@ class ChatGenerationSupervisor:
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     quote_cut = quote_cut or chunk.get("quote_cut") is True
-                if saw_done:
+                if saw_done or raw is None:
                     break
-
-            # A stream truncated mid-event still gets its last event before the run is judged;
-            # after [DONE] nothing else counts, terminated or not.
-            if not saw_done:
-                for encoded in decoder.flush():
-                    if encoded.strip() == "[DONE]":
-                        saw_done = True
-                        break
-                    try:
-                        chunk = json.loads(encoded)
-                    except (TypeError, ValueError):
-                        continue
-                    if not isinstance(chunk, dict):
-                        continue
-                    pending.append(("chunk", chunk, db.now_ms()))
-                    finish_reason = _chunk_finish_reason(chunk) or finish_reason
-                    error = _chunk_error(chunk) or error
-                    quote_cut = quote_cut or chunk.get("quote_cut") is True
 
             failure = await settle_write()
             if held_cancel is not None:

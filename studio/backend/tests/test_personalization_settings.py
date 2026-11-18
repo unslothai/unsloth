@@ -89,7 +89,7 @@ def test_customization_defaults():
     assert c.contrast == 50
     assert c.composerOutline is None
     assert c.elementOutline is None
-    assert c.reduceMotion == "off"
+    assert c.reduceMotion == "on"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
     assert c.codeLineNumbers is False
@@ -204,6 +204,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("export", False),
     ("api", False),
     ("tasks", False),
+    ("translate", False),
 ]
 
 
@@ -243,6 +244,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("export", False),
         ("api", False),
         ("tasks", False),
+        ("translate", False),
     ]
 
 
@@ -537,6 +539,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                     {"id": "tasks", "pinned": False},
+                    {"id": "translate", "pinned": False},
                 ],
                 "sidebarNavAuto": [],
             },

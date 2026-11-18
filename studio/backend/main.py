@@ -450,6 +450,7 @@ from routes import (
     mcp_servers_router,
     openai_fine_tuning_router,
     skills_router,
+    computer_use_router,
     models_router,
     providers_router,
     openai_codex_auth_router,
@@ -607,6 +608,20 @@ def _start_helper_precache_if_enabled() -> None:
             pass  # non-critical
 
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+
+
+def _start_offline_docs_refresh_if_due() -> None:
+    """Offline docs refresh, DB check included, off the startup path."""
+    import threading
+
+    def _refresh():
+        try:
+            from utils.offline_docs_settings import refresh_offline_docs_if_due
+            refresh_offline_docs_if_due()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _refresh, daemon = True, name = "offline-docs-refresh").start()
 
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
@@ -1048,6 +1063,7 @@ async def lifespan(app: FastAPI):
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
+    _start_offline_docs_refresh_if_due()
 
     from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
 
@@ -1369,7 +1385,39 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+_CSP_CACHE: dict = {}
+
+
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
+    """Nonce-free policies are memoized on every input the build reads (env, saved-only set, Colab)."""
+    if script_nonce:
+        return _build_csp_uncached(script_nonce, docs = docs)
+    key = _csp_key(docs)
+    policy = _CSP_CACHE.get(key)
+    if policy is None:
+        policy = _build_csp_uncached(None, docs = docs)
+        # A settings save in a worker thread can land mid-build; keep only a policy built from the key's inputs.
+        if _csp_key(docs) == key:
+            if len(_CSP_CACHE) >= 64:
+                _CSP_CACHE.clear()
+            _CSP_CACHE[key] = policy
+    return policy
+
+
+def _csp_key(docs: bool) -> tuple:
+    from utils.hub_settings import SOURCE_ENV, saved_only_endpoints
+    environ = os.environ
+    return (
+        docs,
+        _IS_COLAB,
+        environ.get("HF_ENDPOINT"),
+        environ.get("HF_DATASETS_SERVER"),
+        environ.get(SOURCE_ENV),
+        saved_only_endpoints(),
+    )
+
+
+def _build_csp_uncached(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
     worker_src = "worker-src 'self'"
@@ -1629,9 +1677,10 @@ _BODY_PROTECTED_PREFIXES = (
     # llama-server passthrough POSTs; keyless inference scope admits them.
     "/tokenize",
     "/detokenize",
-    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
-    # prefix let an unauthenticated client stream an unbounded body into memory.
-    "/api/",
+    # Everything else, root routes included (/models/load). FastAPI reads a body before the route's auth
+    # dependency runs, so an unlisted prefix let an unauthenticated client stream an unbounded body into memory.
+    # Uploads that need more are the explicit passthroughs below.
+    "/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1780,6 +1829,21 @@ _ZSTD_BODY_PATH = "/v1/systemone"
 _ZSTD_MIN_DECODED_BYTES = 8 * 1024 * 1024
 _ZSTD_MAX_RATIO = 64
 _ZSTD_MAX_FRAMES = 1024
+
+
+# Decoding runs before the route's auth check, so an unauthenticated ~8 MiB frame can inflate to the full body
+# cap: one decode at a time per event loop keeps concurrent bombs from multiplying that.
+_ZSTD_DECODE_GATES: dict = {}
+
+
+def _zstd_decode_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    gate = _ZSTD_DECODE_GATES.get(loop)
+    if gate is None:
+        for stale in [k for k in _ZSTD_DECODE_GATES if k.is_closed()]:
+            _ZSTD_DECODE_GATES.pop(stale, None)
+        gate = _ZSTD_DECODE_GATES[loop] = asyncio.Semaphore(1)
+    return gate
 
 
 def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
@@ -1950,7 +2014,8 @@ class MaxBodyMiddleware:
                     return
             limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
             try:
-                body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
+                async with _zstd_decode_gate():
+                    body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
             except zstd.ZstdError:
                 await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
                     scope, receive, send
@@ -2129,6 +2194,7 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
+app.include_router(computer_use_router, prefix = "/api/computer-use", tags = ["computer-use"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
@@ -2541,9 +2607,17 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    from utils.download_speed_limit import get_download_speed_limit_mbps
+    from utils.download_speed_limit import (
+        DownloadSpeedLimitUnavailableError,
+        get_download_speed_limit_mbps,
+    )
+
     caps = asdict(get_download_transport_capabilities(probe = probe))
-    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
+    try:
+        speed_limited = get_download_speed_limit_mbps() is not None
+    except DownloadSpeedLimitUnavailableError:
+        speed_limited = True  # unknown policy: preflight as limited, the start itself refuses
+    return {**caps, "speed_limited": speed_limited}
 
 
 @app.post(
@@ -2985,6 +3059,7 @@ def get_system_info(
         export_capability,
         video_capability,
         cpu_frequency_mhz,
+        npu_load_percent,
     )
     from utils.hardware.hardware import _backend_label
 
@@ -3105,6 +3180,7 @@ def get_system_info(
         "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
+        "npu_load_percent": npu_load_percent(),
         "ml_packages": ml_packages,
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
@@ -3427,7 +3503,12 @@ def _should_inject_bootstrap(request: Request) -> bool:
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
         return True
-    return _is_local_bootstrap_request(request)
+    if not _is_local_bootstrap_request(request):
+        return False
+    # A loopback port is not an identity: keep the password from another OS user's connection.
+    from utils.loopback_peer import peer_is_another_local_user
+
+    return not peer_is_another_local_user(request)
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
@@ -3481,13 +3562,17 @@ def _is_direct_loopback_frontend_request(scope) -> bool:
 
 def _is_remote_frontend_request(scope, app_state) -> bool:
     """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, one
-    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), or a
-    direct unproxied browser on the loopback listener."""
+    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), a
+    direct unproxied browser on the loopback listener, or a local reverse proxy for a hostname the user
+    allowlisted in ``UNSLOTH_STUDIO_PROXY_HOSTS``."""
     from lan_access import request_on_lan_listener
+    from utils.client_ip import request_via_trusted_proxy
+
     return (
         _is_live_cloudflare_frontend_request(scope, app_state)
         or request_on_lan_listener(scope)
         or _is_direct_loopback_frontend_request(scope)
+        or request_via_trusted_proxy(scope)
     )
 
 

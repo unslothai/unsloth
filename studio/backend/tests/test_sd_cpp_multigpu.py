@@ -382,6 +382,41 @@ def test_the_block_split_pin_lists_both_cards_and_their_budgets(monkeypatch):
     ]
 
 
+_OLD_BOOL_AUTO_FIT_HELP = (
+    "  --max-vram <string>    maximum VRAM budget in GiB for graph-cut segmented execution.\n"
+    "  --auto-fit             pick the diffusion/te/vae device placements automatically from the model size\n"
+)
+_ON_OFF_AUTO_FIT_HELP = (
+    "  --max-vram <string>    maximum VRAM budget in GiB for graph-cut segmented execution.\n"
+    "  --auto-fit             on|off (default: on). Use one GPU for diffusion/te/vae computation and place\n"
+)
+
+
+def test_a_boolean_auto_fit_build_keeps_the_one_card_pin(monkeypatch):
+    devices = "CUDA0\tTesla T4\nCUDA1\tTesla T4\n"
+    split = _m().SdCppCardSplit(
+        primary = 0,
+        secondary = 1,
+        vae_on_secondary = True,
+        reason = "r",
+        layer = True,
+        budgets_mib = (13_876, 13_876),
+    )
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
+    for help_text, layer in ((_OLD_BOOL_AUTO_FIT_HELP, False), (_ON_OFF_AUTO_FIT_HELP, True)):
+        monkeypatch.setattr(
+            bk,
+            "_sd_cpp_probe_output",
+            lambda _b, *args, h = help_text: h if args and args[0] == "--help" else devices,
+        )
+        assert bk._layer_split_supported("/sd/sd-server") is layer
+        flags = bk._offload_with_device_pin_impl([], "/sd/sd-server", 0, split)
+        if layer:
+            assert flags[flags.index("--auto-fit") + 1] == "off"
+        else:
+            assert flags == ["--backend", "diffusion=CUDA0,te=CUDA1,vae=CUDA1"]
+
+
 def test_a_two_card_load_cuts_the_model_across_both_cards_on_a_capable_build(monkeypatch, tmp_path):
     monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: True)
     monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: [0, 1])

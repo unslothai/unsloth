@@ -482,3 +482,94 @@ def test_probe_verdicts_round_trip_through_the_cache(monkeypatch, tmp_path):
     assert cq._verdict_load(7) is None
     path.write_text("{torn")
     assert cq._verdict_load(7) is None
+
+
+# ------------------------------------------------------------------------- FLUX.3 joint block under the span forward
+@pytest.fixture()
+def span_patched(env):
+    """diffusion_cond_blocks' span-aware joint block forward installed first, as the load does (cond_blocks.prepare
+    runs before the speed layer), restored after."""
+    torch, _f2, f3, fused, gemm = env
+    from core.inference import diffusion_cond_blocks as cond
+
+    cls = f3.Flux3SingleTransformerBlock
+    before_fwd, before_reg = cls.forward, dict(cond._PATCHED_SINGLE)
+    why = cond.patch_single_class(cls)
+    if why is not None:
+        pytest.skip(f"span forward not installable on this diffusers: {why}")
+    try:
+        yield torch, f3, fused, gemm, cond
+    finally:
+        fused.uninstall()
+        cls.forward = before_fwd
+        cond._PATCHED_SINGLE.clear()
+        cond._PATCHED_SINGLE.update(before_reg)
+        cond.JOINT_ATTN_FF = None
+
+
+@pytest.mark.parametrize("span", [False, True])
+def test_flux3_joint_block_under_span_forward_shares_the_quant(
+    span_patched, monkeypatch, span, mode
+):
+    """The span forward wins the class first, so the joint block patch goes to the stock it delegates to (no span)
+    and to its own attention + MLP call (span): one shared quant per block either way, outputs bit for bit stock."""
+    torch, f3, fused, gemm, cond = span_patched
+    calls = {"shared": 0, "producer": 0}
+    _force_on(monkeypatch, torch, fused, gemm, calls)
+    widths = []
+    plain = gemm.shared_rotq_linears
+
+    def shared(x, linears):
+        widths.append(len(linears))
+        return plain(x, linears)
+
+    monkeypatch.setattr(gemm, "shared_rotq_linears", shared)
+    dim, heads, hd = 64, 2, 32
+    hs = torch.randn(2, 12, dim)
+    enc = torch.randn(2, 5, dim)
+    mod = torch.randn(2, 1, 3 * dim) * 0.1
+    cmod = torch.randn(2, 1, 3 * dim) * 0.1
+    rope = _rope(torch, 17, hd)
+    kw = {}
+    if span:
+        kw = {
+            "unsloth_cond_mod": torch.randn(2, 1, 3 * dim) * 0.1,
+            "unsloth_cond_span": torch.empty(4, 0),
+        }
+    span_fwd = f3.Flux3SingleTransformerBlock.forward
+    ref, out, back = _run_stock_vs_patched(
+        torch,
+        fused,
+        lambda: f3.Flux3SingleTransformerBlock(dim, heads, hd),
+        lambda b: b(hs, enc, mod, cmod, rope, **kw),
+        mode,
+    )
+    assert _same(ref, out) and _same(ref, back)
+    assert widths == [
+        4
+    ]  # Q, K, V and the MLP input: one quant (main: Q / K / V, then the MLP input alone)
+    assert calls["producer"] == 1
+    assert f3.Flux3SingleTransformerBlock.forward is span_fwd  # the span forward keeps the class
+    assert cond.JOINT_ATTN_FF is None and not fused.is_installed()
+
+
+def test_flux3_span_install_reports_and_restores(span_patched):
+    torch, f3, fused, _gemm, cond = span_patched
+    cls = f3.Flux3SingleTransformerBlock
+    stock = cond._PATCHED_SINGLE[cls]
+    done = fused._install_patches()  # noqa: SLF001
+    assert done["f3_single"] is True
+    assert cond._PATCHED_SINGLE[cls] is not stock and cond.JOINT_ATTN_FF is not None
+    assert fused._install_patches() == done  # noqa: SLF001 - idempotent
+    fused.uninstall()
+    assert cond._PATCHED_SINGLE[cls] is stock and cond.JOINT_ATTN_FF is None
+
+
+def test_flux3_span_switch_keeps_the_separate_quant(span_patched, monkeypatch):
+    torch, f3, fused, _gemm, cond = span_patched
+    monkeypatch.setenv(fused.FLUX3_SPAN_FUSED_ENV, "0")
+    stock = cond._PATCHED_SINGLE[f3.Flux3SingleTransformerBlock]
+    assert fused._install_patches()["f3_single"] is False  # noqa: SLF001
+    assert (
+        cond._PATCHED_SINGLE[f3.Flux3SingleTransformerBlock] is stock and cond.JOINT_ATTN_FF is None
+    )

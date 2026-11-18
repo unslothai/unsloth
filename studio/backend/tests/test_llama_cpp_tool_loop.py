@@ -1845,6 +1845,68 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     )
 
 
+def test_repeated_duplicate_final_pass_asks_for_the_answer_not_another_tool(monkeypatch):
+    search = {"query": "gpu prices 2026"}
+    streams = [
+        [_tool_call_sse("web_search", search, f"call_search_{index}"), _done()]
+        for index in range(3)
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        streams + [[_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search gpus"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    last = final_pass["messages"][-1]
+    assert last["role"] == "user"
+    assert "different tool" not in last["content"]
+    assert "final answer now" in last["content"]
+
+
+def test_final_pass_notice_ends_with_the_answer_request_in_a_mixed_batch(monkeypatch):
+    def batch(*queries):
+        calls = [
+            {
+                "index": index,
+                "id": f"call_{query}_{index}_{len(queries)}",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": query})},
+            }
+            for index, query in enumerate(queries)
+        ]
+        return [_sse({"tool_calls": calls}), _done()]
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [batch("a", "b"), batch("a"), batch("a", "b"), [_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    assert "different tool" not in final_pass["messages"][-1]["content"]
+
+
 def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     same_turn_duplicates = [
         _sse(
@@ -7414,3 +7476,38 @@ def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
     )
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
     assert len(payloads) == 2 and "I will make the song" in content
+
+
+def test_a_released_nudge_retry_records_its_reasoning_wrap(monkeypatch):
+    """A held-back retry shown after all must record its wrap, or its reasoning reads as answer."""
+    trace = "Think </think> and <tool_call>{}</tool_call> again."
+    streams = [
+        [
+            _sse({"reasoning_content": "Plan."}),
+            _sse({"content": "I will search the web now."}),
+            _done(),
+        ],
+        [
+            _sse({"reasoning_content": trace}),
+            _sse({"content": "The square "}),
+            _sse({"reasoning_content": "Check."}),
+            _sse({"content": "is red."}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    ledger = {"wrapped": 0}
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        [_web_search_tool()],
+        nudge_tool_calls = True,
+        reasoning_provenance = ledger,
+    )
+
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    shown = f"<think>{trace}</think>The square <think>Check.</think>is red."
+    assert content_texts[-1] == shown
+    assert ledger["wraps"][-1] == {"len": len(trace)}
+    assert ledger["later"][-1] == {"len": len("Check."), "at": shown.index("<think>Check.")}

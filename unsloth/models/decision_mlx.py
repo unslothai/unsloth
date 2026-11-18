@@ -49,6 +49,7 @@ from unsloth._decision_common import (
     _option_keys,
     _parsed,
     _predicted,
+    _refuse_private_push_to_public_repo,
     _row_images,
     _rows_problem,
     _served_lengths,
@@ -392,6 +393,7 @@ def _clef_push(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -562,6 +564,7 @@ def _decision_push_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -681,6 +684,20 @@ def _d1_temperatures(folder) -> dict:
     }
 
 
+def _refuse_model_file(folder):
+    # mlx-lm / mlx-vlm exec a config.json `model_file` on load, and decision models never take remote code.
+    path = Path(folder) / "config.json"
+    try:
+        declared = json.loads(path.read_text(encoding = "utf-8")).get("model_file")
+    except (OSError, ValueError, AttributeError):
+        return
+    if declared:
+        raise ValueError(
+            f"Unsloth: {folder} names its own model code ({declared!r}) in config.json. "
+            "Decision models do not run repository code, so it cannot be loaded."
+        )
+
+
 def _load_lm_as_d1(
     zoo,
     folder,
@@ -753,6 +770,7 @@ def _load_lm_as_clef(
             f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
             "Merge them into the base model first."
         )
+    _refuse_model_file(folder)
     zoo = _decision_zoo()
     d1 = getattr(zoo, "FAMILIES", {}).get("d1")
     if decision_head == "d1" or (d1 is not None and d1.matches(folder)):
@@ -814,6 +832,7 @@ class FastDecisionModel:
         lm = kwargs.get("decision_head") is not None
         if not lm:
             folder = _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
+            _refuse_model_file(folder)
         if (lm or is_clef_checkpoint(folder)) and dtype is not None:
             raise NotImplementedError(
                 f"Unsloth: Clef on MLX trains at its checkpoint's precision, not {dtype}."

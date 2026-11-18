@@ -11,6 +11,7 @@ export type ClientPreferences = {
   browser: Record<string, unknown> | null;
   chat: Record<string, unknown> | null;
   plusMenu: Record<string, unknown> | null;
+  material: Record<string, unknown> | null;
   timeFormat: string | null;
   spellcheck: boolean | null;
 };

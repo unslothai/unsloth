@@ -25,3 +25,9 @@ test("the browser suggests the docs at unsloth.ai/docs, separate from the home p
   assert.doesNotMatch(page, /hosts\.has\(hostOf\(/);
   assert.match(page, /hideSuggestion\(siteKey\(site\.url\)\)/);
 });
+
+test("a link to a local address never opens in the panel, which only shows local pages typed there", () => {
+  const index = readSrc("features/browser/index.ts");
+  const body = index.slice(index.indexOf("export function openUrlInBrowser("), index.indexOf("export function openUrlInBrowserPanel("));
+  assert.match(body, /if \(isLoopbackUrl\(url\)\) return false;\s+useBrowserStore\.getState\(\)\.openUrl\(url\);/);
+});

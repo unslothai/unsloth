@@ -1628,6 +1628,10 @@ def fake_studio(tmp_path, monkeypatch):
             if state.get("providers_status"):
                 raise urllib.error.HTTPError(url, state["providers_status"], "error", None, None)
             return state.get("providers", [])
+        if "/served-window?" in url:
+            if state.get("served_window_error"):
+                raise state["served_window_error"]
+            return {"context_length": state.get("served_window")}
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [
@@ -3801,7 +3805,11 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": "unsloth/Qwen3.5-35B-A3B", "use_saved_settings": True},
+        )
     ]
     assert result.output.index(
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
@@ -3934,6 +3942,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
+                "use_saved_settings": True,
             },
         )
     ]
@@ -4803,7 +4812,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
+            {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL", "use_saved_settings": True},
         )
     ]
     assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
@@ -4818,7 +4827,11 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
-        ("POST", f"{BASE}/api/inference/load", {"model_path": MODEL["id"], "gguf_variant": "Q8_0"})
+        (
+            "POST",
+            f"{BASE}/api/inference/load",
+            {"model_path": MODEL["id"], "gguf_variant": "Q8_0", "use_saved_settings": True},
+        )
     ]
 
 
@@ -4838,13 +4851,17 @@ def test_start_agents_expose_gpu_memory_mode_option(command_name):
 @pytest.mark.parametrize(
     "mode,expected",
     [
-        ("auto", {"model_path": MODEL["id"], "gpu_memory_mode": "auto"}),
+        (
+            "auto",
+            {"model_path": MODEL["id"], "gpu_memory_mode": "auto", "use_saved_settings": True},
+        ),
         (
             "manual",
             {
                 "model_path": MODEL["id"],
                 "gpu_memory_mode": "manual",
                 "gpu_layers": -1,
+                "use_saved_settings": True,
             },
         ),
     ],
@@ -4886,7 +4903,11 @@ def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -4910,7 +4931,11 @@ def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
         (
             "POST",
             f"{BASE}/api/inference/load",
-            {"model_path": "unsloth/Qwen3-4B-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+            {
+                "model_path": "unsloth/Qwen3-4B-GGUF",
+                "gguf_variant": "UD-Q4_K_XL",
+                "use_saved_settings": True,
+            },
         )
     ]
 
@@ -5796,7 +5821,13 @@ def test_resolve_model_loads_a_kept_model_at_another_quant(monkeypatch, capsys):
         preload_check = lambda *args: gated.append(args),
     )
 
-    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q4_K_M"}]
+    assert payloads == [
+        {
+            "model_path": "unsloth/Qwen3-1.7B-GGUF",
+            "gguf_variant": "Q4_K_M",
+            "use_saved_settings": True,
+        }
+    ]
     assert gated, "the kept model is at Q8_0, so the Q4_K_M load must pass the preload gate"
     out = capsys.readouterr().out
     assert (
@@ -5940,7 +5971,12 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(max_seq_length = 8192))
 
     assert payloads == [
-        {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
+        {
+            "model_path": "owner/model-GGUF",
+            "gguf_variant": "Q8_0",
+            "max_seq_length": 8192,
+            "use_saved_settings": True,
+        }
     ]
 
 
@@ -6075,7 +6111,7 @@ def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypa
     start._resolve_model(BASE, "key", "owner/model-GGUF")
 
     [(payload, before_load)] = state["loads"]
-    assert payload == {"model_path": "owner/model-GGUF"}
+    assert payload == {"model_path": "owner/model-GGUF", "use_saved_settings": True}
     assert "from another account's model to owner/model-GGUF." in before_load
     assert "unloads it for every attached session" in before_load
 
@@ -6660,8 +6696,6 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
-    # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -7091,7 +7125,6 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
         "disabled_providers": [],
     }
     assert _launch_command(result.output) == ["opencode"]
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
 def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypatch):
@@ -7306,6 +7339,62 @@ def test_a_connection_model_without_a_window_says_how_to_give_one(fake_studio):
     )
     assert result.exit_code == 0, result.output
     assert "Pass --max-seq-length with the model's context window" in result.output
+
+
+OLLAMA_CONNECTION = {
+    "id": "c2",
+    "display_name": "Ollama",
+    "is_enabled": True,
+    "models": ["qwen3:8b"],
+}
+OLLAMA_ID = "external::c2::qwen3%3A8b"
+
+
+def test_a_connection_model_takes_the_window_its_server_loaded(fake_studio):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 65_536
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert ("POST", f"{BASE}/api/providers/c2/served-window?model=qwen3%3A8b", None) in (
+        fake_studio
+    )
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", OLLAMA_ID)
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "65536")
+    assert "Pass --max-seq-length" not in result.output
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+@pytest.mark.parametrize("given", [[], ["--max-seq-length", "40960"]])
+def test_a_connection_too_small_for_the_agent_is_refused(fake_studio, launched, agent, given):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 4_096
+    result = CliRunner().invoke(start.start_app, [agent, "--model", "qwen3:8b", *given])
+    assert result.exit_code == 1, result.output
+    assert f"{OLLAMA_ID} is loaded with 4,096 tokens of context, too few" in result.output
+    assert "OLLAMA_CONTEXT_LENGTH" in result.output
+    assert not launched
+
+
+@pytest.mark.parametrize(
+    "error", [http.client.RemoteDisconnected("closed"), json.JSONDecodeError("bad", "", 0)]
+)
+def test_an_unreadable_served_window_falls_back_to_the_hint(fake_studio, error):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window_error"] = error
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", "qwen3:8b"])
+    assert result.exit_code == 0, result.output
+    assert "Pass --max-seq-length with the model's context window" in result.output
+
+
+def test_max_seq_length_below_the_served_window_still_applies(fake_studio):
+    fake_studio.state["providers"] = [OLLAMA_CONNECTION]
+    fake_studio.state["served_window"] = 262_144
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "qwen3:8b", "--max-seq-length", "65536"],
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "65536")
 
 
 @pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw"])
@@ -7626,6 +7715,30 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     assert hermes_config.read_text() == before
 
 
+def test_write_hermes_config_keeps_user_fields_on_the_provider(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, MODEL, hermes_config, {"temperature": 0.2})
+    config = yaml.safe_load(hermes_config.read_text())
+    config["providers"]["unsloth-studio"]["api_key"] = "${MY_STATIC_KEY}"
+    config["providers"]["unsloth-studio"]["base_url"] = "http://stale:1/v1"
+    hermes_config.write_text(yaml.safe_dump(config, sort_keys = False))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["providers"]["unsloth-studio"] == {
+        "base_url": f"{BASE}/v1",
+        "api_mode": "openai",
+        "key_env": "UNSLOTH_API_KEY",
+        "api_key": "${MY_STATIC_KEY}",
+    }
+
+
+def test_write_hermes_config_replaces_a_non_mapping_provider(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"providers": {"unsloth-studio": "broken"}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    provider = yaml.safe_load(hermes_config.read_text())["providers"]["unsloth-studio"]
+    assert provider["key_env"] == "UNSLOTH_API_KEY"
+
+
 def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
     pytest.importorskip("yaml")
     original = "- just\n- a\n- list\n"
@@ -7828,7 +7941,6 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     assert config["providers"]["unsloth"]["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
-    assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
     settings = json.loads((home / ".pi" / "agent" / "settings.json").read_text())
     assert settings == {"packages": ["npm:pi-mine"]}
@@ -8401,6 +8513,51 @@ def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys)
     assert provider["baseURL"] == "http://127.0.0.1:9999/v1"
     assert provider["models"] == [{"id": "other"}]
     assert entries["agent-default-model"]["config"]["model"] == "other"
+
+
+def _generated_image_input(tmp_path, agent, vibe_env):
+    agents = tmp_path / "agents"
+    if agent == "opencode":
+        config = json.loads((agents / "opencode" / "opencode.json").read_text())
+        model = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]
+        return model.get("attachment", False) and "image" in model["modalities"]["input"]
+    if agent == "openclaw":
+        config = json.loads((agents / "openclaw" / "openclaw.json").read_text())
+        return "image" in config["models"]["providers"]["unsloth"]["models"][0].get("input", ())
+    if agent == "pi":
+        return "image" in _pi_generated_model(tmp_path, False).get("input", ())
+    if agent == "pi-subagent":
+        return _pi_generated_model(tmp_path, True).get("vision", False)
+    if agent == "dsh":
+        entries = _dsh_entries(agents / "dsh" / start._DSH_PATCH_FILE)
+        model = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+        return "image" in model.get("input", ())
+    return json.loads(vibe_env["VIBE_MODELS"])[0].get("supports_images") is True
+
+
+@pytest.mark.parametrize("vision", [True, False])
+@pytest.mark.parametrize("agent", ["opencode", "openclaw", "pi", "pi-subagent", "dsh", "vibe"])
+def test_agent_config_declares_image_input_only_for_a_vision_model(
+    fake_studio, tmp_path, monkeypatch, agent, vision
+):
+    http_json = start._http_json
+
+    def with_vision(method, url, *args, **kwargs):
+        answer = http_json(method, url, *args, **kwargs)
+        if url.split("?")[0].endswith("/api/inference/status"):
+            answer["is_vision"] = vision
+        return answer
+
+    monkeypatch.setattr(start, "_http_json", with_vision)
+    vibe_env = {}
+    vibe_env_fn = start._vibe_env
+    monkeypatch.setattr(
+        start, "_vibe_env", lambda *a, **k: vibe_env.update(vibe_env_fn(*a, **k)) or vibe_env
+    )
+    args = ["pi", "--as-subagent"] if agent == "pi-subagent" else [agent]
+    result = CliRunner().invoke(start.start_app, [*args, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert _generated_image_input(tmp_path, agent, vibe_env) is vision
 
 
 @pytest.mark.parametrize(
@@ -12508,3 +12665,10 @@ def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
     )
     assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
     assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()
+
+
+@pytest.mark.parametrize(
+    "window,pct", [(32_768, "90"), (200_000, "90"), (400_000, "91"), (1_000_000, "96")]
+)
+def test_claude_compacts_with_bounded_headroom_on_large_windows(window, pct):
+    assert start.claude_autocompact_pct(window) == pct
