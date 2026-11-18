@@ -146,8 +146,9 @@ test("the pinned caption strip stops at docked Run settings, whose glass runs to
 	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
 	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
-	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]';
-	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' \\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
+	// Only while the pinned strip is there; unpinned, the panel starts below the caption with its rounded corner.
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]';
+	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
 	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
 	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
 	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));

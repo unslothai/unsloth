@@ -7214,13 +7214,12 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* The caption strip above stops at the docked panel, so the panel's glass runs to the window top
-   instead of meeting the strip's sidebar fill in a seam. */
-html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+/* The pinned strip stops at the docked panel, whose glass runs to the window top instead of meeting it in a seam. */
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {
   --chat-settings-top: 0px;
   padding-top: var(--studio-custom-titlebar-height, 0px);
 }
-html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
+html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
   top: var(--studio-custom-titlebar-height, 0px);
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
