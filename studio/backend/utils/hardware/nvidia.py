@@ -394,8 +394,8 @@ def get_visible_gpu_utilization(
                 env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
-            # Older drivers can reject a query containing an unsupported property.
-            if result.returncode != 2:
+            # Any failure retries the base query, so the new fields never cost telemetry it returned.
+            if result.returncode == 0:
                 break
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)

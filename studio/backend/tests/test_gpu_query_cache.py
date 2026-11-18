@@ -157,10 +157,11 @@ def test_nvidia_free_and_link_follow_mask_order(smi):
     assert "pcie_link_width" not in a and "pcie_link_gen" not in a
 
 
-def test_nvidia_retains_telemetry_on_drivers_rejecting_link_fields(monkeypatch):
+@pytest.mark.parametrize("rejected_rc", [2, 3, 255])
+def test_nvidia_retains_telemetry_on_drivers_rejecting_link_fields(monkeypatch, rejected_rc):
     def run(argv, **kwargs):
         if "pcie.link.width.current" in argv[1]:
-            return subprocess.CompletedProcess(argv, 2, "")
+            return subprocess.CompletedProcess(argv, rejected_rc, "")
         return subprocess.CompletedProcess(argv, 0, "0, 42, 61, 100, 1024, 60, 200")
 
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", run)
