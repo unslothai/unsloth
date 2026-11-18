@@ -117,7 +117,6 @@ export function useMemoryEstimate(
   const inventory = splitInventory(request, gpuDevices);
   const refreshSplitMemory = inventory?.usesFreeMemory === true;
   const settings = estimateKey(request, inventory);
-  // A resident estimate is usable only after its corresponding memory probe finished.
   const key = refreshMemory && settings !== null ? `probe:${settings}` : settings;
   // Computed during render: the clearing effect runs after paint and would flash the old model's numbers.
   const currentIdentity =

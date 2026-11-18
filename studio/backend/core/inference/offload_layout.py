@@ -357,7 +357,6 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
             and len(recurrent_blocks) == n_recurrent
             and attention_blocks.isdisjoint(recurrent_blocks)
         ):
-            # Use tensor identities, not a presumed period or a uniform fraction of total cache.
             attention_layers = tuple(i in attention_blocks for i in range(n_layers))
 
     return ModelLayout(
