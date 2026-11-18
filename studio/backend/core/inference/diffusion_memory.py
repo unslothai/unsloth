@@ -1147,6 +1147,26 @@ def trim_host_heap_after_load(logger: Any = None) -> bool:
         return False
 
 
+# "=1" re-enables per-request denoiser promotion (video residency, image whole tier) under Low VRAM.
+LOW_VRAM_PROMOTE_ENV = "UNSLOTH_DIFFUSION_LOW_VRAM_PROMOTE"
+
+
+def keeps_denoiser_streamed(memory_mode: Optional[str]) -> bool:
+    """True under Low VRAM (no per-request promotion). Never raises: an unreadable mode returns False."""
+    try:
+        mode = normalize_memory_mode(memory_mode)
+    except Exception:  # noqa: BLE001
+        return False
+    if mode != MEMORY_MODE_LOW_VRAM:
+        return False
+    return (os.environ.get(LOW_VRAM_PROMOTE_ENV) or "").strip().lower() not in (
+        "1",
+        "on",
+        "true",
+        "yes",
+    )
+
+
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode (accepting dashes); None passes through. Raises ValueError
     for an unsupported mode so the route rejects it as a 4xx before any GPU work."""
@@ -2175,6 +2195,30 @@ def _model_offload_fits_quantised(plan: Any) -> bool:
         return False
 
 
+def _low_vram_whole_module(
+    plan: Any,
+    reason: str = "the quantised denoiser cannot stream; whole-module offload of every component",
+) -> Optional[Any]:
+    """The whole-module form of a streamed low_vram plan, or None for any other plan."""
+    if (
+        getattr(plan, "offload_policy", None) != OFFLOAD_GROUP
+        or (getattr(plan, "estimates", None) or {}).get("low_vram_streamed") is None
+    ):
+        return None
+    try:
+        return replace(
+            plan,
+            offload_policy = OFFLOAD_MODEL,
+            stream_text_encoders = False,
+            stream_transformer = True,
+            vae_tiling = True,
+            vae_slicing = True,
+            reasons = tuple(plan.reasons) + (reason,),
+        )
+    except Exception:  # noqa: BLE001 - a duck-typed plan keeps the old refusal
+        return None
+
+
 def torchao_offload_plan(
     plan: Any,
     scheme: Optional[str],
@@ -2191,10 +2235,12 @@ def torchao_offload_plan(
         return plan
     if policy not in (OFFLOAD_MODEL, OFFLOAD_GROUP, OFFLOAD_STREAMING):
         return None
-    if not torchao_scheme_streams(scheme, torchao_version = torchao_version):
-        return None
-    if not _torchao_stream_pinnable(plan, reclaimable_host_mib):
-        return None
+    if not torchao_scheme_streams(
+        scheme, torchao_version = torchao_version
+    ) or not _torchao_stream_pinnable(plan, reclaimable_host_mib):
+        # low_vram streams by default; a scheme that cannot stream keeps the whole-module tier it had before.
+        whole = _low_vram_whole_module(plan)
+        return whole if whole is not None and _model_offload_fits_quantised(whole) else None
     if policy != OFFLOAD_MODEL:
         return plan
     return torchao_streaming_plan(plan)
@@ -2918,8 +2964,15 @@ def plan_diffusion_memory(
         policy = OFFLOAD_GROUP
         reasons.append("balanced requested; streamed block-level transformer offload")
     elif mode == MEMORY_MODE_LOW_VRAM:
-        policy = OFFLOAD_MODEL
-        reasons.append("low_vram requested; whole-module offload of every component")
+        # Whole-module offload keeps the whole denoiser on the card for every step, which is above balanced's
+        # streamed blocks whenever the denoiser outweighs the text encoders (Cosmos3 has none: 18.9 vs 9.0 GiB).
+        # Streaming the denoiser and the text encoders is the lowest tier; a setup failure still falls back.
+        policy = OFFLOAD_GROUP
+        stream_text_encoders = True
+        estimates["low_vram_streamed"] = 1
+        reasons.append(
+            "low_vram requested; denoiser blocks and text-encoder layers streamed (the lowest tier)"
+        )
     elif budget is None or required is None:
         policy = OFFLOAD_NONE
         reasons.append("device budget or model size unknown; staying resident")
@@ -2964,7 +3017,12 @@ def plan_diffusion_memory(
 
     # VAE slicing is exact on any tier; tiling is bit-identical only for one tile (<= 1 MP).
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
-    tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
+    # low_vram keeps the tiled decode it had under whole-module offload: the decode can be the peak of a video call.
+    tile = (
+        policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+        or "low_vram_streamed" in estimates
+        or device_memory.backend in ("mps", "cpu")
+    )
     if (
         calibrated_activation is not None
         and mode == MEMORY_MODE_AUTO
@@ -4036,8 +4094,12 @@ def denoiser_quant_label(pipe: Any) -> str:
         if classes:
             return "torchao:" + "+".join(sorted(classes)) + _quant_variant_tag(dits)
         dtypes: set[str] = set()
+        from .diffusion_compile_cache import _adapter_path
+
         for dit in dits:
-            for param in dit.parameters():
+            for name, param in dit.named_parameters():
+                if _adapter_path(name):
+                    continue
                 if type(param).__name__ == "GGUFParameter":
                     return "gguf"
                 if param.dtype in (torch.int8, torch.uint8):
@@ -4064,7 +4126,7 @@ def _quant_variant_tag(dits: list) -> str:
 
         from .diffusion_compile_cache import graph_variant
 
-        variants = [graph_variant(dit) for dit in dits]
+        variants = [graph_variant(dit, skip_adapters = True) for dit in dits]
         if any(isinstance(v.get("weights"), str) for v in variants):
             return "#unknown"
         blob = json.dumps(variants, sort_keys = True, default = str)
@@ -4842,6 +4904,11 @@ def _refine_plan_from_loaded_weights(
         dit = sum(m for m, r in sizes.values() if r == "dit")
         encoders = sum(m for m, r in sizes.values() if r == "text_encoder")
         other = sum(m for m, r in sizes.values() if r == "other")
+        # a priced LoRA set's forward sits beside every phase's measured peak
+        from .diffusion_lora_memory import load_reserve_mib as lora_load_reserve_mib
+
+        lora_mib = lora_load_reserve_mib(pipe)
+        priced_other = other + lora_mib
         if dit <= 0:
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
@@ -4894,7 +4961,7 @@ def _refine_plan_from_loaded_weights(
             family = family, quant = read_quant, speed_mode = speed_mode
         ) or (None, None, False)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
-        floor = headroom + overhead + other
+        floor = headroom + overhead + priced_other
         estimates = dict(plan.estimates)
         estimates.update(
             measured_runtime_headroom_mib = headroom,
@@ -4920,6 +4987,8 @@ def _refine_plan_from_loaded_weights(
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
         )
+        if lora_mib:
+            estimates["lora_activation_mib"] = lora_mib
         if _env_off(PARTIAL_RESIDENT_ENV):
             return plan
         # Flat hooks stay installed; release_resident_groups lets an oversized request stream groups again.
@@ -4966,7 +5035,7 @@ def _refine_plan_from_loaded_weights(
                 # torchao denoisers only: the slack was measured on the int8 route, not the dense eager table
                 and dense_mib is None
                 and (policy == OFFLOAD_STREAMING or stream_te)
-                and _resident_dit_fits(memory, dit, headroom, other)
+                and _resident_dit_fits(memory, dit, headroom, priced_other)
             ):
                 # pin it whole; during the encode it drops back to the flat room (install_encode_release)
                 encode_room = int(dit_room)
@@ -4992,7 +5061,7 @@ def _refine_plan_from_loaded_weights(
                         or headroom,
                     )
                 streamed_room = min(
-                    _streamed_dit_room_mib(memory, streamed_headroom, other, window), dit
+                    _streamed_dit_room_mib(memory, streamed_headroom, priced_other, window), dit
                 )
                 phase_reserve = None
                 if window >= 0:
@@ -5010,7 +5079,8 @@ def _refine_plan_from_loaded_weights(
                         phase_reserve = None
                     if phase_reserve is not None:
                         phase_room = min(
-                            _streamed_dit_room_mib(memory, phase_reserve[0], other, window), dit
+                            _streamed_dit_room_mib(memory, phase_reserve[0], priced_other, window),
+                            dit,
                         )
                         if (
                             phase_reserve[0] >= streamed_headroom
@@ -5124,6 +5194,7 @@ def _refine_plan_from_loaded_weights(
                 )
                 + f" and {int(te_room)} MiB of the {encoders} MiB "
                 f"encoders stay resident (measured peak {headroom} MiB"
+                + (f" + {lora_mib} MiB for the LoRA forward" if lora_mib else "")
                 + (
                     (
                         f"; {phase_headroom} MiB without the streaming window, every weight resident"
@@ -6436,7 +6507,68 @@ def live_reference_shortfall_mib(
         return None
 
 
+def placement_measured_activation(pipe: Any) -> Optional[CalibratedImageActivation]:
+    """The measured activation row the load placed ``pipe`` from (its family, speed tier and compute width, as recorded
+    in ``_unsloth_measured_reserve``), else None: the generate guard then keeps the flat estimate. Never raises."""
+    try:
+        reserve = getattr(pipe, "_unsloth_measured_reserve", None) or ()
+        if len(reserve) < 3:
+            return None
+        family, speed_mode = reserve[1], reserve[2]
+        compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
+        return calibrated_image_activation(
+            family,
+            max_speed = str(speed_mode or "").strip().lower() == "max",
+            compute_bytes = int(compute_bytes),
+        )
+    except Exception:  # noqa: BLE001 - unknown keeps the flat estimate
+        return None
+
+
 def measured_request_extra_mib(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    condition_pixels: int = 0,
+    cfg: Optional[bool] = None,
+    unpriced_references: bool = False,
+    workflow: Optional[str] = None,
+    tier_peak_mib: Optional[int] = None,
+    reference_pixels: int = 0,
+    quadratic_attention: bool = False,
+) -> int:
+    """MiB a request needs beyond what the measured placement reserved; plus a priced LoRA forward past its load reserve."""
+    extra = _measured_request_extra_mib(
+        pipe,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        condition_pixels = condition_pixels,
+        cfg = cfg,
+        unpriced_references = unpriced_references,
+        workflow = workflow,
+        tier_peak_mib = tier_peak_mib,
+        reference_pixels = reference_pixels,
+        quadratic_attention = quadratic_attention,
+    )
+    if not getattr(pipe, "_unsloth_measured_reserve", None) or not getattr(
+        pipe, "_unsloth_loras", None
+    ):
+        return extra
+    from .diffusion_lora_memory import request_extra_mib as lora_request_extra_mib
+
+    return extra + lora_request_extra_mib(
+        pipe,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        extra_pixels = max(int(condition_pixels or 0), int(reference_pixels or 0)),
+    )
+
+
+def _measured_request_extra_mib(
     pipe: Any,
     *,
     width: Optional[int],
@@ -6463,6 +6595,8 @@ def measured_request_extra_mib(
     bucket, no condition images or tier peak, within the whole-render reserve) releases nothing, its encode and decode
     priced by their own hooks; any other request is priced against the denoise reserve, which first streams the blocks
     the phase sizing added. ``reference_pixels`` (unweighted): priced by ``derived_reference_need_mib`` when set."""
+    from .diffusion_lora_memory import priced as lora_priced
+
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -6508,12 +6642,12 @@ def measured_request_extra_mib(
         and (
             getattr(pipe, "_unsloth_peak_static", False)
             or (tier_moved and tier_peak is None)
-            or getattr(pipe, "_unsloth_loras", None)
+            or (getattr(pipe, "_unsloth_loras", None) and lora_priced(pipe) is None)
             or cfg_unmeasured
         )
     ):
-        # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
-        # engage): requests size from the flat estimate
+        # the learned peak no longer describes this pipeline (LoRA adapters the load did not price, a planned VAE saver
+        # that did not engage): requests size from the flat estimate
         flat = estimate_image_runtime_mib(
             width = width,
             height = height,
@@ -6680,6 +6814,22 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
+    unet_whole = (
+        _low_vram_whole_module(
+            plan,
+            "group offload streams transformer blocks only; the U-Net takes whole-module offload",
+        )
+        if getattr(pipe, "transformer", None) is None
+        else None
+    )
+    if unet_whole is not None and getattr(pipe, "unet", None) is not None:
+        # Group offload streams only transformer blocks; a U-Net takes the whole-module tier (which streams an
+        # oversized U-Net leaf by leaf) exactly as low_vram did before it streamed by default.
+        policy = OFFLOAD_MODEL
+        try:
+            pipe._unsloth_applied_plan = unet_whole
+        except Exception:  # noqa: BLE001
+            pass
     if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
         policy = OFFLOAD_GROUP
         try:
@@ -9320,6 +9470,20 @@ def _family_activation_multiplier(family: Optional[str]) -> float:
     return multiplier
 
 
+# Tile side each family's measured tiled decode used (``_MEASURED_IMAGE_ACTIVATION_MIB``); others tile at the default.
+_MEASURED_TILED_DECODE_SIDE: dict[str, int] = {"qwen-image-2.1": 512}
+
+
+def _measured_tiled_decode_side(family: Optional[str]) -> int:
+    # The generate guard passes the load's variant hint (family name, then file / repo / base, space-joined).
+    parts = str(family or "").lower().split()
+    fam = parts[0] if parts else ""
+    for name, side in _MEASURED_TILED_DECODE_SIDE.items():
+        if fam == name or fam.startswith(name + "-"):
+            return side
+    return DEFAULT_VAE_TILE_SIDE
+
+
 def estimate_tiled_image_runtime_mib(
     *,
     width: Optional[int],
@@ -9329,21 +9493,30 @@ def estimate_tiled_image_runtime_mib(
     condition_pixels: int = 0,
     tile_side: Optional[int] = None,
     vae_sliced: bool = False,
+    measured: Optional["CalibratedImageActivation"] = None,
 ) -> int:
     """Per-call MiB with the VAE tiled: max(one-tile decode, denoiser); unsliced tiles carry the whole batch.
-    Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens."""
+    Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens. ``measured``: the
+    family's measured row the placement was sized from; its tiled decode (taken at 1024x1024 with the family's measured
+    tile side, scaled by tile area)
+    caps the flat one-tile figure, which prices a 1024 px DiT VAE tile like a U-Net's whole render."""
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     cond = max(0, int(condition_pixels or 0))
     side = int(tile_side or DEFAULT_VAE_TILE_SIDE)
     megapixel = float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    vae_batch = 1 if vae_sliced else batch
     vae = estimate_image_runtime_mib(
         width = min(w, side),
         height = min(h, side),
-        batch_size = 1 if vae_sliced else batch,
+        batch_size = vae_batch,
         family = family,
     )
+    if measured is not None:
+        cal_side = min(DEFAULT_IMAGE_WIDTH, _measured_tiled_decode_side(family))
+        tile_scale = max(0.25, min(w, side) * min(h, side) * vae_batch / float(cal_side * cal_side))
+        vae = min(vae, max(1024, int(measured.tiled_decode_mib * tile_scale)))
     denoise = batch * (
         DENOISE_MIB_PER_MEGAPIXEL * (w * h / megapixel) * _family_activation_multiplier(family)
         + 8192 * (cond / megapixel)
@@ -9414,8 +9587,10 @@ def image_activation_verdict(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
 ) -> ImageActivationVerdict:
-    """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown."""
+    """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
+    ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode."""
     override = bool(allow_oversized) or _oversized_generate_override()
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
@@ -9464,6 +9639,7 @@ def image_activation_verdict(
                 condition_pixels = condition_pixels,
                 tile_side = vae_tile_side,
                 vae_sliced = vae_sliced,
+                measured = measured_activation if calibrated_placement else None,
             )
     except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
         return ImageActivationVerdict(ACTIVATION_RUN)
@@ -9532,6 +9708,7 @@ def image_activation_shortfall_message(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -9548,6 +9725,7 @@ def image_activation_shortfall_message(
         allow_oversized = allow_oversized,
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
+        measured_activation = measured_activation,
     ).message
 
 
@@ -9567,6 +9745,7 @@ def raise_on_image_activation_shortfall(
     allow_oversized: bool = False,
     calibrated_placement: bool = False,
     controlnet: bool = False,
+    measured_activation: Optional["CalibratedImageActivation"] = None,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Raises ValueError so the route answers 400 with the reason; RuntimeError becomes an opaque 500."""
@@ -9585,6 +9764,7 @@ def raise_on_image_activation_shortfall(
         allow_oversized = allow_oversized,
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
+        measured_activation = measured_activation,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:

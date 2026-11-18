@@ -432,13 +432,13 @@
   },
   "hunyuanvideo-1.5": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "hunyuanvideo-1.5-720p": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },

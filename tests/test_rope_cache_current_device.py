@@ -302,6 +302,7 @@ def _model_forward_rope(
         "position_ids": position_ids,
         "IS_ATTENTION_REFACTOR": True,
         "IS_GRANITE": False,
+        "get_cp_manager": lambda: None,
         "torch": torch,
         # isinstance needs the class this rope was built from; other ropes never match.
         "LongRopeRotaryEmbedding": type(rope)

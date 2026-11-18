@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,10 +34,12 @@ from test_external_provider_sampling_over_the_wire import _Handler  # noqa: E402
 _SUMMARY = "## Goal\nThe user asked twelve questions about words."
 
 
-def _sse(text: str) -> bytes:
+def _sse(text: str, finish_reason: str = "stop") -> bytes:
     return (
         "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": text}}]}) + "\n\n"
-        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        "data: "
+        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]})
+        + "\n\n"
         "data: [DONE]\n\n"
     ).encode()
 
@@ -46,6 +49,9 @@ class _SummarisingHandler(_Handler):
 
     # Chat turns longer than this many characters are refused the way a provider words it.
     overflow_chars: int | None = None
+    summary_finish_reason = "stop"
+    summary_text = _SUMMARY
+    summary_delay_s = 0.0
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
@@ -69,12 +75,26 @@ class _SummarisingHandler(_Handler):
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
         else:
-            payload = _sse(_SUMMARY if summary else "ok")
+            if summary:
+                time.sleep(self.summary_delay_s)
+            payload = _sse(self.summary_text, self.summary_finish_reason) if summary else _sse("ok")
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+
+class _CutOffSummary(_SummarisingHandler):
+    summary_finish_reason = "length"
+
+
+class _StalledSummary(_SummarisingHandler):
+    summary_delay_s = 1.0
+
+
+class _EmptySummary(_SummarisingHandler):
+    summary_text = ""
 
 
 class _OverflowAt8k(_SummarisingHandler):
@@ -115,8 +135,10 @@ def _saved_thread(thread_id: str) -> str:
 @pytest.fixture(autouse = True)
 def _no_remembered_summaries():
     cloud_compaction._memory_summaries.clear()
+    cloud_compaction._cut_off_summaries.clear()
     yield
     cloud_compaction._memory_summaries.clear()
+    cloud_compaction._cut_off_summaries.clear()
 
 
 # Compacts early in a window large enough for one summary call to read the whole backlog.
@@ -203,6 +225,77 @@ def test_a_failed_summary_falls_back_to_dropping_the_oldest_turns():
     assert "summarized" not in truncation
     assert truncation["dropped_messages"] == len(chat) - len(sent["messages"])
     assert not [c for c in chunks if "error" in c]
+
+
+def test_a_summary_cut_off_at_its_token_cap_is_not_kept():
+    thread = _saved_thread("thread-cut-off-summary")
+    chunks, summaries, [sent] = _bodies(_CutOffSummary, thread_id = thread, **_SMALL_TRIGGER)
+    assert summaries
+    assert _SUMMARY not in json.dumps(sent["messages"])
+    assert studio_db.list_chat_thread_summaries(thread) == []
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+
+def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
+    thread = _saved_thread("thread-cut-off-again")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    _, summaries, _ = _bodies(_CutOffSummary, messages = chat, **options)
+    assert summaries
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    chunks, summaries, [sent] = _bodies(_CutOffSummary, messages = later, **options)
+    assert summaries == []
+    assert sent["messages"][-1]["content"] == "next"
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    # Another model on the same thread is asked again.
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, model = "b-model", **options)
+    assert summaries
+
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
+    assert summaries
+    assert studio_db.list_chat_thread_summaries(thread)
+
+
+def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
+    monkeypatch.setattr(cloud_compaction.collect_summary, "__defaults__", (0.2,))
+    thread = _saved_thread("thread-timed-out-summary")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    chunks, summaries, _ = _bodies(_StalledSummary, messages = chat, **options)
+    assert summaries
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    chunks, summaries, [sent] = _bodies(_StalledSummary, messages = later, **options)
+    assert summaries == []
+    assert sent["messages"][-1]["content"] == "next"
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and "summarized" not in truncation
+
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, model = "b-model", **options)
+    assert summaries
+
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, compact_context = True, **options)
+    assert summaries
+    assert studio_db.list_chat_thread_summaries(thread)
+
+
+def test_a_summary_that_came_back_empty_is_asked_for_again_on_the_next_turn():
+    thread = _saved_thread("thread-empty-summary")
+    chat = _long_chat()
+    options = dict(thread_id = thread, **_SMALL_TRIGGER)
+    _, summaries, _ = _bodies(_EmptySummary, messages = chat, **options)
+    assert summaries
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    _, summaries, _ = _bodies(_SummarisingHandler, messages = later, **options)
+    assert summaries
+    assert studio_db.list_chat_thread_summaries(thread)
 
 
 def test_a_saved_thread_reuses_its_summary_on_later_turns():

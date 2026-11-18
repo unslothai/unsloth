@@ -42,6 +42,8 @@ class _BakedBackend(_FakeBackend):
         self,
         *,
         loras = None,
+        # The diffusers engine takes the adapter pin; the strict base fake does not.
+        expected_load_loras = None,
         **kwargs,
     ):
         self.loras_seen.append(loras)
@@ -181,3 +183,78 @@ def test_managed_accounts_authorize_explicit_adapters(baked_client, monkeypatch)
     # The baked set was authorized by its load; omitting loras does not re-check it.
     resp = _post(baked_client, {"prompt": "a sloth", "response_format": "b64_json"})
     assert resp.status_code == 200 and calls == [["private-hub-lora"]]
+
+
+class _DenseLoadBackend(_BakedBackend):
+    def status(self):
+        out = super().status()
+        out["load_lora_specs"] = [{"id": "tarot-lora", "weight": 1.0}]
+        return out
+
+
+def test_omitted_loras_keep_a_dense_deploys_adapters(monkeypatch):
+    backend = _DenseLoadBackend(baked = [])
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
+    resp = cli.post(
+        "/v1/images/generations",
+        json = {"prompt": "trtcrd a sloth", "size": "256x256", "response_format": "b64_json"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert backend.loras_seen == [[("tarot-lora", 1.0)]]
+    resp = cli.post(
+        "/v1/images/generations",
+        json = {"prompt": "a sloth", "size": "256x256", "loras": [], "response_format": "b64_json"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert backend.loras_seen[-1] is None
+
+
+def test_load_lora_specs_report_the_load_request():
+    pipe = types.SimpleNamespace()
+    assert diffusion_module._load_lora_specs(pipe) == []
+    diffusion_module._record_load_lora_specs(pipe, [("tarot-lora", 1.0), ("off", 0.0)])
+    assert diffusion_module._load_lora_specs(pipe) == [{"id": "tarot-lora", "weight": 1.0}]
+    pipe._unsloth_loras_baked = True
+    diffusion_module._record_baked_lora_specs(pipe, [("baked-lora", 0.5)])
+    assert diffusion_module._load_lora_specs(pipe) == [{"id": "baked-lora", "weight": 0.5}]
+
+
+def _diffusion_functions():
+    import ast
+    src = Path(diffusion_module.__file__).read_text(encoding = "utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node
+
+
+def test_every_bake_records_the_specs_v1_reads_back():
+    """Unrecorded baked specs make /v1/images/generations send an empty selection (refused on MiniMax-H3-Image)."""
+    import ast
+    for node in _diffusion_functions():
+        marks = [
+            n
+            for n in ast.walk(node)
+            if isinstance(n, ast.Assign)
+            and any(ast.unparse(t).endswith("._unsloth_loras_baked") for t in n.targets)
+            and isinstance(n.value, ast.Constant)
+            and n.value.value is True
+        ]
+        if not marks:
+            continue
+        calls = {ast.unparse(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+        assert (
+            "_record_baked_lora_specs" in calls
+        ), f"{node.name} bakes LoRAs without recording their specs"
+
+
+def test_dense_loads_record_their_requested_adapters():
+    import ast
+    for node in _diffusion_functions():
+        if node.name == "load_pipeline":
+            calls = {ast.unparse(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+            assert "_record_load_lora_specs" in calls
+            return
+    raise AssertionError("load_pipeline not found")

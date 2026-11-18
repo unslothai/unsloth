@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
+import type { NpuCompat } from "./compat";
 import { npuSearchText } from "./display-name";
 
 export const NPU_MODEL_PREFIX = "lemonade:";
@@ -65,6 +66,15 @@ export interface NpuModel {
   memory_needed_gb?: number | null;
   /** false when the model is larger than the NPU memory window; null when unknown. */
   fits_memory?: boolean | null;
+  /** A Q4NX folder converted on the Export page; absent from servers that predate them. */
+  local?: NpuLocalModel | null;
+}
+
+export interface NpuLocalModel {
+  folder: string;
+  /** FastFlowLM catalog tag whose NPU kernels run it. */
+  base: string | null;
+  problem: string | null;
 }
 
 export function npuRowsFor(
@@ -83,34 +93,26 @@ export function npuRowsFor(
       (model) =>
         (!onDevice || model.downloaded) &&
         (!needle ||
-          npuSearchText(model).toLowerCase().includes(needle)),
+          `${npuSearchText(model)} ${model.local?.folder ?? ""}`
+            .toLowerCase()
+            .includes(needle)),
     )
     .sort((a, b) => npuRank(a.checkpoint) - npuRank(b.checkpoint));
 }
 
-// The AMD NPU launch blog's headline models lead, then the newest ones that fit a Strix laptop
-// NPU, then the backend's order.
-const NPU_RECOMMENDED = [
+// The popular NPU models, pinned first in every NPU list; the backend's order follows.
+const NPU_POPULAR = [
   "qwen3.6-moe:35b-a3b",
   "qwen3.8-mtp:27b",
-  "qwen3.8-dflash2:27b",
+  "gemma4-it:12b",
   "qwen3.5:9b",
-  "qwen3.5:4b",
-  "gemma4-it:e4b",
-  "gpt-oss:20b",
-  "lfm3:1.7b",
-  "nemotron3.5-bolt:e4b",
   "qwen3vl-it:4b",
-  "gemma4-it:e2b",
-  "qwen3.5:2b",
-  "qwen3.5:0.8b",
-  "phi4-mini-it:4b",
-  "llama3.2:3b",
+  "lfm3:1.7b",
 ];
 
 function npuRank(checkpoint: string): number {
-  const rank = NPU_RECOMMENDED.indexOf(checkpoint);
-  return rank === -1 ? NPU_RECOMMENDED.length : rank;
+  const rank = NPU_POPULAR.indexOf(checkpoint);
+  return rank === -1 ? NPU_POPULAR.length : rank;
 }
 
 export interface NpuCapability {
@@ -173,6 +175,32 @@ export function npuResumeLabel(model: NpuModel): string | null {
     : `${model.resume_percent}% downloaded`;
 }
 
+export function npuRowDetails(model: NpuModel): string[] {
+  return [
+    "NPU",
+    model.local ? "Converted" : null,
+    npuSizeLabel(model.size_gb),
+    npuMemoryTag(model),
+    npuResumeLabel(model),
+  ].filter((part): part is string => Boolean(part));
+}
+
+export function npuRowTooltip(model: NpuModel): string | null {
+  if (!model.local) return null;
+  const { folder, problem } = model.local;
+  // A folder saved outside the exports root comes as its full path.
+  const where = /^(\/|[A-Za-z]:\/)/.test(folder) ? folder : `exports/${folder}`;
+  return problem
+    ? `Can't load ${folder}: ${problem}`
+    : `Converted on the Export page, from ${where}`;
+}
+
+export function npuDeleteDescription(model: NpuModel): string {
+  return model.local
+    ? "This removes the model from the NPU list. Your exported folder stays on disk."
+    : "This removes the model's NPU files from this device.";
+}
+
 /** Rehashing kept files before a resume, or Lemonade registering the files after the download. */
 export type NpuDownloadPhase = "verifying" | "finishing";
 
@@ -206,6 +234,16 @@ export async function getNpuStatus(signal?: AbortSignal): Promise<NpuStatus> {
     );
   }
   return (await response.json()) as NpuStatus;
+}
+
+export async function getNpuCompat(): Promise<NpuCompat> {
+  const response = await authFetch("/api/npu/compat");
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not read NPU model support"),
+    );
+  }
+  return (await response.json()) as NpuCompat;
 }
 
 export async function enableNpu(): Promise<NpuStatus> {

@@ -609,7 +609,7 @@ _plist_string() {
          f && /<string>/ { sub(/.*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }' "$1"
 }
 
-# install.sh's shell launcher shares the bundle id, so exclude it by executable.
+# Launchers from older install.sh reuse Desktop's bundle id: exclude them by executable.
 _owns_bundle_id() {
     [ -d "$1" ] || return 1
     [ "$(_plist_string "$1/Contents/Info.plist" CFBundleIdentifier)" = "$2" ] || return 1
@@ -683,6 +683,39 @@ _unsloth_uninstall_main() {
         [ "$_sd_stopped" = 1 ] || echo "  could not reach the systemd user manager to stop it; it will not start again after the next login or reboot" >&2
     }
     _remove_systemd_user_service
+
+    # Before the kill sweep too: a SIGKILLed server exits non-zero, and KeepAlive would restart it.
+    _remove_launchd_user_agent() {
+        [ "$_os" = "Darwin" ] || return 0
+        _ld_label="ai.unsloth.studio.server"
+        # The $HOME owner, not id -u: under sudo (HOME kept) the agent lives in gui/<owner>.
+        _ld_uid=$(_home_uid)
+        _ld_uid=${_ld_uid:-$_uid}
+        _ld_plist="$HOME/Library/LaunchAgents/$_ld_label.plist"
+        # The installer writes it under the login account's home, which a redirected $HOME hides.
+        if [ ! -f "$_ld_plist" ] && command -v dscl >/dev/null 2>&1; then
+            _ld_user=$(id -un "$_ld_uid" 2>/dev/null || true)
+            _ld_pw=$(dscl . -read "/Users/$_ld_user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+            case "$_ld_pw" in /*) _ld_plist="$_ld_pw/Library/LaunchAgents/$_ld_label.plist" ;; esac
+        fi
+        [ -f "$_ld_plist" ] || return 0
+        [ "$(sed -n 2p "$_ld_plist" 2>/dev/null)" = "<!-- unsloth-studio-managed-launchd -->" ] || return 0
+        _ld_stopped=0
+        if command -v launchctl >/dev/null 2>&1; then
+            if ! launchctl print "gui/$_ld_uid/$_ld_label" >/dev/null 2>&1; then
+                _ld_stopped=1
+            elif launchctl bootout "gui/$_ld_uid/$_ld_label" 2>/dev/null; then
+                _ld_stopped=1
+            # A job still loaded here would be respawned by KeepAlive after the kill sweep below; `remove` drops it by label.
+            elif _run_as_home_owner launchctl remove "$_ld_label" 2>/dev/null; then
+                _ld_stopped=1
+            fi
+        fi
+        _remove_path "$_ld_plist"
+        echo "Removed launchd user agent ($_ld_label)."
+        [ "$_ld_stopped" = 1 ] || echo "  could not unload it from launchd; it will not start again after the next login" >&2
+    }
+    _remove_launchd_user_agent
 
     echo "Stopping any running Unsloth Studio servers..."
     _pkill_studio

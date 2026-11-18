@@ -484,12 +484,16 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8, or memory-mapped like an encoder
+    # encoders stay memory-mapped except fp32-kept layers and a token embedding widened to float32
+    # (``prepare_streamed_encoder_`` converts the first parameter's owner on the host: 3.8 GB for Qwen3.5-9B); a DiT
+    # lands as int8, or memory-mapped like an encoder
     route = sum(
         c.mib // 2
         if n in INT8_DENOISER_NAMES and not dense_denoiser
+        else c.kept_fp32_mib * 4 // _itemsize(c.dtype) + _widened_embed_mib(c, compute)
+        if n.startswith("text_encoder")
         else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
-        if n.startswith("text_encoder") or n in INT8_DENOISER_NAMES
+        if n in INT8_DENOISER_NAMES
         else c.mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
     )
@@ -589,13 +593,21 @@ def _spill_choice(
     short = available is not None and route + reserve > int(available)
     if not (short or spill_forced()) or dit + _SPILL_DISK_MARGIN_MIB > int(spill_free_mib):
         return False, route
-    # route omits the converted encoder embedding
+    # route holds a widened encoder embedding only; a same-width one joins here
     embed = sum(
         c.embed_mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
-        if n.startswith("text_encoder")
+        if n.startswith("text_encoder") and not _widened_embed_mib(c, compute)
     )
     return True, route - dit + embed + _SPILL_TRANSIENT_MIB
+
+
+def _widened_embed_mib(comp: StoredComponent, compute: str) -> int:
+    """Host MiB of an encoder's token embedding converted to a wider ``compute`` dtype (bf16 -> float32 doubles it,
+    past what the reserve absorbs); 0 at the same width, where the reserve covers the copy as measured on FLUX.2."""
+    if _itemsize(compute) <= _itemsize(comp.dtype):
+        return 0
+    return comp.embed_mib * _itemsize(compute) // _itemsize(comp.dtype)
 
 
 def _refusal(need: int, reserve: int, available: Optional[int], what: str) -> str:

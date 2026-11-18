@@ -355,3 +355,10 @@ test("a Hub-routed single-file checkpoint keys its recipe on the selected file",
     { steps: 1, guidance: 0 },
   );
 });
+
+test("Kromoss picks take the MOSS-Image recipe", () => {
+  for (const id of ["lodestones/Kromoss", "molbal/Kromoss-GGUF", "kromoss-Q8_0.gguf"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 2.5 }, id);
+  }
+  assert.equal(defaultsKeyFor("molbal/Kromoss-GGUF", null, "kromoss-Q8_0.gguf"), "kromoss-Q8_0.gguf");
+});

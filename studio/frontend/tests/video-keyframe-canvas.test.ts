@@ -185,6 +185,24 @@ test("a family's declared first-render size is used only when declared and a pre
   assert.equal(familyFirstRenderResolution(null, presets), null);
 });
 
+test("a family that declares no first size starts at its first preset when the held size is untrained", () => {
+  // Wan2.1 1.3B's presets: the page's 768x512 fallback would otherwise stay (or be fitted to an untrained size).
+  const presets: Array<[number, number]> = [
+    [832, 480],
+    [480, 832],
+  ];
+  assert.deepEqual(familyFirstRenderResolution({}, presets, [768, 512]), [832, 480]);
+  assert.deepEqual(familyFirstRenderResolution(null, presets, [864, 480]), [832, 480]);
+  // a held trained size stays
+  assert.equal(familyFirstRenderResolution({}, presets, [480, 832]), null);
+  // a declared size still wins over the held one
+  assert.deepEqual(
+    familyFirstRenderResolution({ default_resolution: [480, 832] }, presets, [768, 512]),
+    [480, 832],
+  );
+  assert.equal(familyFirstRenderResolution({}, [], [768, 512]), null);
+});
+
 test("the page applies the first-render size when the family loads, behind the model-defaults gate", async () => {
   const page = await readFile(new URL("../src/features/video/video-page.tsx", import.meta.url), "utf8");
   const start = page.indexOf("const familyChanged = loadedFamily !== prevFamilyRef.current;");
@@ -195,7 +213,10 @@ test("the page applies the first-render size when the family loads, behind the m
   );
   assert.ok(gate >= 0, "the clip-length gate, and never over a size the user chose");
   const apply = effect.slice(gate);
-  assert.match(apply, /familyFirstRenderResolution\(status\?\.defaults, resolutionPresets\)/);
+  assert.match(
+    apply,
+    /familyFirstRenderResolution\(\s*status\?\.defaults,\s*resolutionPresets,\s*resolutionIntentRef\.current,\s*\)/,
+  );
   assert.match(apply, /setResolutionIntent\(firstSize\)/);
   // before the clip-length branch, which returns early
   assert.ok(gate < effect.indexOf("familyDefaultFrames && applyFamilyDefault"));

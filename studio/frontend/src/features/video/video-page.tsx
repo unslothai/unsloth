@@ -42,7 +42,11 @@ import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+import {
+  type AdapterDeployRequest,
+  useImageWorkflowStore,
+} from "@/features/images/stores/image-workflow-store";
+import { type DiffusionLoraInfo, type LoraSpecInput, listDiffusionLoras } from "@/features/images/api";
 // Images' trainer already covers the video families.
 import { DiffusionTrainPanel } from "@/features/images/train/diffusion-train-panel";
 import {
@@ -142,8 +146,11 @@ import {
 import {
   fitVideoSize,
   isPresetSize,
+  lockedVideoSize,
   snapVideoDim,
+  trainedSizeValue,
   videoDimOptions,
+  videoSizeAspect,
   videoSizeLimits,
 } from "./video-size";
 import {
@@ -219,6 +226,14 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -273,6 +288,15 @@ import {
   referenceVideoTrimError,
   referenceVideoTrimFeedback,
 } from "./reference-trim";
+import { useVideoDeployStore } from "./video-deploy-store";
+import {
+  bakedVideoLoraSpecs,
+  trainedLoraId,
+  videoLoraCapable,
+  videoLoraReloadNeeded,
+  videoLoraSpecs,
+} from "./video-lora";
+import { VideoLoraField } from "./video-lora-field";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
@@ -298,7 +322,11 @@ import {
   getVideoStatus,
   loadVideoModel,
   unloadVideoModel,
+  fetchCosmosGuardrailStatus,
+  startCosmosGuardrailInstall,
 } from "./api";
+import { isGuardrailInstallRefusal, runGuardrailInstall } from "./cosmos-guardrail";
+import { isAccountOwner } from "@/features/auth";
 import { stopButtonLabel } from "@/features/images/lib/generation-stop";
 import { type Playback, fetchWithFreshLink, playWithMutedFallback, readPlayback } from "./viewer";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
@@ -765,7 +793,38 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
+  if (isGuardrailInstallRefusal(text)) {
+    // Owner only: the install writes into Studio's own environment.
+    toast.error(COSMOS_GUARDRAIL_TITLE, {
+      description: text,
+      action: isAccountOwner()
+        ? { label: "Install guardrail", onClick: () => void installCosmosGuardrail() }
+        : undefined,
+    });
+    return;
+  }
   toast.error(text || fallback);
+}
+
+const COSMOS_GUARDRAIL_TITLE = "The Cosmos safety checker needs cosmos-guardrail";
+
+async function installCosmosGuardrail(): Promise<void> {
+  const id = "cosmos-guardrail-install";
+  toast.loading("Installing cosmos-guardrail", {
+    id,
+    description: "Adding NVIDIA's guardrail package to Studio's environment. Nothing already installed changes.",
+  });
+  try {
+    const result = await runGuardrailInstall(
+      startCosmosGuardrailInstall,
+      fetchCosmosGuardrailStatus,
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
+    if (result.ok) toast.success("cosmos-guardrail installed", { id, description: result.message });
+    else toast.error("Could not install cosmos-guardrail", { id, description: result.message });
+  } catch (err) {
+    toast.error("Could not install cosmos-guardrail", { id, description: failureMessage(err) });
+  }
 }
 
 function AdvancedSelect({
@@ -1032,6 +1091,9 @@ function RecipePopover({
           {video.text_encoder_quant ? (
             <RecipeRow label="TE quant" value={video.text_encoder_quant} />
           ) : null}
+          {video.baked_loras?.length ? (
+            <RecipeRow label="Baked" value={video.baked_loras.join(", ")} wrap />
+          ) : null}
           {video.memory_mode ? (
             <RecipeRow
               label="Memory"
@@ -1097,12 +1159,15 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+const EMPTY_LORA_CATALOG: DiffusionLoraInfo[] = [];
 type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
 type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
   displayRepoId?: string;
+  // Baked into the denoiser at load; only a pipeline load sends them.
+  loras?: LoraSpecInput[];
 };
 /** Carries the deferred loadOrStage arguments so the H3 partition choice only adds `h3Task`. */
 type PendingH3Load = {
@@ -1145,6 +1210,7 @@ type VideoLoadAdvanced = Pick<
   | "memory_mode"
   | "speed_mode"
   | "attention_backend"
+  | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
   | "family_override"
@@ -1287,6 +1353,11 @@ function VideoGenerator({
   const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
   // Set once the user picks a size or restores a clip's recipe; a family's first-render size never replaces it.
   const resolutionChosen = useRef(false);
+  // Read by the family-change effect (declared later, so it runs after this one) without re-running it per size.
+  const resolutionIntentRef = useRef(resolutionIntent);
+  useEffect(() => {
+    resolutionIntentRef.current = resolutionIntent;
+  }, [resolutionIntent]);
   const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
@@ -1335,6 +1406,7 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
@@ -1344,6 +1416,9 @@ function VideoGenerator({
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant]);
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   const [canReapply, setCanReapply] = useState(false);
+  // Pending LoRA picks; the resident build's baked set is status.baked_lora_specs.
+  const [loraSelection, setLoraSelection] = useState<LoraSpecInput[]>([]);
+  const [loraCatalog, setLoraCatalog] = useState<DiffusionLoraInfo[]>([]);
 
   const [busy, setBusy] = useState<Busy>(null);
   const [stopping, setStopping] = useState(false);
@@ -1743,7 +1818,7 @@ function VideoGenerator({
       if (!statusKnown) setPendingPresetFps({ fps: rate });
       else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -1844,10 +1919,14 @@ function VideoGenerator({
     );
     if (familyChanged && loadedFamily && applyFamilyDefault && !resolutionChosen.current) {
       // The family's first-render size (MiniMax-H3: the templates' 864x480), so a fresh page renders it.
-      const firstSize = familyFirstRenderResolution(status?.defaults, resolutionPresets);
+      const firstSize = familyFirstRenderResolution(
+        status?.defaults,
+        resolutionPresets,
+        resolutionIntentRef.current,
+      );
       if (firstSize) {
         setResolutionIntent(firstSize);
-        const matched = matchAspect(firstSize[0], firstSize[1]);
+        const matched = videoSizeAspect(firstSize[0], firstSize[1], sizeLimits, ASPECT_RATIOS);
         setAspect(matched.key);
         setPortrait(matched.portrait);
       }
@@ -1874,6 +1953,7 @@ function VideoGenerator({
     fps,
     loadedFamily,
     resolutionPresets,
+    sizeLimits,
     status?.defaults,
     videoPresets.storedRecipe,
   ]);
@@ -1941,6 +2021,8 @@ function VideoGenerator({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2504,7 +2586,7 @@ function VideoGenerator({
       const size = fitVideoSize(video.width, video.height, sizeLimits);
       resolutionChosen.current = true;
       setResolutionIntent(size);
-      const matched = matchAspect(size[0], size[1]);
+      const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
@@ -2869,6 +2951,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2879,6 +2962,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2893,6 +2977,8 @@ function VideoGenerator({
         speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
         attention_backend:
           controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: controls.int8Attention,
         transformer_cache:
           controls.transformerCache === "auto" ? undefined : controls.transformerCache,
         transformer_quant:
@@ -2997,11 +3083,14 @@ function VideoGenerator({
           memory_mode: advanced.memory_mode,
           speed_mode: advanced.speed_mode,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
           family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick.
           h3_task: opts.h3Task,
+          // Absent unless a pipeline load names an adapter, so a plain load sends what it did before.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
           gpu_ids: advanced.gpu_ids,
           allow_oversized_load: advanced.allow_oversized_load,
         });
@@ -3167,6 +3256,8 @@ function VideoGenerator({
           gpu_ids: advanced.gpu_ids,
           // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
           allow_oversized_load: advanced.allow_oversized_load,
+          // A LoRA load bakes into the dense denoiser, so the plan must not stage a hosted quantized one.
+          ...(opts.kind === "pipeline" && videoLoraSpecs(opts.loras) ? { loras: videoLoraSpecs(opts.loras) } : {}),
         });
         // Superseded; report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -3447,9 +3538,11 @@ function VideoGenerator({
         filename: l.filename,
         h3Task: l.h3Task,
         displayRepoId: l.displayRepoId,
+        // The picker's current selection: adapters merge at load, so Reapply is how a new set takes.
+        loras: l.kind === "pipeline" ? videoLoraSpecs(loraSelection) : undefined,
       });
     }
-  }, [handleLoad]);
+  }, [handleLoad, loraSelection]);
 
   // Every pick supersedes the last: a staged download outlives its pick and plans may be in flight.
   const beginPick = useCallback(() => {
@@ -3626,6 +3719,91 @@ function VideoGenerator({
     ],
   );
 
+  // Load-time LoRAs: the picker reseeds from what each new resident build baked, so a plain pick clears it.
+  const loraCapable = videoLoraCapable(status);
+  const loraFamily = loraCapable ? (status?.family ?? null) : null;
+  const bakedLoraSpecs = useMemo(() => bakedVideoLoraSpecs(status), [status]);
+  const bakedLoraKey = `${status?.loaded ? (status.repo_id ?? "") : ""}|${JSON.stringify(bakedLoraSpecs)}`;
+  const [seededLoraKey, setSeededLoraKey] = useState(bakedLoraKey);
+  if (seededLoraKey !== bakedLoraKey) {
+    setSeededLoraKey(bakedLoraKey);
+    setLoraSelection(bakedLoraSpecs);
+  }
+  const trainingCompletions = useImageWorkflowStore((s) => s.trainingCompletions);
+  useEffect(() => {
+    if (!loraCapable) return;
+    let cancelled = false;
+    listDiffusionLoras(loraFamily ?? undefined)
+      .then((list) => {
+        if (!cancelled) setLoraCatalog(list);
+      })
+      .catch(() => {
+        // Only the suggestions go: a typed id still loads.
+        if (!cancelled) setLoraCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loraCapable, loraFamily, trainingCompletions]);
+  const loraReloadNeeded = loraCapable && videoLoraReloadNeeded(loraSelection, status);
+
+  // Deploy from a Train panel: load the family's base with the adapter baked in, as a fresh pick.
+  const handleDeployVideoAdapter = useCallback(
+    (args: AdapterDeployRequest) => {
+      if (busy !== null) {
+        toast.error("Finish the current model load before deploying the adapter.");
+        return;
+      }
+      const loraId = trainedLoraId(args.catalogPath);
+      if (!loraId || !args.baseRepo) {
+        toast.error("Could not resolve the trained adapter or its base model.");
+        return;
+      }
+      setPageMode("create");
+      if (args.trigger.trim()) setPrompt(args.trigger.trim());
+      beginPick();
+      const token = pickGuard.claim();
+      setFamilyOverride("auto");
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
+      setQuant(null);
+      applyVideoModelDefaults(args.baseRepo, "auto");
+      const deployLoras: LoraSpecInput[] = [{ id: loraId, weight: 1 }];
+      setLoraSelection(deployLoras);
+      const opts: VideoLoadOptions = { kind: "pipeline", loras: deployLoras };
+      if (isH3PipelinePick(args.baseRepo, "pipeline")) {
+        setPendingH3Load({ repoId: args.baseRepo, opts, source: "hub", token, familyOverrideRequired: false });
+        return;
+      }
+      void loadOrStage(args.baseRepo, opts, "hub", token).then((started) => {
+        if (!started && pickGuard.holds(token)) {
+          setLoraSelection(bakedLoraSpecs);
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
+    },
+    [
+      applyVideoModelDefaults,
+      bakedLoraSpecs,
+      beginPick,
+      busy,
+      guidance,
+      loadOrStage,
+      pickGuard,
+      quant,
+      revertPick,
+      setFamilyOverride,
+      steps,
+    ],
+  );
+  const deployRequest = useVideoDeployStore((s) => s.pendingDeploy);
+  useEffect(() => {
+    if (!active || !deployRequest) return;
+    const request = useVideoDeployStore.getState().takeDeploy();
+    if (request) handleDeployVideoAdapter(request);
+  }, [active, deployRequest, handleDeployVideoAdapter]);
+
   // True only when the backend accepted the unload.
   const handleUnload = useCallback((): Promise<boolean> => {
     if (pendingUnload.current) return pendingUnload.current;
@@ -3701,7 +3879,7 @@ function VideoGenerator({
     setResolutionIntent(size);
     setMatchSource(false);
     if (keepAspect) return;
-    const matched = matchAspect(size[0], size[1]);
+    const matched = videoSizeAspect(size[0], size[1], sizeLimits, ASPECT_RATIOS);
     setAspect(matched.key);
     setPortrait(matched.portrait);
   };
@@ -3725,13 +3903,14 @@ function VideoGenerator({
     }
     applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
   };
+  const lockedRatio = !sourceSized && aspect !== "custom" ? ASPECT_RATIOS[aspect] : undefined;
   const changeWidth = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+    if (!lockedRatio) return applySize(v, shownSize[1], false);
+    applySize(...lockedVideoSize("width", v, lockedRatio, portrait, sizeLimits), true);
   };
   const changeHeight = (v: number) => {
-    const locked = !sourceSized && aspect !== "custom";
-    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+    if (!lockedRatio) return applySize(shownSize[0], v, false);
+    applySize(...lockedVideoSize("height", v, lockedRatio, portrait, sizeLimits), true);
   };
   const flipDimensions = () => {
     if (sourceSized) {
@@ -3890,7 +4069,7 @@ function VideoGenerator({
       <AdvancedSelect {...familySelect} badge={<ResolvedBadge status={status} controlKey="family_override" />} />
       <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
@@ -3951,7 +4130,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3962,6 +4141,14 @@ function VideoGenerator({
           ["flash3", "FlashAttention 3"],
           ["sage", "SageAttention (INT8)"],
         ]}
+      />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
       />
       {gpuChoices.length > 0 && (
         <AdvancedSelect
@@ -4219,6 +4406,7 @@ function VideoGenerator({
               useImageWorkflowStore.getState().requestDeploy(args);
               void navigateToImages({ to: "/images" });
             }}
+            onDeployVideo={handleDeployVideoAdapter}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
@@ -4767,7 +4955,7 @@ function VideoGenerator({
             hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value=""
+              value={trainedSizeValue(videoSize, sizeLimits, sourceSized)}
               onValueChange={(v) => {
                 const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
                 if (preset) applySize(preset[0], preset[1]);
@@ -4903,6 +5091,18 @@ function VideoGenerator({
               onChange={(e) => setSeed(e.target.value)}
             />
           </Field>
+
+          {loraCapable && (
+            <VideoLoraField
+              catalog={loraCapable ? loraCatalog : EMPTY_LORA_CATALOG}
+              selection={loraSelection}
+              onSelectionChange={setLoraSelection}
+              baked={status?.baked_loras ?? []}
+              reloadNeeded={loraReloadNeeded}
+              reloadDisabled={busy !== null || !canReapply}
+              onReload={handleReapply}
+            />
+          )}
 
           <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
             {advancedControls}

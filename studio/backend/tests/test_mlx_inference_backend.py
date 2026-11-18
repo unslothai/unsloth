@@ -167,6 +167,8 @@ NEUTRAL_PLAIN_HELPERS = {
     "_ast_fingerprint": _no_replay,
     "_bindings_intact": _no_replay,
     "_resolved_bindings": _no_replay,
+    # unsloth_zoo #2586: the head replay tries several contracts through this resolver.
+    "_first_resolved": _no_replay,
     "_verify_with_lazy_replay": _no_replay,
 }
 
@@ -7619,6 +7621,28 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     assert payload.tools[0]["type"] == "function"
 
 
+def test_an_mlx_count_merges_memory_into_the_normalized_developer_turn(monkeypatch):
+    from core import chat_memory
+
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered preference: concise answers"}
+    )
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [
+            {"role": "developer", "content": "Follow these instructions."},
+            {"role": "user", "content": "hello"},
+        ],
+        enable_tools = False,
+    )
+    assert backend.messages == [{"role": "user", "content": "hello"}]
+    assert backend.system == (
+        "Follow these instructions.\n\nRemembered preference: concise answers"
+    )
+
+
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     """Request wins verbatim; none takes the trained window; unreadable dims yield nothing."""
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -9939,6 +9963,34 @@ def test_advance_raises_on_a_token_the_grammar_rejects(tiny_tokenizer):
     with pytest.raises(gc.GrammarDesyncError, match = "desynced on token") as excinfo:
         constraint.advance(int(illegal))
     assert not isinstance(excinfo.value, ResponseFormatError)
+
+
+def test_the_forward_is_queued_before_the_host_advances_the_grammar_and_builds_its_mask(
+    tiny_tokenizer, monkeypatch
+):
+    mx = _metal_mx()
+    constraint = build_constraint(JSON_SCHEMA_FORMAT, tiny_tokenizer, "prompt")
+    processor = gc.make_grammar_logits_processor(constraint)
+    width, brace = len(tiny_tokenizer), tiny_tokenizer.encode("{", add_special_tokens = False)[0]
+    prompt = mx.array([3, 4, 5])
+    processor(prompt, mx.zeros((1, width)))
+    events, queue = [], mx.async_eval
+    monkeypatch.setattr(
+        mx, "async_eval", lambda *arrays: events.append(("queued", arrays)) or queue(*arrays)
+    )
+    advance, mask = constraint.advance, constraint.mask_logits
+    monkeypatch.setattr(
+        constraint, "advance", lambda token: events.append(("advance", token)) or advance(token)
+    )
+    monkeypatch.setattr(
+        constraint, "mask_logits", lambda logits: events.append(("mask", logits)) or mask(logits)
+    )
+    logits = mx.zeros((1, width)) + 1
+    processor(mx.concatenate([prompt, mx.array([brace])]), logits)
+    assert [kind for kind, _ in events] == ["queued", "queued", "advance", "mask"]
+    # The new tokens are queued apart from the forward, so reading them never waits for it.
+    (unseen,), (forward,) = events[0][1], events[1][1]
+    assert unseen.tolist() == [brace] and forward is logits and events[3][1] is logits
 
 
 def test_binding_waits_for_the_logits_width_a_padded_lm_head_widens(tiny_tokenizer):
