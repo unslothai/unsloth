@@ -49,11 +49,17 @@ def test_recompute_mode_matches_policy_scorer(monkeypatch):
     assert (
         _resolve_scorer(_trainer()) is zoo_rl.chunked_hidden_states_selective_log_softmax_recompute
     )
-    # zoo's policy pass falls back to the plain helper for truncated support under recompute.
+    # Kept set under recompute: the same dispatcher the zoo loss scores the policy with (its recompute
+    # kept-set scorer), on a zoo that exports it; older zoos keep the plain helper.
     monkeypatch.setattr(
         zoo_rl, "grpo_truncated_support_kwargs", lambda trainer: {"support_top_k": 4}
     )
-    assert _resolve_scorer(_trainer()) is zoo_rl.chunked_hidden_states_selective_log_softmax
+    expected = getattr(
+        zoo_rl,
+        "grpo_chunked_hidden_states_logprobs",
+        zoo_rl.chunked_hidden_states_selective_log_softmax,
+    )
+    assert _resolve_scorer(_trainer()) is expected
 
 
 def test_no_grad_scores_equal_policy_scores(monkeypatch):
