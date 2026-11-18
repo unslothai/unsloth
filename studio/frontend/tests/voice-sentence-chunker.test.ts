@@ -65,7 +65,6 @@ test("newlines are boundaries, so a list speaks a line at a time", () => {
 });
 
 test("stripForSpeech keeps the newlines the splitter needs", () => {
-  // Regression: collapsing every \s+ merged paragraphs into one synth request.
   const reply = 'Sure! Here it is:\n\n**"Lice, lice, lice."**\n\nLet me know!';
   const spoken = stripForSpeech(reply);
   assert.ok(spoken.includes("\n"), "paragraph breaks must survive stripping");

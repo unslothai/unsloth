@@ -183,9 +183,6 @@ export const VoiceEngine: FC = () => {
       // A typed draft ahead of a held fragment stays: only the fragment goes.
       const typed = isComposerHeldForEdit() ? null : withoutVoiceText(fresh.getState().text);
       if (typed !== null) fresh.setText(typed);
-      // Start dictation via the composer runtime, NOT by clicking the Dictate
-      // button: in voice mode that button is hidden/replaced by the orb, so a
-      // DOM query returns null and the mic never opens (silent green orb).
       fresh.startDictation();
     };
 
@@ -276,8 +273,7 @@ export const VoiceEngine: FC = () => {
   if (isPlayingRef.current && !isPlaying) playedAtRef.current = performance.now();
   isPlayingRef.current = isPlaying;
   useEffect(() => {
-    // Audible output only (plus its echo tail and sentence gaps): while the reply is still being thought
-    // or synthesized nothing plays, so a normal-volume interjection is heard, not held to the barge-in bar.
+    // Audible output only (plus echo tail and gaps): before playback an interjection is not held to the barge-in bar.
     registerVoicePlayback(
       () => isPlayingRef.current || performance.now() - playedAtRef.current < PLAYBACK_TAIL_MS,
     );
@@ -425,7 +421,6 @@ export const VoiceEngine: FC = () => {
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
-      // Only the transcript the composer refills: a draft typed since, or another chat's, stays.
       if (voiceWroteBox(fresh.getState().text)) {
         fresh.setText("");
         if (n < 5) {
@@ -1148,7 +1143,7 @@ export const VoiceEngine: FC = () => {
 
     const text = latestAssistantText();
     if (!text) {
-      // A run with no answer text still closes its stream: playback end resumes listening.
+      // A run with no answer text still closes its stream, or listening never resumes.
       if (streamBegun) endStreamRef.current("");
       else resumeListen();
       return;

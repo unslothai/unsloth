@@ -838,7 +838,6 @@ def test_the_voice_speech_detector_is_stopped_before_the_install(slots, monkeypa
     stopped: list = []
     fake = SimpleNamespace(unload = lambda: stopped.append(True) or True)
     monkeypatch.setattr(vad_audiocpp_sidecar, "get_audio_cpp_vad_sidecar", lambda: fake)
-    # It reloads on its own next check, so it does not ask the UI to resync.
     assert aupd._unload_audio_cpp_models() is False
     assert stopped == [True]
 

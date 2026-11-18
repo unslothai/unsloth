@@ -2287,6 +2287,7 @@ async def _admit_training_request(
             raise HTTPException(status_code = 409, detail = str(exc))
         if not effective_load_in_4bit:
             training_kwargs["load_in_4bit"] = False
+            training_kwargs["load_in_4bit_forced_16bit"] = True
             logger.info(
                 "Latest-transformers sidecar active for %s - sizing and "
                 "training in 16-bit (4-bit is disabled for brand-new "

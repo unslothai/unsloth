@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex text comes from user_message/agent_message events, not response_item (injected context)."""
+"""Codex text comes from user/agent message events (legacy rollouts) or completed items (paginated),
+not response_item (injected context)."""
 
 from __future__ import annotations
 
@@ -43,7 +44,9 @@ def _meta(path: Path) -> dict:
         payload = payload if isinstance(payload, dict) else {}
         # Only what is read below: the payload also carries the full base instructions.
         _META[path] = {
-            k: payload[k] for k in ("id", "cwd", "source", "history_base") if k in payload
+            k: payload[k]
+            for k in ("id", "cwd", "source", "history_base", "history_mode")
+            if k in payload
         }
     return _META[path]
 
@@ -140,6 +143,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     messages: list[dict] = []
     inherited = 0
     open_calls: dict[str, dict] = {}
+    reread: set[str] = set()
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -148,9 +152,18 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         # Thread + origin file + ordinal: a revert's inherited messages keep their ids, and a fork
         # (another thread) gets its own, since message ids are unique across threads.
         message_id = stable_id("codex", session_id, origin, str(ordinal), length = 16)
+        item = payload.get("item") if kind == ("event_msg", "item_completed") else None
         if kind in (("event_msg", "user_message"), ("event_msg", "agent_message")):
             role = "user" if payload["type"] == "user_message" else "assistant"
             parts = [{"type": "text", "text": clean_text(str(payload.get("message") or ""))}]
+        elif isinstance(item, dict) and item.get("type") in ("UserMessage", "AgentMessage"):
+            role = "user" if item["type"] == "UserMessage" else "assistant"
+            text = "".join(
+                str(part.get("text") or "")
+                for part in item.get("content") or []
+                if isinstance(part, dict)
+            )
+            parts = [{"type": "text", "text": clean_text(text)}]
         elif kind in (("response_item", "function_call"), ("response_item", "custom_tool_call")):
             role, parts = "assistant", [_call(payload, message_id)]
             open_calls[parts[0]["toolCallId"]] = parts[0]
@@ -168,6 +181,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             continue
         if parts[0]["type"] == "text" and not parts[0]["text"]:
             continue
+        if item is not None:
+            reread.add(message_id)
         timestamp = iso_ms(line.get("timestamp"))
         inherited += origin != revision
         messages.append(
@@ -188,8 +203,12 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        revision = revision,
+        # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
+        revision = f"{revision}:items"
+        if reread or _meta(path).get("history_mode") == "paginated"
+        else revision,
         inherited = inherited,
+        reread = frozenset(reread),
     )
 
 

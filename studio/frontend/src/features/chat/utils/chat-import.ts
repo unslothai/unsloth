@@ -15,6 +15,7 @@ import {
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import { COMBINED_CSV_HEADER } from "./csv-export";
 import { parseCsv } from "./csv-parse";
 import {
   decodeTextChunks,
@@ -24,8 +25,10 @@ import {
   type ImportSource,
 } from "./json-record-stream";
 import {
+  CLIENT_RUN_CALLS,
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
+  reasoningText,
 } from "./openwebui-import";
 import {
   isOpenAIMessageRecord,
@@ -126,6 +129,9 @@ function oaiContentToParts(raw: unknown): unknown[] {
     }
     if (part.type === "refusal" && typeof part.refusal === "string") {
       return [{ type: "text", text: part.refusal }];
+    }
+    if (part.type === "reasoning" && typeof part.text === "string" && part.text.trim()) {
+      return [{ type: "reasoning", text: part.text }];
     }
     if (part.type === "image_url" || part.type === "input_image") {
       // Chat Completions nests {image_url:{url}}; Responses input_image is a string.
@@ -414,8 +420,37 @@ function markdownToRecords(
   return records;
 }
 
-function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  const rows = parseCsv(csvText).slice(1);
+// A combined export starts each row with the chat's number and title; a new number starts a new chat.
+function csvToConversations(csvText: string, basename: string): ParsedConversation[] {
+  const parsed = parseCsv(csvText);
+  const [header = [], ...rows] = parsed;
+  const baseTs = Date.now();
+  if (header.map((cell) => cell.trim().toLowerCase()).join(",") !== COMBINED_CSV_HEADER) {
+    const threadId = crypto.randomUUID();
+    const first = header[0]?.trim().toLowerCase();
+    // Row 0 is data only in a headerless file, where it starts with a role.
+    const body = first === "user" || first === "assistant" || first === "system" ? parsed : rows;
+    const messages = csvToRecords(body, threadId, baseTs);
+    return messages.length > 0 ? [{ title: basename, threadId, messages }] : [];
+  }
+  const chats: Array<{ title: string; rows: string[][] }> = [];
+  let chatKey: string | undefined;
+  for (const row of rows) {
+    if (row.length < 4) continue;
+    if (row[0] !== chatKey) {
+      chatKey = row[0];
+      chats.push({ title: row[1]?.trim() || `${basename} ${chats.length + 1}`, rows: [] });
+    }
+    chats[chats.length - 1].rows.push(row.slice(2));
+  }
+  return chats.flatMap(({ title, rows: chatRows }) => {
+    const threadId = crypto.randomUUID();
+    const messages = csvToRecords(chatRows, threadId, baseTs);
+    return messages.length > 0 ? [{ title, threadId, messages }] : [];
+  });
+}
+
+function csvToRecords(rows: string[][], threadId: string, baseTs: number): MessageRecord[] {
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
@@ -501,8 +536,6 @@ const BUILTIN_TOOL_NAMES: Record<string, string> = {
   code_interpreter_call: "code_execution",
   shell_call: "code_execution",
 };
-// Executed by the client, so neither hosted nor answered on its own.
-const CLIENT_RUN_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "computer_call"]);
 
 // Adjacent assistant items share one turn, as in the backend's _normalise_responses_input.
 function responsesToTurns(obj: Record<string, unknown>): unknown[] {
@@ -556,6 +589,9 @@ function responsesToTurns(obj: Record<string, unknown>): unknown[] {
       );
     } else if (typeof entry.role === "string") {
       push(entry);
+    } else if (type === "reasoning") {
+      const reasoning = reasoningText(entry.summary) || reasoningText(entry.content);
+      if (reasoning) addContent({ type: "reasoning", text: reasoning });
     } else if (type === "image_generation_call") {
       const encoded = text(entry.result) ?? text(entry.b64_json);
       if (encoded) {
@@ -692,9 +728,7 @@ export function parseImportText(
     );
   }
   if (/\.csv$/i.test(filename)) {
-    const threadId = crypto.randomUUID();
-    const messages = csvToRecords(text, threadId, Date.now());
-    return messages.length > 0 ? [{ title: basename, threadId, messages }] : [];
+    return csvToConversations(text, basename);
   }
 
   const results: ParsedConversation[] = [];

@@ -353,6 +353,7 @@ from .import_fixes import (
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_fp8_modulelist_experts,
     fix_transformers_fp8_unscaled_checkpoint_linears,
+    fix_transformers_quantizer_unquantized_converters,
     fix_transformers_validate_rope_ignore_keys,
     fix_transformers5_remote_code_legacy_defaults,
     fix_transformers_config_only_remote_code,
@@ -436,6 +437,7 @@ del check_transformers_prequantized_vlm_quant_state
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
 fix_transformers_fp8_unscaled_checkpoint_linears()
+fix_transformers_quantizer_unquantized_converters()
 fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
@@ -515,6 +517,7 @@ del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
+del fix_transformers_quantizer_unquantized_converters
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none

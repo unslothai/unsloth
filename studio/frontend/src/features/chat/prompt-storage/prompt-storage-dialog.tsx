@@ -93,7 +93,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
-import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
+import { COMBINED_CSV_HEADER, csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -795,13 +795,34 @@ async function buildThreadContent(
     return await buildConversationMarkdownForThread(threadId);
   }
 
+  const rows = csvMessageRows(messages);
+  return rows.length > 0 ? rows.join("\n") : null;
+}
+
+function csvMessageRows(messages: MessageRecord[]): string[] {
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
     if (!content.trim()) continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
-  return rows.length > 0 ? rows.join("\n") : null;
+  return rows;
+}
+
+async function combinedConversationsCsv(threadIds: string[]): Promise<string | null> {
+  const rows: string[] = [];
+  let chat = 0;
+  for (const { id, title } of await titledConversations(threadIds)) {
+    const messages = await loadConversationMessages(id, {
+      includeSiblings: exportFormatIncludesSiblings("csv"),
+    });
+    const messageRows = messages ? csvMessageRows(messages) : [];
+    if (messageRows.length === 0) continue;
+    chat++;
+    const lead = `${chat},${csvEscape(title)},`;
+    for (const row of messageRows) rows.push(lead + row);
+  }
+  return rows.length > 0 ? csvDocument([COMBINED_CSV_HEADER, ...rows]) : null;
 }
 
 function csvHeader(format: ConvExportFormat): string {
@@ -865,6 +886,13 @@ export async function exportBulkConversationsMerged(
       `${basename}.md`,
       CONVERSATION_MARKDOWN_MIME_TYPE,
     );
+    return;
+  }
+
+  if (format === "csv" && threadIds.length > 1) {
+    const body = await combinedConversationsCsv(threadIds);
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(body, `${basename}.csv`, CSV_MIME);
     return;
   }
 

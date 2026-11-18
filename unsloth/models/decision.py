@@ -1095,6 +1095,9 @@ def push_to_hub_clef(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -1538,6 +1541,9 @@ def push_to_hub_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    from ..save import _refuse_private_push_to_public_repo
+
+    _refuse_private_push_to_public_repo(repo_id, private, api = api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)

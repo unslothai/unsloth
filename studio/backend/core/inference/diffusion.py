@@ -42,6 +42,7 @@ from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
+from hub.utils.hf_cache_state import blob_bytes_present, incomplete_blob_hash
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 from loggers import get_logger
@@ -57,6 +58,7 @@ from .diffusion_content import (
     whole_pipeline_gguf_family,
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
+from .diffusion_hub_evidence import cached_family
 from .diffusion_init_buffers import install_single_file_fp32_buffers
 from . import hub_reachability
 from .diffusion_families import (
@@ -751,8 +753,8 @@ def _planned_progress_files(
 
 
 def _sibling_blob_key(sibling: Any) -> Optional[str]:
-    """The name huggingface_hub gives this file's blob (and its ``<key>.incomplete`` while downloading): the LFS
-    sha256 for an LFS file, else the git blob id. None when the listing did not say."""
+    """The name huggingface_hub gives this file's blob (and its ``<key>[.<8 hex>].incomplete`` while downloading):
+    the LFS sha256 for an LFS file, else the git blob id. None when the listing did not say."""
     lfs = getattr(sibling, "lfs", None)
     sha = (
         (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None))
@@ -1775,9 +1777,7 @@ class _LoadingState:
     # ``{incomplete blob path: size}`` in the planned repos when this load claimed them: a cancelled sibling download
     # leaves ``*.incomplete`` blobs behind, and only growth past this snapshot is this load's own bytes.
     incomplete_baseline: dict[str, int] = field(default_factory = dict)
-    # ``{(repo_lower, filename): blob key}`` for the planned files whose listing named one. huggingface_hub writes a
-    # download to ``blobs/<key>.incomplete``, so an in-flight blob with a planned key IS that file, resumed bytes
-    # included, and every other ``.incomplete`` (a cancelled sibling's) is ignored outright.
+    # ``{(repo_lower, filename): blob key}``: a ``<key>[.<8 hex>].incomplete`` with a planned key IS that file.
     planned_blob_keys: dict[tuple[str, str], str] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
@@ -2034,6 +2034,13 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
 
 
+# First sd.cpp build per native-only family, named in the too-old refusal.
+_NATIVE_ONLY_FIRST_BUILD = {
+    MOSS_IMAGE_FAMILY_NAME: "upstream master-975",
+    MINIMAX_H3_IMAGE_FAMILY_NAME: "upstream master-1088",
+}
+
+
 def _family_default_ids(fam: Any) -> tuple:
     """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
     and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
@@ -2096,7 +2103,10 @@ _WHOLE_PIPELINE_GGUF_LORA_MSG = (
 
 def _whole_pipeline_gguf_pick(repo_id: Optional[str], gguf_filename: Optional[str]) -> bool:
     """True when the pick is an on-disk GGUF carrying a whole single-file pipeline (UNet + text encoders + VAE)."""
-    return whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
+    return (
+        whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
+        or cached_family(repo_id, gguf_filename) is not None
+    )
 
 
 def _dequantize_gguf_outside_linears(
@@ -5386,6 +5396,11 @@ class DiffusionBackend:
         # Too-old diffusers matters only for a diffusers build (not native sd.cpp); imported here since the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
+        if kind == "single_file" and not getattr(fam, "single_file_loadable", True):
+            raise ValueError(
+                f"'{fam.name}' has no single-file transformer load; select the pipeline repo, or a GGUF for the "
+                f"native stable-diffusion.cpp engine."
+            )
         # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
             (
@@ -5397,9 +5412,10 @@ class DiffusionBackend:
                 and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
             )
         ):
+            first_build = _NATIVE_ONLY_FIRST_BUILD.get(fam.name, "a current upstream build")
             raise ValueError(
                 f"'{fam.name}' runs a {'GGUF' if kind == 'gguf' else 'single-file'} transformer only on the native "
-                f"stable-diffusion.cpp engine, from a build that supports it (upstream master-975 or newer); the "
+                f"stable-diffusion.cpp engine, from a build that supports it ({first_build} or newer); the "
                 f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
                 f"engine available."
             )
@@ -5509,7 +5525,7 @@ class DiffusionBackend:
                 )
         if text_encoder_files or vae_file:
             self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
-        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
+        if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME and kind != "gguf":
             from .diffusion_minimax_h3_image import h3_image_device_refusal
             refusal = h3_image_device_refusal(resolve_diffusion_device_target().device)
             if refusal:
@@ -6075,7 +6091,6 @@ class DiffusionBackend:
                     # estimate: a total that came back without per-file sizes keeps the repo-level scan.
                     planned_total = sum(size for _r, _n, size in planned_files)
                     if planned_total and planned_total == expected:
-                        self._loading.planned_files = planned_files
                         self._loading.planned_blob_keys = _planned_blob_keys(
                             planned_files,
                             planned_keys,
@@ -6086,6 +6101,8 @@ class DiffusionBackend:
                         self._loading.incomplete_baseline = self._incomplete_blob_sizes(
                             {repo for repo, _n, _s in planned_files}
                         )
+                        # Last: load_progress reads lock-free and takes the planned path once this is set.
+                        self._loading.planned_files = planned_files
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
                         # Claimed before a byte moves. File entry first: load_progress reads lock-free.
@@ -7894,14 +7911,14 @@ class DiffusionBackend:
 
     @staticmethod
     def _incomplete_blob_sizes(repos) -> dict[str, int]:
-        """``{path: size}`` of every ``blobs/*.incomplete`` of ``repos`` across cache roots. Never raises."""
+        """``{path: bytes written}`` (sparse-aware) of every ``blobs/*.incomplete`` of ``repos`` across cache roots."""
         out: dict[str, int] = {}
         for repo in repos:
             for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo):
                 try:
                     for entry in (repo_dir / "blobs").iterdir():
                         if entry.name.endswith(".incomplete"):
-                            out[str(entry)] = entry.stat().st_size
+                            out[str(entry)] = blob_bytes_present(entry)
                 except OSError:
                     continue
         return out
@@ -7926,10 +7943,8 @@ class DiffusionBackend:
                 name: (min(size, DiffusionBackend._cache_file_bytes(repo, name)) if size else 0)
                 for name, size in files
             }
-            # A planned file's in-flight blob is ``<its blob key>.incomplete``: counted in full (resumed bytes are
-            # this file's), up to what the file still lacks. Any other ``.incomplete`` belongs to some other download
-            # and is ignored, unless a planned file's key is unknown: only then does growth past the load's baseline
-            # stand in for it.
+            # ``<key>.incomplete`` counts in full (resumes append); ``<key>.<8 hex>.incomplete`` (hub >= 1.18, one per
+            # attempt) only past the baseline. Unplanned partials count only when a planned key is unknown.
             remaining_by_key: dict[str, int] = {}
             unkeyed = False
             for name, size in files:
@@ -7941,12 +7956,19 @@ class DiffusionBackend:
                 elif size:
                     unkeyed = True
             in_flight = 0
+            in_flight_by_key: dict[str, int] = {}
             for path, size in DiffusionBackend._incomplete_blob_sizes((repo,)).items():
-                stem = Path(path).name[: -len(".incomplete")]
-                if stem in remaining_by_key:
-                    in_flight += min(size, remaining_by_key[stem])
+                name = Path(path).name
+                key = incomplete_blob_hash(name)
+                if key in remaining_by_key:
+                    if name != f"{key}.incomplete":
+                        size = max(0, size - (baseline or {}).get(path, 0))
+                    in_flight_by_key[key] = max(in_flight_by_key.get(key, 0), size)
                 elif unkeyed:
                     in_flight += max(0, size - (baseline or {}).get(path, 0))
+            in_flight += sum(
+                min(size, remaining_by_key[key]) for key, size in in_flight_by_key.items()
+            )
             total += min(planned_total, sum(done_by_file.values()) + in_flight)
         return total
 
@@ -11015,6 +11037,7 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                         requested = attention_backend,
+                        speed_active = effective_speed != SPEED_OFF,
                     )
                     self._raise_if_load_cancelled(_load_token)
                     # Step cache drops compile fullgraph; off/fbcache pin it, auto only on max by FBCACHE_MIN_STEPS.

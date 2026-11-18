@@ -14,6 +14,7 @@ import contextlib
 import os
 from functools import lru_cache
 from typing import Any, Optional
+from . import diffusion_int8_attention as _i8
 from .rocm_bf16 import is_rocm_torch
 
 STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
@@ -227,7 +228,7 @@ def _strided_processor_for(base: Any) -> Any:
                     and (query.requires_grad or key.requires_grad or value.requires_grad)
                 )
             ):
-                hidden_states = torch.ops.unsloth_studio.int8_attention_nhd(query, key, value)
+                hidden_states = _i8.int8_attention_call(query, key, value)
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
                 # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
