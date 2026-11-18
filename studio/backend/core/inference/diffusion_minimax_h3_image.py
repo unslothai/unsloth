@@ -151,7 +151,7 @@ TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
 PARK_ENV = "UNSLOTH_H3_IMAGE_PARK"
 # Overrides the measured host-to-device GiB/s.
 H2D_ENV = "UNSLOTH_H3_IMAGE_H2D_GIBS"
-# "0": price the stream tier's working set as before (activation_gb + 1.5 GB margin, no per-render residency fit)
+# "0": old stream pricing (activation_gb + 1.5 GB margin, no per-render fit)
 MEASURED_WORKING_SET_ENV = "UNSLOTH_H3_IMAGE_MEASURED_WORKING_SET"
 # Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
 REF_CACHE_ENTRIES = 8
@@ -1465,9 +1465,7 @@ class H3ImagePlan:
     parked: bool = False
     vae_parked: bool = False
     h2d_gib_s: Optional[float] = None
-    # stream tier: the working set priced for the plan canvas (GB, None = the old activation_gb + margin pricing),
-    # the room left past the kept blocks, one block's GB and the canvas: a render needing more working set gives
-    # back resident blocks first (``render_resident_blocks``)
+    # stream tier measured pricing (None = old pricing); see ``render_resident_blocks``
     working_gb: Optional[float] = None
     slack_gb: Optional[float] = None
     block_gb: Optional[float] = None
@@ -1520,17 +1518,11 @@ def measured_working_set_enabled() -> bool:
     return not _env_off(MEASURED_WORKING_SET_ENV)
 
 
-# Stream tier working set at the 2048x2048 text-to-image canvas, GB: the peak reserved memory of a whole render
-# (encode, refine, denoise, tiled decode) less the device weights the layout keeps, on A100-40 at 0 to 50 resident
-# blocks (today 1.84 / 1.88, parked 1.11 / 1.17, parked + VAE 0.87 / 0.89 / 0.96), rounded up. Each layout keeps
-# a different set of phases on one room, hence one value each.
+# Measured on A100-40: whole-render peak reserved less kept weights at 2048x2048, per layout, rounded up.
 STREAM_WORKING_GB = {"today": 1.9, "parked": 1.2, "parked+vae": 1.0}
-# Growth per megapixel of DiT rows past the 2048x2048 canvas (a larger canvas, or reference pictures packed in):
-# A100-40 at 43 resident measured +3.37 GB reserved at 4096x4096 and +3.74 GB for a 3-reference 2048x2048 edit,
-# 12.6 extra megapixels either way.
+# Per extra megapixel of DiT rows: +3.37 GB at 4096x4096, +3.74 GB for a 3-reference edit (12.6 MP each).
 STREAM_WORKING_GB_PER_MP = 0.30
-# On top: allocator rounding, workspaces outside PyTorch's allocator (cuBLAS, CUTLASS, Triton local memory) and
-# the spread between cards and runs; never under 0.75 GB.
+# Covers allocator rounding, cuBLAS/CUTLASS/Triton workspaces and card spread.
 STREAM_RESERVE_GB = 0.75
 STREAM_RESERVE_FRACTION = 0.03
 
@@ -1555,9 +1547,7 @@ def render_resident_blocks(
     height: int,
     references: int = 0,
 ) -> Optional[int]:
-    """Resident DiT blocks a render at ``width`` x ``height`` with ``references`` fits under ``plan``: the plan's
-    own count while its priced working set (plus the room past the kept blocks) covers the render's, fewer by the
-    shortfall otherwise. None where the plan has no measured stream pricing."""
+    """Resident DiT blocks this render fits under ``plan``; None without measured stream pricing."""
     if (
         plan.placement != PLACE_STREAM
         or plan.working_gb is None
@@ -2199,8 +2189,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return plan.placement if plan is not None else PLACE_RESIDENT
 
     def _fit_render(self, width: int, height: int, references: int) -> Optional[dict]:
-        """Stream tier: a canvas or reference count past the planned one gives resident DiT blocks back to the
-        stream before the render (never back: a later smaller render keeps the lower count). None = nothing to do."""
+        """Demote resident DiT blocks before a render bigger than planned (one-way). None = nothing to do."""
         plan = self._unsloth_h3_plan
         if plan is None or not measured_working_set_enabled():
             return None
@@ -2218,7 +2207,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         )
         refusal = self.__dict__.pop("_unsloth_h3_demotion_refusal", None)
         if refusal is not None:
-            # neither the card (the working set) nor system memory (the blocks it would give back) holds it
             raise RuntimeError(
                 f"MiniMax-H3-Image: a {width}x{height} render with {references} reference picture(s) needs "
                 f"{resident - keep} DiT blocks moved off the GPU, and system memory cannot take them: {refusal}. "
@@ -2237,8 +2225,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         )
 
     def _oom_demote(self, what: str) -> bool:
-        """After an out-of-memory render on the stream tier: free the cache and stream 4 more DiT blocks (at least
-        the reserve's worth); False when nothing could be given back."""
+        """After a stream-tier OOM: stream 4+ more DiT blocks; False when nothing could be given back."""
         plan = self._unsloth_h3_plan
         if not self._oom_demotable():
             return False
@@ -2604,8 +2591,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             try:
                 pixels = self._render_one(*args, batch_index = index if shared else 0)
             except torch.OutOfMemoryError as exc:
-                # the measured working set's backstop: resident DiT blocks go back to the stream and the render
-                # runs once more, outside this handler (its traceback holds the failed render's tensors)
+                # retry outside this handler: its traceback holds the failed render's tensors
                 if not self._oom_demotable():
                     raise
                 oom = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
@@ -3179,8 +3165,7 @@ def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
 
 
 def restore_row_pads(transformer: Any) -> int:
-    """Wrap every per-row int8 Linear of the DiT blocks in the row pad again (the speed levers unwrap the ones the
-    fused int8 GEMM serves, which pads by itself); wrapped or absent names are left alone. Returns the count."""
+    """Re-wrap per-row int8 Linears the fused GEMM install unwrapped in the row pad; returns the count."""
     count = 0
     for block in getattr(transformer, "transformer_blocks", None) or ():
         names = []
@@ -4510,15 +4495,13 @@ def demotion_host_refusal(
     count: int,
     encoder_loaded: bool = True,
 ) -> Optional[str]:
-    """Why ``count`` more DiT blocks cannot move to system memory, or None. Checks the load's host plan again with
-    them on the host (the DiT blocks there plus the whole encoder, kept or loaded for each prompt, as
-    ``plan_placement`` budgets it) and what is free now (the blocks, plus the encoder when it is not loaded)."""
+    """Why ``count`` more DiT blocks cannot move to system memory (load's host plan, then free RAM), or None."""
     extra = max(0, int(count)) * float(plan.block_gb or 0.0)
     if extra <= 0:
         return None
     if plan.host_gb is not None and plan.host_need_gb is not None:
         dit_host = float(plan.host_need_gb) - float(plan.te_gb) - 4.0
-        # kept: the plan keeps 4 GB beside the encoder; per prompt: the encoder's load peak beside the blocks
+        # as ``plan_placement`` budgets: kept encoder + 4 GB, per-prompt encoder + 1 GB load peak
         need = dit_host + extra + float(plan.te_gb) + (4.0 if plan.te_kept_on_host else 1.0)
         if need > float(plan.host_gb):
             return (
@@ -4546,9 +4529,7 @@ def demote_dit_blocks(
     keep: int,
     why: str = "",
 ) -> bool:
-    """Stream ``blocks[keep:]`` of a stream-tier pipe that keeps more resident: blocks that already streamed keep
-    their pinned copies (``reuse``), only the newly streamed ones are pinned. Never lands on the pageable streamer
-    under an int8 GEMM installed for parameters that stay put; True when the residency changed."""
+    """Stream ``blocks[keep:]``, reusing existing pins; True when the residency changed."""
     plan = getattr(pipe, "_unsloth_h3_plan", None)
     streamers = getattr(pipe, "_unsloth_h3_streamers", None)
     if plan is None or plan.placement != PLACE_STREAM or streamers is None:
@@ -4564,7 +4545,6 @@ def demote_dit_blocks(
         plan, resident - keep, encoder_loaded = getattr(pipe, "text_encoder", None) is not None
     )
     if refusal is not None:
-        # placement unchanged: nothing has moved yet
         logger.warning(
             "diffusion.minimax_h3_image: %s, but %s: keeping %d resident", why, refusal, resident
         )
@@ -4579,7 +4559,6 @@ def demote_dit_blocks(
     gemm = any(str(name).startswith("h3_int8_gemm") for name in speed_levers(pipe) or ())
     pageable = isinstance(old, ModuleListStreamer)
     if pageable and int(getattr(old, "streamed", 0) or 0) > 0:
-        # already streaming pageable (no GEMM on it): one more pageable streamer over the new split
         old.remove()
         new = ModuleListStreamer(blocks, device, keep)
     else:
@@ -4602,13 +4581,11 @@ def demote_dit_blocks(
 
         new = _pinned(keep)
         if new is None and reuse is not None:
-            # the newly streamed blocks could not be pinned: the earlier split again (nothing new to pin)
             keep = resident
             new = _pinned(resident)
             if new is None:
-                # last resort, never a pipe without hooks: pageable over the earlier split. Its swapped parameters
-                # send the int8 GEMM to torchao's stock path, which needs the row pads the GEMM install removed
-                # (cuBLASLt refuses most packed row counts and torchao then falls back to an fp32 matmul).
+                # last resort: pageable swaps parameters, so torchao's stock path needs the row pads back
+                # (else cuBLASLt refuses packed row counts and torchao falls back to fp32 matmul)
                 padded = restore_row_pads(transformer) if gemm else 0
                 logger.warning(
                     "diffusion.minimax_h3_image: the pinned DiT streamer could not be rebuilt: %d resident "
@@ -4619,7 +4596,6 @@ def demote_dit_blocks(
                 new = ModuleListStreamer(blocks, device, resident)
         if new is None:
             if gemm:
-                # the old streamer stays: every block it keeps resident goes back on the card
                 for block in list(blocks)[:resident]:
                     block.to(device)
                 logger.warning(
@@ -4640,7 +4616,6 @@ def demote_dit_blocks(
     before = plan.dit_resident_blocks
     plan.dit_resident_blocks = keep
     if plan.block_gb:
-        # the room the blocks gave back now belongs to the working set: the same render fits without another step
         if plan.working_gb is not None:
             plan.working_gb += (
                 max(0.0, float(plan.slack_gb or 0.0)) + (resident - keep) * plan.block_gb

@@ -42,8 +42,7 @@ def _auto_layout(monkeypatch):
     ):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
-    # the layout and resident-block numbers below are priced with activation_gb + margin (the measured working-set
-    # pricing and its per-render fit are covered in test_h3_image_resident_route.py)
+    # old pricing; measured pricing is in test_h3_image_resident_route.py
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_MEASURED_WORKING_SET", "0")
 
 

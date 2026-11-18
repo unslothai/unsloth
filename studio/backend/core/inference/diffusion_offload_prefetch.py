@@ -1394,9 +1394,8 @@ class PrefetchedListStreamer:
         self.arenas = []
 
     def detach(self) -> dict:
-        """Unhook and stop prefetching but keep every group's pinned host copies: ``{id(block): group}``, for
-        ``stream_module_list(..., reuse = ...)`` to stream the same blocks again without pinning them twice (the
-        arenas move with them: pass ``arenas`` as ``reuse_arenas``)."""
+        """Unhook, keeping pinned copies as ``{id(block): group}`` for ``stream_module_list(reuse = ...)``
+        (pass ``arenas`` as ``reuse_arenas``)."""
         out = self._unhook(offload = True)
         self.streamed = 0
         return out
@@ -1430,9 +1429,7 @@ class PrefetchedListStreamer:
 
 
 def _module_device(module: Any) -> Any:
-    """The device of ``module``'s first tensor (CPU when it has none)."""
     import torch
-
     for t in list(module.parameters()) + list(module.buffers()):
         return t.device
     return torch.device("cpu")
@@ -1550,7 +1547,7 @@ def stream_module_list(
         return None
     onload = torch.device(device)
     streamer = PrefetchedListStreamer()
-    # where each newly streamed member was: a failure puts it back there ("nothing changed")
+    # a failure puts newly streamed members back here
     origin: dict = {}
     try:
         from .diffusion_memory import install_group_offload_buffer_restore
@@ -1642,7 +1639,6 @@ def stream_module_list(
         streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
     except Exception as exc:  # noqa: BLE001 - the caller's pageable streamer takes the members as they are now
-        # reused groups keep their pinned copies: the caller can stream them again
         detached = streamer._unhook(offload = False)
         for group in streamer._fresh:
             cpu = getattr(group, "cpu_param_dict", None)

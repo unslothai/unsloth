@@ -85,10 +85,7 @@ def test_every_planned_placement_has_an_int8_gemm(h3i, speed, monkeypatch, te_gb
     monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, measured)
     seen = set()
     for key, plan in _plans(h3i, te_gb):
-        assert plan.placement != h3i.PLACE_SEQUENTIAL, (
-            key,
-            plan.reasons,
-        )  # unforced: never for the int8 DiT
+        assert plan.placement != h3i.PLACE_SEQUENTIAL, (key, plan.reasons)
         resident = plan.dit_resident_blocks
         all_resident = plan.placement == h3i.PLACE_STREAM and resident == 50
         seen.add((plan.placement, all_resident))
@@ -96,12 +93,9 @@ def test_every_planned_placement_has_an_int8_gemm(h3i, speed, monkeypatch, te_gb
             keeps = plan.placement == h3i.PLACE_STREAM and (pinned or all_resident)
             route = speed.int8_gemm_route(plan.placement, keeps_parameters = keeps)
             if plan.placement == h3i.PLACE_STREAM and not keeps:
-                assert (
-                    route is None
-                )  # pageable streaming swaps parameters: the stock path, as before
+                assert route is None
                 continue
             assert route in ("resident", "streamed"), (key, plan.placement, resident, pinned)
-    # the case this guards: a stream plan that keeps every block
     assert (h3i.PLACE_STREAM, True) in seen and (h3i.PLACE_STREAM, False) in seen
     assert (h3i.PLACE_DIT_RESIDENT, False) in seen or te_gb > 30
 
@@ -141,7 +135,7 @@ def test_the_measured_table_keeps_more_blocks_and_the_switch_restores_the_old_pl
     head = h3i.plan_placement(**card)
     monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, "0")
     old = h3i.plan_placement(**card)
-    assert old.working_gb is None and old.dit_resident_blocks == 44  # main's plan for the x4 3090
+    assert old.working_gb is None and old.dit_resident_blocks == 44
     assert head.dit_resident_blocks == 50 and head.working_gb is not None
     # a smaller card keeps fewer blocks under either pricing, never more than fit
     for vram in (7.45, 11.75, 16.04, 24.64):
@@ -173,9 +167,7 @@ def test_a_larger_canvas_or_more_references_gives_blocks_back(h3i, monkeypatch):
     assert (resident - big) * plan.block_gb >= short > (resident - big - 1) * plan.block_gb
     monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, "0")
     old = h3i.plan_placement(vram_gb = 24.64, host_gb = 160.0, h2d_gib_s = 3.0, block_tops = 270.0, **INT8)
-    assert (
-        h3i.render_resident_blocks(old, 4096, 4096, 0) is None
-    )  # the old pricing has no per-render fit
+    assert h3i.render_resident_blocks(old, 4096, 4096, 0) is None
 
 
 def _tiny(h3i, tmp_path, monkeypatch, resident):
@@ -226,7 +218,6 @@ def test_a_render_needing_more_room_streams_more_blocks_with_the_same_image(
         assert pipe._unsloth_h3_last_stats["fit"] == {"resident": 0, "demoted": True}
         assert _dit_streamer(pipe).streamed == 2 and pipe._unsloth_h3_plan.dit_resident_blocks == 0
         assert torch.equal(want, got)
-        # the same render again fits what it already gave back
         assert torch.equal(want, _image(pipe))
         assert pipe._unsloth_h3_last_stats["fit"] == {"resident": 0}
     finally:
@@ -256,7 +247,6 @@ def test_an_out_of_memory_render_streams_more_blocks_and_runs_again(h3i, tmp_pat
         assert calls["n"] > 1 and pipe._unsloth_h3_plan.dit_resident_blocks == 0
         assert any("out of memory" in r for r in pipe._unsloth_h3_plan.reasons)
         assert torch.equal(want, got)
-        # nothing left to give back: the error reaches the caller
         handle = block.register_forward_pre_hook(
             lambda *_a: (_ for _ in ()).throw(torch.OutOfMemoryError("again"))
         )
@@ -326,7 +316,7 @@ def test_demotion_never_leaves_an_installed_gemm_on_the_pageable_streamer(h3i, s
     new = pipe._unsloth_h3_streamers[0]
     assert new is not every and new.streamed == 2 and plan.dit_resident_blocks == 1
     assert plan.working_gb == pytest.approx(2.8)
-    assert not h3i.demote_dit_blocks(pipe, 1, "test")  # already there
+    assert not h3i.demote_dit_blocks(pipe, 1, "test")
 
 
 def _measured_need_gb(h3i, plan):
@@ -368,8 +358,7 @@ def test_measured_plans_fit_their_budget_and_keep_at_least_as_many_blocks(h3i, m
 
 @pytest.fixture
 def pin_failure(monkeypatch):
-    """The pinned streamer gets past its refusals on CPU and fails after moving the newly streamed blocks to the
-    host (its copy stream is a CUDA one): the failure path a pinning error takes on a card."""
+    """Pinned streamer failing on CPU after moving new blocks to host: a card's pinning-error path."""
     from core.inference import diffusion_offload_prefetch as op
 
     monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
@@ -404,10 +393,10 @@ def test_a_pin_failure_under_the_gemm_keeps_every_block_resident(
         old = _dit_streamer(pipe)
         assert isinstance(old, h3i.ModuleListStreamer) and old.streamed == 0
         _fake_gemm(pipe, speed)
-        pin_failure.clear()  # the load's encoder streamer took the same path
+        pin_failure.clear()
         assert not h3i.demote_dit_blocks(pipe, 0, "pin failure")
         blocks = list(pipe.transformer.transformer_blocks)
-        assert pin_failure == blocks  # both newly streamed blocks were put back where they were
+        assert pin_failure == blocks
         assert _dit_streamer(pipe) is old and pipe._unsloth_h3_plan.dit_resident_blocks == 2
         assert all(p.device == pipe._device() for b in blocks for p in b.parameters())
         assert torch.equal(want, _image(pipe))
@@ -428,7 +417,6 @@ def test_a_pin_failure_after_detaching_a_prefetch_streamer_rebuilds_the_old_spli
     )
     try:
         want = _image(pipe)
-        # stand in for the pinned streamer a card builds: detach() hands back no groups on CPU
         old = _dit_streamer(pipe)
         old.remove()
         fake = op.PrefetchedListStreamer()
@@ -451,8 +439,7 @@ def test_a_pin_failure_after_detaching_a_prefetch_streamer_rebuilds_the_old_spli
 
 
 def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypatch):
-    """Both pinned rebuilds fail after an existing pinned streamer was detached: the pageable fallback swaps
-    parameters, so the int8 GEMM takes torchao's stock path, which needs the row pads the GEMM install removed."""
+    """Pageable fallback after both pinned rebuilds fail must restore the row pads torchao's stock path needs."""
     import torch
 
     pytest.importorskip("torchao")
@@ -468,9 +455,7 @@ def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypat
         b.attn = torch.nn.Module()
         b.attn.to_q = torch.nn.Linear(256, 64, bias = False)
         b.ff = torch.nn.Module()
-        b.ff.net = torch.nn.Sequential(
-            torch.nn.Linear(256, 64, bias = False)
-        )  # not a quantized suffix
+        b.ff.net = torch.nn.Sequential(torch.nn.Linear(256, 64, bias = False))
         return b.to(torch.bfloat16)
 
     blocks = torch.nn.ModuleList([block(), block()])
@@ -480,16 +465,13 @@ def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypat
     transformer = types.SimpleNamespace(transformer_blocks = blocks)
     if not h3i.restore_row_pads(transformer):
         pytest.skip("this torchao gives no per-row int8 Linears")
-    # what the int8 GEMM install leaves: the pads it serves itself are unwrapped
     for b in blocks:
         b.attn.to_q = b.attn.to_q.inner
     x = torch.randn(1, 37, 256, dtype = torch.bfloat16)
     with torch.no_grad():
         want = blocks[1].attn.to_q(x)
 
-    monkeypatch.setattr(
-        op, "_list_stream_refusal", lambda device: None
-    )  # gets to the pin, fails there on CPU
+    monkeypatch.setattr(op, "_list_stream_refusal", lambda device: None)
     old = op.PrefetchedListStreamer()
     old._unsloth_role, old._unsloth_resident = "transformer", 1
     plan = h3i.H3ImagePlan(
@@ -520,14 +502,14 @@ def test_the_pageable_last_resort_pads_the_int8_rows_again(h3i, speed, monkeypat
     assert plan.dit_resident_blocks == 1
     for b in blocks:
         assert type(b.attn.to_q).__name__ == "H3ImageRowPad"
-        assert type(b.attn.to_q.inner).__name__ != "H3ImageRowPad"  # wrapped once
-        assert type(b.ff.net[0]).__name__ == "Linear"  # only the quantized suffixes
+        assert type(b.attn.to_q.inner).__name__ != "H3ImageRowPad"
+        assert type(b.ff.net[0]).__name__ == "Linear"
     seen = []
     blocks[1].attn.to_q.inner.register_forward_pre_hook(lambda m, a: seen.append(a[0].shape[0]))
     with torch.no_grad():
         got = blocks[1].attn.to_q(x)
     assert seen == [64] and torch.equal(got, want)
-    assert h3i.restore_row_pads(transformer) == 0  # idempotent
+    assert h3i.restore_row_pads(transformer) == 0
 
 
 def _per_prompt_host(h3i, pipe, monkeypatch, host_gb):
@@ -583,7 +565,6 @@ def test_a_larger_render_is_refused_when_system_memory_cannot_take_the_blocks(
         monkeypatch.setattr(h3i, "stream_working_gb", lambda *a, **k: 3.15)
         with pytest.raises(RuntimeError, match = "system memory cannot take them"):
             _image(pipe)
-        # placement unchanged: the streamer, the plan and every block where they were
         assert _dit_streamer(pipe) is before and before.streamed == 0
         assert plan.dit_resident_blocks == 2 and plan.host_need_gb == need
         assert all(
@@ -592,6 +573,6 @@ def test_a_larger_render_is_refused_when_system_memory_cannot_take_the_blocks(
             for p in b.parameters()
         )
         monkeypatch.undo()
-        assert torch.equal(want, _image(pipe))  # a render the plan covers still runs
+        assert torch.equal(want, _image(pipe))
     finally:
         pipe.release()
