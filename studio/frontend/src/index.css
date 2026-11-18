@@ -7097,7 +7097,7 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   box-shadow: none;
   mask:
     linear-gradient(black 0 0) left top / var(--sidebar-width) 100% no-repeat,
-    linear-gradient(black 0 0) left top / 100% var(--studio-custom-titlebar-height) no-repeat,
+    linear-gradient(black 0 0) left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
       var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
 }
@@ -7213,6 +7213,15 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+/* The caption strip above stops at the docked panel, so the panel's glass runs to the window top
+   instead of meeting the strip's sidebar fill in a seam. */
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
+  --chat-settings-top: 0px;
+  padding-top: var(--studio-custom-titlebar-height, 0px);
+}
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-resize-handle"] {
+  top: var(--studio-custom-titlebar-height, 0px);
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] .bg-panel-surface,
 html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {

@@ -141,6 +141,23 @@ test("the pinned Windows glass frame rounds the corner with either an image or a
 	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
 });
 
+test("the pinned caption strip stops at docked Run settings, whose glass runs to the window top", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]';
+	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' \\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
+	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
+	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
+	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
+	// Off glass the panel still starts below the caption.
+	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
+	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
+	assert.match(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `\$\{panel\.offsetWidth\}px`\)/);
+	assert.match(sheet, /root\.removeProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR\)/);
+});
+
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);

@@ -137,6 +137,10 @@ import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
+// Glass over a wallpaper zeroes --chat-settings-top so the panel's own glass runs under the caption.
+const CHAT_SETTINGS_TOP =
+  "var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))";
+const CHAT_SETTINGS_DOCKED_WIDTH_VAR = "--studio-chat-settings-docked-width";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -522,6 +526,21 @@ export function ChatSettingsPanel({
       uiSpaceScale,
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
+  // The pinned sidebar's title bar glass stops at the docked panel, whose own glass runs to the top.
+  useEffect(() => {
+    const panel = asideRef.current;
+    if (!open || isCompact || !panel) return;
+    const root = document.documentElement.style;
+    const apply = () =>
+      root.setProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `${panel.offsetWidth}px`);
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      root.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+    };
+  }, [open, isCompact]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -1885,8 +1904,8 @@ export function ChatSettingsPanel({
       style={
         {
           "--chat-settings-width": `${settingsWidth * settingsScale}px`,
-          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+          height: `calc(100% - ${CHAT_SETTINGS_TOP})`,
+          marginTop: CHAT_SETTINGS_TOP,
         } as CSSProperties
       }
     >
