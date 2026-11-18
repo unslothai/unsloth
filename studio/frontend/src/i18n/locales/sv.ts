@@ -1830,7 +1830,7 @@ export const sv = {
       modeManual: "Manuellt",
       refreshNow: "Uppdatera nu",
       privacyNote:
-        "Inloggningsuppgifter maskeras i denna vy. Filen på disken maskeras inte.",
+        "Kända format för inloggningsuppgifter maskeras i den här vyn. Kontrollera om loggen innehåller hemligheter, filsökvägar eller privat text innan du delar den. Filen på disken innehåller den ursprungliga loggen.",
       copyVisible: "Kopiera synlig logg",
       empty: "Inget har loggats ännu.",
       disabled: "Filloggning är avstängd (UNSLOTH_STUDIO_NO_FILE_LOG=1).",

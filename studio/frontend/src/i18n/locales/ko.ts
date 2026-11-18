@@ -1731,7 +1731,7 @@ export const ko = {
       modeInterval: "3초마다",
       modeManual: "수동",
       refreshNow: "지금 새로 고침",
-      privacyNote: "이 화면에서는 인증 정보가 가려져 표시됩니다. 실제 로그 파일에는 가려지지 않습니다.",
+      privacyNote: "이 화면에서는 알려진 형식의 인증 정보를 가립니다. 공유하기 전에 로그에 기밀 정보, 파일 경로 또는 비공개 텍스트가 있는지 확인하세요. 디스크의 파일에는 원본 로그가 들어 있습니다.",
       copyVisible: "표시된 로그 복사",
       empty: "아직 기록된 내용이 없습니다.",
       disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
