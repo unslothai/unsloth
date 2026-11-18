@@ -197,8 +197,8 @@ const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
 
-const ACTION_BUTTON =
-  "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100";
+// Disabled stays the accent pill, faded, so the button keeps its place in an empty box.
+const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
   "ms-1 h-9 rounded-full px-4 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
 const STOP_BUTTON =
@@ -250,7 +250,9 @@ const TAB =
 const LIST_ROW =
   "h-9 cursor-pointer break-inside-avoid rounded-full py-0 text-ui-14 data-[checked=true]:font-medium data-[checked=true]:text-control-accent";
 // Footer controls share the icons' 36px row.
-const FOOTER_ICON = "size-9";
+const CONTROL_HOVER =
+  "hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]";
+const FOOTER_ICON = cn("size-9", CONTROL_HOVER);
 
 const TONE_LABEL: Record<TranslateTone, TranslationKey> = {
   default: "translate.options.toneDefault",
@@ -542,7 +544,11 @@ function StyleMenu() {
           variant="ghost"
           size="sm"
           title={`${t("translate.options.mode")} · ${t("translate.options.tone")}`}
-          className="h-9 min-w-0 cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground max-sm:ms-auto"
+          className={cn(
+            "h-9 min-w-0 cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground max-sm:ms-auto",
+            CONTROL_HOVER,
+            "data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]",
+          )}
         >
           {t(MODE_LABEL[mode])} · {t(TONE_LABEL[tone])}
           <HugeiconsIcon
@@ -1431,7 +1437,12 @@ export function TranslatePage() {
   };
 
   return (
-    <main className="translate-page mx-auto flex w-full max-w-[calc(96rem*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-8 lg:px-12">
+    // A file dropped anywhere on the page opens into the source box.
+    <main
+      ref={dropRef}
+      {...dragHandlers}
+      className="translate-page mx-auto flex w-full max-w-[calc(96rem*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-8 lg:px-12"
+    >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -1470,8 +1481,6 @@ export function TranslatePage() {
             className="absolute start-1/2 top-0 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
           />
           <section
-            ref={dropRef}
-            {...dragHandlers}
             aria-label={t("translate.sourceLabel")}
             className="relative flex min-w-0 flex-col gap-3"
           >
