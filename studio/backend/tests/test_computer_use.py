@@ -353,6 +353,31 @@ def test_only_a_local_engine_sizes_the_screenshots(desktop, monkeypatch):
         assert session.coordinates == ("grid" if local else "pixels")
 
 
+def test_a_worker_engine_counts_a_screenshot_once_per_load_and_never_waits(monkeypatch):
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.models, orch.active_model_name = {"m": {"context_length": 8192}}, "m"
+    orch.load_generation = 1
+    orch._gen_lock, orch._mailbox_lock, orch._mailboxes = threading.Lock(), threading.Lock(), {}
+    replies, sent = [{"tokens": 1100}, {"error": "busy"}, {}, {"tokens": 900}], []
+    orch._direct_reader = lambda _id: (None, None, lambda: None)
+    orch._send_cmd = sent.append
+    orch._await_reply = lambda *_a: replies.pop(0)
+
+    assert orch.context_length == 8192
+    assert [orch.image_tokens(64, 64), orch.image_tokens(64, 64)] == [1100, 1100]
+    with orch._gen_lock:
+        assert orch.image_tokens(32, 32) is None
+    orch._mailboxes = {"streaming": None}
+    assert orch.image_tokens(32, 32) is None and len(sent) == 1
+    orch._mailboxes = {}
+    assert [orch.image_tokens(32, 32) for _ in range(3)] == [None] * 3
+    orch.load_generation = 2
+    assert orch.image_tokens(64, 64) == 900
+    assert [(c["width"], c["height"]) for c in sent] == [(64, 64), (32, 32), (32, 32), (64, 64)]
+
+
 def test_each_capture_takes_its_display_shape_and_zoom_maps_by_desktop(desktop, monkeypatch):
     portrait = Display(2, 1280, 0, 800, 1280, False)
     monkeypatch.setattr(desktop, "displays", lambda: [Display(1, 0, 0, 1280, 800, True), portrait])
