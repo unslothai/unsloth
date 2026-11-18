@@ -2179,7 +2179,6 @@ function chatFullAccessPermissionPatch(
 }
 
 
-/** null: the picker suggests its own orgs. */
 function loadPickerOrgs(): string[] | null {
   const raw = readStorageValue(CHAT_PICKER_ORGS_KEY);
   if (raw === null) return null;

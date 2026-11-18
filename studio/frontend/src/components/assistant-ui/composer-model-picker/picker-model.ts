@@ -279,7 +279,6 @@ export function filterRows<T extends PickerRow>(
   });
 }
 
-/** Org filters narrow Discover and On Device only. */
 // Official Hub orgs whose name isn't the provider's id; the rest match their id (`google`, `Qwen`, ...).
 const ORG_ALIASES: Record<string, string> = {
   coherelabs: "cohere",
@@ -289,7 +288,6 @@ const ORG_ALIASES: Record<string, string> = {
   minimaxai: "minimax",
 };
 
-/** The provider id a Hub owner publishes as, for matching against the provider list. */
 export function ownerOrgId(owner: string): string {
   const key = owner.trim().toLowerCase();
   return ORG_ALIASES[key] ?? key;

@@ -799,7 +799,6 @@ function TabButton({
 }: {
   tab: SourceTab;
   shown: boolean;
-  /** An on/off filter rather than one of a set of tabs. */
   toggle?: boolean;
   onSelect: () => void;
   dragging: string | null;
@@ -964,7 +963,6 @@ function wheelSideways(event: WheelEvent<HTMLDivElement>) {
   }
 }
 
-/** Marks which ends of a scrolling tab strip have more tabs past them. */
 function useStripFades(strip: HTMLDivElement | null) {
   useEffect(() => {
     if (!strip) {
@@ -2477,11 +2475,9 @@ export function ComposerModelPicker({
       .map(({ t }) => t);
     return [...pinned, ...movable];
   }, [externalModels, makerTabs, connectionsOn, tabOrder]);
-  // Sources on the first row; makers on their own, as filters over Discover and On Device.
   const sourceTabs = tabs.filter((t) => !t.value.startsWith(MAKER_PREFIX));
   const orgTabs = tabs.filter((t) => t.value.startsWith(MAKER_PREFIX));
   const [orgPick, setOrgPick] = useState<string | null>(null);
-  // A drag reorders within its own row only.
   const draggingOrg = draggingTab?.startsWith(MAKER_PREFIX) ?? false;
   const orgFilter =
     orgPick && orgTabs.some((t) => t.value === `${MAKER_PREFIX}${orgPick}`)
