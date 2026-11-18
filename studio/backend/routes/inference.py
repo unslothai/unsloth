@@ -4163,8 +4163,10 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
 # Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
 # "<head>": that text may sit in a comment or a script string. The parser opens the head for the
 # script and folds a later <html>'s attributes into the root.
+# A comment body never contains "-->", so each comment has one match: a lazy `.*?` could also span
+# later comments, and a run of `<!---->` without a doctype then backtracks exponentially.
 _ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
-    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+    r"\A\ufeff?(?:\s|<!--(?:(?!-->).)*-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
 )
 
 
