@@ -54,24 +54,37 @@ def strided_processor_class() -> Any:
         # the kernel's mode for this processor (diffusion_int8_attention.sink_mode), set with _unsloth_int8
         _unsloth_int8_sinks = 0
 
-        def __call__(
+        # diffusion_flux_convrot_fused._f3_block_ready accepts this class: a block whose Q / K / V and MLP input share
+        # one rotation + act quant hands its projections to unsloth_projected_attention
+        _unsloth_projected_attention = True
+
+        def _unsloth_route(
             self,
-            attn: Any,
-            hidden_states: Any,
+            tokens: int,
             attention_mask: Any = None,
-            image_rotary_emb: Any = None,
-        ) -> Any:
+        ) -> Optional[tuple]:
+            """(cudnn, int8) for a call this class runs; None: the stock call. Traced: plain reads only."""
             cudnn = _backend_value(self._attention_backend) == _CUDNN
             # below the INT8 floor: the stock call
-            int8 = self._unsloth_int8 and hidden_states.shape[1] >= self._unsloth_int8_min_tokens
+            int8 = self._unsloth_int8 and tokens >= self._unsloth_int8_min_tokens
             if (
                 attention_mask is not None
                 or self._parallel_config is not None
                 or not (cudnn or int8)
             ):
-                return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
-            query, key, value = tf3._get_qkv_projections(attn, hidden_states)
+                return None
+            return cudnn, int8
 
+        def _unsloth_attend(
+            self,
+            attn: Any,
+            query: Any,
+            key: Any,
+            value: Any,
+            image_rotary_emb: Any,
+            cudnn: bool,
+            int8: bool,
+        ) -> Any:
             query = query.unflatten(-1, (attn.heads, -1))
             key = key.unflatten(-1, (attn.heads, -1))
             value = value.unflatten(-1, (attn.heads, -1))
@@ -120,6 +133,35 @@ def strided_processor_class() -> Any:
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
             return hidden_states
+
+        def unsloth_projected_attention(
+            self,
+            attn: Any,
+            query: Any,
+            key: Any,
+            value: Any,
+            tokens: int,
+            image_rotary_emb: Any = None,
+        ) -> Optional[Any]:
+            """This processor's output for unmasked ``hidden_states`` of ``tokens`` tokens whose projections are
+            ``query`` / ``key`` / ``value`` (the same ops ``__call__`` runs below them); None: the stock call applies."""
+            route = self._unsloth_route(tokens)
+            if route is None:
+                return None
+            return self._unsloth_attend(attn, query, key, value, image_rotary_emb, *route)
+
+        def __call__(
+            self,
+            attn: Any,
+            hidden_states: Any,
+            attention_mask: Any = None,
+            image_rotary_emb: Any = None,
+        ) -> Any:
+            route = self._unsloth_route(hidden_states.shape[1], attention_mask)
+            if route is None:
+                return super().__call__(attn, hidden_states, attention_mask, image_rotary_emb)
+            query, key, value = tf3._get_qkv_projections(attn, hidden_states)
+            return self._unsloth_attend(attn, query, key, value, image_rotary_emb, *route)
 
     return UnslothFlux3StridedAttnProcessor
 
