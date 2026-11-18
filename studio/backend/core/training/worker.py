@@ -2702,6 +2702,47 @@ def _own_mlx_video_values(value):
     return owned if isinstance(value, list) else owned[0]
 
 
+_MLX_ZOO_VIDEO_TOO_OLD = "Training on video needs a newer unsloth-zoo; update it and retry."
+
+
+def _mlx_zoo_collates_video():
+    import inspect
+
+    from unsloth_zoo.mlx import utils as mlx_utils
+    return "all_videos" in inspect.signature(mlx_utils._processor_vlm_inputs).parameters
+
+
+def _mlx_video_preflight(dataset, *, is_vlm, is_cpt):
+    # CPT trains the text column only, so a video column is not data it would drop.
+    if is_cpt:
+        return
+    from utils.datasets.format_detection import detect_video_columns, video_sample
+
+    first_row = next(iter(dataset), None)
+    if not (isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row))):
+        return
+    if not is_vlm:
+        raise ValueError(
+            "This dataset has a video column but the model is not a vision model. "
+            "Video data needs a VLM; pick a vision model or drop the video column."
+        )
+    if not _mlx_zoo_collates_video():
+        raise ValueError(_MLX_ZOO_VIDEO_TOO_OLD)
+
+
+def _require_mlx_video_collation(*splits):
+    """The preflight sees one train row; this covers eval splits and list-valued video columns."""
+    if _mlx_zoo_collates_video():
+        return
+    if any(
+        isinstance(row, dict) and row.get("videos") is not None
+        for split in splits
+        if split is not None
+        for row in split
+    ):
+        raise ValueError(_MLX_ZOO_VIDEO_TOO_OLD)
+
+
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
@@ -3583,23 +3624,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
 
-        from utils.datasets.format_detection import detect_video_columns, video_sample
-
-        first_row = next(iter(dataset), None)
-        if isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row)):
-            if not is_vlm:
-                raise ValueError(
-                    "This dataset has a video column but the model is not a vision model. "
-                    "Video data needs a VLM; pick a vision model or drop the video column."
-                )
-            import inspect
-
-            from unsloth_zoo.mlx import utils as _mlx_utils
-
-            if "all_videos" not in inspect.signature(_mlx_utils._processor_vlm_inputs).parameters:
-                raise ValueError(
-                    "Training on video needs a newer unsloth-zoo; update it and retry."
-                )
+        # Before formatting: it would fetch every Hub clip only to be refused.
+        _mlx_video_preflight(dataset, is_vlm = is_vlm, is_cpt = is_cpt)
 
         if is_dataset_audio:
             _send("status", status_message = "Formatting audio dataset...")
@@ -3737,6 +3763,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     _send("warning", message = message)
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
+
+    if is_vlm:
+        _require_mlx_video_collation(dataset, eval_dataset)
 
     if not is_vlm and dataset_final_format:
         # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in

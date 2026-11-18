@@ -603,7 +603,54 @@ def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
     assert detect_video_columns({"audio": cell, "text": "hi"}) == []
 
 
-def test_mlx_video_refusal_only_lives_in_the_residual_routing_guard():
+def _mlx_video_guards(zoo_has_video):
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    nodes = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_mlx_video_preflight", "_require_mlx_video_collation")
+        or isinstance(n, ast.Assign)
+        and ast.unparse(n.targets[0]) == "_MLX_ZOO_VIDEO_TOO_OLD"
+    ]
+    namespace = {"_mlx_zoo_collates_video": lambda: zoo_has_video}
+    exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
+    return namespace["_mlx_video_preflight"], namespace["_require_mlx_video_collation"]
+
+
+def test_mlx_video_preflight_refuses_only_what_would_be_dropped():
+    preflight, _ = _mlx_video_guards(zoo_has_video = True)
+    preflight(_flat_rows(), is_vlm = True, is_cpt = False)
+    with pytest.raises(ValueError, match = "not a vision model"):
+        preflight(_flat_rows(), is_vlm = False, is_cpt = False)
+    preflight(Dataset.from_dict({"text": ["a", "b"]}), is_vlm = False, is_cpt = False)
+    old_zoo, _ = _mlx_video_guards(zoo_has_video = False)
+    with pytest.raises(ValueError, match = "newer unsloth-zoo"):
+        old_zoo(_flat_rows(), is_vlm = True, is_cpt = False)
+
+
+def test_mlx_cpt_ignores_an_unused_video_column():
+    preflight, _ = _mlx_video_guards(zoo_has_video = False)
+    preflight(Dataset.from_dict({"text": ["a", "b"], "video": CLIPS}), is_vlm = False, is_cpt = True)
+
+
+def test_mlx_old_zoo_refuses_clips_in_any_forwarded_split():
+    _, require = _mlx_video_guards(zoo_has_video = False)
+    images_only = [{"messages": [], "images": "img.png"}]
+    require(images_only, None)
+    with pytest.raises(ValueError, match = "newer unsloth-zoo"):
+        require(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
+    _, new_zoo = _mlx_video_guards(zoo_has_video = True)
+    new_zoo(images_only, [{"messages": [], "videos": [CLIPS[0]]}])
+
+
+def test_mlx_training_runs_both_video_guards_around_formatting():
     import ast
     from pathlib import Path
 
@@ -615,17 +662,14 @@ def test_mlx_video_refusal_only_lives_in_the_residual_routing_guard():
         for n in ast.parse(source).body
         if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
     )
-    video_probes = [
-        node.func.id
-        for node in ast.walk(run)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "detect_video_columns"
-    ]
-    assert len(video_probes) == 1
-    assert "_MLX_VIDEO_UNSUPPORTED" not in {
-        node.id for node in ast.walk(run) if isinstance(node, ast.Name)
-    }
+    lines = {}
+    for node in ast.walk(run):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            lines.setdefault(node.func.id, []).append(node.lineno)
+    assert len(lines["_mlx_video_preflight"]) == 1
+    assert len(lines["_require_mlx_video_collation"]) == 1
+    assert lines["_mlx_video_preflight"][0] < min(lines["format_and_template_dataset"])
+    assert lines["_require_mlx_video_collation"][0] > max(lines["_adapt_for_mlx_vlm"])
 
 
 @pytest.mark.parametrize("name", ["user_prompt", "problem", "inputs"])
