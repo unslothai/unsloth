@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two-Spark serving orchestrator: picks a topology and runs the peer half of it."""
+"""Two-Spark serving orchestrator: picks a topology and runs the peer half of it.
+
+It is ``rpc_serving``'s provider: every load hook Studio calls is answered here, so a paired
+Spark keeps replicas and the two-node split while an N-node cluster config still takes over."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import collections
 import contextlib
-import getpass
 import fnmatch
-import glob
 import importlib.util
 import inspect
 import logging
@@ -25,9 +25,10 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.inference.spark_router import CONVERSATION_FIELD, Backend, SparkRouter
+from core.inference import rpc_serving as rs
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,6 @@ RPC_PORT_DEFAULT = 50052
 PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt length
 # Only added when the bundle's llama-server has the flag (unslothai/llama.cpp PR #187).
 PIPELINE_GROUPS_DEFAULT = 2
-PIPELINE_GROUPS_FLAG = "--pipeline-groups"
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 # Never a second --spec-type: extras that own it switch the backend's whole speculative path off.
@@ -98,24 +98,10 @@ _SPEC_OWNER_ENV = frozenset(
         "LLAMA_ARG_CACHE_TYPE_V_DRAFT",
     }
 )
-# Still refused with groups after PR #187: projector, control vectors and idle timer are per server.
-_GROUPS_REFUSED_FLAGS = frozenset(
-    {
-        "--mmproj",
-        "-mm",
-        "--mmproj-url",
-        "-mmu",
-        "--control-vector",
-        "--control-vector-scaled",
-        "--control-vector-layer-range",
-        "--sleep-idle-seconds",
-    }
-)
 # Mirrors of spark_cluster.GROUPS_X_MTP_*: crossover interpolated between measured 8 and 32 rows, all with --kv-unified.
 GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
 GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
-SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 # Below this kept/asked slot fraction groups lose to the rounding: 1/1.4, the measured two-group speedup.
 GROUPS_WORTH_SLOTS_RATIO = 1.0 / 1.4
 # Capped because the throughput table alone says 128 and p90 TTFT says that is unshippable.
@@ -125,7 +111,6 @@ SPLIT_CONFIG_BOTH = "groups + speculation"
 SPLIT_CONFIG_SPEC = "one context + speculation"
 SPLIT_CONFIG_GROUPS = "groups, no speculation"
 SPLIT_CONFIG_PLAIN = "one context, no speculation"
-HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 GROUPS_DRAFTER_PROBE_TIMEOUT_S = 30.0
 _GROUPS_REFUSAL_TEXT = "is not supported together with"
 _PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
@@ -137,7 +122,6 @@ PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load
 PEER_REPLICA_START_TIMEOUT_S = 600.0
 PEER_REUSE_TIMEOUT_S = 3.0
 SUPERVISOR_INTERVAL_S = 1.0
-_LOG_TAIL = 60
 _GIB = 2**30
 
 _SPARK_USABLE_GIB = 121.69
@@ -230,6 +214,10 @@ def _discover_peer_address() -> Optional[str]:
 def enabled() -> bool:
     if (os.environ.get(ENV_TOGGLE) or "").strip() == "0":
         return False
+    from core.inference import cluster_serving
+
+    if cluster_serving.configured():
+        return True
     if not is_spark():
         return False
     return peer_address() is not None
@@ -302,410 +290,6 @@ def plan_topology(
     return out
 
 
-def gguf_shard_paths(path: Optional[str]) -> List[str]:
-    """Every file a load of ``path`` reads; llama.cpp opens the shards after the first itself."""
-    if not path:
-        return []
-    p = Path(path)
-    match = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", p.name)
-    if not match:
-        return [str(p)]
-    prefix, _first, count = match.groups()
-    return [str(p.with_name(f"{prefix}-{i:05d}-of-{count}.gguf")) for i in range(1, int(count) + 1)]
-
-
-def gguf_size_bytes(path: Optional[str]) -> Optional[int]:
-    """The model's size on disk, or None when it cannot be known from what is here."""
-    if not path:
-        return None
-    try:
-        if not Path(path).is_file():
-            return None
-        total = 0
-        for shard in gguf_shard_paths(path):
-            try:
-                total += Path(shard).stat().st_size
-            except OSError:
-                return None
-        return total
-    except OSError:
-        return None
-
-
-def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
-    """The GGUF an unresolved load request will use, or None (the caller then waits for the resolved path)."""
-    if not model_path:
-        return None
-    expanded = osp.expanduser(model_path)
-    if osp.isfile(expanded):
-        return expanded
-    if osp.isdir(expanded):
-        return _local_dir_gguf(expanded, variant)
-    if "/" not in model_path or osp.isabs(model_path):
-        return None
-    cache = os.environ.get("HF_HUB_CACHE") or osp.join(
-        os.environ.get("HF_HOME") or osp.expanduser("~/.cache/huggingface"), "hub"
-    )
-    resolved = _cached_repo_file_via_loader(model_path, variant)
-    if resolved is not None:
-        return resolved
-    root = osp.join(cache, "models--" + model_path.replace("/", "--"), "snapshots")
-    if not osp.isdir(root):
-        return None
-    pattern = f"*{variant}*.gguf" if variant else "*.gguf"
-    snapshots = sorted(
-        (d for d in glob.glob(osp.join(root, "*")) if osp.isdir(d)),
-        key = lambda d: _snapshot_mtime(d),
-        reverse = True,
-    )
-    for snapshot in snapshots:
-        candidates = sorted(glob.glob(osp.join(snapshot, "**", pattern), recursive = True))
-        candidates = [c for c in candidates if not _is_companion_gguf(c)]
-        if candidates:
-            return candidates[0]
-    return None
-
-
-def _local_dir_gguf(directory: str, variant: Optional[str]) -> Optional[str]:
-    try:
-        from utils.models.model_config import list_local_gguf_variants
-        variants, _has_vision = list_local_gguf_variants(directory)
-        variants = list(variants or [])
-    except Exception:
-        variants = []
-    if variants:
-        chosen = _pick_variant(variants, str(variant).strip().casefold() if variant else "")
-        if chosen is not None:
-            name = str(getattr(chosen, "filename", "") or "")
-            candidate = name if osp.isabs(name) else osp.join(directory, osp.basename(name))
-            if osp.isfile(candidate):
-                return candidate
-    pattern = f"*{variant}*.gguf" if variant else "*.gguf"
-    found = sorted(
-        c
-        for c in glob.glob(osp.join(directory, "**", pattern), recursive = True)
-        if osp.isfile(c) and not _is_companion_gguf(c)
-    )
-    return found[0] if found else None
-
-
-def _snapshot_mtime(directory: str) -> float:
-    try:
-        return osp.getmtime(directory)
-    except OSError:
-        return 0.0
-
-
-_COMPANION_GGUF_MARKERS = ("mmproj", "imatrix")
-_COMPANION_GGUF_PARTS = ("mtp", "dspark", "draft")
-
-
-def _is_companion_gguf(path: str) -> bool:
-    name = osp.basename(path).lower()
-    if any(marker in name for marker in _COMPANION_GGUF_MARKERS):
-        return True
-    parts = [part.lower() for part in Path(path).parts[:-1]]
-    return any(part in _COMPANION_GGUF_PARTS for part in parts)
-
-
-def _pick_variant(variants: Any, wanted: str) -> Any:
-    """The variant a load naming ``wanted`` resolves to, or the one the LOADER would default to."""
-    if not wanted:
-        if not variants:
-            return None
-        try:
-            from utils.models.model_config import _pick_best_gguf
-            best = _pick_best_gguf([str(getattr(v, "filename", "")) for v in variants])
-        except Exception:
-            best = None
-        if best:
-            for info in variants:
-                if str(getattr(info, "filename", "")) == best:
-                    return info
-        return variants[0]
-    for info in variants:
-        if wanted in (str(info.quant).casefold(), str(info.filename).casefold()):
-            return info
-    return None
-
-
-def remote_gguf_size_bytes(
-    model_path: str,
-    variant: Optional[str],
-    hf_token: Optional[str] = None,
-) -> Optional[int]:
-    """What a not-yet-downloaded GGUF will weigh, from the hub's own file metadata."""
-    if not model_path or "/" not in model_path or osp.isabs(model_path):
-        return None
-    try:
-        from utils.models.model_config import list_gguf_variants
-    except Exception:
-        return None
-    try:
-        variants, _has_vision = list_gguf_variants(model_path, hf_token)
-        chosen = _pick_variant(variants, str(variant).strip().casefold() if variant else "")
-        if chosen is None:
-            return None
-        size = int(getattr(chosen, "size_bytes", 0) or 0)
-        return size or None
-    except Exception:
-        return None
-
-
-def _cached_repo_file_via_loader(model_path: str, variant: Optional[str]) -> Optional[str]:
-    """The GGUF the backend's own resolver would pick, or None when it cannot be asked."""
-    try:
-        from utils.models.model_config import (
-            _iter_hf_cache_snapshots,
-            list_local_gguf_variants,
-        )
-    except Exception:
-        return None
-    try:
-        wanted = str(variant).strip().casefold() if variant else ""
-        for snapshot in _iter_hf_cache_snapshots(model_path):
-            variants, _has_vision = list_local_gguf_variants(str(snapshot))
-            if not variants:
-                continue
-            chosen = _pick_variant(variants, wanted)
-            if chosen is None:
-                continue
-            path = osp.join(str(snapshot), chosen.filename)
-            if osp.isfile(path):
-                return path
-    except Exception:
-        return None
-    return None
-
-
-_KV_BYTES_PER_ELEM = {
-    "f32": 4.0,
-    "f16": 2.0,
-    "bf16": 2.0,
-    "q8_0": 34 / 32,
-    "q4_0": 18 / 32,
-    "q4_1": 20 / 32,
-    "q5_0": 22 / 32,
-    "q5_1": 24 / 32,
-    "iq4_nl": 18 / 32,
-}
-
-
-def kv_bytes_per_elem(cache_type: Optional[str]) -> float:
-    return _KV_BYTES_PER_ELEM.get(str(cache_type or "f16").strip().lower(), 2.0)
-
-
-def _loader_kv_bytes(
-    gguf_path: str, n_ctx: int, cache_type: Optional[str], cache_type_v: Optional[str]
-) -> Optional[int]:
-    """``LlamaCppBackend._estimate_kv_cache_bytes`` on a probe instance; None when it cannot say."""
-    try:
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        probe = object.__new__(LlamaCppBackend)
-        probe._model_identifier = "spark-kv-probe"
-        probe._read_gguf_metadata(str(_first_shard(gguf_path) or gguf_path))
-        k_type = str(cache_type or "f16").strip().lower()
-        v_type = k_type if cache_type_v is None else str(cache_type_v).strip().lower()
-        k_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), k_type))
-        if k_bytes <= 0:
-            return None
-        if v_type == k_type:
-            return k_bytes
-        v_bytes = int(probe._estimate_kv_cache_bytes(int(n_ctx), v_type))
-        if v_bytes <= 0:
-            return None
-        # The estimator takes one type for both; K and V each carry half of either pricing.
-        return int((k_bytes + v_bytes) / 2)
-    except Exception:
-        return None
-
-
-def estimate_kv_bytes(
-    gguf_path: Optional[str],
-    n_ctx: int,
-    cache_type: Optional[str] = None,
-    cache_type_v: Optional[str] = None,
-) -> Optional[int]:
-    """KV cache bytes for ``n_ctx`` tokens, priced by the loader's own estimator; None when unreadable."""
-    if not gguf_path or n_ctx <= 0:
-        return None
-    loader = _loader_kv_bytes(gguf_path, int(n_ctx), cache_type, cache_type_v)
-    if loader is not None:
-        return loader
-    try:
-        from gguf import GGUFReader  # type: ignore
-
-        reader = GGUFReader(gguf_path)
-        fields = reader.fields
-
-        def _scalar(key: str) -> Optional[int]:
-            field = fields.get(key)
-            if field is None:
-                return None
-            try:
-                return int(field.parts[field.data[0]][0])
-            except Exception:
-                return None
-
-        arch_field = fields.get("general.architecture")
-        if arch_field is None:
-            return None
-        arch = bytes(arch_field.parts[arch_field.data[0]]).decode("utf-8", "replace")
-        n_layer = _scalar(f"{arch}.block_count")
-        n_head = _scalar(f"{arch}.attention.head_count")
-        n_kv = _scalar(f"{arch}.attention.head_count_kv") or n_head
-        n_embd = _scalar(f"{arch}.embedding_length")
-        head_dim = _scalar(f"{arch}.attention.key_length")
-        if head_dim is None and n_head and n_embd:
-            head_dim = n_embd // n_head
-        if not (n_layer and n_kv and head_dim):
-            return None
-        per_elem = kv_bytes_per_elem(cache_type) + kv_bytes_per_elem(
-            cache_type if cache_type_v is None else cache_type_v
-        )
-        return int(n_layer * int(n_ctx) * n_kv * head_dim * per_elem)
-    except Exception:
-        return None
-
-
-def _ssh_user() -> str:
-    """This session's login, which is the peer's too (`provision` mirrors the install as one account)."""
-    shared = getattr(_cluster(), "_ssh_user", None)
-    if callable(shared):
-        try:
-            return str(shared())
-        except Exception:
-            pass
-    for var in ("USER", "USERNAME", "LOGNAME"):
-        value = os.environ.get(var)
-        if value:
-            return value
-    try:
-        return getpass.getuser()
-    except Exception:
-        return "nvidia"
-
-
-def ssh_argv(
-    peer: str,
-    remote: str,
-    *,
-    connect_timeout: int = 8,
-    keepalive: bool = False,
-) -> List[str]:
-    argv = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        f"ConnectTimeout={connect_timeout}",
-    ]
-    if keepalive:
-        argv += ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
-    argv += [f"{_ssh_user()}@{peer}", remote]
-    return argv
-
-
-async def ssh_run(
-    peer: str,
-    remote: str,
-    *,
-    timeout: float = 20.0,
-    stdin: Optional[bytes] = None,
-) -> Tuple[int, str, str]:
-    """Run one command on the peer without blocking the loop. rc 255 on transport failure."""
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_argv(peer, remote),
-            stdin = asyncio.subprocess.PIPE if stdin is not None else None,
-            stdout = asyncio.subprocess.PIPE,
-            stderr = asyncio.subprocess.PIPE,
-        )
-        exchange = proc.communicate(stdin) if stdin is not None else proc.communicate()
-        out, err = await asyncio.wait_for(exchange, timeout = timeout)
-        return (
-            proc.returncode if proc.returncode is not None else 255,
-            out.decode("utf-8", "replace"),
-            err.decode("utf-8", "replace"),
-        )
-    except (asyncio.TimeoutError, OSError) as exc:
-        if proc is not None:
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
-            try:
-                await proc.wait()
-            except (OSError, asyncio.CancelledError):
-                pass
-        return 255, "", str(exc)
-
-
-def peer_path(path: Path) -> str:
-    sc = _cluster()
-    relative = getattr(sc, "_peer_relative_path", None)
-    if callable(relative):
-        try:
-            text = str(relative(path))
-            return "$HOME/" + text[2:] if text.startswith("~/") else text
-        except Exception:
-            pass
-    try:
-        return "$HOME/" + path.relative_to(Path.home()).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def peer_binary_candidates(local_binary: Optional[str], name: str) -> List[str]:
-    """Where ``name`` should be on the peer, most likely first (the pair is provisioned by rsync)."""
-    out: List[str] = []
-    if local_binary:
-        out.append(peer_path(Path(local_binary).parent) + "/" + name)
-    sc = _cluster()
-    bundle = None
-    try:
-        bundle = sc.llama_bundle_dir() if sc is not None else None
-    except Exception:
-        bundle = None
-    if bundle is not None:
-        for parts in (("build", "bin"), ("bin",), ()):
-            out.append(peer_path(bundle.joinpath(*parts) if parts else bundle) + "/" + name)
-    out.append("$HOME/.unsloth/llama.cpp/build/bin/" + name)
-    out.append("$HOME/llamacpp-rpc/bin/" + name)
-    out.append(name)
-    seen = set()
-    return [c for c in out if not (c in seen or seen.add(c))]
-
-
-def find_binary_script(candidates: List[str]) -> str:
-    """A shell snippet that prints the first executable candidate, or MISSING."""
-    checks = " ".join(
-        f'if [ -x "{c}" ]; then echo "{c}"; exit 0; fi;'
-        if "/" in c
-        else f"if command -v {c} >/dev/null 2>&1; then command -v {c}; exit 0; fi;"
-        for c in candidates
-    )
-    return checks + " echo MISSING; exit 1"
-
-
-_SIDECAR_FLAGS = frozenset(
-    {
-        "--mmproj",
-        "-mm",
-        "--model-draft",
-        "-md",
-        "--lora",
-        "--lora-scaled",
-        "--control-vector",
-        "--control-vector-scaled",
-    }
-)
-
-
 # A non-sidecar file operand: absolutised and preflighted, never split or charged as memory.
 _TEMPLATE_FILE_FLAGS = frozenset({"--chat-template-file"})
 
@@ -725,150 +309,15 @@ def template_files(args: Sequence[str], *, cwd: Optional[str] = None) -> List[st
     return out
 
 
-def _looks_like_a_scale(text: str) -> bool:
-    try:
-        float(text)
-    except ValueError:
-        return False
-    return True
-
-
-def sidecar_operand_paths(value: str) -> List[str]:
-    """The files one sidecar operand names, with the list and ``:SCALE`` forms taken apart."""
-    out: List[str] = []
-    for piece in str(value).split(","):
-        piece = piece.strip()
-        if not piece:
-            continue
-        head, sep, tail = piece.rpartition(":")
-        if sep and head and _looks_like_a_scale(tail):
-            piece = head
-        out.append(piece)
-    return out
-
-
-def sidecar_files(args: Sequence[str], *, cwd: Optional[str] = None) -> List[str]:
-    """Every sidecar weight ``args`` names, resolved the way the launch will resolve it."""
-    base = cwd or os.getcwd()
-    out: List[str] = []
-    tokens = [str(a) for a in args]
-    for index, token in enumerate(tokens):
-        name, sep, inline = token.partition("=")
-        if name not in _SIDECAR_FLAGS:
-            continue
-        value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
-        for path in sidecar_operand_paths(value):
-            out.append(path if osp.isabs(path) else osp.join(base, path))
-    return out
-
-
-def sidecar_bytes(args: Sequence[str], *, cwd: Optional[str] = None) -> Tuple[int, bool]:
-    total = 0
-    unknown = False
-    for path in sidecar_files(args, cwd = cwd):
-        size = gguf_size_bytes(path)
-        if size is None:
-            try:
-                size = osp.getsize(path)
-            except OSError:
-                size = None
-        if size is None:
-            unknown = True
-            continue
-        total += int(size)
-    return total, unknown
-
-
-_CTX_SIZE_FLAGS = ("--ctx-size", "-c")
-_CACHE_TYPE_K_FLAGS = ("--cache-type-k", "-ctk")
-_CACHE_TYPE_V_FLAGS = ("--cache-type-v", "-ctv")
-
-
-def _last_operand(args: Sequence[str], flags: Sequence[str]) -> Optional[str]:
-    """The last operand any of *flags* carries in *args*, or None. Last wins, as llama.cpp does."""
-    from core.inference.llama_server_args import _flag_name
-
-    tokens = [str(a) for a in args or ()]
-    found: Optional[str] = None
-    for index, token in enumerate(tokens):
-        _, sep, inline = token.partition("=")
-        # llama.cpp folds long-option underscores (--ctx_size is --ctx-size), so the sizing does too.
-        if _flag_name(token) not in flags:
-            continue
-        value = inline if sep else (tokens[index + 1] if index + 1 < len(tokens) else "")
-        if str(value).strip():
-            found = str(value).strip()
-    return found
-
-
-def effective_kv_settings(
-    request: Any, extras: Optional[Sequence[str]] = None
-) -> Tuple[int, Optional[str], Optional[str]]:
-    """``(context, cache_type_k, cache_type_v)`` this load will ACTUALLY run with."""
-    ctx = int(getattr(request, "max_seq_length", None) or 0)
-    from_extras = _last_operand(extras or (), _CTX_SIZE_FLAGS)
-    extras_ask_for_native = False
-    if from_extras:
-        try:
-            ctx = int(from_extras)
-            extras_ask_for_native = ctx == 0
-        except ValueError:
-            pass  # llama-server will refuse it; nothing to price here
-    if ctx <= 0 and not extras_ask_for_native:
-        # Auto-layers omits -c, and the launch keeps a positive inherited LLAMA_ARG_CTX_SIZE
-        # (routes.inference._inherited_ctx_size): the child runs at that length.
-        raw_env_ctx = str(os.environ.get("LLAMA_ARG_CTX_SIZE") or "").strip()
-        try:
-            ctx = max(0, int(raw_env_ctx)) if raw_env_ctx else ctx
-        except ValueError:
-            pass
-
-    def _cache(flags: Sequence[str], env_name: str) -> Optional[str]:
-        value = _last_operand(extras or (), flags)
-        if value:
-            return value
-        value = str(os.environ.get(env_name) or "").strip()
-        if value:
-            return value
-        return getattr(request, "cache_type_kv", None)
-
-    return (
-        max(0, ctx),
-        _cache(_CACHE_TYPE_K_FLAGS, "LLAMA_ARG_CACHE_TYPE_K"),
-        _cache(_CACHE_TYPE_V_FLAGS, "LLAMA_ARG_CACHE_TYPE_V"),
-    )
-
-
-def launch_files_from(args: Sequence[str]) -> List[str]:
-    """The sidecar paths an argv names, absolutised."""
-    return list(sidecar_files(args))
-
-
-def env_launch_files(env: Optional[Dict[str, str]]) -> List[str]:
-    """The existing local files an environment names through ``_REPLICA_ENV_PATHS``."""
-    out: List[str] = []
-    for name in sorted(_REPLICA_ENV_PATHS):
-        raw = str((env or {}).get(name) or "").strip()
-        if not raw:
-            continue
-        for piece in (
-            sidecar_operand_paths(raw) if name != "LLAMA_ARG_CHAT_TEMPLATE_FILE" else [raw]
-        ):
-            path = piece if osp.isabs(piece) else osp.join(os.getcwd(), piece)
-            if osp.isfile(path) and path not in out:
-                out.append(path)
-    return out
-
-
 def launch_files(argv: List[str], gguf_path: str) -> List[str]:
     """Every file the launch reads, all shards included: the replica needs each at the same path."""
-    files = gguf_shard_paths(gguf_path)
+    files = rs.gguf_shard_paths(gguf_path)
     seen = set(files)
     for arg in argv[1:]:
         if arg not in seen and osp.isabs(arg) and osp.isfile(arg):
             files.append(arg)
             seen.add(arg)
-    for path in list(sidecar_files(argv[1:])) + list(template_files(argv[1:])):
+    for path in list(rs.sidecar_files(argv[1:])) + list(template_files(argv[1:])):
         if path not in seen and osp.isfile(path):
             files.append(path)
             seen.add(path)
@@ -889,7 +338,7 @@ def absolute_sidecar_operand(value: str, *, cwd: Optional[str] = None) -> str:
             pieces.append(piece)
             continue
         head, sep, tail = stripped.rpartition(":")
-        if sep and head and _looks_like_a_scale(tail):
+        if sep and head and rs._looks_like_a_scale(tail):
             path, scale = head, ":" + tail
         else:
             path, scale = stripped, ""
@@ -934,7 +383,7 @@ def replica_argv(
         if arg.startswith(tuple(f"{flag}=" for flag in _REPLICA_DROPPED_FLAGS)):
             continue
         name, sep, inline = arg.partition("=")
-        if name in _SIDECAR_FLAGS:
+        if name in rs._SIDECAR_FLAGS:
             if sep:
                 out.append(f"{name}={absolute_sidecar_operand(inline, cwd = cwd)}")
             else:
@@ -959,14 +408,6 @@ _REPLICA_ENV_PREFIX = "LLAMA_ARG_"
 _REPLICA_ENV_DENY = frozenset({"LLAMA_ARG_HOST", "LLAMA_ARG_PORT"})
 # Normalised as the backend does: llama.cpp throws on any inexact type name, whitespace included.
 _REPLICA_ENV_LOWERED = frozenset({"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"})
-# Env twins of _SIDECAR_FLAGS: llama.cpp reads either route, so both are absolutised.
-_REPLICA_ENV_PATHS = frozenset(
-    {
-        "LLAMA_ARG_MMPROJ",
-        "LLAMA_ARG_SPEC_DRAFT_MODEL",
-        "LLAMA_ARG_CHAT_TEMPLATE_FILE",
-    }
-)
 
 
 def replica_env(
@@ -984,7 +425,7 @@ def replica_env(
         text = str(value).strip()
         if not text:
             continue
-        if name in _REPLICA_ENV_PATHS:
+        if name in rs._REPLICA_ENV_PATHS:
             text = absolute_sidecar_operand(text, cwd = cwd)
         out[name] = text.lower() if name in _REPLICA_ENV_LOWERED else text
     return out
@@ -1021,16 +462,6 @@ async def peer_gpu_conflict(peer: str, *, own_pids: Sequence[int] = ()) -> Optio
     return f"the peer GPU is already in use ({used})"
 
 
-def argv_or_env_rpc(argv: Sequence[str], env: Optional[Dict[str, str]] = None) -> bool:
-    """Whether this llama-server is already an RPC split, however it was told to be."""
-    for arg in argv or ():
-        name = str(arg).partition("=")[0]
-        if name == "--rpc":
-            return True
-    source = os.environ if env is None else env
-    return bool(str(source.get("LLAMA_ARG_RPC") or "").strip())
-
-
 _VERSION_LINE = re.compile(r"version:\s*(\S+)\s*\(([0-9a-f]+)\)", re.IGNORECASE)
 
 
@@ -1041,7 +472,7 @@ def parse_llama_server_version(text: str) -> Optional[str]:
 
 
 def local_llama_server_version(binary: Optional[str] = None) -> Optional[str]:
-    path = binary or llama_server_binary()
+    path = binary or rs.llama_server_binary()
     if not path:
         return None
     try:
@@ -1050,7 +481,7 @@ def local_llama_server_version(binary: Optional[str] = None) -> Optional[str]:
             stdin = subprocess.DEVNULL,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
-            timeout = HELP_PROBE_TIMEOUT_S,
+            timeout = rs.HELP_PROBE_TIMEOUT_S,
         )
     except Exception:
         return None
@@ -1062,7 +493,9 @@ async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
     local = await asyncio.to_thread(local_llama_server_version)
     if not local:
         return None
-    rc, out, _err = await ssh_run(peer, f"{shlex.quote(peer_binary)} --version 2>&1", timeout = 25.0)
+    rc, out, _err = await rs.ssh_run(
+        peer, f"{shlex.quote(peer_binary)} --version 2>&1", timeout = 25.0
+    )
     remote = parse_llama_server_version(out) if rc == 0 else None
     if not remote or remote == local:
         return None
@@ -1119,7 +552,7 @@ async def replicate_secret_files(peer: str, files: Sequence[str]) -> Optional[st
             return f"{path} could not be read ({exc})"
         target = shlex.quote(path)
         parent = shlex.quote(osp.dirname(path))
-        rc, _out, err = await ssh_run(
+        rc, _out, err = await rs.ssh_run(
             peer,
             f"umask 077 && mkdir -p {parent} && cat > {target} && chmod 600 {target}",
             timeout = 25.0,
@@ -1147,7 +580,7 @@ async def replicate_generated_files(peer: str, files: Sequence[str]) -> Optional
             payload = base64.b64encode(Path(path).read_bytes()).decode("ascii")
         except OSError as exc:
             return f"{path} could not be read ({exc})"
-        rc, _out, err = await ssh_run(
+        rc, _out, err = await rs.ssh_run(
             peer,
             f"printf %s {shlex.quote(payload)} | base64 -d > {shlex.quote(path)}",
             timeout = 25.0,
@@ -1157,184 +590,12 @@ async def replicate_generated_files(peer: str, files: Sequence[str]) -> Optional
     return None
 
 
-def redacted_argv(argv: List[str]) -> List[str]:
-    out = list(argv)
-    for index, arg in enumerate(out):
-        if arg == "--api-key" and index + 1 < len(out):
-            out[index + 1] = "<redacted>"
-        elif arg.startswith("--api-key="):
-            out[index] = "--api-key=<redacted>"
-    return out
-
-
 def _argv_value(argv: Sequence[str], flag: str) -> Optional[str]:
     tokens = [str(a) for a in argv]
     for index, token in enumerate(tokens):
         if token == flag and index + 1 < len(tokens):
             return tokens[index + 1].strip()
     return None
-
-
-def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[str]:
-    """``ggml-rpc-server`` on the peer; `-c` caches tensors to disk, so only where the user keeps the GGUF."""
-    argv = [binary, "-H", bind, "-p", str(port)]
-    if cache:
-        argv.append("-c")
-    return argv
-
-
-_RPC_SERVER_STEMS = ("ggml-rpc-server", "rpc-server")
-
-
-def executable_suffixes() -> Tuple[str, ...]:
-    """The suffixes a runnable file can carry on this platform, most likely first."""
-    if os.name != "nt":
-        return ("",)
-    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-    found = tuple(part.strip().lower() for part in raw.split(";") if part.strip().startswith("."))
-    return found or (".exe",)
-
-
-def rpc_server_names() -> Tuple[str, ...]:
-    """Candidate file names for the rpc-server, in the order this platform should try them."""
-    return tuple(stem + suffix for stem in _RPC_SERVER_STEMS for suffix in executable_suffixes())
-
-
-def is_executable_file(path: Any) -> bool:
-    """Whether ``path`` is a file this platform would run."""
-    name = str(path)
-    try:
-        if not osp.isfile(name):
-            return False
-    except OSError:
-        return False
-    if os.name != "nt":
-        return os.access(name, os.X_OK)
-    return osp.splitext(name)[1].lower() in executable_suffixes()
-
-
-def llama_server_binary() -> Optional[str]:
-    """The llama-server this node will LAUNCH, from the backend's own resolver: a second search order once ran mismatched builds."""
-    try:
-        from core.inference.llama_cpp import LlamaCppBackend
-    except Exception as exc:  # pragma: no cover - the backend package is always there
-        logger.info("spark serving: cannot import the llama.cpp backend resolver: %s", exc)
-        return None
-    try:
-        found = LlamaCppBackend._find_llama_server_binary()
-    except Exception as exc:
-        logger.info("spark serving: the backend's llama-server resolver failed: %s", exc)
-        return None
-    return str(found) if found else None
-
-
-def rpc_server_binary() -> Optional[str]:
-    """``ggml-rpc-server`` from beside the llama-server that launches."""
-    launched = llama_server_binary()
-    if launched:
-        directory = osp.dirname(osp.abspath(launched))
-        for name in rpc_server_names():
-            candidate = osp.join(directory, name)
-            if is_executable_file(candidate):
-                return candidate
-    sc = _cluster()
-    try:
-        found = sc.rpc_server_binary() if sc is not None else None
-    except Exception:
-        return None
-    return str(found) if found else None
-
-
-# Keyed by (path, mtime); failures are cached so a broken binary costs one timeout.
-_HELP_TEXT: Dict[Tuple[str, float], str] = {}
-
-
-def llama_server_help(binary: Optional[str] = None) -> str:
-    """The ``--help`` of the llama-server that will LAUNCH, empty on any failure."""
-    path = binary or llama_server_binary()
-    if not path:
-        return ""
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return ""
-    key = (str(path), mtime)
-    cached = _HELP_TEXT.get(key)
-    if cached is not None:
-        return cached
-    text = ""
-    try:
-        done = subprocess.run(
-            [str(path), "--help"],
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            timeout = HELP_PROBE_TIMEOUT_S,
-        )
-        text = (done.stdout or b"").decode("utf-8", "replace") + (done.stderr or b"").decode(
-            "utf-8", "replace"
-        )
-    except Exception as exc:
-        logger.info("spark serving: llama-server --help probe failed for %s: %s", path, exc)
-        text = ""
-    _HELP_TEXT[key] = text
-    return text
-
-
-def llama_server_supports(flag: str, binary: Optional[str] = None) -> bool:
-    """From the ``--help`` text; False on every failure, so a flag the build may lack is never passed."""
-    try:
-        text = llama_server_help(binary)
-    except Exception:
-        return False
-    if not text or not flag:
-        return False
-    return re.search(re.escape(flag) + r"(?![\w-])", text) is not None
-
-
-_ACCEPTS: Dict[Tuple[str, float, Tuple[str, ...]], bool] = {}
-
-
-def llama_server_accepts(
-    flag: str,
-    value: str = "1",
-    binary: Optional[str] = None,
-    *,
-    extra: Sequence[str] = (),
-) -> bool:
-    """For a flag hidden from the usage text: the fork prints usage for it, other builds say "invalid argument"."""
-    path = binary or llama_server_binary()
-    if not path or not flag:
-        return False
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return False
-    probe = [str(flag), str(value), *(str(a) for a in extra)]
-    key = (str(path), mtime, tuple(probe))
-    cached = _ACCEPTS.get(key)
-    if cached is not None:
-        return cached
-    accepted = False
-    try:
-        done = subprocess.run(
-            [str(path), *probe, "--help"],
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            timeout = HELP_PROBE_TIMEOUT_S,
-        )
-        accepted = done.returncode == 0 and bool((done.stdout or b"").strip())
-    except Exception as exc:
-        logger.info(
-            "spark serving: llama-server %s probe failed for %s: %s",
-            " ".join(probe),
-            path,
-            exc,
-        )
-        accepted = False
-    _ACCEPTS[key] = accepted
-    return accepted
 
 
 def _free_local_port() -> int:
@@ -1355,13 +616,13 @@ def llama_server_accepts_groups_with_drafter(
     if groups <= 1:
         return False
     if not (
-        llama_server_supports(PIPELINE_GROUPS_FLAG, binary)
-        or llama_server_accepts(PIPELINE_GROUPS_FLAG, str(groups), binary)
+        rs.llama_server_supports(rs.PIPELINE_GROUPS_FLAG, binary)
+        or rs.llama_server_accepts(rs.PIPELINE_GROUPS_FLAG, str(groups), binary)
     ):
         return False
-    if not llama_server_supports(SPEC_TYPE_FLAG, binary):
+    if not rs.llama_server_supports(SPEC_TYPE_FLAG, binary):
         return False
-    path = binary or llama_server_binary()
+    path = binary or rs.llama_server_binary()
     if not path:
         return False
     try:
@@ -1369,7 +630,7 @@ def llama_server_accepts_groups_with_drafter(
     except OSError:
         return False
     probe = [
-        PIPELINE_GROUPS_FLAG,
+        rs.PIPELINE_GROUPS_FLAG,
         str(groups),
         SPEC_TYPE_FLAG,
         MTP_SPEC_TYPE,
@@ -1381,7 +642,7 @@ def llama_server_accepts_groups_with_drafter(
         _PROBE_MODEL_NAME,
     ]
     key = (str(path), mtime, tuple(probe))
-    cached = _ACCEPTS.get(key)
+    cached = rs._ACCEPTS.get(key)
     if cached is not None:
         return cached
     accepted = False
@@ -1403,16 +664,16 @@ def llama_server_accepts_groups_with_drafter(
     except Exception as exc:
         logger.info(
             "spark serving: %s %d with a drafter probe failed for %s: %s",
-            PIPELINE_GROUPS_FLAG,
+            rs.PIPELINE_GROUPS_FLAG,
             groups,
             path,
             exc,
         )
         accepted = False
-    _ACCEPTS[key] = accepted
+    rs._ACCEPTS[key] = accepted
     logger.info(
         "spark serving: %s %d together with %s %s: %s",
-        PIPELINE_GROUPS_FLAG,
+        rs.PIPELINE_GROUPS_FLAG,
         groups,
         SPEC_TYPE_FLAG,
         MTP_SPEC_TYPE,
@@ -1421,21 +682,12 @@ def llama_server_accepts_groups_with_drafter(
     return accepted
 
 
-def _first_shard(path: str) -> str:
-    """The file that carries the header: shard 00001 of a split GGUF, else ``path``."""
-    match = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", osp.basename(path))
-    if not match:
-        return path
-    prefix, _index, count = match.groups()
-    return osp.join(osp.dirname(path), f"{prefix}-00001-of-{count}.gguf")
-
-
 def gguf_nextn_predict_layers(path: Optional[str]) -> Optional[int]:
     """``<arch>.nextn_predict_layers`` from the GGUF header, None on anything missing."""
     if not path:
         return None
     try:
-        shard = _first_shard(str(path))
+        shard = rs._first_shard(str(path))
         if not osp.isfile(shard):
             return None
     except Exception:
@@ -1469,12 +721,6 @@ def gguf_has_mtp_head(path: Optional[str]) -> bool:
         return False
 
 
-def _arg_name(arg: Any) -> str:
-    """The option name in ``arg`` the way llama-server itself reads it."""
-    name = str(arg).strip().partition("=")[0]
-    return name.replace("_", "-") if name.startswith("--") else name
-
-
 def _speculation_owner_reason(owner: str) -> str:
     """Where the caller's speculation setting came from."""
     if owner in _SPEC_OWNER_ENV:
@@ -1487,7 +733,7 @@ def extra_args_own_speculation(
 ) -> Optional[str]:
     """The first setting that makes speculative decoding the caller's, or None."""
     for arg in extra_args or []:
-        name = _arg_name(arg)
+        name = rs._arg_name(arg)
         if name in _SPEC_OWNER_FLAGS or name.startswith(_SPEC_OWNER_PREFIXES):
             return name
     source = os.environ if env is None else env
@@ -1545,7 +791,7 @@ def mtp_plan(
         )
         return out
     try:
-        on_disk = bool(gguf_path) and osp.isfile(_first_shard(str(gguf_path)))
+        on_disk = bool(gguf_path) and osp.isfile(rs._first_shard(str(gguf_path)))
     except Exception:
         on_disk = False
     if not on_disk:
@@ -1555,7 +801,7 @@ def mtp_plan(
     if not layers:
         out.update(mtp = "no head", reason = "no <arch>.nextn_predict_layers in the GGUF header")
         return out
-    if not llama_server_supports(SPEC_TYPE_FLAG):
+    if not rs.llama_server_supports(SPEC_TYPE_FLAG):
         out.update(mtp = "server too old", reason = f"bundle llama-server lacks {SPEC_TYPE_FLAG}")
         return out
     depth = mtp_draft_n_max(users)
@@ -1646,7 +892,7 @@ def reconcile_split_speculation(
     if planned <= 1:
         groups["split_config"] = SPLIT_CONFIG_SPEC if speculating else SPLIT_CONFIG_PLAIN
         groups["split_config_reason"] = str(
-            groups.get("reason") or f"{PIPELINE_GROUPS_FLAG} not added"
+            groups.get("reason") or f"{rs.PIPELINE_GROUPS_FLAG} not added"
         )
         return
     if speculating:
@@ -1657,13 +903,13 @@ def reconcile_split_speculation(
             groups["split_config_reason"] = (
                 f"{rows} rows is at or above the measured crossover of "
                 f"{GROUPS_X_MTP_MIN_ROWS}, and this llama-server takes "
-                f"{PIPELINE_GROUPS_FLAG} {planned} together with a drafter: both, measured "
+                f"{rs.PIPELINE_GROUPS_FLAG} {planned} together with a drafter: both, measured "
                 f"{GROUPS_X_MTP_OVER_MTP_ONLY[hi]:.2f}x of one context with speculation and "
                 f"{GROUPS_X_MTP_OVER_GROUPS_ONLY[hi]:.2f}x of {planned} groups alone at "
                 f"{hi} rows"
             )
             mtp["reason"] = (
-                f"{mtp.get('reason')}; kept together with {PIPELINE_GROUPS_FLAG} {planned}"
+                f"{mtp.get('reason')}; kept together with {rs.PIPELINE_GROUPS_FLAG} {planned}"
             )
             return
         lo = min(GROUPS_X_MTP_OVER_MTP_ONLY)
@@ -1682,13 +928,13 @@ def reconcile_split_speculation(
             why = f"{why}, and the speculation is the caller's"
         groups["pipeline_groups"] = 0
         groups["slots"] = groups.get("requested_slots", groups.get("slots"))
-        groups["reason"] = f"{PIPELINE_GROUPS_FLAG} not added: {why}"
+        groups["reason"] = f"{rs.PIPELINE_GROUPS_FLAG} not added: {why}"
         groups["split_config"] = SPLIT_CONFIG_SPEC
         groups["split_config_reason"] = groups["reason"]
         return
     groups["split_config"] = SPLIT_CONFIG_GROUPS
     groups["split_config_reason"] = (
-        f"{PIPELINE_GROUPS_FLAG} {planned} and no speculation to keep: "
+        f"{rs.PIPELINE_GROUPS_FLAG} {planned} and no speculation to keep: "
         f"{mtp.get('reason') or verdict}"
     )
     if callers:
@@ -1700,7 +946,7 @@ def reconcile_split_speculation(
     ):
         # "unknown" is not "no head": the GGUF is not on disk yet; the backend reads the header after download.
         groups["split_config_reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} {planned}, speculation left to the backend: "
+            f"{rs.PIPELINE_GROUPS_FLAG} {planned}, speculation left to the backend: "
             f"{mtp.get('reason') or verdict}"
         )
         return
@@ -1709,7 +955,7 @@ def reconcile_split_speculation(
         request["speculative_type"] = "off"
         no_head = "which this GGUF has no head for and " if verdict == "no head" else ""
         mtp["reason"] = (
-            f"{mtp.get('reason')}; speculation off for {PIPELINE_GROUPS_FLAG} "
+            f"{mtp.get('reason')}; speculation off for {rs.PIPELINE_GROUPS_FLAG} "
             f"{groups['pipeline_groups']}, {no_head}which a "
             f"sidecar drafter loses on from 4 users on this pair"
         )
@@ -1722,7 +968,7 @@ def launched_spec_flags(argv: List[str]) -> Tuple[Optional[str], Optional[int]]:
     args = [str(a) for a in argv]
     for index, arg in enumerate(args):
         _, _, inline = arg.partition("=")
-        name = _arg_name(arg)
+        name = rs._arg_name(arg)
         if name not in (SPEC_TYPE_FLAG, SPEC_DRAFT_N_MAX_FLAG):
             continue
         value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
@@ -1734,42 +980,6 @@ def launched_spec_flags(argv: List[str]) -> Tuple[Optional[str], Optional[int]]:
             except ValueError:
                 continue
     return spec, depth
-
-
-def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
-    """The slot count a pass-through already sets, last wins, as llama.cpp does."""
-    found: Optional[int] = None
-    args = [str(a) for a in (extra_args or [])]
-    for index, arg in enumerate(args):
-        _, _, inline = arg.partition("=")
-        name = _arg_name(arg)
-        if name not in ("-np", "--parallel"):
-            continue
-        value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
-        try:
-            found = int(value.strip())
-        except (TypeError, ValueError):
-            continue
-    return found
-
-
-# Env twins of the group-refused flags: llama.cpp reads them itself, so an argv-only check misses them.
-_GROUPS_REFUSED_ENV = frozenset({"LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"})
-
-
-def extra_args_refuse_pipeline_groups(
-    extra_args: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None
-) -> Optional[str]:
-    """The first pass-through flag or env setting the server refuses together with the groups."""
-    for arg in extra_args or []:
-        name = _arg_name(arg)
-        if name in _GROUPS_REFUSED_FLAGS:
-            return name
-    source = os.environ if env is None else env
-    for name in _GROUPS_REFUSED_ENV:
-        if str(source.get(name, "")).strip():
-            return name
-    return None
 
 
 def extra_args_fit_off(extra_args: Optional[List[str]] = None) -> bool:
@@ -1793,65 +1003,27 @@ def _from_hub_repo(model_file: Optional[str]) -> bool:
     return "snapshots" in parts and any(part.startswith("models--") for part in parts)
 
 
-def _snapshot_projector(model_file: Optional[str]) -> Optional[str]:
-    """The multimodal projector Studio would pick up beside ``model_file``, or None."""
-    if not model_file:
-        return None
-    try:
-        # NOT realpath: HF snapshot links resolve into blobs/, where nothing ends in .gguf.
-        directory = osp.dirname(osp.abspath(str(model_file)))
-        found = sorted(
-            path
-            for path in glob.glob(osp.join(directory, "*.gguf"))
-            if "mmproj" in osp.basename(path).lower() and not osp.basename(path).startswith("._")
-        )
-    except OSError:
-        found = []
-    if not found:
-        return None
-    return next((f for f in found if f.lower().endswith("-f16.gguf")), found[0])
-
-
-def _projector_accepts_image(path: str) -> bool:
-    try:
-        from utils.models.gguf_metadata import mmproj_accepts_image  # type: ignore
-        return bool(mmproj_accepts_image(path))
-    except Exception as exc:
-        logger.info("spark serving: could not read the projector %s: %s", path, exc)
-        return False
-
-
-def auto_projector_file(
-    model_file: Optional[str], *, disable_vision: bool = False
-) -> Optional[str]:
-    """The projector the load will open without being named in the args, for sizing."""
-    on_disk = _snapshot_projector(model_file)
-    if on_disk and disable_vision and _projector_accepts_image(on_disk):
-        return None
-    return on_disk
-
-
 def projector_blocks_pipeline_groups(
     model_file: Optional[str], *, disable_vision: bool = False
 ) -> Optional[str]:
     """Why this load cannot have pipeline groups because of a multimodal projector, or None."""
-    on_disk = _snapshot_projector(model_file)
+    on_disk = rs._snapshot_projector(model_file)
     if not disable_vision:
         if on_disk:
             return (
                 f"Studio opens this model's multimodal projector ({osp.basename(on_disk)}); "
-                f"load with vision off to get {PIPELINE_GROUPS_FLAG}"
+                f"load with vision off to get {rs.PIPELINE_GROUPS_FLAG}"
             )
         if not model_file or _from_hub_repo(model_file):
             return (
                 "Studio fetches this repo's multimodal projector during the load when it has "
                 f"one, so it cannot be ruled out beforehand; load with vision off to get "
-                f"{PIPELINE_GROUPS_FLAG}"
+                f"{rs.PIPELINE_GROUPS_FLAG}"
             )
         return None
     if not on_disk:
         return None
-    if _projector_accepts_image(on_disk):
+    if rs._projector_accepts_image(on_disk):
         return None  # the Vision switch really does suppress this one
     return (
         f"the projector {osp.basename(on_disk)} is not an image projector, so the load's "
@@ -1866,7 +1038,7 @@ def pipeline_groups_plan(
     projector: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pipeline groups for a layer split, with ``slots`` rounded UP to a multiple of them."""
-    requested = _extra_args_slots(extra_args)
+    requested = rs._extra_args_slots(extra_args)
     base = max(1, int(requested if requested is not None else (slots or 1)))
     out: Dict[str, Any] = {
         "pipeline_groups": 0,
@@ -1881,23 +1053,23 @@ def pipeline_groups_plan(
             groups = int(raw)
         except ValueError:
             out["reason"] = (
-                f"{ENV_PIPELINE_GROUPS}={raw!r} is not a number; {PIPELINE_GROUPS_FLAG} not added"
+                f"{ENV_PIPELINE_GROUPS}={raw!r} is not a number; {rs.PIPELINE_GROUPS_FLAG} not added"
             )
             return out
     if groups <= 1:
         out["reason"] = (
             f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
             if raw
-            else f"{PIPELINE_GROUPS_FLAG} not added"
+            else f"{rs.PIPELINE_GROUPS_FLAG} not added"
         )
         return out
     if projector:
-        out["reason"] = f"{PIPELINE_GROUPS_FLAG} not added: {projector}"
+        out["reason"] = f"{rs.PIPELINE_GROUPS_FLAG} not added: {projector}"
         return out
-    refused = extra_args_refuse_pipeline_groups(extra_args)
+    refused = rs.extra_args_refuse_pipeline_groups(extra_args)
     if refused:
         out["reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with {refused}"
+            f"{rs.PIPELINE_GROUPS_FLAG} not added: the server refuses it together with {refused}"
         )
         return out
     from core.inference.llama_server_args import fit_is_effectively_on
@@ -1905,13 +1077,14 @@ def pipeline_groups_plan(
     if not fit_is_effectively_on(extra_args, os.environ):
         # Every group holds the full context's KV; only llama-server's fit pass reserves room for the extra ones.
         out["reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} not added: --fit off (or LLAMA_ARG_FIT=off) leaves the extra groups' KV unaccounted"
+            f"{rs.PIPELINE_GROUPS_FLAG} not added: --fit off (or LLAMA_ARG_FIT=off) leaves the extra groups' KV unaccounted"
         )
         return out
     if not (
-        llama_server_supports(PIPELINE_GROUPS_FLAG) or llama_server_accepts(PIPELINE_GROUPS_FLAG)
+        rs.llama_server_supports(rs.PIPELINE_GROUPS_FLAG)
+        or rs.llama_server_accepts(rs.PIPELINE_GROUPS_FLAG)
     ):
-        out["reason"] = f"bundle llama-server lacks {PIPELINE_GROUPS_FLAG}"
+        out["reason"] = f"bundle llama-server lacks {rs.PIPELINE_GROUPS_FLAG}"
         return out
     slots = max(groups, -(-base // groups) * groups)
     if slots > PARALLEL_MAX:
@@ -1919,14 +1092,14 @@ def pipeline_groups_plan(
         slots = (PARALLEL_MAX // groups) * groups
         if slots < groups:
             out["reason"] = (
-                f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups do not fit in the "
+                f"{rs.PIPELINE_GROUPS_FLAG} not added: {groups} groups do not fit in the "
                 f"{PARALLEL_MAX}-slot maximum"
             )
             return out
         if base <= PARALLEL_MAX and slots < base * GROUPS_WORTH_SLOTS_RATIO:
             # Written straight into request.n_parallel: rounding down would silently serve fewer users.
             out["reason"] = (
-                f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups need {base} slots rounded "
+                f"{rs.PIPELINE_GROUPS_FLAG} not added: {groups} groups need {base} slots rounded "
                 f"up to a multiple, which is over the {PARALLEL_MAX}-slot maximum, and "
                 f"rounding down would drop {base - slots} of the {base} slots asked for"
             )
@@ -1952,31 +1125,13 @@ def layer_split_extra_args(
         "-sm",
         "layer",
         "--tensor-split",
-        SPLIT_TENSOR_SPLIT_EVEN,
+        rs.SPLIT_TENSOR_SPLIT_EVEN,
         "--cache-ram",
         "0",
     ]
     if pipeline_groups and int(pipeline_groups) > 1:
-        out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
+        out += [rs.PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
     return out
-
-
-def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
-    """``extra`` without our appended split block, so an inheriting reload re-plans the split."""
-    tokens = [str(t) for t in extra]
-    fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
-    fixed += ["--cache-ram", "0"]
-    for start in range(len(tokens) - 1, -1, -1):
-        if tokens[start] != "--rpc":
-            continue
-        end = start + 2 + len(fixed)
-        if tokens[start + 2 : end] != fixed:
-            return tokens
-        tail = tokens[end:]
-        if not tail or (len(tail) == 2 and tail[0] == PIPELINE_GROUPS_FLAG):
-            return tokens[:start]
-        return tokens
-    return tokens
 
 
 def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optional[List[str]]:
@@ -1984,7 +1139,7 @@ def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optio
     if not peer:
         return None
     tokens = [str(t) for t in extra]
-    optional = [("--tensor-split", SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
+    optional = [("--tensor-split", rs.SPLIT_TENSOR_SPLIT_EVEN), ("--cache-ram", "0")]
     for start in range(len(tokens) - 1, -1, -1):
         if tokens[start] != "--rpc":
             continue
@@ -1998,7 +1153,7 @@ def strip_echoed_split_block(extra: Sequence[str], peer: Optional[str]) -> Optio
         for name, wanted in optional:
             if rest[:2] == [name, wanted]:
                 rest = rest[2:]
-        if rest and not (len(rest) == 2 and rest[0] == PIPELINE_GROUPS_FLAG):
+        if rest and not (len(rest) == 2 and rest[0] == rs.PIPELINE_GROUPS_FLAG):
             return None
         return tokens[:start]
     return None
@@ -2011,271 +1166,8 @@ except Exception:
     _LIBC = None
 
 
-def _die_with_parent() -> None:  # pragma: no cover - runs in the forked child
-    """``PR_SET_PDEATHSIG(SIGKILL)``, so the ssh client cannot outlive this process."""
-    if _LIBC is None:
-        return
-    try:
-        _LIBC.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG, SIGKILL
-    except Exception:
-        pass
-
-
-# A poll and not a read on the ssh channel: a half-open TCP connection never delivers EOF.
-PEER_REAP_POLL_S = 5
-
-
-class PeerProcess:
-    """A long-lived process on the peer, driven through one ssh session."""
-
-    def __init__(
-        self,
-        name: str,
-        peer: str,
-        argv: List[str],
-        log_path: Optional[Path] = None,
-    ):
-        self.name = name
-        self.peer = peer
-        self.argv = argv
-        self.log_path = log_path
-        self.proc: Optional[asyncio.subprocess.Process] = None
-        self.remote_pid: Optional[int] = None
-        self.started_at: Optional[float] = None
-        self.exited_at: Optional[float] = None
-        self.returncode: Optional[int] = None
-        self.tail: Deque[str] = collections.deque(maxlen = _LOG_TAIL)
-        self._drain: Optional[asyncio.Task] = None
-
-    @property
-    def remote_command(self) -> str:
-        """Start the server, report ITS pid, then watch the ssh session that started us."""
-        launch = " ".join(shlex.quote(a) for a in self.argv)
-        return (
-            f"{launch} & srv=$!; echo UNSLOTH_SPARK_PID=$srv; watch=$PPID; "
-            f'while kill -0 "$srv" 2>/dev/null; do '
-            f'if ! kill -0 "$watch" 2>/dev/null; then '
-            f'kill "$srv" 2>/dev/null; sleep {PEER_REAP_POLL_S}; '
-            f'kill -9 "$srv" 2>/dev/null; exit 143; fi; '
-            f"sleep {PEER_REAP_POLL_S}; done; "
-            f'wait "$srv"'
-        )
-
-    @property
-    def redacted_command(self) -> str:
-        return " ".join(redacted_argv(self.argv))
-
-    @property
-    def alive(self) -> bool:
-        return self.proc is not None and self.proc.returncode is None
-
-    async def start(self) -> None:
-        # A stale pid would make stop() kill whatever the peer reused that number for.
-        self.remote_pid = None
-        self.proc = await asyncio.create_subprocess_exec(
-            *ssh_argv(self.peer, self.remote_command, keepalive = True),
-            stdout = asyncio.subprocess.PIPE,
-            stderr = asyncio.subprocess.STDOUT,
-            stdin = asyncio.subprocess.DEVNULL,
-            preexec_fn = _die_with_parent,
-        )
-        self.started_at = time.time()
-        self.exited_at = None
-        self.returncode = None
-        self._drain = asyncio.create_task(self._drain_output())
-
-    async def _drain_output(self) -> None:
-        assert self.proc is not None and self.proc.stdout is not None
-        handle = None
-        if self.log_path is not None:
-            try:
-                self.log_path.parent.mkdir(parents = True, exist_ok = True)
-                handle = open(self.log_path, "a", encoding = "utf-8", errors = "replace")
-                handle.write(
-                    f"\n# {time.strftime('%Y-%m-%d %H:%M:%S')} {self.name} on {self.peer}: "
-                    f"{self.redacted_command}\n"
-                )
-            except OSError:
-                handle = None
-        try:
-            while True:
-                line = await self.proc.stdout.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", "replace").rstrip()
-                if text.startswith("UNSLOTH_SPARK_PID="):
-                    try:
-                        self.remote_pid = int(text.split("=", 1)[1].strip())
-                    except ValueError:
-                        pass
-                    continue
-                self.tail.append(text)
-                if handle is not None:
-                    handle.write(text + "\n")
-                    handle.flush()
-        except (asyncio.CancelledError, Exception):
-            pass
-        finally:
-            if handle is not None:
-                handle.close()
-            if self.proc is not None:
-                try:
-                    await self.proc.wait()
-                except Exception:
-                    pass
-                self.returncode = self.proc.returncode
-                self.exited_at = time.time()
-
-    async def stop(self, *, timeout: float = 10.0) -> None:
-        """Kill the remote process by the pid this run printed, then its ssh session."""
-        # Only while the ssh session that printed the pid is still up.
-        if self.remote_pid and self.alive:
-            await ssh_run(
-                self.peer,
-                f"kill {self.remote_pid} 2>/dev/null; sleep 1; kill -9 {self.remote_pid} 2>/dev/null; true",
-                timeout = timeout,
-            )
-        elif self.remote_pid:
-            logger.info(
-                "spark serving: peer %s already exited; leaving remote pid %s to the remote "
-                "wrapper rather than signalling a number we no longer own",
-                self.name,
-                self.remote_pid,
-            )
-            self.remote_pid = None
-        proc = self.proc
-        if proc is not None and proc.returncode is None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(proc.wait(), timeout = timeout)
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-        if self._drain is not None:
-            try:
-                await asyncio.wait_for(self._drain, timeout = 2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                self._drain.cancel()
-
-    def snapshot(self) -> Dict[str, Any]:
-        return {
-            "name": self.name,
-            "peer": self.peer,
-            "alive": self.alive,
-            "remote_pid": self.remote_pid,
-            "started_at": self.started_at,
-            "exited_at": self.exited_at,
-            "returncode": self.returncode,
-            "command": self.redacted_command,
-            "log": str(self.log_path) if self.log_path else None,
-            "tail": list(self.tail)[-5:],
-        }
-
-
-async def wait_for_port(
-    host: str,
-    port: int,
-    timeout: float,
-    *,
-    cancelled: Optional[Callable[[], bool]] = None,
-) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if cancelled is not None and cancelled():
-            return False
-        try:
-            _r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout = 2.0)
-            w.close()
-            return True
-        except (OSError, asyncio.TimeoutError):
-            await asyncio.sleep(0.25)
-    return False
-
-
-PEER_OWNERSHIP_SETTLE_S = 1.5
-
-
-async def wait_for_own_port(
-    process: "PeerProcess",
-    host: str,
-    port: int,
-    timeout: float,
-    *,
-    cancelled: Optional[Callable[[], bool]] = None,
-) -> bool:
-    """Wait until ``process`` is answering on ``port``, not merely until something is."""
-    if not process.alive:
-        return False
-    if not await wait_for_port(host, port, timeout, cancelled = cancelled):
-        return False
-    if PEER_OWNERSHIP_SETTLE_S > 0:
-        await asyncio.sleep(PEER_OWNERSHIP_SETTLE_S)
-    if not process.alive:
-        return False
-    # process.alive is the LOCAL ssh session, not a timely answer about the remote child.
-    if not await peer_pid_alive(process):
-        return False
-    # Alive is not bound: a child still starting while a stale server holds the port looks the same.
-    deadline = time.monotonic() + timeout
-    while True:
-        owner = await peer_port_owner(process, port)
-        if owner is None or owner:
-            return True  # None: the peer cannot say (no ss), so alive is the best evidence
-        if time.monotonic() >= deadline or (cancelled is not None and cancelled()):
-            return False
-        if not process.alive or not await peer_pid_alive(process):
-            return False
-        await asyncio.sleep(1.0)
-
-
-async def peer_port_owner(process: "PeerProcess", port: int) -> Optional[bool]:
-    """Whether the listener on ``port`` is ``process``'s remote pid; None when it cannot be told."""
-    pid = process.remote_pid
-    if not pid:
-        return None
-    try:
-        rc, out, _err = await ssh_run(
-            process.peer, f"ss -ltnpH 'sport = :{int(port)}' 2>/dev/null", timeout = 10.0
-        )
-    except Exception:
-        return None
-    lines = [line for line in (out or "").splitlines() if line.strip()]
-    if rc != 0 or not lines:
-        return None
-    return any(f"pid={int(pid)}," in line for line in lines)
-
-
-async def peer_pid_alive(process: "PeerProcess", *, timeout: float = 10.0) -> bool:
-    """Whether the remote pid this run printed is still running. False when it cannot be asked."""
-    pid = process.remote_pid
-    if not pid:
-        return False
-    try:
-        rc, out, _err = await ssh_run(
-            process.peer,
-            f"kill -0 {int(pid)} 2>/dev/null && echo PIDLIVE || echo PIDGONE",
-            timeout = timeout,
-        )
-    except Exception:
-        return False
-    return rc == 0 and "PIDLIVE" in (out or "")
-
-
-def _log_dir() -> Optional[Path]:
-    try:
-        from utils.paths.storage_roots import studio_root
-        return studio_root() / "logs" / "spark"
-    except Exception:
-        return None
-
-
-class SparkLoadDoesNotFit(Exception):
-    """No topology on this pair can hold the requested load."""
+# No topology on this pair can hold the requested load; the routes answer it as a refusal.
+SparkLoadDoesNotFit = rs.LoadDoesNotFit
 
 
 class _TeardownRefused(Exception):
@@ -2289,7 +1181,7 @@ class SparkServing:
         self.plan: Dict[str, Any] = {}
         self.preflight: Optional[Dict[str, Any]] = None
         self.router: Optional[SparkRouter] = None
-        self.peer_process: Optional[PeerProcess] = None
+        self.peer_process: Optional[rs.PeerProcess] = None
         self.peer: Optional[str] = None
         self.attached_backend: Any = None
         self.attached_port: Optional[int] = None
@@ -2302,6 +1194,7 @@ class SparkServing:
         # The current load is a model kept alongside, which this state does not describe.
         self._passthrough: bool = False
         self._confirm_teardown: Any = None
+        self._on_plan_accepted: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         # The split's llama-server lost its rpc-server and has not reconnected to the replacement.
@@ -2352,14 +1245,7 @@ class SparkServing:
     @staticmethod
     def _request_with(request: Any, updates: Dict[str, Any]) -> Any:
         """``request`` with ``updates``: a copy for a pydantic model, in place otherwise."""
-        if not updates:
-            return request
-        try:
-            return request.model_copy(update = dict(updates))
-        except AttributeError:
-            for key, value in updates.items():
-                setattr(request, key, value)
-            return request
+        return rs.request_with(request, updates)
 
     async def before_load(
         self,
@@ -2398,29 +1284,29 @@ class SparkServing:
         try:
             model_path = str(getattr(request, "model_path", "") or "")
             variant = getattr(request, "gguf_variant", None)
-            local_file = cached_repo_file(model_path, variant)
-            size = gguf_size_bytes(local_file)
+            local_file = rs.cached_repo_file(model_path, variant)
+            size = rs.gguf_size_bytes(local_file)
             # Sidecars stay resident, so pricing the base GGUF alone understates the node.
             extras_for_sizing = list(
                 getattr(request, "llama_extra_args", None)
                 if getattr(request, "llama_extra_args", None) is not None
                 else (inherited_extra_args or [])
             )
-            sidecars, sidecars_unknown = sidecar_bytes(extras_for_sizing)
+            sidecars, sidecars_unknown = rs.sidecar_bytes(extras_for_sizing)
             _named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
             if not any(str(a).split("=", 1)[0] in _named for a in extras_for_sizing) and not any(
-                os.environ.get(k) for k in _GROUPS_REFUSED_ENV
+                os.environ.get(k) for k in rs._GROUPS_REFUSED_ENV
             ):
-                projector = auto_projector_file(
+                projector = rs.auto_projector_file(
                     local_file, disable_vision = bool(getattr(request, "disable_vision", False))
                 )
-                projector_size = gguf_size_bytes(projector) if projector else None
+                projector_size = rs.gguf_size_bytes(projector) if projector else None
                 if projector_size:
                     sidecars += int(projector_size)
-            for path in env_launch_files(dict(os.environ)):
-                if path in launch_files_from(extras_for_sizing):
+            for path in rs.env_launch_files(dict(os.environ)):
+                if path in rs.launch_files_from(extras_for_sizing):
                     continue  # already charged from argv; do not count it twice
-                file_size = gguf_size_bytes(path)
+                file_size = rs.gguf_size_bytes(path)
                 if file_size is None:
                     try:
                         file_size = osp.getsize(path)
@@ -2441,19 +1327,19 @@ class SparkServing:
             remote_size = None
             if size is None:
                 remote_size = await asyncio.to_thread(
-                    remote_gguf_size_bytes,
+                    rs.remote_gguf_size_bytes,
                     model_path,
                     variant,
                     getattr(request, "hf_token", None),
                 )
                 size = None if remote_size is None else remote_size + sidecars
-            requested_ctx, cache_type, cache_type_v = effective_kv_settings(
+            requested_ctx, cache_type, cache_type_v = rs.effective_kv_settings(
                 request, extras_for_sizing
             )
             kv_total = None
             if local_file and requested_ctx:
                 kv_total = await asyncio.to_thread(
-                    estimate_kv_bytes, local_file, requested_ctx, cache_type, cache_type_v
+                    rs.estimate_kv_bytes, local_file, requested_ctx, cache_type, cache_type_v
                 )
             users = max(1, int(n_parallel))
             kv_per_user = (kv_total / users) if kv_total else 0.0
@@ -2472,6 +1358,14 @@ class SparkServing:
                 self.load_in_progress = False
                 self._restore_pre_load_state()
                 raise SparkLoadDoesNotFit(why)
+            hook, self._on_plan_accepted = self._on_plan_accepted, None
+            if hook is not None:
+                try:
+                    await hook()
+                except BaseException as exc:
+                    self.load_in_progress = False
+                    self._restore_pre_load_state()
+                    raise _TeardownRefused() from exc
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
                 mtp_plan,
@@ -2569,7 +1463,7 @@ class SparkServing:
             if self.pipeline_groups:
                 logger.info(
                     "spark serving: %s %d with %d slots (%d asked for)",
-                    PIPELINE_GROUPS_FLAG,
+                    rs.PIPELINE_GROUPS_FLAG,
                     self.pipeline_groups,
                     int(groups["slots"]),
                     int(groups["requested_slots"]),
@@ -2600,7 +1494,7 @@ class SparkServing:
                 "rpc-server so the new llama-server can take the connection"
             )
             reusable = False
-        if reusable and not await wait_for_port(peer, port, PEER_REUSE_TIMEOUT_S):
+        if reusable and not await rs.wait_for_port(peer, port, PEER_REUSE_TIMEOUT_S):
             logger.warning(
                 "spark serving: the peer rpc-server on %s:%s stopped answering; restarting it",
                 peer,
@@ -2613,7 +1507,7 @@ class SparkServing:
                 "a layer split needs its own device order and an explicit GPU selection "
                 "replaces it; clear the GPU pin to serve this model across both Sparks"
             )
-        if argv_or_env_rpc(_effective(request)):
+        if rs.argv_or_env_rpc(_effective(request)):
             return _fall_back(
                 "llama-server is being launched with a caller-supplied --rpc; leaving the "
                 "placement alone"
@@ -2655,17 +1549,17 @@ class SparkServing:
                 )
             for note in self.preflight.get("notes", []):
                 logger.info("spark serving: preflight: %s", note)
-        local_rpc = rpc_server_binary()
+        local_rpc = rs.rpc_server_binary()
         rpc_names: List[str] = []
         if local_rpc:
             rpc_names.append(osp.basename(local_rpc))
-        rpc_names += [n for n in rpc_server_names() if n not in rpc_names]
+        rpc_names += [n for n in rs.rpc_server_names() if n not in rpc_names]
         candidates: List[str] = []
         for rpc_name in rpc_names:
             candidates += [
-                c for c in peer_binary_candidates(local_rpc, rpc_name) if c not in candidates
+                c for c in rs.peer_binary_candidates(local_rpc, rpc_name) if c not in candidates
             ]
-        rc, out, _err = await ssh_run(peer, find_binary_script(candidates))
+        rc, out, _err = await rs.ssh_run(peer, rs.find_binary_script(candidates))
         binary = out.strip().splitlines()[-1] if out.strip() else "MISSING"
         if rc != 0 or binary == "MISSING":
             return _fall_back(
@@ -2674,21 +1568,21 @@ class SparkServing:
             )
         present = False
         if local_file:
-            rc2, out2, _ = await ssh_run(
+            rc2, out2, _ = await rs.ssh_run(
                 peer, f"test -f {shlex.quote(local_file)} && echo YES || echo NO"
             )
             present = rc2 == 0 and out2.strip().endswith("YES")
         self.peer_model_present = present
         bind = (os.environ.get(ENV_RPC_BIND) or "").strip() or peer
-        argv = rpc_server_argv(binary, bind = bind, port = port, cache = present)
-        log_dir = _log_dir()
-        process = PeerProcess(
+        argv = rs.rpc_server_argv(binary, bind = bind, port = port, cache = present)
+        log_dir = rs._log_dir()
+        process = rs.PeerProcess(
             "ggml-rpc-server", peer, argv, log_dir / "rpc-server.log" if log_dir else None
         )
         await process.start()
         try:
             # Not wait_for_port: a stale listener on the port would be adopted while our child fails to bind.
-            ready = await wait_for_own_port(
+            ready = await rs.wait_for_own_port(
                 process, peer, port, PEER_START_TIMEOUT_S, cancelled = self._cancelled
             )
         except BaseException:
@@ -2777,7 +1671,7 @@ class SparkServing:
             argv = list(getattr(process, "args", None) or [])
             port = getattr(llama_backend, "_port", None)
             self._record_launched_mtp(argv)
-            if argv_or_env_rpc(argv):
+            if rs.argv_or_env_rpc(argv):
                 # A user-supplied --rpc is recorded, not managed.
                 if self.router is not None or (
                     self.peer_process is not None and not self._argv_names_our_peer(argv)
@@ -2809,7 +1703,7 @@ class SparkServing:
             if self.router is not None or self.peer_process is not None:
                 await self.detach()
             gguf_path = getattr(llama_backend, "gguf_path", None)
-            size = gguf_size_bytes(gguf_path)
+            size = rs.gguf_size_bytes(gguf_path)
             n_ctx = int(
                 getattr(llama_backend, "_kv_cache_context_total", None)
                 or getattr(llama_backend, "_effective_context_length", None)
@@ -2824,7 +1718,7 @@ class SparkServing:
             cache_type_v = cache_types[1] if len(cache_types) > 1 else cache_type
             kv_total = (
                 await asyncio.to_thread(
-                    estimate_kv_bytes, gguf_path, n_ctx, cache_type, cache_type_v
+                    rs.estimate_kv_bytes, gguf_path, n_ctx, cache_type, cache_type_v
                 )
                 if gguf_path
                 else None
@@ -2889,9 +1783,9 @@ class SparkServing:
             self.topology, self.reason = "single", "cannot read this node's llama-server launch"
             return
         # Two round trips: the lookup script exits on its first hit, so an appended check would never run.
-        rc, out, _ = await ssh_run(
+        rc, out, _ = await rs.ssh_run(
             peer,
-            find_binary_script(peer_binary_candidates(argv[0], Path(argv[0]).name)),
+            rs.find_binary_script(rs.peer_binary_candidates(argv[0], Path(argv[0]).name)),
             timeout = 25.0,
         )
         binary = out.strip().splitlines()[-1].strip() if out.strip() else "MISSING"
@@ -2917,7 +1811,7 @@ class SparkServing:
             logger.warning("spark serving: %s", self.reason)
             return
         needed = launch_files(argv, str(gguf_path))
-        for extra in env_launch_files(getattr(llama_backend, "launched_env", None)):
+        for extra in rs.env_launch_files(getattr(llama_backend, "launched_env", None)):
             if extra not in needed:
                 needed.append(extra)
         generated = generated_launch_files(needed)
@@ -2951,7 +1845,7 @@ class SparkServing:
             fmt = "; ".join(
                 f"stat -L -c '%s %Y' {shlex.quote(p)} 2>/dev/null || echo NOSTAT" for p in needed
             )
-            rc, out, _ = await ssh_run(peer, fmt, timeout = 25.0)
+            rc, out, _ = await rs.ssh_run(peer, fmt, timeout = 25.0)
             remote = (out or "").strip().splitlines()
             self.peer_model_present = rc == 0 and len(remote) == len(needed)
             if self.peer_model_present:
@@ -2993,16 +1887,16 @@ class SparkServing:
             replica_argv(argv, binary = binary, host = peer, port = peer_port),
             replica_env(getattr(llama_backend, "launched_env", None) or None),
         )
-        log_dir = _log_dir()
+        log_dir = rs._log_dir()
         self.peer = peer
         self.replica_binary, self.replica_port = binary, peer_port
-        self.peer_process = PeerProcess(
+        self.peer_process = rs.PeerProcess(
             "llama-server", peer, peer_argv, log_dir / "peer-llama-server.log" if log_dir else None
         )
         await self.peer_process.start()
         router: Optional[SparkRouter] = None
         try:
-            if not await wait_for_own_port(
+            if not await rs.wait_for_own_port(
                 self.peer_process,
                 peer,
                 peer_port,
@@ -3293,7 +2187,7 @@ class SparkServing:
             self.peer_keys = keys
         if rebuilt != process.argv:
             generated = generated_launch_files(
-                argv[1:] + env_launch_files(getattr(backend, "launched_env", None))
+                argv[1:] + rs.env_launch_files(getattr(backend, "launched_env", None))
             )
             failed = await replicate_generated_files(peer, generated) if generated else None
             if failed:
@@ -3358,7 +2252,7 @@ class SparkServing:
                 port = _argv_value(getattr(process, "argv", None) or [], "-p")
                 if not port or not port.isdigit():
                     return False
-                return await wait_for_own_port(
+                return await rs.wait_for_own_port(
                     process,
                     process.peer,
                     int(port),
@@ -3455,12 +2349,12 @@ def state() -> SparkServing:
 
 
 def reset_for_tests() -> None:
-    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP
+    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP, _DETACH_LEGACY_ON_COMMIT
     _STATE = None
+    _DETACH_LEGACY_ON_COMMIT = False
     _CLUSTER = None
     _CLUSTER_LOOKED_UP = False
-    _HELP_TEXT.clear()
-    _ACCEPTS.clear()
+    rs.reset_shared_for_tests()
 
 
 def route_base_url(llama_backend: Any) -> Optional[str]:
@@ -3475,11 +2369,108 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     _STATE.tag_conversation(payload, thread_id)
 
 
+def replica_count(llama_backend: Any) -> int:
+    """Healthy replicas behind the paired-Spark router, else 1: each runs the primary's slots and KV pool."""
+    if route_base_url(llama_backend) is None:
+        return 1
+    router = state().router
+    return max(1, len(router.healthy_backends())) if router is not None else 1
+
+
+_DETACH_LEGACY_ON_COMMIT = False
+
+
+def _cluster_active() -> bool:
+    from core.inference import cluster_serving
+    return (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured()
+
+
+def _legacy_worker_holds_a_cluster_port() -> bool:
+    from core.inference import cluster_serving
+
+    process = _STATE.peer_process if _STATE is not None else None
+    if (
+        process is None
+        or getattr(process, "name", "") != "ggml-rpc-server"
+        or not getattr(process, "alive", False)
+    ):
+        return False
+    argv = [str(a) for a in getattr(process, "argv", None) or []]
+
+    def operand(flag: str) -> str:
+        return argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
+
+    port = operand("-p")
+    hosts = {operand("-H"), str(getattr(process, "peer", "") or "").rpartition("@")[2]} - {""}
+    candidates = [
+        node
+        for node in cluster_serving.state().nodes
+        if node.managed and str(node.rpc_port) == port
+    ]
+    if any(node.host in hosts for node in candidates):
+        return True
+    if not candidates:
+        return False
+    # A host name and an address are the same endpoint when they resolve to a common IPv4.
+    legacy = set().union(*(_ipv4_addresses(h) for h in hosts)) if hosts else set()
+    return any(legacy & _ipv4_addresses(node.host) for node in candidates)
+
+
+def _ipv4_addresses(host: str) -> set:
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return {host}
+    try:
+        return {
+            info[4][0]
+            for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        }
+    except (OSError, UnicodeError):
+        return set()
+
+
+async def _legacy_worker_holds_a_cluster_port_bounded(timeout: float = 5.0) -> bool:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_legacy_worker_holds_a_cluster_port), timeout
+        )
+    except asyncio.TimeoutError:
+        return False
+
+
+def _legacy_kept() -> bool:
+    from core.inference import cluster_serving
+
+    if _STATE is None or (_STATE.peer_process is None and _STATE.router is None):
+        return False
+    if not _cluster_active():
+        return False
+    cluster = cluster_serving.state()
+    cluster.refresh_nodes()
+    return bool(cluster.config_error)
+
+
 def current_topology() -> Optional[str]:
+    from core.inference import cluster_serving
+
+    if (
+        cluster_serving._STATE is not None
+        and not _legacy_kept()
+        and (_cluster_active() or cluster_serving._STATE.serving())
+    ):
+        return cluster_serving._STATE.topology
     st = state()
     if st.attached_backend is None and st.peer_process is None and st.router is None:
         return None
     return st.topology
+
+
+async def _confirm(confirm_teardown: Any) -> None:
+    """Run the route's teardown gate; it may be async (a forced reload drains its chats there)."""
+    if confirm_teardown is None:
+        return
+    confirmed = confirm_teardown()
+    if inspect.isawaitable(confirmed):
+        await confirmed
 
 
 async def before_load(
@@ -3490,6 +2481,89 @@ async def before_load(
     cancel_event: Any = None,
     confirm_teardown: Any = None,
 ) -> Any:
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    alongside = bool(
+        getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
+    )
+    replacing = not alongside and str(getattr(request, "engine", "auto") or "auto") == "auto"
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.settle_internal_load()
+    legacy_serving = _STATE is not None and (
+        _STATE.peer_process is not None or _STATE.router is not None
+    )
+    cluster_broken = False
+    if _cluster_active() and legacy_serving:
+        cluster_serving.state().refresh_nodes()
+        cluster_broken = bool(cluster_serving.state().config_error)
+    # A malformed cluster config never tears down a two-Spark split that still serves.
+    if _cluster_active() and not cluster_broken:
+        retired_first = False
+        if replacing and await _legacy_worker_holds_a_cluster_port_bounded():
+            # The two-Spark rpc-server holds the port a managed worker must bind: retire it first.
+            await _confirm(confirm_teardown)
+            _STATE._note_retired_split(_STATE.peer_process)
+            await _STATE.detach()
+            retired_first = True
+        try:
+            out = await cluster_serving.state().before_load(
+                request,
+                n_parallel,
+                inherited_extra_args = inherited_extra_args,
+                cancel_event = cancel_event,
+            )
+        except BaseException:
+            if retired_first:
+                # Refused after its split went: the primary left cannot compute, so unload it.
+                await _STATE.load_failed()
+            raise
+        if retired_first:
+            out = SparkServing._request_with(out, {"force_reload": True})
+        legacy = _STATE is not None and (
+            _STATE.peer_process is not None or _STATE.router is not None
+        )
+        _DETACH_LEGACY_ON_COMMIT = legacy and not alongside and not replacing
+        if replacing and legacy and not cluster_serving.state()._cancelled():
+            # Only once the cluster has a plan, so a refused or cancelled load leaves it serving.
+            try:
+                await _confirm(confirm_teardown)
+            except BaseException:
+                await cluster_serving._STATE.load_failed()  # no load follows a refused teardown
+                raise
+            if _STATE.peer_process is not None:
+                _STATE._note_retired_split(_STATE.peer_process)  # load_failed unloads the orphan
+            await _STATE.detach()
+            out = SparkServing._request_with(out, {"force_reload": True})
+        return out
+    if cluster_serving._STATE is not None and (
+        cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None
+    ):
+        cluster_serving._STATE.retire_on_commit = not (
+            getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
+        )
+        if replacing and cluster_serving._STATE.retire_on_commit and enabled():
+            # The workers go once the two-Spark planner accepts; a refused load keeps them serving.
+            async def retire_cluster() -> None:
+                await _confirm(confirm_teardown)
+                cluster = cluster_serving._STATE
+                if cluster._backend is not None and cluster.block and cluster.workers:
+                    state()._retired_split = (
+                        cluster._backend,
+                        getattr(cluster._backend, "_process", None),
+                    )
+                await cluster.shutdown()
+
+            state()._on_plan_accepted = retire_cluster
+        cluster = cluster_serving._STATE
+        if (
+            replacing
+            and cluster.retire_on_commit
+            and cluster.block
+            and getattr(cluster._backend, "is_loaded", False)
+        ):
+            # after_load retires the workers, so the primary using them must not be kept as is.
+            request = SparkServing._request_with(request, {"force_reload": True})
     if not enabled():
         return request
     st = state()
@@ -3519,6 +2593,7 @@ async def before_load(
         raise exc.__cause__
     finally:
         st._confirm_teardown = None
+        st._on_plan_accepted = None
 
 
 async def after_load(
@@ -3528,6 +2603,19 @@ async def after_load(
     cancel_event: Any = None,
 ) -> bool:
     """True when the load was cancelled during the replica startup and must be undone."""
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
+        await cluster_serving._STATE.after_load(llama_backend)
+        if _DETACH_LEGACY_ON_COMMIT and _STATE is not None:
+            await _STATE.detach()
+        _DETACH_LEGACY_ON_COMMIT = False
+        if _STATE is not None:
+            _STATE._retired_split = None
+        return False
+    if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
+        await cluster_serving._STATE.shutdown()
     if not enabled():
         return False
     st = state()
@@ -3543,6 +2631,20 @@ async def after_load(
 
 
 async def load_failed() -> None:
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    _DETACH_LEGACY_ON_COMMIT = False
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
+        await cluster_serving._STATE.load_failed()
+        legacy = _STATE.attached_backend if _STATE is not None else None
+        if legacy is not None and not getattr(legacy, "is_loaded", False):
+            await _STATE.detach()  # an engine load unloaded the two-Spark primary, then failed
+        if _STATE is not None and _STATE._retired_split is not None:
+            await _STATE.load_failed()  # unloads the two-Spark primary whose split went
+        return
+    if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
+        await cluster_serving._STATE.failed_while_retiring()
     if _STATE is None or not enabled():
         return
     if _STATE._passthrough:
@@ -3553,6 +2655,10 @@ async def load_failed() -> None:
 
 async def reconcile_internal_load() -> None:
     """Drop a two-node topology before a load that did not come through ``before_load``."""
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.note_internal_load()
     if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
         return
     logger.info("spark serving: serving on this node only for a load that bypassed the planner")
@@ -3560,12 +2666,24 @@ async def reconcile_internal_load() -> None:
 
 
 async def shutdown() -> None:
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        await cluster_serving._STATE.shutdown()
     if _STATE is None:
         return
     await _STATE.detach()
 
 
 def status() -> Dict[str, Any]:
+    from core.inference import cluster_serving
+
+    if _legacy_kept():
+        return dict(state().status(), cluster_config_error = cluster_serving.state().config_error)
+    if _cluster_active():
+        return cluster_serving.state().status()
+    if cluster_serving._STATE is not None and cluster_serving._STATE.serving():
+        return dict(cluster_serving._STATE.status(), retiring = True)
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
     return state().status()

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from core.inference import rpc_serving as rs
 from core.inference import spark_serving as ss
 
 # DGX Spark is Linux: these assert POSIX paths and accounts, which a Windows runner does not have.
@@ -129,6 +130,9 @@ def cluster(monkeypatch, tmp_path):
     ss.reset_peer_discovery_cache()
     monkeypatch.setattr(ss, "_CLUSTER", stub)
     monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", True)
+    # The bundle lookup the shared helpers use answers from the same stub.
+    monkeypatch.setattr(rs, "_LLAMA_RPC", stub)
+    monkeypatch.setattr(rs, "_LLAMA_RPC_LOOKED_UP", True)
     monkeypatch.delenv(ss.ENV_TOGGLE, raising = False)
     monkeypatch.delenv(ss.ENV_TOPOLOGY, raising = False)
     monkeypatch.delenv(ss.ENV_PEER, raising = False)
@@ -227,18 +231,6 @@ def run(coro):
     return asyncio.run(coro)
 
 
-@_POSIX_ONLY
-def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch):
-    import getpass
-
-    monkeypatch.setenv("USER", "alice")
-    assert ss._ssh_user() == "alice"
-    for var in ("USER", "USERNAME", "LOGNAME"):
-        monkeypatch.delenv(var, raising = False)
-    assert ss._ssh_user() == getpass.getuser()
-    assert ss.ssh_argv("192.168.200.13", "true")[-2] == f"{getpass.getuser()}@192.168.200.13"
-
-
 def test_off_by_default_everywhere_but_a_paired_spark(cluster, monkeypatch):
     assert ss.enabled()
     cluster.peer = None
@@ -271,7 +263,10 @@ def test_module_entry_points_are_no_ops_off_a_spark(cluster):
 
 
 def test_import_path_has_no_posix_only_calls():
-    source = Path(ss.__file__).read_text(encoding = "utf-8")
+    # The ssh and process helpers it drives live in rpc_serving; both must import on Windows.
+    source = Path(ss.__file__).read_text(encoding = "utf-8") + Path(rs.__file__).read_text(
+        encoding = "utf-8"
+    )
     for name in ("os.fork", "os.setsid", "os.killpg", "signal.SIGHUP", "fcntl", "resource."):
         assert name not in source, name
     assert "asyncio.create_subprocess_exec" in source
@@ -298,32 +293,6 @@ def test_forced_topology_overrides_and_says_so(cluster, monkeypatch):
     plan = ss.state().decide(model_bytes = GIB, users = 1, kv_bytes_per_user = 0)
     assert plan["topology"] == "replicas" and plan["recommended"] == "single"
     assert ss.ENV_TOPOLOGY in plan["reason"]
-
-
-def test_gguf_size_counts_every_shard(tmp_path):
-    for i in (1, 2, 3):
-        (tmp_path / f"m-0000{i}-of-00003.gguf").write_bytes(b"x" * (10 * i))
-    assert ss.gguf_size_bytes(str(tmp_path / "m-00001-of-00003.gguf")) == 60
-    (tmp_path / "single.gguf").write_bytes(b"y" * 7)
-    assert ss.gguf_size_bytes(str(tmp_path / "single.gguf")) == 7
-    assert ss.gguf_size_bytes(str(tmp_path / "missing.gguf")) is None
-    assert ss.gguf_size_bytes(None) is None
-
-
-def test_cached_repo_file_finds_the_variant_in_the_hub_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    snap = tmp_path / "models--unsloth--Demo-GGUF" / "snapshots" / "abc"
-    snap.mkdir(parents = True)
-    (snap / "Demo-UD-Q4_K_XL.gguf").write_bytes(b"a" * 5)
-    (snap / "mmproj-F16.gguf").write_bytes(b"b" * 5)
-    (snap / "Demo-Q8_0.gguf").write_bytes(b"c" * 9)
-    assert ss.cached_repo_file("unsloth/Demo-GGUF", "UD-Q4_K_XL") == str(
-        snap / "Demo-UD-Q4_K_XL.gguf"
-    )
-    assert ss.cached_repo_file("unsloth/Nope-GGUF", "Q8_0") is None
-    local = tmp_path / "local.gguf"
-    local.write_bytes(b"z")
-    assert ss.cached_repo_file(str(local), None) == str(local)
 
 
 def test_replica_argv_repoints_only_host_and_port():
@@ -374,10 +343,10 @@ def test_replica_argv_repoints_only_host_and_port():
 
 
 def test_rpc_server_and_layer_split_arguments():
-    assert ss.rpc_server_argv(
+    assert rs.rpc_server_argv(
         "/b/ggml-rpc-server", bind = "192.168.200.13", port = 50052, cache = True
     ) == ["/b/ggml-rpc-server", "-H", "192.168.200.13", "-p", "50052", "-c"]
-    assert ss.rpc_server_argv("/b/ggml-rpc-server", bind = "0.0.0.0", port = 50053, cache = False) == [
+    assert rs.rpc_server_argv("/b/ggml-rpc-server", bind = "0.0.0.0", port = 50053, cache = False) == [
         "/b/ggml-rpc-server",
         "-H",
         "0.0.0.0",
@@ -428,50 +397,6 @@ def test_rpc_server_and_layer_split_arguments():
         "--cache-ram",
         "0",
     ]
-
-
-def test_peer_binary_candidates_prefer_the_local_bundle_path(cluster):
-    local = str(Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "llama-server")
-    candidates = ss.peer_binary_candidates(local, "llama-server")
-    assert candidates[0] == "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
-    assert candidates[-1] == "llama-server"
-    assert len(candidates) == len(set(candidates))
-    script = ss.find_binary_script(candidates)
-    assert script.endswith("echo MISSING; exit 1") and "command -v llama-server" in script
-
-
-def test_peer_process_remote_command_prints_the_servers_pid_and_reaps_it():
-    """A Studio killed without its shutdown path must not leave the peer rpc-server holding the GPU."""
-    process = ss.PeerProcess(
-        "llama-server", "192.168.200.13", ["/b/llama-server", "-m", "/p/a b.gguf"]
-    )
-    command = process.remote_command
-    assert command.startswith("/b/llama-server -m '/p/a b.gguf' & srv=$!")
-    assert "echo UNSLOTH_SPARK_PID=$srv" in command, "the reported pid is the server's own"
-    assert "watch=$PPID" in command and 'kill -0 "$watch"' in command
-    assert 'kill "$srv"' in command and 'kill -9 "$srv"' in command
-    assert 'wait "$srv"' in command, "a server that exits on its own still reports its status"
-    for statement in command.split(";"):
-        if "kill " in statement and "kill -0" not in statement:
-            assert (
-                '"$srv"' in statement
-            ), f"the reaper kills something it did not start: {statement}"
-    assert "pkill" not in command and "pgrep" not in command and "killall" not in command
-    assert "read" not in command
-    assert f"sleep {ss.PEER_REAP_POLL_S}" in command
-    assert not process.alive
-    snap = process.snapshot()
-    assert snap["remote_pid"] is None and snap["alive"] is False
-
-
-def test_the_ssh_client_carrying_the_peer_cannot_outlive_this_process():
-    """Without PR_SET_PDEATHSIG the ssh client outlives a killed Studio."""
-    import inspect
-
-    source = inspect.getsource(ss.PeerProcess.start)
-    assert "preexec_fn = _die_with_parent" in source
-    assert "PR_SET_PDEATHSIG" in inspect.getsource(ss._die_with_parent)
-    ss._die_with_parent()
 
 
 class _FakeRequest:
@@ -556,7 +481,7 @@ def _patch_remote(
             return 0, f"{binary}\n", ""
         return 0, "", ""
 
-    started: List[ss.PeerProcess] = []
+    started: List[rs.PeerProcess] = []
 
     async def fake_start(self):
         started.append(self)
@@ -578,11 +503,11 @@ def _patch_remote(
             return False
         return port_opens
 
-    monkeypatch.setattr(ss, "ssh_run", fake_ssh_run)
-    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
-    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
-    monkeypatch.setattr(ss, "wait_for_port", fake_wait)
-    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.0)
+    monkeypatch.setattr(rs, "ssh_run", fake_ssh_run)
+    monkeypatch.setattr(rs.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(rs.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(rs, "wait_for_port", fake_wait)
+    monkeypatch.setattr(rs, "PEER_OWNERSHIP_SETTLE_S", 0.0)
     return calls, started
 
 
@@ -906,76 +831,6 @@ def test_after_load_keeps_replicas_across_a_no_op_reload(cluster, monkeypatch, t
     run(scenario())
 
 
-def test_peer_process_never_shows_the_api_key():
-    argv = ["/b/llama-server", "-m", "/m.gguf", "--api-key", "sk-secret", "--port", "1"]
-    process = ss.PeerProcess("llama-server", "192.168.200.13", argv)
-    assert "sk-secret" in process.remote_command
-    assert "sk-secret" not in process.redacted_command
-    assert "sk-secret" not in process.snapshot()["command"]
-    assert ss.redacted_argv(["--api-key=sk-secret"]) == ["--api-key=<redacted>"]
-
-
-def test_kv_estimate_reads_the_gguf_header_and_scales_with_cache_type(tmp_path):
-    gguf = pytest.importorskip("gguf")
-    path = tmp_path / "tiny.gguf"
-    writer = gguf.GGUFWriter(str(path), "llama")
-    writer.add_block_count(2)
-    writer.add_head_count(4)
-    writer.add_head_count_kv(2)
-    writer.add_embedding_length(64)
-    writer.write_header_to_file()
-    writer.write_kv_data_to_file()
-    writer.write_tensors_to_file()
-    writer.close()
-    assert ss.estimate_kv_bytes(str(path), 1024) == 2 * 2 * 1024 * 2 * 16 * 2
-    assert ss.estimate_kv_bytes(str(path), 1024, "q8_0") == int(2 * 2 * 1024 * 2 * 16 * (34 / 32))
-    assert ss.estimate_kv_bytes(str(path), 0) is None
-    assert ss.estimate_kv_bytes(str(tmp_path / "missing.gguf"), 1024) is None
-    assert ss.kv_bytes_per_elem("q4_0") == 18 / 32 and ss.kv_bytes_per_elem(None) == 2.0
-
-
-def test_ssh_user_defers_to_the_cluster_module(cluster, monkeypatch):
-    monkeypatch.setenv("USER", "alice")
-    cluster._ssh_user = lambda: "bob"
-    assert ss._ssh_user() == "bob"
-    assert ss.ssh_argv("192.168.200.13", "true")[-2] == "bob@192.168.200.13"
-    del cluster._ssh_user
-    assert ss._ssh_user() == "alice"
-
-
-def test_llama_server_supports_probes_help_once_per_binary_and_mtime(cluster, tmp_path):
-    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
-    assert ss.llama_server_binary() == str(script)
-    assert ss.llama_server_supports("--pipeline-groups") is True
-    assert ss.llama_server_supports("--parallel") is True
-    assert ss.llama_server_supports("--pipeline") is False, "a prefix is not the flag"
-    assert ss.llama_server_supports("--no-such-flag") is False
-    assert probe_runs(script) == 1, "one --help run answers every flag"
-    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
-    os.utime(script, (time.time() + 5, time.time() + 5))
-    assert ss.llama_server_supports("--pipeline-groups") is False
-    assert probe_runs(script) == 2
-
-
-def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_path):
-    assert ss.llama_server_binary() is None
-    assert ss.llama_server_supports("--pipeline-groups") is False, "no binary in the bundle"
-    assert ss.llama_server_supports("--pipeline-groups", str(tmp_path / "missing")) is False
-    write_fake_llama_server(cluster.bundle / "bin", _FAKE_HELP_WITH_FLAG)
-    assert ss.llama_server_binary() is None
-    assert ss.llama_server_supports("--pipeline-groups") is False
-    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
-    assert ss.llama_server_binary() == str(script)
-    assert ss.llama_server_supports("--pipeline-groups") is False
-    assert ss.llama_server_supports("", str(script)) is False
-    crashing = write_fake_llama_server(tmp_path / "crash", _FAKE_HELP_WITH_FLAG, body = "exit 3\n")
-    assert ss.llama_server_supports("--pipeline-groups", str(crashing)) is False
-    dud = tmp_path / "dud" / "llama-server"
-    dud.parent.mkdir()
-    dud.write_text("not a program")
-    assert ss.llama_server_supports("--pipeline-groups", str(dud)) is False
-
-
 def test_the_orchestrator_probes_the_binary_the_backend_launches(cluster, monkeypatch, tmp_path):
     """One llama-server resolver shared with the backend, so both link ends run one build."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -987,46 +842,17 @@ def test_the_orchestrator_probes_the_binary_the_backend_launches(cluster, monkey
         cluster.bundle = root
         ss.reset_for_tests()
         backend_choice = LlamaCppBackend._find_llama_server_binary()
-        assert ss.llama_server_binary() == backend_choice, (
+        assert rs.llama_server_binary() == backend_choice, (
             f"layout {parts or ('flat',)}: the orchestrator would probe "
-            f"{ss.llama_server_binary()} while the backend launches {backend_choice}"
+            f"{rs.llama_server_binary()} while the backend launches {backend_choice}"
         )
     # And not vacuously equal: without this the loop passes with both resolvers finding nothing.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "layout_build_bin"))
     ss.reset_for_tests()
-    assert ss.llama_server_binary() == str(tmp_path / "layout_build_bin/build/bin/llama-server")
+    assert rs.llama_server_binary() == str(tmp_path / "layout_build_bin/build/bin/llama-server")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "layout_bin"))
     ss.reset_for_tests()
-    assert ss.llama_server_binary() is None
-
-
-def test_the_rpc_server_is_taken_from_beside_the_launched_llama_server(cluster, tmp_path):
-    """The peer's copy comes from beside the llama-server this node launches."""
-    launched = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
-    beside = launched.parent / "ggml-rpc-server"
-    beside.write_text("#!/bin/sh\nexit 0\n")
-    beside.chmod(0o755)
-    other = tmp_path / "other" / "ggml-rpc-server"
-    other.parent.mkdir(parents = True, exist_ok = True)
-    other.write_text("#!/bin/sh\nexit 0\n")
-    other.chmod(0o755)
-    cluster.rpc_binary = str(other)
-    assert ss.rpc_server_binary() == str(beside)
-    assert ss.peer_binary_candidates(ss.rpc_server_binary(), "ggml-rpc-server")[0].endswith(
-        "/build/bin/ggml-rpc-server"
-    )
-    beside.unlink()
-    assert ss.rpc_server_binary() == str(other)
-
-
-def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tmp_path):
-    script = write_fake_llama_server(tmp_path / "slow", _FAKE_HELP_WITH_FLAG, body = "sleep 5\n")
-    monkeypatch.setattr(ss, "HELP_PROBE_TIMEOUT_S", 0.3)
-    started = time.monotonic()
-    assert ss.llama_server_supports("--pipeline-groups", str(script)) is False
-    assert time.monotonic() - started < 3.0
-    assert ss.llama_server_supports("--pipeline-groups", str(script)) is False
-    assert probe_runs(script) == 1, "the timeout is cached; one stall per build"
+    assert rs.llama_server_binary() is None
 
 
 def test_pipeline_groups_default_is_two_when_the_bundle_has_the_flag(cluster, monkeypatch):
@@ -1061,7 +887,7 @@ def test_pipeline_groups_plan_gives_every_group_a_slot(cluster, monkeypatch):
 
 
 def test_pipeline_groups_plan_is_off_when_fit_is_off(cluster, monkeypatch):
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(rs, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
     for args in (["-fit", "off"], ["--fit=off"], ["--fit", "0"], ["-fit", "on", "--fit", "false"]):
         out = ss.pipeline_groups_plan(8, args)
@@ -1075,7 +901,7 @@ def test_pipeline_groups_plan_is_off_when_fit_is_off(cluster, monkeypatch):
 
 def test_pipeline_groups_plan_honours_llama_arg_fit_in_the_environment(cluster, monkeypatch):
     # llama.cpp applies LLAMA_ARG_FIT before argv: off there means no fit pass for the extra groups' KV.
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(rs, "llama_server_supports", lambda flag, binary = None: True)
     monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
     monkeypatch.setenv("LLAMA_ARG_FIT", "off")
     out = ss.pipeline_groups_plan(8, [])
@@ -1084,33 +910,6 @@ def test_pipeline_groups_plan_honours_llama_arg_fit_in_the_environment(cluster, 
     assert (
         ss.pipeline_groups_plan(8, ["-fit", "on"])["pipeline_groups"] == ss.PIPELINE_GROUPS_DEFAULT
     )
-
-
-def test_kv_sizing_reads_an_inherited_llama_arg_ctx_size(monkeypatch):
-    from types import SimpleNamespace
-
-    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "8192")
-    request = SimpleNamespace(max_seq_length = 0, cache_type_kv = None)
-    # no panel value and no -c: auto-layers omits -c and the child runs at the env length
-    assert ss.effective_kv_settings(request, [])[0] == 8192
-    # a panel value is passed as -c and wins over the environment
-    assert ss.effective_kv_settings(SimpleNamespace(max_seq_length = 4096), [])[0] == 4096
-    # a pass-through -c wins too, and -c 0 asks for the native length, not the env's
-    assert ss.effective_kv_settings(request, ["-c", "2048"])[0] == 2048
-    assert ss.effective_kv_settings(request, ["--ctx-size", "0"])[0] == 0
-    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "nope")
-    assert ss.effective_kv_settings(request, [])[0] == 0
-
-
-def test_kv_sizing_folds_long_option_underscores(monkeypatch):
-    from types import SimpleNamespace
-
-    monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
-    monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
-    monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
-    request = SimpleNamespace(max_seq_length = 4096, cache_type_kv = "f16")
-    extras = ["--ctx_size", "65536", "--cache_type_k", "q8_0", "--cache_type_v=q4_0"]
-    assert ss.effective_kv_settings(request, extras) == (65536, "q8_0", "q4_0")
 
 
 def test_pipeline_groups_plan_is_off_when_the_bundle_lacks_the_flag(cluster, monkeypatch):
@@ -1245,19 +1044,19 @@ def test_llama_server_accepts_finds_a_flag_the_usage_hides(cluster, tmp_path):
         _FAKE_HELP_SPEC_ONLY,
         hidden_flags = ("--pipeline-groups",),
     )
-    assert ss.llama_server_supports("--pipeline-groups") is False
-    assert ss.llama_server_accepts("--pipeline-groups") is True
-    assert ss.llama_server_accepts("--pipeline-groups") is True
+    assert rs.llama_server_supports("--pipeline-groups") is False
+    assert rs.llama_server_accepts("--pipeline-groups") is True
+    assert rs.llama_server_accepts("--pipeline-groups") is True
     assert probe_runs(hidden) == 2, "one --help run plus one acceptance run, both cached"
     plan = ss.pipeline_groups_plan(3)
     assert plan["pipeline_groups"] == 2 and plan["slots"] == 4 and plan["reason"] is None
     assert probe_runs(hidden) == 2
     plain = write_fake_llama_server(tmp_path / "plain", _FAKE_HELP_WITHOUT_FLAG)
-    assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
-    assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
+    assert rs.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
+    assert rs.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
     assert probe_runs(plain) == 1
-    assert ss.llama_server_accepts("--pipeline-groups", binary = str(tmp_path / "none")) is False
-    assert ss.llama_server_accepts("", binary = str(plain)) is False
+    assert rs.llama_server_accepts("--pipeline-groups", binary = str(tmp_path / "none")) is False
+    assert rs.llama_server_accepts("", binary = str(plain)) is False
 
 
 def test_gguf_nextn_predict_layers_reads_the_header_and_never_raises(tmp_path):
@@ -1292,7 +1091,7 @@ def test_mtp_plan_verdicts(cluster, monkeypatch, tmp_path):
         assert plan["mtp"] == "unknown" and plan["request"] == {}, plan
     plan = ss.mtp_plan(plain)
     assert plan["mtp"] == "no head" and plan["request"] == {}
-    assert ss.llama_server_binary() is None
+    assert rs.llama_server_binary() is None
     assert ss.mtp_plan(head)["mtp"] == "server too old"
     script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
     plan = ss.mtp_plan(head)
@@ -1600,7 +1399,7 @@ def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
     plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
     _patch_remote(monkeypatch)
     cluster.topology = "layer_split"
-    assert ss.llama_server_accepts(ss.PIPELINE_GROUPS_FLAG) is True
+    assert rs.llama_server_accepts(rs.PIPELINE_GROUPS_FLAG) is True
     assert ss.llama_server_accepts_groups_with_drafter(2) is False
     assert ss.llama_server_accepts_groups_with_drafter(1) is False, "one group is not the pair"
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
@@ -1663,10 +1462,10 @@ def test_mmproj_control_vectors_and_idle_sleep_cost_the_groups_not_the_speculati
             f"--pipeline-groups not added: the server refuses it together with {extras[0]}"
         ), extras
         run(ss.shutdown())
-    assert ss.extra_args_refuse_pipeline_groups(["--seed", "1"]) is None
-    assert ss.extra_args_refuse_pipeline_groups(None) is None
-    assert ss.extra_args_refuse_pipeline_groups(["--mmproj=/p.gguf"]) == "--mmproj"
-    assert ss.extra_args_refuse_pipeline_groups(["--control-vector-scaled", "/v", "0.5"]) == (
+    assert rs.extra_args_refuse_pipeline_groups(["--seed", "1"]) is None
+    assert rs.extra_args_refuse_pipeline_groups(None) is None
+    assert rs.extra_args_refuse_pipeline_groups(["--mmproj=/p.gguf"]) == "--mmproj"
+    assert rs.extra_args_refuse_pipeline_groups(["--control-vector-scaled", "/v", "0.5"]) == (
         "--control-vector-scaled"
     )
     plan = ss.pipeline_groups_plan(32, ["--sleep-idle-seconds", "30"])
@@ -1787,8 +1586,8 @@ def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
     sc = _load_spark_cluster()
     extra = ss.layer_split_extra_args("192.168.200.13", 50052)
     assert "--tensor-split" in extra, "the split must not inherit llama.cpp's free-memory boundary"
-    assert extra[extra.index("--tensor-split") + 1] == ss.SPLIT_TENSOR_SPLIT_EVEN
-    assert ss.SPLIT_TENSOR_SPLIT_EVEN == sc.SPLIT_TENSOR_SPLIT_EVEN, "mirror drifted"
+    assert extra[extra.index("--tensor-split") + 1] == rs.SPLIT_TENSOR_SPLIT_EVEN
+    assert rs.SPLIT_TENSOR_SPLIT_EVEN == sc.SPLIT_TENSOR_SPLIT_EVEN, "mirror drifted"
     assert extra.index("--device") < extra.index("--tensor-split")
     assert extra[extra.index("--device") + 1] == "RPC0,CUDA0"
 
@@ -1893,7 +1692,7 @@ def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, 
     assert run(ss.before_load(request, 4)) is request
     assert ss.status()["mtp"] == "no head"
     old = write_fake_llama_server(tmp_path / "old", _FAKE_HELP_WITHOUT_FLAG)
-    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(old))
+    monkeypatch.setattr(rs, "llama_server_binary", lambda: str(old))
     request = _FakeRequest(str(model))
     assert run(ss.before_load(request, 4)) is request
     assert ss.status()["mtp"] == "server too old"
@@ -1999,13 +1798,13 @@ def test_the_drafter_probe_is_a_load_not_a_help(cluster, tmp_path):
     )
     taking = write_fake_llama_server(tmp_path / "new" / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     assert (
-        ss.llama_server_accepts(
+        rs.llama_server_accepts(
             "--pipeline-groups", "2", str(refusing), extra = ("--spec-type", "draft-mtp")
         )
         is True
     )
     assert (
-        ss.llama_server_accepts(
+        rs.llama_server_accepts(
             "--pipeline-groups", "2", str(taking), extra = ("--spec-type", "draft-mtp")
         )
         is True
@@ -2076,7 +1875,7 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
     assert len(started) == 1 and ss.state().peer_process is first
     run(ss.before_load(_FakeRequest(str(model), force_reload = True), 4))
     assert len(started) == 2, "a forced reload reused the peer the old server still holds"
-    monkeypatch.setattr(ss, "wait_for_port", _port_answers(False, then = True))
+    monkeypatch.setattr(rs, "wait_for_port", _port_answers(False, then = True))
     run(ss.before_load(_FakeRequest(str(model)), 4))
     assert len(started) == 3, "the dead peer was reused instead of restarted"
     assert ss.status()["topology"] == "layer_split"
@@ -2213,7 +2012,7 @@ def test_a_relaunched_rpc_server_recovers_without_a_router(monkeypatch):
 
     real_sleep = asyncio.sleep
     monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
-    monkeypatch.setattr(ss, "wait_for_own_port", _owns)
+    monkeypatch.setattr(rs, "wait_for_own_port", _owns)
     state.peer_process = _Proc()
     state.attached_backend = object()
     state.topology = "layer_split"
@@ -2293,7 +2092,7 @@ def _split_relaunch_state(monkeypatch, respawn_ok):
 
     real_sleep = asyncio.sleep
     monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
-    monkeypatch.setattr(ss, "wait_for_own_port", _owns)
+    monkeypatch.setattr(rs, "wait_for_own_port", _owns)
     backend = _LlamaBackend()
     state.peer, state.peer_process = "peer", _Rpc()
     state.attached_backend, state.topology = backend, "layer_split"
@@ -2473,33 +2272,11 @@ def test_ssh_run_kills_and_reaps_a_timed_out_child(monkeypatch):
         return _Proc()
 
     monkeypatch.setattr(ss.asyncio, "create_subprocess_exec", _spawn)
-    rc, out, err = asyncio.run(ss.ssh_run("peer", "true", timeout = 0.01))
+    rc, out, err = asyncio.run(rs.ssh_run("peer", "true", timeout = 0.01))
 
     assert rc == 255
     assert killed, "timed-out ssh child was never killed"
     assert waited, "timed-out ssh child was never reaped"
-
-
-def test_estimate_kv_bytes_prices_k_and_v_apart(tmp_path):
-    gguf = pytest.importorskip("gguf")
-    path = tmp_path / "tiny.gguf"
-    writer = gguf.GGUFWriter(str(path), "llama")
-    writer.add_block_count(2)
-    writer.add_head_count(4)
-    writer.add_head_count_kv(2)
-    writer.add_embedding_length(64)
-    writer.write_header_to_file()
-    writer.write_kv_data_to_file()
-    writer.write_tensors_to_file()
-    writer.close()
-
-    cells = 2 * 1024 * 2 * 16  # layers x tokens x kv heads x head dim
-    q4, f32 = 18 / 32, 4.0
-
-    assert ss.estimate_kv_bytes(str(path), 1024, "q4_0") == int(cells * (q4 + q4))
-    asymmetric = ss.estimate_kv_bytes(str(path), 1024, "q4_0", "f32")
-    assert asymmetric == int(cells * (q4 + f32))
-    assert asymmetric > 4 * ss.estimate_kv_bytes(str(path), 1024, "q4_0")
 
 
 def test_after_load_prices_the_aggregate_context_not_one_slot():
@@ -2553,21 +2330,21 @@ def test_current_topology_does_not_pay_for_rail_discovery(cluster, monkeypatch):
 def test_underscore_spellings_are_read_the_way_llama_server_reads_them():
     assert ss.extra_args_own_speculation(["--spec_type", "none"]) == "--spec-type"
     assert ss.extra_args_own_speculation(["--model_draft", "/d.gguf"]) == "--model-draft"
-    assert ss.extra_args_refuse_pipeline_groups(["--control_vector", "/v.gguf"]) == (
+    assert rs.extra_args_refuse_pipeline_groups(["--control_vector", "/v.gguf"]) == (
         "--control-vector"
     )
-    assert ss.extra_args_refuse_pipeline_groups(["--sleep_idle_seconds=30"]) == (
+    assert rs.extra_args_refuse_pipeline_groups(["--sleep_idle_seconds=30"]) == (
         "--sleep-idle-seconds"
     )
     assert ss.launched_spec_flags(["--spec_type", "draft-mtp", "--spec_draft_n_max=3"]) == (
         "draft-mtp",
         3,
     )
-    assert ss._extra_args_slots(["--parallel_", "4"]) is None  # not an option at all
-    assert ss._extra_args_slots(["--parallel", "4"]) == 4
+    assert rs._extra_args_slots(["--parallel_", "4"]) is None  # not an option at all
+    assert rs._extra_args_slots(["--parallel", "4"]) == 4
 
     assert ss.extra_args_own_speculation(["-md", "/d.gguf"]) == "-md"
-    assert ss.extra_args_refuse_pipeline_groups(["-mm", "/p.gguf"]) == "-mm"
+    assert rs.extra_args_refuse_pipeline_groups(["-mm", "/p.gguf"]) == "-mm"
 
 
 def test_split_reload_keeps_the_extras_the_apply_path_does_not_round_trip(
@@ -2602,12 +2379,12 @@ def test_split_reload_reads_an_inherited_flag_the_groups_are_refused_with(
             _FakeRequest(str(model)), 3, inherited_extra_args = ["--control-vector", "/v.gguf"]
         )
     )
-    assert ss.PIPELINE_GROUPS_FLAG not in out.llama_extra_args
+    assert rs.PIPELINE_GROUPS_FLAG not in out.llama_extra_args
     assert ss.state().pipeline_groups in (0, 1)
 
 
 def test_group_rounding_never_costs_the_caller_slots(cluster, monkeypatch):
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag: True)
+    monkeypatch.setattr(rs, "llama_server_supports", lambda flag: True)
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "40")
     plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX, [])
     assert plan["pipeline_groups"] == 0
@@ -2687,38 +2464,6 @@ def _snapshot(root, repo, digest, files, mtime):
     return snap
 
 
-def test_the_sized_gguf_is_the_newest_snapshot_not_the_first_hash(monkeypatch, tmp_path):
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    repo = "unsloth/Big-GGUF"
-    _snapshot(tmp_path, repo, "aaa0", {"big-Q4_K_M.gguf": 4096}, mtime = 1_000)
-    _snapshot(tmp_path, repo, "zzz9", {"big-Q4_K_M.gguf": 16384}, mtime = 2_000)
-
-    chosen = ss.cached_repo_file(repo, None)
-    assert chosen is not None and "zzz9" in chosen
-    assert ss.gguf_size_bytes(chosen) == 16384
-
-
-def test_a_companion_gguf_is_never_sized_in_place_of_the_weights(monkeypatch, tmp_path):
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    repo = "unsloth/With-Companions"
-    _snapshot(
-        tmp_path,
-        repo,
-        "abc1",
-        {
-            "MTP/model-Q4_K_M.gguf": 512,
-            "model-Q4_K_M.gguf": 32768,
-            "mmproj-model-f16.gguf": 256,
-        },
-        mtime = 1_000,
-    )
-
-    chosen = ss.cached_repo_file(repo, None)
-    assert chosen is not None, "the weights are cached"
-    assert "MTP" not in chosen and "mmproj" not in os.path.basename(chosen)
-    assert ss.gguf_size_bytes(chosen) == 32768
-
-
 def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
@@ -2726,7 +2471,7 @@ def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatc
 
     asked = []
     monkeypatch.setattr(
-        ss,
+        rs,
         "remote_gguf_size_bytes",
         lambda path, variant, token = None: asked.append(path) or 200 * 1024**3,
     )
@@ -2745,7 +2490,7 @@ def test_an_uncached_repo_is_priced_with_its_local_sidecars(cluster, monkeypatch
     _patch_remote(monkeypatch)
     projector = tmp_path / "mmproj.gguf"
     projector.write_bytes(b"x" * 1024)
-    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: 4096)
+    monkeypatch.setattr(rs, "remote_gguf_size_bytes", lambda path, variant, token = None: 4096)
     cluster.topology = "single"
     run(
         ss.before_load(
@@ -2769,7 +2514,7 @@ def test_the_projector_studio_picks_up_itself_is_priced(cluster, monkeypatch, tm
     explicit.write_bytes(b"x" * 512)
     run(ss.before_load(_FakeRequest(str(model), llama_extra_args = ["--mmproj", str(explicit)]), 4))
     assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 512
-    monkeypatch.setattr(ss, "_projector_accepts_image", lambda path: True)
+    monkeypatch.setattr(rs, "_projector_accepts_image", lambda path: True)
     run(ss.before_load(_FakeRequest(str(model), disable_vision = True), 4))
     assert cluster.planner_calls[-1]["model_bytes"] == 4096
 
@@ -2778,7 +2523,7 @@ def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, mon
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     _patch_remote(monkeypatch)
-    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
+    monkeypatch.setattr(rs, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
 
     cluster.topology = "layer_split"  # the planner would split, if it were ever asked
     request = _FakeRequest("unsloth/Huge-GGUF")
@@ -2786,95 +2531,6 @@ def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, mon
     assert cluster.planner_calls == [], "an unknown size does not reach the planner at all"
     assert ss.state().topology == "single"
     assert "unknown" in (ss.state().plan or {}).get("reason", "")
-
-
-def test_remote_sizing_never_raises_out_of_the_load(monkeypatch):
-    def _boom(*_a, **_k):
-        raise RuntimeError("hub is down")
-
-    monkeypatch.setattr(ss, "_pick_variant", _boom)
-    assert ss.remote_gguf_size_bytes("unsloth/Huge-GGUF", None) is None
-    assert ss.remote_gguf_size_bytes("/models/x.gguf", None) is None
-    assert ss.remote_gguf_size_bytes("mymodel", None) is None
-
-
-def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
-    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.01)
-
-    async def always_open(
-        host,
-        port,
-        timeout,
-        *,
-        cancelled = None,
-    ):
-        return True
-
-    monkeypatch.setattr(ss, "wait_for_port", always_open)
-
-    class _Child:
-        peer = "1.2.3.4"
-        remote_pid = 4242
-
-        def __init__(self, dies):
-            self._dies = dies
-            self.alive = True
-
-        async def die_after_the_probe(self):
-            self.alive = not self._dies
-
-    listener = {"pid": 4242}
-
-    async def pid_is_live(
-        peer,
-        remote,
-        timeout = 20.0,
-    ):
-        if remote.startswith("ss "):
-            line = (
-                f'LISTEN 0 512 1.2.3.4:50052 0.0.0.0:* users:(("rpc",pid={listener["pid"]},fd=3))'
-            )
-            return 0, line + "\n", ""
-        return 0, "PIDLIVE\n", ""
-
-    monkeypatch.setattr(ss, "ssh_run", pid_is_live)
-
-    ours = _Child(dies = False)
-    assert run(ss.wait_for_own_port(ours, "1.2.3.4", 50052, 5.0)) is True
-    listener["pid"] = 999
-    assert run(ss.wait_for_own_port(_Child(dies = False), "1.2.3.4", 50052, 1.5)) is False
-    listener["pid"] = 4242
-
-    class _Doomed:
-        alive = True
-        peer = "1.2.3.4"
-        remote_pid = 4242
-
-    doomed = _Doomed()
-
-    async def open_then_kill(
-        host,
-        port,
-        timeout,
-        *,
-        cancelled = None,
-    ):
-        doomed.alive = False
-        return True
-
-    monkeypatch.setattr(ss, "wait_for_port", open_then_kill)
-    assert run(ss.wait_for_own_port(doomed, "1.2.3.4", 50052, 5.0)) is False
-
-    probed = []
-    monkeypatch.setattr(
-        ss,
-        "wait_for_port",
-        lambda h, p, t, **kw: probed.append(1) or always_open(h, p, t, **kw),
-    )
-    dead = _Doomed()
-    dead.alive = False
-    assert run(ss.wait_for_own_port(dead, "1.2.3.4", 50052, 5.0)) is False
-    assert probed == []
 
 
 def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, monkeypatch, tmp_path):
@@ -2887,7 +2543,7 @@ def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, mon
     )
 
     stopped = []
-    real_stop = ss.PeerProcess.stop
+    real_stop = rs.PeerProcess.stop
 
     async def counting_stop(self, timeout = 10.0):
         stopped.append(self.name)
@@ -2903,8 +2559,8 @@ def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, mon
     ):
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
-    monkeypatch.setattr(ss, "wait_for_own_port", cancel_while_waiting)
+    monkeypatch.setattr(rs.PeerProcess, "stop", counting_stop)
+    monkeypatch.setattr(rs, "wait_for_own_port", cancel_while_waiting)
 
     with pytest.raises(asyncio.CancelledError):
         run(ss.after_load(_FakeBackend(12345, str(model)), 16))
@@ -2933,7 +2589,7 @@ def test_a_replica_port_taken_by_a_stranger_is_not_routed_to(cluster, monkeypatc
     ):
         return False
 
-    monkeypatch.setattr(ss, "wait_for_own_port", not_ours)
+    monkeypatch.setattr(rs, "wait_for_own_port", not_ours)
 
     backend = _FakeBackend(12345, str(model))
     run(ss.after_load(backend, 16))
@@ -3074,11 +2730,11 @@ def test_an_rpc_split_configured_by_environment_is_not_treated_as_unsplit(
     assert ss.state().topology == "layer_split"
     assert "user-supplied --rpc" in ss.state().reason
 
-    assert ss.argv_or_env_rpc(["llama-server", "--rpc", "h:1"], env = {}) is True
-    assert ss.argv_or_env_rpc(["llama-server", "--rpc=h:1"], env = {}) is True
-    assert ss.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "h:1"}) is True
-    assert ss.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "  "}) is False
-    assert ss.argv_or_env_rpc(["llama-server"], env = {}) is False
+    assert rs.argv_or_env_rpc(["llama-server", "--rpc", "h:1"], env = {}) is True
+    assert rs.argv_or_env_rpc(["llama-server", "--rpc=h:1"], env = {}) is True
+    assert rs.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "h:1"}) is True
+    assert rs.argv_or_env_rpc(["llama-server"], env = {"LLAMA_ARG_RPC": "  "}) is False
+    assert rs.argv_or_env_rpc(["llama-server"], env = {}) is False
 
 
 def test_a_caller_who_placed_their_own_rpc_keeps_it(cluster, monkeypatch, tmp_path):
@@ -3161,17 +2817,17 @@ def test_the_adapter_operand_forms_are_taken_apart_not_ignored(tmp_path):
     b = tmp_path / "b.gguf"
     b.write_bytes(b"x" * 20)
 
-    assert ss.sidecar_operand_paths("/a.gguf,/b.gguf") == ["/a.gguf", "/b.gguf"]
-    assert ss.sidecar_operand_paths("/a.gguf:0.5") == ["/a.gguf"]
-    assert ss.sidecar_operand_paths("/a.gguf:0.5,/b.gguf:1") == ["/a.gguf", "/b.gguf"]
-    assert ss.sidecar_operand_paths("/models/a:b.gguf") == ["/models/a:b.gguf"]
+    assert rs.sidecar_operand_paths("/a.gguf,/b.gguf") == ["/a.gguf", "/b.gguf"]
+    assert rs.sidecar_operand_paths("/a.gguf:0.5") == ["/a.gguf"]
+    assert rs.sidecar_operand_paths("/a.gguf:0.5,/b.gguf:1") == ["/a.gguf", "/b.gguf"]
+    assert rs.sidecar_operand_paths("/models/a:b.gguf") == ["/models/a:b.gguf"]
 
     args = ["--lora", f"{a},{b}", "--lora-scaled", f"{a}:0.5"]
-    assert ss.sidecar_files(args) == [str(a), str(b), str(a)]
-    assert ss.sidecar_bytes(args) == (10 + 20 + 10, False)
+    assert rs.sidecar_files(args) == [str(a), str(b), str(a)]
+    assert rs.sidecar_bytes(args) == (10 + 20 + 10, False)
 
     monkey_cwd = str(tmp_path)
-    assert ss.sidecar_files(["--lora", "a.gguf"], cwd = monkey_cwd) == [str(a)]
+    assert rs.sidecar_files(["--lora", "a.gguf"], cwd = monkey_cwd) == [str(a)]
 
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x")
@@ -3202,7 +2858,7 @@ def test_a_forced_split_does_not_apply_to_a_load_that_is_not_a_gguf(cluster, mon
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-cache"))
     cluster.topology = "single"
     _calls, started = _patch_remote(monkeypatch)
-    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
+    monkeypatch.setattr(rs, "remote_gguf_size_bytes", lambda path, variant, token = None: None)
 
     request = _FakeRequest("meta-llama/Llama-3.1-8B-Instruct")
     assert run(ss.before_load(request, 4)) is request
@@ -3226,30 +2882,6 @@ def test_what_counts_as_a_gguf_load_before_the_loader_says(tmp_path):
     assert ss.looks_like_a_gguf_load("meta-llama/Llama-3.1-8B-Instruct", None, None) is False
 
 
-def test_the_capability_probe_follows_the_binary_the_loader_will_launch(monkeypatch, tmp_path):
-    chosen = tmp_path / "custom" / "llama-server"
-    chosen.parent.mkdir(parents = True)
-    write_fake_llama_server(chosen.parent, _FAKE_HELP_WITH_FLAG)
-    other = tmp_path / "bundle" / "llama-server"
-    other.parent.mkdir(parents = True)
-    write_fake_llama_server(other.parent, _FAKE_HELP_WITHOUT_FLAG)
-
-    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(chosen))
-    assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is True
-    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(other))
-    assert ss.llama_server_supports(ss.PIPELINE_GROUPS_FLAG) is False
-
-
-def test_every_tool_loop_round_names_the_same_conversation():
-    source = (Path(ss.__file__).resolve().parent / "llama_cpp.py").read_text(encoding = "utf-8")
-    start = source.index("def generate_chat_completion_with_tools(")
-    body = source[start:]
-    for marker in ("payload = {", "stream_payload = {"):
-        assert marker in body, marker
-    assert body.count("tag_conversation(payload, thread_id)") >= 1
-    assert body.count("tag_conversation(stream_payload, thread_id)") >= 1
-
-
 def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     cluster, monkeypatch, tmp_path
 ):
@@ -3271,7 +2903,7 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     _calls, started = _patch_remote(
         monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
     )
-    outer = ss.ssh_run
+    outer = rs.ssh_run
 
     async def versioned_ssh(
         peer,
@@ -3282,7 +2914,7 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
             return 0, "version: 5000 (bbbbbbb)\nbuilt with gcc\n", ""
         return await outer(peer, remote, timeout = timeout)
 
-    monkeypatch.setattr(ss, "ssh_run", versioned_ssh)
+    monkeypatch.setattr(rs, "ssh_run", versioned_ssh)
     run(ss.after_load(_FakeBackend(12345, str(model)), 16))
     assert not started, "no replica from a different build"
     assert ss.state().topology == "single"
@@ -3298,7 +2930,7 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
             return 0, "version: 6109 (aaaaaaa)\n", ""
         return await outer(peer, remote, timeout = timeout)
 
-    monkeypatch.setattr(ss, "ssh_run", matching_ssh)
+    monkeypatch.setattr(rs, "ssh_run", matching_ssh)
     run(ss.after_load(_FakeBackend(12345, str(model)), 16))
     assert started and ss.state().topology == "replicas"
 
@@ -3425,36 +3057,36 @@ def test_windows_picks_the_exe_and_refuses_a_file_it_cannot_run(monkeypatch, tmp
     monkeypatch.setattr(ss.os, "name", "nt")
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
 
-    names = ss.rpc_server_names()
+    names = rs.rpc_server_names()
     assert names[0] == "ggml-rpc-server.com" and "ggml-rpc-server.exe" in names
     assert "ggml-rpc-server" not in names, "an extensionless file is not runnable on Windows"
 
-    assert ss.is_executable_file(stray) is False
-    assert ss.is_executable_file(real) is True
-    assert ss.is_executable_file(missing) is False
-    assert ss.is_executable_file(directory) is False
+    assert rs.is_executable_file(stray) is False
+    assert rs.is_executable_file(real) is True
+    assert rs.is_executable_file(missing) is False
+    assert rs.is_executable_file(directory) is False
 
-    monkeypatch.setattr(ss, "llama_server_binary", lambda: server)
-    assert ss.rpc_server_binary() == real
+    monkeypatch.setattr(rs, "llama_server_binary", lambda: server)
+    assert rs.rpc_server_binary() == real
 
 
 @_POSIX_ONLY
 def test_posix_still_answers_on_the_bit_and_the_bare_name(monkeypatch, tmp_path):
     assert ss.os.name != "nt", "this test describes the POSIX side"
-    assert ss.executable_suffixes() == ("",)
-    assert ss.rpc_server_names() == ("ggml-rpc-server", "rpc-server")
+    assert rs.executable_suffixes() == ("",)
+    assert rs.rpc_server_names() == ("ggml-rpc-server", "rpc-server")
 
     plain = tmp_path / "ggml-rpc-server"
     plain.write_text("#!/bin/sh\n", encoding = "utf-8")
-    assert ss.is_executable_file(plain) is False, "no execute bit"
+    assert rs.is_executable_file(plain) is False, "no execute bit"
     plain.chmod(0o755)
-    assert ss.is_executable_file(plain) is True
+    assert rs.is_executable_file(plain) is True
 
     server = tmp_path / "llama-server"
     server.write_text("#!/bin/sh\n", encoding = "utf-8")
     server.chmod(0o755)
-    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(server))
-    assert ss.rpc_server_binary() == str(plain)
+    monkeypatch.setattr(rs, "llama_server_binary", lambda: str(server))
+    assert rs.rpc_server_binary() == str(plain)
 
 
 def test_the_replica_never_inherits_an_env_var_the_primary_refuses():
@@ -3506,33 +3138,6 @@ def test_the_replica_gets_sidecar_paths_the_peer_can_actually_open(tmp_path):
     assert "/already/abs.gguf" in out, "an absolute path must be left alone"
     assert "adapter.gguf" not in out, "the bare relative name must not reach the peer"
     assert out[-4:] == ["--host", "10.0.0.2", "--port", "9"], out[-4:]
-
-
-def test_a_missing_shard_reports_the_size_unknown_rather_than_short(tmp_path):
-    """Undercounting shards would plan `single` and OOM after the rest arrive."""
-    first = tmp_path / "m-00001-of-00003.gguf"
-    first.write_bytes(b"a" * 100)
-    (tmp_path / "m-00002-of-00003.gguf").write_bytes(b"b" * 100)
-    assert ss.gguf_size_bytes(str(first)) is None
-
-    (tmp_path / "m-00003-of-00003.gguf").write_bytes(b"c" * 100)
-    assert ss.gguf_size_bytes(str(first)) == 300
-
-
-def test_a_projector_that_arrives_only_through_the_environment_still_costs_the_groups(monkeypatch):
-    """LLAMA_ARG_MMPROJ reaches the server without appearing in argv."""
-    monkeypatch.delenv("LLAMA_ARG_MMPROJ", raising = False)
-    monkeypatch.delenv("LLAMA_ARG_MMPROJ_URL", raising = False)
-    assert ss.extra_args_refuse_pipeline_groups([]) is None
-    assert ss.extra_args_refuse_pipeline_groups(["--mmproj", "p.gguf"]) == "--mmproj"
-
-    monkeypatch.setenv("LLAMA_ARG_MMPROJ", "/models/p.gguf")
-    assert ss.extra_args_refuse_pipeline_groups([]) == "LLAMA_ARG_MMPROJ"
-    monkeypatch.delenv("LLAMA_ARG_MMPROJ")
-    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example/p.gguf")
-    assert ss.extra_args_refuse_pipeline_groups([]) == "LLAMA_ARG_MMPROJ_URL"
-    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "  ")
-    assert ss.extra_args_refuse_pipeline_groups([]) is None
 
 
 @_POSIX_ONLY
@@ -3587,7 +3192,7 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
         monkeypatch.setattr(
             ri, "get_llama_cpp_backend", lambda: _Backend(list(extras), stored_id, stored_var)
         )
-        return ri._spark_inherited_extra_args(_Req(req_path, req_var))
+        return ri._split_inherited_extra_args(_Req(req_path, req_var))
 
     assert run("unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL", "unsloth/Qwen3-8B-GGUF", "UD-Q4_K_XL") == [
         "--lora",
@@ -3605,7 +3210,7 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
     monkeypatch.setattr(
         ri, "get_llama_cpp_backend", lambda: _Backend(["--lora", "a"], "org/m", None)
     )
-    assert ri._spark_inherited_extra_args(_Req("org/m", None, lea = [])) is None
+    assert ri._split_inherited_extra_args(_Req("org/m", None, lea = [])) is None
 
     split = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
     assert run("org/m", "Q4", "org/m", "Q4", extras = ["--lora", "a.gguf", *split]) == [
@@ -3721,31 +3326,6 @@ def test_a_backend_that_cannot_say_still_gets_the_old_environment_behaviour(
     assert "LLAMA_ARG_CACHE_TYPE_V=q8_0" in started[0].argv
 
 
-def test_the_hub_is_asked_with_the_requests_own_token(monkeypatch):
-    import sys
-    import types
-
-    seen = []
-
-    class _Variant:
-        filename, size_bytes = "model-Q4_K_M.gguf", 200 * 1024**3
-
-    module = types.ModuleType("utils.models.model_config")
-
-    def _list(repo_id, hf_token = None):
-        seen.append((repo_id, hf_token))
-        if not hf_token:
-            raise PermissionError("gated repo")
-        return ([_Variant()], False)
-
-    module.list_gguf_variants = _list
-    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
-
-    assert ss.remote_gguf_size_bytes("private/Huge-GGUF", None) is None
-    assert ss.remote_gguf_size_bytes("private/Huge-GGUF", None, "hf_tok") == 200 * 1024**3
-    assert seen == [("private/Huge-GGUF", None), ("private/Huge-GGUF", "hf_tok")]
-
-
 def test_the_planner_forwards_the_requests_token_to_the_hub(cluster, monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
@@ -3753,7 +3333,7 @@ def test_the_planner_forwards_the_requests_token_to_the_hub(cluster, monkeypatch
 
     seen = []
     monkeypatch.setattr(
-        ss,
+        rs,
         "remote_gguf_size_bytes",
         lambda path, variant, token = None: seen.append(token) or 200 * 1024**3,
     )
@@ -3814,46 +3394,6 @@ def test_rail_discovery_is_not_walked_again_on_every_status_poll(cluster, monkey
     assert len(calls) == 2
 
 
-def test_the_size_is_taken_from_the_variant_the_loader_would_open(monkeypatch):
-    import sys
-    import types
-
-    class _Variant:
-        def __init__(self, filename, quant, size_bytes):
-            self.filename, self.quant, self.size_bytes = filename, quant, size_bytes
-
-    bf16 = _Variant("Qwen3-8B-BF16.gguf", "BF16", 300 * 1024**3)
-    q4 = _Variant("Qwen3-8B-UD-Q4_K_XL.gguf", "UD-Q4_K_XL", 120 * 1024**3)
-
-    module = types.ModuleType("utils.models.model_config")
-    module.list_gguf_variants = lambda repo_id, hf_token = None: ([bf16, q4], False)
-    module._pick_best_gguf = lambda names: next(
-        (n for n in names if "UD-Q4_K_XL" in n), names[0] if names else None
-    )
-    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
-
-    assert ss.remote_gguf_size_bytes("unsloth/Qwen3-8B-GGUF", None) == 120 * 1024**3
-    assert ss.remote_gguf_size_bytes("unsloth/Qwen3-8B-GGUF", "BF16") == 300 * 1024**3
-
-
-def test_a_repo_whose_picker_cannot_answer_still_gets_a_size(monkeypatch):
-    import sys
-    import types
-
-    class _Variant:
-        filename, quant, size_bytes = "weights.gguf", "F16", 42
-
-    module = types.ModuleType("utils.models.model_config")
-    module.list_gguf_variants = lambda repo_id, hf_token = None: ([_Variant()], False)
-
-    def _boom(names):
-        raise RuntimeError("no picker here")
-
-    module._pick_best_gguf = _boom
-    monkeypatch.setitem(sys.modules, "utils.models.model_config", module)
-    assert ss.remote_gguf_size_bytes("org/repo", None) == 42
-
-
 def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkeypatch, tmp_path):
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
@@ -3903,13 +3443,13 @@ def test_a_managed_split_is_retired_before_a_callers_own_rpc_is_adopted(
     assert managed is not None and ss.state().router is None, "a managed split, no router"
 
     stopped = []
-    real_stop = ss.PeerProcess.stop
+    real_stop = rs.PeerProcess.stop
 
     async def counting_stop(self, timeout = 10.0):
         stopped.append(self.name)
         return await real_stop(self, timeout = timeout)
 
-    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
+    monkeypatch.setattr(rs.PeerProcess, "stop", counting_stop)
 
     backend = _FakeBackend(12345, str(model), argv_extra = ["--rpc", "10.0.0.9:50052"])
     run(ss.after_load(backend, 16))
@@ -3957,13 +3497,13 @@ def test_a_reload_the_route_will_refuse_does_not_stop_the_running_peer(
     topology, reason = ss.state().topology, ss.state().reason
 
     stopped = []
-    real_stop = ss.PeerProcess.stop
+    real_stop = rs.PeerProcess.stop
 
     async def counting_stop(self, timeout = 10.0):
         stopped.append(self.name)
         return await real_stop(self, timeout = timeout)
 
-    monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
+    monkeypatch.setattr(rs.PeerProcess, "stop", counting_stop)
 
     doomed = _FakeRequest(str(model))
     doomed.force_reload = True
@@ -4039,7 +3579,7 @@ def test_the_peer_is_searched_for_the_rpc_name_the_local_bundle_resolved(
     legacy.parent.mkdir(parents = True, exist_ok = True)
     legacy.write_text("#!/bin/sh\n", encoding = "utf-8")
     legacy.chmod(0o755)
-    monkeypatch.setattr(ss, "rpc_server_binary", lambda: str(legacy))
+    monkeypatch.setattr(rs, "rpc_server_binary", lambda: str(legacy))
 
     _calls, started = _patch_remote(monkeypatch)
     run(ss.before_load(_FakeRequest(str(model)), 4))
@@ -4058,7 +3598,7 @@ def test_the_plan_prices_the_context_the_extras_actually_ask_for(cluster, monkey
 
     priced = []
     monkeypatch.setattr(
-        ss,
+        rs,
         "estimate_kv_bytes",
         lambda path, ctx, k = None, v = None: priced.append((ctx, k, v)) or 0,
     )
@@ -4084,7 +3624,7 @@ def test_the_cache_types_are_read_from_the_environment_and_apart(cluster, monkey
 
     priced = []
     monkeypatch.setattr(
-        ss,
+        rs,
         "estimate_kv_bytes",
         lambda path, ctx, k = None, v = None: priced.append((ctx, k, v)) or 0,
     )
@@ -4121,20 +3661,6 @@ def test_an_empty_gpu_list_is_automatic_placement_not_a_pin(cluster, monkeypatch
     assert "GPU pin" in ss.state().reason or "GPU selection" in ss.state().reason
 
 
-def test_a_local_directory_of_gguf_variants_is_sized_not_skipped(tmp_path):
-    directory = tmp_path / "export"
-    directory.mkdir()
-    (directory / "model-Q4_K_M.gguf").write_bytes(b"x" * 16)
-    (directory / "model-BF16.gguf").write_bytes(b"x" * 64)
-    (directory / "mmproj-model.gguf").write_bytes(b"x" * 4)
-
-    picked = ss.cached_repo_file(str(directory), None)
-    assert picked is not None, "a local directory of GGUFs must resolve to a file"
-    assert "mmproj" not in osp_basename(picked), "a companion is not the weights"
-
-    assert osp_basename(ss.cached_repo_file(str(directory), "BF16") or "") == "model-BF16.gguf"
-
-
 def osp_basename(path: str) -> str:
     import os.path
     return os.path.basename(str(path))
@@ -4155,86 +3681,6 @@ def test_only_generated_templates_are_shipped_to_the_peer_by_value(tmp_path, mon
     huge = tmp_path / "unsloth_chat_template_9999.jinja"
     huge.write_bytes(b"x" * (ss._GENERATED_MAX_BYTES + 1))
     assert ss.generated_launch_files([str(huge)]) == []
-
-
-def test_a_dead_child_behind_a_slow_reaper_does_not_claim_the_port(monkeypatch):
-    assert (
-        ss.PEER_OWNERSHIP_SETTLE_S < ss.PEER_REAP_POLL_S
-    ), "the settle is shorter than the reap interval, which is why the local view is not enough"
-
-    async def always_open(
-        host,
-        port,
-        timeout,
-        *,
-        cancelled = None,
-    ):
-        return True
-
-    monkeypatch.setattr(ss, "wait_for_port", always_open)
-    monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0)
-
-    class _SlowReaped:
-        alive = True
-        peer = "1.2.3.4"
-        remote_pid = 4242
-
-    asked = []
-
-    async def pid_is_gone(
-        peer,
-        remote,
-        timeout = 20.0,
-    ):
-        asked.append(remote)
-        return 0, "PIDGONE\n", ""
-
-    monkeypatch.setattr(ss, "ssh_run", pid_is_gone)
-    assert run(ss.wait_for_own_port(_SlowReaped(), "1.2.3.4", 50052, 5.0)) is False
-    assert asked and asked[0].startswith("kill -0 4242")
-
-    async def ssh_broken(
-        peer,
-        remote,
-        timeout = 20.0,
-    ):
-        raise OSError("no route to host")
-
-    monkeypatch.setattr(ss, "ssh_run", ssh_broken)
-    assert run(ss.wait_for_own_port(_SlowReaped(), "1.2.3.4", 50052, 5.0)) is False
-
-
-def test_a_peer_that_already_exited_is_not_signalled_by_pid(monkeypatch):
-    sent = []
-
-    async def record(
-        peer,
-        remote,
-        timeout = 20.0,
-    ):
-        sent.append(remote)
-        return 0, "", ""
-
-    monkeypatch.setattr(ss, "ssh_run", record)
-
-    process = ss.PeerProcess("llama-server", "1.2.3.4", ["/bin/llama-server"])
-    process.remote_pid = 4242
-    process.proc = SimpleNamespace(returncode = 1)  # the ssh session has exited
-    run(process.stop())
-    assert sent == [], "a pid we no longer own must not be signalled"
-    assert process.remote_pid is None, "and it must not be carried into the next attempt"
-
-    sent.clear()
-    live = ss.PeerProcess("llama-server", "1.2.3.4", ["/bin/llama-server"])
-    live.remote_pid = 4343
-    live.proc = SimpleNamespace(returncode = None, terminate = lambda: None)
-
-    async def _wait():
-        return 0
-
-    live.proc.wait = _wait
-    run(live.stop())
-    assert sent and "kill 4343" in sent[0]
 
 
 def test_an_env_configured_drafter_is_the_callers_and_is_not_turned_off(monkeypatch):
@@ -4330,54 +3776,6 @@ def test_an_env_only_file_the_peer_does_not_have_costs_the_replicas_at_once(
     assert ss.state().topology == "single"
     assert str(projector) in ss.state().reason, "the reason must name the file that is missing"
     assert not started, "the peer llama-server must not be launched at all"
-
-
-def test_a_value_that_names_no_local_file_is_not_demanded_of_the_peer(tmp_path):
-    real = tmp_path / "mmproj.gguf"
-    real.write_bytes(b"x")
-    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": str(real)}) == [str(real)]
-    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": str(tmp_path / "gone.gguf")}) == []
-    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ": ""}) == []
-    assert ss.env_launch_files(None) == []
-    assert ss.env_launch_files({"LLAMA_ARG_MMPROJ_URL": "https://example/x.gguf"}) == []
-
-
-def test_every_branch_that_commits_extra_args_also_records_the_requested_identity():
-    """The two are a pair and must never disagree."""
-    import ast
-    from pathlib import Path
-
-    src = Path(ss.__file__).resolve().parent / "llama_cpp.py"
-    tree = ast.parse(src.read_text(encoding = "utf-8"))
-
-    def _assigns(statements, attribute):
-        for node in statements:
-            for target in getattr(node, "targets", []):
-                if (
-                    isinstance(target, ast.Attribute)
-                    and target.attr == attribute
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "self"
-                ):
-                    return True
-        return False
-
-    resolved = []
-    for node in ast.walk(tree):
-        for field in ("body", "orelse", "finalbody"):
-            block = getattr(node, field, None)
-            if not isinstance(block, list):
-                continue
-            if not _assigns(block, "_extra_args_source"):
-                continue
-            resolved.append(getattr(block[0], "lineno", "?"))
-            assert _assigns(block, "_extra_args_requested_source"), (
-                f"llama_cpp.py near line {getattr(block[0], 'lineno', '?')} commits "
-                "_extra_args_source without recording or clearing "
-                "_extra_args_requested_source; the pair must be written together"
-            )
-
-    assert len(resolved) >= 2, "the commit points moved; this invariant is no longer being checked"
 
 
 def test_a_refused_oversized_load_leaves_the_running_topology_exactly_as_it_was(
@@ -4491,7 +3889,7 @@ def test_the_launch_key_reaches_the_peer_over_stdin_only(monkeypatch, tmp_path):
         calls.append((remote, stdin))
         return 0, "", ""
 
-    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(rs, "ssh_run", fake_ssh)
     assert run(ss.replicate_secret_files("192.168.200.13", [str(key)])) is None
     remote, stdin = calls[0]
     assert stdin == b"s3cret" and "s3cret" not in remote
@@ -4690,66 +4088,6 @@ def test_a_model_loaded_alongside_leaves_the_primary_split_alone(monkeypatch):
     assert calls == ["before", "after"]
 
 
-def test_a_load_the_account_may_not_make_is_refused_before_the_split_is_touched(monkeypatch):
-    """Access is refused before before_load can tear down the served split."""
-    import routes.inference as ri
-    from fastapi import HTTPException
-
-    touched = []
-
-    async def _before(*a, **k):
-        touched.append("before_load")
-        return a[0]
-
-    def _deny(path):
-        raise HTTPException(status_code = 403, detail = f"no access to {path}")
-
-    monkeypatch.setattr(ss, "enabled", lambda: True)
-    monkeypatch.setattr(ss, "before_load", _before)
-    monkeypatch.setattr(ri.account_access, "managed_account", lambda: True)
-    monkeypatch.setattr(ri.account_access, "require_model_access", _deny)
-    monkeypatch.setattr(ri, "_defers_access_to_native_grant", lambda request: False)
-    request = SimpleNamespace(
-        model_path = "org/forbidden-GGUF",
-        engine = "auto",
-        n_parallel = 4,
-        load_request_id = None,
-    )
-    with pytest.raises(HTTPException) as raised:
-        run(ri._run_tracked_load_model_impl(request, None, "someone"))
-    assert raised.value.status_code == 403
-    assert touched == []
-
-
-def test_the_route_hands_its_reload_gate_to_the_split_teardown(monkeypatch):
-    """The active-chat 409 must run before the split teardown."""
-    import routes.inference as ri
-    from fastapi import HTTPException
-
-    gate_calls = []
-
-    def _gate(*, cancel):
-        gate_calls.append(cancel)
-        raise HTTPException(status_code = 409, detail = "active generations")
-
-    async def _before(request, slots, **k):
-        confirmed = k["confirm_teardown"]()
-        if hasattr(confirmed, "__await__"):
-            await confirmed
-        return request
-
-    monkeypatch.setattr(ss, "enabled", lambda: True)
-    monkeypatch.setattr(ss, "before_load", _before)
-    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
-    monkeypatch.setattr(ri.account_access, "require_idle_other_accounts", lambda: None)
-    request = SimpleNamespace(
-        model_path = "org/model-GGUF", engine = "auto", n_parallel = 4, load_request_id = None
-    )
-    with pytest.raises(HTTPException) as raised:
-        run(ri._run_tracked_load_model_impl(request, None, "someone", on_reload_confirmed = _gate))
-    assert raised.value.status_code == 409 and gate_calls == [False]
-
-
 def test_a_forced_split_reload_cancels_and_drains_chats_before_the_teardown(
     cluster, monkeypatch, tmp_path
 ):
@@ -4787,7 +4125,7 @@ def test_a_forced_split_reload_cancels_and_drains_chats_before_the_teardown(
     monkeypatch.setattr(ss, "after_load", _after)
     monkeypatch.setattr(ri, "_load_model_impl", _impl)
     monkeypatch.setattr(ri, "_wait_for_model_switch_idle", _drain)
-    monkeypatch.setattr(ri, "_spark_inherited_extra_args", lambda request: None)
+    monkeypatch.setattr(ri, "_split_inherited_extra_args", lambda request: None)
     monkeypatch.setattr(ri, "_resolve_parallel_slots", lambda request, fastapi_request: 4)
     monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
     monkeypatch.setattr(ri.account_access, "require_idle_other_accounts", lambda: None)
@@ -4803,61 +4141,6 @@ def test_a_forced_split_reload_cancels_and_drains_chats_before_the_teardown(
         ("detach",),
     ], events
     run(ss.shutdown())
-
-
-def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monkeypatch):
-    """Regression: a load cancelled during replica start must not report success."""
-    import routes.inference as ri
-    from fastapi import HTTPException
-
-    unloaded = []
-
-    async def _before(request, *a, **k):
-        return request
-
-    async def _impl(*a, **k):
-        return {"status": "loaded"}
-
-    async def _after(*a, **k):
-        return True
-
-    monkeypatch.setattr(ss, "enabled", lambda: True)
-    monkeypatch.setattr(ss, "before_load", _before)
-    monkeypatch.setattr(ss, "after_load", _after)
-    monkeypatch.setattr(ri, "_load_model_impl", _impl)
-    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
-    monkeypatch.setattr(
-        ri,
-        "get_llama_cpp_backend",
-        lambda: SimpleNamespace(unload_model = lambda: unloaded.append(1)),
-    )
-    request = SimpleNamespace(
-        model_path = "org/model-GGUF", engine = "auto", n_parallel = 4, load_request_id = None
-    )
-    with pytest.raises(HTTPException) as raised:
-        run(ri._run_tracked_load_model_impl(request, None, "someone"))
-    assert raised.value.status_code == 409 and unloaded == [1]
-
-
-def test_the_spark_status_route_is_the_owners_only(monkeypatch):
-    """Regression: only the owner may read peer command lines, log tails and host paths."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    import routes.spark_serving as route
-    import utils.account_context as account_context
-    from auth.authentication import get_current_subject
-
-    app = FastAPI()
-    app.include_router(route.router, prefix = "/api/inference/spark")
-    app.dependency_overrides[get_current_subject] = lambda: "someone"
-    monkeypatch.setattr(ss, "status", lambda: {"enabled": True, "peer": {"command": "/home/o/x"}})
-    client = TestClient(app)
-    monkeypatch.setattr(account_context, "current_account", lambda: SimpleNamespace(is_owner = False))
-    assert client.get("/api/inference/spark/status").status_code == 403
-    monkeypatch.setattr(account_context, "current_account", lambda: SimpleNamespace(is_owner = True))
-    response = client.get("/api/inference/spark/status")
-    assert response.status_code == 200 and response.json()["enabled"] is True
 
 
 def test_a_reload_that_inherits_a_splits_extras_drops_the_managed_rpc_block(monkeypatch):
@@ -5023,9 +4306,9 @@ def test_inherited_extras_handed_to_the_planner_are_shadow_stripped(monkeypatch)
     )
     monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: backend)
     applied = LoadRequest(model_path = "unsloth/some-GGUF", max_seq_length = 32768)
-    assert ri._spark_inherited_extra_args(applied) == ["--seed", "1"]
+    assert ri._split_inherited_extra_args(applied) == ["--seed", "1"]
     untouched = LoadRequest(model_path = "unsloth/some-GGUF")
-    assert ri._spark_inherited_extra_args(untouched) == ["--ctx-size", "4096", "--seed", "1"]
+    assert ri._split_inherited_extra_args(untouched) == ["--ctx-size", "4096", "--seed", "1"]
 
 
 def test_idle_slot_erase_is_declined_behind_the_replica_router(monkeypatch):
@@ -5168,7 +4451,7 @@ def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
             "full_attention_interval": 4,
         },
     )
-    kv = ss.estimate_kv_bytes(qwen, 262144, "f16")
+    kv = rs.estimate_kv_bytes(qwen, 262144, "f16")
     assert 7.5 * gib <= kv < 8 * gib
     plan = ss.plan_topology(212.33 * gib, users = 1, kv_bytes_per_user = kv)
     assert plan["fits_any_topology"] is True and plan["topology"] == "layer_split"
@@ -5185,4 +4468,19 @@ def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
             "attention.head_count_kv": [0, 0, 8] * 21 + [8],
         },
     )
-    assert ss.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
+    assert rs.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
+
+
+def test_an_async_teardown_gate_is_awaited_on_every_cluster_teardown_path():
+    """Regression: the route's gate is async since a forced reload drains there; a sync call drops its 409."""
+    from fastapi import HTTPException
+
+    async def _refuse():
+        raise HTTPException(status_code = 409, detail = "active generations")
+
+    with pytest.raises(HTTPException):
+        run(ss._confirm(_refuse))
+    calls = []
+    run(ss._confirm(lambda: calls.append(1)))
+    run(ss._confirm(None))
+    assert calls == [1]

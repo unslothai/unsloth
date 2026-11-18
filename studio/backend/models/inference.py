@@ -2582,7 +2582,8 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spark_topology: Optional[str] = Field(
         None,
         description = (
-            "How a GGUF is being served across machines: single (this machine only) or "
+            "How a GGUF is being served across machines: single (this machine only), "
+            "replicas (one llama-server per paired DGX Spark behind the in-process router) or "
             "layer_split (other machines' ggml-rpc-server hold part of the model). None when "
             "no machines are configured. GET /api/inference/spark/status has the per-node detail."
         ),
