@@ -2421,7 +2421,8 @@ def run(
         "--max-seq-length",
         "--context-length",
         rich_help_panel = _RUN_PANEL_MODEL,
-        help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
+        help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub "
+        "models). --context-length works too.",
     ),
     gpu_memory_mode: Literal["auto", "manual"] = typer.Option(
         "auto",

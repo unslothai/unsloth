@@ -5605,8 +5605,12 @@ def refresh_moved_layer_devices(layers, block_swap = None):
     such as {"": 1} to cuda:0) keeps the per-layer device published at load, so decode moved activations
     back to the old card ("cuda:1 and cuda:0"). Checks the first and last layer once per decode step and
     republishes every layer only when a weight sits on another index of the published device type; block
-    swap and offload park weights on CPU or meta by design, so those are left alone."""
-    if block_swap is not None or len(layers) == 0:
+    swap and offload park weights on CPU or meta by design, so those are left alone. A swapper that
+    keeps every weight on the device (native FSDP2's per-block gather during generate,
+    `keeps_weights_on_device`) still gets the repair."""
+    if len(layers) == 0:
+        return
+    if block_swap is not None and not getattr(block_swap, "keeps_weights_on_device", False):
         return
     for layer in (layers[0], layers[-1]):
         published = getattr(layer, "__dict__", {}).get("_per_layer_device")
@@ -6082,6 +6086,122 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_forced_float32_init_scale(trainer):
+    """2**8: 2**12 and 2**10 overflowed Gemma-4 12B on T4, 2**8 matches gradients; divided by ranks since DP losses are multiplied by the process count."""
+    override = os.environ.get("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "")
+    if override:
+        try:
+            value = float(override)
+            if value > 0 and math.isfinite(value):
+                return value
+        except ValueError:
+            pass
+    ranks = 1
+    try:
+        if int(getattr(getattr(trainer, "accelerator", None), "num_processes", 1) or 1) > 1:
+            from .fsdp2_native import _loss_scale_ranks
+            ranks = max(1, int(_loss_scale_ranks(trainer)))
+    except Exception:
+        ranks = 1
+    return 2.0**8 / ranks
+
+
+def _unsloth_forced_float32_grad_scaler(trainer, model):
+    """Dynamic GradScaler for forced float32 on float16 weights: without it gradients underflow and
+    training diverges (E2B 2.5 -> 9.5 over 60 steps). UNSLOTH_FORCED_FLOAT32_GRAD_SCALER=0 disables."""
+    if os.environ.get("UNSLOTH_FORCED_FLOAT32_GRAD_SCALER", "1") == "0":
+        return None
+    accelerator = getattr(trainer, "accelerator", None)
+    if accelerator is None or getattr(accelerator, "scaler", None) is not None:
+        return None
+    if getattr(accelerator, "mixed_precision", None) != "no":
+        return None
+    forced = getattr(model, "_unsloth_forced_float32", None)
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if not forced:
+        return None
+    try:
+        from accelerate.utils import DistributedType
+
+        # DeepSpeed / FSDP / XLA own their loss scaling and gradient unscaling.
+        if accelerator.distributed_type not in (DistributedType.NO, DistributedType.MULTI_GPU):
+            return None
+    except Exception:
+        return None
+    device_type = getattr(getattr(accelerator, "device", None), "type", "cuda")
+    if device_type not in ("cuda", "xpu"):
+        return None
+    has_half, trainable_fp32 = False, True
+    for parameter in model.parameters():
+        if parameter.requires_grad:
+            # GradScaler.unscale_ refuses float16 gradients.
+            if parameter.dtype != torch.float32:
+                trainable_fp32 = False
+                break
+        elif parameter.dtype == torch.float16:
+            has_half = True
+    if not has_half or not trainable_fp32:
+        return None
+    init_scale = _unsloth_forced_float32_init_scale(trainer)
+    try:
+        scaler = torch.amp.GradScaler(device_type, init_scale = init_scale)
+    except (AttributeError, TypeError):
+        scaler = torch.cuda.amp.GradScaler(init_scale = init_scale)
+    accelerator.scaler = scaler
+    scaler = _parallel_forced_scaler(trainer, init_scale)
+
+    # accelerate only unscales under native fp16 AMP; else clipping would see scaled gradients.
+    def unscale_gradients(optimizer = None):
+        from accelerate.optimizer import AcceleratedOptimizer
+
+        scaler = accelerator.scaler
+        if optimizer is None:
+            optimizer = accelerator._optimizers
+        elif not isinstance(optimizer, (tuple, list)):
+            optimizer = [optimizer]
+        for opt in optimizer:
+            while isinstance(opt, AcceleratedOptimizer):
+                opt = opt.optimizer
+            state = scaler._per_optimizer_states.get(id(opt), None)
+            if (
+                state is not None
+                and state.get("stage", None) is not None
+                and state["stage"].name != "READY"
+            ):
+                continue
+            scaler.unscale_(opt)
+
+    accelerator.unscale_gradients = unscale_gradients
+    return scaler
+
+
+def _parallel_forced_scaler(trainer, init_scale):
+    """Convert the forced scaler to the tp / pp / FSDP2 native one (their setup ran before it existed): a plain
+    GradScaler fails on mixed DTensor / local grads and decides found_inf per rank."""
+    accelerator = trainer.accelerator
+    scaler = accelerator.scaler
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return scaler
+        from .fsdp2_native import _scaler_for_native, is_native_fsdp2
+        from .tp_native import _SCALE_DIVISOR
+    except Exception:
+        return scaler
+    divisor = accelerator.__dict__.get(_SCALE_DIVISOR)
+    fsdp2 = divisor is None and is_native_fsdp2(getattr(trainer, "model", None))
+    if divisor is None and not fsdp2:
+        # DDP averages grads before unscale_: every rank sees the same inf.
+        return scaler
+    if not _scaler_for_native(trainer):
+        return accelerator.scaler
+    # Keep the forced float32 start, not fp16's 2**16.
+    accelerator.scaler._init_scale = init_scale
+    return accelerator.scaler
+
+
 def _unsloth_attach_accelerator_scaler(trainer, model):
     # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
     scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
@@ -6315,6 +6435,79 @@ def _warn_micro_mean_loss(trainer, batch_samples):
     )
 
 
+def _mask_pad_predicted_targets(batch):
+    """Ignore every causal target whose predicting position is a pad.
+
+    An unpadded row never trains its first token, but a left or interior padded row would, from
+    the last pad before it. That pad's hidden state has no real keys to attend to, so each backend
+    makes up a different one: eager spreads it over the masked keys, SDPA and FlashAttention-2
+    (whose varlen path drops pad queries) return zero. The loss term, and through it every
+    gradient up to embed_tokens, then depends on the attention backend, the pad token and the batch
+    composition. Masking it makes eager, SDPA and FA2 agree and a padded row train exactly like the
+    same row unpadded. Right padding is unchanged (a pad never precedes a real target there).
+    Device-side masked_fill only: no host sync."""
+    if not isinstance(batch, collections.abc.Mapping):
+        return batch
+    labels = batch.get("labels")
+    attention_mask = batch.get("attention_mask")
+    if (
+        not isinstance(labels, torch.Tensor)
+        or not isinstance(attention_mask, torch.Tensor)
+        or labels.dim() != 2
+        or attention_mask.shape != labels.shape
+        or attention_mask.is_floating_point()
+        or labels.shape[1] < 2
+        or labels.is_floating_point()
+    ):
+        return batch
+    pad_before = attention_mask[:, :-1].to(labels.device) == 0
+    # Out of place: a collator may hand back labels sharing storage with input_ids.
+    batch["labels"] = torch.cat(
+        (labels[:, :1], labels[:, 1:].masked_fill(pad_before, -100)),
+        dim = 1,
+    )
+    return batch
+
+
+class _PadTargetMaskingIterator:
+    __slots__ = ("_iterator",)
+
+    def __init__(self, iterator):
+        self._iterator = iterator
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return _mask_pad_predicted_targets(next(self._iterator))
+
+
+def _trains_shifted_causal_labels(trainer):
+    # Positive signal only (a ForCausalLM loss): token classification labels are unshifted.
+    try:
+        from unsloth_zoo.loss_utils import _loss_shifts_labels
+
+        head = _loss_head(getattr(trainer, "model", None))
+        if head is None:
+            return False
+        config = getattr(head, "config", None)
+        if bool(getattr(config, "is_encoder_decoder", False)) or _is_seq2seq_lm_config(config):
+            return False
+        return bool(_loss_shifts_labels(trainer, head, False))
+    except Exception:
+        return False
+
+
+def _with_pad_target_masking(trainer, args, kwargs):
+    if not _trains_shifted_causal_labels(trainer):
+        return args, kwargs
+    if "epoch_iterator" in kwargs:
+        kwargs = dict(kwargs, epoch_iterator = _PadTargetMaskingIterator(kwargs["epoch_iterator"]))
+    elif len(args) > 0:
+        args = (_PadTargetMaskingIterator(args[0]),) + tuple(args[1:])
+    return args, kwargs
+
+
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
@@ -6323,6 +6516,8 @@ def _make_seq2seq_aware_get_batch_samples(original):
         elif _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
         else:
+            # Before counting, so num_items_in_batch matches the targets the loss actually sees.
+            args, kwargs = _with_pad_target_masking(self, args, kwargs)
             result = _unsloth_get_batch_samples(self, *args, **kwargs)
         try:
             _warn_micro_mean_loss(self, result[0] if isinstance(result, tuple) else result)
@@ -6340,6 +6535,11 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Before the early returns: a non-fla model loaded first would leave the fla patch permanently uninstalled
     patch_fla_autotuner_fast_path()
+    try:
+        from ..optimizers.bf16_stochastic_rounding import patch_trainer_bf16_stochastic_rounding
+        patch_trainer_bf16_stochastic_rounding(Trainer)
+    except Exception:
+        pass
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
@@ -6488,6 +6688,13 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            if os.environ.get("UNSLOTH_PARALLEL", "").strip().lower() == "auto":
+                # No Unsloth from_pretrained chose DDP / FSDP2 yet: size the model handed in (once).
+                from ..parallel_auto import resolve_for_trainer
+                resolve_for_trainer(
+                    model,
+                    kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None),
+                )
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)

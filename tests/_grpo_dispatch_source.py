@@ -15,6 +15,7 @@ SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_r
 HELPER_NAMES = (
     "_unsloth_grpo_returns_hidden_states",
     "_unsloth_grpo_hidden_states_signal",
+    "_unsloth_seq_packing_verify_verdict",
 )
 
 

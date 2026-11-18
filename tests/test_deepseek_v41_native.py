@@ -560,6 +560,24 @@ def _e8m0_pow2(amax, qmax):
     return torch.exp2(torch.ceil(torch.log2((amax / qmax).clamp_min(2.0**-126))))
 
 
+def _fp8_dequantizes_on_cpu(monkeypatch):
+    """These tests load the FP8 release onto CPU and run it in float32. transformers dequantizes a pre-quantized FP8
+    checkpoint only on a host with no CUDA / XPU device; with a GPU present it keeps FP8 linears on CPU (no .float(),
+    no CPU init of a missing fp8 weight). Pin the CPU-host behaviour so the test means the same on every host."""
+    try:
+        from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+    except Exception:
+        return
+    original = FineGrainedFP8HfQuantizer.validate_environment
+
+    def validate_environment(self, *args, **kwargs):
+        if self.pre_quantized:
+            self.quantization_config.dequantize = True
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(FineGrainedFP8HfQuantizer, "validate_environment", validate_environment)
+
+
 def _quantized_release(tmp_path, model):
     """Write the tiny model in the release's fp8 / fp4 storage with its quantization_config."""
     import json
@@ -639,6 +657,7 @@ def test_every_call_shape_loads_the_release_without_missing_or_unexpected_keys(
         pytest.skip("torch without float8_e8m0fnu")
     from transformers import AutoConfig, AutoModelForCausalLM
 
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     if convert == "1":
         monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
@@ -755,6 +774,7 @@ def test_parameter_backed_fp8_engram_keeps_its_block_scale_on_load(tmp_path, mon
     """Released fp8 engram rows load into Parameter-backed tables identically to the frozen store."""
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     if convert == "1":
         monkeypatch.setenv("UNSLOTH_DSV41_CONVERT", "1")
@@ -789,6 +809,7 @@ def test_a_released_checkpoint_in_a_subfolder_loads_from_that_subfolder(
         pytest.skip("torch without float8_e8m0fnu")
     import shutil
 
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     root = tmp_path / "repo"
     shutil.copytree(src, root / "sub")
@@ -965,6 +986,7 @@ def test_a_config_that_does_not_fit_the_release_raises_instead_of_random_init(
 ):
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch without float8_e8m0fnu")
+    _fp8_dequantizes_on_cpu(monkeypatch)
     src = _quantized_release(tmp_path, _tiny_model())
     monkeypatch.setenv("UNSLOTH_DSV41_CONVERTED_DIR", str(tmp_path / "converted"))
     text = DeepseekV41Config.from_pretrained(src).text_config.to_dict()

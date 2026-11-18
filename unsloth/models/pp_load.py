@@ -142,11 +142,12 @@ def _split_for(model, mesh, schedule, config):
         )
     # The structural refusals (MoE, MLA, ...) before anything is read. Every weight of a fresh load is
     # trainable until get_peft_model freezes it: those refusals run again at apply_pipeline_parallel.
+    # at_load: a VLM's text-only decision waits for the split (Trainer / UNSLOTH_PP_TEXT_ONLY); towers load whole.
     flags = [(p, p.requires_grad) for p in model.parameters()]
     for p, _ in flags:
         p.requires_grad_(False)
     try:
-        _refuse_unsupported(model, parts, allow_moe = False)
+        _refuse_unsupported(model, parts, at_load = True, allow_moe = False)
     finally:
         for p, flag in flags:
             p.requires_grad_(flag)

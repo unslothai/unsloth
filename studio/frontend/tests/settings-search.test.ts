@@ -141,6 +141,18 @@ test("close to tray is searchable only on supported desktops", () => {
   assert.ok(!browser.general.includes(CLOSE_TO_TRAY_ENTRY));
 });
 
+const KEEP_AWAKE_ENTRY = "settings.general.power.keepAwake";
+
+test("keep computer awake is searchable on every desktop and never in a browser", () => {
+  const windows = createSettingsSearchIndex({ desktop: true, closeToTray: true, menuBarIcon: false });
+  const mac = createSettingsSearchIndex({ desktop: true, closeToTray: false, menuBarIcon: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false, menuBarIcon: false });
+
+  assert.ok(windows.general.includes(KEEP_AWAKE_ENTRY));
+  assert.ok(mac.general.includes(KEEP_AWAKE_ENTRY));
+  assert.ok(!browser.general.includes(KEEP_AWAKE_ENTRY));
+});
+
 const MENU_BAR_ICON_ENTRY = "settings.general.startup.menuBarIcon";
 
 test("menu bar icon is searchable only when the platform supports it", () => {

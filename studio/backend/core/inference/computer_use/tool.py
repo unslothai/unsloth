@@ -446,7 +446,7 @@ class _Run:
             for chord in action["chords"]:
                 if policy.blocked_chord(chord):
                     raise _Halt(
-                        f"{chord_text(chord)} locks the screen or ends the session, so it is "
+                        f"{chord_text(chord)} takes the screen away or ends the session, so it is "
                         "never sent."
                     )
             for _ in range(action["repeat"]):

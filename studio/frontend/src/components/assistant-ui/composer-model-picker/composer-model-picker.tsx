@@ -134,11 +134,18 @@ import { isCapableCheckpointQuant } from "@/features/model-picker/components/mod
 import {
   type NpuModel,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDownloadLabel,
+  npuRowTooltip,
   npuSizeLabel,
+  refreshNpuModels,
   useNpuCatalog,
   useNpuStatus,
 } from "@/features/npu";
+import {
+  interfaceScaleToZoom,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -147,6 +154,7 @@ import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -185,6 +193,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -209,7 +218,11 @@ import {
   type ListSection,
   PICKER_EDGE,
   PICKER_GAP,
-  PICKER_WIDTH,
+  pickerDropOffset,
+  pickerMinHeight,
+  pickerRoomBelow,
+  pickerWidth,
+  pickerZoomOut,
   type PickerRow,
   RECOMMENDED_TAB,
   SECTION_LABEL,
@@ -229,7 +242,6 @@ import {
   orgFilterApplies,
   ownerOrgId,
   pickerAlignOffset,
-  pickerDropOffset,
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
@@ -240,6 +252,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
+import { npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -717,14 +730,19 @@ function MakerMark({
 
 type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   id?: string;
+  label?: string;
   lora?: LoraModelOption;
 };
 
-/** A model's own logo only; no placeholder. */
+function rowMarkName(row?: RowMarkRow): string | undefined {
+  const name = row?.label ?? row?.lora?.name ?? row?.id?.split(/[\\/]/).pop();
+  return name?.trim() || undefined;
+}
+
 function hasRowMark(row?: RowMarkRow): boolean {
   return row?.kind === "external"
     ? Boolean(row.providerType)
-    : rowMaker(row) !== null;
+    : rowMaker(row) !== null || rowMarkName(row) !== undefined;
 }
 
 function RowMark({ row }: { row?: RowMarkRow }) {
@@ -744,7 +762,15 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
-  return null;
+  const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  // 2px over the slot: a solid disc reads smaller than the logos.
+  return name ? (
+    <ApiProviderLogo
+      providerType={null}
+      name={name}
+      className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+    />
+  ) : null;
 }
 
 interface SourceTab {
@@ -1535,6 +1561,8 @@ export function ComposerModelPicker({
   const navigate = useNavigate();
   const reasoning = useComposerReasoning();
   const pane = source?.selection;
+  const browseOnly = source?.browseOnly === true;
+  const hiddenIds = source?.hiddenIds;
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -1694,6 +1722,11 @@ export function ComposerModelPicker({
       : undefined,
   );
   const npuModels = npuCatalog?.models ?? null;
+  // The picker stays mounted, so a conversion made on the Export page lists only on a fresh read.
+  const npuReady = npuStatus?.supported === true && npuStatus.ready === true;
+  useEffect(() => {
+    if (open && npuReady) void refreshNpuModels();
+  }, [open, npuReady]);
   const online = useOnlineStatus();
   const hfToken = useHfTokenStore((s) => s.token);
   const gpuInfo = useGpuInfo(open);
@@ -2041,21 +2074,7 @@ export function ComposerModelPicker({
         lora,
       });
     }
-    for (const model of npuModels ?? []) {
-      if (!model.downloaded) {
-        continue;
-      }
-      device.push({
-        key: `npu:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: DEVICE_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-        sizeBytes: model.size_gb != null ? model.size_gb * 1e9 : undefined,
-      });
-    }
+    device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
     const loaded = new Map<string, (typeof loadedModels)[number]>();
@@ -2139,19 +2158,18 @@ export function ComposerModelPicker({
       providerType: m.providerType,
       providerName: m.providerName,
     }));
-    const npuOffers: Row[] = (npuModels ?? [])
-      .filter((model) => !model.downloaded)
-      .map((model) => ({
-        key: `npu-offer:${model.id}`,
-        id: model.model_path,
-        label: model.id,
-        tab: RECOMMENDED_TAB,
-        kind: "npu",
-        section: "npu",
-        npu: model,
-      }));
-    return [...marked, ...npuOffers, ...hub, ...external];
+    const npuOffers: Row[] = npuPickerRows(npuModels, false);
+    const all = [...marked, ...npuOffers, ...hub, ...external];
+    return browseOnly
+      ? all.filter(
+          (row) =>
+            !hiddenIds?.has(row.id.toLowerCase()) &&
+            mediaPageForTask(mediaTaskById.get(row.id.toLowerCase())) === null,
+        )
+      : all;
   }, [
+    browseOnly,
+    hiddenIds,
     inventory.cachedGguf,
     inventory.cachedModels,
     npuModels,
@@ -2502,15 +2520,16 @@ export function ComposerModelPicker({
     return () => clearTimeout(timer);
   }, [pending, chosen?.id, modelLoading]);
   const shown = pending ?? chosen;
-  const chosenName =
-    shown?.label ??
-    (checkpoint
-      ? (missingExternalModel(
-          checkpoint,
-          externalModels ?? [],
-          source?.externalConnections ?? [],
-        )?.modelName ?? modelDisplayName(checkpoint))
-      : null);
+  const chosenName = browseOnly
+    ? undefined
+    : (shown?.label ??
+      (checkpoint
+        ? (missingExternalModel(
+            checkpoint,
+            externalModels ?? [],
+            source?.externalConnections ?? [],
+          )?.modelName ?? modelDisplayName(checkpoint))
+        : null));
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
@@ -2522,15 +2541,38 @@ export function ComposerModelPicker({
     !inventory.cachedReady ||
     (externalModels?.length ?? 0) > 0 ||
     rows.some((row) => row.tab === DEVICE_TAB);
+  const hasDeviceRows = rows.some((row) => row.tab === DEVICE_TAB);
+  const [browseDevice, setBrowseDevice] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!browseOnly) return;
+    if (!open) {
+      setBrowseDevice(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setBrowseDevice((known) => known ?? false),
+      2000,
+    );
+    return () => clearTimeout(timer);
+  }, [browseOnly, open]);
+  useEffect(() => {
+    if (browseOnly && open && inventory.cachedReady) {
+      setBrowseDevice((known) => known ?? hasDeviceRows);
+    }
+  }, [browseOnly, open, inventory.cachedReady, hasDeviceRows]);
   const viewed =
     tab ??
-    (hasModels
-      ? ((lastTab && sourceTabs.some((t) => t.value === lastTab)
-          ? lastTab
-          : null) ??
-        (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
-        DEVICE_TAB)
-      : RECOMMENDED_TAB);
+    (browseOnly
+      ? browseDevice
+        ? DEVICE_TAB
+        : RECOMMENDED_TAB
+      : hasModels
+        ? ((lastTab && sourceTabs.some((t) => t.value === lastTab)
+            ? lastTab
+            : null) ??
+          (chosen?.tab === RECOMMENDED_TAB ? DEVICE_TAB : chosen?.tab) ??
+          DEVICE_TAB)
+        : RECOMMENDED_TAB);
   useEffect(() => {
     setOnRecommended(viewed === RECOMMENDED_TAB);
   }, [viewed]);
@@ -2741,7 +2783,21 @@ export function ComposerModelPicker({
       store.endPinnedConnectedDrag(true);
     },
   });
-  const isExpanded = expanded || !chosenName;
+  // No thinking controls: nothing to collapse to, whatever the quants.
+  const noThinking =
+    !(pane || modelLoading) &&
+    !(
+      reasoning.supportsReasoning ||
+      reasoning.supportsPreserve ||
+      reasoning.supportsFast
+    );
+  const isExpanded = expanded || !chosenName || noThinking;
+  // Stored, so the next pick does not load into the collapsed view.
+  useEffect(() => {
+    if (noThinking && !expanded) {
+      setExpanded(true);
+    }
+  }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
   const chosenTarget =
@@ -2800,6 +2856,13 @@ export function ComposerModelPicker({
   // modelLoading also covers unloads: only a cycle with a load pick is a fresh load.
   const loadPicked = useChatRuntimeStore((s) => s.loadingModelPick !== null);
   const loadingFresh = pane ? modelLoading : modelLoading && loadPicked;
+  // Runs once the load settles, when the store holds the new model's reasoning.
+  const closeIfNoThinking = useRef(() => {});
+  closeIfNoThinking.current = () => {
+    if (noThinking) {
+      setOpen(false);
+    }
+  };
   useEffect(() => {
     if (modelLoading) {
       if (loadingFresh) {
@@ -2818,11 +2881,18 @@ export function ComposerModelPicker({
       setExpanded(
         (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
       );
+      if (fresh) {
+        closeIfNoThinking.current();
+      }
     } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
       writeModelExpanded(prev, null);
       setExpanded(true);
     }
   }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
+  // Never loaded, but ejectModel clears a connected pick.
+  const chosenExternal =
+    !pane && Boolean(checkpoint && isExternalModelId(checkpoint));
+  const chosenEjectable = chosenLoaded || chosenExternal;
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
@@ -3062,6 +3132,12 @@ export function ComposerModelPicker({
       isLora: false,
       isDownloaded: true,
     } as const;
+    if (model.local?.problem) {
+      toast.error("Can't load this model on the NPU", {
+        description: model.local.problem,
+      });
+      return;
+    }
     if (model.downloaded) {
       if (row.id !== chosen?.id) {
         setPending(row);
@@ -3327,17 +3403,21 @@ export function ComposerModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
+  const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
+  const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const dropsDown = open && openSide === "bottom";
-  useEffect(() => {
-    if (!(dropsDown && panel)) {
-      setDropOffset(PICKER_GAP);
+  const [roomBelow, setRoomBelow] = useState<number | null>(null);
+  const dropsDown = openSide === "bottom";
+  // Layout effect: the first painted frame must already have the measured offset.
+  useLayoutEffect(() => {
+    if (!(open && dropsDown && panel)) {
       return;
     }
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
+        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3351,7 +3431,33 @@ export function ComposerModelPicker({
       observer.disconnect();
       window.removeEventListener("resize", place);
     };
-  }, [dropsDown, panel]);
+  }, [open, dropsDown, panel]);
+  // The open-time rect is stale once the trigger moves or lays out late.
+  useEffect(() => {
+    const trigger = triggerRef.current;
+    if (!(open && panel && trigger)) {
+      return;
+    }
+    const place = () => {
+      const rect = trigger.getBoundingClientRect();
+      if (rect.width === 0 || panel.offsetWidth === 0) {
+        return;
+      }
+      setAlignOffset(
+        pickerAlignOffset(align, rect, panel.offsetWidth, window.innerWidth),
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    observer.observe(trigger);
+    observer.observe(trigger.closest("form") ?? document.body);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [open, panel, align]);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
   };
@@ -3364,14 +3470,37 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      setOpenSide(pickerSide(side, rect, window.innerHeight));
+      const nextSide = pickerSide(side, rect, window.innerHeight);
+      setOpenSide(nextSide);
+      setDropOffset(PICKER_GAP);
+      setRoomBelow(
+        nextSide === "bottom" && rect
+          ? pickerRoomBelow(rect.bottom, window.innerHeight)
+          : null,
+      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
           ) || 1
         : 1;
+      const zoomOut = pickerZoomOut(
+        window.innerWidth,
+        window.outerWidth,
+        isTauri
+          ? interfaceScaleToZoom(useInterfaceScaleStore.getState().scale)
+          : null,
+      );
+      setPickerZoomOutState(zoomOut);
+      setPickerMinBase(
+        pickerMinHeight(window.innerWidth, window.innerHeight, zoomOut),
+      );
       setAlignOffset(
-        pickerAlignOffset(align, rect, PICKER_WIDTH * scale, window.innerWidth),
+        pickerAlignOffset(
+          align,
+          rect,
+          pickerWidth(window.innerWidth, scale, zoomOut),
+          window.innerWidth,
+        ),
       );
       resetView();
       setActive(0);
@@ -3662,7 +3791,7 @@ export function ComposerModelPicker({
     if (row.kind === "local" && row.lora) {
       return loraMeta(row.lora);
     }
-    if (row.npu?.downloaded) {
+    if (row.npu?.downloaded && !row.npu.local?.problem) {
       return {
         source: "local",
         isLora: false,
@@ -3920,7 +4049,7 @@ export function ComposerModelPicker({
     if (npu?.downloaded && npuCatalog) {
       return {
         title: `Delete ${row.label}?`,
-        description: "This removes the model's NPU files from this device.",
+        description: npuDeleteDescription(npu),
         successMessage: `Deleted ${row.label}`,
         disabled: row.loaded || source?.deleteDisabled,
         onConfirm: () => npuCatalog.remove(npu),
@@ -4072,6 +4201,7 @@ export function ComposerModelPicker({
             // Shared with the header picker's rows: the Playwright drivers select by these.
             data-model-picker-option=""
             data-model-picker-active-option={rowActive ? "true" : undefined}
+            title={row.npu ? (npuRowTooltip(row.npu) ?? undefined) : undefined}
             onMouseMove={() => {
               setActive(index);
               setHighlight(true);
@@ -4231,7 +4361,9 @@ export function ComposerModelPicker({
                         : undefined
                     }
                     items={[
-                      ...(row.loaded && canEject
+                      ...((row.loaded ||
+                        (chosenExternal && row.id === checkpoint)) &&
+                      canEject
                         ? [
                             {
                               key: "eject",
@@ -5021,7 +5153,7 @@ export function ComposerModelPicker({
               >
                 {modelLoading || pending ? (
                   <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-                ) : chosenName && chosenLoaded ? (
+                ) : chosenName && chosenEjectable ? (
                   <Hint label="Eject model">
                     {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                     <span
@@ -5095,7 +5227,7 @@ export function ComposerModelPicker({
           >
             {modelLoading || pending ? (
               <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
-            ) : chosenName && chosenLoaded ? (
+            ) : chosenName && chosenEjectable ? (
               <Hint label="Eject model">
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only shortcut; keyboard and screen readers eject from the panel. */}
                 <span
@@ -5150,14 +5282,23 @@ export function ComposerModelPicker({
       )}
       {/* No collision flip: a height change must not move the panel across the composer. */}
       <PopoverContent
-        ref={setPanel}
         side={openSide}
         avoidCollisions={false}
         collisionPadding={PICKER_EDGE}
         align={align}
         alignOffset={alignOffset}
+        ref={setPanel}
         sideOffset={dropsDown ? dropOffset : PICKER_GAP}
         data-composer-model-picker=""
+        style={
+          {
+            "--picker-zoom-out": pickerZoomOutState,
+            "--picker-min-base": `${pickerMinBase}px`,
+            ...(roomBelow === null
+              ? {}
+              : { "--picker-room": `${roomBelow}px` }),
+          } as CSSProperties
+        }
         data-tour="chat-model-selector-popover"
         data-list-last={
           isExpanded && !hasFoot && !configTarget ? "" : undefined
@@ -5169,15 +5310,16 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
-          "unsloth-plus-menu composer-model-picker relative w-[calc(420px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-2",
-          (isExpanded || configTarget) &&
-            "h-[calc(420px*var(--ui-space-scale,1))]",
+          "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
+          openSide !== "bottom" &&
+            "[--picker-floor:var(--radix-popover-content-available-height)]",
+          configTarget
+            ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
+            : isExpanded
+              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
-          // Opening down, it keeps its height and rides up over the composer instead (pickerDropOffset).
-          openSide === "bottom"
-            ? "max-h-[min(calc(760px*var(--ui-space-scale,1)),calc(100dvh-16px))]"
-            : "max-h-[min(calc(760px*var(--ui-space-scale,1)),var(--radix-popover-content-available-height))]",
         )}
         onOpenAutoFocus={(event) => {
           if (isExpanded) {
@@ -5270,7 +5412,7 @@ export function ComposerModelPicker({
                 ))}
               </div>
               {(!pane || pane.loaded) &&
-              (chosenLoaded || loadedModels.length > 0) &&
+              (chosenEjectable || loadedModels.length > 0) &&
               !pending &&
               !modelLoading ? (
                 <Button
@@ -5280,7 +5422,7 @@ export function ComposerModelPicker({
                     ejectsAll
                       ? "Eject all models"
                       : `Eject ${
-                          chosenLoaded
+                          chosenEjectable
                             ? (chosenName ?? "model")
                             : modelDisplayName(loadedModels[0]?.id ?? "model")
                         }`
@@ -5288,7 +5430,7 @@ export function ComposerModelPicker({
                   onClick={() => {
                     if (ejectsAll) {
                       source?.ejectAll();
-                    } else if (!chosenLoaded && loadedModels[0]) {
+                    } else if (!chosenEjectable && loadedModels[0]) {
                       source?.eject(
                         loadedModels[0].checkpoint ?? loadedModels[0].id,
                       );
@@ -5308,7 +5450,7 @@ export function ComposerModelPicker({
                   {ejectsAll ? "Eject all" : "Eject"}
                 </Button>
               ) : null}
-              {chosenName ? (
+              {chosenName && !noThinking ? (
                 <Hint label="Collapse">
                   <button
                     type="button"
@@ -5642,7 +5784,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </button>
-            {!pending && chosenLoaded && !modelLoading ? (
+            {!pending && chosenEjectable && !modelLoading ? (
               <Button
                 variant="destructive"
                 size="xs"

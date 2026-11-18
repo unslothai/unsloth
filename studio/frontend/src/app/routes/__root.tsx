@@ -367,6 +367,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/projects",
   "/library",
   "/tasks",
+  "/translate",
   "/hub",
   "/login",
   "/signup",

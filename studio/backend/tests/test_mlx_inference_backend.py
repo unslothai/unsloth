@@ -7619,6 +7619,28 @@ def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     assert payload.tools[0]["type"] == "function"
 
 
+def test_an_mlx_count_merges_memory_into_the_normalized_developer_turn(monkeypatch):
+    from core import chat_memory
+
+    monkeypatch.setattr(
+        chat_memory, "context", lambda *_: {"text": "Remembered preference: concise answers"}
+    )
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [
+            {"role": "developer", "content": "Follow these instructions."},
+            {"role": "user", "content": "hello"},
+        ],
+        enable_tools = False,
+    )
+    assert backend.messages == [{"role": "user", "content": "hello"}]
+    assert backend.system == (
+        "Follow these instructions.\n\nRemembered preference: concise answers"
+    )
+
+
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     """Request wins verbatim; none takes the trained window; unreadable dims yield nothing."""
     from core.inference.mlx_inference import MLXInferenceBackend
