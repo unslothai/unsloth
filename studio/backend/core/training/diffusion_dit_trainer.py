@@ -1818,6 +1818,141 @@ def _flux3_training_scheduler(cfg):
     return FlowMatchEulerDiscreteScheduler.from_config(shipped.config)
 
 
+# Same names as published MOSS LoRAs (Angais/MOSS-Image-PixelArt-16x16), so adapters are interchangeable.
+_MOSS_TARGETS = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
+# Dense under nf4: _MOSS_IMAGE_QUANT_KEEP plus latent in / out; bitsandbytes matches "<name>." so names are whole.
+_MOSS_NF4_KEEP = (
+    "text_embedder",
+    "time_embedding",
+    "shared_block_modulation",
+    "video_head_modulation",
+    "video_embedder",
+    "final_linear_video",
+)
+
+
+def _moss_load_conditioners(cfg, device, weight_dtype):
+    import torch
+    from core.inference.diffusion_moss_image import load_moss_image_pipeline
+
+    pipe = load_moss_image_pipeline(
+        cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
+    )
+    return pipe, pipe.vae
+
+
+def _moss_nf4_config():
+    cfg = _bnb_4bit_config()
+    cfg.llm_int8_skip_modules = list(_MOSS_NF4_KEEP)
+    return cfg
+
+
+def _moss_load_transformer(cfg, device, weight_dtype, base_precision):
+    import torch
+    from core.inference.diffusion_moss_image import MOSSImageTransformer
+
+    if base_precision == "nf4" and not repo_is_prequantized(cfg.base_model):
+        return MOSSImageTransformer.from_pretrained(
+            cfg.base_model,
+            subfolder = "transformer",
+            quantization_config = _moss_nf4_config(),
+            device_map = {"": device},
+            torch_dtype = torch.bfloat16,
+            token = cfg.hf_token,
+        )
+    return _load_dit_transformer(MOSSImageTransformer, cfg, device, base_precision)
+
+
+def _moss_encode_prompts(pipe, captions, device):
+    _encoders_to_device(pipe, device)
+    out = []
+    for cap in captions:
+        embeds, _mask = pipe.encode_prompt(cap, device = device)
+        out.append((embeds[0].cpu(),))
+    return out
+
+
+def _moss_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    """Right-padded ``(embeds, mask)``; mask is None for equal lengths (no host sync in the forward)."""
+    import torch
+
+    rows = [e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries]
+    lengths = [int(r.shape[0]) for r in rows]
+    if len(set(lengths)) == 1:
+        return (torch.stack(rows), None)
+    embeds = torch.nn.utils.rnn.pad_sequence(rows, batch_first = True)
+    mask = (
+        torch.arange(embeds.shape[1], device = embeds.device)[None]
+        < torch.tensor(lengths, device = embeds.device)[:, None]
+    )
+    return (embeds, mask)
+
+
+def _moss_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    embeds, mask = embeds_batch
+    # Timestep is sigma * 1000, as MOSSImagePipeline passes it.
+    kwargs = {} if mask is None else {"encoder_attention_mask": mask}
+    return transformer(noisy, timesteps, encoder_hidden_states = embeds, return_dict = False, **kwargs)[
+        0
+    ]
+
+
+# Patchified 2x2 and batch-norm normalised, the inverse of MOSSImagePipeline.vae_decode.
+_moss_encode_latents = _flux2_encode_latents
+_moss_encode_latent_stats = _flux2_encode_latent_stats
+
+
+def _moss_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
+    import inspect
+
+    from diffusers.loaders import QwenImageLoraLoaderMixin
+
+    save = QwenImageLoraLoaderMixin.save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _moss_training_scheduler(cfg):
+    """Shift 5 baked into the sigmas: MOSSImageScheduler's table is unshifted, so training from it draws shift-1 noise."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    conf = FlowMatchEulerDiscreteScheduler.load_config(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps = int(conf.get("num_train_timesteps") or 1000),
+        shift = float(conf.get("shift") or 5.0),
+    )
+
+
 # Targets fully qualified: a bare to_q would also match audio and cross-modality attention, so keep audio out of the LoRA targets and the loss.
 _LTX2_TARGETS = (
     "attn1.to_q",
@@ -2341,6 +2476,25 @@ _SPECS: dict[str, _FamilySpec] = {
         training_scheduler = _flux3_training_scheduler,
         save_takes_metadata = True,
         timestep_density = "none",
+    ),
+    "moss-image": _FamilySpec(
+        family = "moss-image",
+        lora_targets = _MOSS_TARGETS,
+        # ComfyUI runs MOSS-Image in bf16 / fp32 only: its residual stream overflows fp16.
+        force_bf16 = True,
+        dense_bf16_gb = 10.2,
+        load_conditioners = _moss_load_conditioners,
+        load_transformer = _moss_load_transformer,
+        encode_prompts = _moss_encode_prompts,
+        encode_latents = _moss_encode_latents,
+        encode_latent_stats = _moss_encode_latent_stats,
+        collate = _moss_collate,
+        forward = _moss_forward,
+        save = _moss_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
+        training_scheduler = _moss_training_scheduler,
+        save_takes_metadata = True,
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
