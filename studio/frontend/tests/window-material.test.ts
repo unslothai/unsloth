@@ -247,7 +247,7 @@ test("glass frosts the chat model controls and gives the account row the row hov
 test("glass gives the chat header's icon buttons the model picker's glass, not a new style", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const model = String.raw`\[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
-	const actions = String.raw`:is\(\[data-chat-header-actions\] > button, \[data-chat-new-chat\]\)`;
+	const actions = String.raw`:is\(\[data-chat-header-actions\] > button, \[data-chat-new-chat\], html:not\(\[data-sidebar-glass-frame\]\) \[data-titlebar-nav\]:not\(\[data-slot="sidebar"\] \*\) > button\)`;
 	// Listed beside the picker in each of its rules, so the buttons share its fill, rim, edge and hover.
 	for (const glass of [String.raw`\[data-glass\]`, String.raw`\[data-glass\^="liquid"\]`, String.raw`\[data-glass="liquid-3d"\]`]) {
 		const after = glass.includes("3d") ? "::before" : "";
@@ -259,6 +259,9 @@ test("glass gives the chat header's icon buttons the model picker's glass, not a
 	assert.match(css, new RegExp(String.raw`${actions}:focus-visible,\n[^{]*:focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow[^;]*!important;`));
 	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto/);
+	// Back, forward and the sidebar toggle frost too, except over a pinned sidebar's strip or inside the sidebar.
+	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
+	assert.match(titlebar, /role="toolbar"\n\s*aria-label=\{t\("desktopShell\.navigation"\)\}\n\s*data-titlebar-nav=""/);
 	// The collapsed sidebar's New chat button sits beside the picker and takes the same glass.
 	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
 });
@@ -287,9 +290,10 @@ test("the narrow window's Run settings sheet takes the docked panel's glass", ()
 	assert.match(compact, /<SheetContent side="right" data-chat-settings-sheet=""/);
 	assert.match(compact, /data-slot="chat-settings-panel" className="relative flex h-full flex-col"/);
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-chat-settings-sheet\],\nhtml\[data-glass="macos"\] \[data-chat-settings-sheet\] \{\n  background-color: transparent;/);
-	// The floating monitor docks beside the docked column only, never the overlay sheet.
+	// The floating monitor measures whichever panel is shown, so it docks by the sheet's real width too.
 	const monitor = readFileSync(new URL("../src/components/floating-monitor.tsx", import.meta.url), "utf8");
-	assert.match(monitor, /document\.querySelector\('aside\[data-slot="chat-settings-panel"\]'\)/);
+	assert.match(monitor, /document\.querySelector\('\[data-slot="chat-settings-panel"\]'\)/);
+	assert.match(monitor, /if \(!attach\(\)\) \{\n\s*setPaintedSettingsWidth\(0\);\n\s*frame = requestAnimationFrame/);
 });
 
 test("glass tints the user's bubble and thread code blocks like the composer, with no blur", () => {

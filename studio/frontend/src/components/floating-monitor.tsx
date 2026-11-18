@@ -678,20 +678,32 @@ export function FloatingMonitor() {
       setPaintedSettingsWidth(0);
       return;
     }
-    const panel = document.querySelector('aside[data-slot="chat-settings-panel"]');
-    if (!panel) {
-      setPaintedSettingsWidth(0);
-      return;
-    }
-    const measure = () => {
-      if (panel.isConnected) {
-        setPaintedSettingsWidth(panel.getBoundingClientRect().width);
-      }
+    // The docked aside, or the narrow window's fixed-width sheet, whose portal can mount a frame later.
+    let observer: ResizeObserver | null = null;
+    const attach = () => {
+      const panel = document.querySelector('[data-slot="chat-settings-panel"]');
+      if (!panel) return false;
+      const measure = () => {
+        if (panel.isConnected) {
+          setPaintedSettingsWidth(panel.getBoundingClientRect().width);
+        }
+      };
+      measure();
+      observer = new ResizeObserver(measure);
+      observer.observe(panel);
+      return true;
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(panel);
-    return () => observer.disconnect();
+    let frame = 0;
+    if (!attach()) {
+      setPaintedSettingsWidth(0);
+      frame = requestAnimationFrame(() => {
+        attach();
+      });
+    }
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
   }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
 
   // The sidebar paints per frame and commits on release, so track painted width for docking.
