@@ -370,3 +370,29 @@ def test_checkpoint_skip_planner_arms_one_step_later(monkeypatch):
     _arm()
     _run(model, x)
     assert _memo_of(model).out is not None
+
+
+def test_deleted_model_releases_its_budget(monkeypatch):
+    # A notebook that deletes a model and loads another must not keep the old caches' bytes as used.
+    import gc
+
+    model = _model("int8", monkeypatch)
+    x = torch.randn(4, DIM)
+    for _ in range(2):
+        _run(model, x)
+    held = _memo_of(model).nbytes + _memo_of(model, "down_proj").nbytes
+    assert held > 0
+    before = memo.qat_weight_memo_stats()["cached_bytes"]
+    del model
+    gc.collect()
+    assert memo.qat_weight_memo_stats()["cached_bytes"] == before - held  # no optimizer step needed
+    other = _model("int8", monkeypatch)
+    for _ in range(2):
+        _run(other, x)
+    _memo_of(other).drop()
+    _memo_of(
+        other, "down_proj"
+    ).drop()  # an explicit drop, then the release at deletion: no double count
+    del other
+    gc.collect()
+    assert memo.qat_weight_memo_stats()["cached_bytes"] == before - held

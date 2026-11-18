@@ -294,6 +294,13 @@ class _WeightMemo:
     def __deepcopy__(self, memo):
         return _WeightMemo()
 
+    def __del__(self):
+        # A deleted model's caches give their bytes back now, not at the next optimizer step's recount.
+        try:
+            self.drop()
+        except Exception:
+            pass  # interpreter shutdown
+
     def drop(self):
         if self.out is not None:
             _STATE["live"] -= 1
