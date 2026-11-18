@@ -2509,6 +2509,7 @@ export function ModelConfigPage({
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
   const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
+  const loadedSplitRatio = useChatRuntimeStore((s) => s.loadedSplitRatio);
   const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
@@ -4176,6 +4177,7 @@ export function ModelConfigPage({
               loadedGpuLayers,
               loadedGpuIds,
               loadedGpuIndexKind,
+              loadedSplitRatio,
               gpuIndexKind,
             })}
             placementMode={

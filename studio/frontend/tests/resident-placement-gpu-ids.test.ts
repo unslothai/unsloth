@@ -31,3 +31,8 @@ test("unknown identities stay unknown", () => {
   assert.equal(residentPlacementGpuIds({ ...resident, gpuIndexKind: "vulkan" }), null);
   assert.equal(residentPlacementGpuIds({ ...resident, loadedGpuIds: [] }), null);
 });
+
+test("a pinned card with a zero share releases nothing on reload", () => {
+  assert.deepEqual(residentPlacementGpuIds({ ...resident, loadedSplitRatio: [0, 1] }), [1]);
+  assert.deepEqual(residentPlacementGpuIds({ ...resident, loadedSplitRatio: [3] }), [0, 1]);
+});

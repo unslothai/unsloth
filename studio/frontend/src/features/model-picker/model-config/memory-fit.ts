@@ -597,6 +597,7 @@ export function residentPlacementGpuIds(state: {
   loadedGpuLayers: number | null | undefined;
   loadedGpuIds: readonly number[] | null | undefined;
   loadedGpuIndexKind: string | null | undefined;
+  loadedSplitRatio?: readonly number[] | null;
   gpuIndexKind: string | null | undefined;
 }): readonly number[] | null | undefined {
   if (!state.isActiveModel || state.loadedCpuFallback || state.loadedGpuLayers === 0) {
@@ -604,5 +605,9 @@ export function residentPlacementGpuIds(state: {
   }
   const sameNamespace =
     state.loadedGpuIndexKind != null && state.loadedGpuIndexKind === state.gpuIndexKind;
-  return state.loadedGpuIds?.length && sameNamespace ? state.loadedGpuIds : null;
+  const ids = state.loadedGpuIds;
+  if (!ids?.length || !sameNamespace) return null;
+  const ratio = state.loadedSplitRatio;
+  // A zero share places nothing on that card, so a reload frees nothing there.
+  return ratio?.length === ids.length ? ids.filter((_, i) => ratio[i] > 0) : ids;
 }
