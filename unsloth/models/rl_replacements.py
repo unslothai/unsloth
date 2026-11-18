@@ -233,6 +233,26 @@ def grpo_config_fix_vllm_top_k(old_RLTrainer_source, old_RLConfig_source):
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_fix_vllm_top_k)
 
 
+# UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1 makes the PPO ratio pi_theta / pi_rollout. Its clip bounds only
+# positive advantages, so without the dual clip `delta` a negative-advantage token's ratio is unbounded
+# (a run collapsed at grad norm 7.6e4; verl always applies its dual clip, clip_ratio_c = 3). The loss
+# types below are the ones grpo_compute_loss applies `delta` to.
+def grpo_config_warn_rollout_logps_as_old_delta(old_RLTrainer_source, old_RLConfig_source):
+    if re.search(r"\n[ \t]+delta[ \t]*:", old_RLConfig_source) is None:
+        return ""
+    return (
+        "if os.environ.get('UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD', '0') == '1' "
+        "and locals().get('delta', None) is None "
+        "and locals().get('loss_type', None) in ('grpo', 'bnpo', 'dr_grpo', 'dapo', 'luspo'):\n"
+        "    print('Unsloth: UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1 is set without `delta`. The PPO ratio is then "
+        "pi_theta / pi_rollout and nothing bounds it on negative-advantage tokens, which can make training "
+        "diverge. Set `delta` in GRPOConfig (for example delta = 3.0, above 1 + epsilon_high).')\n"
+    )
+
+
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_config_warn_rollout_logps_as_old_delta)
+
+
 def gkd_trainer_mask_prompt(function_name, function):
     if function_name != "generate_on_policy_outputs":
         return function
