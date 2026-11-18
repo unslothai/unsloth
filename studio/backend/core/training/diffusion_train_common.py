@@ -662,19 +662,14 @@ def flow_bf16_trainable() -> bool:
         return False
 
 
-# DiT families that train on a CUDA card without bf16 (T4 / V100 / RTX 20xx): fp16 autocast + dynamic loss scaling, fp32
-# LoRA, fp32 residual stream and the per-family fp32 modules in diffusion_dit_trainer._FP16_FP32_MODULES. Every other
-# family keeps the bf16 refusal on such a card.
+# DiT families with a validated fp16 path on non-bf16 CUDA cards; others keep the bf16 refusal.
 DIT_FP16_TRAIN_FAMILIES: frozenset[str] = frozenset({"flux.2-klein", "z-image", "wan2.2-ti2v-5b"})
-# "0" turns the fallback off (non-bf16 cards are refused, as before); "force" takes it on a bf16 card too, which only
-# a parity check wants. Anything else: the fallback only where bf16 is unavailable.
+# "0" disables the fallback; "force" uses it on bf16 cards too (parity checks only).
 DIT_FP16_ENV = "UNSLOTH_STUDIO_DIT_FP16"
 
 
 def dit_fp16_fallback(resolved_family: str) -> bool:
-    """Whether this DiT run trains through the fp16 path: a supported family on an NVIDIA CUDA GPU that has no native
-    bf16 (or ``UNSLOTH_STUDIO_DIT_FP16=force``). A bf16-capable card returns False, so it keeps the bf16 path unchanged.
-    ROCm stays on its own bf16 rules. Never raises."""
+    """Supported family on an NVIDIA GPU without native bf16 (or env ``force``); ROCm excluded. Never raises."""
     if (resolved_family or "").strip().lower() not in DIT_FP16_TRAIN_FAMILIES:
         return False
     mode = os.environ.get(DIT_FP16_ENV, "").strip().lower()
@@ -768,7 +763,6 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     try:
         import torch
         if torch.cuda.is_available() and not flow_bf16_trainable():
-            # A family with a validated fp16 path trains here in fp16 autocast + loss scaling instead.
             if dit_fp16_fallback(resolved_family):
                 return None
             return (
@@ -979,7 +973,6 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
-    # The fp16 path trains on the nf4 base only: every dense mode computes in bf16.
     if mode in ("bf16", "int8", "fp8", "mxfp8") and dit_fp16_fallback(fam):
         return dit_fp16_dense_reason(mode)
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):

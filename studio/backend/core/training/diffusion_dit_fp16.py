@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp16 training path for the DiT LoRA trainer on GPUs without bf16 (T4 / V100 / RTX 20xx).
-
-The recipe:
-  * the nf4 base computes its matmuls in fp16 (bitsandbytes ``compute_dtype``) under fp16 autocast;
-  * every non-quantized parameter (norms, embedders, biases, modulation tables) is held in fp32, and the latents and
-    text embeddings enter in fp32, so the residual stream between blocks is fp32 and never has to fit fp16;
-  * modules whose fp16 matmul OUTPUT overflows (found per family with ``overflow_probe``) run as fp32 islands:
-    autocast off, inputs cast up, their nf4 matmul computing in fp32;
-  * LoRA weights stay fp32 (the loop's ``cast_training_params``) and a GradScaler does dynamic loss scaling.
-"""
+"""fp16 DiT LoRA training on non-bf16 GPUs: nf4 matmuls in fp16, fp32 residual stream / LoRA / overflowing modules."""
 
 from __future__ import annotations
 
@@ -18,9 +9,7 @@ import contextlib
 import re
 from typing import Any, Iterable, Optional
 
-# Module-name patterns (re.search over ``named_modules`` names, before the LoRA attaches) that run in fp32 per family.
-# The final layer, the timestep / modulation embedders and the measured overflowing modules; see overflow_probe and
-# outputs/lora_fp16_t4/REPORT.md for the measurements behind each entry.
+# Per-family module-name patterns run in fp32; overflowing entries measured with overflow_probe on a T4.
 FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
     "flux.2-klein": (
         r"^time_guidance_embed$",
@@ -33,10 +22,7 @@ FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
     "z-image": (
         r"^t_embedder$",
         r"^all_final_layer\.",
-        # The attention and FFN outputs feed post-norms (attention_norm2 / ffn_norm2), so nothing bounds them. Measured
-        # on a T4 (16 training forwards, 512 px, Turbo), each finite-check pass exposing the next block: the refiner
-        # to_out went inf in 14/16 and 16/16 forwards (1.4e5 in fp32) and w2 in 2/16 (5.9e5 in fp32); with those in
-        # fp32, layers.0 w2 overflowed 16/16, its INPUT alone reaching 2.3e5. So both run fp32 in every block.
+        # to_out / w2 feed post-norms, so nothing bounds them: measured overflowing in every block family on a T4.
         r"^(noise_refiner|context_refiner|layers)\.\d+\.attention\.to_out\.0$",
         r"^(noise_refiner|context_refiner|layers)\.\d+\.feed_forward\.w2$",
         r"^(noise_refiner|layers)\.\d+\.adaLN_modulation$",
@@ -49,8 +35,7 @@ FP16_FP32_MODULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# The scale only starts high and backs off; this many skipped steps in a row means the forward itself overflows, which
-# loss scaling cannot fix, so the run stops with the overflowing module named instead of training nothing.
+# This many skips in a row means the forward itself overflows (loss scaling cannot fix it): stop the run.
 MAX_CONSECUTIVE_SKIPS = 30
 
 
@@ -100,13 +85,11 @@ def island_names(
     """Module names matching the family's patterns; a PEFT wrapper's inner ``base_layer`` is never matched on its own."""
     patterns = [re.compile(p) for p in (*FP16_FP32_MODULES.get(family, ()), *extra)]
     names = [n for n, _ in model.named_modules() if n and any(p.search(n) for p in patterns)]
-    # A matched ancestor already covers its children.
     return [n for n in names if not any(n.startswith(o + ".") for o in names if o != n)]
 
 
 def prepare_fp16_base(model) -> dict[str, Any]:
-    """Make a loaded nf4 DiT compute under fp16 autocast: nf4 matmuls in fp16, every other floating parameter and
-    buffer in fp32. Call before the LoRA attaches. Returns engagement counts the trainer reports."""
+    """nf4 matmuls in fp16, every other floating param / buffer in fp32. Call before the LoRA attaches."""
     import torch
 
     n4 = 0
@@ -117,7 +100,6 @@ def prepare_fp16_base(model) -> dict[str, Any]:
     up = 0
     for mod in model.modules():
         for _pname, p in list(mod.named_parameters(recurse = False)):
-            # Params4bit is uint8 storage: not floating, left alone.
             if p.is_floating_point() and p.dtype != torch.float32:
                 p.data = p.data.to(torch.float32)
                 up += 1
@@ -137,8 +119,7 @@ def install_fp32_islands(
     device_type: str = "cuda",
     extra: Iterable[str] = (),
 ) -> list[str]:
-    """Wrap the family's fp32 modules. Call AFTER the LoRA attaches: PEFT replaces a targeted module with a wrapper at
-    the same name, and the island must cover that wrapper so the adapter branch runs fp32 too."""
+    """Call AFTER the LoRA attaches, so the island wraps the PEFT wrapper and its adapter branch runs fp32 too."""
     names = island_names(model, family, extra)
     mods = dict(model.named_modules())
     for n in names:
@@ -148,10 +129,7 @@ def install_fp32_islands(
 
 @contextlib.contextmanager
 def overflow_probe(model, record: Optional[dict] = None):
-    """Finite-check every leaf module's output during the forwards inside the block. ``record`` gets
-    ``first_overflow`` (the first module whose output went non-finite from finite inputs, in execution order),
-    ``overflows`` (every such module, by name) and ``max_abs`` (largest finite |output| per module), the data that
-    picks a family's fp32 islands. Hooks are removed on exit."""
+    """Record leaf modules whose output goes non-finite from finite inputs (``first_overflow``, ``overflows``, ``max_abs``)."""
     import torch
 
     rec = record if record is not None else {}

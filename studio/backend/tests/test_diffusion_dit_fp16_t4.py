@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests for DiT LoRA training on GPUs without bf16 (T4 / sm75): which cards take the fp16 path, that bf16 cards
-take exactly the old one, and the fp16 mechanics (loss-scale skips, LR schedule, scaler resume, fp32 islands)."""
+"""CPU tests for the DiT fp16 training path on non-bf16 GPUs (T4)."""
 
 from __future__ import annotations
 
@@ -76,9 +75,6 @@ def _route(monkeypatch, tmp_path, family):
     out = dit.run_dit_lora_training(_cfg(family, tmp_path))
     assert out == "ok"
     return seen
-
-
-# ---- routing: bf16 cards keep the old path exactly --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("cap", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)])
@@ -157,9 +153,6 @@ def test_t4_family_infos_offer_nf4_only(card, monkeypatch):
         assert infos["qwen-image"]["precision_modes"] == []
 
 
-# ---- fp16 mechanics ------------------------------------------------------------------------------------------------
-
-
 def _toy(lr = 0.1):
     w = torch.nn.Parameter(torch.ones(4))
     opt = torch.optim.SGD([w], lr = lr)
@@ -186,7 +179,6 @@ def test_inf_grad_skips_update_and_schedule_then_recovers():
     scaler = torch.amp.GradScaler("cpu", init_scale = 2.0**16)
     before = w.detach().clone()
     lr0 = sched.get_last_lr()[0]
-    # Overflow step: inf in the (scaled) gradient.
     scaler.scale((w * torch.tensor([1.0, float("inf"), 1.0, 1.0])).sum()).backward()
     scaler.unscale_(opt)
     assert dit._optimizer_update(opt, sched, scaler, True) is False
@@ -223,7 +215,7 @@ def test_scaled_grad_accumulation_matches_unscaled():
 def test_scaler_state_round_trips_through_the_checkpoint_progress():
     scaler = torch.amp.GradScaler("cpu", init_scale = 2.0**16)
     w, opt, sched = _toy()
-    for _ in range(3):  # back off three times
+    for _ in range(3):
         opt.zero_grad(set_to_none = True)
         scaler.scale((w * float("inf")).sum()).backward()
         scaler.unscale_(opt)
@@ -232,18 +224,13 @@ def test_scaler_state_round_trips_through_the_checkpoint_progress():
     assert (
         dit._resume_progress(base, scaler, 3, False) is base
     ), "bf16 checkpoints keep the old progress block"
-    prog = json.loads(
-        json.dumps(dit._resume_progress(base, scaler, 3, True))
-    )  # the manifest is JSON
+    prog = json.loads(json.dumps(dit._resume_progress(base, scaler, 3, True)))
     fresh = torch.amp.GradScaler("cpu", init_scale = 2.0**16)
     assert dit._restore_scaler(prog, fresh) == 3
     assert fresh.get_scale() == scaler.get_scale() == 2.0**13
     # A checkpoint from before the fp16 path (no scaler block) leaves the default scale.
     other = torch.amp.GradScaler("cpu", init_scale = 2.0**16)
     assert dit._restore_scaler(base, other) == 0 and other.get_scale() == 2.0**16
-
-
-# ---- fp32 islands --------------------------------------------------------------------------------------------------
 
 
 class Linear4bit(torch.nn.Linear):
@@ -400,7 +387,6 @@ def test_overflow_probe_names_the_overflowing_module():
         "1": 1
     }, "the Identity after it saw a non-finite INPUT, so it is not blamed"
     assert rec["max_abs"]["0"] > 0
-    # Hooks are gone after the block.
     rec2 = {}
     m(torch.ones(1, 4))
     assert rec2 == {}
