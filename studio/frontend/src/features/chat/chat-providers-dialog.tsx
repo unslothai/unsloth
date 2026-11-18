@@ -497,6 +497,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setShowOlderModels(false);
     if (isCustomProviderType(value)) {
       setCustomProviderName(customProviderDisplayName(value));
     }
@@ -634,10 +635,12 @@ export function ChatProvidersSettings({
       (model) => selected.has(model) || !isOlderModel(providerType, model),
     );
   }, [availableModels, modelSearchQuery, providerType, showOlderModels, selectedModelIds, catalogVersion]);
-  const olderModelCount = useMemo(
-    () => availableModels.filter((model) => isOlderModel(providerType, model)).length,
-    [availableModels, providerType, catalogVersion],
-  );
+  const olderModelCount = useMemo(() => {
+    const selected = new Set(selectedModelIds);
+    return availableModels.filter(
+      (model) => !selected.has(model) && isOlderModel(providerType, model),
+    ).length;
+  }, [availableModels, providerType, selectedModelIds, catalogVersion]);
   const keyOptional = isCustomProvider && !isCloudPresetProviderType(providerType);
   const apiKeyUrl =
     customProviderApiKeyUrl(providerType) ?? selectedProviderContract?.api_key_url ?? null;
@@ -852,6 +855,7 @@ export function ChatProvidersSettings({
     setSelectedModelIds([]);
     setManualModelIds("");
     setModelSearchQuery("");
+    setShowOlderModels(false);
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
@@ -1769,6 +1773,7 @@ export function ChatProvidersSettings({
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
+    setShowOlderModels(false);
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true

@@ -4193,6 +4193,7 @@ def load_tensor_parallel(
 # turns into the token mean over the dp replicas, as for DDP on dp GPUs.
 
 _TP_DATA = "_unsloth_tp_data"
+_SCALE_DIVISOR = "_unsloth_scaler_dp"
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 _DP_SYNC = "_unsloth_tp_dp_sync"
 _TP_GATHER = "_unsloth_tp_gather_mesh"
@@ -4865,6 +4866,8 @@ def _tp_scaler(trainer, dp):
     from .fsdp2_native import _scaler_for_native
 
     accelerator = trainer.accelerator
+    # Read by _utils._parallel_forced_scaler.
+    accelerator.__dict__[_SCALE_DIVISOR] = dp
     if not _scaler_for_native(trainer):
         return
     handler = getattr(accelerator, "scaler_handler", None)
