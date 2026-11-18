@@ -86,7 +86,7 @@ test("absent and null are the same, so an unset variant does not thrash the row"
 });
 
 // The fit path sends a pin or 0, never the resident length.
-test("when the fit or a builtin-default owns the context, the resident length is not sent", () => {
+test("when the fit owns the context, the resident length is not sent", () => {
   assert.equal(resolveEstimateContext(null, 40960, true), 0);
 });
 
@@ -104,7 +104,7 @@ test("every other shape keeps the resident fallback", () => {
   assert.equal(resolveEstimateContext(null, 40960), 40960);
 });
 
-test("a builtin-default GGUF load prices the fit, not the resident context", () => {
+test("an Auto GGUF load prices the fit, not the resident context", () => {
   assert.equal(resolveEstimateContext(null, 131072, true), 0);
 });
 

@@ -3366,8 +3366,6 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load, so do not fall back to it.
-  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -3473,10 +3471,8 @@ export function ModelConfigPage({
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
-            (target.isGguf === true &&
-              runtimeGpuMemoryMode === "manual" &&
-              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
-              (target.isGguf === true && activePresetSource === "builtin-default"),
+            // resolveLoadMaxSeqLength sends 0 for every Auto GGUF load, so do not price the old fit.
+            target.isGguf === true,
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           maxSeqLength: target.isGguf

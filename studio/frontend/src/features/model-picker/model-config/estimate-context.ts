@@ -9,7 +9,7 @@ export function resolveEstimateContext(
   skipResidentFallback = false,
 ): number {
   if (skipResidentFallback) {
-    // Manual + Auto layers and builtin presets both resolve to 0; pricing the resident context quotes the old fit.
+    // An Auto GGUF load resolves to 0; pricing the resident context quotes the old fit.
     return customContextLength && customContextLength > 0 ? customContextLength : 0;
   }
   return customContextLength ?? activeLoadedContext ?? 0;

@@ -164,7 +164,6 @@ import {
   mergeBackendRecommendedInference,
   recommendedValuesForPick,
   resolveFitMaxSeqLength,
-  isReplayedLoadContext,
   unpinnedDefaultRequest,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
@@ -1585,9 +1584,6 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf: residentIsGguf,
                 customContextLength,
-                loadedContextLength: live.loadedContextLength,
-                currentCheckpoint: live.params.checkpoint,
-                activeGgufVariant: live.activeGgufVariant,
                 isMlx: isServedByMlx(
                   residentIsGguf,
                   platform.deviceType,
@@ -1600,8 +1596,6 @@ export function useChatModelRuntime() {
                         .maxSeqLength,
                 ),
                 defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
-                presetSource: live.activePresetSource,
-                loadedContextPin: live.loadedCustomContextLength,
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
@@ -2131,7 +2125,6 @@ export function useChatModelRuntime() {
               (loadSwitchesModelOrVariant
                 ? DEFAULT_PER_MODEL_CONFIG.disableVision
                 : stateBeforeUnload.disableVision));
-          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
             pendingLoadConfig?.gpuMemoryMode ?? stateBeforeUnload.gpuMemoryMode;
@@ -2338,9 +2331,6 @@ export function useChatModelRuntime() {
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              loadedContextLength: loadContextLength,
-              currentCheckpoint,
-              activeGgufVariant: loadActiveGgufVariant,
               isMlx: targetIsMlx,
               pinnedMaxSeqLength,
               defaultMaxSeqLength: unpinnedDefaultRequest(
@@ -2348,8 +2338,6 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.params.maxSeqLength,
                 DEFAULT_MAX_SEQ_LENGTH,
               ),
-              presetSource: loadActivePresetSource,
-              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
@@ -2367,11 +2355,6 @@ export function useChatModelRuntime() {
               engine: isGguf ? "auto" : loadEngineFields.engine,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
-              max_seq_length_auto_derived: isReplayedLoadContext(
-                isGguf,
-                loadCustomContextLength,
-                loadMaxSeqLength,
-              ),
               load_in_4bit: loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
