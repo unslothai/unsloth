@@ -412,7 +412,7 @@ def _build(
     tokenizer_config = directory / "tokenizer_config.json"
     has_template = (directory / "chat_template.jinja").exists() or (
         tokenizer_config.exists()
-        and "chat_template" in json.loads(tokenizer_config.read_text(encoding = "utf-8"))
+        and bool(json.loads(tokenizer_config.read_text(encoding = "utf-8")).get("chat_template"))
     )
     if not has_template:
         template = _bundled_chat_template(ollama_config, config)

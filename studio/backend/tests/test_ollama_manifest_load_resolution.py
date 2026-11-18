@@ -929,6 +929,14 @@ def test_an_unloaded_mlx_tag_resolves_for_the_api(mlx_store):
     assert (entry.load_path, entry.is_gguf) == (row.id, False)
     assert resolver.local_servable_model(row) == (False, ())
     assert resolver._local_servable_entry(row.model_id, row.model_copy(update = {"id": "/x"})) is None
+    # Nor once a tensor blob is gone, since the build would fail.
+    tensor = next(
+        layer
+        for layer in json.loads(mlx_store[1].read_text())["layers"]
+        if layer["mediaType"].endswith("tensor")
+    )
+    (mlx_store[0] / "blobs" / tensor["digest"].replace(":", "-")).unlink()
+    assert resolver._local_servable_entry(row.model_id, row) is None
 
 
 @pytest.mark.parametrize("key", ["auto_map", "model_file"])
@@ -1136,6 +1144,34 @@ def test_an_mlx_load_builds_the_checkpoint_it_names_and_advertises_the_tag(mlx_s
     assert ollama.ollama_mlx_ref_for_path(str(elsewhere)) is None
     copied = shutil.copytree(row_id, root.parent / "copy" / "gemma4-e4b-mlx", symlinks = True)
     assert _as_ollama_mlx_request(LoadRequest(model_path = str(copied)))._advertised_id is None
+
+
+@_APFS
+@pytest.mark.parametrize("value", [None, "", {}])
+def test_an_unset_tokenizer_template_still_gets_the_bundled_one(tmp_path, monkeypatch, value):
+    import hashlib
+
+    from core.inference.chat_templates import load_bundled_chat_template
+    from hub.services.models import ollama, ollama_mlx
+
+    root = tmp_path / "ollama"
+    tag_file = _write_ollama_mlx_store(root)[0]
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+    monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: True)
+    manifest = json.loads(tag_file.read_text())
+    layer = next(
+        layer for layer in manifest["layers"] if layer.get("name") == "tokenizer_config.json"
+    )
+    text = json.dumps({"bos_token": "<bos>", "chat_template": value}).encode()
+    digest = hashlib.sha256(text).hexdigest()
+    (root / "blobs" / f"sha256-{digest}").write_bytes(text)
+    layer.update(digest = f"sha256:{digest}", size = len(text))
+    tag_file.write_text(json.dumps(manifest))
+    row_id = ollama.scan_ollama_dir(root)[0].id
+    checkpoint = Path(ollama.materialize_ollama_mlx_ref(ollama.ollama_mlx_ref_for_path(row_id)))
+    assert (checkpoint / "chat_template.jinja").read_text() == load_bundled_chat_template(
+        "gemma-4-edge.jinja"
+    )
 
 
 @_APFS

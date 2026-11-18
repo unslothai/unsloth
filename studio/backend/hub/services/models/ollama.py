@@ -779,8 +779,14 @@ def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
 
 
 def ollama_mlx_json_reader(ref: str):
-    """A reader of the MLX tag's JSON layers by name, None for one it lacks or cannot parse."""
+    """A reader of the MLX tag's JSON layers by name, None for one it lacks or cannot parse;
+    raises when a tensor blob is gone, since the build would then fail."""
     ollama_dir, manifest, _ = _ollama_model_ref_info(ref)
+    for layer in manifest.get("layers") or []:
+        if isinstance(layer, dict) and layer.get("mediaType") == ollama_mlx.TENSOR_MEDIA_TYPE:
+            blob = _ollama_blob_path(ollama_dir / "blobs", layer.get("digest"))
+            if blob is None or not _safe_is_file(blob):
+                raise ValueError(f"Ollama blob for {layer.get('name')} is missing")
     layers = ollama_mlx._json_layers(manifest.get("layers") or [])
 
     def read(name: str):
