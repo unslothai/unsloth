@@ -3546,7 +3546,11 @@ def _train_dit(
                     raise
                 oom = True
             if oom:
-                # Handled outside the except block, so the failed step's tensors are already released.
+                # Outside the except block, so the failed forward's partial graph is gone with its traceback. Drop
+                # every device reference to this micro-batch too (and the earlier micro-batches' losses), so the
+                # rerun has the memory a clean fully checkpointed step would; it replays from the host copies.
+                inputs = latents = noise = timesteps = t_indices = sigmas = noisy = embeds = None
+                px = loss = step_acc = None
                 step_acc = _retry_fully_checkpointed()
             else:
                 step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)

@@ -102,8 +102,20 @@ def _run(
 
         monkeypatch.setattr(gb.StepReplay, "replay", replay)
 
+    failed_refs, failed_alive_at_replay = [], []
+
+    def _tensors(obj):
+        if isinstance(obj, torch.Tensor):
+            yield obj
+        elif isinstance(obj, (tuple, list)):
+            for o in obj:
+                yield from _tensors(o)
+
     def forward(transformer, noisy, *a, **k):
         calls["n"] += 1
+        if replaying[0] and failed_refs and not failed_alive_at_replay:
+            # First replayed forward: which of the failed micro-batch's tensors (and its partial output) still live.
+            failed_alive_at_replay.append(sum(1 for r in failed_refs if r() is not None))
         if not replaying[0]:
             # Earlier micro-batches' noisy latents still referenced by the loop when this forward starts.
             alive.append(sum(1 for r in seen if r() is not None))
@@ -112,6 +124,7 @@ def _run(
             # A real failure consumes RNG (dropout masks drawn) before the allocator gives up.
             torch.rand(1000)
             out = fwd(transformer, noisy, *a, **k)
+            failed_refs.extend(weakref.ref(t) for t in _tensors((noisy, a[:3], out)))
             del out
             raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
         return fwd(transformer, noisy, *a, **k)
@@ -149,6 +162,8 @@ def _run(
     lora = load_file(str(out_dir / "pytorch_lora_weights.safetensors"))
     losses = [e["loss"] for e in events if e.get("type") == "progress"]
     warnings = [e["message"] for e in events if e.get("type") == "warning"]
+    _run.failed_alive_at_replay = failed_alive_at_replay
+    _run.failed_refs = len(failed_refs)
     return lora, losses, records, alive, warnings, budgets
 
 
@@ -201,3 +216,17 @@ def test_a_rerun_after_out_of_memory_is_bit_identical(oom_at, tmp_path, monkeypa
     # Every timestep draw after the failure matches the clean run (the failed forward's draws were rewound).
     assert len(rec) == len(ref_rec)
     assert all(torch.equal(a, b) for a, b in zip(rec, ref_rec))
+
+
+@pytest.mark.allow_network
+@pytest.mark.parametrize("oom_at", [2, 8])
+def test_the_failed_micro_batch_is_released_before_the_replay(
+    oom_at, tmp_path, monkeypatch, tiny_pipe_dir
+):
+    _lora, _losses, _rec, _alive, warnings, _b = _run(
+        tmp_path, monkeypatch, tiny_pipe_dir, budget = True, oom_at = oom_at
+    )
+    assert any("Ran out of GPU memory" in w for w in warnings)
+    # noisy latents, timesteps, sigmas, embeddings and the partial output of the failed forward: all freed.
+    assert _run.failed_refs >= 4
+    assert _run.failed_alive_at_replay == [0]
