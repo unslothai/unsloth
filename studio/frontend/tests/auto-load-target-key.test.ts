@@ -127,7 +127,6 @@ test("a remembered repo still ranks first when only its Hugging Face cache path 
       size_bytes: size, capabilities: { requires_variant: true },
     };
   };
-  // The managed cache listing failed, so only /api/models/local rows name the cached repos.
   const sources = helpers.buildAutoLoadSources([], [], [
     cacheRow("unsloth/gemma-4-E2B-it-GGUF", 3_000_000_000),
     cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000),
@@ -136,7 +135,6 @@ test("a remembered repo still ranks first when only its Hugging Face cache path 
   const [first] = helpers.orderAutoLoadSources(sources, remembered);
   assert.equal(first.repoId, "unsloth/gemma-4-26B-A4B-it-GGUF");
 
-  // Other local folders keep matching on their own target only.
   const studioRow = { ...cacheRow("unsloth/gemma-4-26B-A4B-it-GGUF", 17_000_000_000), source: "models_dir" };
   const [studioFirst] = helpers.orderAutoLoadSources(
     helpers.buildAutoLoadSources([], [], [

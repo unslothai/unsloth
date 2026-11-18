@@ -1428,7 +1428,6 @@ def test_a_last_used_model_that_loads_is_still_recorded_without_a_warning():
     assert _toasts(out, "toast.warning") == []
 
 
-# #18104: with the cached listings down, another cache's snapshot is listed by path; the repo id must still match it.
 def test_a_failed_last_used_model_in_another_cache_is_still_named_and_kept():
     out = _run(
         "(() => { const snap = (repo, size) => {"
