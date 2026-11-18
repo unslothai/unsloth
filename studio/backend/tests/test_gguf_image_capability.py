@@ -84,3 +84,4 @@ def test_the_load_reads_both_capabilities_from_the_projector_it_attaches():
     assert "self._mmproj_has_audio = has_audio" in src
     assert "self._mmproj_accepts_image = accepts_image" in src
     assert "self._mmproj_projector_type = read_mmproj_vision_projector_type(" in src
+    assert "self._image_token_counts = {}" in src

@@ -980,7 +980,7 @@ def test_a_replayed_history_is_not_decoded_past_what_the_cap_can_keep():
     decoded: list = []
     real = _png()
 
-    def _counting_url(data):
+    def _counting_url(data, as_taken = False):
         decoded.append(data)
         return "data:image/png;base64," + real
 
@@ -1136,7 +1136,7 @@ def test_a_live_result_of_unreadable_entries_bounds_its_decode_attempts():
     entries could hold a worker on Pillow for a turn that shows four pictures at most."""
     attempts: list = []
 
-    def _counting_url(data):
+    def _counting_url(data, as_taken = False):
         attempts.append(data)
         return None
 
@@ -1159,7 +1159,7 @@ def test_the_allowance_still_looks_past_a_run_of_rejects():
     """The bound must still look past rejects: valid PNGs sit behind formats Pillow rejects."""
     seen: list = []
 
-    def _url(data):
+    def _url(data, as_taken = False):
         seen.append(data)
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
 
@@ -1203,7 +1203,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
     """Decode attempts share one budget across a parallel batch, so malformed results cannot multiply it."""
     attempts: list = []
     original = mcp_images._png_data_url
-    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    mcp_images._png_data_url = lambda data, as_taken = False: (attempts.append(data), None)[1]
     try:
         results = [
             [{"data": f"junk{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
@@ -1220,7 +1220,7 @@ def test_a_parallel_batch_shares_one_decode_attempt_budget():
 def test_the_shared_budget_still_reaches_a_good_result_behind_bad_ones():
     """The shared decode budget must still reach real pictures behind a failing newest result."""
 
-    def _url(data):
+    def _url(data, as_taken = False):
         return None if data.startswith("bad") else "data:image/png;base64," + _png()
 
     original = mcp_images._png_data_url
@@ -1791,7 +1791,7 @@ def test_pixels_follow_their_own_marker_not_a_queue():
 def test_the_local_batch_shares_one_decode_attempt_budget():
     attempts: list = []
     original = mcp_images._png_data_url
-    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    mcp_images._png_data_url = lambda data, as_taken = False: (attempts.append(data), None)[1]
     try:
         results = [
             [{"data": f"j{r}-{i}", "mimeType": "image/png"} for i in range(8)] for r in range(25)
@@ -2195,9 +2195,9 @@ def test_the_client_tool_rebuild_decodes_each_picture_once(monkeypatch):
     decoded: list = []
     original = mcp_images._png_data_url
 
-    def counting(data):
+    def counting(data, as_taken = False):
         decoded.append(data[:16])
-        return original(data)
+        return original(data, as_taken)
 
     monkeypatch.setattr(mcp_images, "_png_data_url", counting)
     call = _client_tool_route(
@@ -2245,9 +2245,9 @@ def test_the_caller_reservation_is_taken_before_any_replay_decode(monkeypatch):
     decoded: list = []
     original = mcp_images._png_data_url
 
-    def counting(data):
+    def counting(data, as_taken = False):
         decoded.append(1)
-        return original(data)
+        return original(data, as_taken)
 
     monkeypatch.setattr(mcp_images, "_png_data_url", counting)
     attachments = [

@@ -1964,7 +1964,7 @@ def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     return extra_args_image_max_tokens(extra_args)
 
 
-# Per-projector image caps from llama.cpp set_limit_image_tokens (keys: clip.projector_type); no universal default, absent families use the default.
+# Per-projector image caps from llama.cpp set_limit_image_tokens (keys: the image tower's projector type, clip.vision.projector_type first); no universal default, absent families use the default.
 _MMPROJ_IMAGE_TOKEN_MAX = {
     "qwen2vl_merger": 4096,
     "qwen2.5vl_merger": 4096,
@@ -6240,8 +6240,14 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 _computer_use_withheld: "str | None" = None
 
 
-def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
+def _computer_use_tool(
+    payload,
+    can_show_and_see: bool,
+    engine = None,
+) -> "dict | None":
+    """`engine`: the local backend serving the request, whose image-token counts size screenshots."""
     from core.inference.computer_use import computer_tool, policy
+    from core.inference.computer_use.budget import ImageBudget
     from state import computer_use as computer_state
 
     if not (can_show_and_see and policy.offered()):
@@ -6262,6 +6268,11 @@ def _computer_use_tool(payload, can_show_and_see: bool) -> "dict | None":
             getattr(payload, "thread_id", None) or getattr(payload, "session_id", None)
         ),
         mode,
+        (
+            ImageBudget(engine.image_tokens, lambda: getattr(engine, "context_length", None))
+            if engine is not None
+            else None
+        ),
     )
     return computer_tool(mode)
 
@@ -6274,6 +6285,7 @@ async def _select_request_tools(
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
     ui_events: bool = True,
+    engine = None,
 ) -> list[dict]:
     """Empty result skips the loop, so a model-emitted built-in call cannot ride an empty allow-list."""
     from core.inference.tools import (
@@ -6306,7 +6318,7 @@ async def _select_request_tools(
         if COMPUTER_TOOL_NAME in payload.enabled_tools:
             # Only where the approval card can be shown.
             computer = await asyncio.to_thread(
-                _computer_use_tool, payload, ui_events and supports_vision
+                _computer_use_tool, payload, ui_events and supports_vision, engine
             )
             if computer is not None:
                 # First, or a small model with code tools scripts the mouse in Python instead.
@@ -34038,6 +34050,7 @@ async def produce_openai_chat_completions(
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
                 tools_on = _tools_on,
                 mcp_allowed = _mcp_allowed,
+                engine = llama_backend,
                 # Process policy says a reset is possible somewhere, not that this request can do one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 ui_events = _ui_events,
@@ -44831,6 +44844,7 @@ async def chat_count_tokens(
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
             checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            engine = llama_backend,
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools

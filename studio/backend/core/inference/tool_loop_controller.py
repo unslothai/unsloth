@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.computer_use import COMPUTER_TOOL_NAME
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.mcp_images import is_image_tool, mark_as_taken, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
@@ -316,7 +316,7 @@ class ToolCallCompletion:
         """Only MCP and image-viewer tools yield images; a plain suffix elsewhere would attach bytes."""
         if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
-        return split_mcp_images(self.result)[1]
+        return mark_as_taken(split_mcp_images(self.result)[1], self.decision.tool_name)
 
 
 @dataclass(frozen = True)
