@@ -4708,7 +4708,6 @@ def runtime_patterns_for_install_kind(
     install_kind: str, source_label: "str | None" = None
 ) -> list[str]:
     # Broad shared-library glob so upstream can repackage the SO/DLL set without re-enumerating.
-    # Explicit binaries include the ggml-rpc-server for two-node clustering.
     if install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -5444,8 +5443,7 @@ def install_from_archives(
     if source_bench.is_file():
         os.chmod(source_bench, 0o755)
     ensure_fit_params_executable(install_dir)
-    # Extraction does not keep exec bits and rpc_server_binary() skips a file without X_OK, so this
-    # needs the same chmod as the two primaries.
+    # Extraction drops exec bits, and rpc_server_binary() skips a file without X_OK.
     for rpc_name in rpc_server_names_for_host(host):
         rpc_server = build_bin / rpc_name
         if rpc_server.is_file():
@@ -8820,7 +8818,7 @@ def existing_install_current_without_plan(
         )
     except Exception:  # noqa: BLE001
         return False
-    # The backfills that are not a release change, so they have to be asked separately.
+    # Backfills are not a release change, so ask for them separately.
     if _diffusion_visual_server_missing_for_marker(install_dir, host, marker) or _rpc_server_owed(
         install_dir, host, marker.get("source"), marker.get("release_tag")
     ):

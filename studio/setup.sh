@@ -1145,8 +1145,7 @@ _has_local_rpc_server() {
     return 1
 }
 
-# 0 when $1/build was configured in another directory and moved here (source builds are staged
-# in ${LLAMA_CPP_DIR}.build.$$): cmake cannot reconfigure or build in such a tree any more.
+# 0 when $1/build was configured in ${LLAMA_CPP_DIR}.build.$$ and moved here: cmake refuses that cache.
 _llama_build_relocated() {
     local _cache="$1/build/CMakeCache.txt" _was _here
     [ -f "$_cache" ] || return 1
@@ -1158,8 +1157,7 @@ _llama_build_relocated() {
     [ "$_was" != "$_here" ]
 }
 
-# 0 when a reused source build predates ggml-rpc-server and only a fresh build can add it: the tree
-# has the target, the moved build directory never enabled RPC, and RPC was not turned off on purpose.
+# 0 when a moved reused build never enabled RPC (and did not turn it off on purpose): only a rebuild adds it.
 _llama_rpc_needs_rebuild() {
     local _dir=$1
     _has_local_rpc_server "$_dir" && return 1
@@ -1191,8 +1189,7 @@ _backfill_local_rpc_server() {
     substep "the reused build has no $_target; building it in place..."
     # NCPU is assigned in the source-build section, which the reuse path never enters.
     _jobs="$(_llama_build_jobs)"
-    # A build configured before RPC support has no such target until it is reconfigured with it;
-    # cmake keeps every other cached option.
+    # No RPC target until reconfigured with GGML_RPC; cmake keeps every other cached option.
     if ! grep -q '^GGML_RPC:BOOL=ON' "$_dir/build/CMakeCache.txt"; then
         run_quiet_no_exit "enable GGML_RPC (existing install)" cmake -S "$_dir" -B "$_dir/build" -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF || true
     fi
@@ -1206,8 +1203,7 @@ _backfill_local_rpc_server() {
     return 0
 }
 
-# macOS only: return 1 when the cache did not keep -DGGML_RPC_RDMA=OFF or something under $1/bin
-# still links librdma.
+# macOS only: 1 when the cache lost -DGGML_RPC_RDMA=OFF or something under $1/bin links librdma.
 _llama_macos_rdma_gate_ok() {
     local _build=$1 _linked=""
     grep -qE '^GGML_RPC_RDMA:(BOOL|UNINITIALIZED)=OFF$' "$_build/CMakeCache.txt" 2>/dev/null || return 1
@@ -1217,8 +1213,7 @@ _llama_macos_rdma_gate_ok() {
     [ -z "$_linked" ]
 }
 
-# Best-effort: it never fails the build, since a tree without the tool or a failed link leaves what
-# was built.
+# Best-effort: a missing tool or a failed link never fails the build.
 _llama_build_rpc_server() {
     local _label=$1 _target _args
     _target="$(_llama_rpc_server_target "$_BUILD_TMP")"
@@ -4874,7 +4869,6 @@ fi
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ "$_LLAMA_REUSE_EXISTING" = true ] && \
    [ "$_LLAMA_FORCE_COMPILE" != "1" ] && [ -z "$_LLAMA_PR" ] && \
    _llama_rpc_needs_rebuild "$LLAMA_CPP_DIR"; then
-    # Its build directory was moved into place, so the target cannot be added to it.
     substep "the existing source build predates ggml-rpc-server; rebuilding once to add it"
     _LLAMA_REUSE_EXISTING=false
 fi
