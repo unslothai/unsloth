@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { type NpuCompat, type NpuTag, npuFit } from "../../npu/compat.ts";
+
 // Mirrors SOURCE_QUANTS in backend core/export/q4nx.py; any other quant is dequantized and rounded again.
 const DIRECT_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 // Only the q4k converter unpacks Q4_K, and only these architectures use it
@@ -9,31 +11,6 @@ const Q4K_ARCHITECTURES = ["qwen35", "qwen35moe"];
 // Q4_0 and Q4_1 blocks are packed as is, so only the layout the converter config reads works: Q4_0
 // here, Q4_1 on every other q4nx architecture, Q4_K on the q4k ones. The backend refuses the rest.
 const Q4_0_ARCHITECTURES = ["qwen2", "lfm2"];
-
-// GGUF general.architecture values the pinned ROCm/FLM_Q4NX_Converter accepts (q4nx_converter_pins.json),
-// with the caveat when it only takes some models of that architecture. Some (qwen35, qwen2vl) it
-// matches by general.basename prefix rather than by architecture.
-const Q4NX_ARCHITECTURES: Record<string, string | null> = {
-  llama: null,
-  qwen2: null,
-  qwen2vl: "Only Qwen2.5-VL converts.",
-  qwen3: null,
-  qwen3vl: null,
-  qwen35: "Only Qwen3.5 0.8B, 2B, 4B, 9B and Omni convert.",
-  qwen35moe: "Only Qwen3.5 35B-A3B converts.",
-  gemma3: null,
-  gemma4: null,
-  lfm2: null,
-  phi3: "Only Phi-4 mini converts.",
-  "gpt-oss": null,
-  nanbeige: null,
-};
-
-// Parameter counts, in billions, behind the size caveats above. Qwen3.5 Omni is matched by name.
-const Q4NX_SIZES: Record<string, readonly number[]> = {
-  qwen35: [0.8, 2, 4, 9],
-  qwen35moe: [35],
-};
 
 // modelInfo fields for a typed repo. "gguf" is outside the SDK's expandable-key type but is forwarded to expand= as is.
 export const Q4NX_INFO_FIELDS = ["tags", "gguf"] as unknown as "tags"[];
@@ -153,54 +130,47 @@ export function q4nxParamsFromName(name: string): number | null {
 }
 
 export type Q4nxArchFit =
-  | { status: "supported"; note: string | null }
-  // `sized`: the architecture converts, this model's size does not.
-  | { status: "unsupported"; note: string; sized?: true }
-  | { status: "unknown"; note: string };
+  | { status: "supported"; note: string | null; tag: NpuTag | null }
+  | { status: "unsupported"; note: string; tag: NpuTag }
+  | { status: "unknown"; note: string; tag: null };
 
 // The converter finds no qwen2vl architecture name, so a Qwen2-VL basename falls to the dense qwen2 prefix.
 const QWEN2_VL_NAME = /(^|[\s/\\._-])qwen2[-_]?vl/i;
 
-/** `name` is the repo id or file path, used to refuse models the converter would misroute, even when the architecture is unknown. */
+/** `name` is the repo id or file path, used to refuse models the converter would misroute, even
+ *  when the architecture is unknown. `compat` is GET /api/npu/compat. */
 export function q4nxArchFit(
   architecture: string | null | undefined,
   name?: string | null,
+  compat?: NpuCompat | null,
 ): Q4nxArchFit {
   const arch = architecture?.trim().toLowerCase();
   if ((!arch || arch === "qwen2vl") && QWEN2_VL_NAME.test(name ?? "")) {
     return {
       status: "unsupported",
       note: "The Q4NX converter does not support Qwen2-VL. Only Qwen2.5-VL converts.",
+      tag: "unsupported",
     };
   }
   if (!arch) {
     return {
       status: "unknown",
       note: "The architecture is read from the file during conversion, so this model may not be supported.",
+      tag: null,
     };
   }
-  if (!(arch in Q4NX_ARCHITECTURES)) {
+  const fit = npuFit(compat, arch, name);
+  if (fit.tag === null) {
     return {
-      status: "unsupported",
-      note: `The Q4NX converter does not support the ${arch} architecture.`,
+      status: "unknown",
+      note: "Which models the NPU runs is read once the NPU is enabled; the size is checked during conversion.",
+      tag: null,
     };
   }
-  const caveat = Q4NX_ARCHITECTURES[arch];
-  const sizes = Q4NX_SIZES[arch];
-  if (!sizes) return { status: "supported", note: caveat };
-  // A size named in the repo or file settles the caveat up front, not after the download.
-  const billions = (q4nxParamsFromName(name ?? "") ?? 0) / 1e9;
-  if (/omni/i.test(name ?? "") || sizes.includes(billions)) {
-    return { status: "supported", note: null };
+  if (fit.tag === "convertRuns") {
+    return { status: "supported", note: fit.note, tag: fit.tag };
   }
-  if (billions) {
-    return {
-      status: "unsupported",
-      note: `The Q4NX converter does not support this ${billions}B model. ${caveat}`,
-      sized: true,
-    };
-  }
-  return { status: "supported", note: caveat };
+  return { status: "unsupported", note: fit.note ?? "", tag: fit.tag };
 }
 
 /** Which listing the file picker shows. Only the active source counts: a picked local folder survives a switch to the Hub. */

@@ -1446,6 +1446,148 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == f"Title: Handbook\nContext: Internal\n{body}"
 
+    @pytest.mark.parametrize("tool_result_images", [True, False])
+    def test_tool_result_pdf_document_reaches_the_model_as_text(self, tool_result_images):
+        import pymupdf
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Invoice total 4242 EUR")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        request = AnthropicMessagesRequest(
+            messages = [
+                {"role": "user", "content": "What is the invoice total in inv.pdf?"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file_path": "/work/inv.pdf"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "PDF file read: /work/inv.pdf (597 bytes)",
+                                },
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in request.messages],
+            tool_result_images = tool_result_images,
+        )
+        tool_message = next(m for m in result if m["role"] == "tool")
+        assert "Invoice total 4242 EUR" in tool_message["content"]
+        assert DOCUMENT_OMITTED not in tool_message["content"]
+
+    def test_warmed_pdf_document_converts_while_indexing_holds_the_mupdf_lock(self):
+        import pymupdf
+        from core.inference import anthropic_compat
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+        from core.rag.parsers import MUPDF_LOCK
+
+        with pymupdf.open() as doc:
+            doc.new_page().insert_text((72, 100), "Quarterly revenue 42 million")
+            pdf = _b64.b64encode(doc.tobytes()).decode()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        anthropic_compat._PDF_TEXTS.clear()
+        warm_anthropic_pdf_documents(AnthropicMessagesRequest(messages = msgs).messages)
+        held, release, result = threading.Event(), threading.Event(), []
+
+        def indexer():
+            with MUPDF_LOCK:
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target = indexer, daemon = True)
+        holder.start()
+        held.wait(5)
+        try:
+            converter = threading.Thread(
+                target = lambda: result.append(anthropic_messages_to_openai(msgs)),
+                daemon = True,
+            )
+            converter.start()
+            converter.join(5)
+            assert result, "conversion waited on MUPDF_LOCK"
+        finally:
+            release.set()
+            holder.join(5)
+        assert "Quarterly revenue 42 million" in str(result[0])
+
+    def test_warmed_pdf_text_survives_cache_eviction(self, monkeypatch):
+        import pymupdf
+        from core.inference import anthropic_compat, tools
+        from core.inference.anthropic_compat import warm_anthropic_pdf_documents
+
+        def pdf(i):
+            with pymupdf.open() as doc:
+                doc.new_page().insert_text((72, 100), f"Report {i}")
+                return _b64.b64encode(doc.tobytes()).decode()
+
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf(i),
+                        },
+                    }
+                ],
+            }
+            for i in range(12)
+        ]
+        request = AnthropicMessagesRequest(messages = msgs)
+        warm_anthropic_pdf_documents(request.messages)
+        anthropic_compat._PDF_TEXTS.clear()
+        monkeypatch.setattr(tools, "_extract_pdf_text", lambda data: pytest.fail("reparsed"))
+        result = str(anthropic_messages_to_openai([m.model_dump() for m in request.messages]))
+        assert all(f"Report {i}" in result for i in range(12))
+
     def test_top_level_search_result_and_document_reach_the_user_turn(self):
         request = AnthropicMessagesRequest(
             model = "x",
@@ -4946,7 +5088,7 @@ def test_user_unknown_block_rejected_not_silently_dropped():
 @pytest.mark.parametrize(
     "source",
     [
-        {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="},
+        {"type": "base64", "media_type": "text/plain", "data": "aGk="},
         {"type": "url", "url": "https://example.com/a.pdf"},
         {"type": "file", "file_id": "file_1"},
     ],

@@ -1560,6 +1560,18 @@ def _float8_params(model):
 _GENERATE_DEPTH = [0]
 
 
+def _eager_decode_scope(stream):
+    """No CUDA graphs while streaming blocks: a captured graph holds NCCL all-gathers and hangs
+    `destroy_process_group()` until the watchdog aborts."""
+    if not stream:
+        return contextlib.nullcontext()
+    try:
+        from ._decode_graphs import eager_scope
+    except ImportError:
+        return contextlib.nullcontext()
+    return eager_scope()
+
+
 def _wrap_generate(model):
     """Run `generate` (the root's and every inner module's that has one) inside native_fsdp2_unsharded."""
     import weakref
@@ -1583,7 +1595,11 @@ def _wrap_generate(model):
             _GENERATE_DEPTH[0] += 1
             try:
                 stream = _generate_streams_blocks(target)
-                with native_fsdp2_unsharded(target, stream_blocks = stream), torch.no_grad():
+                with (
+                    native_fsdp2_unsharded(target, stream_blocks = stream),
+                    torch.no_grad(),
+                    _eager_decode_scope(stream),
+                ):
                     return _generate(*args, **kwargs)
             finally:
                 _GENERATE_DEPTH[0] -= 1
@@ -3623,6 +3639,18 @@ def _persistent_buffers(root):
     return out
 
 
+def _peft_trained_layout(root, saved, adapter):
+    """Zoo's wrapped get_peft_model_state_dict saves expert LoRA in vanilla PEFT's layout (swapped
+    factors for flagged expert classes, a legacy [out, E, R] lora_B) and its wrapped
+    set_peft_model_state_dict undoes that on every PEFT load; this direct copy has to as well.
+    Shape-checked: a file already in the trained layout and every non-expert adapter pass as is."""
+    try:
+        from unsloth_zoo.temporary_patches.moe_lora_factor_swap import _from_vanilla
+    except Exception:  # noqa: BLE001 - Zoo before 2026.11.1 saves the trained layout
+        return saved
+    return _from_vanilla(root, saved, adapter)
+
+
 def _check_checkpoint_tables(root, checkpoint):
     """Collective: the frozen table provenance of a Trainer checkpoint's adapters (frozen_tables.json at the
     checkpoint for "default", in <checkpoint>/<name> for the others) against the model's tables, before anything is
@@ -3689,7 +3717,8 @@ def native_load_model_checkpoint(model, checkpoint):
             if adapter not in active_names and not _has_checkpoint_weights(directory):
                 absent.append(adapter)  # an inactive adapter this checkpoint did not save
                 continue
-            sources.append((adapter, _read_checkpoint_weights(directory)[0]))
+            saved = _read_checkpoint_weights(directory)[0]
+            sources.append((adapter, _peft_trained_layout(root, saved, adapter)))
         is_adapter = True
     else:
         saved, is_adapter = _read_checkpoint_weights(checkpoint)

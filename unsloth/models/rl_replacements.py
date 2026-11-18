@@ -1484,6 +1484,9 @@ def sft_trainer_compute_loss(function_name, function):
         return_outputs = False,
         num_items_in_batch = None,
     ):
+        # TRL >= 1.18 requests router logits per forward, not via config; do the same so aux_loss is kept.
+        if getattr(self, "aux_loss_enabled", False):
+            inputs = {**inputs, "output_router_logits": True}
         # Runs DFT on the TRL fused LM head (TRL >= 1.15 computes it only in compute_loss; older TRL
         # routes it via compute_loss_func); label smoothing must not opt dft out.
         if getattr(self.args, "loss_type", None) == "dft" and self.compute_loss_func is None:
@@ -1544,12 +1547,37 @@ def sft_trainer_compute_loss(function_name, function):
                     with torch.no_grad():
                         outputs = model(**{k: v for k, v in inputs.items() if k != "labels"})
                 return (loss, outputs) if return_outputs else loss
-        outputs = super().compute_loss(
-            model,
-            inputs,
-            return_outputs = return_outputs,
-            num_items_in_batch = num_items_in_batch,
-        )
+        # MoE VLM wrappers (Qwen3-VL-MoE, Qwen3.5-MoE, GLM-4V-MoE, ...) add the router aux loss to their own loss
+        # with config.text_config.router_aux_loss_coef, which TRL >= 1.18 no longer overwrites. Apply the trainer's
+        # coefficient for this forward only, so the user's value is trained on and never reaches a saved config.
+        _aux_coef = getattr(self, "router_aux_loss_coef", None)
+        _aux_restore = []
+        if _aux_coef is not None and hasattr(model, "modules"):
+            _aux_configs = getattr(self, "_unsloth_aux_coef_configs", None)
+            if _aux_configs is None or _aux_configs[0] is not model:
+                _seen = {}
+                for _module in model.modules():
+                    _config = getattr(_module, "config", None)
+                    if hasattr(_config, "get_text_config"):
+                        _text_config = _config.get_text_config()
+                        if hasattr(_text_config, "router_aux_loss_coef"):
+                            _seen[id(_text_config)] = _text_config
+                _aux_configs = (model, list(_seen.values()))
+                self._unsloth_aux_coef_configs = _aux_configs
+            for _text_config in _aux_configs[1]:
+                if _text_config.router_aux_loss_coef != _aux_coef:
+                    _aux_restore.append((_text_config, _text_config.router_aux_loss_coef))
+                    _text_config.router_aux_loss_coef = _aux_coef
+        try:
+            outputs = super().compute_loss(
+                model,
+                inputs,
+                return_outputs = return_outputs,
+                num_items_in_batch = num_items_in_batch,
+            )
+        finally:
+            for _text_config, _old_coef in _aux_restore:
+                _text_config.router_aux_loss_coef = _old_coef
         return outputs
 
     function = inspect.getsource(compute_loss)

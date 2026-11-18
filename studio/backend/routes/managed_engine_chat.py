@@ -3,6 +3,7 @@
 
 """Native managed-engine tool calls and Studio's shared execution loop."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import asyncio
 import json
 import threading
@@ -411,7 +412,7 @@ async def managed_tool_chat(
                         tools = tools,
                         max_calls = payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25,
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                         timeout = payload.tool_call_timeout or 300,
                         permission_mode = payload.permission_mode or "auto",
                         sandbox_level = payload.sandbox_level,
@@ -571,7 +572,12 @@ async def managed_tool_chat(
                 return JSONResponse(line)
             if not line.startswith("data:") or line[5:].strip() == "[DONE]":
                 continue
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("error"):
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
@@ -580,6 +586,8 @@ async def managed_tool_chat(
                 result["context_truncated"] = event["context_truncated"]
             message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
+                if not isinstance(choice, dict):
+                    continue
                 delta = choice.get("delta") or {}
                 message["content"] += delta.get("content") or ""
                 if delta.get("reasoning_content"):

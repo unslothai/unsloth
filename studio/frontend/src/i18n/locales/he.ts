@@ -917,6 +917,7 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
+    addScheduledTask: "הוספת משימה מתוזמנת…",
     compact: "כווץ שיחה",
     compactQueued: "התבקש כיווץ שיחה עבור ההודעה הבאה",
     compactEmpty: "אין עדיין מה לכווץ",
@@ -1797,7 +1798,7 @@ export const he = {
       modeManual: "ידני",
       refreshNow: "רענן כעת",
       privacyNote:
-        "פרטי הזדהות מוסתרים בתצוגה זו. הקובץ המאוחסן בדיסק אינו מוסתר.",
+        "בתצוגה זו מוסתרים פרטי הזדהות בתבניות מוכרות. לפני השיתוף יש לבדוק אם היומן מכיל סודות, נתיבי קבצים או טקסט פרטי. הקובץ בדיסק מכיל את היומן המקורי.",
       copyVisible: "העתק יומן גלוי",
       empty: "שום דבר לא נרשם ביומן עדיין.",
       disabled: "רישום לקובץ יומן מושבת (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
@@ -2171,7 +2172,7 @@ export const he = {
       modelAliases: {
         sectionTitle: "כינויים למודלים (OpenAI API)",
         description:
-          "שמות קבועים ללקוחות API, כמו fast-chat או code. בקשה שמציינת כינוי מוגשת על ידי המודל שאליו הוא מצביע, כך שאפליקציות מחוברות ממשיכות לעבוד כשמחליפים מודל. הפעילו את החלף מודל לפי בקשה כדי שכינוי יוכל לטעון את המודל שלו.",
+          "שמות קצרים שלקוחות API יכולים להשתמש בהם במקום השם המלא של המודל.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "שם הכינוי",
         modelAriaLabel: "המודל שאליו הכינוי מצביע",
@@ -2180,6 +2181,13 @@ export const he = {
         add: "הוספת כינוי",
         loadError: "טעינת הכינויים למודלים נכשלה.",
         saveError: "שמירת הכינויים למודלים נכשלה.",
+        contextLength: "אורך הקשר",
+        kvCacheType: "סוג מטמון KV",
+        speculativeDecoding: "פענוח ספקולטיבי",
+        savedSetting: "הגדרה שמורה",
+        loadSettings: "הגדרות טעינה",
+        loadSettingsHint:
+          "למודלי GGUF בלבד. שדות ריקים משתמשים בהגדרות השמורות של המודל.",
       },
       previewSharing: {
         sectionTitle: "שיתוף תצוגה מקדימה",
@@ -3223,6 +3231,9 @@ export const he = {
         showMemoryBar: "הצג סרגל שימוש ב-VRAM",
         showMemoryBarDescription:
           "הצג את ה-VRAM המוערך עבור משקולות המודל, ההקשר ופענוח ספקולטיבי.",
+        pickerOrgs: "בחירת ארגונים",
+        pickerOrgsDescription:
+          "בחרו לאילו ארגונים יהיה מסנן בבורר המודלים, במקום אלה שהוא מציע לפי המודלים שלכם.",
         fitOnDeviceOnly: "הצג רק מודלים שמתאימים",
         fitOnDeviceOnlyDescription:
           "הסתר בבורר המודלים וב-Hub מודלים גדולים מדי לזיכרון ה-GPU וה-RAM של מכשיר זה. מודלים שהורדו נשארים גלויים.",
@@ -4916,6 +4927,8 @@ export const he = {
   translate: {
     title: "תרגום",
     detectLanguage: "זיהוי שפה",
+    detectedLanguage: "{language} (זוהתה)",
+    detectedTab: "{language} - זוהתה",
     sourceLanguage: "תרגום מ",
     targetLanguage: "תרגום ל",
     recentTargets: "אחרונות",
@@ -4926,15 +4939,19 @@ export const he = {
     translate: "תרגם",
     stop: "עצירה",
     sourceLabel: "טקסט לתרגום",
-    sourcePlaceholder: "הקלד או הדבק טקסט, או גרור לכאן קובץ טקסט",
+    sourcePlaceholder: "הקלידו או הדביקו טקסט, או גררו מסמך או תמונה",
     outputLabel: "תרגום",
     outputEmpty: "התרגום יופיע כאן.",
     firstRunHint: "התרגום הראשון מוריד את {model} ({size}). לאחר מכן הוא פועל במכשיר הזה, ללא חיבור לאינטרנט.",
+    charLimit: "עד {max} תווים",
+    readingFile: "קורא את {name}…",
+    downloadConfirmTitle: "להוריד את {model}?",
+    downloadConfirm: "הורדה",
     clear: "נקה",
     paste: "הדבק",
-    openFile: "פתח קובץ טקסט",
-    dropFile: "שחרר קובץ טקסט כדי לתרגם אותו",
-    fileNotText: "ניתן לפתוח כאן רק קובצי טקסט.",
+    openFile: "פתיחת מסמך או תמונה",
+    dropFile: "גררו קובץ כדי לתרגם את הטקסט שלו",
+    fileNotText: "בקובץ הזה אין טקסט לתרגום.",
     truncated: "נשמרו רק {max} התווים הראשונים.",
     copy: "העתק תרגום",
     copied: "הועתק",
@@ -5061,6 +5078,7 @@ export const he = {
       intervalHours: "מרווח (שעות)",
       hourlyNote: "ההרצה הראשונה תתחיל לאחר מרווח אחד מרגע השמירה. שינוי המרווח או חידוש המשימה מתחילים את ההמתנה מחדש.",
       createTitle: "תזמון משימה",
+      repliesInChat: "כל הרצה עונה ב„{title}”.",
       editTitle: "עריכת משימה מתוזמנת",
       name: "שם",
       namePlaceholder: "שם (אופציונלי)",

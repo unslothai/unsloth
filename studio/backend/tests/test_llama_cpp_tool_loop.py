@@ -3170,6 +3170,42 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     assert events.index(provisional[0]) < events.index(gated[0])
 
 
+def test_gated_mcp_call_streams_its_arguments_before_approval(monkeypatch):
+    """An MCP call waiting for approval (an editor script, say) fills its card while the model writes it, not all at once at the end."""
+
+    name = "mcp__unreal__call_tool"
+    script = "import unreal\n" + "\n".join(f"unreal.log('step {i}')" for i in range(80))
+    arguments = {"tool_name": "execute_tool_script", "arguments": {"script": script}}
+    assert len(json.dumps(arguments)) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call(name, arguments, "call_mcp_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "deny")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build a village in Unreal"}],
+        [{"type": "function", "function": {"name": name}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_call_id"] == "call_mcp_gated"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert len(args_events) > 1, "gated MCP call streamed no arguments"
+    assert "step 79" in "".join(e["text"] for e in args_events)
+
+    gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
+    assert gated, tool_starts
+    assert events.index(args_events[0]) < events.index(gated[0])
+    assert gated[0]["tool_call_id"] == "call_mcp_gated"  # the same card asks, not a second one
+
+
 @pytest.mark.parametrize("verdict", ["allow", "deny"])
 def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
     first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")

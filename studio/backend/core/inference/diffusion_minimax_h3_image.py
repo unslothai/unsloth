@@ -17,6 +17,7 @@ uniform knot grid at load, so 20B parameters are left to quantize."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
 import hashlib
@@ -4357,6 +4358,7 @@ def install_checkpoint_attention(
     *,
     scheme: Optional[str] = None,
     logger: Any = None,
+    int8_policy: Any = None,
 ) -> Optional[str]:
     """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
     keeps its own. Returns the engaged backend, or None with every processor unchanged."""
@@ -4384,7 +4386,14 @@ def install_checkpoint_attention(
     dtype = _module_dtype(transformer, skip_fp32 = True)
     target = types.SimpleNamespace(device = dev.type, dtype = dtype, torch_device = str(dev))
     try:
-        engaged = apply_attention_backend(pipe, want, logger = log, target = target)
+        engaged = apply_attention_backend(
+            pipe,
+            want,
+            logger = log,
+            target = target,
+            # only a load's own policy: a direct call keeps the env switch, as before
+            **({"int8_policy": int8_policy} if int8_policy is not None else {}),
+        )
     except Exception as exc:  # noqa: BLE001 - native attention stays
         engaged = None
         log.warning("diffusion.minimax_h3_image: INT8 attention unavailable (%s)", exc)
@@ -4411,9 +4420,10 @@ def install_checkpoint_attention(
         (None if not forced else True) if sage_on else False,
         forced,
         log,
+        **({"policy": int8_policy} if int8_policy is not None else {}),
     )
     if race is None and sage_on and not forced and not kernel_blocks:
-        race = race_checkpoint_attention(transformer, saved, dtype)
+        race = race_checkpoint_attention(transformer, saved, dtype, device = dev)
     sage_kept = sage_on and (forced or race is None or race["keep"])
     if kernel_blocks:
         from .diffusion_int8_attention import BACKEND as INT8_KERNEL
@@ -4472,16 +4482,41 @@ def _paired_ratio(times: list, first: int, second: int) -> float:
     return _median([a / b for a, b in zip(times[first], times[second]) if b > 0] or [float("inf")])
 
 
+@contextlib.contextmanager
+def _weights_on(module: Any, device: Any) -> Any:
+    """Swap ``module``'s host tensors for ``device`` copies, restoring the same host tensors after (streamers hold them)."""
+    import torch
+
+    swapped: list = []
+    try:
+        for owner in module.modules():
+            for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
+                for name, tensor in list(table.items()):
+                    if tensor is None or tensor.device.type == device.type:
+                        continue
+                    moved = tensor.to(device)
+                    swapped.append((table, name, tensor))
+                    table[name] = (
+                        torch.nn.Parameter(moved, requires_grad = False) if kind == "p" else moved
+                    )
+        yield module
+    finally:
+        for table, name, tensor in reversed(swapped):
+            table[name] = tensor
+
+
 def race_checkpoint_attention(
     transformer: Any,
     saved: dict,
     dtype: Any,
     *,
     kernel: bool = False,
+    device: Any = None,
 ) -> Optional[dict]:
     """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
     (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
-    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route).
+    A fully streamed DiT stages the first block's attention on CUDA ``device`` for the race, so it decides as a resident
+    layout would (else images differ by layout). None when nothing could be timed (the caller keeps the INT8 route).
 
     ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
     count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
@@ -4490,12 +4525,24 @@ def race_checkpoint_attention(
 
     attn = None
     norm = None
+    streamed = None
     for block in getattr(transformer, "transformer_blocks", ()) or ():
         module = getattr(block, "attn", None)
         params = list(module.parameters()) if module is not None else []
-        if module in saved and params and all(p.is_cuda for p in params):
+        if module not in saved or not params:
+            continue
+        if all(p.is_cuda for p in params):
             attn, norm = module, getattr(block, "norm1", None)
             break
+        if streamed is None:
+            streamed = (module, getattr(block, "norm1", None))
+    stage = None
+    if attn is None and streamed is not None and device is not None:
+        stage = torch.device(device)
+        if stage.type != "cuda":
+            stage = None
+        else:
+            attn, norm = streamed
     rope = getattr(transformer, "rope", None)
     if attn is None or norm is None or rope is None:
         return None
@@ -4504,7 +4551,7 @@ def race_checkpoint_attention(
     native = saved[attn]
     kernel = kernel and hasattr(type(proc), "_unsloth_int8")
     routed = (getattr(proc, "_unsloth_int8", False), getattr(proc, "_unsloth_int8_min_tokens", 0))
-    device = next(attn.parameters()).device
+    device = stage if stage is not None else next(attn.parameters()).device
     width = int(norm.normalized_shape[0])
     text = _RACE_ROWS[1]
 
@@ -4548,13 +4595,20 @@ def race_checkpoint_attention(
 
     variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
-        with torch.no_grad(), torch.cuda.device(device):
+        with (
+            torch.no_grad(),
+            torch.cuda.device(device),
+            _weights_on(attn, device) if stage is not None else contextlib.nullcontext(),
+        ):
             rows = {
                 image: timed(image, variants)
                 for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])
             }
     except torch.OutOfMemoryError:
-        raise
+        if stage is None:
+            raise
+        # no room for a streamed block's attention beside the load: untimed, as before
+        return None
     except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
         return None
     finally:
@@ -4566,6 +4620,7 @@ def race_checkpoint_attention(
         "keep": _paired_ratio(large, 1, 0) < 0.98,
         "ms": [_median(t) for t in large[:2]],
         "native": str(native),
+        "staged": stage is not None,
     }
     if kernel:
         found["kernel"] = {n: [_median(t) for t in times] for n, times in rows.items()}
@@ -4585,6 +4640,7 @@ def _race_int8_kernel(
     sage: Optional[bool],
     forced: bool,
     log: Any,
+    policy: Any = None,
 ) -> tuple:
     """Route the DiT blocks to Studio's INT8 attention kernel when it matches fp32 attention on this card and is more
     than 2% faster than what they would run (SageAttention or their native backend) on a resident block.
@@ -4596,7 +4652,7 @@ def _race_int8_kernel(
 
     from . import diffusion_int8_attention as int8_attention
 
-    setting = int8_attention.mode()
+    setting = int8_attention.mode(policy)
     if (
         not block_modules
         or setting == "off"
@@ -4609,7 +4665,13 @@ def _race_int8_kernel(
     race = None
     try:
         ready = int8_attention.install_int8_attention(
-            transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
+            transformer,
+            device = dev,
+            dtype = dtype,
+            modules = block_modules,
+            force = True,
+            logger = log,
+            policy = policy,
         )
         record["checked_s"] = round(time.perf_counter() - started, 3)
         # which INT8 implementation passed the card check: the CUDA kernel, or Triton where it cannot load
@@ -4633,6 +4695,7 @@ def _race_int8_kernel(
                 if sage is not False
                 else int8_attention._sdpa_incumbent(saved.get(block_modules[0])),
                 logger = log,
+                policy = policy,
             )
             record.update(blocks = routed, timed = "attention")
             return routed, None
@@ -4802,8 +4865,12 @@ def load_minimax_h3_image_pipeline(
     plan_width: int = 2048,
     plan_height: int = 2048,
     loras: Sequence[tuple] = (),
+    int8_policy: Any = None,
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
+
+    ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (or ``int8_attention`` request) for Studio's
+    INT8 attention kernel; None reads the env switch.
 
     ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
     placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
@@ -5066,9 +5133,11 @@ def load_minimax_h3_image_pipeline(
         early_streamer.remove()
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
-    speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    speed_levers = install_h3_image_speed(pipe, plan, device, logger, int8_policy = int8_policy)
     speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
-    int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
+    int8_attention = install_checkpoint_attention(
+        pipe, device, scheme = scheme, logger = logger, int8_policy = int8_policy
+    )
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
     parked_gb = park_session_pieces(pipe, device, plan)
