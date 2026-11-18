@@ -199,6 +199,27 @@ def test_auto_install_selects_series(torch_version: str, series: str, cuda: str,
 
 
 @pytest.mark.parametrize(
+    "torch_version, cuda, series",
+    [
+        ("2.6.1+cu124", "12.4", "torch260"),
+        ("2.7.0+cu118", "11.8", "torch270"),
+        ("2.7.0+cu126", "12.6", "torch270"),
+        ("2.7.0+cu128", "12.8", "torch270"),
+        ("2.7.1+cu118", "11.8", "torch271"),
+        ("2.7.1+cu126", "12.6", "torch271"),
+        ("2.7.1+cu128", "12.8", "torch271"),
+        ("2.7.1", "12.6", "torch271"),
+        ("2.8.0+cu128", "12.8", "torch280"),
+    ],
+)
+def test_auto_install_selects_torch27_series(torch_version: str, cuda: str, series: str, capsys):
+    out = _run_auto_install(torch_version, cuda, capsys)
+    tag = cuda.replace(".", "")
+    assert f'"unsloth[cu{tag}-{series}] @' in out
+    assert f"cu{tag}-{series}" in _extras()
+
+
+@pytest.mark.parametrize(
     "torch_version, message",
     [
         ("2.12.2", "not supported"),
