@@ -355,3 +355,22 @@ test("a Hub-routed single-file checkpoint keys its recipe on the selected file",
     { steps: 1, guidance: 0 },
   );
 });
+
+test("distilled checkpoints get their publishers' recipes, not their family's", () => {
+  for (const id of [
+    "hunyuanvideo-community/HunyuanImage-2.1-Distilled-Diffusers",
+    "hunyuanimage2.1_distilled_bf16.safetensors",
+    "dit/hunyuanimage2.1-distilled.safetensors",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 8, guidance: 3.25 }, id);
+  }
+  assert.deepEqual(defaultsFor("hunyuanvideo-community/HunyuanImage-2.1-Diffusers"), { steps: 50, guidance: 3.25 });
+  assert.deepEqual(defaultsFor("anima-turbo-v1.1.safetensors"), { steps: 10, guidance: 1 });
+  assert.equal(
+    defaultsKeyFor("circlestone-labs/Anima", "anima", "split_files/diffusion_models/anima-turbo-v1.1.safetensors"),
+    "split_files/diffusion_models/anima-turbo-v1.1.safetensors",
+  );
+  for (const id of ["lodestones/Chroma1-Flash", "Chroma1-HD-Flash.safetensors", "silveroxides/Chroma1-Flash-GGUF"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 16, guidance: 1 }, id);
+  }
+});

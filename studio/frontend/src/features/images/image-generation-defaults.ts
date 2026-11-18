@@ -61,7 +61,15 @@ const MODEL_DEFAULTS: Array<{
   { match: "moss_image", steps: 25, guidance: 2.5 },
   { match: "mossimage", steps: 25, guidance: 2.5 },
   { match: "lumina", steps: 50, guidance: 4 },
+  // Distilled checkpoints: their publishers' recipes (HunyuanImage 2.1 distilled 8 steps; Anima-Turbo CFG 1, 8-12
+  // steps; Chroma1-Flash heun 8 steps at CFG 1, which Euler matches at 16), each before its family's key.
+  { match: "hunyuanimage-2.1-distilled", steps: 8, guidance: 3.25 },
+  { match: "hunyuanimage2.1-distilled", steps: 8, guidance: 3.25 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
+  { match: "anima-turbo", steps: 10, guidance: 1 },
+  { match: "chroma1-hd-flash", steps: 16, guidance: 1 },
+  { match: "chroma1-flash", steps: 16, guidance: 1 },
+  { match: "chroma-flash", steps: 16, guidance: 1 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
