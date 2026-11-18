@@ -500,9 +500,7 @@ def test_builder_builds_on_the_cpu_when_the_card_is_absent(tmp_path, monkeypatch
 
 
 def _offline_tokenizer_transformers(monkeypatch, folder: Path) -> list:
-    """transformers 5.13 AutoTokenizer as the sidecar runs it: a Hub id with ``subfolder = "tokenizer"`` also looks up
-    ``tokenizer/config.json``, which the pack does not ship, so local_files_only raises even on a warm cache; a
-    local folder loads."""
+    """Fake transformers 5.13: a Hub id with local_files_only raises even on a warm cache; a local folder loads."""
     _fake_transformers(monkeypatch, folder)
     calls = []
 
@@ -527,7 +525,6 @@ def _offline_tokenizer_transformers(monkeypatch, folder: Path) -> list:
 
 
 def test_offline_load_reads_the_tokenizer_from_the_warm_cache(tmp_path, monkeypatch):
-    # A user offline after the first download: the Hub id's tokenizer is cached, the load is local_files_only.
     _write_tiny_encoder(tmp_path / "hub")
     calls = _offline_tokenizer_transformers(monkeypatch, tmp_path / "hub")
     cache = tmp_path / "hf_cache"
@@ -574,7 +571,6 @@ def test_tokenizer_keeps_the_hub_call_when_nothing_is_cached_or_online(
         "local_files_only": local_files_only,
     }
     if local_files_only:
-        # Cold cache offline: the Hub id call still runs and its error names the miss.
         with pytest.raises(OSError, match = "couldn't find them in the cached files"):
             worker._load(config)
     else:
