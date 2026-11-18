@@ -1350,7 +1350,6 @@ def connect_studio_server(
 
     npu_path = npu_model_path(model)
     if npu_path:
-        # A bare id or the name Unsloth Studio shows; load it by the model path it resolves to.
         try:
             model = prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(
