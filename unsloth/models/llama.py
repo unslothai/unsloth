@@ -1633,20 +1633,25 @@ def LlamaModel_fast_forward(
             materialize_len = rope_rows,
         )
         device_index = hidden_states.device.index
+        rows = seq_length_with_past
         if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
             # transformers' longrope_frequency_update: factors from max(position_ids) + 1 (a host
-            # sync), not max_seq_length. Other models stay sync-free.
-            rope_len = seq_length_with_past if position_ids is None else int(position_ids.max()) + 1
+            # sync) over the whole sequence (Ulysses shards it), not max_seq_length.
+            factor_ids = position_ids
+            cp_manager = get_cp_manager()
+            if cp_manager is not None:
+                rows *= cp_manager.size
+                full = getattr(cp_manager, "full_position_ids", None)
+                if isinstance(full, torch.Tensor):
+                    factor_ids = full
+            rope_len = rows if factor_ids is None else int(factor_ids.max()) + 1
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
-        if (
-            rope_len < seq_length_with_past
-            and position_embeddings[0].shape[0] < seq_length_with_past
-        ):
+        if rope_len < rows and position_embeddings[0].shape[0] < rows:
             # Packed positions restart under original; pad so layers, which check rows against
-            # the packed length, keep the short table.
+            # the (CP-global) length, keep the short table.
             position_embeddings = tuple(
-                torch.nn.functional.pad(x, (0, 0, 0, seq_length_with_past - x.shape[0]))
+                torch.nn.functional.pad(x, (0, 0, 0, rows - x.shape[0]))
                 for x in position_embeddings
             )
     else:
@@ -1825,7 +1830,10 @@ def _LlamaModel_fast_forward_inference(
         if static is not None:
             rotary_seq_len = static.rope_len
         else:
-            rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
+            rotary_seq_len = int(position_ids.max().item()) + 1
+            # LongRoPE picks factors from positions, as prefill does, not the (padded) KV length.
+            if not isinstance(getattr(self.model, "rotary_emb", None), LongRopeRotaryEmbedding):
+                rotary_seq_len = max(kv_seq_len, rotary_seq_len)
 
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
@@ -2910,7 +2918,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             )
-            dim = int((config.hidden_size // config.num_attention_heads))
+            dim = (
+                getattr(config, "head_dim", None)
+                or config.hidden_size // config.num_attention_heads
+            )
             device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
 

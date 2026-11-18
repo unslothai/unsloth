@@ -110,11 +110,16 @@ def _block(fn, test):
     )
 
 
-def _unsloth_cos_sin(positions, packed):
+def _unsloth_cos_sin(
+    positions,
+    packed,
+    cp = 1,
+    config = CONFIG,
+):
     from transformers import LlamaConfig
 
     tree, ns = _llama()
-    config = LlamaConfig(num_hidden_layers = 1, **copy.deepcopy(CONFIG))
+    config = LlamaConfig(num_hidden_layers = 1, **copy.deepcopy(config))
     # pre_patch puts Unsloth's LlamaRotaryEmbedding into transformers; LlamaModel builds this one.
     model = types.SimpleNamespace(
         config = config,
@@ -130,8 +135,11 @@ def _unsloth_cos_sin(positions, packed):
     rope = model.model.rotary_emb
     assert model.model.layers[0].self_attn.rotary_emb is rope
 
-    # LlamaModel_fast_forward: the cos/sin every layer reuses.
+    # LlamaModel_fast_forward: the cos/sin every layer reuses. Under Ulysses CP this rank holds
+    # the first 1 / cp of the tokens; the layers check rows against the global length.
     seq_len = positions.shape[0]
+    local = positions[: seq_len // cp]
+    manager = types.SimpleNamespace(size = cp, full_position_ids = positions[None] if packed else None)
     forward = _block(
         _find(ast.walk(tree), ast.FunctionDef, "LlamaModel_fast_forward"), "IS_ATTENTION_REFACTOR"
     )
@@ -144,8 +152,9 @@ def _unsloth_cos_sin(positions, packed):
             config = types.SimpleNamespace(max_position_embeddings = MAX_POSITION),
         ),
         hidden_states = types.SimpleNamespace(device = torch.device("cpu", 0), dtype = torch.float16),
-        seq_length_with_past = seq_len,
-        position_ids = positions[None] if packed else None,
+        seq_length_with_past = local.shape[0],
+        position_ids = local[None] if packed else None,
+        get_cp_manager = lambda: manager if cp > 1 else None,
         IS_ATTENTION_REFACTOR = True,
         IS_GRANITE = False,
     )
@@ -153,26 +162,42 @@ def _unsloth_cos_sin(positions, packed):
     cos, sin = scope["position_embeddings"]
     # The layers reuse these only when they hold a row per token; else each rebuilds its own.
     assert cos.shape[0] >= seq_len
-    return cos[positions].float(), sin[positions].float()
+    return cos[local].float(), sin[local].float()
 
 
 @pytest.mark.parametrize(
     "positions, packed",
     [
-        (torch.arange(4097), False),  # past 4096: transformers takes the long factors
+        (torch.arange(4098), False),  # past 4096: transformers takes the long factors
         (torch.arange(2048), False),  # short, though max_seq_length is past 4096
         (torch.cat([torch.arange(3000), torch.arange(3000)]), True),  # packed rows all short
     ],
     ids = ["long", "short", "packed"],
 )
-def test_longrope_checkpoint_matches_transformers_phi3(positions, packed):
+@pytest.mark.parametrize("cp", [1, 2], ids = ["nocp", "ulysses2"])
+def test_longrope_checkpoint_matches_transformers_phi3(positions, packed, cp):
     from transformers import Phi3Config
     from transformers.models.phi3.modeling_phi3 import Phi3RotaryEmbedding
 
-    cos, sin = _unsloth_cos_sin(positions, packed)
+    cos, sin = _unsloth_cos_sin(positions, packed, cp)
     ref_cos, ref_sin = Phi3RotaryEmbedding(Phi3Config(**copy.deepcopy(CONFIG)))(
         torch.zeros(1, positions.shape[0], DIM), positions[None]
     )
+    n = cos.shape[0]
     # The caches are fp16 here (no bf16 on CPU), the reference fp32.
+    torch.testing.assert_close(cos, ref_cos[0, :n], atol = 2e-3, rtol = 0)
+    torch.testing.assert_close(sin, ref_sin[0, :n], atol = 2e-3, rtol = 0)
+
+
+def test_longrope_honours_explicit_head_dim():
+    from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
+
+    # head_dim 8, not hidden_size // num_attention_heads = 16: four factors per table.
+    config = dict(CONFIG, hidden_size = 32, num_attention_heads = 2, head_dim = DIM)
+    positions = torch.arange(4097)
+    cos, sin = _unsloth_cos_sin(positions, False, config = config)
+    ref_cos, ref_sin = LlamaRotaryEmbedding(LlamaConfig(**copy.deepcopy(config)))(
+        torch.zeros(1, positions.shape[0], DIM), positions[None]
+    )
     torch.testing.assert_close(cos, ref_cos[0], atol = 2e-3, rtol = 0)
     torch.testing.assert_close(sin, ref_sin[0], atol = 2e-3, rtol = 0)
