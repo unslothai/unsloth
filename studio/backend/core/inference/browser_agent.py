@@ -734,9 +734,17 @@ def _validated_request(
         if target.lower() in ("back", "forward", "reload"):
             return {"op": target.lower()}
         if len(target) <= _MAX_URL_CHARS:
-            path = workspace_path_of(target) or _workspace_file_named(target, session_id)
+            # Only a target workspace_path_of recognises opens a file: the approval check
+            # (tools._browser_opens_workspace_file) sees the same syntax, never the disk.
+            path = workspace_path_of(target)
             if path is not None:
                 return _workspace_file_request(path, session_id)
+            named = _workspace_file_named(target, session_id)
+            if named is not None:
+                raise ValueError(
+                    f"{named} is a file in the workspace, not a site. Open it as ./{named}, or give "
+                    "the site's full https:// address."
+                )
         return {"op": "navigate", "url": normalize_navigation_url(target, website_policy)}
     if name == "browser_snapshot":
         request: dict = {"op": op, "full_page": arguments.get("full_page") is True}

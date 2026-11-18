@@ -48,7 +48,12 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
-from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .browser_agent import (
+    BROWSER_TOOL_NAMES,
+    execute_browser_tool,
+    is_browser_tool,
+    workspace_path_of,
+)
 from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
@@ -6454,9 +6459,14 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
 
 
+def _browser_opens_workspace_file(name: str, arguments: dict) -> bool:
+    """browser_navigate onto a workspace file hands its bytes to the model, so it asks like a read."""
+    return name == "browser_navigate" and workspace_path_of(arguments.get("url")) is not None
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts for anything that can mutate state or run code; unknown tools fail closed."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -9047,7 +9057,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False

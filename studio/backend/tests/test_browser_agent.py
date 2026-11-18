@@ -8,6 +8,8 @@ import sys
 import threading
 import types
 
+import re
+
 import pytest
 
 from core.inference import browser_agent
@@ -771,26 +773,67 @@ def test_status_badge_names_a_workspace_file():
     assert status_for_tool("browser_navigate", {"url": "file:///w/x.svg"}) == "Opening: x.svg"
 
 
-def test_a_code_file_named_like_a_domain_opens_only_when_the_workspace_has_it(workspace):
+def test_a_bare_name_the_workspace_has_points_at_its_path_form(workspace):
     (workspace / "script.py").write_text("print(1)")
     (workspace / "notes.md").write_text("# hi")
-    (workspace / "main.go").write_text("package main")
     (workspace / "nb.ipynb").write_text("{}")
-    assert _request("browser_navigate", {"url": "main.go"})["path"] == "main.go"
-    assert _request("browser_navigate", {"url": "nb.ipynb"})["path"] == "nb.ipynb"
+    for name in ("script.py", "notes.md", "nb.ipynb"):
+        with pytest.raises(ValueError, match = rf"Open it as \./{re.escape(name)}"):
+            _request("browser_navigate", {"url": name})
+        assert _request("browser_navigate", {"url": f"./{name}"})["path"] == name
+    assert _request("browser_navigate", {"url": "./notes.md"})["content_type"] == "text/markdown"
     assert _request("browser_navigate", {"url": "example.go"})["op"] == "navigate"
     assert _request("browser_navigate", {"url": "example.com/../script.py"}) == {
         "op": "navigate",
         "url": "https://example.com/../script.py",
     }
-    assert _request("browser_navigate", {"url": "script.py"})["path"] == "script.py"
-    assert _request("browser_navigate", {"url": "notes.md"})["content_type"] == "text/markdown"
     with pytest.raises(ValueError, match = "no file app.ts in the workspace"):
         _request("browser_navigate", {"url": "app.ts"})
-    assert _request("browser_navigate", {"url": "example.py"}) == {
-        "op": "navigate",
-        "url": "https://example.py",
-    }
+
+
+_FILE_TARGETS = [
+    "draw.html",
+    "./notes.md",
+    "sub/pic.svg",
+    "file:///w/x.html",
+    "/etc/passwd",
+    "~/x.html",
+]
+_SITE_TARGETS = [
+    "https://example.com",
+    "example.com",
+    "example.com/page.html",
+    "localhost:3000/x.html",
+    "back",
+]
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto", "off", "full"])
+@pytest.mark.parametrize("url", _FILE_TARGETS + _SITE_TARGETS)
+def test_opening_a_workspace_file_asks_wherever_a_sensitive_read_asks(mode, url):
+    from state.tool_policy import needs_tool_confirmation
+
+    asks = needs_tool_confirmation(
+        confirm_tool_calls = True,
+        bypass_permissions = mode == "full",
+        permission_mode = mode,
+        name = "browser_navigate",
+        arguments = {"url": url},
+    )
+    expected = {"ask": True, "auto": url in _FILE_TARGETS, "off": False, "full": False}[mode]
+    assert asks is expected
+
+
+def test_the_approval_check_and_the_open_agree_on_every_target(workspace):
+    (workspace / "script.py").write_text("print(1)")
+    for url in _FILE_TARGETS + _SITE_TARGETS + ["script.py", "./script.py", "main.go"]:
+        try:
+            opened = _request("browser_navigate", {"url": url})["op"] == "open_file"
+        except ValueError:
+            opened = False
+        if opened:
+            assert tools_mod.is_high_risk_tool_call("browser_navigate", {"url": url}), url
+            assert tools_mod.is_potentially_unsafe_tool_call("browser_navigate", {"url": url}), url
 
 
 def test_a_malformed_file_url_is_refused_and_its_badge_does_not_raise():
