@@ -653,17 +653,77 @@ def _cutlass_tile(
     plan = _CUT_PLAN.get(index)
     if not plan:
         return None
-    entry = plan.get(_cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None))
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    entry = plan.get(key)
     if not entry:
         return None
     from . import diffusion_int8_cutlass as cut
 
-    tile = cut.slot(int(a.shape[0]), entry)
+    m = int(a.shape[0])
+    if _CUT_ROWS_PENDING.get(index) or cut._LARGE_M <= m < cut._HUGE_M:
+        _note_rows(index, key, m)
+    tile = cut.slot(m, entry)
     if tile is None:
         return None
     import torch
 
     return tile if cut.eligible(a, w, xs, ws, bias, out_dtype or torch.bfloat16) else None
+
+
+# index -> {shape key: [row buckets of its large calls, first seen first]}; recorded for the next load's plan
+_CUT_ROWS: dict = {}
+_CUT_ROWS_PENDING: dict = {}
+# index -> the race cache key its plan used (hashing the sources per call would cost a file read)
+_CUT_CKEY: dict = {}
+_CUT_ROWS_MAX = 4
+
+
+def _rows_cache_key(ckey: str) -> str:
+    return ckey + "|rows"
+
+
+def _note_rows(index: int, key: tuple, m: int) -> None:
+    """Record a large call's row bucket; a new one is written to the race cache outside any capture, so the next load
+    races the row counts this model runs (``diffusion_int8_cutlass.large_points``). No race here: no added cost."""
+    from . import diffusion_int8_cutlass as cut
+
+    if cut._LARGE_M <= m < cut._HUGE_M:
+        seen = _CUT_ROWS.setdefault(index, {}).setdefault(key, [])
+        b = cut.row_bucket(m)
+        if b not in seen:
+            seen.append(b)
+            del seen[:-_CUT_ROWS_MAX]
+            _CUT_ROWS_PENDING[index] = True
+    if not _CUT_ROWS_PENDING.get(index):
+        return
+    ckey = _CUT_CKEY.get(index)
+    if not ckey or not cut.row_race_enabled():
+        _CUT_ROWS_PENDING[index] = False
+        return
+    import torch
+
+    try:
+        busy = torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling()
+    except Exception:  # noqa: BLE001 - no CUDA runtime: nothing records a graph
+        busy = False
+    if busy:
+        return
+    _CUT_ROWS_PENDING[index] = False
+    table = _cut_cache_read()
+    rkey = _rows_cache_key(ckey)
+    stored = table.get(rkey) if isinstance(table.get(rkey), dict) else {}
+    changed = False
+    for k_, buckets in (_CUT_ROWS.get(index) or {}).items():
+        old = [int(b) for b in stored.get(repr(k_), []) if isinstance(b, int)]
+        new = [b for b in old if b not in buckets] + list(buckets)
+        new = new[-_CUT_ROWS_MAX:]
+        if new != old:
+            stored[repr(k_)] = new
+            changed = True
+    if changed:
+        table.pop(rkey, None)
+        table[rkey] = stored
+        _cut_cache_write(table)
 
 
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
@@ -811,9 +871,13 @@ def _cutlass_plan(
         fam = cut.family(cap)
         act = cut.out_dtype_for(fam)
         ckey = _cut_cache_key(index)
+        if ckey:
+            _CUT_CKEY[index] = ckey
         table = _cut_cache_read() if ckey else {}
         cached = table.get(ckey) if ckey else None
         cached = cached if isinstance(cached, dict) else {}
+        recorded = table.get(_rows_cache_key(ckey)) if ckey else None
+        recorded = recorded if isinstance(recorded, dict) else {}
         dev = torch.device("cuda", index)
         g = torch.Generator(device = "cpu").manual_seed(11)
         seen: dict = {}
@@ -834,20 +898,29 @@ def _cutlass_plan(
             done.add(key)
             skey = repr(key)
             hit = cached.get(skey)
-            points = cut.race_points()
-            if (
-                isinstance(hit, dict)
-                and {int(m) for m in hit} == set(points)
+            points = cut.race_points(recorded.get(skey))
+            hit = (
+                {int(m): v for m, v in hit.items()}
+                if isinstance(hit, dict)
                 and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
-            ):
-                plan[key] = {int(m): v for m, v in hit.items()}
+                else {}
+            )
+            # a cache holding every fixed point keeps its winners and races only a newly recorded row bucket; one
+            # from before a fixed point existed races them all
+            fixed = {min(cut._RACE_M)} | (
+                {cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set()
+            )
+            entry = {m: hit[m] for m in points if m in hit} if fixed <= set(hit) else {}
+            if len(entry) == len(points):
+                plan[key] = entry
                 continue
             # random operands: a streamed weight need not be resident
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
-            entry = {}
             for m in points:
+                if m in entry:
+                    continue
                 if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
                     # no room to time it: today's path at that size, never an untimed 4096-row winner
                     entry[m] = None
