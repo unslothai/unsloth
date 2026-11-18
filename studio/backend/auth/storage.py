@@ -1622,7 +1622,8 @@ def _take_refresh_token(
             datetime.fromisoformat(now) - timedelta(seconds = REFRESH_REUSE_GRACE_SECONDS)
         ).isoformat()
         conn.execute("DELETE FROM refresh_token_reuse WHERE consumed_at < ?", (cutoff,))
-        if row is not None:
+        # Only stamped tokens: a credential change outside this module (CLI reset) still voids them.
+        if row is not None and row["secret_gen"] is not None:
             conn.execute(
                 """
                 INSERT INTO refresh_token_reuse
@@ -1631,7 +1632,7 @@ def _take_refresh_token(
                 """,
                 (row["token_hash"], row["username"], row["is_desktop"], row["secret_gen"], now),
             )
-        else:
+        elif row is None:
             row = conn.execute(
                 f"""
                 SELECT username, is_desktop, secret_gen FROM refresh_token_reuse

@@ -117,3 +117,28 @@ def test_strict_consume_stays_single_use(owner):
     spent = _issue(owner)
     assert storage.consume_refresh_token(spent) is not None
     assert storage.consume_refresh_token(spent) is None
+
+
+def _raw(sql, *args):
+    conn = storage.get_connection()
+    try:
+        conn.execute(sql, args)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_cli_reset_inside_the_window_still_ends_the_session(client, owner):
+    # The CLI reset rotates the secret and deletes refresh_tokens with its own SQL, never this table.
+    spent = _issue(owner)
+    assert _refresh(client, spent).status_code == 200
+    _raw("UPDATE auth_user SET jwt_secret = ? WHERE username = ?", secrets.token_urlsafe(64), owner)
+    _raw("DELETE FROM refresh_tokens WHERE username = ?", owner)
+    assert _refresh(client, spent).status_code == 401
+
+
+def test_a_legacy_unstamped_token_gets_no_window(client, owner):
+    spent = _issue(owner)
+    _raw("UPDATE refresh_tokens SET secret_gen = NULL")
+    assert _refresh(client, spent).status_code == 200
+    assert _refresh(client, spent).status_code == 401
