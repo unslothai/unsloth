@@ -112,6 +112,10 @@ _ACTIVE = 0  # Trainer.train() calls running: nothing is cached outside them
 _CHECKED = set()
 _SHAPE_SEEN = [0, 0]  # most tokens / longest sequence of a model input before the last safe point
 _SHAPE_NEW = [0, 0]  # the same since the last safe point
+# Whether a training input with padding (a dense attention mask, quadratic in the sequence) ran before the last
+# safe point / since it. A padded batch of a measured shape still allocates more than an unpadded one did.
+_PADDED_SEEN = [False]
+_PADDED_NEW = [False]
 _HOOKS = []  # forward pre-hooks on the trained model, removed when training ends
 _PRE_RAN = [0]  # eager runs of the model pre-hook since the last safe point
 _EVALUATING = [
@@ -352,6 +356,8 @@ def _on_optimizer_step(optimizer, args, kwargs):
         _SHAPE_SEEN[0] = max(_SHAPE_SEEN[0], _SHAPE_NEW[0])
         _SHAPE_SEEN[1] = max(_SHAPE_SEEN[1], _SHAPE_NEW[1])
         _SHAPE_NEW[0] = _SHAPE_NEW[1] = 0
+        _PADDED_SEEN[0] = _PADDED_SEEN[0] or _PADDED_NEW[0]
+        _PADDED_NEW[0] = False
         for index in list(_SEEN):
             # The budget below covers steps up to the largest matmul seen so far, no larger.
             _ROWS_SEEN[index] = max(_ROWS_SEEN.get(index, 0), _ROWS_NEW.pop(index, 0))
@@ -810,6 +816,17 @@ def _input_shape(args, kwargs):
     return x.numel(), x.shape[-1]
 
 
+def _padded(kwargs):
+    """A 2D attention mask with any zero: the forward may build a dense 4D mask before the first LoRA matmul."""
+    mask = kwargs.get("attention_mask")
+    if not isinstance(mask, torch.Tensor) or mask.dim() != 2 or mask.numel() == 0:
+        return False
+    try:
+        return not bool(mask.all())
+    except Exception:
+        return True
+
+
 def _model_pre_hook(module, args, kwargs):
     # Runs before the model allocates anything for this call (embeddings, attention masks that grow with the
     # square of the sequence): a call larger than every step the budget was measured on drops the cache now.
@@ -830,7 +847,10 @@ def _model_pre_hook(module, args, kwargs):
             _SHAPE_NEW[0] = tokens
         if length > _SHAPE_NEW[1]:
             _SHAPE_NEW[1] = length
-    if tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1]:
+    padded = _padded(kwargs)
+    if padded and (module is None or getattr(module, "training", True)):
+        _PADDED_NEW[0] = True
+    if tokens > _SHAPE_SEEN[0] or length > _SHAPE_SEEN[1] or (padded and not _PADDED_SEEN[0]):
         if _CACHE or any(b > 0 for b in _BUDGET.values()):
             for index in list(_BUDGET):
                 _drop_device(index, "shape_drops")

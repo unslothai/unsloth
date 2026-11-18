@@ -36,6 +36,7 @@ def _fresh(monkeypatch):
     dc.clear_dequant_cache()
     dc.STATS.clear()
     dc._PRE_RAN[0] = 0
+    dc._PADDED_SEEN[0] = dc._PADDED_NEW[0] = False
     for name in ("_SHRINK_PEAK", "_SHRINK_UNSAFE"):
         getattr(dc, name, set()).clear()
     yield
@@ -169,6 +170,30 @@ def test_whole_model_compile_gets_no_budget(monkeypatch):
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] > 0
     dc._HOOKS[0].remove()
+
+
+def test_first_padded_batch_of_a_measured_shape_drops_the_cache(monkeypatch):
+    # Same [batch, sequence] as the measured steps, but padded: the forward builds a dense quadratic mask before
+    # any LoRA op, which the unpadded steps never measured.
+    _memory(monkeypatch, usable = 10 * GiB)
+    ids = torch.zeros(2, 8, dtype = torch.long)
+    full = torch.ones(2, 8, dtype = torch.long)
+    dc._model_pre_hook(None, (), {"input_ids": ids, "attention_mask": full})
+    dc._SEEN.add(None)
+    dc._on_optimizer_step(None, (), {})
+    W, absmax = _weight()
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16)
+    assert dc.cached_count() == 1
+    dc._model_pre_hook(None, (), {"input_ids": ids, "attention_mask": full})
+    assert dc.cached_count() == 1  # same shape, unpadded: kept
+    padded = full.clone()
+    padded[0, :3] = 0
+    dc._model_pre_hook(None, (), {"input_ids": ids, "attention_mask": padded})
+    assert dc.cached_count() == 0 and dc._BUDGET.get(None, 0) == 0
+    dc._on_optimizer_step(None, (), {})  # the padded step is measured now
+    dc._lookup(W, absmax, _decoder([]), torch.bfloat16)
+    dc._model_pre_hook(None, (), {"input_ids": ids, "attention_mask": padded})
+    assert dc.cached_count() == 1
 
 
 def test_guard_evicts_under_margin(monkeypatch):
