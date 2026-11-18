@@ -27,11 +27,18 @@ def test_install_writes_the_toolset_and_hooks_it_once(tmp_path):
     root = _project(tmp_path)
     python_dir = root / "Content" / "Python"
     files = unreal_tools.install(str(root / "MyGame.uproject"))
-    assert files == [str(python_dir / "unsloth_level_tools.py"), str(python_dir / "init_unreal.py")]
+    assert files == [
+        str(python_dir / "unsloth_level_tools.py"),
+        str(python_dir / "unsloth_game_tools.py"),
+        str(python_dir / "init_unreal.py"),
+    ]
     installed = (python_dir / "unsloth_level_tools.py").read_text(encoding = "utf-8")
     assert installed == unreal_tools._SOURCE.read_text(encoding = "utf-8")
+    game = (python_dir / "unsloth_game_tools.py").read_text(encoding = "utf-8")
+    assert game == unreal_tools._GAME_SOURCE.read_text(encoding = "utf-8")
     hook = (python_dir / "init_unreal.py").read_text()
     assert "unsloth_level_tools.register_when_ready()" in hook
+    assert "unsloth_game_tools.register_when_ready()" in hook
     unreal_tools.install(str(root))  # the folder works too, and a repeat adds nothing
     assert (python_dir / "init_unreal.py").read_text() == hook
 
@@ -46,7 +53,23 @@ def test_install_keeps_an_existing_init_unreal(tmp_path):
     unreal_tools.install(str(root))
     text = (python_dir / "init_unreal.py").read_text()
     assert text.startswith("import my_tools\nmy_tools.start()\n\n# Unsloth level tools")
-    assert text.count("register_when_ready()") == 1
+    assert text.count("unsloth_level_tools.register_when_ready()") == 1
+    assert text.count("unsloth_game_tools.register_when_ready()") == 1
+
+
+def test_install_over_a_level_tools_only_install_adds_the_game_tools_once(tmp_path):
+    """Projects set up before the game tools existed have the level hook only; a reinstall appends the game hook."""
+    root = _project(tmp_path)
+    python_dir = root / "Content" / "Python"
+    python_dir.mkdir(parents = True)
+    (python_dir / "init_unreal.py").write_text(unreal_tools._HOOK, encoding = "utf-8")
+    unreal_tools.install(str(root))
+    unreal_tools.install(str(root))
+    text = (python_dir / "init_unreal.py").read_text()
+    assert (
+        text.count(unreal_tools._HOOK_MARKER) == 1
+        and text.count(unreal_tools._GAME_HOOK_MARKER) == 1
+    )
 
 
 def test_install_accepts_a_path_copied_with_quotes(tmp_path):
@@ -63,16 +86,17 @@ def test_hook_never_stops_the_rest_of_init_unreal(tmp_path, monkeypatch, plugin_
     hook = (root / "Content" / "Python" / "init_unreal.py").read_text() + "\nafter_hook = True\n"
     warnings, registered = [], []
     monkeypatch.setitem(sys.modules, "unreal", types.SimpleNamespace(log_warning = warnings.append))
-    if plugin_on:
-        toolset = types.SimpleNamespace(register_when_ready = lambda: registered.append(True))
-        monkeypatch.setitem(sys.modules, "unsloth_level_tools", toolset)
-    else:
-        monkeypatch.setitem(sys.modules, "unsloth_level_tools", None)  # import raises ImportError
+    for module in ("unsloth_level_tools", "unsloth_game_tools"):
+        if plugin_on:
+            toolset = types.SimpleNamespace(register_when_ready = lambda: registered.append(True))
+            monkeypatch.setitem(sys.modules, module, toolset)
+        else:
+            monkeypatch.setitem(sys.modules, module, None)  # import raises ImportError
     scope: dict = {}
     exec(compile(hook, "init_unreal.py", "exec"), scope)
     assert scope["after_hook"] is True
-    assert registered == ([True] if plugin_on else [])
-    assert len(warnings) == (0 if plugin_on else 1)
+    assert registered == ([True, True] if plugin_on else [])
+    assert len(warnings) == (0 if plugin_on else 2)
 
 
 @pytest.mark.parametrize("path", ["", "missing", "no_uproject"])
@@ -98,7 +122,7 @@ def test_install_route_follows_the_editor_tools_gate(tmp_path, monkeypatch):
         routes.install_unreal_tools(UnrealToolsInstall(project_path = str(tmp_path / "nope")))
     assert bad.value.status_code == 400
     result = routes.install_unreal_tools(UnrealToolsInstall(project_path = str(root)))
-    assert result.restart_required and len(result.files) == 2
+    assert result.restart_required and len(result.files) == 3
 
 
 class _FakeEditor:
