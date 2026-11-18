@@ -7,6 +7,8 @@ the routing rule that a MOSS GGUF loads only natively, from a build that carries
 
 from __future__ import annotations
 
+import struct
+
 import pytest
 
 from core.inference import diffusion_engine_router as r
@@ -241,3 +243,71 @@ def test_a_loose_moss_safetensors_is_offered():
     assert _single_file_loadable(_moss(), None, "MOSS-Image-SFT-INT8.safetensors")
     assert not _single_file_loadable(_moss(), None, "MOSS-Image-SFT-Q4_K_M.gguf")
     assert _single_file_loadable(detect_family("z-image"), None, "z_image_turbo_bf16.safetensors")
+
+
+def _gguf(path, keys):
+    def s(text):
+        b = text.encode()
+        return struct.pack("<Q", len(b)) + b
+
+    out = struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys))
+    for key, value in keys.items():
+        out += s(key) + struct.pack("<I", 8) + s(value)
+    path.write_bytes(out)
+    return path
+
+
+_CONVROT = {
+    "general.architecture": "moss_image",
+    "comfy.gguf.quant.layers.0.proj.qkv.weight": '{"format": "int8_tensorwise", "convrot": true}',
+}
+
+
+def test_a_comfy_convrot_gguf_is_named_and_plain_ggufs_pass(tmp_path):
+    from core.inference.diffusion_content import sd_cpp_gguf_refusal
+
+    convrot = _gguf(tmp_path / "kromoss-Q4_CR_L.gguf", _CONVROT)
+    plain = _gguf(tmp_path / "kromoss-Q4_K_M.gguf", {"general.architecture": "moss_image"})
+    truncated = tmp_path / "cut.gguf"
+    truncated.write_bytes(convrot.read_bytes()[:30])
+    assert "kromoss-Q4_CR_L.gguf" in sd_cpp_gguf_refusal(str(convrot))
+    for path in (plain, truncated, tmp_path / "missing.gguf"):
+        assert sd_cpp_gguf_refusal(str(path)) is None, path
+    assert sd_cpp_gguf_refusal(str(tmp_path / "model.safetensors")) is None
+
+
+def test_the_native_load_refuses_a_comfy_convrot_gguf_before_spawning(monkeypatch, tmp_path):
+    import types
+
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
+
+    convrot = _gguf(tmp_path / "kromoss-Q4_CR_L.gguf", _CONVROT)
+    backend = Native(engine = None)
+    monkeypatch.setattr(
+        Native,
+        "_resolve_backend",
+        lambda self: ("oneshot", None, types.SimpleNamespace(version = lambda: "master")),
+    )
+    monkeypatch.setattr(Native, "_preflight_companion_repos", lambda *a, **k: None)
+    monkeypatch.setattr(Native, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        Native, "_fetch_assets", lambda self, assets, token, **k: {"diffusion_model": str(convrot)}
+    )
+
+    def _no_sigmas(*_a, **_k):
+        raise AssertionError("the refusal must precede the native state")
+
+    monkeypatch.setattr("core.inference.sd_cpp_backend._base_sample_sigmas", _no_sigmas)
+    backend._load_token = 1
+    backend._loading = types.SimpleNamespace(error = None)
+    Native._run_load(
+        backend,
+        repo_id = "molbal/Kromoss-GGUF",
+        gguf_filename = convrot.name,
+        base = _SNAP,
+        fam = _moss(),
+        hf_token = None,
+        local_files_only = True,
+        _load_token = 1,
+    )
+    assert "ComfyUI-quantized GGUF" in (backend._loading.error or ""), backend._loading.error

@@ -142,6 +142,46 @@ def _gguf_skip(f, vtype: int) -> bool:
     return True
 
 
+COMFY_GGUF_QUANT_PREFIX = "comfy.gguf.quant."
+
+
+def gguf_comfy_quant_declared(path: Optional[str]) -> bool:
+    """True when a GGUF declares ComfyUI per-layer quant formats (int8 ConvRot: rotated weights + scales).
+    stable-diffusion.cpp's GGUF reader ignores them and aborts on the scale shapes. Fail-open on unreadable files."""
+    try:
+        with open(str(path), "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return False
+            magic, version, _n_tensors, n_kv = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or version < 2 or n_kv > _MAX_GGUF_KV:
+                return False
+            prefix = COMFY_GGUF_QUANT_PREFIX.encode()
+            for _ in range(n_kv):
+                key = _gguf_read_str(f)
+                vt = f.read(4)
+                if key is None or len(vt) < 4:
+                    return False
+                if key.startswith(prefix):
+                    return True
+                if not _gguf_skip(f, struct.unpack("<I", vt)[0]):
+                    return False
+    except (OSError, struct.error):
+        return False
+    return False
+
+
+def sd_cpp_gguf_refusal(path: Optional[str]) -> Optional[str]:
+    """Why the native engine cannot run this GGUF, or None."""
+    if not path or not str(path).lower().endswith(".gguf") or not gguf_comfy_quant_declared(path):
+        return None
+    return (
+        f"{Path(str(path)).name} is a ComfyUI-quantized GGUF (per-layer int8 ConvRot weights), which the native "
+        "stable-diffusion.cpp engine cannot run. Pick a standard GGUF quant from the same repo (for example "
+        "Q4_K_M, Q6_K or Q8_0)."
+    )
+
+
 def _read_gguf_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
     with open(path, "rb") as f:
         head = f.read(24)
