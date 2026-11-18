@@ -210,8 +210,7 @@ def test_nograd_kill_spares_a_verified_signature():
 
 
 def test_nograd_verify_envelope_is_rounded_up_to_a_power_of_two():
-    # Sampled lengths set a new maximum on most steps; an exact-max envelope re-ran the no-grad
-    # self-verify (packed + shared-prefix forward) on about half the steps.
+    # An exact-max envelope re-ran the no-grad self-verify on about half the steps.
     node = next(
         n
         for n in ast.parse(TEXT).body

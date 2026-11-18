@@ -92,7 +92,6 @@ def _batch(
 
 
 def _cases(n = 120):
-    # Small shapes keep the token-by-token reference and the semantics loop well under 10 s on CPU.
     rng = torch.Generator().manual_seed(3407)
     pick = random.Random(3407)
     for i in range(n):
@@ -306,10 +305,7 @@ def _check_layout_semantics(layout, ids, lp, logits_to_keep, pad):
 
 
 def test_shuffled_micro_batch_still_groups_by_prompt():
-    # TRL shuffles the generation batch before splitting it into gradient accumulation
-    # micro-batches (grpo_trainer _prepare_inputs, shuffle_sequence_dict), and Unsloth's GRPO
-    # default is gradient_accumulation_steps = 2, so a micro-batch holds a prompt's completions
-    # in any order and count. The layout must still share each prompt instead of declining.
+    # TRL shuffles the generation batch (shuffle_sequence_dict) at Unsloth's default GA=2.
     rng = torch.Generator().manual_seed(0)
     G, P, C = 4, 200, 8
     ids, lp = _batch(rng, 2, G, P, C)
@@ -341,9 +337,7 @@ def test_layout_semantics_on_random_cases():
 
 
 def test_shuffled_group_mixes_share_one_verify_signature():
-    # A shuffled micro-batch mixes prompts in many ways ((2, 6), (3, 5), (4, 4) ...). The first-use
-    # self-verify is keyed on layout.signature, so those mixes must map to one structural class,
-    # not one re-verify each; a singleton group (nothing shared) stays its own class.
+    # Shuffled mixes ((2, 6), (3, 5), ...) share one verify class; a singleton group is its own.
     rng = torch.Generator().manual_seed(1)
     G, P, C = 8, 64, 8
     ids, lp = _batch(rng, 2, G, P, C)
@@ -372,8 +366,6 @@ def _full_prompt_batch(
     C,
     seed = 0,
 ):
-    # every prompt exactly P real tokens, every completion C: the saved prompt recompute is
-    # num_groups * (G - 1) * P tokens
     rng = torch.Generator().manual_seed(seed)
     ids = torch.randint(1, 50, (num_groups * G, P + C), generator = rng)
     for g in range(num_groups):
@@ -382,9 +374,7 @@ def _full_prompt_batch(
 
 
 def test_cost_gate_declines_short_prompts_even_when_reuse_is_high():
-    # Unsloth's default GRPO shape on GSM8K: one prompt of ~136 tokens, 4 completions. Token reuse
-    # is 1.6 (over the 1.3 threshold) but only 408 prompt tokens are saved, and the measured
-    # shared-prefix forward overhead (~0.09 s per call on L4) outweighs that: keep the packed path.
+    # Default GSM8K shape: reuse 1.6 passes TOKR but 408 saved tokens is under the cost gate.
     ids, lp = _full_prompt_batch(1, 4, 136, 90)
     assert pg.build_group_layout(ids, 90, 0, 4, lp, apply_tokr_gate = False).tok_r > 1.3
     for fn in (pg.build_group_layout, pg._build_group_layout_reference):

@@ -49,10 +49,8 @@ _ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
 _OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
-# Cost gate: prompt tokens a layout saves per call ((rows - 1) * P per group). Colab L4 LoRA GRPO,
-# trainer phase vs the packed path: Qwen3-0.6B 172 saved +24%, 2230 -34%, 4250 -40%; Qwen2.5-1.5B
-# 94 saved +47%, 2147 -40%, 3255 -57%. Break-even is about 670 (0.6B) and 560 (1.5B) tokens, so
-# 1024 keeps a margin; short GSM8K-style prompts stay on the packed path.
+# Cost gate on saved prompt tokens per call: measured L4 LoRA break-even ~670 (Qwen3-0.6B) and
+# ~560 (Qwen2.5-1.5B) saved tokens, so 1024 keeps a margin.
 _MIN_SAVED = int(float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_MIN_SAVED", "1024")))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
@@ -176,8 +174,7 @@ class GroupLayout:
     L: int  # original padded seq length (input_ids.shape[1])
     W: int  # logits_to_keep + max_left_pad (scatter width)
     tok_r: float
-    # Self-verify / unsafe key: a coarse structural class (see _verify_signature), so a shuffled
-    # micro-batch's many group-size mixes share one first-use check instead of one each.
+    # Self-verify key: structural class (_verify_signature), so shuffled group-size mixes share one check.
     signature: Tuple
     group_sizes: Tuple = ()  # (num_groups, sorted rows per group): the exact structure
 
@@ -218,10 +215,8 @@ class GroupLayout:
 
 
 def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows):
-    """CPU mirror of the packed _pk_* partition: rows grouped by byte-identical prompt, groups in
-    first-appearance order and rows in batch order. TRL shuffles the generation batch before it
-    splits it into gradient accumulation micro-batches, so a group's rows need not be adjacent and
-    a micro-batch can hold any number of a prompt's completions."""
+    """CPU mirror of the _pk_* partition: rows grouped by identical prompt (TRL shuffles at GA>1, so
+    rows need not be adjacent), groups in first-appearance order, rows in batch order."""
     G = num_generations
     if G is None or G < 2:
         return None
@@ -259,14 +254,11 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
 
 
 def _verify_signature(num_groups, sizes) -> Tuple:
-    """What can change the shared-prefix mask's structure: one group or several, and whether some
-    group has a single row (nothing shared). Exact sizes only move segment boundaries, which the
-    T / longest-segment envelope already re-checks."""
+    """Mask structure: multi-group and any singleton group; exact sizes are covered by the T envelope."""
     return ("pg", num_groups > 1, min(sizes) == 1)
 
 
 def _saved_tokens(groups) -> int:
-    # Prompt recompute the shared forward skips: (rows - 1) * P per group.
     return sum((len(gm["R_list"]) - 1) * gm["P"] for gm in groups)
 
 
@@ -473,8 +465,7 @@ def build_group_layout(
     R_row = end - pe
     if bool((P_row == 0).any()):
         return None
-    # Group rows by prompt content, not by position: TRL shuffles the generation batch before it
-    # splits it into micro-batches, so a prompt's completions are scattered across the batch.
+    # Group by prompt content, not position: TRL shuffles the generation batch at GA>1.
     ar_p = torch.arange(int(P_row.max()), device = "cpu")
     in_prompt = ar_p < P_row.unsqueeze(1)
     prompt_tok = ids.gather(1, (first.unsqueeze(1) + ar_p).clamp(max = L - 1))
@@ -485,7 +476,6 @@ def build_group_layout(
     first_row = torch.full(
         (num_groups,), total_rows, dtype = torch.long, device = "cpu"
     ).scatter_reduce(0, inv, rows_ar, reduce = "amin")
-    # Number groups by first appearance; rows keep their batch order inside a group.
     rank = torch.empty_like(first_row)
     rank[torch.argsort(first_row)] = torch.arange(num_groups, device = "cpu")
     gid = rank[inv]
