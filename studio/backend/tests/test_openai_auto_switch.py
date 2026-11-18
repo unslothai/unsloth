@@ -399,8 +399,6 @@ def test_an_auto_alias_reloads_a_model_whose_extra_arguments_chose_the_speculati
 
 
 class _InheritingRecorder(_AliasLoadRecorder):
-    """A reload that omits llama_extra_args keeps the resident's, as /load does."""
-
     async def __call__(self, request, *args, **kwargs):
         kept = self.backend.requested_extra_args
         await super().__call__(request, *args, **kwargs)
