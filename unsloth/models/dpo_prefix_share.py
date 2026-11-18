@@ -487,8 +487,10 @@ def _gather(hidden, layout):
 
 
 def _token_rel_err(shared, unshared, keep):
+    # A model split over GPUs returns its last block's device; the mask stays on the input device.
+    keep = keep.to(device = shared.device, dtype = torch.bool)
     a = shared.float()[keep]
-    b = unshared.float()[keep]
+    b = unshared.to(shared.device).float()[keep]
     num = (a - b).norm(dim = -1)
     den = b.norm(dim = -1).clamp_min(1e-6)
     rel = num / den
