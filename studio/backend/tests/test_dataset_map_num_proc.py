@@ -544,6 +544,8 @@ def test_the_batched_packing_pool_asks_the_same_veto(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
     from types import SimpleNamespace
 
+    # _pack_num_proc imports core.training.trainer, which needs unsloth_zoo.
+    pytest.importorskip("core.training.trainer", exc_type = ImportError)
     from core.training import multi_lora_trainer
     import utils.datasets.online_tokenization as online
 
