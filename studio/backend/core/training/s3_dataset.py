@@ -447,7 +447,7 @@ def prepare_s3_dataset_download(
         if audio_keys:
             raise ValueError(
                 f"Found {len(audio_keys)} audio file(s) under {where} but no manifest. "
-                "An audio dataset needs a JSON/JSONL/CSV manifest beside the audio, "
+                "An audio dataset needs a JSON/JSONL/CSV/Parquet manifest beside the audio, "
                 "with a column of audio paths and a column of transcriptions."
             )
         raise ValueError(
