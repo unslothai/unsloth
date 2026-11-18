@@ -1636,15 +1636,13 @@ def LlamaModel_fast_forward(
         rows = seq_length_with_past
         if isinstance(self.rotary_emb, LongRopeRotaryEmbedding):
             # transformers' longrope_frequency_update: factors from max(position_ids) + 1 (a host
-            # sync) over the whole sequence (Ulysses shards it), not max_seq_length.
-            factor_ids = position_ids
+            # sync) over the caller's whole sequence (CP shards and pads it), not max_seq_length.
+            bound = position_ids
             cp_manager = get_cp_manager()
             if cp_manager is not None:
                 rows *= cp_manager.size
-                full = getattr(cp_manager, "full_position_ids", None)
-                if isinstance(full, torch.Tensor):
-                    factor_ids = full
-            rope_len = rows if factor_ids is None else int(factor_ids.max()) + 1
+                bound = getattr(cp_manager, "position_bound", None)
+            rope_len = rows if bound is None else int(bound.max()) + 1
         # rope_rows only sizes the build; LongRoPE picks its short or long factors from rope_len.
         position_embeddings = self.rotary_emb.get_cached(rope_len, device_index)
         if rope_len < rows and position_embeddings[0].shape[0] < rows:
@@ -2907,6 +2905,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         long_factor = None,
         device = None,
         config = None,
+        attention_scaling = None,
     ):
         super().__init__()
         assert short_factor is not None
@@ -2945,17 +2944,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         short_inv_freq = 1.0 / (short_factor * self.base**inv_freq_shape)
         long_inv_freq = 1.0 / (long_factor * self.base**inv_freq_shape)
 
-        # Phi-3 scale factor, unless the config sets attention_factor (as transformers honours).
+        # Phi-3 scale factor, unless given (transformers' own, which honours attention_factor / factor).
         scale = self.max_position_embeddings / self.original_max_position_embeddings
-        attention_factor = None
-        if config is not None:
-            attention_factor = _rope_scaling_as_dict(
-                getattr(config, "rope_scaling", None)
-                or getattr(config, "rope_parameters", None)
-                or {}
-            ).get("attention_factor")
-        if attention_factor is not None:
-            scaling_factor = float(attention_factor)
+        if attention_scaling is not None:
+            scaling_factor = float(attention_scaling)
         elif scale <= 1.0:
             scaling_factor = 1.0
         else:
@@ -4829,11 +4821,14 @@ class FastLlamaModel:
                 or getattr(config, "rope_parameters", None)
                 or {}
             )
-            if isinstance(rotary_emb, LlamaRotaryEmbedding) and "longrope" in (
-                scaling.get("rope_type"),
-                scaling.get("type"),
+            # Llama only (Phi-3.5): its attention reads the model-level tables; Mistral / Qwen3 rebuild
+            # their own. patch_llama_rope_scaling only reaches pre-4.48 attention layers.
+            if (
+                isinstance(rotary_emb, LlamaRotaryEmbedding)
+                and getattr(config, "model_type", None) == "llama"
+                and "longrope" in (scaling.get("rope_type"), scaling.get("type"))
             ):
-                # patch_llama_rope_scaling only reaches pre-4.48 attention layers.
+                inv_freq, attention_scaling = _compute_config_rope_inv_freq(config, scaling)
                 rotary_emb = model.model.rotary_emb = LongRopeRotaryEmbedding(
                     original_max_position_embeddings = int(
                         getattr(config, "original_max_position_embeddings", None)
@@ -4843,6 +4838,7 @@ class FastLlamaModel:
                     short_factor = scaling["short_factor"],
                     long_factor = scaling["long_factor"],
                     config = config,
+                    attention_scaling = None if inv_freq is None else attention_scaling,
                 )
             for layer in model.model.layers:
                 layer.self_attn.rotary_emb = rotary_emb

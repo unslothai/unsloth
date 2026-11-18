@@ -115,10 +115,12 @@ def _unsloth_cos_sin(
     packed,
     cp = 1,
     config = CONFIG,
+    caller = None,
 ):
     from transformers import LlamaConfig
 
     tree, ns = _llama()
+    caller = positions.shape[0] if caller is None else caller
     config = LlamaConfig(num_hidden_layers = 1, **copy.deepcopy(config))
     # pre_patch puts Unsloth's LlamaRotaryEmbedding into transformers; LlamaModel builds this one.
     model = types.SimpleNamespace(
@@ -139,7 +141,10 @@ def _unsloth_cos_sin(
     # the first 1 / cp of the tokens; the layers check rows against the global length.
     seq_len = positions.shape[0]
     local = positions[: seq_len // cp]
-    manager = types.SimpleNamespace(size = cp, full_position_ids = positions[None] if packed else None)
+    # The CP manager keeps the caller's position bound from before alignment padding and sharding.
+    manager = types.SimpleNamespace(
+        size = cp, full_position_ids = positions[None], position_bound = positions[:caller].amax()
+    )
     forward = _block(
         _find(ast.walk(tree), ast.FunctionDef, "LlamaModel_fast_forward"), "IS_ATTENTION_REFACTOR"
     )
@@ -213,6 +218,39 @@ def test_longrope_honours_attention_factor(length):
     cos, sin = _unsloth_cos_sin(positions, False, config = config)
     ref_cos, ref_sin = LlamaRotaryEmbedding(LlamaConfig(**copy.deepcopy(config)))(
         torch.zeros(1, length, DIM), positions[None]
+    )
+    torch.testing.assert_close(cos, ref_cos[0], atol = 4e-3, rtol = 0)
+    torch.testing.assert_close(sin, ref_sin[0], atol = 4e-3, rtol = 0)
+
+
+def test_longrope_cp_alignment_padding_stays_short():
+    from transformers import Phi3Config
+    from transformers.models.phi3.modeling_phi3 import Phi3RotaryEmbedding
+
+    # Documents [1, 4096]: 4097 tokens, padded to 4098 for CP=2 with an appended position 4096.
+    caller = torch.cat([torch.arange(1), torch.arange(4096)])
+    positions = torch.cat([caller, torch.tensor([4096])])
+    cos, sin = _unsloth_cos_sin(positions, True, cp = 2, caller = caller.shape[0])
+    ref_cos, ref_sin = Phi3RotaryEmbedding(Phi3Config(**copy.deepcopy(CONFIG)))(
+        torch.zeros(1, caller.shape[0], DIM), caller[None]
+    )
+    n = cos.shape[0]
+    torch.testing.assert_close(cos, ref_cos[0, :n], atol = 2e-3, rtol = 0)
+    torch.testing.assert_close(sin, ref_sin[0, :n], atol = 2e-3, rtol = 0)
+
+
+def test_longrope_factor_only_config_keeps_transformers_scaling():
+    from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
+
+    # No original_max_position_embeddings or attention_factor: transformers scales by `factor`.
+    config = copy.deepcopy(CONFIG)
+    del config["original_max_position_embeddings"]
+    config["max_position_embeddings"] = 32768
+    config["rope_scaling"]["factor"] = 8.0
+    positions = torch.arange(2048)
+    cos, sin = _unsloth_cos_sin(positions, False, config = config)
+    ref_cos, ref_sin = LlamaRotaryEmbedding(LlamaConfig(**copy.deepcopy(config)))(
+        torch.zeros(1, 2048, DIM), positions[None]
     )
     torch.testing.assert_close(cos, ref_cos[0], atol = 4e-3, rtol = 0)
     torch.testing.assert_close(sin, ref_sin[0], atol = 4e-3, rtol = 0)
