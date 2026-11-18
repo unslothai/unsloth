@@ -420,8 +420,7 @@ _COSMOS3_REASONER_REFUSAL = (
     "This is a Cosmos3 Reasoner checkpoint, a vision-language model that answers in text rather than generating "
     "video. Load it from Chat, or load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge here."
 )
-# NVIDIA's ModelOpt FP8 builds (Cosmos3-Nano-FP8, Cosmos3-Edge-FP8) are variants of their family: the transformer
-# is read by diffusion_modelopt_fp8, everything else is the bf16 sibling's pipeline.
+# ModelOpt FP8 builds: transformer via diffusion_modelopt_fp8, the rest is the bf16 sibling's pipeline.
 _COSMOS3_CONDITIONED_RE = (
     _COSMOS3_VARIANT + r"(?:policy|sim|transfer)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 )
@@ -436,7 +435,6 @@ _COSMOS3_UNSUPPORTED = (
 )
 # Wan2.2-TI2V-5B VAE: stock tiles leave a 4-latent edge tile at 480 / 832 px; priced at its measured 2.5 MiB/latent px.
 _COSMOS3_UNTILED_VAE = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
-# NVIDIA's ModelOpt FP8 build of each family: the same pipeline, its transformer read by diffusion_modelopt_fp8.
 COSMOS3_FP8_REPOS = {
     COSMOS3_NANO_FAMILY: "nvidia/Cosmos3-Nano-FP8",
     COSMOS3_EDGE_FAMILY: "nvidia/Cosmos3-Edge-FP8",

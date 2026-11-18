@@ -71,8 +71,7 @@ test("each Cosmos3 picker group offers its FP8 build beside the BF16 pipeline", 
 });
 
 test("no Cosmos3 row carries a needs chip, only its stored precision", () => {
-  // The picker draws these tags beside the name; the guardrail is an opt-in, not a requirement. With a BF16 and
-  // an FP8 build in one group, each row names its precision.
+  // The guardrail is opt-in, not required.
   assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Nano", VIDEO_CATALOG)?.tags, ["BF16"]);
   assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Edge", VIDEO_CATALOG)?.tags, ["BF16"]);
   assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Nano-FP8", VIDEO_CATALOG)?.tags, ["FP8"]);

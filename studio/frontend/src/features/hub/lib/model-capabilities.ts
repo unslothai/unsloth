@@ -46,8 +46,7 @@ const VIDEO_GEN_TAGS = new Set([
   "image-text-to-video",
 ]);
 // MiniMax-H3-Image is the image partition of the H3 release (the Images page), not a video model.
-// Cosmos3 counts only as its Nano and Edge generators (and their -FP8 builds), not the Reasoner / Policy / Sim /
-// Transfer repos.
+// Cosmos3: only Nano / Edge (and -FP8) generate video; not Reasoner / Policy / Sim / Transfer.
 const VIDEO_GEN_ID_RE =
   /(?:^|[-_.])wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d(?![-_.]?image)|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b|(?:^|[-_.])cosmos3[-_.](?:nano|edge)(?:[-_.]fp8)?(?![a-z0-9]|[-_.](?:reasoner|policy|sim|transfer|fp8)(?![a-z0-9]))/;
 

@@ -10014,12 +10014,11 @@ class VideoBackend:
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
-        # An NVIDIA ModelOpt FP8 build of a Cosmos3 family (nvidia/Cosmos3-Nano-FP8, -Edge-FP8): its transformer is
-        # read by Studio's ModelOpt loader, which diffusers cannot do, and priced at the bytes that loader keeps.
+        # ModelOpt FP8 Cosmos3 builds: Studio's loader reads the DiT (diffusers cannot), priced at the bytes it keeps.
         modelopt_scan = None
         modelopt_dit_gb: Optional[float] = None
         modelopt_priced_offload = False
-        # LoRAs bake into dense float weights: the loader dequantizes the codes to bf16 (exact) for them, priced so.
+        # LoRAs bake into dense weights, so the codes dequantize to bf16.
         modelopt_keep = comfy_keep and not baked_loras
         if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
             from .diffusion_modelopt_fp8 import modelopt_fp8_error, scan_modelopt_fp8
@@ -10649,8 +10648,7 @@ class VideoBackend:
                 kind = kind,
                 source_dir = _base_local_dir or repo_id,
             )
-            # A LoRA load quantises its merged weights, never a cached build of the bare ones; a ModelOpt FP8 DiT
-            # is read from its own checkpoint, never a build of dense shards.
+            # LoRA loads quantise merged weights; a ModelOpt FP8 DiT is read from its own checkpoint.
             if kind == "pipeline"
             and not denoiser_injected
             and not baked_loras

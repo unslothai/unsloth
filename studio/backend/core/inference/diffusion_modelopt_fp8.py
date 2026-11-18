@@ -1,25 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NVIDIA ModelOpt FP8 diffusers transformers (``quant_algo`` FP8, ModelOpt ``FP8_FP8``: e4m3 weights and
-activations, one static scale per tensor), as published in nvidia/Cosmos3-Nano-FP8 and nvidia/Cosmos3-Edge-FP8.
+"""NVIDIA ModelOpt FP8 diffusers transformers (per-tensor e4m3 W8A8), e.g. nvidia/Cosmos3-Nano-FP8 / -Edge-FP8.
 
-Every quantized Linear stores an e4m3 ``weight`` and scalar ``weight_scale`` / ``input_scale`` (amax / 448), plus the
-calibration state ModelOpt restores (``weight_quantizer._amax`` / ``._scale``, ``input_quantizer._amax``), which is
-checked against the scales and dropped. Diffusers cannot load these folders itself: the transformer config carries a
-``quantization_config`` whose ``quant_method`` resolves to its ModelOpt quantizer, which needs the nvidia-modelopt
-package (not a Studio dependency) and ModelOpt's restore hooks.
-
-Runtimes, per Linear (``modelopt_runtime``):
-  * ``static``: W8A8 ``torch._scaled_mm`` with the checkpoint's static input scale (ModelOpt's per-tensor fp8 GEMM);
-    plain buffers, so it is resident or streamed alike; sm_89+ CUDA with a bfloat16 pipeline.
-  * ``dynamic``: the same Linear with per-row dynamic activation scales (rowwise ``torch._scaled_mm``).
-  * ``stored``: fp8 codes kept, widened per layer in the forward (weight-only; Studio's native fp8 Linear), for cards
-    without an fp8 GEMM when the plan streams the DiT or the host is tight.
-  * ``dequant``: widened to the compute dtype once at load (weight-only; exactly the checkpoint's weights).
-The two W8A8 runtimes follow the checkpoint's ``diffusion_step_policy`` (``StepPolicy``): W8A16 on the first / last
-denoising steps and on the reasoner (text) path, the schedule NVIDIA validated for these checkpoints. Modules ModelOpt
-left unquantized keep their stored precision, cast as a stock ``from_pretrained`` would.
+Diffusers cannot load these without the nvidia-modelopt package. Runtimes per Linear: ``static`` / ``dynamic``
+(W8A8 ``torch._scaled_mm``, tensorwise / rowwise activation scales, sm_89+), ``stored`` (fp8 codes widened per
+layer), ``dequant`` (widened once at load). W8A8 follows the checkpoint's ``diffusion_step_policy``.
 """
 
 from __future__ import annotations
@@ -69,7 +55,6 @@ _CALIBRATION_SUFFIXES = (
 # format this loader does not implement.
 _FOREIGN_MARKERS = ("_quantizer.", "_pre_quant_scale", ".weight_scale_2", "bmm_quantizer")
 _MAX_HEADER_BYTES = 256 * 1024 * 1024
-# float32 elements per activation-quantization chunk (64 MiB of scratch).
 _QUANT_CHUNK_ELEMENTS = 1 << 24
 # Calibrated amax / 448 against the stored scale: ModelOpt writes the same float32 value; looser only for rounding.
 _SCALE_RTOL = 1e-3
@@ -441,12 +426,9 @@ def runtime_keeps_fp8(runtime: str) -> bool:
     return runtime in (RUNTIME_STATIC, RUNTIME_DYNAMIC, RUNTIME_STORED)
 
 
-# Diffusers' fused Cosmos3 decoder layer routes its two token streams through separate Linears
-# (``Cosmos3AttnProcessor.__call__`` / ``Cosmos3DecoderLayer.forward``): ``to_q/to_k/to_v(und_seq)`` and
-# ``to_out`` -> und_out with ``mlp``, the reasoner (text) tokens; ``add_q_proj/add_k_proj/add_v_proj(gen_seq)`` and
-# ``to_add_out`` -> gen_out with ``mlp_moe_gen``, the generation (video) tokens. diffusers 0.42.1's own
-# ``_classify_cosmos3_linear`` swaps the attention halves, so its runtime keeps the video attention W8A16 and
-# quantizes the text attention; the checkpoint's policy (``reasoner: a16``) is applied to the real token paths here.
+# Per diffusers ``Cosmos3AttnProcessor.__call__`` / ``Cosmos3DecoderLayer.forward``: to_q/k/v, to_out, mlp run the
+# reasoner (text) tokens; add_*_proj, to_add_out, mlp_moe_gen the generation (video) tokens. diffusers 0.42.1's
+# ``_classify_cosmos3_linear`` swaps the attention halves; do not copy it.
 _GENERATION_SUFFIXES = (
     ".self_attn.add_q_proj",
     ".self_attn.add_k_proj",
@@ -634,7 +616,6 @@ def fp8_linear_class():
             if bias is not None:
                 bias = nn.Parameter(bias.detach().to(compute_dtype), requires_grad = False)
             self.bias = bias
-            # engagement counters (eager forwards): fp8 GEMM calls and W8A16 calls
             self.gemm_calls = 0
             self.a16_calls = 0
 
@@ -905,7 +886,6 @@ def load_modelopt_fp8_transformer(
         setattr(parent, leaf, layer)
     model_keys = set(model.state_dict().keys())
     missing, unexpected = model.load_state_dict(state, strict = False, assign = True)
-    # buffers the replacement Linears created themselves are already real
     missing = [k for k in missing if k.rpartition(".")[0] not in replacements]
     ignore = getattr(model, "_keys_to_ignore_on_load_unexpected", None) or []
     if ignore:
