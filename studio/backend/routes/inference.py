@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import math
 import os
 import shutil
@@ -30562,7 +30563,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31262,7 +31263,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -34231,7 +34232,7 @@ async def produce_openai_chat_completions(
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 25,
+                    else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -36094,7 +36095,9 @@ async def produce_openai_chat_completions(
         _sf_is_gptoss = False
 
     _sf_tool_budget = (
-        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
     )
 
     # _sf_cli_policy, _sf_tools_on and _sf_mcp_allowed resolve first, so both paths share one decision.
@@ -45020,7 +45023,7 @@ def _anthropic_chat_fields(
             sandbox_level = payload.sandbox_level,
             bypass_permissions = bool(payload.bypass_permissions),
             rag_scope = getattr(payload, "rag_scope", None),
-            max_tool_calls_per_message = 25,
+            max_tool_calls_per_message = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
             tool_call_timeout = 300,
             auto_heal_tool_calls = True,
         )
@@ -46871,7 +46874,7 @@ async def anthropic_messages(
                 stop = stop,
                 seed = payload.seed,
                 cancel_event = cancel_event,
-                max_tool_iterations = 25,
+                max_tool_iterations = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                 on_conversation_grew = _anthropic_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
