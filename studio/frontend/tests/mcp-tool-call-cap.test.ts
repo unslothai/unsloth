@@ -163,3 +163,27 @@ test("after a reload with MCP's Max saved, a chat with MCP off gets the old cap 
   } as never);
   assert.equal(cap(reloaded), MAX);
 });
+
+test("chats opened before settings hydrate still get the cap reconciled", async (t) => {
+  await boot(t);
+  for (const [mcpChat, saved] of [
+    [false, MAX],
+    [true, MAX],
+    [true, 12],
+  ] as const) {
+    // Max on the server with the pre-MCP 12 in this browser, or a plain 12.
+    settingsHttp.settings = { rememberParamsPerModel: false, maxToolCallsPerMessage: saved };
+    storage.set("unsloth_max_tool_calls_before_mcp", saved === MAX ? "12" : "");
+    const reloaded = (await import(
+      `${runtimeUrl}?scenario=${encodeURIComponent(`${t.name} ${mcpChat} ${saved}`)}`
+    )) as RuntimeModule;
+    t.after(() => reloaded.flushPendingChatSettings());
+    const state = () => reloaded.useChatRuntimeStore.getState();
+    state().setActiveThreadId("chat");
+    state().applyThreadScopedSettings("chat", {
+      mcpEnabledForChat: mcpChat,
+    } as never);
+    await state().hydratePersistedSettings();
+    assert.equal(cap(reloaded), mcpChat ? MAX : 12);
+  }
+});

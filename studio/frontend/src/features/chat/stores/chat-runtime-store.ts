@@ -3871,10 +3871,14 @@ function reconcileMcpToolCallCap(
   state: ChatRuntimeStore,
   previous: ChatRuntimeStore,
 ): void {
+  // Before hydration the cap is the built-in default, not the user's: neither save nor restore it.
+  if (!state.settingsHydrated) return;
   const current = state.maxToolCallsPerMessage;
   let next: number;
   if (state.mcpEnabledForChat) {
-    if (previous.mcpEnabledForChat || current >= UNLIMITED_TOOL_CALLS) return;
+    const turnedOn =
+      !previous.mcpEnabledForChat || !previous.settingsHydrated;
+    if (!turnedOn || current >= UNLIMITED_TOOL_CALLS) return;
     saveCapBeforeMcp(current);
     next = UNLIMITED_TOOL_CALLS;
   } else {
