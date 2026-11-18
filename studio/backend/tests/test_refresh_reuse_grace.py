@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A rotated refresh token stays exchangeable for a short window.
-
-Refresh tokens are single-use. When the answer to a successful rotation never reaches the browser
-(tab closed or reloaded mid-refresh, a proxy timeout, a phone suspending the page) the browser
-still holds the spent token, its next refresh got a 401, and every open tab was signed out. Two
-plain-HTTP tabs racing on one token hit the same 401. Within REFRESH_REUSE_GRACE_SECONDS the spent
-token now rotates again; logout and password changes still end it at once.
-"""
+"""A spent refresh token rotates again within REFRESH_REUSE_GRACE_SECONDS, so a lost rotation answer
+no longer signs every tab out; logout and password changes still end it at once."""
 
 import secrets
 from datetime import datetime, timedelta, timezone

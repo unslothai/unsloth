@@ -1583,9 +1583,7 @@ def save_refresh_token(
         conn.close()
 
 
-# A rotation answer lost in transit (tab closed mid-refresh, proxy timeout, phone suspend) or a
-# second tab racing on one token may present the just-rotated token again; within this window it
-# rotates once more instead of signing every tab out. Logout and password changes still end it.
+# A lost rotation answer or a racing tab re-sends the spent token; rotate it again instead of a 401.
 REFRESH_REUSE_GRACE_SECONDS = 60
 
 
