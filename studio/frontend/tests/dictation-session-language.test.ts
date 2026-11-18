@@ -31,6 +31,7 @@ const { StudioDictationAdapter } = loadWithStubs<{
   StudioDictationAdapter: new (options?: {
     chatId?: string | null;
     language?: string;
+    detectLanguage?: boolean;
   }) => { listen(): unknown };
 }>(
   new URL(
@@ -102,6 +103,17 @@ for (const engine of ["browser", "model"]) {
     assert.equal(created[0].options.language, undefined);
   });
 }
+
+test("asked to detect the language, only a recording engine is told to", () => {
+  created.length = 0;
+  dictationEngine = "model";
+  new StudioDictationAdapter({ chatId: null, detectLanguage: true }).listen();
+  assert.equal(created[0].options.detectLanguage, true);
+  created.length = 0;
+  dictationEngine = "browser";
+  new StudioDictationAdapter({ chatId: null, detectLanguage: true }).listen();
+  assert.equal(created[0].options.detectLanguage, undefined);
+});
 
 registerBundlerResolver();
 installLocalStorageFake();

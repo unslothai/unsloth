@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import math
 import os
 import shutil
@@ -178,6 +179,7 @@ from core.inference.llama_admission import (
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 from core.inference.http_stream import SSE_LINE_END, aiter_sse_lines
+from core.inference.sse import SSELineDecoder, iter_sse_lines
 from core.inference import model_slots
 from core.inference.llama_cpp import (
     _TERMINAL_RETIREMENT_HOOKS,
@@ -352,7 +354,8 @@ _LOST_CONNECTION_MSG = (
 _OVERSIZE_TOKENS_RE = _re.compile(
     r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
 )
-_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned 4\d\d: (.*)", _re.DOTALL)
+# 501 is llama-server's not_supported_error (e.g. chat on a decision-only model).
+_LLAMA_CLIENT_ERROR_RE = _re.compile(r"llama-server returned (?:4\d\d|501): (.*)", _re.DOTALL)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -3580,6 +3583,7 @@ from core.inference.anthropic_compat import (
     cached_prompt_tokens,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
+    warm_anthropic_pdf_documents,
     fold_tool_results_into_user,
     anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
@@ -4159,8 +4163,10 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
 # Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
 # "<head>": that text may sit in a comment or a script string. The parser opens the head for the
 # script and folds a later <html>'s attributes into the root.
+# A comment body never contains "-->", so each comment has one match: a lazy `.*?` could also span
+# later comments, and a run of `<!---->` without a doctype then backtracks exponentially.
 _ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
-    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+    r"\A\ufeff?(?:\s|<!--(?:(?!-->).)*-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
 )
 
 
@@ -8042,24 +8048,20 @@ def _monitor_anthropic_response(
 
     async def _monitored_body():
         terminal = False
+        decoder = SSELineDecoder()
+
+        def _watch(line: str) -> None:
+            nonlocal terminal
+            if _monitor_anthropic_sse_line(monitor_id, line.strip(), context_length) == "error":
+                terminal = True
+
         try:
             async for chunk in body_iterator:
-                text = (
-                    chunk.decode("utf-8", errors = "ignore")
-                    if isinstance(chunk, (bytes, bytearray))
-                    else str(chunk)
-                )
-                for line in SSE_LINE_END.split(text):
-                    if (
-                        _monitor_anthropic_sse_line(
-                            monitor_id,
-                            line.strip(),
-                            context_length,
-                        )
-                        == "error"
-                    ):
-                        terminal = True
+                for line in decoder.feed(chunk):
+                    _watch(line)
                 yield chunk
+            for line in decoder.flush():
+                _watch(line)
             if not terminal:
                 api_monitor.finish(
                     monitor_id,
@@ -10320,6 +10322,227 @@ def load_alongside_for_request(scope) -> None:
         scope[_LOAD_ALONGSIDE_SCOPE_KEY] = True
 
 
+def _request_alias(fastapi_request) -> Optional[dict[str, Any]]:
+    from utils.model_aliases import ALIAS_SCOPE_KEY
+
+    scope = getattr(fastapi_request, "scope", None)
+    alias = scope.get(ALIAS_SCOPE_KEY) if isinstance(scope, dict) else None
+    return alias if alias and alias.get("load_settings") else None
+
+
+_ALIAS_DEFAULTED_FIELDS = (
+    "max_seq_length",
+    "max_seq_length_auto_derived",
+    "cache_type_kv",
+    "speculative_type",
+)
+
+
+def _launched_with(backend, settings: dict[str, Any]) -> bool:
+    from core.inference.llama_cpp import (
+        _canonicalize_spec_mode,
+        _extra_args_set_spec_type,
+        _planned_main_cache_types,
+    )
+
+    intent = backend.last_load_intent
+    # The requested mode survives a crash recovery that relaunches with "off".
+    requested_mode = getattr(backend, "requested_spec_mode", intent.speculative_type or "auto")
+    launched = {
+        "max_seq_length": intent.n_ctx,
+        "kv_cache_dtype": intent.cache_type_kv or "f16",
+        # None when extra arguments own --spec-type, which no alias mode matches.
+        "speculative_type": requested_mode and _canonicalize_spec_mode(requested_mode),
+    }
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+        strip_args_shadowed_by,
+    )
+
+    _key, saved = resolve_override_for_load(
+        str(getattr(backend, "model_identifier", None) or intent.model_identifier),
+        getattr(backend, "_openai_advertised_id", None),
+        getattr(backend, "hf_variant", None),
+    )
+    saved = model_override_load_kwargs(saved, is_gguf = True)
+    extras = getattr(backend, "requested_extra_args", None) or list(intent.extra_args or ())
+    # A reload keeps the saved row's extras, else inherits the resident's: --spec-type there wins.
+    load_extras = saved.get("llama_extra_args")
+    # Blank alias fields mean the saved setting, else the loader default, as a cold load would.
+    wanted = {
+        "max_seq_length": 0,
+        "kv_cache_dtype": "f16",
+        "speculative_type": None
+        if _extra_args_set_spec_type(extras if load_extras is None else load_extras)
+        else "auto",
+    }
+    named = {
+        name: saved.get(key)
+        for name, key in (
+            ("max_seq_length", "max_seq_length"),
+            ("kv_cache_dtype", "cache_type_kv"),
+            ("speculative_type", "speculative_type"),
+        )
+        if saved.get(key) is not None
+    }
+    named.update(settings)
+    wanted |= named
+    wanted["speculative_type"] = _canonicalize_spec_mode(wanted["speculative_type"])
+    # Launch flags may run another cache or context; a named setting strips them, so must match.
+    if "kv_cache_dtype" in named:
+        k_type, v_type = getattr(
+            backend, "_requested_cache_types", None
+        ) or _planned_main_cache_types(intent.cache_type_kv, extras)
+        launched["kv_cache_dtype"] = k_type if k_type == v_type else None
+    if (
+        "max_seq_length" in named
+        and extras
+        and strip_args_shadowed_by(extras, {"max_seq_length": wanted["max_seq_length"]})
+        != list(extras)
+    ):
+        return False
+    return all(launched[name] == value for name, value in wanted.items())
+
+
+def _alias_load_settings_met(fastapi_request) -> bool:
+    alias = _request_alias(fastapi_request)
+    backend = get_llama_cpp_backend()
+    if (
+        alias is None
+        or not getattr(backend, "is_loaded", False)
+        or getattr(backend, "last_load_intent", None) is None
+    ):
+        return True
+    return _launched_with(backend, alias["load_settings"])
+
+
+def _alias_reload_due(fastapi_request) -> bool:
+    return _loads_anything() and not _alias_load_settings_met(fastapi_request)
+
+
+def _alias_refusal(
+    fastapi_request,
+    code: str,
+    message: str,
+    status: int = 409,
+) -> HTTPException:
+    return HTTPException(
+        status_code = status,
+        detail = error_body_for_path(
+            fastapi_request.url.path, message, status = status, code = code, param = "model"
+        ),
+    )
+
+
+def _ignored_alias_load_settings(
+    fastapi_request,
+    alias: dict[str, Any],
+    limit: str = "only apply when a local GGUF model generates text",
+) -> HTTPException:
+    return _alias_refusal(
+        fastapi_request,
+        "alias_load_settings_unsupported",
+        f"The alias '{alias['name']}' has its own load settings, and those {limit}. Remove the "
+        "load settings from the alias, or send the model's own name.",
+        status = 400,
+    )
+
+
+async def _refuse_ignored_alias_load_settings(
+    request: Request, _subject: str = Depends(get_current_subject)
+) -> None:
+    """Refuse an alias whose load settings this request would ignore (non-GGUF, embeddings)."""
+    alias = _request_alias(request)
+    if alias is None:
+        return
+    ignored = (
+        request.url.path.rstrip("/").endswith("/embeddings")
+        or _connection_model_ref(alias["model"]) is not None
+    )
+    if not ignored:
+        from core.inference.local_model_resolver import local_target_is_gguf
+        ignored = not await asyncio.to_thread(local_target_is_gguf, alias["model"], alias["model"])
+    if not ignored:
+        body = await request.json()
+        ignored = isinstance(body, dict) and bool(
+            body.get("provider_id") or body.get("provider_type")
+        )
+    if ignored:
+        raise _ignored_alias_load_settings(request, alias)
+
+
+def _refuse_alias_on_other_resident(fastapi_request) -> None:
+    alias = _request_alias(fastapi_request)
+    if alias is None:
+        return
+    backend = get_llama_cpp_backend()
+    if getattr(backend, "is_loaded", False):
+        # The diffusion runner records no launch, so any settings would pass for the alias's.
+        if getattr(backend, "is_diffusion", False):
+            raise _ignored_alias_load_settings(
+                fastapi_request, alias, "do not apply to DiffusionGemma models"
+            )
+    elif _loaded_slot_ident() is not None:
+        # A Transformers, MLX or NPU model the name check read as a GGUF (an unindexed id).
+        raise _ignored_alias_load_settings(fastapi_request, alias)
+
+
+def _refuse_changed_alias(fastapi_request) -> None:
+    from utils.model_aliases import get_model_aliases
+    alias = _request_alias(fastapi_request)
+    if alias is not None and alias not in get_model_aliases():
+        raise _alias_refusal(
+            fastapi_request,
+            "alias_changed",
+            f"The alias '{alias['name']}' was changed while this request waited. Send it again.",
+        )
+
+
+def _serves_alias_load_settings(switch):
+    @functools.wraps(switch)
+    async def wrapper(requested_model, fastapi_request, *args, **kwargs):
+        await switch(requested_model, fastapi_request, *args, **kwargs)
+        _refuse_changed_alias(fastapi_request)
+        _refuse_alias_on_other_resident(fastapi_request)
+        if _alias_load_settings_met(fastapi_request):
+            return
+        alias = _request_alias(fastapi_request)
+        raise _alias_refusal(
+            fastapi_request,
+            "model_settings_mismatch",
+            f"The alias '{alias['name']}' has its own load settings, and '{alias['model']}' is "
+            "loaded with different ones. This request could not reload it: that needs 'Switch "
+            "model by request' on under Settings > API and an API key that may load models. Or "
+            "load the model with these settings in Unsloth Studio.",
+        )
+
+    return wrapper
+
+
+def _alias_row_for_its_launch(row: dict) -> dict:
+    """An alias row copied from a loaded model that runs with other load settings, as unloaded."""
+    settings = row.get("load_settings")
+    if not settings or not row.get("loaded"):
+        return row
+    target = row["alias_for"].lower()
+
+    def _probe() -> Optional[bool]:
+        backend = get_llama_cpp_backend()
+        if not backend.is_loaded or getattr(backend, "last_load_intent", None) is None:
+            return None
+        public = (_llama_public_model_id(backend) or "").lower()
+        if not public or public not in (target, target.rpartition(":")[0]):
+            return None
+        return _launched_with(backend, settings)
+
+    launches = [model_slots.in_slot(slot, _probe) for slot in (None, *model_slots.visible())]
+    if any(launches) or all(launch is None for launch in launches):
+        return row
+    shared = ("id", "object", "created", "owned_by", "task", "alias_for", "load_settings")
+    return _with_openai_residency({**{k: row[k] for k in shared if k in row}, "loaded": False})
+
+
 def _load_alongside_for_request(fastapi_request) -> bool:
     scope = getattr(fastapi_request, "scope", None)
     return isinstance(scope, dict) and bool(scope.get(_LOAD_ALONGSIDE_SCOPE_KEY))
@@ -11646,6 +11869,7 @@ async def _npu_path_for_display_name(
     raise _refuse(404, message, "model_not_found")
 
 
+@_serves_alias_load_settings
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11875,7 +12099,11 @@ async def _maybe_auto_switch_model(
         return
 
     # Check resident state before the filesystem index; rebuilding it can take seconds.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if (
+        auto_switch_on
+        and await asyncio.to_thread(_loaded_identity_satisfies, requested_model)
+        and not _alias_reload_due(fastapi_request)
+    ):
         await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
@@ -12091,6 +12319,8 @@ async def _maybe_auto_switch_model(
                     return False
                 return _matches_any(override_id, loaded_keys)
             if not backend.is_loaded or not backend.model_identifier:
+                return False
+            if _alias_reload_due(fastapi_request):
                 return False
             loaded_keys = {backend.model_identifier.lower()}
             advertised = getattr(backend, "_openai_advertised_id", None)
@@ -12365,6 +12595,7 @@ async def _maybe_auto_switch_model(
                             ollama_same_system = await asyncio.to_thread(
                                 _same_ollama_system, target_id, backend
                             )
+                        _refuse_changed_alias(fastapi_request)
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
@@ -12394,6 +12625,14 @@ async def _maybe_auto_switch_model(
                         _override_key, override = resolve_override_for_load(
                             target_id, override_id, variant
                         )
+                        alias = _request_alias(fastapi_request)
+                        alias_settings = None
+                        if alias is not None and resolved is not None and target_is_gguf:
+                            alias_settings = alias["load_settings"]
+                            override = {**override, **alias_settings}
+                            if "max_seq_length" in alias_settings:
+                                # Manual GPU memory with Auto layers reads the context from this key.
+                                override["custom_context_length"] = alias_settings["max_seq_length"]
                         if require_speech and resolved is not None and speech_budget is not None:
                             target_context = await asyncio.to_thread(
                                 _target_effective_context_length,
@@ -12427,7 +12666,12 @@ async def _maybe_auto_switch_model(
                             override, is_gguf = target_is_gguf
                         )
                         if stashed_intent is not None and target_is_gguf:
-                            load_kwargs.update(_replay_load_kwargs(stashed_intent, override_kwargs))
+                            replay = _replay_load_kwargs(stashed_intent, override_kwargs)
+                            if alias_settings is not None:
+                                # Blank alias fields load the defaults, not the last launch's.
+                                for name in _ALIAS_DEFAULTED_FIELDS:
+                                    replay.pop(name, None)
+                            load_kwargs.update(replay)
                         load_kwargs.update(override_kwargs)
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
@@ -29820,7 +30064,7 @@ async def _finish_external_compaction(
         except cloud_compaction.SummaryFailed as exc:
             logger.warning("external_provider.summary_failed", error = str(exc), model = model)
             summary_failed = True
-            if isinstance(exc, cloud_compaction.SummaryCutOff):
+            if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
             await asyncio.to_thread(
@@ -30321,7 +30565,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31021,7 +31265,7 @@ async def _proxy_to_external_provider(
                     max_calls = (
                         payload.max_tool_calls_per_message
                         if payload.max_tool_calls_per_message is not None
-                        else 25
+                        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
@@ -31654,18 +31898,18 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         body = response.body_iterator
         # Opened after every refusal: a window marks any load it overlaps as shared for good.
         output_mark = npu.output_mark(upstream)
+        lines = iter_sse_lines(body)
         try:
-            async for piece in body:
-                text = piece.decode("utf-8") if isinstance(piece, bytes) else piece
-                for line in text.split("\n"):
-                    if line.startswith("data:") and '"error"' in line:
-                        line = await asyncio.to_thread(
-                            _explain_npu_error_line, npu, output_mark, line
-                        )
-                    if line.strip():
-                        yield line
+            async for line in lines:
+                if line.startswith("data:") and '"error"' in line:
+                    line = await asyncio.to_thread(_explain_npu_error_line, npu, output_mark, line)
+                if line.strip():
+                    yield line
         finally:
-            await body.aclose()
+            try:
+                await lines.aclose()
+            finally:
+                await body.aclose()
 
     if wants_stream:
 
@@ -32333,20 +32577,22 @@ def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> No
 
 async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
     recorder = _ConnectionExtrasRecorder(subject)
-    pending = ""
+    decoder = SSELineDecoder()
+
+    def _record(line: str) -> None:
+        if line.startswith("data:") and ('"tool_calls"' in line or '"extra_content"' in line):
+            try:
+                recorder.chunk(json.loads(line[5:]))
+            except ValueError:
+                pass
+
     try:
         async for chunk in chunks:
             yield chunk
-            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                if line.startswith("data:") and (
-                    '"tool_calls"' in line or '"extra_content"' in line
-                ):
-                    try:
-                        recorder.chunk(json.loads(line[5:]))
-                    except ValueError:
-                        pass
+            for line in decoder.feed(chunk):
+                _record(line)
+        for line in decoder.flush():
+            _record(line)
     finally:
         await chunks.aclose()
 
@@ -32429,7 +32675,13 @@ async def _collect_chat_completion(lines, model: str):
             break
         if not data:
             continue
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            logger.warning("chat connection stream dropped an unparsable data line")
+            continue
+        if not isinstance(chunk, dict):
+            continue
         error = chunk.get("error")
         if error:
             message = error.get("message") if isinstance(error, dict) else str(error)
@@ -32481,7 +32733,7 @@ async def _collect_chat_completion(lines, model: str):
     return JSONResponse(body)
 
 
-@router.post("/chat/completions")
+@router.post("/chat/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -33982,7 +34234,7 @@ async def produce_openai_chat_completions(
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
-                    else 25,
+                    else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                     tool_call_timeout = payload.tool_call_timeout
                     if payload.tool_call_timeout is not None
                     else 300,
@@ -35845,7 +36097,9 @@ async def produce_openai_chat_completions(
         _sf_is_gptoss = False
 
     _sf_tool_budget = (
-        payload.max_tool_calls_per_message if payload.max_tool_calls_per_message is not None else 25
+        payload.max_tool_calls_per_message
+        if payload.max_tool_calls_per_message is not None
+        else DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
     )
 
     # _sf_cli_policy, _sf_tools_on and _sf_mcp_allowed resolve first, so both paths share one decision.
@@ -38659,7 +38913,12 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
-    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
+    aliases = await asyncio.to_thread(
+        lambda: [
+            _alias_row_for_its_launch(row)
+            for row in alias_model_objects(objects, _pinned_quant_row)
+        ]
+    )
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases
@@ -39494,7 +39753,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     }
 
 
-@router.post("/completions")
+@router.post("/completions", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -40340,7 +40599,7 @@ def _embeddings_input_present(body: dict) -> bool:
     return inp is not None
 
 
-@router.post("/embeddings")
+@router.post("/embeddings", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
@@ -42427,21 +42686,25 @@ class _InProcessChatStream:
     async def chunks(self):
         """Each chat chunk as a dict, or ``_LLAMA_STREAM_KEEPALIVE`` for a stall keepalive."""
         self._started = True
-        async for raw in self._iterator:
-            text = raw.decode() if isinstance(raw, bytes) else raw
-            for line in text.split("\n"):
+        lines = iter_sse_lines(self._iterator)
+        try:
+            async for line in lines:
                 if line.startswith(":"):
                     yield _LLAMA_STREAM_KEEPALIVE
                     continue
-                if not line.startswith("data: "):
+                if not line.startswith("data:"):
                     continue
-                data = line[6:]
+                data = line[5:]
+                if data.startswith(" "):
+                    data = data[1:]
                 if data.strip() == "[DONE]":
                     return
                 try:
                     yield json.loads(data)
                 except json.JSONDecodeError:
                     continue
+        finally:
+            await lines.aclose()
 
     async def next_chunk(self, chunks):
         """The next of ``chunks``, or None at its end, a Stop the source raised included."""
@@ -42550,17 +42813,16 @@ async def _responses_in_process_stream(
 
 
 async def _sse_data_lines(chunks):
-    pending = ""
+    # This wrapper owns closing chunks; iter_sse_lines does not.
+    lines = iter_sse_lines(chunks)
     try:
-        async for chunk in chunks:
-            pending += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-            *complete, pending = pending.split("\n")
-            for line in complete:
-                yield line
-        if pending:
-            yield pending
+        async for line in lines:
+            yield line
     finally:
-        await chunks.aclose()
+        try:
+            await lines.aclose()
+        finally:
+            await chunks.aclose()
 
 
 async def _responses_stream(
@@ -42887,6 +43149,8 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(chunk_data, dict):
+                    continue
                 for event in translator.feed(chunk_data):
                     yield event
                 if translator.terminated:
@@ -43039,7 +43303,7 @@ async def _responses_stream(
     )
 
 
-@router.post("/responses")
+@router.post("/responses", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def openai_responses(
     payload: ResponsesRequest,
@@ -43182,7 +43446,12 @@ async def _responses_from_stream(response: StreamingResponse, payload: Responses
     terminal = None
     async for line in _sse_data_lines(response.body_iterator):
         if line.startswith("data:"):
-            event = json.loads(line[5:])
+            try:
+                event = json.loads(line[5:])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
             if event.get("type") in (
                 "response.completed",
                 "response.incomplete",
@@ -44372,7 +44641,7 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
     return total, parts, rendered.get("prompt")
 
 
-@router.post("/chat/count_tokens")
+@router.post("/chat/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
     current_subject: str = Depends(get_current_subject),
@@ -44756,7 +45025,7 @@ def _anthropic_chat_fields(
             sandbox_level = payload.sandbox_level,
             bypass_permissions = bool(payload.bypass_permissions),
             rag_scope = getattr(payload, "rag_scope", None),
-            max_tool_calls_per_message = 25,
+            max_tool_calls_per_message = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
             tool_call_timeout = 300,
             auto_heal_tool_calls = True,
         )
@@ -45008,7 +45277,12 @@ async def _anthropic_events_from_openai_sse(
                 break
             if not data:
                 continue
-            parsed = json.loads(data)
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict):
+                continue
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
@@ -45185,7 +45459,7 @@ async def _anthropic_messages_via_connection(
     return JSONResponse(_anthropic_message_from_events([event async for event in events]))
 
 
-@router.post("/messages/count_tokens")
+@router.post("/messages/count_tokens", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
     request: Request,
@@ -45204,6 +45478,7 @@ async def anthropic_count_tokens(
             status_code = 400,
             detail = "Token counting is not available for a Connection model.",
         )
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
@@ -45845,7 +46120,7 @@ async def _anthropic_in_process_messages(
     return _monitor_anthropic_response(response, monitor_id, context_length, cancel_event)
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies = [Depends(_refuse_ignored_alias_load_settings)])
 @account_access.gpu_busy_route
 async def anthropic_messages(
     payload: AnthropicMessagesRequest,
@@ -45862,6 +46137,7 @@ async def anthropic_messages(
     """
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
+    await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
     connection = _connection_model_ref(payload.model)
     if connection is not None:
         return await _anthropic_messages_via_connection(
@@ -46600,7 +46876,7 @@ async def anthropic_messages(
                 stop = stop,
                 seed = payload.seed,
                 cancel_event = cancel_event,
-                max_tool_iterations = 25,
+                max_tool_iterations = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
                 on_conversation_grew = _anthropic_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
@@ -47912,14 +48188,16 @@ async def _anthropic_passthrough_stream(
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
-                if not raw_line or not raw_line.startswith("data: "):
+                if not raw_line or not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
                     continue
                 lines, failed = _anthropic_passthrough_chunk_lines(
                     emitter, chunk, request, disable_parallel_tool_use
@@ -50995,6 +51273,8 @@ async def load_diffusion_model_gated(
                 transformer_quant_fast_accum = request.transformer_quant_fast_accum,
                 transformer_prequant_path = request.transformer_prequant_path,
                 attention_backend = request.attention_backend,
+                # Only when set: older engines and test doubles take no such argument.
+                **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,

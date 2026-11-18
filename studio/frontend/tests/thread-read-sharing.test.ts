@@ -36,6 +36,7 @@ function harness() {
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         getAuthSessionEpoch: () => auth.epoch,
         authFetch: (url: string, init?: RequestInit) =>

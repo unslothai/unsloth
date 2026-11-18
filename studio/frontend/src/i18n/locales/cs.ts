@@ -977,6 +977,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
+    addScheduledTask: "Přidat naplánovanou úlohu…",
     compact: "Zkomprimovat konverzaci",
     compactQueued: "Komprimace byla vyžádána pro další zprávu",
     compactEmpty: "Zatím není co komprimovat",
@@ -2308,7 +2309,7 @@ export const cs = {
       modelAliases: {
         sectionTitle: "Aliasy modelů (OpenAI API)",
         description:
-          "Stálé názvy pro klienty API, například fast-chat nebo code. Požadavek s aliasem obslouží model, na který alias odkazuje, takže připojené aplikace fungují i po výměně modelů. Zapněte možnost Přepínat model podle požadavku, aby alias mohl načíst svůj model.",
+          "Krátké názvy, které mohou klienti API používat místo celého názvu modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Název aliasu",
         modelAriaLabel: "Model, na který alias odkazuje",
@@ -2317,6 +2318,13 @@ export const cs = {
         add: "Přidat alias",
         loadError: "Aliasy modelů se nepodařilo načíst.",
         saveError: "Aliasy modelů se nepodařilo uložit.",
+        contextLength: "Délka kontextu",
+        kvCacheType: "Typ mezipaměti KV",
+        speculativeDecoding: "Spekulativní dekódování",
+        savedSetting: "Uložené nastavení",
+        loadSettings: "Nastavení načtení",
+        loadSettingsHint:
+          "Jen pro modely GGUF. Prázdná pole použijí uložená nastavení modelu.",
       },
       previewSharing: {
         sectionTitle: "Sdílení náhledů",
@@ -5193,6 +5201,8 @@ export const cs = {
   translate: {
     title: "Překlad",
     detectLanguage: "Rozpoznat jazyk",
+    detectedLanguage: "{language} (rozpoznáno)",
+    detectedTab: "{language} - Rozpoznáno",
     sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
     recentTargets: "Nedávné",
@@ -5203,17 +5213,20 @@ export const cs = {
     translate: "Přeložit",
     stop: "Zastavit",
     sourceLabel: "Text k překladu",
-    sourcePlaceholder:
-      "Napište nebo vložte text, případně sem přetáhněte textový soubor",
+    sourcePlaceholder: "Napište nebo vložte text, nebo přetáhněte dokument či obrázek",
     outputLabel: "Překlad",
     outputEmpty: "Překlad se zobrazí zde.",
     firstRunHint:
       "Při prvním překladu se stáhne {model} ({size}). Poté běží offline na tomto zařízení.",
+    charLimit: "Max. {max} znaků",
+    readingFile: "Načítání {name}…",
+    downloadConfirmTitle: "Stáhnout {model}?",
+    downloadConfirm: "Stáhnout",
     clear: "Vymazat",
     paste: "Vložit",
-    openFile: "Otevřít textový soubor",
-    dropFile: "Přetáhněte sem textový soubor a přeložte ho",
-    fileNotText: "Zde lze otevřít pouze textové soubory.",
+    openFile: "Otevřít dokument nebo obrázek",
+    dropFile: "Přetáhněte soubor a přeložte jeho text",
+    fileNotText: "Tento soubor neobsahuje žádný text k překladu.",
     truncated: "Zachováno bylo pouze prvních {max} znaků.",
     copy: "Kopírovat překlad",
     copied: "Zkopírováno",
@@ -5346,6 +5359,7 @@ export const cs = {
       intervalHours: "Interval (hodiny)",
       hourlyNote: "První spuštění proběhne jeden interval po uložení. Změna intervalu nebo obnovení spustí čekání znovu.",
       createTitle: "Naplánovat úlohu",
+      repliesInChat: "Každé spuštění odpoví v chatu „{title}“.",
       editTitle: "Upravit naplánovanou úlohu",
       name: "Název",
       namePlaceholder: "Název (volitelné)",

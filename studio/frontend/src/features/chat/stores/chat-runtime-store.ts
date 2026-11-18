@@ -180,6 +180,10 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_SEARCH_IMAGES_KEY = "unsloth_chat_search_images";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE = 50;
+export const UNLIMITED_TOOL_CALLS = 9999;
+// The slider value from before MCP lifted it to Max, so turning MCP off can put it back.
+const MAX_TOOL_CALLS_BEFORE_MCP_KEY = "unsloth_max_tool_calls_before_mcp";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
@@ -3843,6 +3847,50 @@ function getHydratedSettingsState(
   return nextState;
 }
 
+function readCapBeforeMcp(): number | null {
+  const saved = Number.parseInt(
+    readStorageValue(MAX_TOOL_CALLS_BEFORE_MCP_KEY) ?? "",
+    10,
+  );
+  return Number.isInteger(saved) && saved >= 0 ? saved : null;
+}
+
+let capBeforeMcp: number | null = readCapBeforeMcp();
+
+function saveCapBeforeMcp(value: number | null): void {
+  capBeforeMcp = value;
+  writeStorageValue(
+    MAX_TOOL_CALLS_BEFORE_MCP_KEY,
+    value === null ? "" : String(value),
+  );
+}
+
+// MCP chains run long: MCP on lifts the cap to Max, MCP off restores the saved value unless the user
+// set one since. A store listener, so chat switches and settings hydrated after a reload reconcile too.
+function reconcileMcpToolCallCap(
+  state: ChatRuntimeStore,
+  previous: ChatRuntimeStore,
+): void {
+  // Before hydration the cap is the built-in default, not the user's: neither save nor restore it.
+  if (!state.settingsHydrated) return;
+  const current = state.maxToolCallsPerMessage;
+  let next: number;
+  if (state.mcpEnabledForChat) {
+    const turnedOn =
+      !previous.mcpEnabledForChat || !previous.settingsHydrated;
+    if (!turnedOn || current >= UNLIMITED_TOOL_CALLS) return;
+    saveCapBeforeMcp(current);
+    next = UNLIMITED_TOOL_CALLS;
+  } else {
+    if (capBeforeMcp === null) return;
+    next = capBeforeMcp;
+    saveCapBeforeMcp(null);
+    if (current < UNLIMITED_TOOL_CALLS) return;
+  }
+  setScalarSettingVersion("maxToolCallsPerMessage", next, current);
+  useChatRuntimeStore.setState({ maxToolCallsPerMessage: next });
+}
+
 function setScalarSettingVersion<K extends ScalarSettingKey>(
   key: K,
   value: ChatRuntimeStore[K],
@@ -4501,7 +4549,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deduplicateToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
   keepRunningWhenTabClosed: DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED,
-  maxToolCallsPerMessage: 25,
+  maxToolCallsPerMessage: DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvQuant: null,
@@ -6387,6 +6435,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
+      // A value the user picks, Max included, is theirs: turning MCP off must not replace it.
+      saveCapBeforeMcp(null);
       setScalarSettingVersion(
         "maxToolCallsPerMessage",
         maxToolCallsPerMessage,
@@ -6487,8 +6537,12 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+const unsubscribeMcpToolCallCap = useChatRuntimeStore.subscribe(
+  reconcileMcpToolCallCap,
+);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+  import.meta.hot.dispose(unsubscribeMcpToolCallCap);
   import.meta.hot.dispose(() => {
     window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, clearChatFullAccessOnAuthChange);
     window.removeEventListener(AUTH_SESSION_STORED_EVENT, clearChatFullAccessOnAuthChange);

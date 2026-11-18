@@ -92,9 +92,24 @@ test("once a number is set, the far right is the real maximum and only reset ret
 test("the context slider's left gap counts from the label text, with a tighter right gap", () => {
   assert.match(
     panelCode,
-    /<div className="config-row flex min-h-8 items-center"> <div className="relative flex shrink-0 items-center"> <span className=\{LABEL_CLASS\}>Context<\/span> <span className="absolute left-full ml-1\.5 flex items-center gap-1">/,
+    /const label = \( \/\/ .*? <div className="relative flex shrink-0 items-center"> <span className=\{LABEL_CLASS\}>Context<\/span> <span className="absolute left-full ml-1\.5 flex items-center gap-1">/,
   );
-  assert.match(panelCode, /className="ml-12 mr-7 min-w-0 flex-1" aria-label="Context"/);
+  assert.match(
+    panelCode,
+    /<div className="config-row flex min-h-8 items-center"> \{label\} \{slider\} \{input\} <\/div>/,
+  );
+  assert.match(
+    panelCode,
+    /className=\{stacked \? undefined : "ml-12 mr-7 min-w-0 flex-1"\} aria-label="Context"/,
+  );
+});
+
+test("the Run settings sidebar puts the context slider on its own row", () => {
+  assert.match(panelCode, /stacked=\{variant === "sidebar"\}/);
+  assert.match(
+    panelCode,
+    /<div className="space-y-2"> <div className="config-row flex min-h-8 items-center"> \{label\} \{input\} <\/div> \{slider\} <\/div>/,
+  );
 });
 
 test("Reset all reads in the same color as Save", () => {
