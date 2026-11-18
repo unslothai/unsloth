@@ -640,6 +640,10 @@ class _ReusedFolderWrites:
             logger.info(f"Reused folder not tracked, staging a second save: {exception}")
             self._before = None
 
+    @property
+    def tracked(self) -> bool:
+        return self._before is not None
+
     def _scan(self, settled_before: Optional[int] = None) -> dict:
         notes = {}
         for path in self._root.rglob("*"):
@@ -2834,20 +2838,24 @@ class ExportBackend:
 
         def save_lora_gguf(directory):
             nonlocal staged_gguf_dir
-            # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
-            reused_writes = _ReusedFolderWrites(directory) if not _dir_is_fresh(directory) else None
-            if _IS_MLX:
-                self._save_mlx_adapter(directory, "peft", gguf_outtype = outtype, hf_token = hf_token)
-            else:
-                self.current_model.save_pretrained_gguf(
-                    directory,
-                    self.current_tokenizer,
-                    save_method = "lora",
-                    quantization_method = outtype,
-                    # False keeps a denied caller off get_token().
-                    token = normalize_token(hf_token),
-                )
-            written = reused_writes.written() if reused_writes else None
+            reused_writes = None if _dir_is_fresh(directory) else _ReusedFolderWrites(directory)
+            written = None
+            # An untracked folder goes straight to the staged save: converting into it first is wasted work.
+            if reused_writes is None or reused_writes.tracked:
+                if _IS_MLX:
+                    self._save_mlx_adapter(
+                        directory, "peft", gguf_outtype = outtype, hf_token = hf_token
+                    )
+                else:
+                    self.current_model.save_pretrained_gguf(
+                        directory,
+                        self.current_tokenizer,
+                        save_method = "lora",
+                        quantization_method = outtype,
+                        # False keeps a denied caller off get_token().
+                        token = normalize_token(hf_token),
+                    )
+                written = reused_writes.written() if reused_writes else None
             if reused_writes and written is None:
                 tmp_dir = gguf_staging.enter_context(_staging_dir(Path(directory).parent))
                 staged = os.path.join(tmp_dir, Path(directory).name)
@@ -2936,7 +2944,7 @@ class ExportBackend:
                     with contextlib.ExitStack() as stack:
                         upload_dir = staged_gguf_dir or output_path
                         if not save_dir_was_empty and staged_gguf_dir is None:
-                            # A reused folder can hold leftovers, so upload a clean second save; the converter names the GGUF model after its folder
+                            # A reused folder can hold leftovers, so upload a clean second save.
                             upload_dir = os.path.join(
                                 stack.enter_context(_staging_dir(Path(output_path).parent)),
                                 Path(output_path).name,

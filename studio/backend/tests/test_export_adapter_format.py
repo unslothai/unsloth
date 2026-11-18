@@ -146,7 +146,10 @@ def test_gguf_lora_export_accepts_new_artifact(monkeypatch, tmp_path, stale):
         if stale == "old":
             os.utime(out / "model-lora-q8_0.gguf", (1000, 1000))
 
+    saved = []
+
     def _save(directory, tokenizer, save_method, **kwargs):
+        saved.append(directory)
         with open(os.path.join(directory, "model-lora-q8_0.gguf"), "wb") as f:
             f.write(b"new GGUF")
 
@@ -156,6 +159,7 @@ def test_gguf_lora_export_accepts_new_artifact(monkeypatch, tmp_path, stale):
     assert ok, message
     assert path == str(out.resolve())
     assert (out / "model-lora-q8_0.gguf").read_bytes() == b"new GGUF"
+    assert len(saved) == 1
     backend._write_export_metadata.assert_called_once_with(str(out))
 
 
