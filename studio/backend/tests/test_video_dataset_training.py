@@ -127,7 +127,10 @@ def _mlx_adapter():
         if isinstance(n, ast.FunctionDef)
         and n.name in ("_adapt_for_mlx_vlm", "_own_mlx_video_values")
     ]
-    namespace = {"_resize_mlx_vlm_image": lambda image, *a, **k: image}
+    namespace = {
+        "_resize_mlx_vlm_image": lambda image, *a, **k: image,
+        "_resize_mlx_vlm_images": lambda images, *a, **k: images,
+    }
     exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
     return namespace["_adapt_for_mlx_vlm"]
 
@@ -148,6 +151,20 @@ def test_mlx_adapter_reads_a_top_level_video_column():
     out = _mlx_adapter()(_format(_flat_rows()))
     for row, clip in zip(out, CLIPS):
         assert row["videos"] == clip
+
+
+def test_mlx_adapter_hoists_a_row_image_as_images_beside_a_video():
+    row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image"}, {"type": "video", "video": CLIPS[0]}]}
+        ],
+        "image": "img.png",
+    }
+    out = _mlx_adapter()(
+        [row, {**row, "messages": [{"role": "user", "content": [{"type": "image"}]}]}]
+    )
+    assert out[0]["images"] == "img.png" and "image" not in out[0]
+    assert out[1]["image"] == "img.png" and "images" not in out[1]
 
 
 def test_mlx_adapter_keeps_decode_hints_on_the_placeholder():
@@ -636,18 +653,18 @@ def _mlx_video_guards(zoo_has_video):
 
 def test_mlx_video_preflight_refuses_only_what_would_be_dropped():
     preflight, _ = _mlx_video_guards(zoo_has_video = True)
-    preflight(_flat_rows(), is_vlm = True, is_cpt = False)
+    preflight(_flat_rows(), is_vlm = True, raw_text = False)
     with pytest.raises(ValueError, match = "not a vision model"):
-        preflight(_flat_rows(), is_vlm = False, is_cpt = False)
-    preflight(Dataset.from_dict({"text": ["a", "b"]}), is_vlm = False, is_cpt = False)
+        preflight(_flat_rows(), is_vlm = False, raw_text = False)
+    preflight(Dataset.from_dict({"text": ["a", "b"]}), is_vlm = False, raw_text = False)
     old_zoo, _ = _mlx_video_guards(zoo_has_video = False)
     with pytest.raises(ValueError, match = "newer unsloth-zoo"):
-        old_zoo(_flat_rows(), is_vlm = True, is_cpt = False)
+        old_zoo(_flat_rows(), is_vlm = True, raw_text = False)
 
 
-def test_mlx_cpt_ignores_an_unused_video_column():
+def test_mlx_raw_text_ignores_an_unused_video_column():
     preflight, _ = _mlx_video_guards(zoo_has_video = False)
-    preflight(Dataset.from_dict({"text": ["a", "b"], "video": CLIPS}), is_vlm = False, is_cpt = True)
+    preflight(Dataset.from_dict({"text": ["a", "b"], "video": CLIPS}), is_vlm = False, raw_text = True)
 
 
 def test_mlx_old_zoo_refuses_clips_in_any_forwarded_split():

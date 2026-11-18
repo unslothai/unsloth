@@ -2650,11 +2650,18 @@ def _adapt_for_mlx_vlm(
             else:
                 messages.append(msg)
         out = {"messages": messages}
+        placeholders = sum(
+            1
+            for msg in messages
+            if isinstance(msg.get("content"), list)
+            for part in msg["content"]
+            if isinstance(part, dict) and part.get("type") == "video"
+        )
+        # The collator reads `image` only when every placeholder is an image, so mixed rows need `images`.
         if images:
-            # Not `image`: the collator only reads it for image-only placeholders, so mixed rows lose it.
             out["images"] = images[0] if len(images) == 1 else images
         elif "image" in item:
-            out["image"] = _resize_mlx_vlm_images(
+            out["images" if placeholders else "image"] = _resize_mlx_vlm_images(
                 item["image"],
                 resize,
                 image_layout = image_layout,
@@ -2671,13 +2678,6 @@ def _adapt_for_mlx_vlm(
             out["videos"] = _own_mlx_video_values(item["videos"], hub)
         elif item.get("video") is not None:
             out["videos"] = _own_mlx_video_values(item["video"], hub)
-        placeholders = sum(
-            1
-            for msg in messages
-            if isinstance(msg.get("content"), list)
-            for part in msg["content"]
-            if isinstance(part, dict) and part.get("type") == "video"
-        )
         hoisted = out.get("videos")
         hoisted_count = (
             len(hoisted) if isinstance(hoisted, list) else (1 if hoisted is not None else 0)
@@ -2713,9 +2713,9 @@ def _mlx_zoo_collates_video():
     return "all_videos" in inspect.signature(mlx_utils._processor_vlm_inputs).parameters
 
 
-def _mlx_video_preflight(dataset, *, is_vlm, is_cpt):
-    # CPT trains the text column only, so a video column is not data it would drop.
-    if is_cpt:
+def _mlx_video_preflight(dataset, *, is_vlm, raw_text):
+    # Raw text / CPT trains the text column only, so a video column is not data it would drop.
+    if raw_text:
         return
     from utils.datasets.format_detection import detect_video_columns, video_sample
 
@@ -3626,7 +3626,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = status_message)
 
         # Before formatting: it would fetch every Hub clip only to be refused.
-        _mlx_video_preflight(dataset, is_vlm = is_vlm, is_cpt = is_cpt)
+        _mlx_video_preflight(dataset, is_vlm = is_vlm, raw_text = format_type == "raw")
 
         if is_dataset_audio:
             _send("status", status_message = "Formatting audio dataset...")
