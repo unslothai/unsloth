@@ -786,7 +786,8 @@ def _tree_fingerprint(folder: str) -> "tuple | None":
                         pending.append(entry.path)
                     elif not linked:
                         # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
-                        info = os.lstat(entry.path)
+                        # Extended namespace: a plain file named `nul` otherwise reads as the NUL device.
+                        info = os.lstat(_entry_path(entry.path))
                         # A socket, FIFO or device is a channel to the host that a read-only bind keeps open.
                         if not stat.S_ISREG(info.st_mode):
                             return None

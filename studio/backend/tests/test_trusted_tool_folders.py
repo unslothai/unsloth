@@ -632,3 +632,11 @@ def test_a_subtree_that_cannot_be_listed_is_not_granted(folder):
         assert os_sandbox.trusted_tool_folder_roots() == ()
     finally:
         hidden.chmod(0o755)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows reserved device names")
+def test_a_plain_file_named_nul_is_still_granted(folder):
+    # Git Bash `> nul` leaves a real file of that name.
+    with open("\\\\?\\" + str(folder / "nul"), "w") as handle:
+        handle.write("")
+    assert os_sandbox.trusted_tool_folder_roots() == (os.path.realpath(folder),)
