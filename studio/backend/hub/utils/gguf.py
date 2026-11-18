@@ -966,7 +966,9 @@ def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
 
 
 def _apply_gguf_display_labels(
-    variants: list[GgufVariantInfo], *repo_ids: object, name_tails: bool = False
+    variants: list[GgufVariantInfo],
+    *repo_ids: object,
+    name_tails: bool = False,
 ) -> None:
     """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
     root_label = gguf_root_label(*repo_ids) if repo_ids else None
