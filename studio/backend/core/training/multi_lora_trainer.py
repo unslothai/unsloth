@@ -676,22 +676,23 @@ def _pack_num_proc(tokenizer, trainer = None) -> Optional[int]:
     from core.training.trainer import _block_swap_engaged, _tokenizer_blocks_map_workers
     from utils.datasets.online_tokenization import host_memory_fork_veto
     from utils.hardware import dataset_map_num_proc
+    from utils.hardware.hardware import _shared_policy
 
     # The pool forks the loaded base model, as the single job's tokenize pool does.
     fork_veto = host_memory_fork_veto(_block_swap_engaged(trainer)) if trainer is not None else None
     if fork_veto:
         logger.info("Packing in process: %s", fork_veto)
 
-    try:
-        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
-    except ImportError:
-        from unsloth.dataset_num_proc import get_dataset_num_proc
-    return get_dataset_num_proc(
-        dataset_map_num_proc(
-            1 if (_tokenizer_blocks_map_workers(tokenizer) or fork_veto) else None,
-            serial_as_none = False,
-        )
+    count = dataset_map_num_proc(
+        1 if (_tokenizer_blocks_map_workers(tokenizer) or fork_veto) else None,
+        serial_as_none = False,
     )
+    # The same loader as the tokenize pool: `import unsloth.dataset_num_proc` would run the package
+    # __init__ (torch patches, the model stack) and fails outright on an install without unsloth_zoo.
+    policy = _shared_policy()
+    if policy is None:
+        return None if count is None or count <= 1 else count
+    return policy.get_dataset_num_proc(count)
 
 
 def _pack_rows(
