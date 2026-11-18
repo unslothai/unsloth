@@ -293,40 +293,59 @@ def test_dequant_rebuilds_the_bf16_model_a_stock_load_of_the_same_weights_gives(
     assert getattr(model, mo.MODELOPT_ATTR)["dequantized"] == len(mo.scan_modelopt_fp8(root).layers)
 
 
+def _w8a8_reference(x, w, s_x, act):
+    """The exact emulation: the same e4m3 activation codes (static scale, or per-row dynamic) times the same weights."""
+    xb = x.to(torch.bfloat16).float()
+    if act == "dynamic":
+        s_x = xb.abs().amax(dim = -1, keepdim = True).clamp(min = 1e-12) / 448
+    return (xb / s_x).clamp(-448, 448).to(torch.float8_e4m3fn).float() * s_x @ w.T
+
+
+@pytest.mark.parametrize("runtime", ["static", "dynamic"])
 @pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_the_static_w8a8_linears_match_the_dequantized_reference_within_fp8_tolerance(
-    tmp_path, repo
+def test_the_w8a8_linears_match_the_dequantized_reference_within_fp8_tolerance(
+    tmp_path, repo, runtime
 ):
     root, ref, scales = _write_checkpoint(tmp_path, repo)
-    model = mo.load_modelopt_fp8_transformer(
-        Cosmos3OmniTransformer, root, runtime = mo.RUNTIME_STATIC
-    )
+    model = mo.load_modelopt_fp8_transformer(Cosmos3OmniTransformer, root, runtime = runtime)
     scan = mo.scan_modelopt_fp8(root)
-    cls = mo.static_linear_class()
-    seen = 0
+    cls = mo.fp8_linear_class()
+    policy = model._unsloth_modelopt_step_policy
+    # the checkpoint's policy: reasoner path W8A16 always, generation path W8A8 between the first / last 3 steps
+    assert (policy.first_steps, policy.last_steps, policy.reasoner_a16) == (3, 3, True)
+    with model.cache_context("cond", step_index = 10, num_inference_steps = 20):
+        assert policy.generation_a16 is False
+    seen = {"generation": 0, "reasoner": 0}
     torch.manual_seed(1)
-    for stem, (rows, cols) in scan.layers.items():
+    for stem, (_rows, cols) in scan.layers.items():
         layer = model.get_submodule(stem)
-        assert isinstance(layer, cls), stem
+        assert isinstance(layer, cls) and layer.act == runtime, stem
+        assert layer.path == mo.linear_path(stem) in seen, stem
         w = ref[stem + ".weight"]
         assert torch.equal(layer.dequantized_weight(torch.float32), w), stem
         s_x = scales[stem]
         # activations inside the calibrated range (the static scale covers their amax)
         x = (torch.rand(3, 5, cols) * 2 - 1) * s_x * 400
         y = layer(x.to(torch.bfloat16)).float()
-        # the exact emulation: the same e4m3 activation codes times the same weights
-        xq = (x.to(torch.bfloat16).float() / s_x).clamp(-448, 448).to(
-            torch.float8_e4m3fn
-        ).float() * s_x
-        exact = xq @ w.T
-        assert torch.allclose(y, exact, rtol = 2e-2, atol = 1e-2 * exact.abs().max().item()), stem
-        # against unquantized activations: within e4m3's activation rounding (3 mantissa bits)
         dense = x.to(torch.bfloat16).float() @ w.T
-        rel = (y - dense).norm() / dense.norm()
-        assert rel < 0.06, (stem, float(rel))
-        seen += 1
-    assert seen == len(scan.layers) > 0
-    assert mo.static_gemm_calls(model) == 0  # CPU: the emulated path, never _scaled_mm
+        if layer.path == "reasoner":
+            # W8A16: bf16 activations on the widened weight
+            expected = torch.nn.functional.linear(
+                x.to(torch.bfloat16), w.to(torch.bfloat16)
+            ).float()
+            assert torch.allclose(y, expected, rtol = 1e-2, atol = 1e-3), stem
+        else:
+            exact = _w8a8_reference(x, w, s_x, runtime)
+            assert torch.allclose(y, exact, rtol = 2e-2, atol = 1e-2 * exact.abs().max().item()), stem
+            # against unquantized activations: within e4m3's activation rounding (3 mantissa bits)
+            rel = (y - dense).norm() / dense.norm()
+            assert rel < 0.06, (stem, float(rel))
+        seen[layer.path] += 1
+    assert seen["generation"] and seen["reasoner"] and sum(seen.values()) == len(scan.layers)
+    calls = mo.fp8_gemm_calls(model)
+    assert (
+        calls["gemm"] == 0 and calls["a16"] == seen["reasoner"]
+    )  # CPU: emulated, never _scaled_mm
     assert getattr(model, "_unsloth_runtime_quant", None) == "fp8"
     # a module-wide cast (offload hooks, pipeline .to) never widens the codes or rounds the scales
     layer = model.get_submodule(next(iter(scan.layers)))
@@ -335,6 +354,54 @@ def test_the_static_w8a8_linears_match_the_dequantized_reference_within_fp8_tole
     assert layer.weight_q.dtype == torch.uint8 and torch.equal(
         layer.dequantized_weight(torch.float32), before
     )
+
+
+@pytest.mark.parametrize(
+    "step, a16", [(0, True), (2, True), (3, False), (16, False), (17, True), (19, True)]
+)
+def test_the_step_policy_runs_the_first_and_last_three_steps_w8a16(tmp_path, step, a16):
+    root, ref, scales = _write_checkpoint(tmp_path, EDGE)
+    model = mo.load_modelopt_fp8_transformer(
+        Cosmos3OmniTransformer, root, runtime = mo.RUNTIME_STATIC
+    )
+    stem = next(s for s in mo.scan_modelopt_fp8(root).layers if mo.linear_path(s) == "generation")
+    layer = model.get_submodule(stem)
+    x = ((torch.rand(4, layer.in_features) * 2 - 1) * scales[stem] * 300).to(torch.bfloat16)
+    with model.cache_context("cond", step_index = step, num_inference_steps = 20):
+        y = layer(x).float()
+    w = ref[stem + ".weight"]
+    if a16:
+        expected = torch.nn.functional.linear(x, w.to(torch.bfloat16)).float()
+        assert torch.allclose(y, expected, rtol = 1e-2, atol = 1e-3)
+    else:
+        assert torch.allclose(
+            y, _w8a8_reference(x.float(), w, scales[stem], "static"), rtol = 2e-2, atol = 1e-2
+        )
+    assert layer.a16_calls == int(a16)
+
+
+def test_without_a_step_policy_every_step_is_w8a8(tmp_path, monkeypatch):
+    root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
+    path = root / "transformer" / "config.json"
+    config = json.loads(path.read_text())
+    config["quantization_config"].pop("runtime")
+    path.write_text(json.dumps(config))
+    model = mo.load_modelopt_fp8_transformer(
+        Cosmos3OmniTransformer, root, runtime = mo.RUNTIME_STATIC
+    )
+    assert not hasattr(model, "_unsloth_modelopt_step_policy")
+    assert getattr(model, mo.MODELOPT_ATTR)["step_policy"] is None
+    assert all(getattr(m, "policy", 0) is None for m in model.modules() if hasattr(m, "weight_q"))
+
+
+def test_a_step_policy_this_loader_does_not_run_is_refused(tmp_path):
+    root, _ref, _scales = _write_checkpoint(tmp_path, EDGE)
+    path = root / "transformer" / "config.json"
+    config = json.loads(path.read_text())
+    config["quantization_config"]["runtime"]["diffusion_step_policy"]["type"] = "sigma_threshold"
+    path.write_text(json.dumps(config))
+    message = mo.modelopt_fp8_error(mo.scan_modelopt_fp8(root))
+    assert message and "first_last_n" in message
 
 
 def test_the_stored_runtime_keeps_fp8_codes_and_widens_to_the_reference(tmp_path):
@@ -355,17 +422,27 @@ def test_the_stored_runtime_keeps_fp8_codes_and_widens_to_the_reference(tmp_path
 
 
 def test_runtime_choice_follows_the_card(monkeypatch):
-    monkeypatch.setattr(mo, "fp8_gemm_runs", lambda target = None, device = None: True)
+    def gemms(static, dynamic):
+        return lambda target = None, device = None, act = None: {"static": static, "dynamic": dynamic}[
+            act or "static"
+        ]
+
+    monkeypatch.setattr(mo, "fp8_gemm_runs", gemms(True, True))
     assert mo.modelopt_runtime(None) == mo.RUNTIME_STATIC
     assert mo.modelopt_runtime(None, keep = False) == mo.RUNTIME_DEQUANT
     monkeypatch.setenv(mo.ACT_SCALE_ENV, "dynamic")
-    assert mo.modelopt_runtime(None, fp8_backend = "torchao") == mo.RUNTIME_DYNAMIC
-    # dynamic activations need the resident torchao weight; an offloaded plan stores fp8 instead
-    assert mo.modelopt_runtime(None, fp8_backend = None, fp8_storage = True) == mo.RUNTIME_STORED
+    assert mo.modelopt_runtime(None) == mo.RUNTIME_DYNAMIC
+    # no rowwise GEMM on this card: the static one still runs
+    monkeypatch.setattr(mo, "fp8_gemm_runs", gemms(True, False))
+    assert mo.modelopt_runtime(None) == mo.RUNTIME_STATIC
     monkeypatch.delenv(mo.ACT_SCALE_ENV)
-    monkeypatch.setattr(mo, "fp8_gemm_runs", lambda target = None, device = None: False)
-    # no fp8 GEMM (A100 / T4): weight-only, stored under a streamed plan, else dequantized at load
+    # no fp8 GEMM (A100 / T4): weight-only, stored where Studio's fp8 rules keep codes, else dequantized at load
+    monkeypatch.setattr(mo, "fp8_gemm_runs", gemms(False, False))
     assert mo.modelopt_runtime(None, fp8_storage = True) == mo.RUNTIME_STORED
+    assert mo.modelopt_runtime(None, fp8_backend = "native") == mo.RUNTIME_STORED
     assert mo.modelopt_runtime(None) == mo.RUNTIME_DEQUANT
+
+
+def test_the_gemm_switch_turns_every_fp8_gemm_off(monkeypatch):
     monkeypatch.setenv(mo.GEMM_ENV, "0")
-    assert mo.modelopt_runtime(None, fp8_backend = "torchao") == mo.RUNTIME_DEQUANT
+    assert mo.fp8_gemm_runs(None) is False and mo.fp8_gemm_runs(None, act = "dynamic") is False

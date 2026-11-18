@@ -11,14 +11,15 @@ checked against the scales and dropped. Diffusers cannot load these folders itse
 package (not a Studio dependency) and ModelOpt's restore hooks.
 
 Runtimes, per Linear (``modelopt_runtime``):
-  * ``static``: W8A8 ``torch._scaled_mm`` with the checkpoint's static input scale (NVIDIA's ModelOpt per-tensor GEMM),
+  * ``static``: W8A8 ``torch._scaled_mm`` with the checkpoint's static input scale (ModelOpt's per-tensor fp8 GEMM);
     plain buffers, so it is resident or streamed alike; sm_89+ CUDA with a bfloat16 pipeline.
-  * ``dynamic``: Studio's own fp8 weight (torchao per-row ``Float8Tensor``, dynamic per-row activations) on a resident
-    plan, the runtime Studio's fp8 quant of the bf16 checkpoint uses.
+  * ``dynamic``: the same Linear with per-row dynamic activation scales (rowwise ``torch._scaled_mm``).
   * ``stored``: fp8 codes kept, widened per layer in the forward (weight-only; Studio's native fp8 Linear), for cards
     without an fp8 GEMM when the plan streams the DiT or the host is tight.
   * ``dequant``: widened to the compute dtype once at load (weight-only; exactly the checkpoint's weights).
-Modules ModelOpt left unquantized keep their stored precision, cast as a stock ``from_pretrained`` would.
+The two W8A8 runtimes follow the checkpoint's ``diffusion_step_policy`` (``StepPolicy``): W8A16 on the first / last
+denoising steps and on the reasoner (text) path, the schedule NVIDIA validated for these checkpoints. Modules ModelOpt
+left unquantized keep their stored precision, cast as a stock ``from_pretrained`` would.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ ACT_DYNAMIC = "dynamic"
 DEFAULT_ACT = ACT_STATIC
 # Off: never take an fp8 GEMM for these checkpoints (weight-only on every card).
 GEMM_ENV = "UNSLOTH_MODELOPT_FP8_GEMM"
+# Off: ignore the checkpoint's diffusion_step_policy (W8A8 on every step and path; measurement only).
+STEP_POLICY_ENV = "UNSLOTH_MODELOPT_FP8_STEP_POLICY"
 
 RUNTIME_STATIC = "static"
 RUNTIME_DYNAMIC = "dynamic"
@@ -265,7 +268,7 @@ def scan_modelopt_fp8(path: Any) -> Optional[ModelOptFp8Scan]:
         quant_algo = str(config.get("quant_algo") or ""),
         producer = f"{producer.get('name', 'modelopt')} {producer.get('version', '')}".strip(),
     )
-    problem = modelopt_problem(config)
+    problem = modelopt_problem(config) or parse_step_policy(config)[1]
     if problem:
         scan.problems.append(problem)
         return scan
@@ -349,14 +352,50 @@ def gemm_disabled() -> bool:
     return (os.environ.get(GEMM_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
+def step_policy_disabled() -> bool:
+    return (os.environ.get(STEP_POLICY_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+# device index -> {"static": bool, "dynamic": bool}
 _GEMM_PROBE: dict = {}
 
 
-def fp8_gemm_runs(target: Any = None, device: Any = None) -> bool:
-    """Whether the static W8A8 ``torch._scaled_mm`` runs on the target card: CUDA (not ROCm, whose fp8 is the fnuz
-    encoding), sm_89 or newer, bfloat16 compute, and a one-off probe GEMM succeeds."""
+def _probe_gemms(index: int) -> dict:
+    import torch
+
+    found = {ACT_STATIC: False, ACT_DYNAMIC: False}
+    if torch.cuda.get_device_capability(index) < (8, 9) or not hasattr(torch, "_scaled_mm"):
+        return found
+    dev = f"cuda:{index}"
+    a = torch.ones((16, 32), device = dev).to(torch.float8_e4m3fn)
+    b = torch.ones((16, 32), device = dev).to(torch.float8_e4m3fn)
+    try:
+        one = torch.ones((), device = dev, dtype = torch.float32)
+        out = torch._scaled_mm(a, b.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        found[ACT_STATIC] = bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
+    except Exception:  # noqa: BLE001 -- no tensorwise fp8 GEMM on this build / card
+        pass
+    try:
+        rows = torch.ones((16, 1), device = dev, dtype = torch.float32)
+        cols = torch.ones((1, 16), device = dev, dtype = torch.float32)
+        out = torch._scaled_mm(a, b.t(), scale_a = rows, scale_b = cols, out_dtype = torch.bfloat16)
+        found[ACT_DYNAMIC] = bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
+    except Exception:  # noqa: BLE001 -- no rowwise fp8 GEMM on this build / card
+        pass
+    return found
+
+
+def fp8_gemm_runs(
+    target: Any = None,
+    device: Any = None,
+    act: Optional[str] = None,
+) -> bool:
+    """Whether the W8A8 ``torch._scaled_mm`` (tensorwise for ``static``, rowwise for ``dynamic``) runs on the target
+    card: CUDA (not ROCm, whose fp8 is the fnuz encoding), sm_89 or newer, bfloat16 compute, and a one-off probe GEMM
+    returns the exact answer."""
     if gemm_disabled():
         return False
+    act = act or act_mode()
     try:
         import torch
 
@@ -368,20 +407,9 @@ def fp8_gemm_runs(target: Any = None, device: Any = None) -> bool:
             return False
         dev = torch.device(device or getattr(target, "torch_device", None) or "cuda")
         index = dev.index if dev.index is not None else torch.cuda.current_device()
-        if index in _GEMM_PROBE:
-            return _GEMM_PROBE[index]
-        ok = False
-        if torch.cuda.get_device_capability(index) >= (8, 9) and hasattr(torch, "_scaled_mm"):
-            try:
-                a = torch.ones((16, 32), device = f"cuda:{index}").to(torch.float8_e4m3fn)
-                b = torch.ones((16, 32), device = f"cuda:{index}").to(torch.float8_e4m3fn)
-                one = torch.ones((), device = f"cuda:{index}", dtype = torch.float32)
-                out = torch._scaled_mm(a, b.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
-                ok = bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
-            except Exception:  # noqa: BLE001 -- no fp8 GEMM on this build / card
-                ok = False
-        _GEMM_PROBE[index] = ok
-        return ok
+        if index not in _GEMM_PROBE:
+            _GEMM_PROBE[index] = _probe_gemms(index)
+        return bool(_GEMM_PROBE[index].get(act))
     except Exception:  # noqa: BLE001
         return False
 
@@ -393,18 +421,18 @@ def modelopt_runtime(
     fp8_backend: Optional[str] = None,
     fp8_storage: bool = False,
 ) -> str:
-    """The runtime every quantized Linear of this load takes. ``fp8_backend`` / ``fp8_storage``: what Studio's rules
-    for pre-quantized fp8 layers pick on this card and plan (the resident fp8 runtime, fp8 storage); ``keep=False``
-    (the user pinned the bf16 DiT): dequantize."""
+    """The runtime every quantized Linear of this load takes. The W8A8 GEMM wherever it runs (plain buffers, so a
+    streamed plan keeps it too); else what Studio's rules for pre-quantized fp8 layers pick on this card and plan:
+    ``fp8_backend`` (a resident or native fp8 runtime) / ``fp8_storage`` keep the codes stored, otherwise they are
+    dequantized. ``keep=False`` (the user pinned the bf16 DiT): dequantize."""
     if not keep:
         return RUNTIME_DEQUANT
     act = act_mode()
-    if act == ACT_STATIC and fp8_gemm_runs(target):
-        # plain buffers: resident or streamed, as the plan decides
-        return RUNTIME_STATIC
-    if fp8_backend == "torchao" and not gemm_disabled():
+    if fp8_gemm_runs(target, act = act):
         return RUNTIME_DYNAMIC if act == ACT_DYNAMIC else RUNTIME_STATIC
-    if fp8_backend == "native" or fp8_storage:
+    if act == ACT_DYNAMIC and fp8_gemm_runs(target, act = ACT_STATIC):
+        return RUNTIME_STATIC
+    if fp8_backend is not None or fp8_storage:
         return RUNTIME_STORED
     return RUNTIME_DEQUANT
 
@@ -413,18 +441,153 @@ def runtime_keeps_fp8(runtime: str) -> bool:
     return runtime in (RUNTIME_STATIC, RUNTIME_DYNAMIC, RUNTIME_STORED)
 
 
+# Diffusers' fused Cosmos3 decoder layer: the generation (video) tokens' Linears and the reasoner (text) tokens' ones.
+_GENERATION_SUFFIXES = (
+    ".self_attn.to_q",
+    ".self_attn.to_k",
+    ".self_attn.to_v",
+    ".self_attn.to_out",
+)
+_REASONER_SUFFIXES = (
+    ".self_attn.add_q_proj",
+    ".self_attn.add_k_proj",
+    ".self_attn.add_v_proj",
+    ".self_attn.to_add_out",
+)
+
+
+def linear_path(name: str) -> Optional[str]:
+    """``generation`` / ``reasoner`` for a Cosmos3 MoT Linear, else None (the same split diffusers' Cosmos3 FP8 step
+    policy makes)."""
+    if ".mlp_moe_gen." in name or name.endswith(_GENERATION_SUFFIXES):
+        return "generation"
+    if ".mlp." in name or name.endswith(_REASONER_SUFFIXES):
+        return "reasoner"
+    return None
+
+
+@dataclass
+class StepPolicy:
+    """The checkpoint's ``quantization_config.runtime.diffusion_step_policy`` (schema 1, ``first_last_n``): the
+    generation path runs W8A16 (bf16 activations) for the first / last N denoising iterations and W8A8 between; the
+    reasoner path runs W8A16 throughout when ``reasoner`` is ``a16``. The schedule NVIDIA validated for these
+    checkpoints (diffusers' Cosmos3 mixed precision, vLLM-Omni)."""
+
+    first_steps: int = 0
+    last_steps: int = 0
+    overlap_a16: bool = True
+    reasoner_a16: bool = False
+    generation_a16: bool = False
+    steps_seen: int = 0
+
+    def set_step(self, step_index: Any, num_steps: Any) -> None:
+        try:
+            i, n = int(step_index), int(num_steps)
+        except (TypeError, ValueError):
+            self.generation_a16 = False
+            return
+        self.steps_seen += 1
+        if n <= 1 or not 0 <= i < n:
+            self.generation_a16 = False
+            return
+        first, last = i < self.first_steps, i >= n - self.last_steps
+        self.generation_a16 = self.overlap_a16 if (first and last) else (first or last)
+
+    def high_precision(self, path: Optional[str]) -> bool:
+        if path == "reasoner":
+            return self.reasoner_a16
+        if path == "generation":
+            return self.generation_a16
+        return False
+
+
+_POLICY_FIELDS = (
+    "schema_version",
+    "type",
+    "index_space",
+    "scope",
+    "default_mode",
+    "first_steps",
+    "last_steps",
+    "overlap",
+    "reasoner",
+)
+_MODES = ("a16", "native")
+
+
+def parse_step_policy(config: Optional[dict]) -> tuple[Optional[StepPolicy], Optional[str]]:
+    """``(policy, problem)`` from a ModelOpt ``quantization_config``: no policy declared is ``(None, None)`` (native
+    W8A8 every step, as diffusers runs a checkpoint without one); a malformed one is a problem."""
+    runtime = (config or {}).get("runtime") if isinstance(config, dict) else None
+    policy = runtime.get("diffusion_step_policy") if isinstance(runtime, dict) else None
+    if policy is None:
+        return None, None
+    if not isinstance(policy, dict):
+        return None, "its diffusion_step_policy is not a mapping"
+    missing = [f for f in _POLICY_FIELDS if f not in policy]
+    if missing:
+        return None, f"its diffusion_step_policy lacks {', '.join(missing)}"
+    if (
+        policy["schema_version"] != 1
+        or policy["type"] != "first_last_n"
+        or policy["index_space"] != "denoising_loop_iteration"
+        or policy["default_mode"] != "native"
+    ):
+        return None, (
+            "its diffusion_step_policy (schema "
+            f"{policy['schema_version']}, {policy['type']}, {policy['index_space']}, default {policy['default_mode']}) "
+            "is not the first_last_n schedule this loader runs"
+        )
+    try:
+        first, last = policy["first_steps"], policy["last_steps"]
+        modes = (first["mode"], last["mode"], policy["overlap"], policy["reasoner"])
+        if any(m not in _MODES for m in modes) or first["mode"] != "a16" or last["mode"] != "a16":
+            raise ValueError(modes)
+        return (
+            StepPolicy(
+                first_steps = max(0, int(first["count"])),
+                last_steps = max(0, int(last["count"])),
+                overlap_a16 = policy["overlap"] == "a16",
+                reasoner_a16 = policy["reasoner"] == "a16",
+            ),
+            None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"its diffusion_step_policy has unsupported steps / modes ({exc})"
+
+
+def install_step_policy(model: Any, policy: StepPolicy) -> None:
+    """Follow the denoising iteration: the Cosmos3 pipeline opens ``transformer.cache_context(name, step_index=i,
+    num_inference_steps=n)`` around every transformer call, so wrap it to switch the policy before the call."""
+    import contextlib
+
+    original = model.cache_context
+
+    @contextlib.contextmanager
+    def cache_context(name: Any, **kwargs: Any):
+        if "step_index" in kwargs:
+            policy.set_step(kwargs.get("step_index"), kwargs.get("num_inference_steps"))
+        with original(name, **kwargs):
+            yield
+
+    model.cache_context = cache_context
+    model._unsloth_modelopt_step_policy = policy
+
+
 @functools.lru_cache(maxsize = None)
-def static_linear_class():
+def fp8_linear_class():
     """``ModelOptFp8Linear``, defined on first use so this module imports torch-free."""
     import torch
     from torch import nn
     from torch.nn import functional as F
 
     class ModelOptFp8Linear(nn.Module):
-        """W8A8 e4m3 Linear with per-tensor static scales: ``y = (q(x / s_x) @ q_w.T) * s_x * s_w + b``, as
-        ModelOpt's per-tensor fp8 GEMM. The fp8 codes and fp32 scales are integer-view buffers, so a module-wide
-        ``.to(dtype)`` (offload hooks, pipeline casts) never widens or rounds them. Off sm_89+ CUDA (CPU tests, a
-        moved module) the same quantized activations run through a widened GEMM."""
+        """A ModelOpt FP8 Linear: e4m3 codes with one weight scale, run as W8A8 ``torch._scaled_mm`` with the
+        checkpoint's static input scale (``act="static"``, ModelOpt's per-tensor fp8 GEMM) or per-row dynamic
+        activation scales (``act="dynamic"``), and as W8A16 (bf16 activations on the widened weight) where the step
+        policy asks for it. The codes and fp32 scales are integer-view buffers, so a module-wide ``.to(dtype)``
+        (offload hooks, pipeline casts) never widens or rounds them, and the module streams like any other. Off sm_89+
+        CUDA (CPU tests, a moved module) the same quantized activations run through a widened GEMM."""
 
         def __init__(
             self,
@@ -436,6 +599,9 @@ def static_linear_class():
             bias: Any = None,
             compute_dtype: Any = torch.bfloat16,
             fast_accum: bool = True,
+            act: str = ACT_STATIC,
+            path: Optional[str] = None,
+            policy: Optional[StepPolicy] = None,
         ):
             super().__init__()
             if codes.dtype != torch.float8_e4m3fn or tuple(codes.shape) != (
@@ -449,6 +615,9 @@ def static_linear_class():
             self.out_features = int(out_features)
             self.compute_dtype = compute_dtype
             self.fast_accum = bool(fast_accum)
+            self.act = act if act in (ACT_STATIC, ACT_DYNAMIC) else ACT_STATIC
+            self.path = path
+            self.policy = policy
             self.register_buffer("weight_q", codes.contiguous().view(torch.uint8))
             self.register_buffer(
                 "weight_scale",
@@ -461,15 +630,17 @@ def static_linear_class():
             if bias is not None:
                 bias = nn.Parameter(bias.detach().to(compute_dtype), requires_grad = False)
             self.bias = bias
+            # engagement counters (eager forwards): fp8 GEMM calls and W8A16 calls
             self.gemm_calls = 0
+            self.a16_calls = 0
 
         def dequantized_weight(self, dtype: Any) -> Any:
             codes = self.weight_q.view(torch.float8_e4m3fn).to(torch.float32)
             return (codes * self.weight_scale.view(torch.float32)).to(dtype)
 
-        def quantize_input(self, x2: Any) -> Any:
-            """e4m3 codes of ``x / input_scale``, rounded once from float32 (no bf16 double rounding), in row chunks
-            so the float32 copy stays small next to the activation."""
+        def _quantize_static(self, x2: Any) -> Any:
+            """e4m3 codes of ``x / input_scale``, rounded once from float32, in row chunks so the float32 copy stays
+            small next to the activation."""
             scale = self.input_scale.view(torch.float32)
             out = torch.empty(x2.shape, dtype = torch.float8_e4m3fn, device = x2.device)
             step = max(1, _QUANT_CHUNK_ELEMENTS // max(1, self.in_features))
@@ -479,13 +650,26 @@ def static_linear_class():
                 ).clamp_(-FP8_E4M3_MAX, FP8_E4M3_MAX)
             return out
 
+        def _quantize_dynamic(self, x2: Any) -> tuple:
+            """Per-row e4m3 codes and their float32 scales (row amax / 448, floored at 1e-12)."""
+            codes = torch.empty(x2.shape, dtype = torch.float8_e4m3fn, device = x2.device)
+            scales = torch.empty((x2.shape[0], 1), dtype = torch.float32, device = x2.device)
+            step = max(1, _QUANT_CHUNK_ELEMENTS // max(1, self.in_features))
+            for start in range(0, x2.shape[0], step):
+                chunk = x2[start : start + step].to(torch.float32)
+                s = chunk.abs().amax(dim = 1, keepdim = True).clamp_(min = 1e-12) / FP8_E4M3_MAX
+                scales[start : start + step] = s
+                codes[start : start + step] = (chunk / s).clamp_(-FP8_E4M3_MAX, FP8_E4M3_MAX)
+            return codes, scales
+
         def _gemm(self, x2: Any) -> bool:
             if not (x2.is_cuda and x2.shape[0] > 0 and self.weight_q.is_cuda):
                 return False
-            ok = _GEMM_PROBE.get(x2.device.index)
-            if ok is None and not torch.compiler.is_compiling():
-                ok = fp8_gemm_runs(device = x2.device)
-            return bool(ok)
+            probe = _GEMM_PROBE.get(x2.device.index)
+            if probe is None and not torch.compiler.is_compiling():
+                fp8_gemm_runs(device = x2.device, act = self.act)
+                probe = _GEMM_PROBE.get(x2.device.index)
+            return bool((probe or {}).get(self.act))
 
         def forward(self, x: Any) -> Any:
             shape = x.shape
@@ -495,18 +679,33 @@ def static_linear_class():
                 else self.compute_dtype
             )
             x2 = x.reshape(-1, self.in_features)
-            xq = self.quantize_input(x2)
-            s_x = self.input_scale.view(torch.float32)
-            s_w = self.weight_scale.view(torch.float32)
             bias = self.bias
+            if self.policy is not None and self.policy.high_precision(self.path):
+                # W8A16: the activation stays in its dtype, the weight widens (the step policy's a16 mode)
+                if not torch.compiler.is_compiling():
+                    self.a16_calls += 1
+                out = F.linear(
+                    x2.to(out_dtype),
+                    self.dequantized_weight(out_dtype),
+                    None if bias is None else bias.to(out_dtype),
+                )
+                return out.reshape(*shape[:-1], self.out_features)
+            s_w = self.weight_scale.view(torch.float32)
+            if self.act == ACT_DYNAMIC:
+                xq, s_x = self._quantize_dynamic(x2)
+            else:
+                xq, s_x = self._quantize_static(x2), self.input_scale.view(torch.float32)
             if self._gemm(x2):
                 if not torch.compiler.is_compiling():
                     self.gemm_calls += 1
+                rowwise = self.act == ACT_DYNAMIC
                 out = torch._scaled_mm(
                     xq,
                     self.weight_q.view(torch.float8_e4m3fn).t(),
-                    scale_a = s_x.reshape(()),
-                    scale_b = s_w.reshape(()),
+                    scale_a = s_x if rowwise else s_x.reshape(()),
+                    scale_b = s_w.reshape(1, 1).expand(1, self.out_features).contiguous()
+                    if rowwise
+                    else s_w.reshape(()),
                     bias = None if bias is None else bias.to(torch.bfloat16),
                     out_dtype = torch.bfloat16,
                     use_fast_accum = self.fast_accum,
@@ -522,22 +721,25 @@ def static_linear_class():
             return out.reshape(*shape[:-1], self.out_features)
 
         def extra_repr(self) -> str:
-            return f"in_features={self.in_features}, out_features={self.out_features}, w8a8=e4m3 static per-tensor"
+            return (
+                f"in_features={self.in_features}, out_features={self.out_features}, e4m3 W8A8 ({self.act} "
+                f"activation scales), path={self.path}"
+            )
 
     return ModelOptFp8Linear
 
 
-def static_gemm_calls(model: Any) -> int:
-    """Engagement counter: ``torch._scaled_mm`` calls the static fp8 Linears of ``model`` made (eager forwards)."""
-    total = 0
+def fp8_gemm_calls(model: Any) -> dict:
+    """Engagement counters of a ModelOpt FP8 model (eager forwards): ``torch._scaled_mm`` calls and W8A16 calls."""
+    total = {"gemm": 0, "a16": 0}
     for module in getattr(model, "modules", lambda: ())():
-        calls = getattr(module, "gemm_calls", None)
         if (
-            isinstance(calls, int)
+            hasattr(module, "gemm_calls")
             and hasattr(module, "input_scale")
             and hasattr(module, "weight_q")
         ):
-            total += calls
+            total["gemm"] += int(module.gemm_calls)
+            total["a16"] += int(getattr(module, "a16_calls", 0))
     return total
 
 
@@ -583,6 +785,11 @@ def load_modelopt_fp8_transformer(
     fast = _resolve_fast_accum(fast_accum)
     folder = Path(scan.folder)
     config = transformer_cls.load_config(str(folder))
+    policy, _ = parse_step_policy(_as_dict(dict(config).get("quantization_config")))
+    if step_policy_disabled():
+        policy = None
+    # diffusers must not see the ModelOpt config: its quantizer table (and the Cosmos3 pipeline's own FP8 step policy)
+    # would look for ModelOpt's restored modules
     config = {k: v for k, v in dict(config).items() if k != "quantization_config"}
     with init_empty_weights():
         model = transformer_cls.from_config(config)
@@ -596,13 +803,14 @@ def load_modelopt_fp8_transformer(
     modules = dict(model.named_modules())
     state: dict = {}
     layers: dict = {}  # stem -> {"weight": codes, "weight_scale": float, ...}
+    suffixes = (".weight", *_QUANT_SUFFIXES)
     for shard in scan.shards:
         with safe_open(shard, framework = "pt", device = "cpu") as handle:
             for key in handle.keys():
                 stem = next(
                     (
                         key[: -len(s)]
-                        for s in (".weight", *_QUANT_SUFFIXES)
+                        for s in suffixes
                         if key.endswith(s) and key[: -len(s)] in scan.layers
                     ),
                     None,
@@ -620,7 +828,7 @@ def load_modelopt_fp8_transformer(
 
     built = {RUNTIME_STATIC: 0, RUNTIME_DYNAMIC: 0, RUNTIME_STORED: 0, RUNTIME_DEQUANT: 0}
     replacements: dict = {}
-    static_cls = static_linear_class() if runtime == RUNTIME_STATIC else None
+    gemm_cls = fp8_linear_class() if runtime in (RUNTIME_STATIC, RUNTIME_DYNAMIC) else None
     native_cls = None
     if runtime == RUNTIME_STORED:
         from .diffusion_native_quant import native_linear_class
@@ -648,8 +856,8 @@ def load_modelopt_fp8_transformer(
                 stem, w_scale, parts["weight_quantizer._scale"] * FP8_E4M3_MAX, "weight_scale"
             )
         bias = state.pop(stem + ".bias", None)
-        if runtime == RUNTIME_STATIC:
-            replacements[stem] = static_cls(
+        if gemm_cls is not None:
+            replacements[stem] = gemm_cls(
                 module.in_features,
                 module.out_features,
                 codes,
@@ -658,6 +866,9 @@ def load_modelopt_fp8_transformer(
                 bias = bias,
                 compute_dtype = dtype,
                 fast_accum = fast,
+                act = ACT_DYNAMIC if runtime == RUNTIME_DYNAMIC else ACT_STATIC,
+                path = linear_path(stem),
+                policy = policy,
             )
         elif runtime == RUNTIME_STORED:
             dense = torch.nn.Linear(
@@ -675,17 +886,6 @@ def load_modelopt_fp8_transformer(
                 codes = codes,
                 scale = torch.full((module.out_features, 1), w_scale, dtype = torch.float32),
             )
-        elif runtime == RUNTIME_DYNAMIC:
-            from .diffusion_comfy_quant import _fp8_tensor
-
-            weight = _fp8_tensor(
-                stem + ".weight", codes, torch.tensor([w_scale], dtype = torch.float32), dtype, fast
-            )
-            if weight is None:
-                raise ValueError(f"{stem}: this install cannot build Studio's fp8 weight (torchao)")
-            state[stem + ".weight"] = weight
-            if bias is not None:
-                state[stem + ".bias"] = bias
         else:
             state[stem + ".weight"] = (codes.to(torch.float32) * w_scale).to(dtype)
             if bias is not None:
@@ -705,15 +905,15 @@ def load_modelopt_fp8_transformer(
     if ignore:
         import re
         unexpected = [k for k in unexpected if not any(re.search(p, k) for p in ignore)]
+    name = folder.parent.name if folder.name == "transformer" else folder.name
     if missing:
         raise ValueError(
-            f"{folder.parent.name or folder.name} is missing {len(missing)} weight(s) of "
-            f"{transformer_cls.__name__} (e.g. {missing[0]!r})"
+            f"{name} is missing {len(missing)} weight(s) of {transformer_cls.__name__} (e.g. {missing[0]!r})"
         )
     if unexpected:
         raise ValueError(
-            f"{folder.parent.name or folder.name} holds {len(unexpected)} tensor(s) {transformer_cls.__name__} has no "
-            f"place for (e.g. {unexpected[0]!r})"
+            f"{name} holds {len(unexpected)} tensor(s) {transformer_cls.__name__} has no place for "
+            f"(e.g. {unexpected[0]!r})"
         )
     if any(p.device.type == "meta" for p in model.parameters()) or any(
         b.device.type == "meta" for b in model.buffers()
@@ -736,14 +936,22 @@ def load_modelopt_fp8_transformer(
                 if buffer.dtype != want:
                     module._buffers[buffer_name] = buffer.to(want)
     model.eval()
+    if gemm_cls is not None and policy is not None and hasattr(model, "cache_context"):
+        install_step_policy(model, policy)
     kept = built[RUNTIME_STATIC] + built[RUNTIME_DYNAMIC] + built[RUNTIME_STORED]
     info = {
         "runtime": runtime,
-        "act": act_mode() if runtime in (RUNTIME_STATIC, RUNTIME_DYNAMIC) else None,
         "fp8": kept,
         "dequantized": built[RUNTIME_DEQUANT],
         "producer": scan.producer,
         "layers": len(layers),
+        "step_policy": None
+        if policy is None or gemm_cls is None
+        else {
+            "first_steps": policy.first_steps,
+            "last_steps": policy.last_steps,
+            "reasoner_a16": policy.reasoner_a16,
+        },
     }
     try:
         setattr(model, MODELOPT_ATTR, info)
@@ -760,17 +968,24 @@ def load_modelopt_fp8_transformer(
         pass
     if logger is not None:
         logger.info(
-            "diffusion.modelopt_fp8: %s loaded from a %s FP8 checkpoint: %d quantized Linears as %s, "
+            "diffusion.modelopt_fp8: %s loaded from a %s FP8 checkpoint: %d quantized Linears as %s%s; "
             "unquantized modules (%s) at their stored precision",
             transformer_cls.__name__,
             scan.producer or "ModelOpt",
             len(layers),
             {
                 RUNTIME_STATIC: "W8A8 fp8 GEMMs (static input scales)",
-                RUNTIME_DYNAMIC: "W8A8 fp8 GEMMs (dynamic per-row activation scales, torchao)",
+                RUNTIME_DYNAMIC: "W8A8 fp8 GEMMs (dynamic per-row activation scales)",
                 RUNTIME_STORED: "fp8 weights widened per layer in the forward",
                 RUNTIME_DEQUANT: f"{str(dtype).replace('torch.', '')} weights dequantized at load",
             }[runtime],
+            ""
+            if info["step_policy"] is None
+            else (
+                f", W8A16 for the first {policy.first_steps} / last {policy.last_steps} denoising steps"
+                + (" and every reasoner-path call" if policy.reasoner_a16 else "")
+                + " (the checkpoint's step policy)"
+            ),
             ", ".join(scan.ignore) or "none",
         )
     return model
