@@ -30432,11 +30432,12 @@ async def openai_chat_completions(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _admit_tool_access(payload)
     from auth.authentication import request_admitted_without_credential
 
+    # Before the local tool policy, as on /responses and /messages: the linked server applies its own.
     if linked := await linked_instances.resolve(request, payload.model):
         return await _forward_linked(request, "chat/completions", linked, current_subject)
+    _admit_tool_access(payload)
 
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
         request
@@ -36859,7 +36860,6 @@ async def openai_list_models(
         data = local + linked
     if wanted & {"all", "decisions"}:
         from routes.systemone import decision_model_objects
-
         data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 
@@ -37823,8 +37823,8 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Studio's configured embedding model."""
     try:
-        _linked_model = (await request.json()).get("model")
-    except (ValueError, AttributeError):
+        _linked_model = _raw_body_model(await request.json())
+    except (json.JSONDecodeError, ValueError):
         _linked_model = None
     if linked := await linked_instances.resolve(request, _linked_model):
         return await _forward_linked(request, "embeddings", linked, current_subject)

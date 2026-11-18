@@ -40,6 +40,8 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
         set(literal.split())
         for literal in re.findall(r'"([^"\n]*)"', source)
         if {"whitespace-pre-wrap", "rounded-lg"} <= set(literal.split())
+        # A font-mono box is a fixed code sample (the example request), not user text.
+        and "font-mono" not in literal.split()
     ]
     assert text_boxes, "no wrapped, rounded text box in the API monitor"
     for tokens in text_boxes:

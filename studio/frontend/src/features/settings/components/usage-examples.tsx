@@ -437,21 +437,18 @@ function useExampleModelName(keylessOnly: boolean): string | null {
           .then((s) => s.enabled)
           .catch(() => null),
       ])
-        .then(([listed, settings]) => {
+        .then(([models, settings]) => {
           if (cancelled) return true;
           // Linked-instance models ("@name/...") run elsewhere, tools included; the
           // examples describe this server.
-          const models =
-            listed === null
-              ? null
-              : listed.filter((m) => !m.id.startsWith("@"));
-          if (models !== null) setCatalog(models);
+          if (models !== null)
+            setCatalog(models.filter((m) => !m.id.startsWith("@")));
           if (settings !== null) {
             setAutoSwitch(settings);
           }
           // Resident only slows the polling; it never stops it.
           // biome-ignore lint/complexity/useOptionalChain: keep the explicit failed-refresh branch
-          return listed !== null && listed.some((m) => m.loaded);
+          return models !== null && models.some((m) => m.loaded);
         })
         .then((resolved) => {
           if (cancelled) return;

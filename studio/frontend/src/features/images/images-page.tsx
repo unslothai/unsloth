@@ -72,14 +72,14 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
+  refreshLinkedMachines,
+  useLinkedMachinesStore,
+} from "@/features/model-picker/linked/linked-machines";
+import {
   explicitFamily,
   resolvedFamilyOverrideSelection,
   useFamilyOverride,
 } from "@/features/model-picker/components/model-selector/family-override";
-import {
-  refreshLinkedMachines,
-  useLinkedMachinesStore,
-} from "@/features/model-picker/linked/linked-machines";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
@@ -2619,6 +2619,11 @@ export function ImagesPage({
       ? state.instances.find((i) => i.id === imagesMachine)?.name
       : undefined,
   );
+  useEffect(() => {
+    // Forced: the list may be cached from before the instance was removed in Settings.
+    if (imagesMachine) void refreshLinkedMachines(true);
+  }, [imagesMachine]);
+
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
@@ -2627,18 +2632,6 @@ export function ImagesPage({
       // Status is best-effort; a failed poll should not surface an error toast.
     }
   }, [setStatusIfNewest]);
-
-  // A machine removed since it was picked would leave every Images request on a 404 proxy.
-  useEffect(() => {
-    if (!imagesMachine) return;
-    void refreshLinkedMachines().then(() => {
-      const { instances, loadedAt } = useLinkedMachinesStore.getState();
-      if (loadedAt === 0 || instances.some((i) => i.id === imagesMachine)) return;
-      setImagesMachine(null);
-      setImagesMachineState(null);
-      void refreshStatus();
-    });
-  }, [imagesMachine, refreshStatus]);
 
   // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page
   // stays mounted across tab switches, so a batch keeps generating off-tab.
@@ -3698,6 +3691,33 @@ export function ImagesPage({
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
   }, [handleLoad]);
 
+  const switchImagesMachine = useCallback(
+    (machine: string | null) => {
+      setImagesMachine(machine);
+      setImagesMachineState(machine);
+      // The shelf belongs to the old machine: drop it, fence any listing still in flight, refetch.
+      stripEpoch.current += 1;
+      galleryCache.images = [];
+      galleryCache.hasMore = false;
+      setImages([]);
+      setHasMore(false);
+      void loadGallery();
+      void refreshStatus();
+    },
+    [loadGallery, refreshStatus],
+  );
+
+  // A removed linked instance leaves its id stored; once the list has loaded without it, use this machine.
+  const imagesMachineGone = useLinkedMachinesStore(
+    (state) =>
+      imagesMachine !== null &&
+      state.loadedAt > 0 &&
+      !state.instances.some((i) => i.id === imagesMachine),
+  );
+  useEffect(() => {
+    if (imagesMachineGone) switchImagesMachine(null);
+  }, [imagesMachineGone, switchImagesMachine]);
+
   // Every pick supersedes the one before it, whichever route it takes: a staged download
   // outlives its pick, and the direct-local branches call handleLoad rather than loadOrStage,
   // so clearing only inside loadOrStage left the old job free to load the abandoned model. A
@@ -3715,29 +3735,28 @@ export function ImagesPage({
       // A pick from a linked instance loads and generates there; its load fetches what is missing,
       // so it skips this machine's download manager.
       const machine = pickMeta.linkedInstanceId ?? null;
-      const meta: ModelSelectorChangeMeta = machine
-        ? { ...pickMeta, source: "local" }
-        : pickMeta;
       // A Download only selection fetches files; it does not take over the page. Retiring the staged
       // intent and claiming the page for it stranded a load that was already downloading: that model
       // finished downloading and then never loaded, with no toast and nothing to retry from.
       const downloadOnlyPick = modelSelectionAction === "download";
-      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
-      // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
-      // stays interactive during a generation: refusing it there was a silent dead click.
-      if (busy !== null && !downloadOnlyPick) return;
       // The download manager writes to this machine's cache; a linked model fetches what it
       // needs when it loads there.
       if (downloadOnlyPick && machine) {
         toast.error("Download only fetches to this machine. Load a linked model to get it there.");
         return;
       }
-      // After the guard: a refused pick must leave status and gallery on the machine still working.
       if (machine !== getImagesMachine()) {
-        setImagesMachine(machine);
-        setImagesMachineState(machine);
-        void refreshStatus();
+        // Progress, Stop and the gallery all follow the machine, so it never moves under active work.
+        if (busy !== null) return;
+        switchImagesMachine(machine);
       }
+      const meta: ModelSelectorChangeMeta = machine
+        ? { ...pickMeta, source: "local" }
+        : pickMeta;
+      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
+      // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
+      // stays interactive during a generation: refusing it there was a silent dead click.
+      if (busy !== null && !downloadOnlyPick) return;
       if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
@@ -3928,6 +3947,7 @@ export function ImagesPage({
       quant,
       refreshStatus,
       revertPick,
+      switchImagesMachine,
     ],
   );
 
