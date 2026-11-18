@@ -100,8 +100,6 @@ test("a cancel during the status preflight blocks every operation POST", async (
       "the run waits on the status preflight before its first POST",
     );
 
-    // The backend has no active op yet, so its cancel is a no-op; the intent
-    // lives only in the store until the next operation would dispatch.
     await store.requestCancel();
     preflight.resolve({ last_op_seq: 0 });
     await run;
@@ -116,7 +114,6 @@ test("a cancel during the status preflight blocks every operation POST", async (
       ["getExportStatus", "cancelExport", "cleanupExport"],
     );
 
-    // The next run starts clean: runExport resets the recorded cancel intent.
     stub.resetStub();
     await store.runExport(params());
     const rerun = useExportRuntimeStore.getState();
