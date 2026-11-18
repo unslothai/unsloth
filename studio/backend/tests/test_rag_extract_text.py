@@ -218,3 +218,57 @@ def test_an_upright_photo_stays_upright_after_shrinking(rag_home, monkeypatch):
     rag_routes.extract_text(_upload("phone.jpg", out.getvalue()), subject = "owner")
     width, height = Image.open(io.BytesIO(seen[0])).size
     assert height > width and width * height <= rag_routes._IMAGE_MAX_PIXELS
+
+
+def _typed_and_scanned_pdf() -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 100), "Typed first page.")
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+    pix.clear_with(200)
+    scan = doc.new_page()
+    scan.insert_image(scan.rect, pixmap = pix)
+    return doc.tobytes()
+
+
+def test_scanned_pdf_pages_are_read(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    seen = []
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
+    monkeypatch.setattr(
+        captioner, "ocr_pages", lambda pngs: seen.append(sorted(pngs)) or {2: "scanned words"}
+    )
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
+    result = rag_routes.extract_text(
+        _upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner"
+    )
+    assert result["text"] == "Typed first page.\n\nscanned words"
+    assert seen == [[2]]
+    assert _uploads_left() == []
+
+
+def test_scanned_pdf_pages_fall_back_to_tesseract(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
+    monkeypatch.setattr(
+        pdf_ocr, "ocr_pages", lambda path, pages: {n: "tesseract words" for n in pages}
+    )
+    result = rag_routes.extract_text(
+        _upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner"
+    )
+    assert result["text"] == "Typed first page.\n\ntesseract words"
+
+
+def test_unreadable_scanned_pdf_pages_are_not_dropped(rag_home, monkeypatch):
+    from core.rag import captioner, pdf_ocr
+
+    monkeypatch.setattr(captioner, "vision_endpoint", lambda: None)
+    monkeypatch.setattr(pdf_ocr, "ocr_pages", lambda path, pages: {})
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("contract.pdf", _typed_and_scanned_pdf()), subject = "owner")
+    assert exc.value.status_code == 422
+    assert "page 2" in exc.value.detail and "contract.pdf" in exc.value.detail
+    assert _uploads_left() == []

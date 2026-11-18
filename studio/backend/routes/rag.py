@@ -1025,6 +1025,18 @@ def _image_text(path: str) -> str:
         return pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
 
 
+def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int]]:
+    from core.rag import captioner, parsers, pdf_ocr
+
+    scanned = [page.page_number for page in pages if page.needs_ocr]
+    wanted = scanned[: config.OCR_MAX_PAGES]
+    texts = {}
+    if wanted and captioner.vision_endpoint() is not None:
+        texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
+    texts.update(pdf_ocr.ocr_pages(path, [number for number in wanted if number not in texts]))
+    return texts, [number for number in scanned if number not in texts]
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
@@ -1049,6 +1061,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         return {"filename": filename, "text": text, "truncated": False}
     try:
         pages = parsers.parse(stored_path)
+        scanned_text, unread = _scanned_page_text(stored_path, pages)
     except ImportError as exc:
         raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
     # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
@@ -1056,12 +1069,25 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
+    if unread:
+        pages_label = ", ".join(map(str, unread[:20]))
+        if len(unread) > 20:
+            pages_label += f" and {len(unread) - 20} more"
+        raise HTTPException(
+            status_code = 422,
+            detail = f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
+            f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
+            f"installed, and covers at most {config.OCR_MAX_PAGES} pages.",
+        )
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES
     truncated = False
     for page in pages:
-        chunk = page.text.strip().encode("utf-8")
+        original = page.text.strip()
+        scanned = scanned_text.get(page.page_number, "")
+        text = scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
+        chunk = text.encode("utf-8")
         if not chunk:
             continue
         if parts:
