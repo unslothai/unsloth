@@ -111,3 +111,30 @@ def test_an_encoder_that_fits_is_pinned_whole(monkeypatch):
     _setup(monkeypatch, budget_mib = 64, seen = seen)
     s = h3i.make_list_streamer(torch.nn.Module(), _layers(), "cpu", 0, "text_encoder")
     assert isinstance(s, _FakePinned) and len(s.members) == 8
+
+
+def test_the_split_leaves_room_for_what_the_load_parks_after_the_encoder(monkeypatch):
+    seen = []
+    _setup(monkeypatch, budget_mib = 7, seen = seen)
+    s = h3i.make_list_streamer(
+        torch.nn.Module(), _layers(), "cpu", 0, "text_encoder", later_host_bytes = 3 << 20
+    )
+    assert isinstance(s, h3i.SplitListStreamer)
+    assert len(s.parts[0].members) == 4 and s.streamed == 4
+
+
+def test_later_host_bytes_cover_the_parked_pieces_and_the_render():
+    plan = h3i.H3ImagePlan(
+        placement = h3i.PLACE_STREAM, dit_gb = 21.9, te_gb = 27.2, vae_gb = 2.34, vram_gb = 7.6, host_gb = 54.0
+    )
+    assert h3i.te_later_host_bytes(plan) == 0
+    plan.parked = True
+    assert (
+        h3i.te_later_host_bytes(plan)
+        == int(h3i.DIT_REFINER_GB * 1e9) + h3i.TE_PARTIAL_PIN_RENDER_BYTES
+    )
+    plan.vae_parked = True
+    assert (
+        h3i.te_later_host_bytes(plan)
+        == int((h3i.DIT_REFINER_GB + 2.34) * 1e9) + h3i.TE_PARTIAL_PIN_RENDER_BYTES
+    )

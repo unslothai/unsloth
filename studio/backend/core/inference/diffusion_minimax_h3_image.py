@@ -4405,8 +4405,10 @@ def make_list_streamer(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
 ) -> Any:
-    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
+    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it)."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -4427,7 +4429,7 @@ def make_list_streamer(
             members,
             device,
             resident,
-            reserve_bytes = reserve_bytes,
+            reserve_bytes = reserve_bytes + max(0, int(later_host_bytes)),
             max_pin_bytes = max_pin_bytes,
             replaces_counted = replaces_counted,
         )
@@ -4440,6 +4442,21 @@ def make_list_streamer(
 TE_PARTIAL_PIN_ENV = "UNSLOTH_H3_IMAGE_TE_PARTIAL_PIN"
 # kept free of the pin budget for the arena's last slab and allocator rounding
 TE_PARTIAL_PIN_SLACK_BYTES = 1 << 30
+
+
+# Host memory a parked stream-tier render takes past the load (arena slabs, host embedding lookups, decode
+# buffers): Colab L4 at 8 GB, 54 GB host, measured about 2 GB below the free memory left after the load.
+TE_PARTIAL_PIN_RENDER_BYTES = 2 << 30
+
+
+def te_later_host_bytes(plan: "H3ImagePlan") -> int:
+    """Host bytes the load and its renders still take after the encoder is placed: the token refiner (and a parked
+    VAE) parked after it, and a parked render's working memory. A split encoder pin leaves them free, so the host
+    reserve still holds while rendering."""
+    if not plan.parked or plan.placement != PLACE_STREAM:
+        return 0
+    parked = DIT_REFINER_GB + (float(plan.vae_gb) if plan.vae_parked else 0.0)
+    return int(parked * 1e9) + TE_PARTIAL_PIN_RENDER_BYTES
 
 
 def te_partial_pin_enabled() -> bool:
@@ -4572,6 +4589,7 @@ def stream_list(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
 ) -> Any:
     """``make_list_streamer``, registered on the pipe by role."""
     streamer = make_list_streamer(
@@ -4584,6 +4602,7 @@ def stream_list(
         reserve_bytes = reserve_bytes,
         max_pin_bytes = max_pin_bytes,
         replaces_counted = replaces_counted,
+        later_host_bytes = later_host_bytes,
     )
     pipe._unsloth_h3_streamers.append(streamer)
     return streamer
@@ -5285,6 +5304,7 @@ def _place_text_encoder(
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
             replaces_counted = pins_replace_counted(plan),
+            later_host_bytes = te_later_host_bytes(plan),
         )
     return encoder
 
