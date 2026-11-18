@@ -757,8 +757,7 @@ def overlaps_studio_state(path: str, state = None) -> bool:
     )
 
 
-# folder -> (fingerprint, verdict): every launch rescans, the path-text checks dominate and only
-# change when an entry, link target or link count does.
+# folder -> (fingerprint, verdict): the path-text checks dominate every launch's rescan.
 _nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
 
 
@@ -778,8 +777,7 @@ def _tree_fingerprint(folder: str) -> "tuple | None":
                     return None
                 target = nlink = None
                 try:
-                    # is_symlink() is False for a junction; DirEntry.is_junction is 3.12+, so on 3.11
-                    # a junction reads as a plain directory.
+                    # is_symlink() misses a junction, and 3.11 has no DirEntry.is_junction.
                     linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
                     is_dir = entry.is_dir(follow_symlinks = False)
                     if linked or (is_dir and os.name == "nt"):

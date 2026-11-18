@@ -8,7 +8,6 @@ import { SettingsRouteAbsentError } from "./settings-route-absent";
 
 const ROUTE = "/api/settings/trusted-tool-folders";
 
-/** One folder per line; blank lines dropped. The backend resolves and validates each one. */
 export function parseTrustedFolders(text: string): string[] {
   return text
     .split(/\r?\n/)

@@ -983,7 +983,6 @@ function OsSandboxSections() {
   );
 }
 
-/** Owner only, like the route: the folders widen what tool calls run without asking. */
 function TrustedFoldersSection() {
   const t = useT();
   const [saved, setSaved] = useState<string[] | null>(null);
