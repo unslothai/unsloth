@@ -1126,6 +1126,18 @@ def test_revocation_cuts_native_mode(native_link, monkeypatch, side, close_failu
 
 
 @_SKIP_NT
+def test_stopping_the_relays_closes_a_live_native_session(native_link, monkeypatch):
+    # Studio drops its relay manager when the master identity is reset (`cluster leave`) right after
+    # a `cluster remove`: the revocation watch dies with it, so stop() must close the session itself.
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 3600.0)
+    link = native_link()
+    pid_native = _native_ok(link)
+    assert "w1" in link.relay._native_watches
+    link.relay.stop()
+    _assert_back_on_loopback(link, pid_native)
+
+
+@_SKIP_NT
 def test_a_failed_explicit_native_close_keeps_the_revocation_watch(native_link, monkeypatch):
     # Studio's one native_close attempt fails: the watch must survive and retry.
     monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)

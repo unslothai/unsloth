@@ -18307,24 +18307,47 @@ def _split_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
         llama_backend = get_llama_cpp_backend()
         stored = getattr(llama_backend, "extra_args", None)
         source = getattr(llama_backend, "extra_args_requested_source", None)
+        resolved = getattr(llama_backend, "extra_args_source", None)
     except Exception:
         return None
     if not stored:
         return None
     if not source or not source[0]:
         return None
-    requested = str(getattr(request, "model_path", "") or "").strip().lower()
-    stored_id = str(source[0] or "").strip().lower()
-    if not requested or requested != stored_id:
-        return None
-    # The variant is part of the identity: two quants are different files with different sidecars.
-    if (
-        str(getattr(request, "gguf_variant", "") or "").strip().lower()
-        != str(source[1] or "").strip().lower()
-    ):
+    if not _split_extras_share_a_source(request, source, resolved):
         return None
     # Our own split block, shadow-stripped as the route would, so it is never read as a caller --rpc.
     return drop_managed_flags(_shadow_stripped_inherited(request, stored))[0]
+
+
+def _split_extras_share_a_source(request, source, resolved) -> bool:
+    """Whether ``request`` loads the GGUF the stored extras were launched with, decided before the
+    route resolves it, so the planner sees the extras ``_resolve_inherited_extra_args`` will keep."""
+    typed = str(getattr(request, "model_path", "") or "").strip()
+    typed_variant = str(getattr(request, "gguf_variant", "") or "").strip()
+    if not typed:
+        return False
+    # The variant is part of the identity: two quants are different files with different sidecars.
+    if typed.lower() == str(source[0] or "").strip().lower() and (
+        typed_variant.lower() == str(source[1] or "").strip().lower()
+    ):
+        return True
+    # A repo id and its snapshot path, or an omitted variant, name the same GGUF only if they resolve
+    # to the same file; two local files sharing a stem stay two models.
+    canonical = _canonical_model_identity(typed)
+    if canonical not in {
+        _canonical_model_identity(source[0]),
+        _canonical_model_identity((resolved or (None,))[0]),
+    }:
+        return False
+    from core.inference.rpc_serving import cached_repo_file
+
+    try:
+        now = cached_repo_file(typed, typed_variant or None)
+        before = cached_repo_file(str(source[0]), str(source[1] or "") or None)
+    except Exception:
+        return False
+    return bool(now and before and os.path.realpath(now) == os.path.realpath(before))
 
 
 def _hub_access_warnings(token_rejections) -> list[str]:
@@ -18493,7 +18516,8 @@ async def _run_tracked_load_model_impl(
             request = await rpc_serving.before_load(
                 request,
                 _split_slots,
-                inherited_extra_args = _split_inherited_extra_args(request),
+                # Off the loop: deciding it may read the Hub cache.
+                inherited_extra_args = await asyncio.to_thread(_split_inherited_extra_args, request),
                 cancel_event = attempt.cancel_event,
                 confirm_teardown = None if on_reload_confirmed is None else _confirm_split_teardown,
             )
