@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import collections
+import hashlib
 import io
 import json
 import re
+import threading
 from typing import Any, Sequence
 
 from loggers import get_logger
@@ -372,7 +375,36 @@ def flattened_rgb(image, background = None):
     return canvas
 
 
+# Normalized PNG per payload, so a long replay decodes only pictures it has not seen (#18231).
+_PNG_MEMO: "collections.OrderedDict[bytes, str]" = collections.OrderedDict()
+_PNG_MEMO_MAX_CHARS = 64 * 1024 * 1024
+_png_memo_chars = 0
+_PNG_MEMO_LOCK = threading.Lock()
+
+
 def _png_data_url(data: str) -> str | None:
+    global _png_memo_chars
+    if not isinstance(data, str):
+        return _normalized_png_data_url(data)
+    key = hashlib.sha256(data.encode("utf-8", "surrogatepass")).digest()
+    with _PNG_MEMO_LOCK:
+        url = _PNG_MEMO.get(key)
+        if url is not None:
+            _PNG_MEMO.move_to_end(key)
+            return url
+    url = _normalized_png_data_url(data)
+    # Failures are not kept: they are cheap and must keep being refused.
+    if url is not None and len(url) <= _PNG_MEMO_MAX_CHARS:
+        with _PNG_MEMO_LOCK:
+            if key not in _PNG_MEMO:
+                _PNG_MEMO[key] = url
+                _png_memo_chars += len(url)
+                while _png_memo_chars > _PNG_MEMO_MAX_CHARS:
+                    _png_memo_chars -= len(_PNG_MEMO.popitem(last = False)[1])
+    return url
+
+
+def _normalized_png_data_url(data: str) -> str | None:
     # PNG always: llama-server's stb_image reads few formats (MCP servers often send WebP).
     try:
         raw = base64.b64decode(data, validate = True)
@@ -875,10 +907,12 @@ def promote_history(
     vision: bool,
     promoted_out: "list | None" = None,
     reserve_for_caller: bool = False,
+    limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> list[dict]:
-    """Strips the envelope from tool text either way, so text-only models never see base64."""
+    """Strips the envelope from tool text either way, so text-only models never see base64. limit
+    None keeps every picture, for a compacting chat whose tool loop keeps them too."""
     out, _payloads, promoted = _promote(
-        messages, vision, local = False, reserve_for_caller = reserve_for_caller
+        messages, vision, local = False, reserve_for_caller = reserve_for_caller, limit = limit
     )
     if promoted_out is not None:
         promoted_out.extend(promoted)
@@ -943,6 +977,7 @@ def _promote(
     reserve_for_caller: bool = False,
     decode_cache: "dict | None" = None,
     caller_images: Sequence = (),
+    limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
     caller_payloads = (
@@ -965,7 +1000,8 @@ def _promote(
         eligible_replay_images(
             messages,
             local = local,
-            budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved),
+            # Uncapped: every result's window; the per-turn cap applies at decode.
+            budget = len(messages) * MAX_MODEL_IMAGES if limit is None else max(0, limit - _reserved),
             parsed = None if local else parsed,
         )
         if vision
@@ -1072,12 +1108,12 @@ def _promote(
                 index for index, part in enumerate(markers) if id(part) in caller_payloads
             )
         trim_image_turns(out, payloads, keep = protected)
-    else:
+    elif limit is not None:
         # Providers cap images in document order (Gemini: 8, rest dropped), so reserve the attachment's room.
         _caller_parts = len(_all_image_url_parts(out)) - len(promoted) if reserve_for_caller else 0
         trim_image_url_turns(
             out,
-            limit = stepped_keep(_total, max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts)),
+            limit = stepped_keep(_total, max(0, limit - _caller_parts)),
             only = promoted,
         )
     return out, payloads, promoted

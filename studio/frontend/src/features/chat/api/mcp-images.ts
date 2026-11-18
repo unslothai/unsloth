@@ -90,13 +90,16 @@ export function planMcpImageBound(
   {
     localMarkers = false,
     exchanges = batches,
+    uncapped = false,
   }: {
     localMarkers?: boolean;
     // Parallel results of one tool turn, admitted at most the cap between them; defaults to batches.
     exchanges?: readonly (readonly (readonly McpImage[])[])[];
+    // A compacting llama.cpp chat keeps every picture its loop admitted; only the byte bound applies.
+    uncapped?: boolean;
   } = {},
 ): McpImage[][][] {
-  if (!localMarkers) return planSteppedBound(batches, exchanges);
+  if (!localMarkers) return planSteppedBound(batches, exchanges, uncapped);
   let budget = MAX_TOTAL_MCP_IMAGES;
   // Shared across results, bounding total candidates to MAX_TOTAL_MCP_IMAGES plus the allowance.
   let spare = DECODE_FAILURE_ALLOWANCE;
@@ -147,7 +150,10 @@ export function sniffedUndecodable(image: McpImage): boolean {
   } catch {
     return false;
   }
-  head = head.replace(/^[ \t\n\r\x0b\x0c]+/, "").slice(0, 16);
+  // bytes.lstrip(): ASCII whitespace only.
+  let start = 0;
+  while (start < head.length && " \t\n\r\v\f".includes(head[start])) start++;
+  head = head.slice(start, start + 16);
   return UNDECODABLE_PREFIXES.some((prefix) => head.startsWith(prefix));
 }
 
@@ -164,6 +170,7 @@ function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[]
 function planSteppedBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   exchanges: readonly (readonly (readonly McpImage[])[])[],
+  uncapped: boolean,
 ): McpImage[][][] {
   const bounded = (images: readonly McpImage[]) =>
     images.filter(
@@ -179,7 +186,7 @@ function planSteppedBound(
     }
     total += Math.min(MAX_TOTAL_MCP_IMAGES, admitted);
   });
-  let budget = steppedKeep(total, MAX_TOTAL_MCP_IMAGES);
+  let budget = uncapped ? total : steppedKeep(total, MAX_TOTAL_MCP_IMAGES);
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
   const admittedBefore = new Map<number | string, number>();
@@ -226,7 +233,7 @@ function planSteppedBound(
 /** The bound over already-serialized history, for callers holding only the wire shape. */
 export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   messages: readonly T[],
-  { localMarkers = false }: { localMarkers?: boolean } = {},
+  { localMarkers = false, uncapped = false }: { localMarkers?: boolean; uncapped?: boolean } = {},
 ): T[] {
   const out = messages.slice();
   type Carrier = { index: number; text: string; images: McpImage[] };
@@ -273,7 +280,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   });
   const plan = planMcpImageBound(
     batches.map((batch) => batch.map((carrier) => carrier.images)),
-    { localMarkers, exchanges },
+    { localMarkers, exchanges, uncapped },
   );
   batches.forEach((batch, b) =>
     batch.forEach((carrier, r) => {

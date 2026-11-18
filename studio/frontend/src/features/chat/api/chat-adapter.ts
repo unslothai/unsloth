@@ -2119,7 +2119,11 @@ export function findLatestUserVideoBase64(
  */
 function boundMcpImageResults(
   messages: RunMessages,
-  { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
+  {
+    readsImages,
+    localMarkers,
+    uncapped = false,
+  }: { readsImages: boolean; localMarkers: boolean; uncapped?: boolean },
 ): RunMessages {
   type Carrier = { message: number; part: number; images: McpImage[] };
   // One entry per replay exchange, partitioned by the serializer's own rule so they cannot drift.
@@ -2161,6 +2165,7 @@ function boundMcpImageResults(
         {
           localMarkers,
           exchanges: perExchange.map((batch) => batch.map((carrier) => carrier.images)),
+          uncapped,
         },
       )
     : batches.map((batch) => batch.map((): McpImage[] => []));
@@ -2189,6 +2194,28 @@ function boundMcpImageResults(
     });
     return { ...message, content } as typeof message;
   }) as RunMessages;
+}
+
+/** llama.cpp with auto-compaction keeps every tool picture, as the backend's loop does (#18231). */
+function compactingLlamaCppChat(
+  state: Pick<
+    ChatRuntimeState,
+    | "loadedIsGguf"
+    | "activeGgufVariant"
+    | "activeNativePathToken"
+    | "params"
+    | "autoCompactEnabled"
+  >,
+): boolean {
+  return (
+    state.autoCompactEnabled &&
+    isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint: state.params.checkpoint,
+    })
+  );
 }
 
 /** The SELECTED model's vision flag wins (a queued send may target another model); loaded state
@@ -2220,6 +2247,7 @@ export async function buildLocalTokenCountHistory(
   const messages = boundMcpImageResults(rawMessages, {
     readsImages: localTargetReadsImages(runtimeState),
     localMarkers: activeModel?.isGguf === false,
+    uncapped: compactingLlamaCppChat(runtimeState),
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   const outboundMessages = survivingMessages
@@ -5332,6 +5360,7 @@ export function createOpenAIStreamAdapter(
       const messages = boundMcpImageResults(rawMessages, {
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
+        uncapped: !isExternalRequest && compactingLlamaCppChat(runtime),
       });
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&

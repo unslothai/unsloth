@@ -393,7 +393,7 @@ test("the send path bounds the run's own results before serializing them", () =>
   );
   assert.match(
     adapter,
-    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*uncapped: !isExternalRequest && compactingLlamaCppChat\(runtime\),\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
   );
   assert.doesNotMatch(adapter, /boundMcpImageEnvelopes\(outboundMessages/);
   assert.doesNotMatch(adapter, /stripMcpImageEnvelopes\(outboundMessages/);
@@ -645,4 +645,44 @@ test("a trailing SVG result does not shift the uploaded cut", () => {
     (m) => m.role === "tool" && m.name === "computer" && splitMcpImages(m.content).images.length > 0,
   );
   assert.equal(sent.length, 8);
+});
+
+test("a compacting llama.cpp chat uploads every picture its loop admitted", () => {
+  for (const calls of [8, 9, 13, 40]) {
+    const chain = Array.from({ length: calls }, (_, i) => [
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        name: "computer",
+        content: `ok${i}` + mcpImagesEnvelope([{ data: `s${i}`, mimeType: "image/jpeg" }]),
+      },
+    ]).flat();
+    const sent = boundMcpImageEnvelopes(chain, { uncapped: true }).filter(
+      (m) => splitMcpImages(m.content).images.length > 0,
+    );
+    assert.equal(sent.length, calls);
+  }
+});
+
+test("the uncapped upload still honours the byte bound, newest first", () => {
+  const chain = Array.from({ length: 16 }, (_, i) => [
+    { role: "assistant", content: "" },
+    {
+      role: "tool",
+      name: "computer",
+      content: `ok${i}` + mcpImagesEnvelope([{ data: `${i}`.padEnd(1_050_000, "A"), mimeType: "image/png" }]),
+    },
+  ]).flat();
+  const kept = boundMcpImageEnvelopes(chain, { uncapped: true })
+    .map((m, index) => ({ index, n: splitMcpImages(m.content).images.length }))
+    .filter((row) => row.n > 0);
+  assert.equal(kept.length, 11);
+  assert.equal(kept.at(-1)?.index, chain.length - 1);
+});
+
+test("the adapter uncaps the upload only for a compacting llama.cpp chat", () => {
+  assert.match(
+    adapter,
+    /function compactingLlamaCppChat\([\s\S]*?state\.autoCompactEnabled &&\n\s*isServedByLlamaCpp\(/,
+  );
 });
