@@ -2143,10 +2143,8 @@ _INLINE_IMAGE_PLACEHOLDER = "<image data moved out of the text>"
 
 
 def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Base64 images a tool returns inside JSON text ({"mimeType": "image/png", "data": ...}, as
-    Unreal's CaptureViewport does) instead of as image blocks. Left in place they reach the model as
-    megabytes of base64 that are truncated and never seen as a picture; lifted out, they take the
-    image-block path and the text keeps a placeholder."""
+    """Moves {"mimeType": "image/*", "data": <base64>} out of JSON text (Unreal's CaptureViewport) onto
+    the image-block path; left in, the model gets megabytes of truncated base64, never a picture."""
     if (
         len(text) < _INLINE_IMAGE_MIN_CHARS
         or '"mimeType"' not in text
