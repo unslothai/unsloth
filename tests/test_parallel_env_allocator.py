@@ -155,6 +155,16 @@ def test_deprecated_setter_neither_warns_nor_is_skipped(monkeypatch):
     assert not seen
 
 
+def test_cuda_started_reads_torch_without_importing_it(monkeypatch):
+    env = _parallel_env()
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    assert env.cuda_started() is False
+    assert "torch" not in sys.modules
+    for initialized in (False, True):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch("2.14.1", initialized, []))
+        assert env.cuda_started() is initialized
+
+
 _REAL_SETTER = textwrap.dedent(
     """
     import importlib.util, json, os, sys, warnings
@@ -239,3 +249,48 @@ def test_cuda_started_before_zoo_still_gets_expandable_segments():
     if "expandable_segments:True" not in (got["env"] or ""):
         pytest.skip(f"unsloth_zoo keeps expandable_segments off on this host ({got['env']!r})")
     assert got["expandable"], got
+
+
+_SINGLE = textwrap.dedent(
+    """
+    import json, torch
+    calls = []
+    original = torch.cuda.memory._set_allocator_settings
+    torch.cuda.memory._set_allocator_settings = lambda value: (calls.append(value), original(value))[1]
+    import unsloth  # noqa: F401
+    print("RESULT", json.dumps({"started": torch.cuda.is_initialized(), "calls": calls}))
+    """
+)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None or not __import__("torch").cuda.is_available(),
+    reason = "needs a CUDA device",
+)
+def test_single_process_import_leaves_the_allocator_alone():
+    """No torchrun, CUDA not started before `import unsloth`: zoo's own import starts CUDA after exporting its
+    settings, so torch already read them and nothing is applied late (single-GPU runs stay as on main)."""
+    # Unset like a fresh shell: zoo exports its settings into this process at import (another test may have
+    # imported it), and a child inheriting them would see nothing to change.
+    drop = ("LOCAL_RANK", "RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "UNSLOTH_VLLM_STANDBY") + (
+        "PYTORCH_ALLOC_CONF",
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "PYTORCH_HIP_ALLOC_CONF",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in drop}
+    env["PYTHONPATH"] = REPO
+    out = subprocess.run(
+        [sys.executable, "-c", _SINGLE],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        cwd = REPO,
+    )
+    lines = [l for l in out.stdout.splitlines() if l.startswith("RESULT ")]
+    assert lines, out.stdout[-3000:] + out.stderr[-3000:]
+    import json
+
+    got = json.loads(lines[-1][len("RESULT ") :])
+    assert got["started"], got
+    assert got["calls"] == [], got

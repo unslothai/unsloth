@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import warnings
 
 __all__ = [
@@ -335,6 +336,15 @@ def _allocator_env_value(torch, environ):
         if environ.get(name) is not None:
             return environ[name]
     return None
+
+
+def cuda_started():
+    """Whether CUDA (or HIP) has started in this process, without importing torch or starting it."""
+    torch = sys.modules.get("torch")
+    try:
+        return bool(torch is not None and torch.cuda.is_initialized())
+    except Exception:
+        return False
 
 
 def apply_late_allocator_env(before, environ = None):
