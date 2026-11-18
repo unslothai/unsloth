@@ -124,7 +124,8 @@ def _mlx_adapter():
     nodes = [
         n
         for n in ast.parse(source).body
-        if isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm"
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_adapt_for_mlx_vlm", "_own_mlx_video_values")
     ]
     namespace = {"_resize_mlx_vlm_image": lambda image, *a, **k: image}
     exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
@@ -147,6 +148,30 @@ def test_mlx_adapter_reads_a_top_level_video_column():
     out = _mlx_adapter()(_format(_flat_rows()))
     for row, clip in zip(out, CLIPS):
         assert row["videos"] == clip
+
+
+def test_mlx_adapter_keeps_decode_hints_on_the_placeholder():
+    rows = _messages_rows().to_list()
+    rows[0]["messages"][0]["content"][0].update(fps = 4.0, nframes = 12)
+    out = _mlx_adapter()(_format(Dataset.from_list(rows)))
+    assert out[0]["videos"] == CLIPS[0]
+    assert {"type": "video", "fps": 4.0, "nframes": 12} in out[0]["messages"][0]["content"]
+
+
+def test_mlx_adapter_skips_rows_whose_video_column_is_null():
+    def row(parts, clips):
+        return {
+            "messages": [
+                {"role": "user", "content": parts + [{"type": "text", "text": QUESTION}]},
+                {"role": "assistant", "content": [{"type": "text", "text": ANSWERS[0]}]},
+            ],
+            "videos": clips,
+        }
+
+    ds = Dataset.from_list([row([{"type": "video"}], [CLIPS[0]]), row([], None)])
+    out = _mlx_adapter()(_format(ds))
+    assert out[0]["videos"] == [CLIPS[0]]
+    assert "videos" not in out[1]
 
 
 @pytest.mark.parametrize("url", ["https://example.com/clip.mp4", "HTTP://example.com/clip.mov?x=1"])
@@ -579,8 +604,6 @@ def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
 
 
 def test_mlx_video_refusal_only_lives_in_the_residual_routing_guard():
-    """Video datasets still fail loudly, but only when they would be silently
-    dropped: non-VLM models, or an unsloth-zoo without video collation."""
     import ast
     from pathlib import Path
 

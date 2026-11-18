@@ -2639,7 +2639,10 @@ def _adapt_for_mlx_vlm(
                         video = part.get("video")
                         if video is not None:
                             videos.append(video)
-                        new_content.append({"type": "video"})
+                        # Decode hints (fps, nframes, ...) stay: the collator pairs them with the hoisted clip.
+                        new_content.append(
+                            {k: v for k, v in part.items() if k != "video" and v is not None}
+                        )
                     else:
                         new_content.append(part)
                 messages.append({"role": msg["role"], "content": new_content})
@@ -2647,8 +2650,7 @@ def _adapt_for_mlx_vlm(
                 messages.append(msg)
         out = {"messages": messages}
         if images:
-            # `images` (plural) is the collator's unconditional key; `image` only fills bare
-            # image-only placeholders, which a mixed image+video row does not satisfy.
+            # Not `image`: the collator only reads it for image-only placeholders, so mixed rows lose it.
             out["images"] = images[0] if len(images) == 1 else images
         elif "image" in item:
             out["image"] = _resize_mlx_vlm_images(
@@ -2664,19 +2666,16 @@ def _adapt_for_mlx_vlm(
             )
         if videos:
             out["videos"] = videos[0] if len(videos) == 1 else videos
-        elif "videos" in item:
+        elif item.get("videos") is not None:
             out["videos"] = _own_mlx_video_values(item["videos"])
-        elif "video" in item:
+        elif item.get("video") is not None:
             out["videos"] = _own_mlx_video_values(item["video"])
-        placeholders = (
-            sum(
-                1
-                for msg in messages
-                for part in (msg.get("content") or [])
-                if isinstance(part, dict) and part.get("type") == "video"
-            )
-            if any(isinstance(msg.get("content"), list) for msg in messages)
-            else 0
+        placeholders = sum(
+            1
+            for msg in messages
+            if isinstance(msg.get("content"), list)
+            for part in msg["content"]
+            if isinstance(part, dict) and part.get("type") == "video"
         )
         hoisted = out.get("videos")
         hoisted_count = (
@@ -2693,8 +2692,7 @@ def _adapt_for_mlx_vlm(
 
 
 def _own_mlx_video_values(value):
-    """Top-level video columns skip the message-part checks, so re-apply the same
-    refusals (remote URLs, network shares, unmanaged paths) before they reach fetch."""
+    """Top-level video columns bypass the message-part ownership checks, so apply them here."""
     from utils.account_context import current_account
     from utils.datasets.format_conversion import _own_video_part
 
