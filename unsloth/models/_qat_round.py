@@ -38,8 +38,9 @@ DTensors, CPU weights of a model that also has accelerator weights (an offloaded
 quantized on the accelerator at forward time; rounding it on the CPU could differ), and weights whose memory another parameter or buffer also uses (a tied
 lm_head would round the input embedding too).
 
-A weight rewritten in place after this (other than vLLM's exact merged rollout fold / restore) is no
-longer fake quantized; call round_frozen_qat_weights(model) again after such a rewrite.
+Residual inits (LoRA-GA, PiSSA, ...) are skipped: resuming one rebases its frozen base in place. Any other
+weight rewritten in place after this (other than vLLM's exact merged rollout fold / restore) is no longer fake
+quantized.
 UNSLOTH_QAT_ROUND_INPLACE=0 turns it off."""
 
 import heapq
@@ -147,6 +148,14 @@ def round_frozen_qat_weights(model):
         _is_lora_adapter_name = lambda fqn: any(p.startswith("lora_") for p in fqn.split("."))
 
     on_accelerator = any(p.device.type not in ("cpu", "meta") for p in model.parameters())
+    # Residual inits (LoRA-GA, PiSSA, ...) keep a snapshot of their initial factors, and resuming such a checkpoint
+    # into a re-initialized model rebases the frozen base in place (_native_from_converted). A rounded base with its
+    # quantizer off would then train on fake_quant(W) + delta instead of fake_quant(W + delta), so keep those per call.
+    residual = {
+        f"{name}.base_layer" if name else "base_layer"
+        for name, module in model.named_modules()
+        if getattr(module, "_unsloth_initial_lora", None)
+    }
     candidates = []
     for name, module in model.named_modules():
         quantizer = module._modules.get("weight_fake_quantizer")
@@ -158,6 +167,9 @@ def round_frozen_qat_weights(model):
         # plain Linear (lm_head, a frozen layer of a full fine-tune) is converted from memory, where a rounded
         # int8 / cactus weight would requantize to other codes, so it keeps fake quantizing per call.
         if _is_lora_adapter_name(name) or name.rsplit(".", 1)[-1] != "base_layer":
+            continue
+        if name in residual:
+            _skip("residual_init")
             continue
         if module._modules.get("activation_fake_quantizer") is not None:
             _skip("activation_quantized")

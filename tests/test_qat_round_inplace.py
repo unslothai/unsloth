@@ -39,6 +39,7 @@ def _model(
     monkeypatch,
     mode = "1",
     dtype = torch.float32,
+    residual = (),
 ):
     monkeypatch.setenv("UNSLOTH_QAT_ROUND_INPLACE", mode)
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
@@ -61,6 +62,11 @@ def _model(
         )
         only_base = lambda m, fqn: isinstance(m, torch.nn.Linear) and fqn.endswith("base_layer")
         scheme = TorchAOConfig(qat_scheme = None, base_config_and_filter_fns = [(config, only_base)])
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] in residual and hasattr(module, "lora_A"):
+            module._unsloth_initial_lora = {
+                "default": None
+            }  # what snapshot_residual_lora_init leaves
     return _prepare_model_for_qat(model, scheme)
 
 
@@ -157,3 +163,15 @@ def test_trainable_tied_and_plain_weights_skipped(monkeypatch):
     assert inner.out.weight_fake_quantizer.enabled  # plain Linear, converted from memory on export
     assert torch.equal(inner.embed.weight, before)
     assert "qat_round_inplace" not in engaged(model)
+
+
+def test_residual_init_bases_keep_per_call_fake_quant(monkeypatch):
+    # Resuming a LoRA-GA / PiSSA checkpoint rebases the frozen base in place; a rounded base with its quantizer off
+    # would then train on fake_quant(W) + delta, so residual-init layers are never rounded.
+    model = _model("int4", monkeypatch, residual = ("up_proj",))
+    on = {
+        n.rsplit(".", 2)[-2]: m.weight_fake_quantizer.enabled
+        for n, m in model.named_modules()
+        if n.endswith("base_layer")
+    }
+    assert on == {"up_proj": True, "down_proj": False}
