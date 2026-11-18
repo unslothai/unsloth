@@ -78,6 +78,120 @@ def npu_needs_studio_message(npu_path: str, *, no_server: bool) -> str:
     )
 
 
+def npu_detected() -> bool:
+    """Studio's own detector (stdlib only, loaded from its file) sees a supported AMD NPU."""
+    try:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "studio/backend/utils/hardware/npu.py"
+        spec = importlib.util.spec_from_file_location("_unsloth_cli_npu_detect", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return bool(module.detect_amd_npu().get("supported"))
+    except Exception:
+        return False
+
+
+def _unsupported_reason(status: dict) -> Optional[str]:
+    if status.get("supported"):
+        return None
+    hardware = status.get("hardware") or {}
+    if not hardware.get("present"):
+        return "no AMD Ryzen AI NPU was found on this machine"
+    if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
+        return (
+            "the NPU is turned off in this Unsloth Studio. Restart it with "
+            "UNSLOTH_STUDIO_ENABLE_NPU=1 to use the NPU"
+        )
+    return f"{hardware.get('name') or 'this NPU'} is not supported (an XDNA2 NPU is needed)"
+
+
+def npu_status_problem(status: dict) -> Optional[str]:
+    """Why the NPU models can't be listed from this /api/npu/status, or None when they can."""
+    reason = _unsupported_reason(status)
+    if reason:
+        return reason[:1].upper() + reason[1:] + "."
+    if status.get("ready"):
+        return None
+    if status.get("runtime_installed"):
+        detail = status.get("error") or "it has not passed its NPU check yet"
+        return f"The NPU runtime is installed but not enabled: {detail}"
+    return (
+        "FastFlowLM isn't installed. Enable the NPU in Unsloth Studio, or run "
+        "`unsloth chat <id>-FLM`, which installs it."
+    )
+
+
+def npu_display_name(model: dict) -> str:
+    """The name the app shows (npuDisplayName): a converted folder's name, else the repo's."""
+    local = model.get("local")
+    if isinstance(local, dict) and local.get("folder"):
+        parts = [p for p in str(local["folder"]).replace("\\", "/").split("/") if p]
+        # A GGUF export with Q4NX on writes into <save folder>/npu-q4nx.
+        if parts and parts[-1] == "npu-q4nx":
+            parts.pop()
+        if parts:
+            return parts[-1]
+    repo = str(model.get("hf_repo") or "").strip()
+    return repo.rsplit("/", 1)[-1] or str(model.get("id"))
+
+
+def fetch_npu_models(request: Callable[..., object]) -> tuple[dict, list[dict]]:
+    """(status, catalog) from the Studio behind request; NpuCliError when the NPU can't list."""
+    import http.client
+
+    try:
+        status = _read_json(_call(request, "GET", "/api/npu/status", 60))
+        problem = npu_status_problem(status)
+        if problem:
+            raise NpuCliError(problem)
+        models = _read_json(_call(request, "GET", "/api/npu/models", 120)).get("models") or []
+    except (OSError, http.client.HTTPException) as exc:
+        raise NpuCliError(f"Lost the connection to Unsloth Studio: {exc}") from None
+    return status, [m for m in models if isinstance(m, dict)]
+
+
+def _gb(value) -> Optional[str]:
+    return f"{value:.1f} GB" if isinstance(value, (int, float)) else None
+
+
+def format_npu_models(models: list[dict], window_gb) -> list[str]:
+    rows = [("NAME", "ID", "SIZE", "DOWNLOADED", "FITS IN MEMORY")]
+    for model in models:
+        if model.get("downloaded"):
+            downloaded = "yes"
+        elif isinstance(model.get("resume_percent"), int):
+            downloaded = f"partly ({model['resume_percent']}%)"
+        else:
+            downloaded = "no"
+        fits = model.get("fits_memory")
+        if fits is True:
+            fit = "yes"
+        elif fits is False:
+            needed = _gb(model.get("memory_needed_gb"))
+            fit = f"no, needs {needed}" if needed else "no"
+        else:
+            fit = "unknown"
+        rows.append(
+            (
+                npu_display_name(model),
+                str(model.get("id")),
+                _gb(model.get("size_gb")) or "?",
+                downloaded,
+                fit,
+            )
+        )
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
+    lines = []
+    window = _gb(window_gb)
+    if window:
+        lines += [f"Memory the NPU can map on this PC: {window}", ""]
+    for row in rows:
+        lines.append("  ".join([*(cell.ljust(w) for cell, w in zip(row, widths)), row[-1]]))
+    return lines
+
+
 def _call(request: Callable[..., object], method: str, path: str, timeout: float):
     """Open `path`, turning an HTTP error into the server's own message."""
     import urllib.error
@@ -115,19 +229,8 @@ def _prepare_npu_model(
 ) -> str:
     model_id = model_path[len(NPU_MODEL_PREFIX) :]
     status = _read_json(_call(request, "GET", "/api/npu/status", 60))
-    if not status.get("supported"):
-        hardware = status.get("hardware") or {}
-        if not hardware.get("present"):
-            reason = "no AMD Ryzen AI NPU was found on this machine"
-        elif hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
-            reason = (
-                "the NPU is turned off in this Unsloth Studio. Restart it with "
-                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use the NPU"
-            )
-        else:
-            reason = (
-                f"{hardware.get('name') or 'this NPU'} is not supported (an XDNA2 NPU is needed)"
-            )
+    reason = _unsupported_reason(status)
+    if reason:
         raise NpuCliError(f"{model_id} runs on the AMD NPU, but {reason}.")
     if not status.get("ready"):
         echo("Enabling the NPU runtime (Lemonade and FastFlowLM, about 47 MB)...")
