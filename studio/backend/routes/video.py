@@ -488,6 +488,8 @@ async def load_video_model_gated(
                 memory_mode = request.memory_mode,
                 speed_mode = request.speed_mode,
                 attention_backend = request.attention_backend,
+                # Only when set: older engines and test doubles take no such argument.
+                **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 transformer_quant = request.transformer_quant,

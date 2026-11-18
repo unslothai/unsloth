@@ -107,11 +107,14 @@ def install_h3_image_speed(
     plan: Any,
     device: Any,
     logger: Any = None,
+    int8_policy: Any = None,
 ) -> tuple:
-    """Engage the levers after placement, before the first forward; returns the engaged names, never raises."""
+    """Engage the levers after placement, before the first forward; returns the engaged names, never raises.
+    ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (its ``on`` forces the INT8 kernel like the
+    env switch ``1``, its ``off`` keeps it off)."""
     levers: list = []
     try:
-        levers = _install(pipe, plan, device, logger)
+        levers = _install(pipe, plan, device, logger, int8_policy)
     except Exception as exc:  # noqa: BLE001 - an optimisation: the stock path stays
         if logger is not None:
             logger.warning("diffusion.minimax_h3_image: speed levers skipped: %s", exc)
@@ -138,7 +141,13 @@ def _dit_streamer_keeps_parameters(pipe: Any) -> bool:
     return bool(streamers) and not any(isinstance(s, ModuleListStreamer) for s in streamers)
 
 
-def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
+def _install(
+    pipe: Any,
+    plan: Any,
+    device: Any,
+    logger: Any,
+    int8_policy: Any = None,
+) -> list:
     import torch
 
     transformer = getattr(pipe, "transformer", None)
@@ -189,14 +198,20 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         backend = h3_attention_backend(backend, requested = None, target = target)
     except Exception:  # noqa: BLE001 - keep the generic pick
         pass
-    engaged = apply_attention_backend(pipe, backend, logger = logger, target = target)
+    engaged = apply_attention_backend(
+        pipe,
+        backend,
+        logger = logger,
+        target = target,
+        **({"int8_policy": int8_policy} if int8_policy is not None else {}),
+    )
     if engaged:
         levers.append(f"attention={engaged}")
     from . import diffusion_int8_attention as int8_attention
 
     fused = engaged in ("_native_cudnn", "_native_flash")
     # the env switch also engages over a default SDPA pick (sm75, gfx1151), with the stock q/k norm + RoPE
-    int8_forced = int8_attention.mode() == "force"
+    int8_forced = int8_attention.mode(int8_policy) == "force"
     if (
         (fused or int8_forced)
         and not fp16_contract
@@ -217,7 +232,12 @@ def _install(pipe: Any, plan: Any, device: Any, logger: Any) -> list:
         if shared_qkv_count(transformer):
             levers.append("h3_shared_qkv_quant")
         if int8_forced and int8_attention.install_int8_attention(
-            transformer, device = dev, dtype = dtype, force = True, logger = logger
+            transformer,
+            device = dev,
+            dtype = dtype,
+            force = True,
+            logger = logger,
+            **({"policy": int8_policy} if int8_policy is not None else {}),
         ):
             levers.append("h3_int8_attention")
     if not compile_enabled():
