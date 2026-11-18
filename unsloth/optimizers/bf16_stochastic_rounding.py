@@ -4,12 +4,24 @@
 """bfloat16 full finetuning: step bfloat16 weights in float32, round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
 
 bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller than a weight's spacing.
+
+On CUDA with Triton, torch AdamW weights take one kernel per weight: read the bfloat16 weight, gradient and
+moments, do AdamW's float32 arithmetic in registers, write all three back with stochastic rounding (Philox
+seeded by (param index, step), so resumes and DDP replicas draw alike). bitsandbytes keeps its own 8-bit
+state, so its weights still step a float32 copy, rounded back in one pass. UNSLOTH_BF16_SR_FUSED=0 keeps
+the float32-copy route with torch.randint draws everywhere.
 """
 
 import os
 import types
 
 import torch
+
+try:
+    import triton
+    import triton.language as tl
+except Exception:
+    triton = None
 
 __all__ = [
     "enable_bf16_stochastic_rounding",
@@ -24,6 +36,112 @@ _CHUNK = 1 << 22
 def bf16_stochastic_rounding_enabled():
     value = os.environ.get("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "1").strip().lower()
     return value not in ("0", "false", "no", "off")
+
+
+def _fused_enabled():
+    """UNSLOTH_BF16_SR_FUSED=0 keeps the float32-copy path (torch.randint draws) on CUDA too."""
+    value = os.environ.get("UNSLOTH_BF16_SR_FUSED", "1").strip().lower()
+    return triton is not None and value not in ("0", "false", "no", "off")
+
+
+if triton is not None:
+
+    @triton.jit
+    def _round_bf16(x, random):
+        # Up with probability low / 2**16: E[result] = x. Same law as (bits + U[0, 2**16)) & -65536.
+        bits = x.to(tl.uint32, bitcast = True)
+        low = bits & 65535
+        upper = bits & 4294901760
+        special = (bits & 2139095040) == 2139095040
+        rounded = tl.where((random & 65535) < low, upper + 65536, upper)
+        return tl.where(special, bits, rounded).to(tl.float32, bitcast = True).to(tl.bfloat16)
+
+    @triton.jit(do_not_specialize = ["N", "SEED"])
+    def _round_kernel(DST, SRC, N, SEED, BLOCK: tl.constexpr):
+        i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        valid = i < N
+        x = tl.load(SRC + i, valid, 0).to(tl.float32)
+        # Lane 0 of Philox(SEED, element index): what the fused AdamW kernel uses for the weight.
+        r0, _, _, _ = tl.randint4x(SEED, i)
+        tl.store(DST + i, _round_bf16(x, r0), valid)
+
+    @triton.jit(do_not_specialize = ["N", "SEED"])
+    def _adamw_kernel(
+        P,
+        G,
+        M,
+        V,
+        N,
+        SEED,
+        DECAY,  # 1 - lr * weight_decay
+        W1,  # 1 - beta1
+        B2,
+        W2,  # 1 - beta2
+        NEG_STEP,  # -lr / (1 - beta1**t)
+        BC2_SQRT,  # sqrt(1 - beta2**t)
+        EPS,
+        BLOCK: tl.constexpr,
+    ):
+        # torch.optim.AdamW's foreach float32 arithmetic, op for op, then one rounding per output.
+        i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        valid = i < N
+        p = tl.load(P + i, valid, 0).to(tl.float32)
+        g = tl.load(G + i, valid, 0).to(tl.float32)
+        m = tl.load(M + i, valid, 0).to(tl.float32)
+        v = tl.load(V + i, valid, 0).to(tl.float32)
+        p = p * DECAY
+        m = m + W1 * (g - m)
+        v = v * B2
+        v = v + W2 * g * g
+        denom = tl.div_rn(tl.sqrt_rn(v), BC2_SQRT) + EPS
+        p = p + NEG_STEP * tl.div_rn(m, denom)
+        r0, r1, r2, _ = tl.randint4x(SEED, i)
+        tl.store(P + i, _round_bf16(p, r0), valid)
+        tl.store(M + i, _round_bf16(m, r1), valid)
+        tl.store(V + i, _round_bf16(v, r2), valid)
+
+
+_BLOCK = 1024
+
+
+def _grid(n):
+    return ((n + _BLOCK - 1) // _BLOCK,)
+
+
+_TRITON_OK = {}
+
+
+def _triton_ok(device):
+    """Compile and run both kernels once per device; any failure keeps the float32-copy route there."""
+    key = str(device)
+    if key not in _TRITON_OK:
+        try:
+            with torch.cuda.device(device):
+                p, g, m, v = (torch.zeros(2, dtype = torch.bfloat16, device = device) for _ in range(4))
+                seed = 1 << 40  # the int64 specialisation real seeds use
+                _adamw_kernel[(1,)](
+                    p, g, m, v, 2, seed, 1.0, 0.1, 0.999, 0.001, -1e-3, 1.0, 1e-8,
+                    BLOCK = _BLOCK, enable_fp_fusion = False,
+                )  # fmt: skip
+                _round_kernel[(1,)](
+                    p, torch.ones(2, device = device), 2, seed, BLOCK = _BLOCK, enable_fp_fusion = False
+                )
+                torch.cuda.synchronize(device)
+            _TRITON_OK[key] = bool(p.float().eq(1).all().item())
+        except Exception as exc:
+            print(
+                f"Unsloth: one-pass bfloat16 stochastic rounding is unavailable on {device} ({exc})."
+            )
+            _TRITON_OK[key] = False
+    return _TRITON_OK[key]
+
+
+def _round_cuda_(dst, src, seed):
+    n = src.numel()
+    if n:
+        with torch.cuda.device(dst.device):
+            _round_kernel[_grid(n)](dst, src, n, seed, BLOCK = _BLOCK, enable_fp_fusion = False)
+    return dst
 
 
 def stochastic_round_to_bf16_(
@@ -72,20 +190,41 @@ def _generator(optimizer, device, seed):
     return generators[key]
 
 
-def _reseed(optimizer, p, seed):
-    """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would."""
+def _index(optimizer, p):
     index = optimizer.__dict__.setdefault("_unsloth_sr_index", {})
-    i = index.setdefault(id(p), len(index))
+    return index.setdefault(id(p), len(index))
+
+
+def _seed_for(optimizer, p, seed, step):
+    """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would."""
+    return (int(seed) + 0x5EED + _index(optimizer, p) * 1000003 + int(step) * 2654435761) & (
+        0x7FFFFFFFFFFFFFFF
+    )
+
+
+def _step_of(optimizer, p):
     step = (optimizer.state.get(p) or {}).get("step", 0)
-    step = int(step.item()) if torch.is_tensor(step) else int(step)
+    return int(step.item()) if torch.is_tensor(step) else int(step)
+
+
+def _reseed(optimizer, p, seed):
     g = _generator(optimizer, p.device, seed)
-    g.manual_seed((int(seed) + 0x5EED + i * 1000003 + step * 2654435761) & 0x7FFFFFFFFFFFFFFF)
+    g.manual_seed(_seed_for(optimizer, p, seed, _step_of(optimizer, p)))
     return g
 
 
 class _Float32Step:
-    def __init__(self, optimizer, p, seed):
+    def __init__(
+        self,
+        optimizer,
+        p,
+        seed,
+        triton_round = False,
+    ):
         self.optimizer, self.p, self.seed = optimizer, p, seed
+        self.triton_round = (
+            triton_round and p.device.type == "cuda" and _fused_enabled() and _triton_ok(p.device)
+        )
 
     def __enter__(self):
         p = self.p
@@ -101,7 +240,12 @@ class _Float32Step:
         p.grad = None
         p.data = self.data
         if exc[0] is None:
-            stochastic_round_to_bf16_(self.data, stepped, _reseed(self.optimizer, p, self.seed))
+            if self.triton_round:
+                seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
+                _round_cuda_(self.data, stepped, seed)
+                _count(self.optimizer, "_unsloth_sr_triton_rounds")
+            else:
+                stochastic_round_to_bf16_(self.data, stepped, _reseed(self.optimizer, p, self.seed))
         p.grad = self.grad
         return False
 
@@ -139,7 +283,8 @@ def _wrap_bitsandbytes(optimizer, tracked, seed):
     def update_step(self, group, p, gindex, pindex):
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
-        with _Float32Step(self, p, seed):
+        # bitsandbytes keeps its own 8-bit state and writes p in place: step a float32 copy, round it in one pass.
+        with _Float32Step(self, p, seed, triton_round = True):
             return original(group, p, gindex, pindex)
 
     optimizer.update_step = types.MethodType(update_step, optimizer)
@@ -163,6 +308,14 @@ def _wrap_torch(optimizer, tracked, seed):
                 if rest:
                     self.param_groups = [dict(group, params = rest)]
                     original()
+                for p in mine:  # indices in parameter order, whichever route steps them
+                    _index(self, p)
+                if mine and _fused_group(self, group):
+                    fused = [p for p in mine if _fused_param(self, p)]
+                    if fused:
+                        _fused_adamw_step(self, group, fused, seed)
+                        done = {id(p) for p in fused}
+                        mine = [p for p in mine if id(p) not in done]
                 for p in mine:
                     self.param_groups = [dict(group, params = [p])]
                     state = self.state.get(p)
@@ -176,6 +329,147 @@ def _wrap_torch(optimizer, tracked, seed):
         return loss
 
     optimizer.step = types.MethodType(step, optimizer)
+
+
+def _count(
+    optimizer,
+    name,
+    n = 1,
+):
+    optimizer.__dict__[name] = optimizer.__dict__.get(name, 0) + n
+
+
+def _float(x):
+    if torch.is_tensor(x):
+        if x.device.type != "cpu" or x.numel() != 1:
+            return None
+        x = x.item()
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fused_group(optimizer, group):
+    """Groups the one-pass kernel reproduces: AdamW (or Adam without L2 decay), float hyperparameters."""
+    if not _fused_enabled():
+        return False
+    if group.get("amsgrad") or group.get("maximize") or group.get("differentiable"):
+        return False
+    if group.get("capturable"):
+        return False
+    betas = group.get("betas", (0.9, 0.999))
+    values = [
+        _float(group.get("lr")),
+        _float(group.get("eps")),
+        _float(group.get("weight_decay", 0)),
+    ]
+    values += [_float(b) for b in betas]
+    if len(betas) != 2 or any(v is None for v in values):
+        return False
+    decoupled = group.get("decoupled_weight_decay", None)
+    if decoupled is None:  # torch < 2.7: AdamW groups carry no flag, the class decides
+        decoupled = isinstance(optimizer, torch.optim.AdamW)
+    return bool(decoupled) or values[2] == 0
+
+
+def _fused_param(optimizer, p):
+    g = p.grad
+    if (
+        p.device.type != "cuda"
+        or g is None
+        or g.is_sparse
+        or g.layout != torch.strided
+        or g.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        or g.device != p.device
+        or g.shape != p.shape
+        or not g.is_contiguous()
+        or not _triton_ok(p.device)
+    ):
+        return False
+    state = optimizer.state.get(p)
+    if not state:
+        return True
+    for key in ("exp_avg", "exp_avg_sq"):
+        value = state.get(key)
+        if (
+            not torch.is_tensor(value)
+            or value.dtype != torch.bfloat16
+            or value.shape != p.shape
+            or value.device != p.device
+            or not value.is_contiguous()
+        ):
+            return False  # e.g. float32 moments from a checkpoint: the float32 route converts them
+    return torch.is_tensor(state.get("step")) and state["step"].numel() == 1
+
+
+def _scalar_dtype():
+    try:
+        from torch.optim.optimizer import _get_scalar_dtype
+        return _get_scalar_dtype()
+    except Exception:
+        return torch.float32
+
+
+def _fused_adamw_step(optimizer, group, params, seed):
+    """One kernel per weight: AdamW in float32 registers, weight and both bfloat16 moments rounded stochastically."""
+    lr, eps, weight_decay = (_float(group[k]) for k in ("lr", "eps", "weight_decay"))
+    beta1, beta2 = (_float(b) for b in group["betas"])
+    on_device = bool(group.get("fused") or group.get("capturable"))
+    states = []
+    for p in params:
+        state = optimizer.state[p]
+        if not state:  # what torch.optim.AdamW creates on a first step
+            state["step"] = (
+                torch.zeros((), dtype = _scalar_dtype(), device = p.device)
+                if on_device
+                else torch.tensor(0.0, dtype = _scalar_dtype())
+            )
+            state["exp_avg"] = torch.zeros_like(p, memory_format = torch.preserve_format)
+            state["exp_avg_sq"] = torch.zeros_like(p, memory_format = torch.preserve_format)
+        states.append(state)
+    steps = [state["step"] for state in states]
+    cpu = [s for s in steps if s.device.type == "cpu"]
+    dev = [s for s in steps if s.device.type != "cpu"]
+    if cpu:
+        torch._foreach_add_(cpu, 1)
+    if dev:
+        torch._foreach_add_(dev, 1)
+    # One host read per device for its step counters (torch's fused AdamW keeps them on the GPU).
+    values = {}
+    for device in {s.device for s in dev}:
+        here = [s for s in dev if s.device == device]
+        values.update(zip(map(id, here), torch.stack([s.float() for s in here]).tolist()))
+    decay = 1 - lr * weight_decay
+    for p, state, step in zip(params, states, steps):
+        t = step.item() if step.device.type == "cpu" else values[id(step)]
+        bc1 = 1 - beta1**t
+        bc2 = 1 - beta2**t
+        n = p.numel()
+        if not n:
+            continue
+        with torch.cuda.device(p.device):
+            _adamw_kernel[_grid(n)](
+                p.data,
+                p.grad,
+                state["exp_avg"],
+                state["exp_avg_sq"],
+                n,
+                _seed_for(optimizer, p, seed, int(t)),
+                decay,
+                1 - beta1,
+                beta2,
+                1 - beta2,
+                (lr / bc1) * -1,
+                bc2**0.5,
+                eps,
+                BLOCK = _BLOCK,
+                enable_fp_fusion = False,
+            )
+    increment = getattr(torch.autograd.graph, "increment_version", None)
+    if increment is not None:
+        increment([p.data for p in params])
+    _count(optimizer, "_unsloth_sr_fused_steps", len(params))
 
 
 def _kind(optimizer):
