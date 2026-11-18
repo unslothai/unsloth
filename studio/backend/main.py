@@ -2016,7 +2016,12 @@ class MaxBodyMiddleware:
         if declared is not None and await self._large_body_refused(scope, path, declared):
             await _send_401(send)
             return
-        if declared is not None:
+        # Only a declared size over the limit ran the credential check above.
+        if (
+            declared is not None
+            and self.preauth_max_bytes is not None
+            and declared > self.preauth_max_bytes
+        ):
             caller_checked = True
 
         chunks: list = []
@@ -2068,6 +2073,13 @@ class MaxBodyMiddleware:
                     )(scope, receive, send)
                     return
             limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
+            # A small compressed body skipped the credential check above; bound what it decodes to.
+            if (
+                not caller_checked
+                and self.preauth_max_bytes is not None
+                and await self._large_body_refused(scope, path, limit)
+            ):
+                limit = self.preauth_max_bytes
             try:
                 async with _zstd_decode_gate():
                     body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)

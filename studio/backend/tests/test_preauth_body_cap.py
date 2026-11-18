@@ -170,3 +170,27 @@ def test_chunked_body_with_small_content_length_is_still_checked(main_module, pa
     status, seen = _drive(main_module, path, headers, _BIG, declared = False)
     assert status in (401, 411)
     assert seen["inner_bytes"] is None
+
+
+def _zstd_or_skip():
+    try:
+        from compression import zstd  # novermin
+    except ImportError:
+        zstd = pytest.importorskip("backports.zstd")
+    return zstd
+
+
+@pytest.mark.parametrize("signed_in", [False, True])
+def test_zstd_body_decodes_past_the_cap_only_for_a_credential(main_module, signed_in):
+    zstd = _zstd_or_skip()
+    packed = zstd.compress(b"0" * (8 * _MIB))
+    assert len(packed) < _MIB
+    headers = {"Content-Encoding": "zstd"}
+    if signed_in:
+        headers["Authorization"] = f"Bearer {_session_token()}"
+    status, seen = _drive(main_module, "/v1/systemone", headers, [packed])
+    if signed_in:
+        assert (status, seen["inner_bytes"]) == (200, 8 * _MIB)
+    else:
+        assert status == 413
+        assert seen["inner_bytes"] is None
