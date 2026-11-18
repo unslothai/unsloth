@@ -15,7 +15,6 @@ from pathlib import Path
 
 PAIR = (("usearch", "2.26.6"), ("numkong", "7.8.6"))
 PYTHONS = ("cp311", "cp312", "cp313", "cp314")
-MIRROR = "https://github.com/unslothai/unsloth/releases/download/HNSW-Wheels/"
 OUT = Path(__file__).resolve().parents[1] / "studio" / "hnsw_prebuilt_pins.json"
 
 
@@ -46,7 +45,6 @@ def _wheels(name: str, version: str) -> list[dict]:
 def build() -> dict:
     return {
         "format": 1,
-        "mirror": MIRROR,
         "packages": {
             name: {"version": version, "wheels": _wheels(name, version)} for name, version in PAIR
         },

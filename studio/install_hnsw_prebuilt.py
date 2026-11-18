@@ -310,14 +310,11 @@ def _verified(path: Path, wheel: dict) -> bool:
 
 
 def _sources(wheel: dict, catalog: dict) -> list[tuple[str, str]]:
-    # PyPI, then our mirror; UNSLOTH_HNSW_MIRROR replaces ours and goes first. Same pinned bytes.
-    own = os.environ.get("UNSLOTH_HNSW_MIRROR", "").strip()
-    mirror = own or catalog.get("mirror", "")
-    out = []
+    # The exact PyPI file; UNSLOTH_HNSW_MIRROR (an organisation's own copy) goes first. Same pinned bytes.
+    mirror = os.environ.get("UNSLOTH_HNSW_MIRROR", "").strip()
+    out = [("mirror", mirror.rstrip("/") + "/" + wheel["filename"])] if mirror else []
     if not _env_flag("UNSLOTH_HNSW_PYPI", _FALSY):
         out.append(("pypi", wheel["url"]))
-    if mirror:
-        out.insert(0 if own else len(out), ("mirror", mirror.rstrip("/") + "/" + wheel["filename"]))
     return out
 
 

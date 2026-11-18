@@ -1,6 +1,5 @@
 {
  "format": 1,
- "mirror": "https://github.com/unslothai/unsloth/releases/download/HNSW-Wheels/",
  "packages": {
   "numkong": {
    "version": "7.8.6",

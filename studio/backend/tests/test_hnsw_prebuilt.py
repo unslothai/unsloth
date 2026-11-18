@@ -105,16 +105,24 @@ def _serve(monkeypatch, responses):
     return calls
 
 
-def test_pypi_comes_first_and_the_mirror_serves_when_pypi_is_blocked(tmp_path, monkeypatch):
+def test_pypi_is_the_only_default_source_and_a_cached_wheel_needs_no_network(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_HNSW_MIRROR", raising = False)
     wheel = _fake_wheel(tmp_path)
-    mirrored = "https://mirror.example/" + wheel["filename"]
+    calls = _serve(monkeypatch, {wheel["url"]: b"wheel-bytes"})
+    path, source = hp.obtain(wheel, CATALOG, tmp_path, 1e18, True)
+    assert source == "pypi" and path.read_bytes() == b"wheel-bytes"
+    assert calls == [wheel["url"]] and "mirror" not in CATALOG
+    assert hp.obtain(wheel, CATALOG, tmp_path, 1e18, False)[1] == "cache"
+
+
+def test_an_organisation_mirror_serves_when_pypi_is_blocked(tmp_path, monkeypatch):
+    wheel = _fake_wheel(tmp_path)
+    monkeypatch.setenv("UNSLOTH_HNSW_MIRROR", "https://corp.example/hnsw/")
+    mirrored = "https://corp.example/hnsw/" + wheel["filename"]
     calls = _serve(monkeypatch, {mirrored: b"wheel-bytes"})
-    path, source = hp.obtain(wheel, {"mirror": "https://mirror.example/"}, tmp_path, 1e18, True)
-    assert source == "mirror" and path.read_bytes() == b"wheel-bytes"
-    assert calls == [wheel["url"], mirrored]
-    assert (
-        hp.obtain(wheel, {"mirror": "https://mirror.example/"}, tmp_path, 1e18, False)[1] == "cache"
-    )
+    monkeypatch.setenv("UNSLOTH_HNSW_PYPI", "0")
+    path, source = hp.obtain(wheel, CATALOG, tmp_path, 1e18, True)
+    assert source == "mirror" and path.read_bytes() == b"wheel-bytes" and calls == [mirrored]
 
 
 def test_an_explicit_mirror_is_tried_before_pypi(tmp_path, monkeypatch):
@@ -127,12 +135,13 @@ def test_an_explicit_mirror_is_tried_before_pypi(tmp_path, monkeypatch):
 
 def test_bytes_that_do_not_match_the_pin_are_rejected_and_deleted(tmp_path, monkeypatch):
     wheel = _fake_wheel(tmp_path)
+    monkeypatch.setenv("UNSLOTH_HNSW_MIRROR", "https://corp.example/hnsw")
     _serve(
         monkeypatch,
-        {wheel["url"]: b"tampered!!!", "https://mirror.example/" + wheel["filename"]: b"short"},
+        {wheel["url"]: b"tampered!!!", "https://corp.example/hnsw/" + wheel["filename"]: b"short"},
     )
     with pytest.raises(RuntimeError, match = "sha256"):
-        hp.obtain(wheel, {"mirror": "https://mirror.example/"}, tmp_path, 1e18, True)
+        hp.obtain(wheel, CATALOG, tmp_path, 1e18, True)
     assert not list(tmp_path.iterdir())
     (tmp_path / wheel["filename"]).write_bytes(b"corrupt-cache")
     with pytest.raises(FileNotFoundError):

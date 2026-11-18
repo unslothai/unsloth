@@ -68,27 +68,21 @@ def test_s3_sdk_is_only_in_the_s3_extra():
     )
 
 
-def test_hnsw_pair_is_only_in_the_hnsw_extra():
-    # Optional native pair: a target without a wheel must never fail the default install.
+def test_the_hnsw_pair_is_in_no_pip_requirement():
+    # Optional native pair, fetched on demand by studio/install_hnsw_prebuilt.py (hash-pinned,
+    # probed): no extra or requirements file may pull it, so no install can fail over it.
     from packaging.requirements import Requirement
 
     project = _load_pyproject()["project"]
-    extras = project["optional-dependencies"]
-    pinned = {
-        Requirement(entry).name.lower(): str(Requirement(entry).specifier)
-        for entry in extras["hnsw"]
-    }
-    assert pinned == {"usearch": "==2.26.6", "numkong": "==7.8.6"}
-    assert all("python_version >= " in entry for entry in extras["hnsw"])
     no_torch = REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
-    default_requirements = (
+    every_requirement = (
         project["dependencies"]
-        + extras["studio"]
+        + [entry for extra in project["optional-dependencies"].values() for entry in extra]
         + _requirement_lines(STUDIO_TXT)
         + _requirement_lines(no_torch)
     )
-    assert not set(pinned).intersection(
-        Requirement(entry).name.lower() for entry in default_requirements
+    assert not {"usearch", "numkong"}.intersection(
+        Requirement(entry).name.lower() for entry in every_requirement
     )
 
 
