@@ -4792,7 +4792,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     if supports_passthrough and has_client_contract:
         return True
     # Only constraining formats need the grammar engine; {'type': 'text'} is the default.
-    return _response_format_constrains_decoding(payload)
+    return _response_format_constrains_decoding(payload) or bool(_raw_grammar_fields(payload))
 
 
 def _folds_studio_tool_history(payload, llama_backend) -> bool:
@@ -31783,6 +31783,10 @@ def _refuse_npu_chat_request(payload, *, supports_vision: bool, supports_tools: 
             "response_format",
             "response_format needs a grammar engine, and FastFlowLM on the NPU has none.",
         )
+    if _raw_param := _raw_grammar_param(payload):
+        _raise_unsupported_openai_parameter(
+            _raw_param, f"{_raw_param} needs a grammar engine, and FastFlowLM on the NPU has none."
+        )
     if getattr(payload, "seed", None) is not None:
         _raise_unsupported_openai_parameter(
             "seed", "FastFlowLM on the NPU does not take a sampling seed."
@@ -33111,6 +33115,12 @@ async def produce_openai_chat_completions(
                     "response_format cannot be honored by an audio reply; send the "
                     "request to a text model to use guided decoding.",
                 )
+            if _raw_param := _raw_grammar_param(payload):
+                _raise_unsupported_openai_parameter(
+                    _raw_param,
+                    f"{_raw_param} cannot be honored by an audio reply; send the request to a "
+                    "text model to use it.",
+                )
             _reject_audio_output_continuation(payload)
             # This branch speaks only the newest user TEXT; an image would go unread.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
@@ -33149,6 +33159,13 @@ async def produce_openai_chat_completions(
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
         model_info = backend.models.get(backend.active_model_name, {})
+        if _raw_param := _raw_grammar_param(payload):
+            # llama-server's own fields; no other backend reads them, so refuse rather than ignore.
+            _raise_unsupported_openai_parameter(
+                _raw_param,
+                f"{_raw_param} is a llama-server field and is applied only when a GGUF model "
+                "is loaded.",
+            )
         if _response_format_constrains_decoding(payload):
             _audio_reply = model_info.get("is_audio") and model_info.get("audio_type") != "whisper"
             _transcribes = model_info.get("audio_type") == "whisper"
@@ -33769,6 +33786,10 @@ async def produce_openai_chat_completions(
         )
     # Shared with the token counter. Guided decoding routes here too: the other path drops schema.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
+        try:
+            _reject_unhonorable_raw_grammar(payload)
+        except HTTPException as exc:
+            raise _reject(exc.status_code, exc.detail)
         _refuse_unused_mcp_image(_mcp_image)
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
@@ -34065,6 +34086,18 @@ async def produce_openai_chat_completions(
                     status = 400,
                     code = "unsupported_parameter",
                     param = "response_format",
+                ),
+            )
+        if _raw_param := _raw_grammar_param(payload):
+            # Only an Unsloth tool-loop request reaches here; every other one took the passthrough.
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"{_raw_param} is not supported with Unsloth tool execution; "
+                    "send the request without enable_tools to use it.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = _raw_param,
                 ),
             )
 
@@ -48914,6 +48947,65 @@ def _response_format_constrains_decoding(payload) -> bool:
     return response_format_constrains_decoding(_extract_response_format(payload))
 
 
+def _raw_grammar_fields(payload) -> dict:
+    """The request's top-level llama-server ``grammar`` / ``json_schema`` (kept in model_extra) that would constrain decoding."""
+    extra = getattr(payload, "model_extra", None)
+    if not isinstance(extra, dict):
+        return {}
+    fields = {}
+    # llama-server's chat endpoint treats an empty grammar as none.
+    if extra.get("grammar") not in (None, ""):
+        fields["grammar"] = extra["grammar"]
+    if extra.get("json_schema") is not None:
+        fields["json_schema"] = extra["json_schema"]
+    return fields
+
+
+def _raw_grammar_param(payload) -> Optional[str]:
+    fields = _raw_grammar_fields(payload)
+    return next(iter(fields), None)
+
+
+def _reject_unhonorable_raw_grammar(payload) -> None:
+    """Refuse a top-level grammar / json_schema the GGUF passthrough cannot apply as sent."""
+    fields = _raw_grammar_fields(payload)
+    if not fields:
+        return
+    if "grammar" in fields and not isinstance(fields["grammar"], str):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "grammar must be a GBNF string.", status = 400, code = "invalid_type", param = "grammar"
+            ),
+        )
+    if "json_schema" in fields and not isinstance(fields["json_schema"], dict):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "json_schema must be a JSON Schema object.",
+                status = 400,
+                code = "invalid_type",
+                param = "json_schema",
+            ),
+        )
+    param = next(iter(fields))
+    if len(fields) > 1:
+        _raise_unsupported_openai_parameter(
+            "grammar", "Send either grammar or json_schema, not both."
+        )
+    if _response_format_constrains_decoding(payload):
+        _raise_unsupported_openai_parameter(
+            param,
+            f"{param} cannot be combined with a constraining response_format; send only one of them.",
+        )
+    # llama-server refuses a custom grammar beside callable tools, and a schema would block the call.
+    if _tools_outrank_response_format(payload, payload.tools):
+        _raise_unsupported_openai_parameter(
+            param,
+            f"{param} cannot be combined with callable tools; send tool_choice 'none' or no tools.",
+        )
+
+
 def _reject_unhonorable_response_format(payload) -> None:
     from core.inference.grammar_constraint import (
         ResponseFormatError,
@@ -48993,6 +49085,8 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    # The route refused the combinations llama-server cannot apply (_reject_unhonorable_raw_grammar).
+    body.update(_raw_grammar_fields(payload))
     if _continue_final_message(payload, thought = True):
         # llama-server rejects both flags set true.
         body["continue_final_message"] = True
