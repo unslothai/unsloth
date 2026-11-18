@@ -341,6 +341,8 @@ class _State:
         )
         self.reason = ""
         self._sig = None
+        self.armed_ids = None  # _input_ids of the call whose rows are armed
+        self.armed_refs: tuple = ()
 
     # ---- inputs / keys
     def inputs(self, model: Any, args: tuple, kwargs: dict) -> dict:
@@ -557,10 +559,43 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
     return None
 
 
+def _input_ids(st: "_State", inputs: dict) -> tuple:
+    """Identity of a call's embedding inputs (objects, storage, in-place version): equal ids, equal rows."""
+    out = [str(inputs.get("_dtype"))]
+    for name in st.adapter.key_names:
+        t = inputs.get(name)
+        out.append(
+            None
+            if t is None
+            else (
+                id(t),
+                getattr(t, "data_ptr", lambda: 0)(),
+                getattr(t, "_version", None),
+                tuple(t.shape),
+            )
+        )
+    return tuple(out)
+
+
+def _arm_call(model: Any, args: tuple, kwargs: dict) -> None:
+    st = model.__dict__.get(STATE_ATTR)
+    if st is None or not st.active:
+        return
+    try:
+        if (
+            st.armed_ids is not None
+            and _input_ids(st, st.inputs(model, args, kwargs)) == st.armed_ids
+        ):
+            return  # the rows armed last are this call's own: no key read, no copy
+    except _Unsupported:
+        pass
+    _pre_hook(model, args, kwargs)
+
+
 def arm_call(model: Any, args: tuple, kwargs: dict) -> None:
     """Arms the rows for a call that reaches the forward without ``model.__call__`` (the CFG router's merged
-    cond / uncond batch): its own inputs, so each half reads its own branch's modulation."""
-    _pre_hook(model, args, kwargs)
+    cond / uncond batch, its plain fallbacks and timing calls): its own inputs, so every call reads its own rows."""
+    _torch().compiler.disable(_arm_call)(model, args, kwargs)
 
 
 def offload_reason(model: Any) -> Optional[str]:
@@ -592,6 +627,9 @@ def _serve(model: Any, st: "_State", args: tuple, kwargs: dict) -> None:
             st.make_room(model, pending, (key,))
             st.compute(model, pending, protect = (key,))
         st.arm(key)
+        st.armed_ids = _input_ids(st, inputs)
+        # held while armed: a freed input's id / storage could otherwise be reused by the next step's tensor
+        st.armed_refs = tuple(inputs.get(name) for name in st.adapter.key_names)
 
 
 # --------------------------------------------------------------------------------------------------------------------

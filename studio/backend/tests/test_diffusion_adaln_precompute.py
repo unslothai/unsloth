@@ -590,3 +590,41 @@ def test_precompute_holds_at_most_the_table_budget(monkeypatch):
     assert all(torch.equal(a, b) for a, b in zip(ref, out))
     assert peak[0] <= budget + row, (peak[0], budget, row)
     assert st.row_bytes <= budget
+
+
+# ---- review round 4 (PR #18342)
+
+
+def test_cfg_batch_doubled_call_failure_falls_back_on_its_own_rows(monkeypatch):
+    """The doubled forward raises (OOM on the doubled activations) after its rows were armed; the plain fallback and
+    every later branch call must read their own rows: bit-identical to the router-off render."""
+    from core.inference import diffusion_cfg_batch as cb
+
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
+    ref = _flux_cfg_loop(_flux())  # router off, lever off
+
+    head = _flux()
+    assert ap.install(head, None, requested = ap.MODE_ON)
+    head = _mark_streamed(head)
+    pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, 4)))
+    pipe.transformer = head
+    ap.bind_pipe(pipe)
+    assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
+    router = cb.router_for(pipe)
+    real = router.orig_forward
+    doubled = []
+
+    def forward(*args, **kwargs):
+        hs = kwargs.get("hidden_states", args[0] if args else None)
+        if hs is not None and hs.shape[0] == 2:
+            doubled.append(1)
+            raise torch.OutOfMemoryError("simulated: no room for the doubled activations")
+        return real(*args, **kwargs)
+
+    router.orig_forward = forward  # the forward the router calls past module.__call__
+    served = ap.COUNTS["served"]
+    out = _flux_cfg_loop(head)
+    assert doubled, "the doubled call never ran"
+    assert ap.COUNTS["served"] > served
+    for a, b in zip(ref, out):
+        assert torch.equal(a, b)
