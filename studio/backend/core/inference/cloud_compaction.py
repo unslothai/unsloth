@@ -27,7 +27,10 @@ TAIL_TOKENS = 15_000
 TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
-SUMMARY_TIMEOUT_S = 120.0
+# A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
+# silent is not. The total cap only bounds a stream that never ends.
+SUMMARY_IDLE_TIMEOUT_S = 120.0
+SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
@@ -363,15 +366,20 @@ def summary_chunks(
     return chunks[-SUMMARY_MAX_CALLS:]
 
 
-async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_TIMEOUT_S) -> str:
+async def collect_summary(stream: AsyncIterator[str]) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
-    reply or a timeout."""
+    reply, SUMMARY_IDLE_TIMEOUT_S without a line, or SUMMARY_TIMEOUT_S in all."""
 
     async def _read() -> str:
         parts: list[str] = []
         finish_reason = None
+        lines = stream.__aiter__()
         try:
-            async for line in stream:
+            while True:
+                try:
+                    line = await asyncio.wait_for(anext(lines), timeout = SUMMARY_IDLE_TIMEOUT_S)
+                except StopAsyncIteration:
+                    break
                 payload = _sse_json(line)
                 if payload is None:
                     continue
@@ -397,7 +405,7 @@ async def collect_summary(stream: AsyncIterator[str], timeout: float = SUMMARY_T
         return "".join(parts)
 
     try:
-        text = await asyncio.wait_for(_read(), timeout = timeout)
+        text = await asyncio.wait_for(_read(), timeout = SUMMARY_TIMEOUT_S)
     except asyncio.TimeoutError as exc:
         raise SummaryTimedOut("the summary call timed out") from exc
     except SummaryFailed:
