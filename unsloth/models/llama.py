@@ -2945,9 +2945,18 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         short_inv_freq = 1.0 / (short_factor * self.base**inv_freq_shape)
         long_inv_freq = 1.0 / (long_factor * self.base**inv_freq_shape)
 
-        # Phi-3 scale factor.
+        # Phi-3 scale factor, unless the config sets attention_factor (as transformers honours).
         scale = self.max_position_embeddings / self.original_max_position_embeddings
-        if scale <= 1.0:
+        attention_factor = None
+        if config is not None:
+            attention_factor = _rope_scaling_as_dict(
+                getattr(config, "rope_scaling", None)
+                or getattr(config, "rope_parameters", None)
+                or {}
+            ).get("attention_factor")
+        if attention_factor is not None:
+            scaling_factor = float(attention_factor)
+        elif scale <= 1.0:
             scaling_factor = 1.0
         else:
             scaling_factor = math.sqrt(

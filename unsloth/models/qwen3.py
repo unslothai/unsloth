@@ -241,6 +241,9 @@ def Qwen3Attention_fast_forward_inference(
     # past the KV length, since the cache only builds the rows asked for.
     rotary_seq_len = kwargs.get("rotary_seq_len")
     rope_len = kv_seq_len if rotary_seq_len is None else max(kv_seq_len, rotary_seq_len)
+    if rotary_seq_len is not None and getattr(self.rotary_emb, "_rope_rows_pick_factors", False):
+        # LongRoPE: factors from positions (the decode loop's value), not the padded KV length.
+        rope_len = rotary_seq_len
     self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rope_len + 1))
     cos, sin = self.rotary_emb.get_cached(rope_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.

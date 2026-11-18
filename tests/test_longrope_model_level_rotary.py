@@ -201,3 +201,18 @@ def test_longrope_honours_explicit_head_dim():
     )
     torch.testing.assert_close(cos, ref_cos[0], atol = 2e-3, rtol = 0)
     torch.testing.assert_close(sin, ref_sin[0], atol = 2e-3, rtol = 0)
+
+
+@pytest.mark.parametrize("length", [2048, 4098], ids = ["short", "long"])
+def test_longrope_honours_attention_factor(length):
+    from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
+
+    config = copy.deepcopy(CONFIG)
+    config["rope_scaling"]["attention_factor"] = 2.0
+    positions = torch.arange(length)
+    cos, sin = _unsloth_cos_sin(positions, False, config = config)
+    ref_cos, ref_sin = LlamaRotaryEmbedding(LlamaConfig(**copy.deepcopy(config)))(
+        torch.zeros(1, length, DIM), positions[None]
+    )
+    torch.testing.assert_close(cos, ref_cos[0], atol = 4e-3, rtol = 0)
+    torch.testing.assert_close(sin, ref_sin[0], atol = 4e-3, rtol = 0)
