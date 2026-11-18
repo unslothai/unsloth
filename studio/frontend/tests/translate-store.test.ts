@@ -102,6 +102,13 @@ test("language tabs keep their order when one is picked and take a new language 
   assert.equal(state().prefs.from, AUTO_SOURCE);
 });
 
+test("picking Detect language keeps a source tab that was never saved as recent", () => {
+  // Prefs saved before recentSources existed: the tab row shows the source alone.
+  state().setPrefs({ from: "ja", recentSources: [] });
+  state().setFrom(AUTO_SOURCE);
+  assert.deepEqual(state().prefs.recentSources, ["ja"]);
+});
+
 test("swap keeps an edited draft instead of the old translation", async () => {
   state().setSource("Hello");
   await state().translate();

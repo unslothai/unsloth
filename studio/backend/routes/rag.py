@@ -978,18 +978,48 @@ _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
 _IMAGE_TEXT_EXTS = frozenset(".png .jpg .jpeg .webp .gif .bmp .tif .tiff".split())
+# A letter page at OCR_DPI, what PDF OCR already sends the vision model.
+_IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
+
+
+def _image_png(path: str) -> bytes:
+    """Native pixels, never rescaled by the file's DPI tag (PyMuPDF does, and cannot open WebP)."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as opened:
+        rgba = ImageOps.exif_transpose(opened).convert("RGBA")
+    # On white, as PyMuPDF renders it: dark text on a transparent PNG must not turn black on black.
+    image = Image.new("RGB", rgba.size, "white")
+    image.paste(rgba, mask = rgba.getchannel("A"))
+    scale = (_IMAGE_MAX_PIXELS / (image.width * image.height)) ** 0.5
+    if scale < 1:
+        image = image.resize(
+            (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    out = io.BytesIO()
+    # Tagged at OCR_DPI so Tesseract renders it 1:1.
+    image.save(out, "PNG", dpi = (config.OCR_DPI, config.OCR_DPI))
+    return out.getvalue()
 
 
 def _image_text(path: str) -> str:
     """The loaded vision model reads the image, else local Tesseract; "" when neither can."""
-    import pymupdf
+    import tempfile
 
     from core.rag import captioner, pdf_ocr
 
-    with pymupdf.open(path) as doc:
-        png = doc[0].get_pixmap(dpi = config.OCR_DPI).tobytes("png")
+    png = _image_png(path)
     text = captioner.ocr_pages({1: png}).get(1, "")
-    return text or pdf_ocr.ocr_pages(path, [1]).get(1, "")
+    if text:
+        return text
+    with tempfile.TemporaryDirectory() as tmp:
+        normalized = os.path.join(tmp, "image.png")
+        with open(normalized, "wb") as handle:
+            handle.write(png)
+        return pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
 
 
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.

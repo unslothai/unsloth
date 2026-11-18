@@ -1347,6 +1347,11 @@ export function TranslatePage() {
     onFiles: (files) => void openFile(files[0]),
     accept: OPEN_FILE_EXTENSIONS,
     multiple: false,
+    // Like Open file: a second read would race the first into the text box.
+    disabled: readingFile !== null,
+    disabledReason: readingFile
+      ? t("translate.readingFile", { name: readingFile })
+      : undefined,
   });
 
   const errorMessage = error
@@ -1640,7 +1645,7 @@ export function TranslatePage() {
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-background/80 text-ui-13 text-muted-foreground">
                 {t("translate.dropFile")}
               </div>
-            )}{" "}
+            )}
           </section>
 
           <section

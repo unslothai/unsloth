@@ -300,17 +300,12 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   setFrom: (from) => {
     const { prefs } = get();
     if (from === prefs.from) return;
-    get().setPrefs(
-      from === AUTO_SOURCE
-        ? { from }
-        : {
-            from,
-            recentSources: withLanguage(
-              languageTabs(prefs.from, prefs.recentSources),
-              from,
-            ),
-          },
-    );
+    // The tabs shown now, so Detect language never drops one (prefs saved before recentSources had none).
+    const shown = languageTabs(prefs.from, prefs.recentSources);
+    get().setPrefs({
+      from,
+      recentSources: from === AUTO_SOURCE ? shown : withLanguage(shown, from),
+    });
   },
 
   setTarget: (target) => {
