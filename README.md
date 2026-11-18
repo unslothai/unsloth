@@ -453,7 +453,7 @@ One install has one PyTorch, and one PyTorch drives one vendor. On a host with b
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_FORCE_ROCM_TORCH=1 sh
 ```
-For Unsloth Desktop, launch it with `UNSLOTH_FORCE_ROCM_TORCH=1` set, then use Settings > General > Repair installation. The variable is read by `install.sh` only; `install.ps1` has no equivalent yet, so Windows has no opt-in.
+For Unsloth Desktop, launch it with `UNSLOTH_FORCE_ROCM_TORCH=1` set, then use Settings > General > Repair installation. On Windows, `install.ps1` does not read `UNSLOTH_FORCE_ROCM_TORCH` yet; pinning a ROCm index with `UNSLOTH_TORCH_INDEX_URL` is the available route there.
 
 GGUF chat is a separate program and can run on either card, whichever PyTorch is installed: pick it in Settings > System, Engine > GGUF inference engine > Compute backend. Vulkan sees both cards. ROCm needs the ROCm runtime installed, and on Linux your user in the `render` and `video` groups.
 
