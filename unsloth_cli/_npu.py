@@ -87,7 +87,15 @@ def npu_status_problem(status: dict) -> Optional[str]:
 
 
 def npu_display_name(model: dict) -> str:
-    """The Hugging Face repo name without its owner, as the app shows it (npuDisplayName)."""
+    """The name the app shows (npuDisplayName): a converted folder's name, else the repo's."""
+    local = model.get("local")
+    if isinstance(local, dict) and local.get("folder"):
+        parts = [p for p in str(local["folder"]).replace("\\", "/").split("/") if p]
+        # A GGUF export with Q4NX on writes into <save folder>/npu-q4nx.
+        if parts and parts[-1] == "npu-q4nx":
+            parts.pop()
+        if parts:
+            return parts[-1]
     repo = str(model.get("hf_repo") or "").strip()
     return repo.rsplit("/", 1)[-1] or str(model.get("id"))
 

@@ -582,3 +582,17 @@ def test_npu_detected_reads_studios_detector(monkeypatch):
     from unsloth_cli import _npu
     monkeypatch.setenv("UNSLOTH_STUDIO_ENABLE_NPU", "0")
     assert _npu.npu_detected() is False
+
+
+@pytest.mark.parametrize(
+    "folder, name",
+    [
+        ("/home/u/runs/my-finetune/npu-q4nx", "my-finetune"),
+        ("C:\\Users\\u\\exports\\qwen-q4nx", "qwen-q4nx"),
+        ("/srv/q4nx/llama-sft", "llama-sft"),
+    ],
+)
+def test_a_converted_model_is_listed_by_its_folder_name(folder, name):
+    from unsloth_cli._npu import npu_display_name
+    row = {"id": "local-npu-q4nx-1a2b3c4d-q4nx-FLM", "hf_repo": None, "local": {"folder": folder}}
+    assert npu_display_name(row) == name
