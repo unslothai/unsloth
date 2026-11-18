@@ -5,7 +5,11 @@ llama.cpp RPC: four DGX Sparks, a few Macs, a Linux box with NVIDIA or AMD GPUs,
 This machine runs `llama-server`; every other machine runs `ggml-rpc-server` and holds a share
 of the layers.
 
-The cluster path below only turns on when you configure it.
+Paired DGX Sparks need none of this: they are found over the QSFP cable and served as before.
+The cluster path below only turns on when you configure it, and then it replaces the two-Spark
+path for every load. If you switch a paired Spark over to a cluster, list its peer as `managed` (or
+start its `ggml-rpc-server` yourself on another port): the two-Spark worker on the peer stops
+when the first cluster load replaces the two-Spark model.
 
 ## 1. Start a worker on each machine
 
@@ -47,10 +51,10 @@ or `<studio home>/cluster.json` (default `~/.unsloth/studio/cluster.json`):
 ```
 
 A node with `"managed": true` (or every node, with `UNSLOTH_CLUSTER_MANAGED=1`) has its
-`ggml-rpc-server` started by Studio over non-interactive ssh
+`ggml-rpc-server` started by Studio over non-interactive ssh, as the two-Spark path does
 (from a Linux or macOS coordinator; on Windows, start the workers yourself). A managed worker
 uses every GPU on its host, so a managed host is listed only once.
-`UNSLOTH_SPARK_SERVING=0` turns it off.
+`UNSLOTH_SPARK_SERVING=0` turns both paths off.
 
 ## What happens on a load
 
@@ -95,6 +99,7 @@ the plan and the exact arguments used.
 
 - A split is bounded by the network. Over plain Ethernet each token crosses the wire once per
   worker, so a split is only chosen when the model does not fit this machine.
+- Copies of the model on several machines (replicas) are only available for two paired Sparks.
 - A worker that restarts loses its share of the model; reload the model afterwards.
 - A split runs without speculative decoding (n-gram modes excepted): a drafter or MTP state is
   not in the plan. A load whose own arguments add a draft model or MTP is served on this machine.

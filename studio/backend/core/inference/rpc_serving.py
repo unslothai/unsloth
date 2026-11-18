@@ -1249,16 +1249,29 @@ def request_with(request: Any, updates: Dict[str, Any]) -> Any:
 # The load hooks. An optional serving provider (two-Spark serving) may take them over whole; without
 # one, they drive the N-node cluster planner only.
 _PROVIDER: Any = None
+_PROVIDER_LOOKED_UP = False
 
 
 def _provider() -> Any:
+    """Two-Spark serving when it is installed; it keeps the cluster path inside its own hooks."""
+    global _PROVIDER, _PROVIDER_LOOKED_UP
+    if _PROVIDER is None and not _PROVIDER_LOOKED_UP:
+        _PROVIDER_LOOKED_UP = True
+        try:
+            from core.inference import spark_serving
+        except ImportError as exc:
+            if exc.name != "core.inference.spark_serving":
+                logger.warning("layer-split serving: two-Spark serving failed to import: %s", exc)
+            return None
+        _PROVIDER = spark_serving
     return _PROVIDER
 
 
 def register_provider(provider: Any) -> None:
     """``provider`` answers every hook below instead of the cluster-only path (None restores it)."""
-    global _PROVIDER
+    global _PROVIDER, _PROVIDER_LOOKED_UP
     _PROVIDER = provider
+    _PROVIDER_LOOKED_UP = True
 
 
 def _cluster_active() -> bool:
@@ -1418,9 +1431,16 @@ def status() -> Dict[str, Any]:
     return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
 
 
-def reset_for_tests() -> None:
+def reset_shared_for_tests() -> None:
     global _LLAMA_RPC, _LLAMA_RPC_LOOKED_UP
     _LLAMA_RPC = None
     _LLAMA_RPC_LOOKED_UP = False
     _HELP_TEXT.clear()
     _ACCEPTS.clear()
+
+
+def reset_for_tests() -> None:
+    reset_shared_for_tests()
+    provider = _provider()
+    if provider is not None and hasattr(provider, "reset_for_tests"):
+        provider.reset_for_tests()
