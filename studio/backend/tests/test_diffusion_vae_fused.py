@@ -720,7 +720,7 @@ def test_shape_args_do_not_multiply_jit_variants():
         assert _variants(k.rms_act) == seen, (t, h, w, front)
 
 
-# ---- causal-conv levers: CPU checks of the new gates (fail on a tree without them) ----
+# ---- causal-conv levers ----
 
 
 def test_causal_levers_default_and_kill_switches(monkeypatch):
@@ -729,7 +729,6 @@ def test_causal_levers_default_and_kill_switches(monkeypatch):
         assert F.lever_on(env) is True
         monkeypatch.setenv(env, "0")
         assert F.lever_on(env) is False
-    # measured inside the A/A spread: opt-in
     for env in (F.T1_CONV2D_ENV,):
         monkeypatch.delenv(env, raising = False)
         assert F.lever_on(env) is False
@@ -815,12 +814,11 @@ def test_conv_frames_is_a_frame_batched_conv2d(monkeypatch):
     ref = torch.nn.functional.conv3d(x, w, b, 1, (0, 1, 1))
     assert out is not None and torch.allclose(out, ref, atol = 1e-5)
     assert out.is_contiguous(memory_format = cl) and F.ENGAGED.get("t1_conv2d") == 1
-    # temporal kernel > 1, temporal stride, or a non-channels-last input: not a frame batch
     assert F.conv_frames(x, torch.randn(4, 8, 3, 3, 3), b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
     assert F.conv_frames(x, w, b, (2, 1, 1), (0, 1, 1), (1, 1, 1)) is None
     assert F.conv_frames(x.contiguous(), w, b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
 
-    # the last tap of a 3x3x3 weight is a strided view: stays conv3d (2.3x slower as conv2d on Qwen-Image)
+    # strided last-tap view stays conv3d
     w3 = torch.randn(4, 8, 3, 3, 3)
     assert F.conv_frames(x, w3[:, :, -1:], b, (1, 1, 1), (0, 1, 1), (1, 1, 1)) is None
 

@@ -233,7 +233,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[
             None, :
         ]
-        # the causal cache tail is a runtime count (0 = none, every store masked off): one compiled kernel for both
+        # runtime tail count (0 = all stores masked): one compiled kernel
         if not REPLICATE:
             t_tail = t_o - (To - n_tail)
             tail_off = ((b.to(tl.int64) * n_tail + t_tail) * (H * W) + (hh * W + ww).to(tl.int64))[
@@ -847,16 +847,13 @@ def _conv_kind(conv: Any) -> Optional[str]:
     return None
 
 
-# Video causal-conv levers, each with its own kill switch (read per call, so a test or a user can flip one live).
+# Video causal-conv kill switches, read per call.
 CAUSAL_TAIL_ENV = "UNSLOTH_VAE_FUSED_CAUSAL_TAIL"
 PREPAD_ENV = "UNSLOTH_VAE_FUSED_PREPAD"
 T1_CONV2D_ENV = "UNSLOTH_VAE_FUSED_T1_CONV2D"
 LTX2_REFLECT_ENV = "UNSLOTH_VAE_FUSED_LTX2_REFLECT"
 BIAS_FOLD_ENV = "UNSLOTH_VAE_FUSED_BIAS_FOLD"
-# Defaults follow the decode-level A/B (3 interleaved fresh processes, RTX PRO 6000 / A100): on are the cache tail (Wan2.1
-# decode 1.014x slower without it), the deferred shortcut / time_conv biases (Wan2.2 1.008x slower without) and the
-# LTX-2 reflect pass; PREPAD (the conv's zero halo written by the norm pass) and the frame-batched temporal-1 conv2d
-# measured inside the A/A spread, so they are opt-in.
+# Decode A/B (RTX PRO 6000 / A100): PREPAD and T1_CONV2D measured inside the A/A spread, so opt-in.
 _LEVER_DEFAULTS = {
     CAUSAL_TAIL_ENV: True,
     PREPAD_ENV: False,
@@ -864,7 +861,7 @@ _LEVER_DEFAULTS = {
     LTX2_REFLECT_ENV: True,
     BIAS_FOLD_ENV: True,
 }
-# Engagement census: how often each lever actually ran (benchmarks read it; a silent fallback shows as 0).
+# Per-lever engagement counts (a silent fallback shows as 0).
 ENGAGED: dict = {}
 
 
@@ -883,9 +880,7 @@ def _count(name: str) -> None:
 def conv_frames(
     y: Any, weight: Any, bias: Any, stride: tuple, padding: tuple, dilation: tuple
 ) -> Any:
-    """A temporal-kernel-1 conv3d as one conv2d over the B*T frames (no temporal mixing), or None.
-
-    A channels-last_3d (B, C, T, H, W) is a free channels-last (B*T, C, H, W) view, and the conv2d output views back."""
+    """A temporal-kernel-1 conv3d as one conv2d over B*T channels-last frames, or None."""
     import torch.nn.functional as F
 
     if (
@@ -976,8 +971,7 @@ def causal_conv(
         and conv.stride[0] == 1
         and conv.dilation[0] == 1
     ):
-        # the last temporal tap as conv3d, as before: a conv2d on that strided weight slice measured 2.3x slower on
-        # Qwen-Image's one-frame decode (RTX PRO 6000), so the frame batch is for native temporal-1 weights only
+        # not conv2d: the strided last-tap slice measured 2.3x slower on Qwen-Image
         y = rms_norm_act(x, norm, act, in_bias = in_bias)  # also the cache: stays unpadded
         return F.conv3d(y, conv.weight[:, :, -1:], bias, conv.stride, spatial, conv.dilation), y
     if lever_on(CAUSAL_TAIL_ENV):
@@ -2198,9 +2192,7 @@ def ltx_conv(
     in_bias: Any = None,
     with_bias: bool = True,
 ) -> Any:
-    """``LTX2VideoCausalConv3d.forward`` over ``silu?(pixel_norm?(x + in_bias))``, pad + norm + act in one pass.
-
-    LTX-2's reflect-padded decoder: the reflect halo is written by the same pass and the conv runs unpadded."""
+    """``LTX2VideoCausalConv3d.forward`` over ``silu?(pixel_norm?(x + in_bias))``, pad + norm + act in one pass."""
     import torch.nn.functional as F
 
     kt = conv.kernel_size[0]
@@ -2296,8 +2288,7 @@ def _fast_pixel_norm_act(norm: Any) -> Any:
 
 
 def _ltx2_convs_fusable(vae: Any) -> bool:
-    """LTX-2's reflect-padded decoder fuses only with the reflect halo pass (``UNSLOTH_VAE_FUSED_LTX2_REFLECT``): norm_out
-    alone decoded 0.97-0.98x (L4 / A100 / RTX PRO 6000)."""
+    """Reflect-padded LTX-2 fuses only with the reflect halo pass: norm_out alone decoded 0.97-0.98x."""
     decoder = getattr(vae, "decoder", None)
     return decoder is not None and any(
         type(m).__name__ == "LTX2VideoCausalConv3d" and _ltx_conv_ok(m) for m in decoder.modules()
