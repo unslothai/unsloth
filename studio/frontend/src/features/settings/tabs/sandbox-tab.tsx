@@ -1042,6 +1042,7 @@ function TrustedFoldersSection() {
         <div className="flex w-full max-w-[calc(26rem*var(--ui-space-scale,1))] flex-col items-end gap-2">
           <Textarea
             value={draft}
+            disabled={saving}
             spellCheck={false}
             aria-label={t("settings.sandbox.trustedFoldersLabel")}
             placeholder={t("settings.sandbox.trustedFoldersPlaceholder")}

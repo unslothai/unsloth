@@ -733,10 +733,18 @@ _TRUSTED_FOLDER_SCAN_LIMIT = 5000
 
 def grantable_trusted_roots(candidates) -> tuple[str, ...]:
     """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    from storage.studio_db import is_denied_system_path
+
+    # Saved as real paths: one that now resolves elsewhere was swapped for a link since.
+    stable = tuple(
+        path
+        for path in candidates
+        if path and os.path.realpath(path) == path and not is_denied_system_path(path)
+    )
     state = studio_state_roots()
     return tuple(
         root
-        for root in _grantable_read_roots(candidates)
+        for root in _grantable_read_roots(stable)
         if not overlaps_studio_state(root, state) and not _holds_a_nested_credential(root)
     )
 
@@ -775,9 +783,13 @@ def _holds_a_nested_credential(folder: str) -> bool:
                     # A link or Windows junction out of the folder reads its target unchecked: the scan
                     # never follows it, and is_symlink() is False for a junction.
                     linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
-                    if linked and not _is_within(os.path.realpath(entry.path), folder):
+                    is_dir = entry.is_dir(follow_symlinks = False)
+                    # DirEntry.is_junction is 3.12+; on 3.11 a junction reads as a plain directory.
+                    if (linked or (is_dir and os.name == "nt")) and not _is_within(
+                        os.path.realpath(entry.path), folder
+                    ):
                         return True
-                    if entry.is_dir(follow_symlinks = False):
+                    if is_dir:
                         pending.append(entry.path)
                     # A second name can alias a credential anywhere on the volume, as in the workdir scan.
                     # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.

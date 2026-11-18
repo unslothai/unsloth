@@ -414,3 +414,79 @@ class TestRoute:
         assert put.status_code == 403, put.text
         assert get.status_code == 403, get.text
         assert state["folders"] == ["/opt/saved"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "junctions are Windows-only")
+def test_a_junction_is_caught_without_direntry_is_junction(folder, monkeypatch):
+    # Python 3.11 DirEntry has no is_junction; the junction then reads as a plain directory.
+    import _winapi
+
+    outside = folder.parent / "outside"
+    outside.mkdir()
+    _winapi.CreateJunction(str(outside), str(folder / "alias"))
+    real_scandir = os.scandir
+
+    class _Entry:
+        def __init__(self, entry):
+            self._entry = entry
+            self.name, self.path = entry.name, entry.path
+
+        def is_symlink(self):
+            return self._entry.is_symlink()
+
+        def is_dir(self, *, follow_symlinks = True):
+            return self._entry.is_dir(follow_symlinks = follow_symlinks)
+
+        def is_file(self, *, follow_symlinks = True):
+            return self._entry.is_file(follow_symlinks = follow_symlinks)
+
+    class _Listing:
+        def __init__(self, path):
+            self._it = real_scandir(path)
+
+        def __enter__(self):
+            return (_Entry(entry) for entry in self._it)
+
+        def __exit__(self, *exc):
+            self._it.close()
+
+    monkeypatch.setattr(os_sandbox.os, "scandir", _Listing)
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
+def test_a_saved_folder_swapped_for_a_link_is_not_granted(folder, scratch):
+    elsewhere = scratch / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "run.sh").write_text("echo hi\n")
+    moved = scratch / "moved"
+    folder.rename(moved)
+    try:
+        os.symlink(elsewhere, folder, target_is_directory = True)
+    except OSError:
+        pytest.skip("this volume does not allow symlinks here")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+    assert _asks(folder / "run.sh") is True
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "bubblewrap plan is Linux-only")
+def test_bwrap_binds_a_trusted_folder_under_tmp_after_the_tmpfs(monkeypatch, tmp_path):
+    from core.inference import sandbox_linux
+    from core.inference.os_sandbox import ToolLaunchPlan
+
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("needs bubblewrap")
+    root = tempfile.mkdtemp(dir = "/tmp")
+    monkeypatch.setattr(sandbox_linux, "model_library_roots", lambda: (root,))
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    launch = sandbox_linux.prepare(
+        ToolLaunchPlan(argv = ("/bin/true",), workdir = str(workdir), env = {"PATH": "/usr/bin"})
+    )
+    try:
+        argv = list(launch.argv)
+        tmpfs = max(i for i, a in enumerate(argv) if a == "/tmp" and argv[i - 1] == "--tmpfs")
+        binds = [i for i in range(len(argv) - 2) if argv[i + 1] == root and argv[i + 2] == root]
+        assert binds and all(i > tmpfs for i in binds), argv
+    finally:
+        launch.cleanup()
+        os.rmdir(root)

@@ -1010,8 +1010,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]
         # -try: a missing model folder must not fail the launch.
+        # A root under /tmp or /dev/shm is bound after their tmpfs, which would otherwise hide it.
+        tmp_silent_roots = tuple(
+            root for root in silent_roots if _within(root, "/tmp") or _within(root, "/dev/shm")
+        )
         for root in silent_roots:
-            argv += ["--ro-bind-try", root, root]
+            if root not in tmp_silent_roots:
+                argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
         for path in (*_ETC_FILES, *_etc_java_binds(), *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
@@ -1029,6 +1034,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
+        for root in tmp_silent_roots:
+            argv += ["--ro-bind-try", root, root]
         argv += ["--bind", workdir, inner]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
