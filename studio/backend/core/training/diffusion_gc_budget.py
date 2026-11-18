@@ -5,13 +5,9 @@
 
 A DiT LoRA run checkpoints every transformer block, so each block's forward runs twice per step (forward, then again
 in backward). After streaming the text encoders, a 4-bit run peaks at 3 to 6 GiB, which leaves most of a 24 to 80 GB
-card idle while the step pays for the recompute. Here step 1 runs with every block checkpointed, except the first
-block of each block class, whose kept activations are measured. After step 1 the free memory left on the card decides
-how many blocks keep their activations instead of recomputing them; the rest stay checkpointed. Skipping a block's
-recompute runs the same kernels on the same inputs, so the loss and gradients are unchanged.
-
-An out-of-memory error in a step that keeps activations turns the plan off and reruns that step with every block
-checkpointed, from the same inputs, so the run carries on exactly as a fully checkpointed run would.
+card idle. Step 1 measures the first block of each class; afterwards free memory decides how many blocks skip the
+recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error disables the plan
+and reruns the step fully checkpointed from the same inputs.
 
 ``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA (not ROCm); ``plain`` checkpoints every block
 and ``partial`` every Nth, as before.
@@ -154,8 +150,7 @@ class BudgetedCheckpoint:
         total_bytes: int,
         max_canvas_area: Optional[int] = None,
     ) -> int:
-        """Pick the blocks that keep their activations from step 1's measurements; returns how many. A bucketed run
-        scales the step-1 sizes (and the peak above the weights) to its largest canvas."""
+        """Pick the blocks that keep activations; returns how many. Bucketed runs scale to the largest canvas."""
         self.probing = False
         self.planned = True
         if self.disabled:
@@ -177,7 +172,6 @@ class BudgetedCheckpoint:
         return len(keep)
 
     def fall_back(self) -> bool:
-        """Every block checkpointed from now on; True when that changed anything."""
         changed = not self.disabled and (bool(self.keep) or self.probing)
         self.disabled = True
         self.probing = False
@@ -249,11 +243,9 @@ class StepReplay:
             torch.cuda.set_rng_state(cuda)
 
     def record(self, inputs: tuple) -> None:
-        """Call right before the micro-batch's forward."""
         self.entries.append((_to_host(inputs, pin = self.device == "cuda"), self._rng_state()))
 
     def replay(self, fn: Any) -> list:
-        """Rerun every recorded micro-batch through ``fn``; returns its results in order."""
         out = []
         for host, state in self.entries:
             self._set_rng_state(state)

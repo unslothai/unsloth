@@ -3546,9 +3546,8 @@ def _train_dit(
                     raise
                 oom = True
             if oom:
-                # Outside the except block, so the failed forward's partial graph is gone with its traceback. Drop
-                # every device reference to this micro-batch too (and the earlier micro-batches' losses), so the
-                # rerun has the memory a clean fully checkpointed step would; it replays from the host copies.
+                # Outside the except block so the failed graph dies with its traceback; drop every device reference
+                # to the step's micro-batches so the host-copy rerun has a clean step's memory.
                 inputs = latents = noise = timesteps = t_indices = sigmas = noisy = embeds = None
                 px = loss = step_acc = None
                 step_acc = _retry_fully_checkpointed()

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only tests for the budgeted DiT gradient checkpointing (diffusion_gc_budget): mode parsing and the kill switch,
-which devices and models it engages on, the first-step measurement, the plan arithmetic, the out-of-memory fall back,
-and LoRA gradients equal to an uncheckpointed run in every state."""
+"""CPU-only tests for diffusion_gc_budget: modes, engagement, plan arithmetic, OOM fall back, gradient parity."""
 
 from __future__ import annotations
 
@@ -202,7 +200,6 @@ def test_every_state_matches_uncheckpointed_grads(monkeypatch):
     check(5)
     assert budget.total_blocks == 6 and set(budget.class_cost) == {"ZImageTransformerBlock"}
     assert budget.class_cost["ZImageTransformerBlock"] > 0
-    # Room for every block: nothing recomputed.
     assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 6
     check(0)
     # Room for two: the first two keep their activations.

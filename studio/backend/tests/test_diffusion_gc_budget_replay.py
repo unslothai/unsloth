@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU tests for the budgeted checkpointing's out-of-memory rerun inside the real DiT training loop (the tiny
-Qwen-Image-2.1 pipe, skipped when unreachable): with gradient accumulation the loop holds only the current
-micro-batch's inputs (plain mode, budget on, after a fall back), and a rerun after an injected out-of-memory error
-replays the step with the same dropout masks and leaves the RNG where a clean step would, so the adapter and every
-later draw are bit-identical to a run without the error."""
+"""CPU tests for the out-of-memory rerun in the real DiT loop (tiny Qwen-Image-2.1, skipped when unreachable): only the
+current micro-batch is held, and a rerun is bit-identical (adapter and RNG) to a run without the error."""
 
 from __future__ import annotations
 
