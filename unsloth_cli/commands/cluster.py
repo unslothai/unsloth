@@ -269,6 +269,42 @@ def worker(
             announcer.stop()
 
 
+def prompt_in_background(fn: Any, *args: Any) -> Any:
+    """``fn(*args)`` on a daemon thread, as a future of the running loop.
+
+    Not ``asyncio.to_thread``: ``asyncio.run`` joins its executor on exit, so a prompt nobody
+    answers would keep a timed-out or Ctrl-C'd command waiting for input.
+    """
+    import asyncio
+    import threading
+
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def settle(answer: Any, error: Optional[BaseException]) -> None:
+        if future.done():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(answer)
+
+    def work() -> None:
+        answer: Any = None
+        error: Optional[BaseException] = None
+        try:
+            answer = fn(*args)
+        except BaseException as exc:
+            error = exc
+        try:
+            loop.call_soon_threadsafe(settle, answer, error)
+        except RuntimeError:
+            pass  # the command already finished
+
+    threading.Thread(target = work, name = "cluster-pair-approval", daemon = True).start()
+    return future
+
+
 @cluster_app.command("pair")
 def pair(
     ttl: str = typer.Option("10m", "--ttl", help = "How long the token works (e.g. 90s, 10m)."),
@@ -309,7 +345,7 @@ def pair(
         port = port or PAIR_PORT_DEFAULT,
         ttl = seconds,
         addrs = addr or None,
-        approve = None if yes else (lambda name, words: asyncio.to_thread(ask, name, words)),
+        approve = None if yes else (lambda name, words: prompt_in_background(ask, name, words)),
     )
 
     async def run() -> Any:
