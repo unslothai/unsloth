@@ -6038,6 +6038,8 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
@@ -6089,6 +6091,8 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6187,6 +6191,8 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6215,6 +6221,8 @@ def _select_only(*names):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": name}} for name in names]
 
@@ -6429,6 +6437,8 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6810,6 +6820,8 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
